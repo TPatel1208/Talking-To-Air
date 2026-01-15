@@ -18,18 +18,18 @@ from nlp.query_executor import QueryExecutor
 
 #Loading Data and Initializing Components
 print("Loading TEMPO NO2 dataset...")
-ds_TEMPO_NO2= xr.open_dataset('TEMPO_NO2_L3_Warm_Season_Mean_V3.nc4')['NO2_trop_column_good']
-"""
+#ds_TEMPO_NO2= xr.open_dataset('TEMPO_NO2_L3_Warm_Season_Mean_V3.nc4')['NO2_trop_column_good']
+
 ds_TEMPO_NO2_1 = xr.open_dataset('TEMPO_NO2_L3_V03_20250916T210309Z_S012.nc')
 no2_grid = ds_TEMPO_NO2_1['weight'] 
-"""
+
 resolver = plotting.RegionResolver()
 embedder = IntentEmbedder(INTENT_EXAMPLES)
 slot_extractor = SlotExtractor()
 grounder = QueryGrounder(slot_extractor)
 dm = Dialouge_Manager(intent_embedder=embedder, slot_extractor=slot_extractor, query_grounder=grounder)
 rg = ResponseGenerator()
-qe = QueryExecutor(resolver, default_filepath='TEMPO_NO2_L3_Warm_Season_Mean_V3.nc4')
+qe = QueryExecutor(resolver, default_ds=no2_grid)
 
 session_id = "test_user_123"
 query = None

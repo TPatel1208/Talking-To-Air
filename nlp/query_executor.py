@@ -8,10 +8,9 @@ This currently does not handle time queries, due to the fact that I still have t
 Currently using a default dataset for testing. Also multiplotting functionality is not implemented yet and will be added later.
 """
 class QueryExecutor:
-    def __init__ (self, region_resolver, default_filepath: Optional[str] = None):
+    def __init__ (self, region_resolver, default_ds: Optional[xr.Dataset] = None):
         self.region_resolver = region_resolver
-        self.default_filepath = default_filepath
-        self.default_ds = xr.open_dataset(default_filepath)['NO2_trop_column_good'] if default_filepath else None
+        self.default_ds = default_ds
     def execute_query(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Executes the query based on the intent and parameters."""
         intent = data.get('intent')
