@@ -1,0 +1,43 @@
+*.nc
+*.nc4
+*.hdf5
+*.h5
+TEMPO_NO2_L3_Warm_Season_Mean_V3.nc4
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+env/
+ENV/
+*.egg-info/
+
+# Trained models and cached data
+*.pth
+*.pt
+*.pkl
+*.pickle
+sentence-transformers/
+
+# IDE/Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs and temp files
+*.log
+.pytest_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Environment variables
+.env

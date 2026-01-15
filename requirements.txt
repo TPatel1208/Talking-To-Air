@@ -1,0 +1,13 @@
+affine==2.4.0
+cartopy==0.25.0
+earthaccess==0.15.1
+faiss==1.5.3
+matplotlib==3.10.8
+numpy==2.4.1
+python-dotenv==1.2.1
+rasterio==1.4.3
+Requests==2.32.5
+sentence_transformers==5.2.0
+Shapely==2.1.2
+spacy==3.8.11
+xarray==2025.6.1
