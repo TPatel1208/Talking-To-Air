@@ -152,14 +152,6 @@ class ResponseGenerator:
             
         Returns:
             Confirmation message
-            
-        Example:
-            >>> rg.generate_confirmation(
-            ...     'QUERY',
-            ...     {'pollutant_type': 'no2', 'location': 'Paris', 'time_filter': {'parsed': 'june'}},
-            ...     {}
-            ... )
-            "Looking up NO2 data for Paris in june..."
         """
         
         # Get templates for this intent (fallback to QUERY if unknown)
@@ -259,7 +251,7 @@ class ResponseGenerator:
         """
         return (
             f"I'm not quite sure I understood that (confidence: {confidence:.0%}).\n"
-            "Could you rephrase?\n\n"
+            "Could you rephrase?\n"
             "Example: 'What was the average NO2 in Paris last month?'"
         )
     

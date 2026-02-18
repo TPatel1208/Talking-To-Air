@@ -241,10 +241,6 @@ def mask_data_by_geometry(
     xarray.DataArray
         Masked data array (copy, original unchanged)
     """
-
-    
-    # Create a copy to avoid modifying original
-    masked = data_array.copy()
     
     # Find lat/lon coordinates (handle different naming conventions)
     lat_names = ['lat', 'latitude', 'Latitude', 'LAT']
@@ -274,17 +270,14 @@ def mask_data_by_geometry(
     lons = data_array[lon_coord].values
     
     # Calculate the affine transform for the raster
-    # This maps pixel coordinates to geographic coordinates
     lon_res = (lons[-1] - lons[0]) / (len(lons) - 1) if len(lons) > 1 else 1
     lat_res = (lats[-1] - lats[0]) / (len(lats) - 1) if len(lats) > 1 else 1
     
-    # Create affine transform
-    # Origin is top-left corner (minimum lon, maximum lat for standard grids)
     transform = Affine.translation(lons[0] - lon_res/2, lats[0] - lat_res/2) * \
                 Affine.scale(lon_res, lat_res)
     
     # Rasterize the geometry
-    # This creates a 2D mask where 1 = inside geometry, 0 = outside
+    # 1 = inside geometry, 0 = outside
     mask_2d = rasterize(
         [(geometry, 1)],
         out_shape=(len(lats), len(lons)),
@@ -293,27 +286,27 @@ def mask_data_by_geometry(
         dtype=np.uint8
     )
     
-    # Convert to boolean (True where OUTSIDE geometry, for consistency)
-    mask_2d = (mask_2d == 0)
+    # Convert to boolean (True = INSIDE geometry = keep)
+    mask_2d = (mask_2d == 1)
     
     # Handle different array dimensions
     if data_array.ndim == 2:
-        # Simple 2D (lat, lon)
-        mask = mask_2d
-        
+        mask_da = xr.DataArray(mask_2d, dims=[lat_coord, lon_coord])
+
     elif data_array.ndim == 3:
-        # 3D - broadcast mask to all time steps
-        # Create 3D mask with same shape as data
-        mask = np.broadcast_to(mask_2d, data_array.shape)
-        
+        # Find time dimension
+        time_dim = [d for d in data_array.dims if d not in [lat_coord, lon_coord]][0]
+        # Broadcast mask across time dimension
+        mask_3d = np.broadcast_to(mask_2d, data_array.shape)
+        mask_da = xr.DataArray(mask_3d, dims=data_array.dims)
+
     else:
         raise ValueError(f"Unsupported array dimension: {data_array.ndim}D")
     
-    # Apply mask (set outside points to NaN)
-    masked.values[mask] = np.nan
+    # Apply mask using xarray .where() — sets outside points to NaN
+    masked = data_array.where(mask_da)
     
     return masked
-
 def plot_diff_maps(
     data_arrays: List[xr.DataArray],
     titles: List[str],

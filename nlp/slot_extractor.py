@@ -22,9 +22,9 @@ class KeywordMatching:
             node = node.children[char]
         node.output.append((slot_type,value))
     
-    def search(self, text:str) -> List[Tuple[int,int,str,str]]:
+    def search(self, text: str) -> List[Tuple[int, int, str, str]]:
         """
-        Finds alll keywords that match in text
+        Finds all keywords that match in text
         Returns (start, end, slot_type, value)
         """
         text_lower = text.lower()
@@ -39,10 +39,16 @@ class KeywordMatching:
                 node = node.children[char]
                 if node.output:
                     for slot_type, value in node.output:
-                        matches.append((start_idx, end_idx+1,slot_type,value))
+                        if slot_type == 'location_abbrev':
+                            if start_idx > 0 and text_lower[start_idx - 1].isalnum():
+                                continue
+                            if end_idx + 1 < len(text_lower) and text_lower[end_idx + 1].isalnum():
+                                continue
+                        
+                        matches.append((start_idx, end_idx + 1, slot_type, value))
         
         return matches
-    
+        
 
 
 class SlotExtractor:
