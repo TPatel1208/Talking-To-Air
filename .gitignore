@@ -3,7 +3,11 @@
 *.hdf5
 *.h5
 TEMPO_NO2_L3_Warm_Season_Mean_V3.nc4
-
+# Zarr
+*.zarr/
+.zarr/
+data/cache.zarr/
+data/downloads/
 # Python
 __pycache__/
 *.pyc

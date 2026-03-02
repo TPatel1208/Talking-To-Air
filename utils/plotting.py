@@ -88,7 +88,13 @@ def plot_map(
             time_slice = 0
         
         print(f"Selecting time slice {time_slice} from dimension '{time_dim}'")
-        data_array = data_array.isel({time_dim: time_slice})
+        time_size = data_array.sizes[time_dim]
+
+        if time_size == 1:
+            data_array = data_array.isel({time_dim: 0})  # just take the only one
+        else:
+            time_slice = min(time_slice, time_size - 1)  # clamp to valid range
+            data_array = data_array.isel({time_dim: time_slice})
     
     # --- 1. Apply geometry mask if provided ---
     if mask_geometry is not None:
@@ -455,7 +461,7 @@ class GeocodingService:
             'polygon_geojson': 1  # Request polygon boundary
         }
         headers = {
-            'User-Agent': '(Educational Project)'
+            'User-Agent': '(Educational project)'
         }
         
         self.last_request = time.time()

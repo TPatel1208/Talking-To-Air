@@ -1,0 +1,147 @@
+import json
+import sys
+import os
+from langchain.tools import tool
+from typing import Tuple
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from utils.plotting import GeocodingService
+from preprocessing.data_loader import DataLoader
+
+_geocoder = GeocodingService()
+_data_loader = DataLoader()
+
+COLLECTIONS = {
+    "NO2": {
+        "collection_id": "C3685896708-LARC_CLOUD",
+        "variables":     ["product/vertical_column_troposphere"],
+        "primary_var":   "vertical_column_troposphere",
+        "short_name":    "TEMPO_NO2_L3",
+        "version":       "V04",
+        "groups":        ["product"],
+        "units":         "molecules/cm^2",
+        "description":   "TEMPO tropospheric NO2 vertical column",
+    }
+}
+@tool
+def geocode_location(location_name: str) -> str:
+    """
+    Convert a place name into a bounding box string 'min_lon,min_lat,max_lon,max_lat'.
+    Always call this before fetch_environmental_data to get the bbox argument.
+
+    Args:
+        location_name : Place name e.g. 'New York City', 'California', 'Paris'.
+
+    Returns:
+        JSON string with keys: location, bbox, center_lat, center_lon.
+        On failure: JSON string with key 'error'.
+    """
+    result = _geocoder.geocode(location_name)
+    if result is None:
+        return json.dumps({"error": f"Could not geocode '{location_name}'"})
+
+    # Nominatim bbox: [south, north, west, east]
+    if result["bbox"] and len(result["bbox"]) == 4:
+        south, north, west, east = result["bbox"]
+    else:
+        lat, lon = result["latitude"], result["longitude"]
+        south, north, west, east = lat - 1, lat + 1, lon - 1, lon + 1
+
+    bbox_str = f"{west:.4f},{south:.4f},{east:.4f},{north:.4f}"
+    return json.dumps({
+        "location":   location_name,
+        "bbox":       bbox_str,
+        "center_lat": result["latitude"],
+        "center_lon": result["longitude"],
+    })
+
+
+
+
+
+@tool
+def fetch_environmental_data(
+    variable: str,
+    bbox: str,
+    start_date: str,
+    end_date: str,
+    max_results: int = 10,
+) -> str:
+    """
+    Fetch environmental / atmospheric data from NASA Harmony (TEMPO satellite).
+    Uses a local Zarr cache — repeated queries for the same parameters are instant.
+
+    Args:
+        variable    : Pollutant key e.g. 'NO2' or 'O3'.
+                      Available: NO2, O3, PM2.5, PM10, CO, SO2
+        bbox        : Bounding box 'min_lon,min_lat,max_lon,max_lat'
+                      — always get this from geocode_location first.
+        start_date  : ISO 8601 start datetime e.g. '2026-02-10T18:00:00Z'.
+        end_date    : ISO 8601 end datetime   e.g. '2026-02-10T19:00:00Z'.
+        max_results : Max granules to download (default 10).
+
+    Returns:
+        JSON string with keys:
+            variable      : Variable name e.g. 'NO2'
+            units         : Physical units e.g. 'molecules/cm²'
+            bbox          : Bounding box string
+            times         : List of ISO timestamp strings in the dataset
+            n_granules    : Number of granules retrieved
+            source        : Human-readable source description
+            _fetch_params : Parameters for downstream plot/stat tools to reload
+                            the dataset without re-downloading.
+    """
+    variable  = variable.upper()
+    available = ", ".join(COLLECTIONS.keys())
+
+    if variable not in COLLECTIONS:
+        return json.dumps({
+            "error": f"Unknown variable '{variable}'. Available: {available}"
+        })
+
+    try:
+        bbox_list = [float(x) for x in bbox.split(",")]
+        if len(bbox_list) != 4:
+            raise ValueError()
+        min_lon, min_lat, max_lon, max_lat = bbox_list
+    except Exception:
+        return json.dumps({
+            "error": f"bbox must be 'min_lon,min_lat,max_lon,max_lat', got: '{bbox}'"
+        })
+
+    col = COLLECTIONS[variable]
+
+    try:
+        ds = _data_loader.download_dataset_harmony(
+            collection_id = col["collection_id"],
+            temporal      = (start_date, end_date),
+            bounding_box  = tuple(bbox_list),
+            variables     = col["variables"],
+            max_results   = max_results,
+        )
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+    except RuntimeError as e:
+        return json.dumps({"error": str(e)})
+    except Exception as e:
+        return json.dumps({"error": f"Unexpected error: {str(e)}"})
+
+    try:
+        times = [str(t) for t in ds.time.values] if "time" in ds.coords else []
+    except Exception:
+        times = []
+
+    return json.dumps({
+        "variable":      variable,
+        "units":         col["units"],
+        "bbox":          bbox,
+        "times":         times,
+        "n_granules":    len(times) or 1,
+        "source":        f"NASA Harmony — {col['description']}",
+        "_fetch_params": {
+            "variable":   variable,
+            "bbox":       bbox_list,
+            "start_date": start_date,
+            "end_date":   end_date,
+        },
+    })

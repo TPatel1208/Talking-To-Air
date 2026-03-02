@@ -35,7 +35,7 @@ class QueryExecutor:
             self.default_ds, 
             location,
             title=f"{pollutant} over {location}",
-            time_slice=6
+            time_slice=0
         )
         # Implementation would go here
         return {'PLOT':(fig, ax)}
