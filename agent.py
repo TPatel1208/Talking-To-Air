@@ -86,10 +86,10 @@ for stream_mode, chunk in agent.stream(
                 # Tool call being made
                 if hasattr(msg, "tool_calls") and msg.tool_calls:
                     for tc in msg.tool_calls:
-                        print(f"🔧 Calling tool: {tc['name']} | args: {tc['args']}")
+                        print(f"Calling tool: {tc['name']} | args: {tc['args']}")
                 # Tool result
                 elif hasattr(msg, "name") and msg.name:
-                    print(f"✅ Tool result [{msg.name}]: {str(msg.content)[:200]}")
+                    print(f"Tool result [{msg.name}]: {str(msg.content)[:200]}")
                 # Model thinking/final response
                 elif hasattr(msg, "content") and msg.content:
-                    print(f"🤖 Model: {msg.content[:300]}")
+                    print(f"Model: {msg.content[:300]}")
