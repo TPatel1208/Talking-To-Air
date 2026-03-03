@@ -54,21 +54,11 @@ def build_llm(model: str = "qwen3:8b", temperature: float = 0.0) -> ChatOllama:
         temperature=temperature,
         base_url="http://localhost:11434",   # default Ollama port
     )
-def build_llm_huggingface(temperature: float = 0.0):
-    pipeline = HuggingFacePipeline.from_model_id(
-        model_id="Qwen/Qwen2.5-7B-Instruct",
-        task="text-generation",
-        pipeline_kwargs={
-            "temperature": temperature,
-            "max_new_tokens": 1000,
-            "do_sample": temperature > 0,
-        }
-    )
-    return ChatHuggingFace(llm=pipeline)
+
 
 
 def build_agent(model: str = "qwen3:8b"):
-    llm   = build_llm_huggingface()
+    llm   = build_llm(model=model)
     agent = create_agent(model = llm, 
                          tools=ALL_TOOLS, 
                          system_prompt=SYSTEM_PROMPT)

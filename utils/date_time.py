@@ -17,4 +17,3 @@ def parse_temporal_range(start_str: str, end_str: str) -> Tuple[str, str]:
         raise ValueError(f"End date {end} is before start date {start}")
     return (start.strftime("%Y-%m-%dT%H:%M:%S"), end.strftime("%Y-%m-%dT%H:%M:%S"))
 
-print(parse_temporal_range("last Monday morning", "last tuesday evening"))
