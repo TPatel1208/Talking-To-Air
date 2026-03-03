@@ -220,7 +220,7 @@ class DataLoader:
             self.harmony_client.wait_for_processing(job_id, show_progress=True)
 
             datasets = []
-            futures = self.harmony_client.download_all(job_id, directory='./downloads', overwrite=True)
+            futures = self.harmony_client.download_all(job_id, directory='./data/downloads', overwrite=True)
 
             for future in concurrent.futures.as_completed(futures):
                 filename = future.result()
