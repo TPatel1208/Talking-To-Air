@@ -14,6 +14,9 @@ import json
 import concurrent.futures
 import netCDF4 as nc
 
+DOWNLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "downloads")
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
 logger = logging.getLogger(__name__)    
 
 class DataLoader:
