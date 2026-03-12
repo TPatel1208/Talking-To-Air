@@ -23,14 +23,14 @@ _resolver = RegionResolver()
 
 
 @tool
-def plot_singular(data_json: str, variable: str, location: str, title: str="",cmap: Optional[str] = "Spectral_r"):
+def plot_singular(data_dict: dict, variable: str, location: str, title: str="",cmap: Optional[str] = "Spectral_r"):
     """
     Plot a single environmental variable over a single location.
     Use when the user asks for a map of one variable in one place,
     e.g. 'Plot the NO2 levels in New York City on February 10th 2026 at 6pm'.
 
     Args:
-        data_json : JSON string from fetch_environmental_data.
+        data_dict : dict from fetch_environmental_data.
         location  : Place name e.g. 'New York City', 'California'.
         title     : Plot title. Auto-generated from variable + location if omitted.
         cmap      : Matplotlib colormap (default 'Spectral_r').
@@ -39,7 +39,7 @@ def plot_singular(data_json: str, variable: str, location: str, title: str="",cm
         File path of the saved PNG, or an error message string.
     """
     try:
-        data_array = _load_data(data_json)
+        data_array = _load_data(data_dict)
     except Exception as e:
         return f"Failed to load data: {e}"
     

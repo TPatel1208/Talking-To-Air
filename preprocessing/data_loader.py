@@ -223,7 +223,7 @@ class DataLoader:
             self.harmony_client.wait_for_processing(job_id, show_progress=True)
 
             datasets = []
-            futures = self.harmony_client.download_all(job_id, directory='./data/downloads', overwrite=True)
+            futures = self.harmony_client.download_all(job_id, directory=DOWNLOAD_DIR, overwrite=True)
 
             for future in concurrent.futures.as_completed(futures):
                 filename = future.result()
@@ -301,6 +301,16 @@ class DataLoader:
 
 
 
+
+
+
+
+
+
+
+
+
+
     
 
 def main():
@@ -339,7 +349,7 @@ def main():
         temporal=("2026-02-10T18:00:00Z","2026-02-10T18:00:00Z"),
         groups=['product'],
         bounding_box=(-88,25,-81,32) # New York City bounding box
-    )
+    )`
     end_time = time.time()
     print(f"Dataset w bounding box loaded in {end_time - start_time:.2f} seconds")
     """

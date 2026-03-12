@@ -17,3 +17,11 @@ def parse_temporal_range(start_str: str, end_str: str) -> Tuple[str, str]:
         raise ValueError(f"End date {end} is before start date {start}")
     return (start.strftime("%Y-%m-%dT%H:%M:%S"), end.strftime("%Y-%m-%dT%H:%M:%S"))
 
+
+def main():
+    # Example usage
+    print(parse_date_time("february 1 2024 at 3pm"))
+    print(parse_temporal_range("january 1", "january 5"))
+
+if __name__ == "__main__":
+    main()

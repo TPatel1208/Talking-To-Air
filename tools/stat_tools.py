@@ -5,20 +5,31 @@ from langchain.tools import tool
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils.statistics import compute_statistic, daily_cycle_peak, get_time_index_local
+from utils.data_utils import _load_data
 
 @tool
 def compute_statistic_tool(data_json: str, statistic: str="mean") -> str:
     """
-    Docstring for compute_statistic_tool
-    
-    :param data_json: Description
-    :type data_json: str
-    :param statistic: Description
-    :type statistic: str
-    :return: Description
-    :rtype: str
+    Compute a statistic (mean/min/max/median) for a DataArray.
+
+    Parameters
+    ----------
+    data_array : xr.DataArray
+        The data values to analyze.
+    statistic : str
+        One of {'mean', 'max', 'min', 'median'}.
+
+    Returns
+    -------
+    value : float
+        The computed statistic.
     """
-    return "0"
+    da = _load_data(data_json)
+    try:
+        result = compute_statistic(da, statistic)
+        return json.dumps({"statistic": statistic, "value": result})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
 
 
 @tool

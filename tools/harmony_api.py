@@ -24,7 +24,7 @@ COLLECTIONS = {
     }
 }
 @tool
-def geocode_location(location_name: str) -> str:
+def geocode_location(location_name: str) -> dict:
     """
     Convert a place name into a bounding box string 'min_lon,min_lat,max_lon,max_lat'.
     Always call this before fetch_environmental_data to get the bbox argument.
@@ -33,13 +33,13 @@ def geocode_location(location_name: str) -> str:
         location_name : Place name e.g. 'New York City', 'California', 'Paris'.
 
     Returns:
-        JSON string with keys: location, bbox, center_lat, center_lon.
+        dict with keys: location, bbox, center_lat, center_lon.
         On failure: JSON string with key 'error'.
     """
     result = _geocoder.geocode(location_name)
     if result is None:
-        return json.dumps({"error": f"Could not geocode '{location_name}'"})
-
+        return {"error": f"Could not geocode '{location_name}'"}
+    
     # Nominatim bbox: [south, north, west, east]
     if result["bbox"] and len(result["bbox"]) == 4:
         south, north, west, east = result["bbox"]
@@ -48,12 +48,12 @@ def geocode_location(location_name: str) -> str:
         south, north, west, east = lat - 1, lat + 1, lon - 1, lon + 1
 
     bbox_str = f"{west:.4f},{south:.4f},{east:.4f},{north:.4f}"
-    return json.dumps({
+    return {
         "location":   location_name,
         "bbox":       bbox_str,
         "center_lat": result["latitude"],
         "center_lon": result["longitude"],
-    })
+    }
 
 
 
@@ -66,7 +66,7 @@ def fetch_environmental_data(
     start_date: str,
     end_date: str,
     max_results: int = 10,
-) -> str:
+) -> dict:
     """
     Fetch environmental / atmospheric data from NASA Harmony (TEMPO satellite).
     Uses a local Zarr cache — repeated queries for the same parameters are instant.
@@ -81,7 +81,7 @@ def fetch_environmental_data(
         max_results : Max granules to download (default 10).
 
     Returns:
-        JSON string with keys:
+        dict with keys:
             variable      : Variable name e.g. 'NO2'
             units         : Physical units e.g. 'molecules/cm²'
             bbox          : Bounding box string
@@ -95,9 +95,7 @@ def fetch_environmental_data(
     available = ", ".join(COLLECTIONS.keys())
 
     if variable not in COLLECTIONS:
-        return json.dumps({
-            "error": f"Unknown variable '{variable}'. Available: {available}"
-        })
+        return {"error": f"Unknown variable '{variable}'. Available: {available}"}
 
     try:
         bbox_list = [float(x) for x in bbox.split(",")]
@@ -105,9 +103,7 @@ def fetch_environmental_data(
             raise ValueError()
         min_lon, min_lat, max_lon, max_lat = bbox_list
     except Exception:
-        return json.dumps({
-            "error": f"bbox must be 'min_lon,min_lat,max_lon,max_lat', got: '{bbox}'"
-        })
+        return {"error": f"bbox must be 'min_lon,min_lat,max_lon,max_lat', got: '{bbox}'"}
 
     col = COLLECTIONS[variable]
 
@@ -120,18 +116,18 @@ def fetch_environmental_data(
             max_results   = max_results,
         )
     except ValueError as e:
-        return json.dumps({"error": str(e)})
+        return {"error": str(e)}
     except RuntimeError as e:
-        return json.dumps({"error": str(e)})
+        return {"error": str(e)}
     except Exception as e:
-        return json.dumps({"error": f"Unexpected error: {str(e)}"})
+        return {"error": f"Unexpected error: {str(e)}"}
 
     try:
         times = [str(t) for t in ds.time.values] if "time" in ds.coords else []
     except Exception:
         times = []
 
-    return json.dumps({
+    return {
         "variable":      variable,
         "units":         col["units"],
         "bbox":          bbox,
@@ -144,4 +140,4 @@ def fetch_environmental_data(
             "start_date": start_date,
             "end_date":   end_date,
         },
-    })
+    }

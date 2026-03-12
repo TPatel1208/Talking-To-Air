@@ -18,15 +18,15 @@ def get_loader():
     return _loader_instance
 
 
-def _load_data(data_json: str) -> xr.DataArray:
+def _load_data(data_json: dict) -> xr.DataArray:
     """
     Parse the JSON output of fetch_environmental_data and reload the primary
     DataArray from the Zarr cache via DataLoader.
 
     Parameters
     ----------
-    data_json : str
-        JSON string returned by fetch_environmental_data.
+    data_json : dict
+        dict returned by fetch_environmental_data.
         Must contain '_fetch_params' with keys:
             variable   : e.g. 'NO2'
             bbox       : [min_lon, min_lat, max_lon, max_lat] as floats
@@ -47,13 +47,8 @@ def _load_data(data_json: str) -> xr.DataArray:
     from tools.harmony_api import COLLECTIONS
 
     # --- Parse ---
-    try:
-        data = json.loads(data_json) if isinstance(data_json, str) else data_json
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid JSON in data_json: {e}")
 
-    if "error" in data:
-        raise ValueError(f"Data fetch previously failed: {data['error']}")
+    data = data_json if isinstance(data_json, dict) else json.loads(data_json)
 
     if "_fetch_params" not in data:
         raise ValueError(
