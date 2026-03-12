@@ -31,6 +31,7 @@ def plot_singular(data_dict: dict, variable: str, location: str, title: str="",c
 
     Args:
         data_dict : dict from fetch_environmental_data.
+        variable  : Variable name e.g. 'NO2'.
         location  : Place name e.g. 'New York City', 'California'.
         title     : Plot title. Auto-generated from variable + location if omitted.
         cmap      : Matplotlib colormap (default 'Spectral_r').

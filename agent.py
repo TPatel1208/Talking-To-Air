@@ -52,7 +52,9 @@ def build_llm(model: str = "qwen3:8b", temperature: float = 0.0) -> ChatOllama:
     return ChatOllama(
         model=model,
         temperature=temperature,
-        base_url="http://localhost:11434",   # default Ollama port
+        base_url="http://localhost:11434",
+        num_ctx=8192,       
+        num_predict=2048,   
     )
 
 
