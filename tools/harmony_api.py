@@ -22,6 +22,7 @@ COLLECTIONS = {
         'groups': [],
         'units': "molecules/cm^2",
         'description': "OMI NO2 tropospheric column",
+        'supports_variable_subsetting': False
     },
     # Tropomi NO2 Monthly
     "TROPOMI_NO2": {
@@ -32,7 +33,8 @@ COLLECTIONS = {
         'version': "2.4",
         'groups': [],
         'units': "molecules/cm^2",
-        'description': "Tropomi NO2 monthly mean"
+        'description': "Tropomi NO2 monthly mean",
+        'supports_variable_subsetting': False
     },
     # Tempo NO2 used for specific time series queries
     "TEMPO_NO2": {
@@ -44,6 +46,7 @@ COLLECTIONS = {
         "groups":        ["product"],
         "units":         "molecules/cm^2",
         "description":   "TEMPO tropospheric NO2 vertical column",
+        'supports_variable_subsetting': True
     }
 
 
@@ -131,15 +134,16 @@ def fetch_environmental_data(
         return {"error": f"bbox must be 'min_lon,min_lat,max_lon,max_lat', got: '{bbox}'"}
 
     col = COLLECTIONS[variable]
-
+    fetch_params = {
+        "collection_id":  col["collection_id"],
+        "bounding_box":   tuple(bbox_list),
+        'temporal':    (start_date, end_date),
+        "max_results": max_results,
+    }
+    if col.get("supports_variable_subsetting", False):
+        fetch_params["variables"] = col["variables"]
     try:
-        ds = _data_loader.download_dataset_harmony(
-            collection_id = col["collection_id"],
-            temporal      = (start_date, end_date),
-            bounding_box  = tuple(bbox_list),
-            variables     = col["variables"],
-            max_results   = max_results,
-        )
+        ds = _data_loader.download_dataset_harmony(**fetch_params)
     except ValueError as e:
         return {"error": str(e)}
     except RuntimeError as e:
