@@ -12,7 +12,30 @@ _geocoder = GeocodingService()
 _data_loader = DataLoader()
 
 COLLECTIONS = {
-    "NO2": {
+    # OMI NO2 (Default for 'NO2' variable)
+    "OMI_NO2": {
+        'collection_id': "C2215175232-GES_DISC",
+        'variables': ["ColumnAmountNO2","ColumnAmountNO2CloudScreened","ColumnAmountNO2TropCloudScreened","Weight"],
+        'primary_var': "ColumnAmountNO2TropCloudScreened",
+        'short_name': "OMI_MINDS_NO2d",
+        'version': "1.1",
+        'groups': [],
+        'units': "molecules/cm^2",
+        'description': "OMI NO2 tropospheric column",
+    },
+    # Tropomi NO2 Monthly
+    "TROPOMI_NO2": {
+        'collection_id': "C3087325222-GES_DISC",
+        'variables': ["Tropospheric_NO2",'Number_obs'],
+        'primary_var': "Tropospheric_NO2",
+        'short_name': "HAQ_TROPOMI_NO2_GLOBAL_M_L3",
+        'version': "2.4",
+        'groups': [],
+        'units': "molecules/cm^2",
+        'description': "Tropomi NO2 monthly mean"
+    },
+    # Tempo NO2 used for specific time series queries
+    "TEMPO_NO2": {
         "collection_id": "C3685896708-LARC_CLOUD",
         "variables":     ["product/vertical_column_troposphere"],
         "primary_var":   "vertical_column_troposphere",
@@ -22,6 +45,8 @@ COLLECTIONS = {
         "units":         "molecules/cm^2",
         "description":   "TEMPO tropospheric NO2 vertical column",
     }
+
+
 }
 @tool
 def geocode_location(location_name: str) -> dict:
@@ -39,7 +64,7 @@ def geocode_location(location_name: str) -> dict:
     result = _geocoder.geocode(location_name)
     if result is None:
         return {"error": f"Could not geocode '{location_name}'"}
-    
+
     # Nominatim bbox: [south, north, west, east]
     if result["bbox"] and len(result["bbox"]) == 4:
         south, north, west, east = result["bbox"]
@@ -72,8 +97,8 @@ def fetch_environmental_data(
     Uses a local Zarr cache — repeated queries for the same parameters are instant.
 
     Args:
-        variable    : Pollutant key e.g. 'NO2' or 'O3'.
-                      Available: NO2, O3, PM2.5, PM10, CO, SO2
+        variable    : Pollutant key e.g. 'OMI_NO2' or 'TEMPO_NO2'.
+                      Available: OMI_NO2, TROPOMI_NO2, TEMPO_NO2
         bbox        : Bounding box 'min_lon,min_lat,max_lon,max_lat'
                       — always get this from geocode_location first.
         start_date  : ISO 8601 start datetime e.g. '2026-02-10T18:00:00Z'.
