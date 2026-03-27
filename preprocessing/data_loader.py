@@ -10,12 +10,17 @@ from pathlib import Path
 import xarray as xr
 import hashlib
 import zarr
-import json
 import concurrent.futures
 import netCDF4 as nc
+import re
+import pandas as pd
+from datetime import timezone
 
 DOWNLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+_EPOCH_DAYS  = datetime(1972, 1, 1, tzinfo=timezone.utc)   # OMI
+_EPOCH_SECS  = datetime(1980, 1, 6, tzinfo=timezone.utc)   # TEMPO
 
 logger = logging.getLogger(__name__)    
 
@@ -89,6 +94,10 @@ class DataLoader:
         except Exception as e:
             logger.error(f"Download failed: {e}")
             raise RuntimeError(f"Failed to download {short_name} data: {e}")
+        
+
+
+        
     def get_dataset(self, 
         short_name: str, 
         temporal: Tuple[str, str],
@@ -161,6 +170,9 @@ class DataLoader:
         except Exception as e:
             logger.error(f"Failed to load dataset: {e}")
             raise RuntimeError(f"Failed to load {short_name} data: {e}")
+
+
+
     def download_dataset_harmony(
             self,
             collection_id: str,
@@ -221,6 +233,7 @@ class DataLoader:
             #status = self.harmony_client.status(job_id)
             start = time.time()
             self.harmony_client.wait_for_processing(job_id, show_progress=True)
+            granule_times = self._get_granule_times(collection_id, temporal, bounding_box)
 
             datasets = []
             futures = self.harmony_client.download_all(job_id, directory=DOWNLOAD_DIR, overwrite=True)
@@ -228,16 +241,22 @@ class DataLoader:
             for future in concurrent.futures.as_completed(futures):
                 filename = future.result()
                 logger.info(f"Downloaded: {filename}")
-                ds = self._open_dataset(filename)
+                ds = self._open_dataset(filename, granule_times=granule_times)  # ADD granule_times
                 datasets.append(ds)
             
-            if len(datasets) == 1:
-                combined = datasets[0]
-            elif len(datasets) > 1:
-                combined = xr.concat(datasets, dim='time')
-            else:
+            if not datasets:
                 logger.error("No datasets were downloaded")
                 raise RuntimeError("Failed to download any datasets from Harmony")
+            if len(datasets) == 1:
+                combined = datasets[0]
+            else:
+                valid = [ds for ds in datasets if "time" in ds.dims or "time" in ds.coords]
+                dropped = len(datasets) - len(valid)
+                if dropped:
+                    logger.warning(f"{dropped} granule(s) had no time coordinate and were dropped")
+                if not valid:
+                    raise RuntimeError("No granules with a time coordinate — cannot concatenate")
+                combined = xr.concat(valid, dim="time")
 
             combined.to_zarr(cache_path, group=group_key, mode='w',consolidated=True)
             logger.info(f"Cached to: {cache_path} with group key: {group_key}")
@@ -261,16 +280,18 @@ class DataLoader:
             return False
         
 
-    def _open_dataset(self, filename: str) -> xr.Dataset:
+    def _open_dataset(self, filename: str, granule_times: Optional[dict] = None) -> xr.Dataset:
         """
-        Open a NASA NetCDF4 file, handling different satellite data structures.
-        
-        Known structures:
-            TEMPO  — coordinates at root, data variables inside 'product' group
-            TROPOMI — flat structure, all variables at root level
+        Open a NASA NetCDF4 file, normalising the time coordinate.
+
+        TEMPO   — coords at root (seconds since 1980-01-06), data in 'product' group
+        OMI     — flat, time = days since 1972-01-01
+        TROPOMI — flat, no time dimension → synthesised from CMR metadata or filename
         """
+        if granule_times is None:
+            granule_times = {}
         try:
-            root = xr.open_dataset(filename, engine="netcdf4", decode_times=True)
+            root = xr.open_dataset(filename, engine="netcdf4", decode_times=False)
         except Exception as e:
             logger.error(f"Failed to open {filename}: {e}")
             raise
@@ -283,24 +304,104 @@ class DataLoader:
 
         logger.debug(f"File groups found: {groups}")
 
-        # --- TEMPO-style: coordinates at root, data in 'product' group ---
+        # --- TEMPO: coords at root, data in 'product' group ---
         if "product" in groups:
             try:
-                product = xr.open_dataset(filename, group="product", engine="netcdf4")
-                coords  = {}
-                for coord in ["time", "latitude", "longitude"]:
+                product = xr.open_dataset(filename, group="product", engine="netcdf4", decode_times=False)
+                coords = {}
+                for coord in ["latitude", "longitude"]:
                     if coord in root:
                         coords[coord] = root[coord]
+                if "time" in root:
+                    coords["time"] = self._decode_time(root["time"], _EPOCH_SECS, unit="s")
                 return product.assign_coords(**coords)
             except Exception as e:
                 logger.warning(f"Failed to open 'product' group, falling back: {e}")
 
-        # --- Flat structure (TROPOMI, generic) ---
-        return root
-        
+        # --- OMI: flat, days since 1972-01-01 ---
+        if "time" in root:
+            units = root["time"].attrs.get("units", "")
+            if "1972" in units:
+                root = root.assign_coords(time=self._decode_time(root["time"], _EPOCH_DAYS, unit="D"))
+            else:
+                try:
+                    root = xr.decode_cf(root)
+                except Exception:
+                    pass
+            return root
+
+        # --- TROPOMI: no time dimension → CMR metadata lookup, then filename fallback ---
+        stem = Path(filename).stem
+        synth_time = granule_times.get(stem) or self._extract_time_from_filename(filename)
+        if synth_time is None:
+            logger.warning(f"Could not determine time for {filename}; using NaT")
+            synth_time = pd.NaT
+        return root.expand_dims(dim={"time": [synth_time]})
 
 
+    def _get_granule_times(
+        self,
+        collection_id: str,
+        temporal: Tuple[str, str],
+        bounding_box: Optional[Tuple[float, float, float, float]] = None,
+        ) -> dict:
+        """
+        Query earthaccess CMR metadata and return a dict mapping
+        producer granule filename stem → pd.Timestamp of granule start time.
+        """
+        try:
+            params = {"concept_id": collection_id, "temporal": temporal}
+            if bounding_box:
+                params["bounding_box"] = bounding_box
+            results = earthaccess.search_data(**params)
+            lookup = {}
+            for granule in results:
+                meta = granule.get("umm", {})
+                identifiers = meta.get("DataGranule", {}).get("Identifiers", [])
+                granule_id = next(
+                    (i["Identifier"] for i in identifiers
+                    if i.get("IdentifierType") == "ProducerGranuleId"),
+                    None
+                )
+                time_str = (
+                    meta.get("TemporalExtent", {})
+                        .get("RangeDateTime", {})
+                        .get("BeginningDateTime")
+                )
+                if granule_id and time_str:
+                    stem = Path(granule_id).stem
+                    lookup[stem] = pd.Timestamp(time_str, tz="UTC")
+                    logger.debug(f"Granule time lookup: {stem} → {lookup[stem]}")
+            logger.info(f"Built time lookup for {len(lookup)} granule(s)")
+            return lookup
+        except Exception as e:
+            logger.warning(f"Failed to build granule time lookup, will fall back to filename parsing: {e}")
+            return {}
 
+    @staticmethod
+    def _decode_time(time_var: xr.DataArray, epoch: datetime, unit: str) -> xr.DataArray:
+        values = time_var.values.astype("float64")
+        deltas = pd.to_timedelta(values, unit=unit)
+        timestamps = pd.Timestamp(epoch) + deltas
+        result = timestamps if hasattr(timestamps, "__len__") else [timestamps]
+        return xr.DataArray(result, dims=time_var.dims, attrs=time_var.attrs)
+
+    @staticmethod
+    def _extract_time_from_filename(filename: str):
+        """Fallback: parse timestamp from filename when CMR metadata is unavailable."""
+        stem = Path(filename).stem
+        for pattern, fmt in [
+            (r"(\d{8}T\d{6})",           "%Y%m%dT%H%M%S"),  # TEMPO:   20260210T172301Z
+            (r"(\d{8}_\d{6})",           "%Y%m%d_%H%M%S"),  # generic: 20260210_172301
+            (r"(?<!\d)(\d{8})(?!\d)",    "%Y%m%d"),          # TROPOMI: 20240810
+        ]:
+            m = re.search(pattern, stem)
+            if m:
+                try:
+                    return pd.Timestamp(datetime.strptime(m.group(1), fmt), tz="UTC")
+                except ValueError:
+                    continue
+        return None
 
 
 
