@@ -44,14 +44,13 @@ def convert_date_to_iso(date_str: str) -> dict:
 @tool
 def convert_temporal_range_to_iso(start_str: str, end_str: str) -> dict:
     """
-    Turn two natural language date expressions into an ISO 8601 date range.
+    Turn two natural language date expressions into a full-day ISO 8601 date range.
+    Always spans from 00:00:00Z on the start date to 23:59:59Z on the end date.
 
-    Uses :func:`utils.date_time.parse_temporal_range` to normalize the
-    inputs to ``YYYY-MM-DD`` strings.  The returned JSON encodes
-    ``start_date`` and ``end_date`` timestamps suitable for the Harmony
-    API.  We interpret the start of a day at midnight UTC and the end of a
-    day at 23:59:59Z so that a range like "january 1 to january 5" covers
-    the full five days.
+    Use this for date ranges like "January 1 to January 31" or "last week".
+    For queries involving a specific time of day e.g. "April 8 at 2pm",
+    use convert_date_to_iso instead.
+    ...
 
     Example::
         "{\"start_date\": \"2026-01-01T00:00:00Z\", \"end_date\": \"2026-01-05T23:59:59Z\"}"
@@ -66,8 +65,8 @@ def convert_temporal_range_to_iso(start_str: str, end_str: str) -> dict:
     try:
         start_date, end_date = parse_temporal_range(start_str, end_str)
         return {
-            "start_date": f"{start_date}Z",
-            "end_date": f"{end_date}Z",
+            "start_date": f"{start_date[:10]}T00:00:00Z",
+            "end_date":   f"{end_date[:10]}T23:59:59Z",
         }
     except Exception as e:
         return {"error": str(e)}
