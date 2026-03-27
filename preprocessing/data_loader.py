@@ -332,6 +332,11 @@ class DataLoader:
                     root = xr.decode_cf(root)
                 except Exception:
                     pass
+            root = root.drop_vars(
+                [v for v in ['LatitudeBounds', 'LongitudeBounds', 'TimeBounds', 'BoundsIndex']
+                if v in root],
+                errors='ignore'
+            )
             return root
 
         # --- TROPOMI: no time dimension → CMR metadata lookup, then filename fallback ---
