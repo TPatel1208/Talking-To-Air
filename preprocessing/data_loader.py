@@ -308,7 +308,7 @@ class DataLoader:
 
         logger.debug(f"File groups found: {groups}")
 
-        # --- TEMPO: coords at root, data in 'product' group ---
+        # --- TEMPO: coords at root, data in 'product' group 
         if "product" in groups:
             try:
                 product = xr.open_dataset(filename, group="product", engine="netcdf4", decode_times=False)
@@ -323,21 +323,30 @@ class DataLoader:
                 logger.warning(f"Failed to open 'product' group, falling back: {e}")
 
         # --- OMI: flat, days since 1972-01-01 ---
-        if "time" in root:
-            units = root["time"].attrs.get("units", "")
+        time_key = "Time" if "Time" in root else "time" if "time" in root else None
+
+        if time_key:
+            units = root[time_key].attrs.get("units", "")
             if "1972" in units:
-                root = root.assign_coords(time=self._decode_time(root["time"], _EPOCH_DAYS, unit="D"))
+                decoded_time = self._decode_time(root[time_key], _EPOCH_DAYS, unit="D")
+                root = root.rename({time_key: "time"}) if time_key != "time" else root
+                root = root.squeeze("Time", drop=True) if "Time" in root.dims else root
+                root = root.assign_coords(time=("time", decoded_time.values))
             else:
                 try:
                     root = xr.decode_cf(root)
                 except Exception:
                     pass
             root = root.drop_vars(
-                [v for v in ['LatitudeBounds', 'LongitudeBounds', 'TimeBounds', 'BoundsIndex']
+                [v for v in ['LatitudeBounds', 'LongitudeBounds', 'TimeBounds', 'BoundsIndex', 'crs']
                 if v in root],
                 errors='ignore'
             )
             return root
+
+
+
+
 
         # --- TROPOMI: no time dimension → CMR metadata lookup, then filename fallback ---
         stem = Path(filename).stem
@@ -432,45 +441,29 @@ class DataLoader:
     
 
 def main():
-    import time
+    import sys
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import logging
+    logging.basicConfig(level=logging.DEBUG)
+
     data_loader = DataLoader()
-    COLLECTION_ID = "C3685896708-LARC_CLOUD"  # TEMPO NO2 L3 V04 — verify this
-    temporal = ("2026-02-10T18:00:00Z","2026-02-10T18:30:00Z")
-    BBOX = [-89,24,-81,32]
-    start = time.time()
+
     ds = data_loader.download_dataset_harmony(
-        collection_id=COLLECTION_ID,
-        temporal=temporal,
-        bounding_box=BBOX,
-        variables=['product/vertical_column_troposphere'],
-        max_results=10,
-        output_format='application/x-netcdf4',
-        cache_path="cache.zarr"
+        collection_id="C2215175232-GES_DISC",  # OMI NO2
+        temporal=("2024-04-08T00:00:00Z", "2024-04-08T23:59:59Z"),
+        bounding_box=(-106.6458, 25.8371, -93.5078, 36.5005),
+        max_results=1,
+        cache_path="cache_test.zarr"
     )
-    
-    end = time.time()
-    print(f"Dataset loaded in {end - start:.2f} seconds")
-    """
-    start_time = time.time()
-    ds = data_loader.get_dataset(
-        short_name="TEMPO_NO2_L3", 
-        version="V04",
-        temporal=("2026-02-10T18:00:00Z","2026-02-10T18:00:00Z"),
-        groups=['product']
-    )
-    end_time = time.time()
-    print(f"Dataset w/o bounding box loaded in {end_time - start_time:.2f} seconds")
-    start_time = time.time()
-    ds = data_loader.get_dataset(
-        short_name="TEMPO_NO2_L3", 
-        version="V04",
-        temporal=("2026-02-10T18:00:00Z","2026-02-10T18:00:00Z"),
-        groups=['product'],
-        bounding_box=(-88,25,-81,32) # New York City bounding box
-    )`
-    end_time = time.time()
-    print(f"Dataset w bounding box loaded in {end_time - start_time:.2f} seconds")
-    """
+
+    print("\n=== Dataset structure ===")
+    print("Data vars:", list(ds.data_vars))
+    print("Coords:   ", list(ds.coords))
+    print("Dims:     ", dict(ds.sizes))
+    print()
+    for var in ds.data_vars:
+        print(f"  {var}: {ds[var].dims} {ds[var].shape}")
 
 
 if __name__ == "__main__":
