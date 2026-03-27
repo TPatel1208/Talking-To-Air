@@ -258,8 +258,11 @@ class DataLoader:
                 if not valid:
                     raise RuntimeError("No granules with a time coordinate — cannot concatenate")
                 combined = xr.concat(valid, dim="time")
+            for coord in combined.coords:
+                combined[coord].attrs.pop("units", None)
+                combined[coord].attrs.pop("calendar", None)
 
-            combined.to_zarr(cache_path, group=group_key, mode='w',consolidated=True)
+            combined.to_zarr(cache_path, group=group_key, mode='w', consolidated=True)
             logger.info(f"Cached to: {cache_path} with group key: {group_key}")
             logger.info(f"total time for Harmony download and load: {time.time() - start:.2f} seconds")
             return combined
