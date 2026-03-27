@@ -15,6 +15,7 @@ import netCDF4 as nc
 import re
 import pandas as pd
 from datetime import timezone
+import numpy as np
 
 DOWNLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
@@ -203,7 +204,7 @@ class DataLoader:
         logger.info(f"Cache group key: {group_key}")
         if self.is_cached(cache_path,group_key):
             logger.info(f"Cache hit — loading from Zarr at {cache_path} with group key: {group_key}")
-            combined = xr.open_zarr(cache_path, group=group_key)
+            combined = xr.open_zarr(cache_path, group=group_key, consolidated=False)
             return combined
         else:
             logger.info("Cache miss — fetching from Harmony")
@@ -336,7 +337,11 @@ class DataLoader:
         if synth_time is None:
             logger.warning(f"Could not determine time for {filename}; using NaT")
             synth_time = pd.NaT
-        return root.expand_dims(dim={"time": [synth_time]})
+        if pd.isna(synth_time):
+            synth_time_np = np.datetime64('NaT', 'ns')
+        else:
+            synth_time_np = np.datetime64(synth_time.to_datetime64(), 'ns')
+        return root.expand_dims(dim={"time": [synth_time_np]})
 
 
     def _get_granule_times(
