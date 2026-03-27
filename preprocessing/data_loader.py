@@ -389,8 +389,12 @@ class DataLoader:
         deltas = pd.to_timedelta(values, unit=unit)
         timestamps = pd.Timestamp(epoch) + deltas
         result = timestamps if hasattr(timestamps, "__len__") else [timestamps]
+        result = [
+            np.datetime64(t.to_datetime64(), 'ns') if not pd.isna(t)
+            else np.datetime64('NaT', 'ns')
+            for t in (result if hasattr(result, '__iter__') else [result])
+        ]
         return xr.DataArray(result, dims=time_var.dims, attrs=time_var.attrs)
-
     @staticmethod
     def _extract_time_from_filename(filename: str):
         """Fallback: parse timestamp from filename when CMR metadata is unavailable."""
