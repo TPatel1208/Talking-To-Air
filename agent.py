@@ -1,11 +1,12 @@
+import uuid
 from langchain_ollama import ChatOllama
-from langchain.agents import  create_agent
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import SystemMessage
-from langchain_huggingface import ChatHuggingFace, HuggingFacePipeline
-
+from langchain.agents import create_agent
+from langgraph.checkpoint.memory import MemorySaver
+# Later use for saves across restarts, swap to:
+# from langgraph.checkpoint.sqlite import SqliteSaver
 
 from tools import ALL_TOOLS
+
 print("Tools imported:", [tool.name for tool in ALL_TOOLS])
 
 SYSTEM_PROMPT = """
@@ -72,62 +73,76 @@ query, visualize, and analyze atmospheric and environmental data using NASA sate
 - If all datasets fail:
   - THEN stop and report the error
 """
-prompt = ChatPromptTemplate.from_messages([
-    ("system", SYSTEM_PROMPT),
-    ("human", "{input}"),
-    MessagesPlaceholder(variable_name="agent_scratchpad"),
-])
 
-
-def build_llm(model: str = "qwen2.5:32b", temperature: float = 0.0) -> ChatOllama:
-    """
-      - qwen2.5:14b   (needs ~14GB RAM)
-      - qwen2.5:7b    (good, needs ~8GB RAM)
-      - llama3.1:8b   (fallback)
-    """
-    return ChatOllama(
+def build_agent(model: str = "qwen2.5:32b"):
+    llm = ChatOllama(
         model=model,
-        temperature=temperature,
+        temperature=0.0,
         base_url="http://localhost:11434",
         num_ctx=8192,
         num_predict=2048,
     )
 
+    checkpointer = MemorySaver()
 
 
-def build_agent(model: str = "qwen2.5:32b"):
-    llm   = build_llm(model=model)
-    agent = create_agent(model = llm,
-                         tools=ALL_TOOLS,
-                         system_prompt=SYSTEM_PROMPT)
-
+    agent = create_agent(
+        model=llm,              # pass instance directly
+        tools=ALL_TOOLS,
+        system_prompt=SYSTEM_PROMPT,
+        checkpointer=checkpointer,
+    )
     return agent
 
 print("Building agent...")
 agent = build_agent()
-"""
-response = agent.invoke({
-    "messages": [{"role": "user", "content": "Plot NO2 levels on january, 2025 in New York City."}]
-})
 
-print(response["messages"][-1].content)
-"""
-for stream_mode, chunk in agent.stream(
-    {"messages": [{"role": "user", "content": "Plot NO2 levels on April 8, 2024 in Texas."}]},
-    stream_mode=["updates", "messages"]
-):
-    if stream_mode == "updates":
-        # Shows each step: model decision, tool calls, tool results
-        print(f"\n--- STEP ({list(chunk.keys())[0]}) ---")
-        for node, data in chunk.items():
-            for msg in data.get("messages", []):
-                # Tool call being made
-                if hasattr(msg, "tool_calls") and msg.tool_calls:
-                    for tc in msg.tool_calls:
-                        print(f"Calling tool: {tc['name']} | args: {tc['args']}")
-                # Tool result
-                elif hasattr(msg, "name") and msg.name:
-                    print(f"Tool result [{msg.name}]: {str(msg.content)[:200]}")
-                # Model thinking/final response
-                elif hasattr(msg, "content") and msg.content:
-                    print(f"Model: {msg.content[:300]}")
+
+def stream_response(agent, user_input: str, thread_id: str):
+    """Stream one turn and print output."""
+    config = {"configurable": {"thread_id": thread_id}}
+
+    for stream_mode, chunk in agent.stream(
+        {"messages": [{"role": "user", "content": user_input}]},
+        config=config,                      
+        stream_mode=["updates", "messages"],
+    ):
+        if stream_mode == "updates":
+            for node, data in chunk.items():
+                for msg in data.get("messages", []):
+                    if hasattr(msg, "tool_calls") and msg.tool_calls:
+                        for tc in msg.tool_calls:
+                            print(f"\n Calling: {tc['name']} | args: {tc['args']}")
+                    elif hasattr(msg, "name") and msg.name:
+                        print(f"[{msg.name}]: {str(msg.content)[:300]}")
+                    elif hasattr(msg, "content") and msg.content:
+                        print(f"\n {msg.content[:500]}")
+
+
+def main():
+    print("Building agent...")
+    agent = build_agent()
+
+    thread_id = str(uuid.uuid4())
+    print(f"\n Environmental Data Assistant ready (session: {thread_id[:8]}...)")
+    print("Type 'quit' or 'exit' to stop.\n")
+
+    while True:
+        try:
+            user_input = input("You: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nGoodbye!")
+            break
+
+        if not user_input:
+            continue
+        if user_input.lower() in {"quit", "exit", "q"}:
+            print("Goodbye!")
+            break
+
+        stream_response(agent, user_input, thread_id)
+        print() 
+
+
+if __name__ == "__main__":
+    main()
