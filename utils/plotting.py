@@ -225,6 +225,29 @@ def plot_map(
     
     return fig, ax
 
+def _normalize_to_2d(data_array: xr.DataArray) -> xr.DataArray:
+    """
+    Squeeze a DataArray down to 2D (lat, lon) by:
+      1. Dropping all size-1 dimensions (handles Time=1 cleanly)
+      2. Averaging over any remaining non-spatial dimensions (handles 4D layer dim)
+    """
+    SPATIAL = {
+        'lat', 'latitude', 'Latitude', 'LAT',
+        'lon', 'longitude', 'Longitude', 'LON', 'long'
+    }
+
+    # squeeze out all size-1 dims
+    dims_to_squeeze = [d for d in data_array.dims if data_array.sizes[d] == 1]
+    if dims_to_squeeze:
+        data_array = data_array.squeeze(dims_to_squeeze)
+
+    # average over any remaining non-spatial dims
+    extra_dims = [d for d in data_array.dims if d not in SPATIAL]
+    if extra_dims:
+        print(f"_normalize_to_2d: averaging over {extra_dims}")
+        data_array = data_array.mean(dim=extra_dims)
+
+    return data_array
 
 def mask_data_by_geometry(
     data_array: xr.DataArray,

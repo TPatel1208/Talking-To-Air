@@ -18,35 +18,8 @@ def get_loader():
     return _loader_instance
 
 
-def _load_data(data_json: dict) -> xr.DataArray:
-    """
-    Parse the JSON output of fetch_environmental_data and reload the primary
-    DataArray from the Zarr cache via DataLoader.
-
-    Parameters
-    ----------
-    data_json : dict
-        dict returned by fetch_environmental_data.
-        Must contain '_fetch_params' with keys:
-            variable   : e.g. 'NO2'
-            bbox       : [min_lon, min_lat, max_lon, max_lat] as floats
-            start_date : ISO 8601 string
-            end_date   : ISO 8601 string
-
-    Returns
-    -------
-    xr.DataArray
-        Primary variable array with 'units' and 'long_name' attrs set.
-
-    Raises
-    ------
-    ValueError   : Bad JSON, error key present, missing keys, unknown variable.
-    RuntimeError : Dataset reloads with no data variables.
-    """
-    # Imported inside function to avoid circular import
+def _load_data(data_json: dict, apply_quality_flag: bool = True) -> xr.DataArray:
     from tools.harmony_api import COLLECTIONS
-
-    # --- Parse ---
 
     data = data_json if isinstance(data_json, dict) else json.loads(data_json)
 
@@ -72,18 +45,23 @@ def _load_data(data_json: dict) -> xr.DataArray:
 
     col = COLLECTIONS[variable]
 
+    # Ensure quality flag variable is requested alongside the primary variable
+    base_vars = list(col.get("variables", []))
+    qf_var    = col.get("quality_flag_var", "main_data_quality_flag")
+    if apply_quality_flag and qf_var not in base_vars:
+        base_vars = base_vars + [qf_var]
+
     logger.info(f"Reloading {variable} from cache: {start} → {end}")
     try:
         ds = get_loader().download_dataset_harmony(
             collection_id = col["collection_id"],
             temporal      = (start, end),
             bounding_box  = tuple(bbox_list),
-            variables     = col["variables"],
+            variables     = base_vars,
         )
     except Exception as e:
         raise RuntimeError(f"Failed to reload dataset for '{variable}': {e}") from e
 
-    # --- Select primary DataArray ---
     data_vars = list(ds.data_vars)
     if not data_vars:
         raise RuntimeError(
@@ -92,12 +70,11 @@ def _load_data(data_json: dict) -> xr.DataArray:
         )
 
     primary_var = col.get("primary_var")
-
     preferred = next(
-        (v for v in data_vars if v == primary_var),  # exact match first
+        (v for v in data_vars if v == primary_var),
         next(
-            (v for v in data_vars if variable.lower() in v.lower()),  # fallback
-            data_vars[0]  # last resort
+            (v for v in data_vars if variable.lower() in v.lower()),
+            data_vars[0]
         )
     )
     logger.debug(f"Selected '{preferred}' from {data_vars}")
@@ -106,5 +83,17 @@ def _load_data(data_json: dict) -> xr.DataArray:
     da.attrs.setdefault("units",     col["units"])
     da.attrs.setdefault("long_name", col["description"])
     da.name = variable
+
+    # --- Apply quality flag mask ---
+    if apply_quality_flag and qf_var in ds.data_vars:
+        qf = ds[qf_var]
+        n_bad = int((qf != 0).sum())
+        logger.debug(f"Quality flag masking removed {n_bad} bad pixels")
+        da = da.where(qf == 0)
+    elif apply_quality_flag:
+        logger.warning(
+            f"Quality flag variable '{qf_var}' not found in dataset. "
+            f"Available vars: {data_vars}. Proceeding without quality masking."
+        )
 
     return da

@@ -38,8 +38,10 @@ COLLECTIONS = {
     # Tempo NO2 used for specific time series queries
     "TEMPO_NO2": {
         "collection_id": "C3685896708-LARC_CLOUD",
-        "variables":     ["product/vertical_column_troposphere"],
+        "variables":     ["product/vertical_column_troposphere",
+                          "product/main_data_quality_flag"],
         "primary_var":   "vertical_column_troposphere",
+        "quality_flag_var": "main_data_quality_flag", 
         "short_name":    "TEMPO_NO2_L3",
         "version":       "V04",
         "groups":        ["product"],
