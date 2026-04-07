@@ -4,11 +4,11 @@ import os
 import numpy as np
 from langchain.tools import tool
 from typing import Optional
-
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from utils.data_utils import _load_data
 from utils.plotting import _normalize_to_2d, mask_data_by_geometry, RegionResolver
+from tools.harmony_api import COLLECTIONS
 
 _resolver = RegionResolver()
 
@@ -54,15 +54,18 @@ def compute_statistic_tool(
 
     da = mask_data_by_geometry(da, region['geometry'])
 
-    # --- 3. Extract valid pixels ---
+    # --- 3. Extract valid pixels ---'
+    var = data_dict.get("variable")
+    col_info = COLLECTIONS.get(var, {})
     values = da.values
-
-    fill_value = -1e30
+    fill_value = col_info.get("fill_value")
+    max_valid = col_info.get("valid_max")
+    min_valid = col_info.get("valid_min")
     valid = values[
         (~np.isnan(values)) &
-        (values > fill_value * 0.5) &  
-        (values > 1e13) &              
-        (values < 1e16)              
+        (values > fill_value * 0.85) &  
+        (values > min_valid) &              
+        (values < max_valid)              
     ]
     if len(valid) == 0:
         return json.dumps({
@@ -126,7 +129,7 @@ def main():
     import logging
 
     logging.basicConfig(
-        level=logging.DEBUG,  # change to DEBUG for more detail
+        level=logging.INFO,  # change to DEBUG for more detail
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     )
 

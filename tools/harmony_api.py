@@ -16,24 +16,32 @@ COLLECTIONS = {
         'collection_id': "C2215175232-GES_DISC",
         'variables': ["ColumnAmountNO2","ColumnAmountNO2CloudScreened","ColumnAmountNO2TropCloudScreened","Weight"],
         'primary_var': "ColumnAmountNO2TropCloudScreened",
+        'quality_flag_var': None,
         'short_name': "OMI_MINDS_NO2d",
         'version': "1.1",
         'groups': [],
         'units': "molecules/cm^2",
         'description': "OMI NO2 tropospheric column",
-        'supports_variable_subsetting': False
+        'supports_variable_subsetting': False,
+        'fill_value': -1.267651e+30,       # from _FillValue attribute
+        'valid_min': -1e15,                # from valid_min attribute
+        'valid_max': 1e18,                 # from valid_max attribute
     },
     # Tropomi NO2 Monthly
     "TROPOMI_NO2": {
         'collection_id': "C3087325222-GES_DISC",
         'variables': ["Tropospheric_NO2",'Number_obs'],
         'primary_var': "Tropospheric_NO2",
+        'quality_flag_var': None,
         'short_name': "HAQ_TROPOMI_NO2_GLOBAL_M_L3",
         'version': "2.4",
         'groups': [],
         'units': "molecules/cm^2",
         'description': "Tropomi NO2 monthly mean",
-        'supports_variable_subsetting': False
+        'supports_variable_subsetting': False,
+        'fill_value': -999.0,                # from _FillValue attribute
+        'valid_min': -1e15,             
+        'valid_max': 1e18,                 
     },
     # Tempo NO2 used for specific time series queries
     "TEMPO_NO2": {
@@ -47,7 +55,10 @@ COLLECTIONS = {
         "groups":        ["product"],
         "units":         "molecules/cm^2",
         "description":   "TEMPO tropospheric NO2 vertical column",
-        'supports_variable_subsetting': True
+        'supports_variable_subsetting': True,
+        'fill_value': -1e30,                # from _FillValue attribute
+        "valid_min": -1e15,               
+        "valid_max": 1e18,
     }
 
 
