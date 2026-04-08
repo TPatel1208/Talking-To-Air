@@ -105,7 +105,7 @@ def fetch_environmental_data(
     bbox: str,
     start_date: str,
     end_date: str,
-    max_results: int = 10,
+    max_results: int = 45,
 ) -> dict:
     """
     Fetch environmental / atmospheric data from NASA Harmony (TEMPO satellite).
@@ -118,7 +118,7 @@ def fetch_environmental_data(
                       — always get this from geocode_location first.
         start_date  : ISO 8601 start datetime e.g. '2026-02-10T18:00:00Z'.
         end_date    : ISO 8601 end datetime   e.g. '2026-02-10T19:00:00Z'.
-        max_results : Max granules to download (default 10).
+        max_results : Max granules to download extend if query exceeds limit (default 45).
 
     Returns:
         dict with keys:
