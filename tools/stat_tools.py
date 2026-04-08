@@ -23,7 +23,7 @@ VALID_STATS = {"mean", "median", "max", "min", "std"}
 def compute_statistic_tool(
     data_dict: dict,
     location: str,
-    stats: list = ["mean", "median", "max", "min"]
+    stats: list[str] = ["mean", "median", "max", "min"]
 ) -> str:
     """
     Compute basic statistics (mean, median, max, min, std) over a region
