@@ -41,8 +41,9 @@ ds_test =  data_loader.get_dataset(
         groups=['product'])
 da = ds_test['vertical_column_troposphere']"""
 
-filepath = './data/156061482_TEMPO_NO2_L3_V04_20260210T130245Z_S002_product_vertical_column_troposphere_subsetted.nc4'
-
+filepath = '.\data\OMI-Aura_L3-OMI_MINDS_NO2d_2024m1231_v01-01-2025m0217t121159.nc'
+da = xr.open_dataset(filepath, engine='netcdf4')['ColumnAmountNO2TropCloudScreened']
+"""
 # Load root coords (lat, lon, time) and product group separately
 root = xr.open_dataset(filepath, engine='netcdf4')
 product = xr.open_dataset(filepath, group='product', engine='netcdf4')
@@ -53,6 +54,7 @@ da = product['vertical_column_troposphere'].assign_coords(
     longitude=root['longitude'],
     time=root['time']
 )
+"""
 print("Dataset loaded successfully.")
 resolver = plotting.RegionResolver()
 embedder = IntentEmbedder(INTENT_EXAMPLES)
