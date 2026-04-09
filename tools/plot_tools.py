@@ -4,6 +4,8 @@ import os
 import sys
 import xarray as xr
 from typing import List, Dict, Any, Optional
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import re
 from utils.data_utils import _load_data

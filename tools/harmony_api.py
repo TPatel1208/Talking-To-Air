@@ -151,6 +151,8 @@ def fetch_environmental_data(
         "bounding_box":   tuple(bbox_list),
         'temporal':    (start_date, end_date),
         "max_results": max_results,
+        "cache_path": "./data/cache.zarr"
+
     }
     if col.get("supports_variable_subsetting", False):
         fetch_params["variables"] = col["variables"]

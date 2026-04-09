@@ -5,6 +5,8 @@ import numpy as np
 from langchain.tools import tool
 import pandas as pd
 from typing import Optional
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import re
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
