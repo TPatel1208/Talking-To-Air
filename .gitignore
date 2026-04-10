@@ -1,13 +1,17 @@
+# Data files
 *.nc
 *.nc4
 *.hdf5
 *.h5
-TEMPO_NO2_L3_Warm_Season_Mean_V3.nc4
-# Zarr
+
+# Zarr cache
 *.zarr/
-.zarr/
-data/cache.zarr/
-data/downloads/
+Backend/cache.zarr/
+Backend/cache_test.zarr/
+Backend/data/
+outputs/
+Backend/outputs/
+
 # Python
 __pycache__/
 *.pyc
@@ -16,32 +20,70 @@ __pycache__/
 venv/
 env/
 ENV/
+geo_ai_env/
 *.egg-info/
 
-# Trained models and cached data
+# ML models and cached data
 *.pth
 *.pt
 *.pkl
 *.pickle
 sentence-transformers/
 
-# IDE/Editors
-.vscode/
-.idea/
-*.swp
-*.swo
+# Environment variables
+.env
 
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs and temp files
+# Logs
 *.log
-.pytest_cache/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Node
+node_modules/
+dist/
+dist-ssr/
+*.local
 
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb
 
-# Environment variables
-.env
+# IDE
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Test cache
+.pytest_cache/
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

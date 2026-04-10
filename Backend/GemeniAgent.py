@@ -28,7 +28,7 @@ def build_agent(model: str = "gemini-3.1-flash-lite-preview"):
     return agent
 
 print("Building agent...")
-agent = build_agent("gemma-4-31b")
+agent = build_agent()
 
 
 def stream_response(agent, user_input: str, thread_id: str):
