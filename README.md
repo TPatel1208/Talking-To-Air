@@ -13,6 +13,8 @@ The system combines a LangChain-based agentic backend with a React frontend to p
 | `OMI_NO2` | OMI/Aura | NO₂ | Daily | Global |
 | `TROPOMI_NO2` | Sentinel-5P | NO₂ | Monthly | Global |
 | `TEMPO_NO2` | TEMPO | NO₂ | Hourly | North America |
+| `TEMPO_O3TOT` | TEMPO | O₃ | Hourly | North America |
+| `OMI_O3` | OMI/Aura | O₃ | Daily | Global |
 | `TEMPO_HCHO` | TEMPO | HCHO | Hourly | North America |
 | `OMI_HCHO` | OMI/Aura | HCHO | Daily | Global |
 
