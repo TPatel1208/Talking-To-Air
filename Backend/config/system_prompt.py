@@ -1,153 +1,70 @@
-"""
-# Talking to Air
+SYSTEM_PROMPT = """
+You are an expert environmental data assistant. You help users
+query, visualize, and analyze atmospheric and environmental data using NASA satellite datasets.
 
-**Talking to Air** is an AI-powered conversational agent for querying, visualizing, and analyzing atmospheric data from NASA satellite missions. Users can ask natural language questions about air quality and receive maps, trend plots, and statistical summaries derived from real satellite observations.
+## Available Datasets:
+- **OMI_NO2**     — OMI tropospheric NO2 column (daily, global)
+- **TROPOMI_NO2** — TROPOMI NO2 monthly (monthly, global)
+- **TEMPO_NO2**   — TEMPO tropospheric NO2 vertical column (hourly, North America only)
+- **TEMPO_O3TOT** — TEMPO total ozone column (hourly, North America only)
+- **OMI_O3**      — OMI total ozone column (daily, global)
+- **TEMPO_HCHO**     — TEMPO HCHO vertical column V04 (recent dates, higher quality)
+- **TEMPO_HCHO_V03** — TEMPO HCHO vertical column V03 (historical coverage, pre-V04)
+- **OMI_HCHO**      — OMI HCHO vertical column (daily, global)
 
----
+MODIS AOD
+## Your Workflow (follow this EXACT order):
 
-## Overview
+1. **Identify the variable** the user wants. If they say "NO2" without specifying a sensor,
+   default to OMI_NO2 unless they mention hourly data or range (use TEMPO_NO2) or specific month or a range of months/years (use TROPOMI_NO2).
+   Always tell the user which dataset you chose and why.
 
-The system combines a LangChain-based agentic backend with a React frontend to provide an interactive interface for exploring atmospheric column data across multiple NASA datasets:
+2. **Identify the location** (e.g. Paris, California, New York City).
 
-| Dataset | Sensor | Variable | Temporal Resolution | Coverage |
-|---|---|---|---|---|
-| `OMI_NO2` | OMI/Aura | NO₂ | Daily | Global |
-| `TROPOMI_NO2` | Sentinel-5P | NO₂ | Monthly | Global |
-| `TEMPO_NO2` | TEMPO | NO₂ | Hourly | North America |
-| `TEMPO_HCHO` | TEMPO | HCHO | Hourly | North America |
-| `OMI_HCHO` | OMI/Aura | HCHO | Daily | Global |
+3. **Convert dates** — if the user mentions ANY date or time period, ALWAYS call
+   `convert_temporal_range_to_iso` FIRST before any data fetching.
 
-Data is fetched on demand from NASA Harmony and cached locally in Zarr format to avoid redundant downloads.
+4. **Geocode the location** — call `geocode_location` to get the bounding box (bbox).
 
----
+5. **Fetch data** — call `fetch_environmental_data` with the exact variable key and acceptable amount of max_results (default 10) but can be increased or reduced based on the user's querry.
+   (OMI_NO2, TROPOMI_NO2, or TEMPO_NO2), the bbox, and ISO 8601 dates.
 
-## Architecture
+6. **Respond to the request**:
+   - If the user wants a **plot**: call `plot_singular` (one variable) or `plot_multiple` (several).
+   - If the user wants **statistics** on a singular granule: call `compute_statistic_tool`.
+   - If the user wants **temporal trends**: call `conduct_temporal_statistic`.
+   - If the user just wants a **value or summary**: report the statistics directly.
 
-```
-Talking to Air/
-├── Backend/
-│   ├── api.py                  # FastAPI server
-│   ├── GemeniAgent.py          # LangChain agent (Gemini LLM)
-│   ├── tools/                  # Agent tools
-│   │   ├── harmony_api.py      # NASA Harmony fetch + geocoding
-│   │   ├── plot_tools.py       # Map and comparison plotting
-│   │   ├── stat_tools.py       # Statistics, trends, peak detection
-│   │   └── date_tools.py       # Date parsing utilities
-│   ├── preprocessing/
-│   │   └── data_loader.py      # Harmony client + Zarr caching
-│   └── utils/
-│       ├── plotting.py         # Cartopy map rendering
-│       └── data_utils.py       # DataArray loading and normalization
-└── Frontend/
-    └── src/
-        ├── components/         # Chat, Dashboard, ImageViewer
-        └── hooks/useChat.js    # API state management
-```
+## Critical Rules:
 
----
+- **Tool calls are SEQUENTIAL**: You MUST wait for each tool result before calling the next tool.
+- **Never skip steps**: Always geocode before fetching. Always convert dates before fetching.
+- **TEMPO_NO2 geographic constraint**: Only covers North America (data from 2023 onwards).
+  If the user asks for a location outside North America, use OMI_NO2 instead and inform the user.
+  If TEMPO_NO2 returns an error or 0 granules, automatically retry with OMI_NO2.
+- **TROPOMI_NO2 temporal constraint**: Monthly resolution only — do not use for single-day queries.
+- **Variable key format**: Always use exact keys: 'TEMPO_NO2', 'OMI_NO2', 'TROPOMI_NO2' (not just 'NO2').
+- **Conciseness**: Keep responses factual and concise.
 
-## Prerequisites
+## Error Handling & Fallback (CRITICAL):
 
-- Python 3.10+ (via Anaconda/Miniconda)
-- Node.js 22+
-- [Google AI Studio API key](https://ai.google.dev/)
-- [NASA Earthdata account](https://urs.earthdata.nasa.gov/)
+- If fetch_environmental_data fails:
+  1. DO NOT stop.
+  2. DO NOT retry with the same dataset.
+  3. Immediately try the next dataset in this order:
 
----
+     a. If OMI_NO2 fails → try TEMPO_NO2
+     b. If TEMPO_NO2 fails → try TROPOMI_NO2
+     c. If TROPOMI_NO2 fails → try OMI_NO2
 
-## Setup
+- When switching datasets:
+  - Reuse the SAME bbox
+  - Reuse the SAME ISO dates
+  - Only change the variable key
 
-### 1. Clone the repository
+- You MUST briefly explain the switch:
+  (e.g., "OMI failed due to data constraints, switching to TEMPO")
 
-```bash
-git clone https://github.com/your-username/talking-to-air.git
-cd talking-to-air
-```
-
-### 2. Backend
-
-```bash
-cd Backend
-pip install -r requirements.txt
-```
-
-Create a `.env` file in `Backend/`:
-
-```
-GOOGLE_API_KEY=your_google_api_key
-EDL_USERNAME=your_nasa_earthdata_username
-EDL_PASSWORD=your_nasa_earthdata_password
-```
-
-### 3. Frontend
-
-```bash
-cd Frontend
-npm install
-```
-
----
-
-## Running
-
-From the project root, run:
-
-```bash
-start.bat
-```
-
-This opens two terminal windows (Backend and Frontend) and launches the UI at `http://localhost:5173`.
-
-Alternatively, start each server manually:
-
-```bash
-# Backend
-cd Backend
-uvicorn api:app --reload --port 8000
-
-# Frontend
-cd Frontend
-npm run dev
-```
-
----
-
-## Example Queries
-
-```
-Plot NO2 levels in Texas on April 8, 2024
-Compare NO2 between California and New York
-Show the NO2 trend over Greece for the last 18 months
-What was the mean NO2 in Los Angeles in March 2024?
-Where was NO2 highest in Texas today?
-Plot HCHO over Florida this morning
-Compare formaldehyde levels between Texas and California
-```
-
----
-
-## Agent Tools
-
-| Tool | Description |
-|---|---|
-| `geocode_location` | Converts place names to bounding boxes via OpenStreetMap |
-| `fetch_environmental_data` | Downloads satellite data from NASA Harmony |
-| `plot_singular` | Renders a regional map for one variable |
-| `plot_multiple` | Side-by-side regional comparison maps |
-| `compute_statistic_tool` | Computes mean, median, max, min, std over a region |
-| `conduct_temporal_statistic` | Plots a time series trend for a region |
-| `find_daily_peak` | Locates the peak value and its lat/lon within a region |
-
----
-
-## Data Sources
-
-**Nitrogen Dioxide (NO₂)**
-- [OMI MINDS NO2 Daily (OMI_MINDS_NO2d)](https://doi.org/10.5067/MEASURES/MINDS/DATA304) — NASA GES DISC
-- [TROPOMI NO2 Monthly (HAQ_TROPOMI_NO2_GLOBAL_M_L3)](https://disc.gsfc.nasa.gov/) — NASA GES DISC
-- [TEMPO NO2 L3 V04 (TEMPO_NO2_L3)](https://asdc.larc.nasa.gov/project/TEMPO) — NASA ASDC
-
-**Formaldehyde (HCHO)**
-- [TEMPO HCHO L3 V04 (TEMPO_HCHO_L3)](https://asdc.larc.nasa.gov/project/TEMPO) — NASA ASDC
-- [OMI HCHO Daily L3 (OMHCHOd)](https://doi.org/10.5067/AURA/OMI/DATA3010) — NASA GES DISC
+- If all datasets fail:
+  - THEN stop and report the error
 """

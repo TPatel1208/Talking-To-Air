@@ -92,33 +92,19 @@ COLLECTIONS = {
 
     # OMI Total Ozone
     "OMI_O3": {
-        "collection_id": "C1266136037-GES_DISC",
-        "variables": [
-            "HDFEOS/GRIDS/ColumnAmountO3/Data Fields/ColumnAmountO3",
-            "HDFEOS/GRIDS/ColumnAmountO3/Data Fields/ColumnAmountO3Precision",
-            "HDFEOS/GRIDS/ColumnAmountO3/Data Fields/CloudFraction",
-            "HDFEOS/GRIDS/ColumnAmountO3/Data Fields/CloudPressure",
-        ],
-        "primary_var": "ColumnAmountO3",
+        "collection_id":  "C1266136037-GES_DISC",
+        "variables":      [],
+        "primary_var":    "ColumnAmountO3",
         "quality_flag_var": None,
-
-        "short_name": "OMDOAO3e",
-        "version": "003",
-        "groups": [
-            "HDFEOS",
-            "GRIDS",
-            "ColumnAmountO3",
-            "Data Fields"
-        ],
-
-        "units": "DU",
-        "description": "OMI Level 3 daily total ozone column (OMDOAO3e)",
-
+        "short_name":     "OMDOAO3e",
+        "version":        "003",
+        "groups":         [],
+        "units":          "DU",
+        "description":    "OMI daily total ozone column",
         "supports_variable_subsetting": False,
-
-        "fill_value": np.float32(-1e30),
-        "valid_min": 50.0,     # realistic ozone lower bound
-        "valid_max": 700.0,    # realistic ozone upper bound
+        "fill_value":     -1.267651e+30,
+        "valid_min":      50.0,
+        "valid_max":      700.0,
     },
     #---------------------
     #Formaldehyde datasets
@@ -220,7 +206,7 @@ def fetch_environmental_data(
     bbox: str,
     start_date: str,
     end_date: str,
-    max_results: int = 45,
+    max_results: int = 10,
 ) -> dict:
     """
     Fetch environmental / atmospheric data from NASA Harmony (TEMPO satellite).
@@ -233,7 +219,7 @@ def fetch_environmental_data(
                       — always get this from geocode_location first.
         start_date  : ISO 8601 start datetime e.g. '2026-02-10T18:00:00Z'.
         end_date    : ISO 8601 end datetime   e.g. '2026-02-10T19:00:00Z'.
-        max_results : Max granules to download extend if query exceeds limit (default 45).
+        max_results : Change this to suite the estimated amount for a query (default 10).
 
     Returns:
         dict with keys:

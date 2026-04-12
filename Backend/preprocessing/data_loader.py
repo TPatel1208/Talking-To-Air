@@ -322,7 +322,92 @@ class DataLoader:
                 return product.assign_coords(**coords)
             except Exception as e:
                 logger.warning(f"Failed to open 'product' group, falling back: {e}")
+        if "HDFEOS" in groups and "product" not in groups:
+            try:
+                import h5py
+                data_vars = {}
+                lats = None
+                lons = None
 
+                with h5py.File(filename, 'r') as f:
+
+                    grids = f['HDFEOS']['GRIDS']
+                    grid_name = list(grids.keys())[0]
+                    data_fields = grids[grid_name]['Data Fields']
+                    grid_group = grids[grid_name]
+
+                    # Grid metadata
+                    grid_span = grid_group.attrs.get('GridSpan', b'(-180,180,-90,90)')
+                    grid_span = np.asarray(grid_span).flat[0]
+                    n_lon = int(np.asarray(grid_group.attrs.get('NumberOfLongitudesInGrid', 1440)).flat[0])
+                    n_lat = int(np.asarray(grid_group.attrs.get('NumberOfLatitudesInGrid', 720)).flat[0])
+
+                    span_str = grid_span.decode() if isinstance(grid_span, bytes) else str(grid_span)
+                    span_vals = [float(x) for x in span_str.strip('()').split(',')]
+                    lon_min, lon_max, lat_min, lat_max = span_vals
+
+                    lons = np.linspace(lon_min, lon_max, n_lon, endpoint=False) + (lon_max - lon_min) / (2 * n_lon)
+                    lats = np.linspace(lat_min, lat_max, n_lat, endpoint=False) + (lat_max - lat_min) / (2 * n_lat)
+
+                    # Read data variables
+                    for var_name in data_fields.keys():
+                        data = data_fields[var_name][()]
+                        fill = data_fields[var_name].attrs.get('_FillValue', None)
+                        arr = data.astype(np.float32)
+                        if fill is not None:
+                            try:
+                                fill_val = float(np.asarray(fill).flat[0])
+                                arr = np.where(
+                                    np.isclose(arr, fill_val, rtol=0, atol=abs(fill_val) * 1e-3),
+                                    np.nan, arr
+                                )
+                            except Exception:
+                                pass
+                        raw_attrs = data_fields[var_name].attrs
+                        safe_attrs = {}
+                        for k, v in raw_attrs.items():
+                            try:
+                                arr_v = np.asarray(v)
+                                scalar = arr_v.flat[0]
+                                # Convert to a JSON-serializable Python type
+                                if isinstance(scalar, bytes):
+                                    safe_attrs[k] = scalar.decode('utf-8', errors='replace')
+                                elif hasattr(scalar, 'item'):
+                                    safe_attrs[k] = scalar.item()
+                                else:
+                                    safe_attrs[k] = str(scalar)
+                            except Exception:
+                                pass
+                        data_vars[var_name] = xr.DataArray( 
+                            arr,
+                            dims=['latitude', 'longitude'],
+                            attrs=safe_attrs
+                        )
+
+                if not data_vars:
+                    raise RuntimeError("No variables found in HDF-EOS5 file")
+
+                ds = xr.Dataset(data_vars).assign_coords(
+                    latitude=('latitude', lats),
+                    longitude=('longitude', lons),
+                )
+
+                # Synthesize time
+                stem = Path(filename).stem
+                synth_time = granule_times.get(stem) or self._extract_time_from_filename(filename)
+                if synth_time is None:
+                    logger.warning(f"Could not determine time for {filename}; using NaT")
+                    synth_time = pd.NaT
+                synth_time_np = (
+                    np.datetime64(synth_time.to_datetime64(), 'ns')
+                    if not pd.isna(synth_time)
+                    else np.datetime64('NaT', 'ns')
+                )
+                logger.info(f"Opened HDF-EOS5: {grid_name}, vars={list(data_vars.keys())}")
+                return ds.expand_dims(dim={"time": [synth_time_np]})
+
+            except Exception as e:
+                logger.warning(f"Failed to open HDF-EOS5 file: {e}")
         # --- Grouped file (OMI HCHO): named groups, no product group ---
         KNOWN_DATA_GROUPS = {"key_science_data", "qa_statistics", "support_data", "geolocation"}
         if any(g in KNOWN_DATA_GROUPS for g in groups) and "product" not in groups:
@@ -486,13 +571,13 @@ def main():
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import logging
     logging.basicConfig(level=logging.DEBUG)
-
     data_loader = DataLoader()
 
     ds = data_loader.download_dataset_harmony(
-        collection_id="C2215175232-GES_DISC",  # OMI NO2
-        temporal=("2024-04-08T00:00:00Z", "2024-04-08T23:59:59Z"),
+        collection_id="C1266136037-GES_DISC",  # OMI Ozone
+        temporal=("2024-07-08T00:00:00Z", "2024-08-08T23:59:59Z"),
         bounding_box=(-106.6458, 25.8371, -93.5078, 36.5005),
+        output_format='application/x-netcdf4',
         max_results=1,
         cache_path="cache_test.zarr"
     )

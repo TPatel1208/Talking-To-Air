@@ -146,6 +146,9 @@ Compare formaldehyde levels between Texas and California
 - [TROPOMI NO2 Monthly (HAQ_TROPOMI_NO2_GLOBAL_M_L3)](https://disc.gsfc.nasa.gov/) — NASA GES DISC
 - [TEMPO NO2 L3 V04 (TEMPO_NO2_L3)](https://asdc.larc.nasa.gov/project/TEMPO) — NASA ASDC
 
+**Ozone (NO₂)**
+
+
 **Formaldehyde (HCHO)**
 - [TEMPO HCHO L3 V04 (TEMPO_HCHO_L3)](https://asdc.larc.nasa.gov/project/TEMPO) — NASA ASDC
 - [OMI HCHO Daily L3 (OMHCHOd)](https://doi.org/10.5067/AURA/OMI/DATA3010) — NASA GES DISC
