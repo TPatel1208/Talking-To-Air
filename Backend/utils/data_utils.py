@@ -1,6 +1,7 @@
 import json
 import logging
 import xarray as xr
+import numpy as np
 
 logger = logging.getLogger(__name__)
 _loader_instance = None
@@ -49,11 +50,8 @@ def _load_data(data_json: dict, apply_quality_flag: bool = True) -> xr.DataArray
     }
 
     if col.get("supports_variable_subsetting", False):
-        base_vars = list(col.get("variables", []))
-        if apply_quality_flag and qf_var and qf_var not in base_vars:
-            base_vars = base_vars + [qf_var]
-        fetch_params["variables"] = base_vars
-
+        # Use the variables from COLLECTIONS config (already includes quality flags)
+        fetch_params["variables"] = list(col.get("variables", []))
     try:
         ds = get_loader().download_dataset_harmony(**fetch_params)
     except Exception as e:
@@ -74,6 +72,21 @@ def _load_data(data_json: dict, apply_quality_flag: bool = True) -> xr.DataArray
     logger.debug(f"Selected '{preferred}' from {data_vars}")
 
     da = ds[preferred]
+    fill_value = col.get("fill_value")
+    valid_min  = col.get("valid_min")
+    valid_max  = col.get("valid_max")
+
+    # Float32 fill values don't compare exactly in float64.
+    # Use the _FillValue stored in the DataArray's own attrs first,
+    # then fall back to the COLLECTIONS config.
+    actual_fill = da.attrs.get("_FillValue", fill_value)
+
+    if actual_fill is not None:
+        da = da.where(~np.isclose(da, actual_fill, rtol=0, atol=abs(actual_fill) * 1e-3))
+
+    if valid_min is not None and valid_max is not None:
+        da = da.where((da >= valid_min) & (da <= valid_max))
+
     da.attrs.setdefault("units",     col["units"])
     da.attrs.setdefault("long_name", col["description"])
     da.name = variable
@@ -81,9 +94,13 @@ def _load_data(data_json: dict, apply_quality_flag: bool = True) -> xr.DataArray
     # --- Apply quality flag mask ---
     if apply_quality_flag and qf_var and qf_var in ds.data_vars:
         qf = ds[qf_var]
-        n_bad = int((qf != 0).sum())
+        if variable == "OMI_HCHO":
+            bad_mask = (qf == 2)  # 0 and 1 are both good, 2 is bad
+        else:
+            bad_mask = (qf != 0)  # TEMPO: only 0 is good
+        n_bad = int(bad_mask.sum())
         logger.debug(f"Quality flag masking removed {n_bad} bad pixels")
-        da = da.where(qf == 0)
+        da = da.where(~bad_mask)
     elif apply_quality_flag and qf_var:
         logger.warning(
             f"Quality flag variable '{qf_var}' not found in dataset. "

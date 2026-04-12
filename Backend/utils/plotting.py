@@ -143,12 +143,18 @@ def plot_map(
     if extent:
         lon_range = extent[2] - extent[0]  # maxx - minx   
         lat_range = extent[3] - extent[1]  # maxy - miny
-        aspect_ratio = lon_range / lat_range
         
-        # Base height of 6 inches, adjust width
-        fig_height = 6
-        fig_width = fig_height * aspect_ratio * 1.2  # 1.2 factor for map projection
-        fig_width = np.clip(fig_width, 6, 14)  # Reasonable bounds
+        # Prevent divide by zero for degenerate regions
+        if lat_range <= 0 or lon_range <= 0:
+            print(f"Warning: Degenerate extent detected (lon_range={lon_range}, lat_range={lat_range}). Using default figure size.")
+            fig_width, fig_height = 10, 6
+        else:
+            aspect_ratio = lon_range / lat_range
+            
+            # Base height of 6 inches, adjust width
+            fig_height = 6
+            fig_width = fig_height * aspect_ratio * 1.2  # 1.2 factor for map projection
+            fig_width = np.clip(fig_width, 6, 14)  # Reasonable bounds
     else:
         fig_width, fig_height = 10, 6
     
@@ -299,8 +305,18 @@ def mask_data_by_geometry(
     lons = data_array[lon_coord].values
     
     # Calculate the affine transform for the raster
-    lon_res = (lons[-1] - lons[0]) / (len(lons) - 1) if len(lons) > 1 else 1
-    lat_res = (lats[-1] - lats[0]) / (len(lats) - 1) if len(lats) > 1 else 1
+    # Ensure we have at least 2 points to calculate resolution
+    if len(lons) < 2:
+        lon_res = 1.0  # Default resolution
+    else:
+        lon_diff = lons[-1] - lons[0]
+        lon_res = lon_diff / (len(lons) - 1) if lon_diff != 0 else 1.0
+    
+    if len(lats) < 2:
+        lat_res = 1.0  # Default resolution
+    else:
+        lat_diff = lats[-1] - lats[0]
+        lat_res = lat_diff / (len(lats) - 1) if lat_diff != 0 else 1.0
     
     transform = Affine.translation(lons[0] - lon_res/2, lats[0] - lat_res/2) * \
                 Affine.scale(lon_res, lat_res)
@@ -526,9 +542,52 @@ class RegionResolver:
     """resolves user location inputs into singular plot or multiple plots"""
     def __init__(self):
         self.geocoding_service = GeocodingService()
+        # Define special global regions that don't need geocoding
+        self.global_regions = {
+            'global': {
+                'geometry': box(-180, -90, 180, 90),
+                'bounds': (-180, -90, 180, 90),
+                'name': 'Global'
+            },
+            'world': {
+                'geometry': box(-180, -90, 180, 90),
+                'bounds': (-180, -90, 180, 90),
+                'name': 'World'
+            },
+            'earth': {
+                'geometry': box(-180, -90, 180, 90),
+                'bounds': (-180, -90, 180, 90),
+                'name': 'Earth'
+            },
+            'continental us': {
+                'geometry': box(-125, 24, -66, 50),
+                'bounds': (-125, 24, -66, 50),
+                'name': 'Continental US'
+            },
+            'conus': {
+                'geometry': box(-125, 24, -66, 50),
+                'bounds': (-125, 24, -66, 50),
+                'name': 'Continental US'
+            },
+            'contiguous us': {
+                'geometry': box(-125, 24, -66, 50),
+                'bounds': (-125, 24, -66, 50),
+                'name': 'Continental US'
+            },
+            'united states': {
+                'geometry': box(-125, 24, -66, 50),
+                'bounds': (-125, 24, -66, 50),
+                'name': 'Continental US'
+            }
+        }
 
     def resolve_location(self, location_name: str):
         """Convert location name to RegionResult with geometry"""
+        # Check for global regions first
+        location_lower = location_name.lower().strip()
+        if location_lower in self.global_regions:
+            return self.global_regions[location_lower]
+        
         geo_result = self.geocoding_service.geocode(location_name)
         if geo_result is None:
             return None

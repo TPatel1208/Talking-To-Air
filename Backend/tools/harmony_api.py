@@ -2,6 +2,7 @@ import sys
 import os
 from langchain.tools import tool
 from typing import Tuple
+import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils.plotting import GeocodingService
@@ -56,12 +57,126 @@ COLLECTIONS = {
         "units":         "molecules/cm^2",
         "description":   "TEMPO tropospheric NO2 vertical column",
         'supports_variable_subsetting': True,
-        'fill_value': -1e30,                # from _FillValue attribute
+        'fill_value': np.float32(-1e30),         # from _FillValue attribute
         "valid_min": -1e15,               
         "valid_max": 1e18,
-    }
+    },
 
+    #--------------
+    #Ozone datasets
+    #--------------
 
+    # TEMPO Total Ozone
+    "TEMPO_O3TOT": {
+        "collection_id": "C3685896625-LARC_CLOUD",
+        "variables": [
+            "product/column_amount_o3",
+            "product/radiative_cloud_frac",
+            "product/fc",
+            "product/o3_below_cloud",
+            "product/so2_index",
+            "product/uv_aerosol_index",
+        ],
+        "primary_var": "column_amount_o3",
+        "quality_flag_var": None,
+        "short_name": "TEMPO_O3TOT_L3",
+        "version": "V04",
+        "groups": ["product"],
+        "units": "DU",
+        "description": "TEMPO Level 3 total ozone column",
+        "supports_variable_subsetting": True,
+        "fill_value": np.float32(-1e30),
+        "valid_min": 50.0,        # valid_min on column_amount_o3
+        "valid_max": 700.0,       # valid_max on column_amount_o3
+    },
+
+    # OMI Total Ozone
+    "OMI_O3": {
+        "collection_id": "C1266136037-GES_DISC",
+        "variables": [
+            "HDFEOS/GRIDS/ColumnAmountO3/Data Fields/ColumnAmountO3",
+            "HDFEOS/GRIDS/ColumnAmountO3/Data Fields/ColumnAmountO3Precision",
+            "HDFEOS/GRIDS/ColumnAmountO3/Data Fields/CloudFraction",
+            "HDFEOS/GRIDS/ColumnAmountO3/Data Fields/CloudPressure",
+        ],
+        "primary_var": "ColumnAmountO3",
+        "quality_flag_var": None,
+
+        "short_name": "OMDOAO3e",
+        "version": "003",
+        "groups": [
+            "HDFEOS",
+            "GRIDS",
+            "ColumnAmountO3",
+            "Data Fields"
+        ],
+
+        "units": "DU",
+        "description": "OMI Level 3 daily total ozone column (OMDOAO3e)",
+
+        "supports_variable_subsetting": False,
+
+        "fill_value": np.float32(-1e30),
+        "valid_min": 50.0,     # realistic ozone lower bound
+        "valid_max": 700.0,    # realistic ozone upper bound
+    },
+    #---------------------
+    #Formaldehyde datasets
+    #---------------------
+    "TEMPO_HCHO": {
+        "collection_id": "C3685897141-LARC_CLOUD",
+        "variables": [
+            "product/vertical_column",
+            "product/vertical_column_uncertainty",
+            "product/main_data_quality_flag",
+        ],
+        "primary_var":        "vertical_column",
+        "quality_flag_var":   "main_data_quality_flag",
+        "short_name":         "TEMPO_HCHO_L3",
+        "version":            "V04",
+        "groups":             ["product"],
+        "units":              "molecules/cm^2",
+        "description":        "TEMPO formaldehyde (HCHO) vertical column",
+        "supports_variable_subsetting": True,
+        "fill_value":  -1e30,
+        "valid_min":   np.float32(0.0),
+        "valid_max":   np.inf,
+    },
+
+    "TEMPO_HCHO_V03": {
+        "collection_id": "C2930761273-LARC_CLOUD",
+        "variables": [
+            "product/vertical_column",
+            "product/vertical_column_uncertainty",
+            "product/main_data_quality_flag",
+        ],
+        "primary_var":        "vertical_column",
+        "quality_flag_var":   "main_data_quality_flag",
+        "short_name":         "TEMPO_HCHO_L3",
+        "version":            "V03",
+        "groups":             ["product"],
+        "units":              "molecules/cm^2",
+        "description":        "TEMPO formaldehyde (HCHO) vertical column (V03)",
+        "supports_variable_subsetting": True,
+        "fill_value":  -1e30,
+        "valid_min":   np.float32(0.0),
+        "valid_max":   np.inf,
+    },
+    "OMI_HCHO": {
+        "collection_id":  "C1626121562-GES_DISC",
+        "variables":      [],
+        "primary_var":    "column_amount",
+        "quality_flag_var": "data_quality_flag",
+        "short_name":     "OMHCHOd",
+        "version":        "003",
+        "groups":         ["key_science_data", "qa_statistics"],
+        "units":          "molecules/cm^2",
+        "description":    "OMI HCHO total column daily",
+        "supports_variable_subsetting": False,
+        "fill_value":     -1e30,
+        "valid_min":      np.float32(0.0),
+        "valid_max":      np.inf,
+    },
 }
 @tool
 def geocode_location(location_name: str) -> dict:

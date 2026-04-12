@@ -283,17 +283,18 @@ class DataLoader:
         except Exception:
             return False
         
-
     def _open_dataset(self, filename: str, granule_times: Optional[dict] = None) -> xr.Dataset:
         """
         Open a NASA NetCDF4 file, normalising the time coordinate.
 
-        TEMPO   — coords at root (seconds since 1980-01-06), data in 'product' group
-        OMI     — flat, time = days since 1972-01-01
-        TROPOMI — flat, no time dimension → synthesised from CMR metadata or filename
+        TEMPO       — coords at root (seconds since 1980-01-06), data in 'product' group
+        OMI NO2     — flat, time = days since 1972-01-01
+        OMI HCHO    — grouped (key_science_data, qa_statistics), no time dim
+        TROPOMI     — flat, no time dimension → synthesised from CMR metadata or filename
         """
         if granule_times is None:
             granule_times = {}
+
         try:
             root = xr.open_dataset(filename, engine="netcdf4", decode_times=False)
         except Exception as e:
@@ -308,7 +309,7 @@ class DataLoader:
 
         logger.debug(f"File groups found: {groups}")
 
-        # --- TEMPO: coords at root, data in 'product' group 
+        # --- TEMPO: coords at root, data in 'product' group ---
         if "product" in groups:
             try:
                 product = xr.open_dataset(filename, group="product", engine="netcdf4", decode_times=False)
@@ -322,7 +323,52 @@ class DataLoader:
             except Exception as e:
                 logger.warning(f"Failed to open 'product' group, falling back: {e}")
 
-        # --- OMI: flat, days since 1972-01-01 ---
+        # --- Grouped file (OMI HCHO): named groups, no product group ---
+        KNOWN_DATA_GROUPS = {"key_science_data", "qa_statistics", "support_data", "geolocation"}
+        if any(g in KNOWN_DATA_GROUPS for g in groups) and "product" not in groups:
+            try:
+                merged_vars = {}
+                for g in groups:
+                    if g in KNOWN_DATA_GROUPS:
+                        try:
+                            grp_ds = xr.open_dataset(
+                                filename, group=g, engine="netcdf4", decode_times=False
+                            )
+                            for var in grp_ds.data_vars:
+                                merged_vars[var] = grp_ds[var]
+                        except Exception as e:
+                            logger.warning(f"Could not open group '{g}': {e}")
+
+                if not merged_vars:
+                    raise RuntimeError("No variables found in any known group")
+
+                ds = xr.Dataset(merged_vars)
+
+                # Assign root coordinates
+                coords = {}
+                for coord in ["latitude", "longitude"]:
+                    if coord in root:
+                        coords[coord] = root[coord]
+                if coords:
+                    ds = ds.assign_coords(**coords)
+
+                # Synthesize time
+                stem = Path(filename).stem
+                synth_time = granule_times.get(stem) or self._extract_time_from_filename(filename)
+                if synth_time is None:
+                    logger.warning(f"Could not determine time for {filename}; using NaT")
+                    synth_time = pd.NaT
+                synth_time_np = (
+                    np.datetime64(synth_time.to_datetime64(), 'ns')
+                    if not pd.isna(synth_time)
+                    else np.datetime64('NaT', 'ns')
+                )
+                return ds.expand_dims(dim={"time": [synth_time_np]})
+
+            except Exception as e:
+                logger.warning(f"Failed to open grouped dataset, falling back: {e}")
+
+        # --- OMI NO2: flat, days since 1972-01-01 ---
         time_key = "Time" if "Time" in root else "time" if "time" in root else None
 
         if time_key:
@@ -344,10 +390,6 @@ class DataLoader:
             )
             return root
 
-
-
-
-
         # --- TROPOMI: no time dimension → CMR metadata lookup, then filename fallback ---
         stem = Path(filename).stem
         synth_time = granule_times.get(stem) or self._extract_time_from_filename(filename)
@@ -359,8 +401,6 @@ class DataLoader:
         else:
             synth_time_np = np.datetime64(synth_time.to_datetime64(), 'ns')
         return root.expand_dims(dim={"time": [synth_time_np]})
-
-
     def _get_granule_times(
         self,
         collection_id: str,
