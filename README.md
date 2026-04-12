@@ -6,13 +6,15 @@
 
 ## Overview
 
-The system combines a LangChain-based agentic backend with a React frontend to provide an interactive interface for exploring NO₂ column data across multiple NASA datasets:
+The system combines a LangChain-based agentic backend with a React frontend to provide an interactive interface for exploring atmospheric column data across multiple NASA datasets:
 
-| Dataset | Sensor | Temporal Resolution | Coverage |
-|---|---|---|---|
-| `OMI_NO2` | OMI/Aura | Daily | Global |
-| `TROPOMI_NO2` | Sentinel-5P | Monthly | Global |
-| `TEMPO_NO2` | TEMPO | Hourly | North America |
+| Dataset | Sensor | Variable | Temporal Resolution | Coverage |
+|---|---|---|---|---|
+| `OMI_NO2` | OMI/Aura | NO₂ | Daily | Global |
+| `TROPOMI_NO2` | Sentinel-5P | NO₂ | Monthly | Global |
+| `TEMPO_NO2` | TEMPO | NO₂ | Hourly | North America |
+| `TEMPO_HCHO` | TEMPO | HCHO | Hourly | North America |
+| `OMI_HCHO` | OMI/Aura | HCHO | Daily | Global |
 
 Data is fetched on demand from NASA Harmony and cached locally in Zarr format to avoid redundant downloads.
 
@@ -117,6 +119,8 @@ Compare NO2 between California and New York
 Show the NO2 trend over Greece for the last 18 months
 What was the mean NO2 in Los Angeles in March 2024?
 Where was NO2 highest in Texas today?
+Plot HCHO over Florida this morning
+Compare formaldehyde levels between Texas and California
 ```
 
 ---
@@ -137,6 +141,11 @@ Where was NO2 highest in Texas today?
 
 ## Data Sources
 
+**Nitrogen Dioxide (NO₂)**
 - [OMI MINDS NO2 Daily (OMI_MINDS_NO2d)](https://doi.org/10.5067/MEASURES/MINDS/DATA304) — NASA GES DISC
-- [TROPOMI NO2 Monthly (HAQ_TROPOMI_NO2_GLOBAL_M_L3)](https://disc.gsfc.nasa.gov/) — NASA GES DISC  
-- [TEMPO NO2 L3 (TEMPO_NO2_L3)](https://asdc.larc.nasa.gov/project/TEMPO) — NASA ASDC
+- [TROPOMI NO2 Monthly (HAQ_TROPOMI_NO2_GLOBAL_M_L3)](https://disc.gsfc.nasa.gov/) — NASA GES DISC
+- [TEMPO NO2 L3 V04 (TEMPO_NO2_L3)](https://asdc.larc.nasa.gov/project/TEMPO) — NASA ASDC
+
+**Formaldehyde (HCHO)**
+- [TEMPO HCHO L3 V04 (TEMPO_HCHO_L3)](https://asdc.larc.nasa.gov/project/TEMPO) — NASA ASDC
+- [OMI HCHO Daily L3 (OMHCHOd)](https://doi.org/10.5067/AURA/OMI/DATA3010) — NASA GES DISC
