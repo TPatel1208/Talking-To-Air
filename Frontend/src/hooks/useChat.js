@@ -1,61 +1,130 @@
 import { useState, useCallback } from 'react'
-import axios from 'axios'
 
 const API_BASE = 'http://localhost:8000'
 
+function normalizeImageUrl(rawUrl) {
+  if (!rawUrl) return null
+  // Already a clean relative path
+  if (rawUrl.startsWith('/outputs/')) return `${API_BASE}${rawUrl}`
+  // Full file:/// or absolute OS path — extract just the filename
+  const filename = rawUrl.replace(/\\/g, '/').split('/').pop()
+  return `${API_BASE}/outputs/${filename}`
+}
+
 export function useChat() {
-  const [messages, setMessages]     = useState([])
-  const [images, setImages]         = useState([])
-  const [toolCalls, setToolCalls]   = useState([])
-  const [threadId, setThreadId]     = useState(null)
-  const [loading, setLoading]       = useState(false)
-  const [error, setError]           = useState(null)
+  const [messages, setMessages]   = useState([])
+  const [threadId, setThreadId]   = useState(null)
+  const [loading,  setLoading]    = useState(false)
+  const [error,    setError]      = useState(null)
+
+  const updateLastAssistant = (updater) => {
+    setMessages(prev => {
+      const next = [...prev]
+      const idx  = next.length - 1
+      if (idx >= 0 && next[idx].role === 'assistant') {
+        next[idx] = { ...next[idx], ...updater(next[idx]) }
+      }
+      return next
+    })
+  }
 
   const sendMessage = useCallback(async (text) => {
-    if (!text.trim()) return
+    if (!text.trim() || loading) return
 
-    // Add user message immediately
-    setMessages(prev => [...prev, { role: 'user', content: text }])
+    setMessages(prev => [
+      ...prev,
+      { role: 'user', content: text },
+      { role: 'assistant', content: '', toolCalls: [], imageUrls: [], isLoading: true },
+    ])
     setLoading(true)
     setError(null)
 
     try {
-      const res = await axios.post(`${API_BASE}/chat`, {
-        message:   text,
-        thread_id: threadId,
+      const res = await fetch(`${API_BASE}/chat`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ message: text, thread_id: threadId }),
       })
 
-      const { thread_id, response, image_urls, tool_calls } = res.data
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
 
-      // Persist thread for conversation memory
-      setThreadId(thread_id)
+      const reader  = res.body.getReader()
+      const decoder = new TextDecoder()
+      let   buffer  = ''
 
-      // Add assistant response
-      setMessages(prev => [...prev, { role: 'assistant', content: response }])
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
 
-      // Update dashboard
-      if (image_urls?.length)  setImages(image_urls)
-      if (tool_calls?.length)  setToolCalls(tool_calls)
+        buffer += decoder.decode(value, { stream: true })
+
+        const parts = buffer.split('\n\n')
+        buffer = parts.pop()
+
+        for (const part of parts) {
+          const eventMatch = part.match(/^event:\s*(.+)$/m)
+          const dataMatch  = part.match(/^data:\s*(.+)$/m)
+          if (!eventMatch || !dataMatch) continue
+
+          const event = eventMatch[1].trim()
+          let   data
+          try { data = JSON.parse(dataMatch[1]) } catch { continue }
+
+          if (event === 'tool_call') {
+            updateLastAssistant(msg => ({
+              toolCalls: [...msg.toolCalls, { name: data.name, args: data.args }],
+            }))
+          }
+
+          else if (event === 'image') {
+            const url = normalizeImageUrl(data.url)
+            if (url) {
+              updateLastAssistant(msg => ({
+                imageUrls: [...msg.imageUrls, url],
+              }))
+            }
+          }
+
+          else if (event === 'done') {
+            setThreadId(data.thread_id)
+            const normalizedUrls = (data.image_urls || [])
+              .map(normalizeImageUrl)
+              .filter(Boolean)
+            updateLastAssistant(() => ({
+              content:   data.response,
+              imageUrls: normalizedUrls,
+              isLoading: false,
+            }))
+          }
+
+          else if (event === 'error') {
+            throw new Error(data.detail || 'Stream error')
+          }
+        }
+      }
 
     } catch (err) {
-      const msg = err.response?.data?.detail || err.message || 'Request failed'
+      const msg = err.message || 'Request failed'
       setError(msg)
-      setMessages(prev => [...prev, { role: 'assistant', content: `Error: ${msg}`, isError: true }])
+      updateLastAssistant(() => ({
+        content:   `Error: ${msg}`,
+        isError:   true,
+        isLoading: false,
+      }))
     } finally {
       setLoading(false)
     }
-  }, [threadId])
+  }, [threadId, loading])
 
   const clearSession = useCallback(async () => {
     if (threadId) {
-      await axios.delete(`${API_BASE}/session/${threadId}`).catch(() => {})
+      await fetch(`${API_BASE}/session/${threadId}`, { method: 'DELETE' }).catch(() => {})
     }
     setMessages([])
-    setImages([])
-    setToolCalls([])
     setThreadId(null)
     setError(null)
   }, [threadId])
 
-  return { messages, images, toolCalls, loading, error, sendMessage, clearSession, threadId }
+  // No longer exposing images/toolCalls separately — everything lives in messages
+  return { messages, loading, error, sendMessage, clearSession, threadId }
 }

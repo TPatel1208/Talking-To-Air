@@ -1,10 +1,12 @@
 import uuid
 import os
 import sys
+import json
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 
@@ -38,31 +40,21 @@ class ChatRequest(BaseModel):
     thread_id: Optional[str] = None
 
 
-class ChatResponse(BaseModel):
-    thread_id:  str
-    response:   str
-    image_urls: list[str] = []
-    tool_calls: list[dict] = []
+def sse(event: str, data: dict) -> str:
+    """Format a server-sent event."""
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-
-@app.post("/chat", response_model=ChatResponse)
-def chat(req: ChatRequest):
-    thread_id = req.thread_id or str(uuid.uuid4())
-    sessions[thread_id] = thread_id
+async def stream_chat(message: str, thread_id: str):
+    """Generator that streams tool calls, images, and final response as SSE."""
     config = {"configurable": {"thread_id": thread_id}}
 
     response_text = ""
     image_urls    = []
-    tool_calls    = []
 
     try:
         for stream_mode, chunk in agent.stream(
-            {"messages": [{"role": "user", "content": req.message}]},
+            {"messages": [{"role": "user", "content": message}]},
             config=config,
             stream_mode=["updates", "messages"],
         ):
@@ -70,30 +62,27 @@ def chat(req: ChatRequest):
                 for node, data in chunk.items():
                     for msg in data.get("messages", []):
 
-                        # Tool calls
+                        # Tool calls — emit immediately as they happen
                         if hasattr(msg, "tool_calls") and msg.tool_calls:
                             for tc in msg.tool_calls:
-                                tool_calls.append({
+                                yield sse("tool_call", {
                                     "name": tc["name"],
                                     "args": tc["args"],
                                 })
 
-                        # Tool results — check for PNG paths
+                        # Tool results — check for image paths
                         elif hasattr(msg, "name") and msg.name:
                             content = str(msg.content)
-                            print(f"DEBUG tool result [{msg.name}]: {content[:200]}")
                             if content.strip().endswith(".png"):
                                 filename = os.path.basename(content.strip())
-                                image_urls.append(f"/outputs/{filename}")
+                                url = f"/outputs/{filename}"
+                                image_urls.append(url)
+                                yield sse("image", {"url": url})
 
                         # Final text response
                         elif hasattr(msg, "content") and msg.content:
-                            print(f"DEBUG msg type: {type(msg.content)}")
-                            print(f"DEBUG msg content: {str(msg.content)[:200]}")
-
                             if isinstance(msg.content, str):
                                 response_text = msg.content
-
                             elif isinstance(msg.content, list):
                                 for block in msg.content:
                                     if isinstance(block, dict) and block.get("type") == "text":
@@ -101,16 +90,34 @@ def chat(req: ChatRequest):
                                     elif hasattr(block, "text"):
                                         response_text = block.text
 
+        # Final done event with complete response
+        yield sse("done", {
+            "thread_id":  thread_id,
+            "response":   response_text,
+            "image_urls": image_urls,
+        })
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        yield sse("error", {"detail": str(e)})
 
-    print(f"DEBUG final response_text: '{response_text[:200]}'")
 
-    return ChatResponse(
-        thread_id=thread_id,
-        response=response_text,
-        image_urls=image_urls,
-        tool_calls=tool_calls,
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.post("/chat")
+async def chat(req: ChatRequest):
+    thread_id = req.thread_id or str(uuid.uuid4())
+    sessions[thread_id] = thread_id
+
+    return StreamingResponse(
+        stream_chat(req.message, thread_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",       # disable nginx buffering if proxied
+        },
     )
 
 
