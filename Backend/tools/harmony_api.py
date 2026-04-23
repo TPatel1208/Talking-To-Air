@@ -14,7 +14,7 @@ _data_loader = DataLoader()
 COLLECTIONS = {
     # OMI NO2 (Default for 'NO2' variable)
     "OMI_NO2": {
-        'collection_id': "C2215175232-GES_DISC",
+        'collection_id': "C1266136111-GES_DISC",
         'variables': ["ColumnAmountNO2","ColumnAmountNO2CloudScreened","ColumnAmountNO2TropCloudScreened","Weight"],
         'primary_var': "ColumnAmountNO2TropCloudScreened",
         'quality_flag_var': None,
@@ -162,6 +162,37 @@ COLLECTIONS = {
         "fill_value":     -1e30,
         "valid_min":      np.float32(0.0),
         "valid_max":      np.inf,
+    },
+    #Modis Aerosol datasets
+    "MODIS_AOD_TERRA": {
+        "collection_id":  "C3618500076-GES_DISC",  # verify with CMR search
+        "variables":      [],
+        "primary_var":    "COMBINE_AOD_550_AVG",
+        "quality_flag_var": None,
+        "short_name":     "AER_DBDT_D10KM_L3_MODIS_TERRA",
+        "version":        "001",
+        "groups":         [],
+        "units":          "AOD (550nm)",
+        "description":    "MODIS Terra AOD at 550nm combined Dark Target + Deep Blue",
+        "supports_variable_subsetting": False,
+        "fill_value":     -999.0,
+        "valid_min":      -0.05,
+        "valid_max":      5.0,
+    },
+    "MODIS_AOD_AQUA": {
+        "collection_id":  "C3618504061-GES_DISC",  
+        "variables":      [],
+        "primary_var":    "COMBINE_AOD_550_AVG",
+        "quality_flag_var": None,
+        "short_name":     "AER_DBDT_D10KM_L3_MODIS_AQUA",
+        "version":        "001",
+        "groups":         [],
+        "units":          "AOD (550nm)",
+        "description":    "MODIS Aqua AOD at 550nm combined Dark Target + Deep Blue",
+        "supports_variable_subsetting": False,
+        "fill_value":     -999.0,
+        "valid_min":      -0.05,
+        "valid_max":      5.0,
     },
 }
 @tool

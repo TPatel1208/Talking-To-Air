@@ -166,16 +166,20 @@ def plot_map(
     )
     
     # --- 5. Plot the data ---
-    # Use pcolormesh explicitly to avoid xarray auto-detection issues
+    if lat_coord in data_array.dims and lon_coord in data_array.dims:
+        data_array = data_array.transpose(lat_coord, lon_coord)
+
+    plot_data = data_array.values
+
     im = ax.pcolormesh(
         data_array[lon_coord].values,
         data_array[lat_coord].values,
-        data_array.values,
+        plot_data,
         transform=ccrs.PlateCarree(),
         cmap=cmap,
         vmin=vmin,
         vmax=vmax,
-        shading='auto'
+        shading='nearest'
     )
     
     # Add colorbar manually
@@ -184,7 +188,7 @@ def plot_map(
         ax=ax,
         shrink=0.7,
         extend='both',
-        label=data_array.attrs.get('long_name', data_array.name or '')
+        label=data_array.attrs.get('long_name', data_array.name or '')[:40]
     )
     
     # --- 6. Set extent (FIXED: correct bounds format) ---

@@ -22,6 +22,7 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 _EPOCH_DAYS  = datetime(1972, 1, 1, tzinfo=timezone.utc)   # OMI
 _EPOCH_SECS  = datetime(1980, 1, 6, tzinfo=timezone.utc)   # TEMPO
+_EPOCH_1990  = datetime(1990, 1, 1, tzinfo=timezone.utc)   # MODIS AOD
 
 logger = logging.getLogger(__name__)    
 
@@ -460,6 +461,11 @@ class DataLoader:
             units = root[time_key].attrs.get("units", "")
             if "1972" in units:
                 decoded_time = self._decode_time(root[time_key], _EPOCH_DAYS, unit="D")
+                root = root.rename({time_key: "time"}) if time_key != "time" else root
+                root = root.squeeze("Time", drop=True) if "Time" in root.dims else root
+                root = root.assign_coords(time=("time", decoded_time.values))
+            elif "1990" in units:                                          
+                decoded_time = self._decode_time(root[time_key], _EPOCH_1990, unit="D")
                 root = root.rename({time_key: "time"}) if time_key != "time" else root
                 root = root.squeeze("Time", drop=True) if "Time" in root.dims else root
                 root = root.assign_coords(time=("time", decoded_time.values))

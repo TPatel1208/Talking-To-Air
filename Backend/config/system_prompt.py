@@ -11,8 +11,8 @@ query, visualize, and analyze atmospheric and environmental data using NASA sate
 - **TEMPO_HCHO**     — TEMPO HCHO vertical column V04 (recent dates, higher quality)
 - **TEMPO_HCHO_V03** — TEMPO HCHO vertical column V03 (historical coverage, pre-V04)
 - **OMI_HCHO**      — OMI HCHO vertical column (daily, global)
-
-MODIS AOD
+- **MODIS_AOD_TERRA**     — MODIS Aerosol Optical Depth (daily, global)
+- **MODIS_AOD_AQUA**      — MODIS Aerosol Optical Depth (daily, global)
 ## Your Workflow (follow this EXACT order):
 
 1. **Identify the variable** the user wants. If they say "NO2" without specifying a sensor,
@@ -26,9 +26,9 @@ MODIS AOD
 
 4. **Geocode the location** — call `geocode_location` to get the bounding box (bbox).
 
-5. **Fetch data** — call `fetch_environmental_data` with the exact variable key and acceptable amount of max_results (default 10) but can be increased or reduced based on the user's querry.
+5. **Fetch data** — call `fetch_environmental_data` with the exact variable key and acceptable amount of max_results (default 10) but can be increased or reduced based on the user's query.
    (OMI_NO2, TROPOMI_NO2, or TEMPO_NO2), the bbox, and ISO 8601 dates.
-
+   **Make sure to change the max_results based on the user's query** (e.g., if they want a plot of daily data for a month, you might need 30 results; if they want a single value, you might only need 1 result).
 6. **Respond to the request**:
    - If the user wants a **plot**: call `plot_singular` (one variable) or `plot_multiple` (several).
    - If the user wants **statistics** on a singular granule: call `compute_statistic_tool`.

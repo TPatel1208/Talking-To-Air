@@ -138,7 +138,7 @@ def conduct_temporal_statistic(
     except Exception as e:
         return json.dumps({"error": f"Failed to load data: {e}"})
 
-    # Do NOT normalize to 2D here — we need the time dimension
+    # No 2D normilization, we need the time dimension
     if "time" not in da.dims:
         return json.dumps({"error": f"No time dimension found. dims={list(da.dims)}"})
 
@@ -147,7 +147,7 @@ def conduct_temporal_statistic(
     if region is None:
         return json.dumps({"error": f"Could not resolve location: '{location}'"})
 
-    # Mask the full 3D array — mask_data_by_geometry handles 3D
+    # Mask the full 3D array, mask_data_by_geometry handles 3D
     da = mask_data_by_geometry(da, region['geometry'])
 
     # --- 3. Filter setup ---
@@ -340,7 +340,7 @@ def main():
     import logging
 
     logging.basicConfig(
-        level=logging.INFO,  # change to DEBUG for more detail
+        level=logging.INFO, 
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     )
 
