@@ -23,7 +23,7 @@ timeout /t 3 /nobreak >nul
 start "Frontend" cmd /k "cd /d "%ROOT%Frontend" && npm run dev"
 
 :: Wait for Vite to start then open browser
-timeout /t 4 /nobreak >nul
+timeout /t 20 /nobreak >nul
 start "" "http://localhost:5173"
 
 echo Both servers started.

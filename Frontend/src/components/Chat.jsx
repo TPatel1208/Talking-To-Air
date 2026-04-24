@@ -1,9 +1,12 @@
 import { useState, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
+import remarkMath from 'remark-math'
+import rehypeKatex from 'rehype-katex'
+
 
 function ToolCallBadge({ name, args }) {
   const [expanded, setExpanded] = useState(false)
-  const argStr = args ? JSON.stringify(args, null, 2) : ''
+  const argStr  = args ? JSON.stringify(args, null, 2) : ''
   const hasArgs = argStr && argStr !== '{}'
 
   return (
@@ -127,12 +130,7 @@ function InlineImage({ url }) {
             objectFit:    'contain',
           }}
         />
-        <div style={{
-          fontSize:  '10px',
-          color:     'var(--text-secondary)',
-          marginTop: '4px',
-          opacity:   0.6,
-        }}>
+        <div style={{ fontSize: '10px', color: 'var(--text-secondary)', marginTop: '4px', opacity: 0.6 }}>
           Click to enlarge
         </div>
       </div>
@@ -153,13 +151,8 @@ function InlineImage({ url }) {
         >
           <img
             src={url}
-            alt="output fullscreen"
-            style={{
-              maxWidth:     '92vw',
-              maxHeight:    '92vh',
-              borderRadius: '8px',
-              objectFit:    'contain',
-            }}
+            alt="fullscreen"
+            style={{ maxWidth: '92vw', maxHeight: '92vh', borderRadius: '8px', objectFit: 'contain' }}
           />
         </div>
       )}
@@ -177,22 +170,14 @@ function MessageBubble({ msg }) {
       alignItems:    isUser ? 'flex-end' : 'flex-start',
       gap:           '4px',
     }}>
-      {/* Tool call badges shown above assistant bubble */}
       {!isUser && msg.toolCalls?.length > 0 && (
-        <div style={{
-          maxWidth:      '80%',
-          padding:       '4px 10px',
-          display:       'flex',
-          flexDirection: 'column',
-          gap:           '1px',
-        }}>
+        <div style={{ maxWidth: '80%', padding: '4px 10px', display: 'flex', flexDirection: 'column', gap: '1px' }}>
           {msg.toolCalls.map((tc, i) => (
             <ToolCallBadge key={i} name={tc.name} args={tc.args} />
           ))}
         </div>
       )}
 
-      {/* Bubble */}
       {(msg.content || msg.imageUrls?.length > 0 || isUser) && (
         <div
           className="msg-bubble"
@@ -216,6 +201,8 @@ function MessageBubble({ msg }) {
             <>
               {msg.content && (
                 <ReactMarkdown
+                  remarkPlugins={[remarkMath]}
+                  rehypePlugins={[rehypeKatex]}
                   components={{
                     p:      ({ children }) => <p style={{ margin: '0 0 8px' }}>{children}</p>,
                     h1:     ({ children }) => <p style={{ margin: '0 0 6px', fontWeight: 700, fontSize: '15px' }}>{children}</p>,
@@ -227,21 +214,14 @@ function MessageBubble({ msg }) {
                     strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
                     code: ({ inline, children }) => inline ? (
                       <code style={{
-                        background:   'var(--bg-primary)',
-                        borderRadius: '4px',
-                        padding:      '1px 5px',
-                        fontFamily:   'var(--font-mono, monospace)',
-                        fontSize:     '12px',
+                        background: 'var(--bg-primary)', borderRadius: '4px',
+                        padding: '1px 5px', fontFamily: 'var(--font-mono, monospace)', fontSize: '12px',
                       }}>{children}</code>
                     ) : (
                       <pre style={{
-                        background:   'var(--bg-primary)',
-                        borderRadius: '6px',
-                        padding:      '8px 10px',
-                        overflowX:    'auto',
-                        fontSize:     '12px',
-                        fontFamily:   'var(--font-mono, monospace)',
-                        margin:       '4px 0 8px',
+                        background: 'var(--bg-primary)', borderRadius: '6px',
+                        padding: '8px 10px', overflowX: 'auto', fontSize: '12px',
+                        fontFamily: 'var(--font-mono, monospace)', margin: '4px 0 8px',
                       }}><code>{children}</code></pre>
                     ),
                     a: ({ href, children }) => (
@@ -252,28 +232,20 @@ function MessageBubble({ msg }) {
                     ),
                     table: ({ children }) => (
                       <div style={{ overflowX: 'auto', margin: '8px 0' }}>
-                        <table style={{ borderCollapse: 'collapse', fontSize: '12px', width: '100%' }}>
-                          {children}
-                        </table>
+                        <table style={{ borderCollapse: 'collapse', fontSize: '12px', width: '100%' }}>{children}</table>
                       </div>
                     ),
                     th: ({ children }) => (
-                      <th style={{ padding: '6px 10px', borderBottom: '1px solid var(--border)', textAlign: 'left', fontWeight: 600, color: 'var(--text-secondary)' }}>
-                        {children}
-                      </th>
+                      <th style={{ padding: '6px 10px', borderBottom: '1px solid var(--border)', textAlign: 'left', fontWeight: 600, color: 'var(--text-secondary)' }}>{children}</th>
                     ),
                     td: ({ children }) => (
-                      <td style={{ padding: '5px 10px', borderBottom: '1px solid var(--border)' }}>
-                        {children}
-                      </td>
+                      <td style={{ padding: '5px 10px', borderBottom: '1px solid var(--border)' }}>{children}</td>
                     ),
                   }}
                 >
                   {msg.content}
                 </ReactMarkdown>
               )}
-
-              {/* Inline images rendered after text */}
               {msg.imageUrls?.map((url, i) => (
                 <InlineImage key={i} url={url} />
               ))}
@@ -307,12 +279,8 @@ export default function Chat({ messages, loading, error, onSend, onClear }) {
   }
 
   return (
-    <div style={{
-      display:       'flex',
-      flexDirection: 'column',
-      height:        '100%',
-      overflow:      'hidden',
-    }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+
       {/* Header */}
       <div style={{
         display:        'flex',
@@ -327,13 +295,8 @@ export default function Chat({ messages, loading, error, onSend, onClear }) {
           Talking to Air
         </span>
         <button onClick={onClear} style={{
-          background:   'transparent',
-          border:       '1px solid var(--border)',
-          borderRadius: '6px',
-          color:        'var(--text-secondary)',
-          padding:      '3px 10px',
-          cursor:       'pointer',
-          fontSize:     '11px',
+          background: 'transparent', border: '1px solid var(--border)', borderRadius: '6px',
+          color: 'var(--text-secondary)', padding: '3px 10px', cursor: 'pointer', fontSize: '11px',
         }}>
           New chat
         </button>
@@ -341,20 +304,13 @@ export default function Chat({ messages, loading, error, onSend, onClear }) {
 
       {/* Messages */}
       <div style={{
-        flex:          1,
-        overflowY:     'auto',
-        padding:       '16px',
-        display:       'flex',
-        flexDirection: 'column',
-        gap:           '12px',
+        flex: 1, overflowY: 'auto', padding: '16px',
+        display: 'flex', flexDirection: 'column', gap: '12px',
       }}>
         {messages.length === 0 && (
           <div style={{
-            textAlign:  'center',
-            color:      'var(--text-secondary)',
-            marginTop:  '60px',
-            fontSize:   '13px',
-            lineHeight: '1.8',
+            textAlign: 'center', color: 'var(--text-secondary)',
+            marginTop: '60px', fontSize: '13px', lineHeight: '1.8',
           }}>
             <div style={{ fontSize: '32px', marginBottom: '10px' }}>🌍</div>
             <div style={{ fontWeight: 500, marginBottom: '4px', color: 'var(--text-primary)' }}>Talking to Air</div>
@@ -376,14 +332,10 @@ export default function Chat({ messages, loading, error, onSend, onClear }) {
         <div ref={bottomRef} />
       </div>
 
-      {/* Input bar */}
+      {/* Input */}
       <div style={{
-        display:    'flex',
-        gap:        '8px',
-        padding:    '12px 16px',
-        borderTop:  '1px solid var(--border)',
-        background: 'var(--bg-secondary)',
-        flexShrink: 0,
+        display: 'flex', gap: '8px', padding: '12px 16px',
+        borderTop: '1px solid var(--border)', background: 'var(--bg-secondary)', flexShrink: 0,
       }}>
         <textarea
           value={input}
@@ -393,20 +345,10 @@ export default function Chat({ messages, loading, error, onSend, onClear }) {
           disabled={loading}
           rows={1}
           style={{
-            flex:         1,
-            background:   'var(--bg-tertiary)',
-            border:       '1px solid var(--border)',
-            borderRadius: '10px',
-            color:        'var(--text-primary)',
-            padding:      '9px 13px',
-            fontSize:     '13px',
-            resize:       'none',
-            outline:      'none',
-            fontFamily:   'var(--font)',
-            lineHeight:   '1.6',
-            minHeight:    '40px',
-            maxHeight:    '140px',
-            overflowY:    'auto',
+            flex: 1, background: 'var(--bg-tertiary)', border: '1px solid var(--border)',
+            borderRadius: '10px', color: 'var(--text-primary)', padding: '9px 13px',
+            fontSize: '13px', resize: 'none', outline: 'none', fontFamily: 'var(--font)',
+            lineHeight: '1.6', minHeight: '40px', maxHeight: '140px', overflowY: 'auto',
           }}
         />
         <button
@@ -414,15 +356,10 @@ export default function Chat({ messages, loading, error, onSend, onClear }) {
           disabled={loading || !input.trim()}
           style={{
             background:   loading || !input.trim() ? 'var(--bg-tertiary)' : 'var(--accent)',
-            border:       'none',
-            borderRadius: '10px',
+            border:       'none', borderRadius: '10px',
             color:        loading || !input.trim() ? 'var(--text-secondary)' : '#fff',
-            padding:      '0 18px',
-            cursor:       loading || !input.trim() ? 'not-allowed' : 'pointer',
-            fontSize:     '13px',
-            fontWeight:   '500',
-            flexShrink:   0,
-            transition:   'background 0.15s',
+            padding:      '0 18px', cursor: loading || !input.trim() ? 'not-allowed' : 'pointer',
+            fontSize:     '13px', fontWeight: '500', flexShrink: 0, transition: 'background 0.15s',
           }}
         >
           {loading ? '…' : 'Send'}
@@ -438,6 +375,7 @@ export default function Chat({ messages, loading, error, onSend, onClear }) {
         .msg-bubble p:last-child  { margin-bottom: 0; }
         .msg-bubble ul:last-child,
         .msg-bubble ol:last-child { margin-bottom: 0; }
+        .katex { font-size: 1em; }
       `}</style>
     </div>
   )

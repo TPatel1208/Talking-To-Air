@@ -28,7 +28,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 app.mount("/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
 
 print("Initializing agent...")
-agent = build_agent("gemma-4-31b-it")
+agent = build_agent()
 print("Agent ready.")
 
 
@@ -37,14 +37,12 @@ class ChatRequest(BaseModel):
     thread_id: Optional[str] = None
 
 
-def normalize_image_url(raw: str) -> str:
-    """Convert absolute file path or relative path to a /outputs/filename URL."""
+def normalize_image_url(raw: str) -> Optional[str]:
     if not raw:
         return None
     raw = raw.strip()
     if raw.startswith("/outputs/"):
         return raw
-    # Handle absolute OS paths
     filename = raw.replace("\\", "/").split("/")[-1]
     return f"/outputs/{filename}"
 
@@ -69,14 +67,12 @@ def chat(req: ChatRequest):
 
         try:
             for event_type, data in stream_response(agent, req.message, thread_id):
-
                 if event_type == "tool_call":
                     tool_calls.append({"name": data["name"], "args": data["args"]})
                     yield sse("tool_call", {"name": data["name"], "args": data["args"]})
 
                 elif event_type == "tool_result":
                     content = data.get("content", "")
-                    # Detect image paths in tool results
                     if content.strip().endswith(".png"):
                         url = normalize_image_url(content.strip())
                         if url:
@@ -84,7 +80,6 @@ def chat(req: ChatRequest):
                             yield sse("image", {"url": url})
 
                 elif event_type == "text":
-                    # data may be a string or a list of content blocks
                     if isinstance(data, str):
                         response_text = data
                     elif isinstance(data, list):
@@ -94,7 +89,6 @@ def chat(req: ChatRequest):
                             elif hasattr(block, "text"):
                                 response_text = block.text
 
-            # Final done event with full summary
             yield sse("done", {
                 "thread_id":  thread_id,
                 "response":   response_text,
@@ -108,10 +102,7 @@ def chat(req: ChatRequest):
     return StreamingResponse(
         generate(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
@@ -119,6 +110,72 @@ def chat(req: ChatRequest):
 def get_sessions():
     try:
         return {"sessions": list_sessions()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/session/{thread_id}/history")
+def get_history(thread_id: str):
+    """
+    Return the conversation history for a thread as a list of
+    {role, content, imageUrls, toolCalls} objects the frontend can render.
+    """
+    try:
+        config = {"configurable": {"thread_id": thread_id}}
+        state  = agent.get_state(config)
+        if not state or not state.values:
+            return {"messages": []}
+
+        raw_messages = state.values.get("messages", [])
+        result = []
+
+        for msg in raw_messages:
+            role = getattr(msg, "type", None)
+            # LangGraph message types: "human", "ai", "tool"
+            if role == "human":
+                result.append({
+                    "role":      "user",
+                    "content":   msg.content if isinstance(msg.content, str) else "",
+                    "toolCalls": [],
+                    "imageUrls": [],
+                })
+            elif role == "ai":
+                # Gather any tool calls attached to this AI message
+                tool_calls = []
+                if hasattr(msg, "tool_calls") and msg.tool_calls:
+                    for tc in msg.tool_calls:
+                        tool_calls.append({"name": tc.get("name", ""), "args": tc.get("args", {})})
+
+                content = ""
+                if isinstance(msg.content, str):
+                    content = msg.content
+                elif isinstance(msg.content, list):
+                    for block in msg.content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            content = block.get("text", "")
+                        elif hasattr(block, "text"):
+                            content = block.text
+
+                result.append({
+                    "role":      "assistant",
+                    "content":   content,
+                    "toolCalls": tool_calls,
+                    "imageUrls": [],   # images are re-derived below from tool messages
+                })
+            elif role == "tool":
+                # Check if tool result contains an image path
+                content = msg.content if isinstance(msg.content, str) else ""
+                if content.strip().endswith(".png"):
+                    url = normalize_image_url(content.strip())
+                    if url and result:
+                        # Attach to the last assistant message
+                        for m in reversed(result):
+                            if m["role"] == "assistant":
+                                m["imageUrls"].append(url)
+                                break
+
+        return {"messages": result}
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

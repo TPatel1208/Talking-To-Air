@@ -3,13 +3,13 @@ import { useState, useCallback, useEffect } from 'react'
 const API_BASE = 'http://localhost:8000'
 
 export function useChat() {
-  const [messages,  setMessages]  = useState([])
-  const [threadId,  setThreadId]  = useState(null)
-  const [sessions,  setSessions]  = useState([])
-  const [loading,   setLoading]   = useState(false)
-  const [error,     setError]     = useState(null)
+  const [messages, setMessages] = useState([])
+  const [threadId, setThreadId] = useState(null)
+  const [sessions, setSessions] = useState([])
+  const [loading,  setLoading]  = useState(false)
+  const [error,    setError]    = useState(null)
 
-  // Load session list on mount
+  // ── Fetch session list ──────────────────────────────────────────────────────
   const fetchSessions = useCallback(async () => {
     try {
       const res  = await fetch(`${API_BASE}/sessions`)
@@ -20,6 +20,25 @@ export function useChat() {
 
   useEffect(() => { fetchSessions() }, [fetchSessions])
 
+  // ── Load history for a thread and hydrate messages ──────────────────────────
+  const loadHistory = useCallback(async (id) => {
+    try {
+      const res  = await fetch(`${API_BASE}/session/${id}/history`)
+      const data = await res.json()
+      const hydrated = (data.messages || []).map(m => ({
+        ...m,
+        // Prepend API base to image URLs so they resolve correctly
+        imageUrls: (m.imageUrls || []).map(u =>
+          u.startsWith('http') ? u : `${API_BASE}${u}`
+        ),
+      }))
+      setMessages(hydrated)
+    } catch {
+      setMessages([])
+    }
+  }, [])
+
+  // ── Helpers ─────────────────────────────────────────────────────────────────
   const updateLastAssistant = (updater) => {
     setMessages(prev => {
       const next = [...prev]
@@ -31,9 +50,11 @@ export function useChat() {
     })
   }
 
+  // ── Send a message ──────────────────────────────────────────────────────────
   const sendMessage = useCallback(async (text) => {
     if (!text.trim() || loading) return
 
+    // Only append — don't re-add history that's already shown
     setMessages(prev => [
       ...prev,
       { role: 'user',      content: text },
@@ -73,14 +94,12 @@ export function useChat() {
           try { data = JSON.parse(dataMatch[1]) } catch { continue }
 
           if (event === 'tool_call') {
-            // Live: badge appears as agent calls each tool
             updateLastAssistant(msg => ({
               toolCalls: [...msg.toolCalls, { name: data.name, args: data.args }],
             }))
           }
 
           else if (event === 'image') {
-            // Live: image appears inline as soon as tool produces it
             updateLastAssistant(msg => ({
               imageUrls: [...msg.imageUrls, `${API_BASE}${data.url}`],
             }))
@@ -116,17 +135,18 @@ export function useChat() {
     }
   }, [threadId, loading])
 
+  // ── Session management ──────────────────────────────────────────────────────
   const newSession = useCallback(() => {
     setMessages([])
     setThreadId(null)
     setError(null)
   }, [])
 
-  const switchSession = useCallback((id) => {
-    setMessages([])
-    setThreadId(id)
+  const switchSession = useCallback(async (id) => {
     setError(null)
-  }, [])
+    setThreadId(id)
+    await loadHistory(id)   // hydrate UI with Postgres history
+  }, [loadHistory])
 
   const deleteSession = useCallback(async (id) => {
     try {
