@@ -1,21 +1,24 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 
 const API_BASE = 'http://localhost:8000'
 
-function normalizeImageUrl(rawUrl) {
-  if (!rawUrl) return null
-  // Already a clean relative path
-  if (rawUrl.startsWith('/outputs/')) return `${API_BASE}${rawUrl}`
-  // Full file:/// or absolute OS path — extract just the filename
-  const filename = rawUrl.replace(/\\/g, '/').split('/').pop()
-  return `${API_BASE}/outputs/${filename}`
-}
-
 export function useChat() {
-  const [messages, setMessages]   = useState([])
-  const [threadId, setThreadId]   = useState(null)
-  const [loading,  setLoading]    = useState(false)
-  const [error,    setError]      = useState(null)
+  const [messages,  setMessages]  = useState([])
+  const [threadId,  setThreadId]  = useState(null)
+  const [sessions,  setSessions]  = useState([])
+  const [loading,   setLoading]   = useState(false)
+  const [error,     setError]     = useState(null)
+
+  // Load session list on mount
+  const fetchSessions = useCallback(async () => {
+    try {
+      const res  = await fetch(`${API_BASE}/sessions`)
+      const data = await res.json()
+      setSessions(data.sessions || [])
+    } catch { /* non-fatal */ }
+  }, [])
+
+  useEffect(() => { fetchSessions() }, [fetchSessions])
 
   const updateLastAssistant = (updater) => {
     setMessages(prev => {
@@ -33,7 +36,7 @@ export function useChat() {
 
     setMessages(prev => [
       ...prev,
-      { role: 'user', content: text },
+      { role: 'user',      content: text },
       { role: 'assistant', content: '', toolCalls: [], imageUrls: [], isLoading: true },
     ])
     setLoading(true)
@@ -57,7 +60,6 @@ export function useChat() {
         if (done) break
 
         buffer += decoder.decode(value, { stream: true })
-
         const parts = buffer.split('\n\n')
         buffer = parts.pop()
 
@@ -71,30 +73,28 @@ export function useChat() {
           try { data = JSON.parse(dataMatch[1]) } catch { continue }
 
           if (event === 'tool_call') {
+            // Live: badge appears as agent calls each tool
             updateLastAssistant(msg => ({
               toolCalls: [...msg.toolCalls, { name: data.name, args: data.args }],
             }))
           }
 
           else if (event === 'image') {
-            const url = normalizeImageUrl(data.url)
-            if (url) {
-              updateLastAssistant(msg => ({
-                imageUrls: [...msg.imageUrls, url],
-              }))
-            }
+            // Live: image appears inline as soon as tool produces it
+            updateLastAssistant(msg => ({
+              imageUrls: [...msg.imageUrls, `${API_BASE}${data.url}`],
+            }))
           }
 
           else if (event === 'done') {
-            setThreadId(data.thread_id)
-            const normalizedUrls = (data.image_urls || [])
-              .map(normalizeImageUrl)
-              .filter(Boolean)
+            const newId = data.thread_id
+            setThreadId(newId)
             updateLastAssistant(() => ({
               content:   data.response,
-              imageUrls: normalizedUrls,
+              imageUrls: (data.image_urls || []).map(u => `${API_BASE}${u}`),
               isLoading: false,
             }))
+            setSessions(prev => prev.includes(newId) ? prev : [...prev, newId])
           }
 
           else if (event === 'error') {
@@ -116,15 +116,35 @@ export function useChat() {
     }
   }, [threadId, loading])
 
-  const clearSession = useCallback(async () => {
-    if (threadId) {
-      await fetch(`${API_BASE}/session/${threadId}`, { method: 'DELETE' }).catch(() => {})
-    }
+  const newSession = useCallback(() => {
     setMessages([])
     setThreadId(null)
     setError(null)
-  }, [threadId])
+  }, [])
 
-  // No longer exposing images/toolCalls separately — everything lives in messages
-  return { messages, loading, error, sendMessage, clearSession, threadId }
+  const switchSession = useCallback((id) => {
+    setMessages([])
+    setThreadId(id)
+    setError(null)
+  }, [])
+
+  const deleteSession = useCallback(async (id) => {
+    try {
+      await fetch(`${API_BASE}/session/${id}`, { method: 'DELETE' })
+      setSessions(prev => prev.filter(s => s !== id))
+      if (id === threadId) newSession()
+    } catch { /* non-fatal */ }
+  }, [threadId, newSession])
+
+  return {
+    messages,
+    loading,
+    error,
+    threadId,
+    sessions,
+    sendMessage,
+    newSession,
+    switchSession,
+    deleteSession,
+  }
 }
