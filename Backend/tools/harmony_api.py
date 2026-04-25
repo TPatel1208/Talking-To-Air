@@ -3,6 +3,8 @@ import os
 from langchain.tools import tool
 from typing import Tuple
 import numpy as np
+import requests
+import json
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils.plotting import GeocodingService
@@ -316,3 +318,118 @@ def fetch_environmental_data(
             "end_date":   end_date,
         },
     }
+
+
+@tool
+def check_data_availability(
+    variable: str,
+    bbox: str,
+    start_date: str,
+    end_date: str,
+)-> dict:
+    """
+    Check if granules exist for a variable over a location and time range BEFORE fetching. Returns a list of available dates so the agent can inform the user exactly which days have data.
+
+    Always call this before fetch_environmental_data when:
+    - Unsure if data exists for a location or time period
+    - A previous fetch returned no granules
+    - User asks about data availability
+    - You want to suggest alternatives or broader ranges    
+
+    Args:
+        variable    : Pollutant key e.g. 'OMI_NO2' or 'TEMPO_NO2'.
+                      Available: OMI_NO2, TROPOMI_NO2, TEMPO_NO2, MODIS_AOD_TERRA, MODIS_AOD_AQUA, OMI_O3, TEMPO_O3TOT, TEMPO_HCHO, TEMPO_HCHO_V03, OMI_HCHO
+        bbox        : Bounding box 'min_lon,min_lat,max_lon,max_lat'
+                      — always get this from geocode_location first.
+        start_date  : ISO 8601 start datetime e.g. '2026-02-10T18:00:00Z'.
+        end_date    : ISO 8601 end datetime   e.g. '2026-02-10T19:00:00Z'.  
+
+    Returns:
+        dict with keys:
+            variable      : Variable name e.g. 'NO2'
+            num_granules    : Number of granules available for the query
+            dates_available: List of ISO date strings for which data is available
+
+    """
+    variable = variable.upper()
+    try:
+        col = COLLECTIONS[variable]
+    except KeyError:
+        return {"error": f"Unknown variable '{variable}'. Available: {', '.join(COLLECTIONS.keys())}"}
+
+    try:
+        bbox_list = [float(x) for x in bbox.split(",")]
+        if len(bbox_list) != 4:
+            raise ValueError()
+    except Exception:
+        return {"error": f"bbox must be 'min_lon,min_lat,max_lon,max_lat', got: '{bbox}'"}
+
+    # Ensure correct format for CMR temporal parameter
+    def _fmt(dt: str) -> str:
+        dt = dt.strip()
+        return dt if dt.endswith('Z') else dt + 'Z'
+
+    params = {
+        'concept_id':   col["collection_id"],
+        'temporal[]':   f"{_fmt(start_date)},{_fmt(end_date)}",
+        'bounding_box': bbox,
+        'page_size':    100,
+        'sort_key':     'start_date',
+    }
+
+    try:
+        resp = requests.get(
+            "https://cmr.earthdata.nasa.gov/search/granules.json",
+            params=params,
+            timeout=15
+        )
+        resp.raise_for_status()
+
+        total   = int(resp.headers.get('CMR-Hits', 0))
+        entries = resp.json().get('feed', {}).get('entry', [])
+
+        # Build dates list
+        dates_available = [
+            {
+                'start': g.get('time_start'),
+                'end':   g.get('time_end'),
+            }
+            for g in entries if g.get('time_start')
+        ]
+
+        return {
+            'variable':       variable,
+            'num_granules':   total,
+            'dates_available': dates_available,
+        }
+
+    except Exception as e:
+        return {'error': str(e)}
+
+
+def main():
+    # Step 1: Geocode
+    location_info = geocode_location.invoke({
+        "location_name": "New York City"
+    })
+    print("Geocoding result:", location_info)
+
+    if "error" in location_info:
+        print("Geocoding failed, cannot proceed with data fetch.")
+        return
+
+    bbox = location_info["bbox"]
+
+    # Step 2: Check availability (FIXED ARGUMENT NAMES)
+    availability = check_data_availability.invoke({
+        "variable": "OMI_NO2",
+        "bbox": bbox,
+        "start_date": "2026-01-01T00:00:00Z",
+        "end_date": "2026-01-02T23:59:59Z"
+    })
+
+    print("Data availability:", availability)
+
+
+if __name__ == "__main__":
+    main()

@@ -316,7 +316,7 @@ export default function Chat({ messages, loading, error, onSend, onClear }) {
             <div style={{ fontWeight: 500, marginBottom: '4px', color: 'var(--text-primary)' }}>Talking to Air</div>
             <div style={{ opacity: 0.7 }}>
               Ask about NO₂, ozone, HCHO, aerosol optical depth,<br/>
-              or any NASA satellite dataset.
+              or any other air quality data you can think of.
             </div>
           </div>
         )}
