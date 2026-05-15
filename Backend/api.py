@@ -28,7 +28,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 app.mount("/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
 
 print("Initializing agent...")
-agent = build_agent()
+agent = build_agent("gemma-4-31b-it")
 print("Agent ready.")
 
 
@@ -67,6 +67,7 @@ def chat(req: ChatRequest):
 
         try:
             for event_type, data in stream_response(agent, req.message, thread_id):
+                print(f"EVENT: {event_type!r}  DATA: {repr(data)[:200]}")
                 if event_type == "tool_call":
                     tool_calls.append({"name": data["name"], "args": data["args"]})
                     yield sse("tool_call", {"name": data["name"], "args": data["args"]})
@@ -81,13 +82,17 @@ def chat(req: ChatRequest):
 
                 elif event_type == "text":
                     if isinstance(data, str):
-                        response_text = data
+                        response_text += data
                     elif isinstance(data, list):
                         for block in data:
-                            if isinstance(block, dict) and block.get("type") == "text":
-                                response_text = block.get("text", "")
+                            if isinstance(block, str):
+                                response_text += block      
+                            elif isinstance(block, dict):
+                                if block.get("type") == "text":
+                                    response_text += block.get("text", "")
+                                # skip "thinking" blocks entirely
                             elif hasattr(block, "text"):
-                                response_text = block.text
+                                response_text += block.text
 
             yield sse("done", {
                 "thread_id":  thread_id,

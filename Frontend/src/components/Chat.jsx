@@ -304,7 +304,7 @@ export default function Chat({ messages, loading, error, onSend, onClear }) {
 
       {/* Messages */}
       <div style={{
-        flex: 1, overflowY: 'auto', padding: '16px',
+        flex: 1, minHeight: 0, overflowY: 'auto', padding: '16px',
         display: 'flex', flexDirection: 'column', gap: '12px',
       }}>
         {messages.length === 0 && (

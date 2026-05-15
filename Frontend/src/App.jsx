@@ -31,7 +31,7 @@ export default function App() {
         onDelete={deleteSession}
       />
 
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <Chat
           messages={messages}
           loading={loading}
