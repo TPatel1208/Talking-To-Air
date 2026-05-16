@@ -1,0 +1,11 @@
+node_modules/
+dist/
+
+# Secrets
+.env
+.env.*
+
+# Clutter
+*.log
+.DS_Store
+.vscode/

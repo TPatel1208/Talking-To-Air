@@ -3,6 +3,13 @@ import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 
+// Convert backend image path to a URL that goes through nginx
+function toImageUrl(path) {
+  if (!path) return null
+  if (path.startsWith('http')) return path
+  if (path.startsWith('/outputs/')) return `/api${path}`
+  return path
+}
 
 function ToolCallBadge({ name, args }) {
   const [expanded, setExpanded] = useState(false)
@@ -112,12 +119,16 @@ function LoadingMessage({ toolCalls }) {
 
 function InlineImage({ url }) {
   const [lightbox, setLightbox] = useState(false)
+  const src = toImageUrl(url)
+
+  // Don't render anything until we have a valid URL
+  if (!src) return null
 
   return (
     <>
       <div style={{ margin: '8px 0' }}>
         <img
-          src={url}
+          src={src}
           alt="output"
           onClick={() => setLightbox(true)}
           style={{
@@ -150,7 +161,7 @@ function InlineImage({ url }) {
           }}
         >
           <img
-            src={url}
+            src={src}
             alt="fullscreen"
             style={{ maxWidth: '92vw', maxHeight: '92vh', borderRadius: '8px', objectFit: 'contain' }}
           />
@@ -246,7 +257,7 @@ function MessageBubble({ msg }) {
                   {msg.content}
                 </ReactMarkdown>
               )}
-              {msg.imageUrls?.map((url, i) => (
+              {msg.imageUrls?.filter(Boolean).map((url, i) => (
                 <InlineImage key={i} url={url} />
               ))}
             </>

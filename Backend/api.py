@@ -15,9 +15,12 @@ from GemeniAgent import build_agent, stream_response, list_sessions, delete_sess
 
 app = FastAPI(title="Talking to Air API")
 
+_raw_origins = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost")
+origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -27,8 +30,10 @@ OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "outputs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 app.mount("/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
 
-print("Initializing agent...")
-agent = build_agent("gemma-4-31b-it")
+
+_model = os.getenv("LLM_MODEL", "gemma-4-31b-it")
+print(f"Initializing agent with model: {_model}")
+agent = build_agent(_model)
 print("Agent ready.")
 
 
@@ -86,11 +91,10 @@ def chat(req: ChatRequest):
                     elif isinstance(data, list):
                         for block in data:
                             if isinstance(block, str):
-                                response_text += block      
+                                response_text += block
                             elif isinstance(block, dict):
                                 if block.get("type") == "text":
                                     response_text += block.get("text", "")
-                                # skip "thinking" blocks entirely
                             elif hasattr(block, "text"):
                                 response_text += block.text
 
@@ -121,10 +125,6 @@ def get_sessions():
 
 @app.get("/session/{thread_id}/history")
 def get_history(thread_id: str):
-    """
-    Return the conversation history for a thread as a list of
-    {role, content, imageUrls, toolCalls} objects the frontend can render.
-    """
     try:
         config = {"configurable": {"thread_id": thread_id}}
         state  = agent.get_state(config)
@@ -136,7 +136,6 @@ def get_history(thread_id: str):
 
         for msg in raw_messages:
             role = getattr(msg, "type", None)
-            # LangGraph message types: "human", "ai", "tool"
             if role == "human":
                 result.append({
                     "role":      "user",
@@ -145,7 +144,6 @@ def get_history(thread_id: str):
                     "imageUrls": [],
                 })
             elif role == "ai":
-                # Gather any tool calls attached to this AI message
                 tool_calls = []
                 if hasattr(msg, "tool_calls") and msg.tool_calls:
                     for tc in msg.tool_calls:
@@ -165,15 +163,13 @@ def get_history(thread_id: str):
                     "role":      "assistant",
                     "content":   content,
                     "toolCalls": tool_calls,
-                    "imageUrls": [],   # images are re-derived below from tool messages
+                    "imageUrls": [],
                 })
             elif role == "tool":
-                # Check if tool result contains an image path
                 content = msg.content if isinstance(msg.content, str) else ""
                 if content.strip().endswith(".png"):
                     url = normalize_image_url(content.strip())
                     if url and result:
-                        # Attach to the last assistant message
                         for m in reversed(result):
                             if m["role"] == "assistant":
                                 m["imageUrls"].append(url)

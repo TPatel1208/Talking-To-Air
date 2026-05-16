@@ -1,6 +1,13 @@
 import { useState } from 'react'
 
-const API_BASE = 'http://localhost:8000'
+const toUrl = (path) => {
+  if (!path) return null
+  // If already absolute, return as-is
+  if (path.startsWith('http')) return path
+  // Ensure it goes through /api/outputs/ so nginx proxies to backend
+  if (path.startsWith('/outputs/')) return `/api${path}`
+  return path
+}
 
 export default function ImageViewer({ images }) {
   const [selected, setSelected] = useState(0)
@@ -28,6 +35,8 @@ export default function ImageViewer({ images }) {
     )
   }
 
+  const currentUrl = toUrl(images[selected])
+
   return (
     <div style={{
       flex:          1,
@@ -48,15 +57,19 @@ export default function ImageViewer({ images }) {
         border:         '1px solid var(--border)',
         overflow:       'hidden',
       }}>
-        <img
-          src={`${API_BASE}${images[selected]}`}
-          alt={`Output ${selected + 1}`}
-          style={{
-            maxWidth:   '100%',
-            maxHeight:  '100%',
-            objectFit:  'contain',
-          }}
-        />
+        {currentUrl ? (
+          <img
+            src={currentUrl}
+            alt={`Output ${selected + 1}`}
+            style={{
+              maxWidth:  '100%',
+              maxHeight: '100%',
+              objectFit: 'contain',
+            }}
+          />
+        ) : (
+          <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>Loading image...</p>
+        )}
       </div>
 
       {/* Thumbnails — only show if more than one image */}
@@ -67,31 +80,36 @@ export default function ImageViewer({ images }) {
           justifyContent: 'center',
           flexShrink:     0,
         }}>
-          {images.map((url, i) => (
-            <button
-              key={i}
-              onClick={() => setSelected(i)}
-              style={{
-                width:        '64px',
-                height:       '48px',
-                borderRadius: '8px',
-                border:       i === selected
-                  ? '2px solid var(--accent)'
-                  : '2px solid var(--border)',
-                overflow:     'hidden',
-                cursor:       'pointer',
-                padding:      0,
-                background:   'var(--bg-tertiary)',
-                flexShrink:   0,
-              }}
-            >
-              <img
-                src={`${API_BASE}${url}`}
-                alt={`thumb ${i + 1}`}
-                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-              />
-            </button>
-          ))}
+          {images.map((url, i) => {
+            const thumbUrl = toUrl(url)
+            return (
+              <button
+                key={i}
+                onClick={() => setSelected(i)}
+                style={{
+                  width:        '64px',
+                  height:       '48px',
+                  borderRadius: '8px',
+                  border:       i === selected
+                    ? '2px solid var(--accent)'
+                    : '2px solid var(--border)',
+                  overflow:     'hidden',
+                  cursor:       'pointer',
+                  padding:      0,
+                  background:   'var(--bg-tertiary)',
+                  flexShrink:   0,
+                }}
+              >
+                {thumbUrl && (
+                  <img
+                    src={thumbUrl}
+                    alt={`thumb ${i + 1}`}
+                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                  />
+                )}
+              </button>
+            )
+          })}
         </div>
       )}
     </div>

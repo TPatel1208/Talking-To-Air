@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# These are mounted as volumes — don't bake into image
+data/
+outputs/
+*.zarr
+
+# Secrets
+.env
+.env.*
+
+# Dev/test clutter
+.pytest_cache/
+tests/
+*.log
+
+# IDE
+.vscode/
+.idea/

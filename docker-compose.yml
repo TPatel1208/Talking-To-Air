@@ -1,0 +1,82 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────
+#  Talking to Air — local Docker Compose stack
+#
+#  Usage:
+#    cp .env.example .env        # fill in secrets
+#    docker compose up --build   # first run
+#    docker compose up           # subsequent runs
+#    docker compose down -v      # stop + wipe volumes
+# ─────────────────────────────────────────────
+
+services:
+
+  # ── PostgreSQL (conversation memory) ─────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: tta-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: talking_to_air_memory
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d talking_to_air_memory"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── FastAPI + LangChain backend ──────────────────────────────────────────────
+  backend:
+    build:
+      context: ./Backend
+      dockerfile: Dockerfile
+    container_name: tta-backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PORT: "8000"
+      DB_HOST: db
+      DB_PORT: "5432"
+    ports:
+      - "8000:8000"
+    volumes:
+      - zarr_cache:/app/data
+      - plot_outputs:/app/outputs
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ── React / Vite frontend (nginx) ────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./Frontend
+      dockerfile: Dockerfile
+    container_name: tta-frontend
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    volumes:
+      - plot_outputs:/usr/share/nginx/html/outputs  # serves images directly from volume
+    depends_on:
+      backend:
+        condition: service_healthy
+
+# ── Named volumes ─────────────────────────────────────────────────────────────
+volumes:
+  pg_data:
+    driver: local
+  zarr_cache:
+    driver: local
+  plot_outputs:
+    driver: local
