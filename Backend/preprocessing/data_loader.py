@@ -1,4 +1,3 @@
-from dotenv import load_dotenv
 import os
 import earthaccess
 import logging 
@@ -28,7 +27,6 @@ logger = logging.getLogger(__name__)
 
 class DataLoader:
     def __init__(self):
-        load_dotenv() 
         try:
             self.auth = earthaccess.login(strategy="environment")
             if not self.auth:

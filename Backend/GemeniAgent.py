@@ -1,8 +1,6 @@
 import uuid
 import os
 import psycopg
-from pathlib import Path
-from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.agents import create_agent  
 from langgraph.checkpoint.postgres import PostgresSaver
@@ -10,7 +8,6 @@ from config.system_prompt import SYSTEM_PROMPT
 from tools import ALL_TOOLS
 
 # Load env vars first — use explicit path so it works regardless of cwd
-load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
 print("Tools imported:", [tool.name for tool in ALL_TOOLS])
 
