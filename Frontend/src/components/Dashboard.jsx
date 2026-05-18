@@ -3,34 +3,23 @@ import ToolCallBadge from './ToolCallBadge'
 
 export default function Dashboard({ images, toolCalls }) {
   return (
-    <div style={{
-      display:       'flex',
-      flexDirection: 'column',
-      height:        '100%',
-      overflow:      'hidden',
-    }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+
       {/* Header */}
       <div style={{
-        display:        'flex',
-        alignItems:     'center',
-        justifyContent: 'space-between',
-        padding:        '12px 16px',
-        borderBottom:   '1px solid var(--border)',
-        flexShrink:     0,
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '12px 16px', borderBottom: '1px solid var(--border)',
+        background: 'var(--bg-primary)', flexShrink: 0,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <div style={{
-            width:        '8px',
-            height:       '8px',
-            borderRadius: '50%',
-            background:   images?.length ? 'var(--success)' : 'var(--text-secondary)',
+            width: '7px', height: '7px', borderRadius: '50%',
+            background: images?.length ? 'var(--teal)' : 'var(--border)',
+            transition: 'background 0.3s',
           }}/>
           <span style={{
-            fontSize:   '12px',
-            fontWeight: '500',
-            color:      'var(--text-secondary)',
-            letterSpacing: '0.05em',
-            textTransform: 'uppercase',
+            fontSize: '11px', fontWeight: '500', color: 'var(--text-muted)',
+            letterSpacing: '0.06em', textTransform: 'uppercase',
           }}>
             {images?.length
               ? `${images.length} output${images.length > 1 ? 's' : ''}`
@@ -39,9 +28,8 @@ export default function Dashboard({ images, toolCalls }) {
         </div>
 
         <span style={{
-          fontSize: '11px',
-          color:    'var(--text-secondary)',
-          opacity:  0.6,
+          fontFamily: 'var(--font-serif)', fontSize: '13px',
+          color: 'var(--text-muted)', fontStyle: 'italic',
         }}>
           Talking to Air
         </span>
@@ -50,7 +38,7 @@ export default function Dashboard({ images, toolCalls }) {
       {/* Tool call badges */}
       <ToolCallBadge toolCalls={toolCalls} />
 
-      {/* Image viewer — takes remaining space */}
+      {/* Image viewer */}
       <ImageViewer images={images} />
     </div>
   )

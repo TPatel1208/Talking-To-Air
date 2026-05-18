@@ -1,7 +1,7 @@
 export default function SessionSidebar({ sessions, threadId, onSwitch, onNew, onDelete }) {
   return (
     <div style={{
-      width:         '200px',
+      width:         '220px',
       flexShrink:    0,
       background:    'var(--bg-secondary)',
       borderRight:   '1px solid var(--border)',
@@ -9,72 +9,140 @@ export default function SessionSidebar({ sessions, threadId, onSwitch, onNew, on
       flexDirection: 'column',
       overflow:      'hidden',
     }}>
+      {/* Header */}
       <div style={{
-        padding:      '12px',
-        borderBottom: '1px solid var(--border)',
-        display:      'flex',
-        justifyContent: 'space-between',
-        alignItems:   'center',
+        padding:        '20px 14px 12px',
+        borderBottom:   '1px solid var(--border)',
       }}>
-        <span style={{ fontSize: '11px', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+        <span style={{
+          fontSize:      '10px',
+          fontWeight:    '500',
+          color:         'var(--text-muted)',
+          textTransform: 'uppercase',
+          letterSpacing: '0.09em',
+        }}>
           Sessions
         </span>
-        <button onClick={onNew} style={{
-          background:   'var(--accent)',
-          border:       'none',
-          borderRadius: '4px',
-          color:        '#fff',
-          fontSize:     '16px',
-          cursor:       'pointer',
-          width:        '22px',
-          height:       '22px',
-          display:      'flex',
-          alignItems:   'center',
-          justifyContent: 'center',
-          lineHeight:   1,
-        }}>+</button>
       </div>
 
-      <div style={{ flex: 1, overflowY: 'auto' }}>
+      {/* Session list */}
+      <div style={{ flex: 1, overflowY: 'auto', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
         {sessions.length === 0 && (
-          <div style={{ padding: '12px', color: 'var(--text-secondary)', fontSize: '12px' }}>
+          <div style={{
+            padding:    '12px 6px',
+            color:      'var(--text-hint)',
+            fontSize:   '12px',
+            fontStyle:  'italic',
+          }}>
             No sessions yet
           </div>
         )}
-        {sessions.map((id, i) => (
-          <div key={id} onClick={() => onSwitch(id)} style={{
+
+        {sessions.map((id, i) => {
+          const isActive = id === threadId
+          return (
+            <div
+              key={id}
+              onClick={() => onSwitch(id)}
+              style={{
+                display:        'flex',
+                alignItems:     'center',
+                justifyContent: 'space-between',
+                gap:            '8px',
+                padding:        '8px 10px',
+                borderRadius:   '10px',
+                cursor:         'pointer',
+                background:     isActive ? 'var(--bg-card)' : 'transparent',
+                boxShadow:      isActive ? 'var(--shadow-sm)' : 'none',
+                transition:     'background 0.15s, box-shadow 0.15s',
+              }}
+              onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'rgba(0,0,0,0.04)' }}
+              onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent' }}
+            >
+              {/* Left: icon + label */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden' }}>
+                {/* Message circle icon (SVG) */}
+                <svg
+                  width="14" height="14" viewBox="0 0 24 24"
+                  fill="none" stroke={isActive ? 'var(--teal)' : 'var(--text-muted)'}
+                  strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                  style={{ flexShrink: 0, transition: 'stroke 0.15s' }}
+                >
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                </svg>
+                <span style={{
+                  fontSize:     '13px',
+                  fontWeight:   isActive ? '500' : '400',
+                  color:        isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
+                  overflow:     'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace:   'nowrap',
+                  transition:   'color 0.15s',
+                }}>
+                  Session {i + 1}
+                </span>
+              </div>
+
+              {/* Delete button */}
+              <button
+                onClick={e => { e.stopPropagation(); onDelete(id) }}
+                style={{
+                  background: 'transparent',
+                  border:     'none',
+                  color:      'var(--text-hint)',
+                  cursor:     'pointer',
+                  fontSize:   '13px',
+                  padding:    '2px 4px',
+                  borderRadius: '4px',
+                  flexShrink: 0,
+                  lineHeight: 1,
+                  opacity:    0,
+                  transition: 'opacity 0.15s, color 0.15s',
+                }}
+                className="session-delete-btn"
+                title="Delete session"
+              >
+                ✕
+              </button>
+            </div>
+          )
+        })}
+      </div>
+
+      {/* New chat button */}
+      <div style={{ padding: '12px 10px 16px' }}>
+        <button
+          onClick={onNew}
+          style={{
             display:        'flex',
             alignItems:     'center',
-            justifyContent: 'space-between',
-            padding:        '8px 12px',
+            gap:            '8px',
+            width:          '100%',
+            padding:        '10px 14px',
+            borderRadius:   '10px',
+            background:     'var(--accent)',
+            color:          'var(--accent-text)',
+            border:         'none',
+            fontSize:       '13px',
+            fontWeight:     '500',
+            fontFamily:     'var(--font)',
             cursor:         'pointer',
-            background:     id === threadId ? 'var(--bg-tertiary)' : 'transparent',
-            borderLeft:     id === threadId ? '2px solid var(--accent)' : '2px solid transparent',
-          }}>
-            <span style={{
-              fontSize:     '12px',
-              color:        id === threadId ? 'var(--text-primary)' : 'var(--text-secondary)',
-              overflow:     'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace:   'nowrap',
-            }}>
-              Session {i + 1}
-            </span>
-            <button
-              onClick={e => { e.stopPropagation(); onDelete(id); }}
-              style={{
-                background: 'transparent',
-                border:     'none',
-                color:      'var(--text-secondary)',
-                cursor:     'pointer',
-                fontSize:   '14px',
-                padding:    '0 2px',
-                flexShrink: 0,
-              }}
-            >×</button>
-          </div>
-        ))}
+            transition:     'opacity 0.15s',
+          }}
+          onMouseEnter={e => e.currentTarget.style.opacity = '0.88'}
+          onMouseLeave={e => e.currentTarget.style.opacity = '1'}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+            <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+          </svg>
+          New chat
+        </button>
       </div>
+
+      <style>{`
+        div:hover > div > .session-delete-btn,
+        .session-delete-btn:focus { opacity: 1 !important; }
+      `}</style>
     </div>
   )
 }

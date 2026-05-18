@@ -1,18 +1,32 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,400&family=DM+Serif+Display&display=swap');
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg-primary:    #0f1117;
-  --bg-secondary:  #1a1d27;
-  --bg-tertiary:   #222536;
-  --border:        #2e3250;
-  --text-primary:  #e8eaf6;
-  --text-secondary:#9ea3c0;
-  --accent:        #4f7cff;
-  --accent-hover:  #6b93ff;
-  --success:       #2dd4a0;
-  --warning:       #f5a623;
-  --error:         #ff5f57;
-  --font:          'Inter', system-ui, sans-serif;
+  --bg-primary:      #f8f7f4;
+  --bg-secondary:    #f0ede8;
+  --bg-tertiary:     #e8e5df;
+  --bg-card:         #ffffff;
+  --border:          #dddbd5;
+  --border-hover:    #c8c5be;
+  --text-primary:    #2c2a28;
+  --text-secondary:  #5a5750;
+  --text-muted:      #9c9990;
+  --text-hint:       #b0ada8;
+  --accent:          #2c2a28;
+  --accent-text:     #f8f7f4;
+  --teal:            #1D9E75;
+  --teal-hover:      #178f68;
+  --teal-light:      #E1F5EE;
+  --teal-text:       #0F6E56;
+  --success:         #1D9E75;
+  --warning:         #c87c2a;
+  --error:           #b94040;
+  --font:            'DM Sans', system-ui, sans-serif;
+  --font-serif:      'DM Serif Display', Georgia, serif;
+  --font-mono:       'JetBrains Mono', 'Fira Code', monospace;
+  --shadow-sm:       0 1px 4px rgba(0,0,0,0.07);
+  --shadow-md:       0 2px 10px rgba(0,0,0,0.08);
 }
 
 html, body, #root {
@@ -24,4 +38,10 @@ html, body, #root {
   font-size: 14px;
   line-height: 1.6;
   overflow: hidden;
+  -webkit-font-smoothing: antialiased;
 }
+
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-hover); }
