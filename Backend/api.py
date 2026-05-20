@@ -1,5 +1,6 @@
 import uuid
 import os
+import re
 import sys
 import json
 from fastapi import FastAPI, HTTPException
@@ -11,7 +12,7 @@ from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from GemeniAgent import build_agent, stream_response, list_sessions, delete_session
+from agents.supervisor_agent import build_agent, stream_response, list_sessions, delete_session
 
 app = FastAPI(title="Talking to Air API")
 
@@ -33,7 +34,11 @@ app.mount("/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
 
 _model = os.getenv("LLM_MODEL", "gemma-4-31b-it")
 print(f"Initializing agent with model: {_model}")
-agent = build_agent(_model)
+
+# build_agent now returns (agent, thread_ref).
+# thread_ref is a mutable dict {"id": ...} that stream_response updates
+# before each call so subagent tool closures always use the right thread_id.
+agent, _thread_ref = build_agent(_model)
 print("Agent ready.")
 
 
@@ -71,16 +76,22 @@ def chat(req: ChatRequest):
         tool_calls    = []
 
         try:
-            for event_type, data in stream_response(agent, req.message, thread_id):
+            # Pass _thread_ref so stream_response can update it for the subagent closures.
+            for event_type, data in stream_response(agent, req.message, thread_id, _thread_ref):
                 print(f"EVENT: {event_type!r}  DATA: {repr(data)[:200]}")
+
                 if event_type == "tool_call":
                     tool_calls.append({"name": data["name"], "args": data["args"]})
                     yield sse("tool_call", {"name": data["name"], "args": data["args"]})
 
                 elif event_type == "tool_result":
                     content = data.get("content", "")
-                    if content.strip().endswith(".png"):
-                        url = normalize_image_url(content.strip())
+                    # Use regex to find a .png path anywhere in the content string.
+                    # The old endswith(".png") check missed paths embedded mid-sentence
+                    # in longer summaries returned by the satellite agent.
+                    png_match = re.search(r'(/outputs/[\w\-./]+\.png|[\w\-./]+\.png)', content)
+                    if png_match:
+                        url = normalize_image_url(png_match.group(1))
                         if url:
                             image_urls.append(url)
                             yield sse("image", {"url": url})
@@ -136,6 +147,7 @@ def get_history(thread_id: str):
 
         for msg in raw_messages:
             role = getattr(msg, "type", None)
+
             if role == "human":
                 result.append({
                     "role":      "user",
@@ -143,11 +155,15 @@ def get_history(thread_id: str):
                     "toolCalls": [],
                     "imageUrls": [],
                 })
+
             elif role == "ai":
                 tool_calls = []
                 if hasattr(msg, "tool_calls") and msg.tool_calls:
                     for tc in msg.tool_calls:
-                        tool_calls.append({"name": tc.get("name", ""), "args": tc.get("args", {})})
+                        tool_calls.append({
+                            "name": tc.get("name", ""),
+                            "args": tc.get("args", {}),
+                        })
 
                 content = ""
                 if isinstance(msg.content, str):
@@ -165,17 +181,36 @@ def get_history(thread_id: str):
                     "toolCalls": tool_calls,
                     "imageUrls": [],
                 })
+
             elif role == "tool":
+                # Attach image URLs from tool results to the preceding assistant message.
+                # Use regex so paths embedded mid-sentence are found correctly.
                 content = msg.content if isinstance(msg.content, str) else ""
-                if content.strip().endswith(".png"):
-                    url = normalize_image_url(content.strip())
-                    if url and result:
+                png_match = re.search(r'(/outputs/[\w\-./]+\.png|[\w\-./]+\.png)', content)
+                if png_match:
+                    url = normalize_image_url(png_match.group(1))
+                    if url:
                         for m in reversed(result):
                             if m["role"] == "assistant":
                                 m["imageUrls"].append(url)
                                 break
 
-        return {"messages": result}
+        merged = []
+        for msg in result:
+            if (
+                msg["role"] == "assistant"
+                and merged
+                and merged[-1]["role"] == "assistant"
+            ):
+                prev = merged[-1]
+                prev["toolCalls"].extend(msg["toolCalls"])
+                if msg["content"]:
+                    prev["content"] = msg["content"]
+                prev["imageUrls"].extend(msg["imageUrls"])
+            else:
+                merged.append(msg)
+
+        return {"messages": merged}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

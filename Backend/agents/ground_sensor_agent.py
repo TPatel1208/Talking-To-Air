@@ -1,19 +1,24 @@
-import uuid
+"""
+ground_sensor_agent.py
+----------------------
+LangGraph agent wrapping EPA AQS ground sensor tools.
+Uses the same build pattern as GemeniAgent.py so both agents
+can be composed by the supervisor.
+"""
+import sys
 import os
 import psycopg
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.agents import create_agent  
+from langchain.agents import create_agent
 from langgraph.checkpoint.postgres import PostgresSaver
-from config.system_prompt import SYSTEM_PROMPT
-from tools import ALL_TOOLS
 
-# Load env vars first — use explicit path so it works regardless of cwd
-
-print("Tools imported:", [tool.name for tool in ALL_TOOLS])
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config.ground_sensor_agent_promp import GROUND_SYSTEM_PROMPT
+from tools import GROUND_TOOLS
 
 
 def _pg_connect(autocommit: bool = False):
-    """Return a psycopg connection using individual env vars (avoids URL encoding issues)."""
+    """Return a psycopg connection using individual env vars."""
     return psycopg.connect(
         host=os.getenv("DB_HOST", "localhost"),
         port=int(os.getenv("DB_PORT", 5432)),
@@ -28,20 +33,33 @@ def get_checkpointer():
     """Returns a persistent PostgreSQL checkpointer."""
     conn = _pg_connect(autocommit=True)
     checkpointer = PostgresSaver(conn)
-    checkpointer.setup()  # creates tables on first run, no-op after
+    checkpointer.setup()
     return checkpointer
 
 
-def build_agent(model: str = "gemini-3.1-flash-lite-preview"):
+def build_ground_agent(model: str = "gemma-4-31b-it", checkpointer=None):
+    """
+    Build and return a ground sensor agent.
+
+    Parameters
+    ----------
+    model : str
+        Gemini model identifier.
+    checkpointer : optional
+        A shared PostgresSaver instance. If None, a new one is created.
+        Pass the supervisor's checkpointer to avoid multiple DB connections
+        racing against each other.
+    """
     llm = ChatGoogleGenerativeAI(
         model=model,
-        google_api_key=os.getenv("GOOGLE_API_KEY")
+        google_api_key=os.getenv("GOOGLE_API_KEY"),
     )
-    checkpointer = get_checkpointer()
+    if checkpointer is None:
+        checkpointer = get_checkpointer()
     agent = create_agent(
         model=llm,
-        tools=ALL_TOOLS,
-        system_prompt=SYSTEM_PROMPT,
+        tools=GROUND_TOOLS,
+        system_prompt=GROUND_SYSTEM_PROMPT,
         checkpointer=checkpointer,
     )
     return agent
@@ -49,6 +67,7 @@ def build_agent(model: str = "gemini-3.1-flash-lite-preview"):
 
 def stream_response(agent, user_input: str, thread_id: str):
     """Stream one turn, yield (event_type, data) tuples."""
+    import re
     config = {"configurable": {"thread_id": thread_id}}
 
     for stream_mode, chunk in agent.stream(
@@ -63,39 +82,21 @@ def stream_response(agent, user_input: str, thread_id: str):
                         for tc in msg.tool_calls:
                             yield ("tool_call", {"name": tc["name"], "args": tc["args"]})
                     elif hasattr(msg, "name") and msg.name:
-                        yield ("tool_result", {"name": msg.name, "content": str(msg.content)[:300]})
+                        raw_content = str(msg.content)
+                        # Extract image path before truncating so it's never lost
+                        img_match = re.search(r'[\w\-./]+\.png', raw_content)
+                        content_out = img_match.group(0) if img_match else raw_content[:300]
+                        yield ("tool_result", {"name": msg.name, "content": content_out})
                     elif hasattr(msg, "content") and msg.content:
                         yield ("text", msg.content)
 
 
-def list_sessions() -> list[str]:
-    """Return all known thread_ids from the DB."""
-    with _pg_connect() as conn:
-        rows = conn.execute(
-            "SELECT DISTINCT thread_id FROM checkpoints ORDER BY thread_id"
-        ).fetchall()
-    return [r[0] for r in rows]
-
-
-def delete_session(thread_id: str):
-    """Delete all checkpoints for a given thread."""
-    with _pg_connect() as conn:
-        conn.execute("DELETE FROM checkpoints WHERE thread_id = %s", (thread_id,))
-        conn.commit()
-
-
 if __name__ == "__main__":
-    agent = build_agent("gemma-4-31b-it")
+    import uuid
 
-    sessions = list_sessions()
-    print("Existing sessions:", sessions or "none")
-
-    thread_id = input("Enter session ID to resume (or press Enter for new): ").strip()
-    if not thread_id:
-        thread_id = str(uuid.uuid4())
-        print(f"New session: {thread_id[:8]}...")
-    else:
-        print(f"Resuming session: {thread_id[:8]}...")
+    agent = build_ground_agent()
+    thread_id = str(uuid.uuid4())
+    print(f"Ground sensor agent started | session: {thread_id[:8]}...")
 
     while True:
         try:

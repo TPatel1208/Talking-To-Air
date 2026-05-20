@@ -17,7 +17,7 @@ def get_loader():
 
 
 def _load_data(data_json: dict, apply_quality_flag: bool = True) -> xr.DataArray:
-    from tools.harmony_api import COLLECTIONS
+    from tools.satellite_tools.harmony_api import COLLECTIONS
 
     data = data_json if isinstance(data_json, dict) else json.loads(data_json)
 

@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils.plotting import mask_data_by_geometry, RegionResolver
 from utils.plotting import plot_diff_maps
 
-OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "outputs")
+OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..","..", "outputs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 _resolver = RegionResolver()

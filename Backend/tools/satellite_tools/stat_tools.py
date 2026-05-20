@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from utils.data_utils import _load_data
 from utils.plotting import _normalize_to_2d, mask_data_by_geometry, RegionResolver
-from tools.harmony_api import COLLECTIONS
+from tools.satellite_tools.harmony_api import COLLECTIONS
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "outputs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 _resolver = RegionResolver()
@@ -344,7 +344,7 @@ def main():
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     )
 
-    from tools.harmony_api import fetch_environmental_data
+    from Backend.tools.satellite_tools.harmony_api import fetch_environmental_data
     # Fetch some data
     data = fetch_environmental_data.invoke({
         "variable": "TEMPO_NO2",
