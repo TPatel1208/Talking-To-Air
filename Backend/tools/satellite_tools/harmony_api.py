@@ -243,7 +243,16 @@ def fetch_environmental_data(
 ) -> dict:
     """
     Fetch environmental / atmospheric data from NASA Harmony (TEMPO satellite).
-    Uses a local Zarr cache — repeated queries for the same parameters are instant.
+
+    Cache lookup order (handled transparently by DataLoader):
+      1. PostgreSQL/PostGIS metadata index — exact group_key match; fastest path.
+      2. Zarr store key check              — fallback when the DB is unavailable.
+      3. NASA Harmony fetch               — only on a true cache miss; result is
+                                            written to both the Zarr store and the
+                                            PostGIS metadata catalog.
+
+    Repeated queries for the same parameters are served from cache without any
+    network calls to NASA Harmony.
 
     Args:
         variable    : Pollutant key e.g. 'OMI_NO2' or 'TEMPO_NO2'.

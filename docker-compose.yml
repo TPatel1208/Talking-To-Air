@@ -10,9 +10,9 @@
 
 services:
 
-  # ── PostgreSQL (conversation memory) ─────────────────────────────────────────
+  # ── PostgreSQL + PostGIS (conversation memory + Zarr cache metadata) ──────────
   db:
-    image: postgres:16-alpine
+    image: postgis/postgis:16-3.4          
     container_name: tta-db
     restart: unless-stopped
     environment:
@@ -21,12 +21,13 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
       - pg_data:/var/lib/postgresql/data
+      - ./sql/init_cache_index.sql:/docker-entrypoint-initdb.d/01_cache_index.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d talking_to_air_memory"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 10s
+      start_period: 15s       
 
   # ── FastAPI + LangChain backend ──────────────────────────────────────────────
   backend:
@@ -40,6 +41,8 @@ services:
       PORT: "8000"
       DB_HOST: db
       DB_PORT: "5432"
+      DB_NAME: talking_to_air_memory
+      DB_USER: postgres
     ports:
       - "8000:8000"
     volumes:
