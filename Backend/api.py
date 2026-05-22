@@ -158,8 +158,11 @@ def get_history(thread_id: str):
 
             elif role == "ai":
                 tool_calls = []
+                seen_tool_ids = set()
                 if hasattr(msg, "tool_calls") and msg.tool_calls:
                     for tc in msg.tool_calls:
+                        tid = tc.get("id", "")
+                        seen_tool_ids.add(tid)
                         tool_calls.append({
                             "name": tc.get("name", ""),
                             "args": tc.get("args", {}),
@@ -170,10 +173,26 @@ def get_history(thread_id: str):
                     content = msg.content
                 elif isinstance(msg.content, list):
                     for block in msg.content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            content = block.get("text", "")
+                        if isinstance(block, str):
+                            # plain string block (Gemini stores response text this way)
+                            content += block
+                        elif isinstance(block, dict):
+                            btype = block.get("type", "")
+                            if btype == "text":
+                                content += block.get("text", "")
+                            elif btype == "thinking":
+                                pass  # skip internal chain-of-thought
+                            elif btype == "tool_use":
+                                # tool dispatch in content list
+                                tid = block.get("id", "")
+                                if tid not in seen_tool_ids:
+                                    seen_tool_ids.add(tid)
+                                    tool_calls.append({
+                                        "name": block.get("name", ""),
+                                        "args": block.get("input", {}),
+                                    })
                         elif hasattr(block, "text"):
-                            content = block.text
+                            content += block.text
 
                 result.append({
                     "role":      "assistant",
@@ -183,16 +202,30 @@ def get_history(thread_id: str):
                 })
 
             elif role == "tool":
-                # Attach image URLs from tool results to the preceding assistant message.
-                # Use regex so paths embedded mid-sentence are found correctly.
-                content = msg.content if isinstance(msg.content, str) else ""
-                png_match = re.search(r'(/outputs/[\w\-./]+\.png|[\w\-./]+\.png)', content)
-                if png_match:
+                # Flatten tool result content — can be str or list of blocks
+                if isinstance(msg.content, str):
+                    tool_text = msg.content
+                elif isinstance(msg.content, list):
+                    parts = []
+                    for block in msg.content:
+                        if isinstance(block, str):
+                            parts.append(block)
+                        elif isinstance(block, dict):
+                            parts.append(block.get("text", "") or str(block.get("content", "")))
+                        elif hasattr(block, "text"):
+                            parts.append(block.text)
+                    tool_text = " ".join(parts)
+                else:
+                    tool_text = str(msg.content)
+
+                # Find all .png paths anywhere in the tool result
+                for png_match in re.finditer(r'(/outputs/[\w\-./]+\.png|[\w\-./]+\.png)', tool_text):
                     url = normalize_image_url(png_match.group(1))
                     if url:
                         for m in reversed(result):
                             if m["role"] == "assistant":
-                                m["imageUrls"].append(url)
+                                if url not in m["imageUrls"]:
+                                    m["imageUrls"].append(url)
                                 break
 
         merged = []
@@ -205,8 +238,10 @@ def get_history(thread_id: str):
                 prev = merged[-1]
                 prev["toolCalls"].extend(msg["toolCalls"])
                 if msg["content"]:
-                    prev["content"] = msg["content"]
-                prev["imageUrls"].extend(msg["imageUrls"])
+                    prev["content"] += ("\n\n" if prev["content"] else "") + msg["content"]
+                for url in msg["imageUrls"]:
+                    if url not in prev["imageUrls"]:
+                        prev["imageUrls"].append(url)
             else:
                 merged.append(msg)
 
@@ -223,3 +258,19 @@ def remove_session(thread_id: str):
         return {"deleted": thread_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
+
+@app.get("/debug/{thread_id}")
+def debug_history(thread_id: str):
+    config = {"configurable": {"thread_id": thread_id}}
+    state = agent.get_state(config)
+    raw = state.values.get("messages", [])
+    return [
+        {
+            "type": getattr(m, "type", None),
+            "content_type": type(m.content).__name__,
+            "content_preview": str(m.content)[:300],
+            "has_tool_calls": bool(getattr(m, "tool_calls", None)),
+        }
+        for m in raw
+    ]

@@ -41,6 +41,14 @@ html, body, #root {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Fix Chrome viewport height bug — dvh accounts for dynamic browser UI */
+html {
+  height: -webkit-fill-available;
+}
+body {
+  min-height: -webkit-fill-available;
+}
+
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }

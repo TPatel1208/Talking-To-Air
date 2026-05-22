@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 
@@ -185,7 +186,7 @@ function MessageBubble({ msg }) {
       </div>
 
       {/* Bubble content */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', maxWidth: '78%' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', maxWidth: '78%', minWidth: 0 }}>
         {/* Tool calls above bubble */}
         {!isUser && msg.toolCalls?.length > 0 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', padding: '0 2px' }}>
@@ -213,6 +214,7 @@ function MessageBubble({ msg }) {
               fontSize:     '13.5px',
               lineHeight:   '1.65',
               wordBreak:    'break-word',
+              overflow:     'hidden',
             }}
           >
             {isUser ? (
@@ -221,7 +223,7 @@ function MessageBubble({ msg }) {
               <>
                 {msg.content && (
                   <ReactMarkdown
-                    remarkPlugins={[remarkMath]}
+                    remarkPlugins={[remarkGfm, remarkMath]}
                     rehypePlugins={[rehypeKatex]}
                     components={{
                       p:      ({ children }) => <p style={{ margin: '0 0 8px' }}>{children}</p>,
