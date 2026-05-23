@@ -24,3 +24,4 @@ xarray==2025.6.1
 psycopg[binary]>=3.1.0
 zarr==3.1.6
 h5py>=3.10.0
+langchain_groq==1.1.2

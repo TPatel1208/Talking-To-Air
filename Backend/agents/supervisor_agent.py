@@ -39,7 +39,7 @@ def get_checkpointer():
 
 # ── Build supervisor ──────────────────────────────────────────────────────────
 
-def build_agent(model: str = "gemini-2.0-flash-lite"):
+def build_agent(model: str = "gemma-4-26b-a4b-it", ground_agent_model: str = "meta-llama/llama-4-scout-17b-16e-instruct", satellite_agent_model: str = "meta-llama/llama-4-scout-17b-16e-instruct"):
     """
     Build and return the supervisor agent.
 
@@ -63,8 +63,8 @@ def build_agent(model: str = "gemini-2.0-flash-lite"):
     # autocommit=True connections hitting the same checkpoint tables.
     checkpointer = get_checkpointer()
 
-    ground_agent    = build_ground_agent(model=model,    checkpointer=checkpointer)
-    satellite_agent = build_satellite_agent(model=model, checkpointer=checkpointer)
+    ground_agent    = build_ground_agent(model=ground_agent_model,    checkpointer=checkpointer)
+    satellite_agent = build_satellite_agent(model=satellite_agent_model, checkpointer=checkpointer)
 
     # Mutable container so the tool closures can always read the current
     # supervisor thread_id even though the tools are defined once at build time.

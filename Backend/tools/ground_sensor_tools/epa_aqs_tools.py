@@ -1,6 +1,6 @@
 from langchain.tools import tool
 import requests
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 import os
 import sys
 import time
@@ -259,8 +259,8 @@ def find_closest_monitor(
 
 @tool
 def find_closest_monitor_by_coords(
-    latitude: float,
-    longitude: float,
+    latitude: Union[float, str],
+    longitude: Union[float, str],
     param_code: str = DEFAULT_PARAM_CODE,
     bdate: Optional[str] = None,
     edate: Optional[str] = None,
@@ -301,6 +301,11 @@ def find_closest_monitor_by_coords(
                       'state_name', 'param_code'}, ...]
         }
     """
+    try:
+        latitude = float(latitude)
+        longitude = float(longitude)
+    except ValueError:
+        raise ValueError(f"Invalid latitude or longitude: '{latitude}', '{longitude}' must be float or castable to float.")
     bdate_obj, edate_obj, bdate_str, edate_str = _resolve_dates(bdate, edate)
 
     bbox = _bbox_from_point(latitude, longitude)

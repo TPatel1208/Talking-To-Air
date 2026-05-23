@@ -32,7 +32,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 app.mount("/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
 
 
-_model = os.getenv("LLM_MODEL", "gemma-4-31b-it")
+_model = os.getenv("LLM_MODEL", "gemma-4-26b-a4b-it")
 print(f"Initializing agent with model: {_model}")
 
 # build_agent now returns (agent, thread_ref).

@@ -3,7 +3,7 @@ import uuid
 import os
 import re
 import psycopg
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_groq import ChatGroq
 from langchain.agents import create_agent
 from langgraph.checkpoint.postgres import PostgresSaver
 
@@ -34,22 +34,22 @@ def get_checkpointer():
     return checkpointer
 
 
-def build_satellite_agent(model: str = "gemma-4-31b-it", checkpointer=None):
+def build_satellite_agent(model: str = "meta-llama/llama-4-scout-17b-16e-instruct", checkpointer=None):
     """
     Build and return a satellite agent.
 
     Parameters
     ----------
     model : str
-        Gemini model identifier.
+        GROQ model identifier.
     checkpointer : optional
         A shared PostgresSaver instance. If None, a new one is created.
         Pass the supervisor's checkpointer to avoid multiple DB connections
         racing against each other.
     """
-    llm = ChatGoogleGenerativeAI(
+    llm = ChatGroq(
         model=model,
-        google_api_key=os.getenv("GOOGLE_API_KEY")
+        groq_api_key=os.getenv("GROQ_API_KEY")
     )
     if checkpointer is None:
         checkpointer = get_checkpointer()
@@ -104,7 +104,7 @@ def delete_session(thread_id: str):
 
 
 if __name__ == "__main__":
-    agent = build_satellite_agent("gemma-4-31b-it")
+    agent = build_satellite_agent()
 
     sessions = list_sessions()
     print("Existing sessions:", sessions or "none")
