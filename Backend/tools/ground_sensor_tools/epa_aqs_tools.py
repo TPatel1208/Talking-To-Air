@@ -188,40 +188,19 @@ def find_closest_monitor(
     k: int = 1,
 ) -> Dict[str, Any]:
     """
-    Find the closest *active* EPA AQS air quality monitoring station to a
-    location name or address over a date range.
+    Find the closest active EPA AQS monitor to a location name or address.
 
-    Geocodes the location via Nominatim, then queries monitors/byBox for
-    monitors active during the date range, and returns the k nearest by
-    haversine distance. Use find_closest_monitor_by_coords instead when you
-    already have lat/lon coordinates.
+    Use find_closest_monitor_by_coords instead if you already have lat/lon.
 
-    Parameters
-    ----------
-    location : str
-        City name, address, or any string Nominatim can geocode.
-    param_code : str
-        EPA AQS parameter code (default '42602' = NO2).
-    bdate : str, optional
-        Start date YYYY-MM-DD. Defaults to 1 year ago (AQS has a multi-month
-        publication lag so recent dates return no data). Must be <= edate.
-    edate : str, optional
-        End date YYYY-MM-DD. Defaults to bdate (single-day query).
-    k : int
-        Number of closest monitors to return (default 1).
+    Args:
+        location   : City name or address (geocoded via Nominatim).
+        param_code : AQS parameter code (default '42602' = NO2).
+        bdate      : Start date YYYY-MM-DD (defaults to 1 year ago).
+        edate      : End date YYYY-MM-DD (defaults to bdate).
+        k          : Number of nearest monitors to return (default 1).
 
-    Returns
-    -------
-    dict
-        {
-            'Header': [{'status': 'success', 'rows': int, 'query_location': str,
-                        'query_lat': float, 'query_lon': float,
-                        'param_code': str, 'bdate': str, 'edate': str}],
-            'Body': [{'station_id', 'station_name', 'latitude', 'longitude',
-                      'distance_miles', 'state_code', 'county_code',
-                      'site_number', 'city_name', 'county_name',
-                      'state_name', 'param_code'}, ...]
-        }
+    Returns Body fields: station_id, station_name, latitude, longitude,
+    distance_miles, state_code, county_code, site_number.
     """
     bdate_obj, edate_obj, bdate_str, edate_str = _resolve_dates(bdate, edate)
 
@@ -267,39 +246,20 @@ def find_closest_monitor_by_coords(
     k: int = 1,
 ) -> Dict[str, Any]:
     """
-    Find the closest *active* EPA AQS air quality monitoring station to a
-    specific lat/lon point over a date range.
+    Find the closest active EPA AQS monitor to a lat/lon point.
 
-    Use this tool when you already have coordinates. Use find_closest_monitor
-    instead when you have a location name or address.
+    Use find_closest_monitor instead if you have a location name.
 
-    Parameters
-    ----------
-    latitude : float
-        Decimal degrees latitude (e.g. 40.7128).
-    longitude : float
-        Decimal degrees longitude (e.g. -74.0060).
-    param_code : str
-        EPA AQS parameter code (default '42602' = NO2).
-    bdate : str, optional
-        Start date YYYY-MM-DD. Defaults to 1 year ago. Must be <= edate.
-    edate : str, optional
-        End date YYYY-MM-DD. Defaults to bdate (single-day query).
-    k : int
-        Number of closest monitors to return (default 1).
+    Args:
+        latitude   : Decimal degrees (e.g. 40.7128).
+        longitude  : Decimal degrees (e.g. -74.0060).
+        param_code : AQS parameter code (default '42602' = NO2).
+        bdate      : Start date YYYY-MM-DD (defaults to 1 year ago).
+        edate      : End date YYYY-MM-DD (defaults to bdate).
+        k          : Number of nearest monitors to return (default 1).
 
-    Returns
-    -------
-    dict
-        {
-            'Header': [{'status': 'success', 'rows': int,
-                        'query_lat': float, 'query_lon': float,
-                        'param_code': str, 'bdate': str, 'edate': str}],
-            'Body': [{'station_id', 'station_name', 'latitude', 'longitude',
-                      'distance_miles', 'state_code', 'county_code',
-                      'site_number', 'city_name', 'county_name',
-                      'state_name', 'param_code'}, ...]
-        }
+    Returns Body fields: station_id, station_name, latitude, longitude,
+    distance_miles, state_code, county_code, site_number.
     """
     try:
         latitude = float(latitude)
@@ -438,24 +398,10 @@ def get_daily_summary(
     pollutant_standard: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Retrieve daily summary statistics from EPA AQS monitors.
- 
-    Aggregated midnight-to-midnight in local time. Includes mean, maximum,
-    AQI, and observation counts per day. Use for day-level analysis or to
-    feed find_exceedance_days. For broader trends use get_quarterly_summary
-    or get_annual_summary instead.
- 
-    Provide exactly one filter group (most specific wins):
-      - Site:    state_code + county_code + site_number
-      - County:  state_code + county_code
-      - State:   state_code only
-      - CBSA:    cbsa_code
-      - Box:     minlat + maxlat + minlon + maxlon
- 
-    pollutant_standard recommended values by param_code:
-    42602 (NO2)->'NO2 1-hour 2010', 88101 (PM2.5)->'PM25 24-hour 2024',
-    44201 (Ozone)->'Ozone 8-hour 2015', 42401 (SO2)->'SO2 1-hour 2010',
-    42101 (CO)->'CO 8-hour 1971'.
+    Daily summary stats (midnight-to-midnight local). Use for day-level analysis
+    or to feed find_exceedance_days. For trends use quarterly/annual instead.
+    Filter (one group): state+county+site | state+county | state | cbsa_code | bbox
+    Always pass pollutant_standard (see ground prompt table).
     """
     bdate_obj, edate_obj, bdate_str, edate_str = _resolve_dates(bdate, edate)
     records, endpoint, _ = _fetch_summary(
@@ -509,24 +455,10 @@ def get_quarterly_summary(
     pollutant_standard: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Retrieve quarterly summary statistics from EPA AQS monitors.
- 
-    Data is labelled by quarter (Q1=Jan-Mar, Q2=Apr-Jun, Q3=Jul-Sep,
-    Q4=Oct-Dec). Only the year portion of bdate/edate is used — all 4
-    quarters for every year in the range are returned. Includes mean,
-    maxima, and percentiles. Use for seasonal trend analysis.
- 
-    Provide exactly one filter group (most specific wins):
-      - Site:    state_code + county_code + site_number
-      - County:  state_code + county_code
-      - State:   state_code only
-      - CBSA:    cbsa_code
-      - Box:     minlat + maxlat + minlon + maxlon
- 
-    pollutant_standard recommended values by param_code:
-    42602 (NO2)->'NO2 1-hour 2010', 88101 (PM2.5)->'PM25 24-hour 2024',
-    44201 (Ozone)->'Ozone 8-hour 2015', 42401 (SO2)->'SO2 1-hour 2010',
-    42101 (CO)->'CO 8-hour 1971'.
+    Quarterly summary stats (Q1=Jan-Mar … Q4=Oct-Dec). Only year portion of
+    bdate/edate used — all 4 quarters per year returned. Use for seasonal trends.
+    Filter (one group): state+county+site | state+county | state | cbsa_code | bbox
+    Always pass pollutant_standard (see ground prompt table).
     """
     bdate_obj, edate_obj, bdate_str, edate_str = _resolve_dates(bdate, edate)
     records, endpoint, _ = _fetch_summary(
@@ -582,24 +514,10 @@ def get_annual_summary(
     pollutant_standard: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Retrieve annual summary statistics from EPA AQS monitors.
- 
-    Only the year portion of bdate/edate is used — whole calendar years are
-    returned. bdate=20171231 and edate=20180101 returns full data for both
-    2017 and 2018. Includes mean, maxima, percentiles, and design values used
-    for NAAQS compliance. Use for long-term trend analysis.
- 
-    Provide exactly one filter group (most specific wins):
-      - Site:    state_code + county_code + site_number
-      - County:  state_code + county_code
-      - State:   state_code only
-      - CBSA:    cbsa_code
-      - Box:     minlat + maxlat + minlon + maxlon
- 
-    pollutant_standard recommended values by param_code:
-    42602 (NO2)->'NO2 1-hour 2010', 88101 (PM2.5)->'PM25 24-hour 2024',
-    44201 (Ozone)->'Ozone 8-hour 2015', 42401 (SO2)->'SO2 1-hour 2010',
-    42101 (CO)->'CO 8-hour 1971'.
+    Annual summary stats. Only year portion of bdate/edate used — whole calendar
+    years returned. Includes design values for NAAQS compliance. Use for long-term trends.
+    Filter (one group): state+county+site | state+county | state | cbsa_code | bbox
+    Always pass pollutant_standard (see ground prompt table).
     """
     bdate_obj, edate_obj, bdate_str, edate_str = _resolve_dates(bdate, edate)
     records, endpoint, _ = _fetch_summary(
@@ -667,38 +585,11 @@ def find_exceedance_days(
     percentile_threshold: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
-    Find days with elevated pollutant concentrations, using a regulatory hard
-    threshold, a relative percentile threshold, or both.
- 
-    Fetches daily summary data internally — no prior get_daily_summary call needed.
-    Returns flagged dates ready to pass to the satellite plotting agent.
-    Supports the same filter groups as get_daily_summary.
- 
-    Provide exactly one filter group (most specific wins):
-      - Site:    state_code + county_code + site_number
-      - County:  state_code + county_code
-      - State:   state_code only
-      - CBSA:    cbsa_code
-      - Box:     minlat + maxlat + minlon + maxlon
- 
-    Threshold modes
-    ---------------
-    Hard threshold (hard_threshold):
-        Flags days where the measurement exceeds a fixed value. If omitted,
-        the known regulatory limit is used automatically by param_code:
-            42602 (NO2)   -> 100 ppb  (first_max_value, NO2 1-hour 2010)
-            88101 (PM2.5) -> 35 ug/m3 (arithmetic_mean, PM25 24-hour 2024)
-            44201 (Ozone) -> 70 ppb   (first_max_value, Ozone 8-hour 2015)
-            42401 (SO2)   -> 75 ppb   (first_max_value, SO2 1-hour 2010)
-            42101 (CO)    -> 9 ppm    (first_max_value, CO 8-hour 1971)
- 
-    Relative threshold (percentile_threshold):
-        Flags days in the top N% of the queried period. Useful for research
-        when no days cross the regulatory limit. e.g. 90.0 returns the top
-        10% of days by concentration.
- 
-    Both can be provided — the union of flagged days is returned, with each
-    day labelled by which threshold(s) it triggered.
+    Find days exceeding pollutant thresholds. No prior get_daily_summary needed.
+    Results include date, value, aqi, triggered flag — ready to pass to satellite agent.
+    Filter (one group): state+county+site | state+county | state | cbsa_code | bbox
+    hard_threshold: fixed value (defaults to regulatory limit for known param_codes).
+    percentile_threshold: top N% of period, e.g. 90.0 = top 10%. Both can combine.
     """
     # Resolve the regulatory standard and measurement field for this param
     reg = _REGULATORY_THRESHOLDS.get(param_code)
@@ -802,63 +693,18 @@ def get_sample_data(
     maxlon: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
-    Retrieve raw sample (hourly) measurements from EPA AQS monitors.
- 
-    Returns individual observations at the native sampling frequency of the
-    monitor (typically 1 hour for NO2, O3, CO, SO2; every 3 or 6 days for
-    PM2.5 FRM). Use this after find_exceedance_days to get an hourly profile
-    of a flagged day — e.g. to determine whether a NO2 spike was rush-hour,
-    overnight, or sustained. For aggregated statistics use get_daily_summary.
- 
-    Provide exactly one filter group (most specific wins):
-      - Site:    state_code + county_code + site_number
-      - County:  state_code + county_code
-      - State:   state_code only
-      - CBSA:    cbsa_code
-      - Box:     minlat + maxlat + minlon + maxlon
- 
-    Parameters
-    ----------
-    param_code : str
-        EPA AQS parameter code (default '42602' = NO2).
-    bdate : str, optional
-        Start date YYYY-MM-DD. Defaults to 1 year ago.
-    edate : str, optional
-        End date YYYY-MM-DD. Defaults to bdate (single-day query).
-        Keep ranges short — hourly data is large. Prefer single days or
-        short windows centred on a known exceedance day.
-    state_code : str, optional
-        2-digit state FIPS code. Returned by find_closest_monitor.
-    county_code : str, optional
-        3-digit county FIPS code. Returned by find_closest_monitor.
-    site_number : str, optional
-        4-digit site number. Returned by find_closest_monitor.
-    cbsa_code : str, optional
-        5-digit CBSA code.
-    minlat, maxlat, minlon, maxlon : float, optional
-        Bounding box in decimal degrees.
- 
-    Returns
-    -------
-    dict
-        {
-            'Header': [{'status': 'success', 'rows': int, 'endpoint': str,
-                        'param_code': str, 'bdate': str, 'edate': str}],
-            'Body': [
-                {
-                    'site_id': str,
-                    'datetime_local': str,   # YYYY-MM-DD HH:MM
-                    'date': str,             # YYYY-MM-DD
-                    'hour': int,             # 0-23 local time
-                    'value': float,
-                    'units': str,
-                    'sample_duration': str,
-                    'qualifier': str,        # null or data qualifier flag
-                    'method': str,           # measurement method description
-                    'local_site_name': str,
-                }
-            ]
-        }
+    Retrieve raw hourly measurements from EPA AQS monitors.
+
+    Use after find_exceedance_days to profile a flagged day (rush-hour spike vs
+    overnight vs sustained). Keep date ranges short — 1–3 days max. For
+    aggregated stats use get_daily_summary instead.
+
+    Filter (one group, most specific wins):
+    state_code + county_code + site_number | state_code + county_code
+    | state_code | cbsa_code | minlat + maxlat + minlon + maxlon
+
+    Returns hourly rows: site_id, datetime_local, date, hour, value, units,
+    qualifier (null=clean), sample_duration, method, local_site_name.
     """
     bdate_obj, edate_obj, bdate_str, edate_str = _resolve_dates(bdate, edate)
  

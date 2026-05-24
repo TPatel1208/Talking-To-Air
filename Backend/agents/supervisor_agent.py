@@ -3,7 +3,6 @@ Supervisor agent that orchestrates the Ground Sensor and Satellite agents.
 """
 import psycopg
 import os
-import re
 import sys
 import uuid
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -17,7 +16,7 @@ from agents.satellite_agent import build_satellite_agent
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config.supervisor_prompt import SUPERVISOR_PROMPT
-
+from utils.streaming import stream_response
 
 def _pg_connect(autocommit: bool = False):
     return psycopg.connect(
@@ -39,7 +38,7 @@ def get_checkpointer():
 
 # ── Build supervisor ──────────────────────────────────────────────────────────
 
-def build_agent(model: str = "gemma-4-26b-a4b-it", ground_agent_model: str = "meta-llama/llama-4-scout-17b-16e-instruct", satellite_agent_model: str = "meta-llama/llama-4-scout-17b-16e-instruct"):
+def build_agent(model: str = "llama-3.1-8b-instant", ground_agent_model: str = "meta-llama/llama-4-scout-17b-16e-instruct", satellite_agent_model: str = "meta-llama/llama-4-scout-17b-16e-instruct"):
     """
     Build and return the supervisor agent.
 
@@ -57,7 +56,8 @@ def build_agent(model: str = "gemma-4-26b-a4b-it", ground_agent_model: str = "me
         model=model,
         google_api_key=os.getenv("GOOGLE_API_KEY"),
     )
-
+    ground_agent_model = os.getenv("GROUND_AGENT_MODEL", ground_agent_model)
+    satellite_agent_model = os.getenv("SATELLITE_AGENT_MODEL", satellite_agent_model)
     # ONE checkpointer shared across supervisor + both subagents.
     # This eliminates the race condition caused by three separate
     # autocommit=True connections hitting the same checkpoint tables.
@@ -159,40 +159,6 @@ def build_agent(model: str = "gemma-4-26b-a4b-it", ground_agent_model: str = "me
     return supervisor, _thread_ref
 
 
-# ── stream_response ───────────────────────────────────────────────────────────
-
-def stream_response(agent, user_input: str, thread_id: str, thread_ref: dict):
-    """
-    Stream one turn, yield (event_type, data) tuples.
-
-    thread_ref must be the dict returned by build_agent. It is updated here
-    so the subagent tool closures always know the current supervisor thread_id.
-    """
-    # Update the shared ref so tool closures derive the correct sub-thread IDs.
-    thread_ref["id"] = thread_id
-
-    config = {"configurable": {"thread_id": thread_id}}
-
-    for stream_mode, chunk in agent.stream(
-        {"messages": [{"role": "user", "content": user_input}]},
-        config=config,
-        stream_mode=["updates", "messages"],
-    ):
-        if stream_mode == "updates":
-            for node, data in chunk.items():
-                for msg in data.get("messages", []):
-                    if hasattr(msg, "tool_calls") and msg.tool_calls:
-                        for tc in msg.tool_calls:
-                            yield ("tool_call", {"name": tc["name"], "args": tc["args"]})
-                    elif hasattr(msg, "name") and msg.name:
-                        raw_content = str(msg.content)
-                        # Extract image path BEFORE truncating so it's never lost
-                        # even when it appears deep in a long summary string.
-                        img_match = re.search(r'[\w\-./]+\.png', raw_content)
-                        content_out = img_match.group(0) if img_match else raw_content[:300]
-                        yield ("tool_result", {"name": msg.name, "content": content_out})
-                    elif hasattr(msg, "content") and msg.content:
-                        yield ("text", msg.content)
 
 
 # ── list_sessions, delete_session ─────────────────────────────────────────────
@@ -207,12 +173,12 @@ def list_sessions() -> list[str]:
 
 
 def delete_session(thread_id: str):
+    threads = [thread_id, f"ground-{thread_id}", f"satellite-{thread_id}"]
     with _pg_connect() as conn:
-        # Also delete the corresponding sub-agent threads for this session.
-        conn.execute(
-            "DELETE FROM checkpoints WHERE thread_id IN (%s, %s, %s)",
-            (thread_id, f"ground-{thread_id}", f"satellite-{thread_id}"),
-        )
+        for table in ("checkpoint_writes", "checkpoint_blobs", "checkpoints"):
+            conn.execute(
+                f"DELETE FROM {table} WHERE thread_id = ANY(%s)", (threads,)
+            )
         conn.commit()
 
 

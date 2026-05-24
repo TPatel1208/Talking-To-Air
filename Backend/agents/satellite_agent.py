@@ -1,16 +1,15 @@
 import sys
 import uuid
 import os
-import re
 import psycopg
 from langchain_groq import ChatGroq
 from langchain.agents import create_agent
 from langgraph.checkpoint.postgres import PostgresSaver
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from config.system_prompt import SYSTEM_PROMPT
+from config.satellite_agent_prompt import SATELLITE_AGENT_PROMPT
 from tools import SATELLITE_TOOLS
-
+from utils.streaming import stream_response
 print("Tools imported:", [tool.name for tool in SATELLITE_TOOLS])
 
 
@@ -34,7 +33,7 @@ def get_checkpointer():
     return checkpointer
 
 
-def build_satellite_agent(model: str = "meta-llama/llama-4-scout-17b-16e-instruct", checkpointer=None):
+def build_satellite_agent(model: str = "llama-3.1-8b-instant", checkpointer=None):
     """
     Build and return a satellite agent.
 
@@ -56,35 +55,10 @@ def build_satellite_agent(model: str = "meta-llama/llama-4-scout-17b-16e-instruc
     agent = create_agent(
         model=llm,
         tools=SATELLITE_TOOLS,
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=SATELLITE_AGENT_PROMPT,
         checkpointer=checkpointer,
     )
     return agent
-
-
-def stream_response(agent, user_input: str, thread_id: str):
-    """Stream one turn, yield (event_type, data) tuples."""
-    config = {"configurable": {"thread_id": thread_id}}
-
-    for stream_mode, chunk in agent.stream(
-        {"messages": [{"role": "user", "content": user_input}]},
-        config=config,
-        stream_mode=["updates", "messages"],
-    ):
-        if stream_mode == "updates":
-            for node, data in chunk.items():
-                for msg in data.get("messages", []):
-                    if hasattr(msg, "tool_calls") and msg.tool_calls:
-                        for tc in msg.tool_calls:
-                            yield ("tool_call", {"name": tc["name"], "args": tc["args"]})
-                    elif hasattr(msg, "name") and msg.name:
-                        raw_content = str(msg.content)
-                        # Extract image path before truncating so it's never lost
-                        img_match = re.search(r'[\w\-./]+\.png', raw_content)
-                        content_out = img_match.group(0) if img_match else raw_content[:300]
-                        yield ("tool_result", {"name": msg.name, "content": content_out})
-                    elif hasattr(msg, "content") and msg.content:
-                        yield ("text", msg.content)
 
 
 def list_sessions() -> list[str]:
@@ -97,9 +71,12 @@ def list_sessions() -> list[str]:
 
 
 def delete_session(thread_id: str):
-    """Delete all checkpoints for a given thread."""
+    threads = [thread_id, f"ground-{thread_id}", f"satellite-{thread_id}"]
     with _pg_connect() as conn:
-        conn.execute("DELETE FROM checkpoints WHERE thread_id = %s", (thread_id,))
+        for table in ("checkpoint_writes", "checkpoint_blobs", "checkpoints"):
+            conn.execute(
+                f"DELETE FROM {table} WHERE thread_id = ANY(%s)", (threads,)
+            )
         conn.commit()
 
 

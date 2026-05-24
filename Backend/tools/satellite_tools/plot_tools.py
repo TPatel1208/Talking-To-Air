@@ -31,7 +31,6 @@ def plot_singular(data_dict: dict, variable: str, location: str, title: str="",c
     """
     Plot a single environmental variable over a single location.
     Use when the user asks for a map of one variable in one place,
-    e.g. 'Plot the NO2 levels in New York City on February 10th 2026 at 6pm'.
 
     Args:
         data_dict : dict from fetch_environmental_data.
@@ -85,11 +84,6 @@ def plot_multiple(
     collecting each result into a list. If a fetch fails for one dataset, try a
     fallback dataset before adding to the list. Only call this tool once you have
     a successful data_dict for every location.
-
-    Example agent flow for 'Compare NO2 in NYC and LA':
-        1. fetch_environmental_data(TEMPO_NO2, bbox_nyc, ...) → data_dict_nyc
-        2. fetch_environmental_data(TEMPO_NO2, bbox_la, ...)  → data_dict_la
-        3. plot_multiple([data_dict_nyc, data_dict_la], 'NO2', ['New York City', 'Los Angeles'])
 
     If datasets differ across locations (e.g. TROPOMI for one, TEMPO for another),
     that is fine, you can plot_multiple handles mixed sources.

@@ -13,9 +13,9 @@ from langchain.agents import create_agent
 from langgraph.checkpoint.postgres import PostgresSaver
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config.ground_sensor_agent_promp import GROUND_SYSTEM_PROMPT
+from config.ground_sensor_agent_prompt import GROUND_SYSTEM_PROMPT
 from tools import GROUND_TOOLS
-
+from utils.streaming import stream_response
 
 def _pg_connect(autocommit: bool = False):
     """Return a psycopg connection using individual env vars."""
@@ -37,7 +37,7 @@ def get_checkpointer():
     return checkpointer
 
 
-def build_ground_agent(model: str = "meta-llama/llama-4-scout-17b-16e-instruct", checkpointer=None):
+def build_ground_agent(model: str = "llama-3.1-8b-instant", checkpointer=None):
     """
     Build and return a ground sensor agent.
 
@@ -65,30 +65,6 @@ def build_ground_agent(model: str = "meta-llama/llama-4-scout-17b-16e-instruct",
     return agent
 
 
-def stream_response(agent, user_input: str, thread_id: str):
-    """Stream one turn, yield (event_type, data) tuples."""
-    import re
-    config = {"configurable": {"thread_id": thread_id}}
-
-    for stream_mode, chunk in agent.stream(
-        {"messages": [{"role": "user", "content": user_input}]},
-        config=config,
-        stream_mode=["updates", "messages"],
-    ):
-        if stream_mode == "updates":
-            for node, data in chunk.items():
-                for msg in data.get("messages", []):
-                    if hasattr(msg, "tool_calls") and msg.tool_calls:
-                        for tc in msg.tool_calls:
-                            yield ("tool_call", {"name": tc["name"], "args": tc["args"]})
-                    elif hasattr(msg, "name") and msg.name:
-                        raw_content = str(msg.content)
-                        # Extract image path before truncating so it's never lost
-                        img_match = re.search(r'[\w\-./]+\.png', raw_content)
-                        content_out = img_match.group(0) if img_match else raw_content[:300]
-                        yield ("tool_result", {"name": msg.name, "content": content_out})
-                    elif hasattr(msg, "content") and msg.content:
-                        yield ("text", msg.content)
 
 
 if __name__ == "__main__":

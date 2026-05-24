@@ -10,8 +10,6 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import re
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-import logging
-logger = logging.getLogger(__name__)
 
 from utils.data_utils import _load_data
 from utils.plotting import _normalize_to_2d, mask_data_by_geometry, RegionResolver
@@ -115,11 +113,6 @@ def conduct_temporal_statistic(
 ) -> str:
     """
     Compute a statistic over each time step in a dataset and plot the trend.
-
-    Use when the user asks questions like:
-      - 'How did NO2 change over time in Texas?'
-      - 'Show me the trend of NO2 in California over the past 3 months'
-      - 'Plot the daily mean NO2 in New York for January 2024'
 
     Args:
         data_dict: dict directly from fetch_environmental_data
@@ -265,51 +258,38 @@ def find_daily_peak(
     Returns:
         JSON string with peak value, lat, lon, and metadata.
     """
-    logger = logging.getLogger(__name__)
-    logger.info(f"[find_daily_peak] Called with location='{location}', variable='{data_dict.get('variable')}'")
-
+  
     # Load and normalize
     try:
         da = _load_data(data_dict)
-        logger.info(f"[find_daily_peak] Data loaded. Shape: {da.shape}, Dims: {list(da.dims)}")
     except Exception as e:
-        logger.error(f"[find_daily_peak] Failed to load data: {e}", exc_info=True)
         return json.dumps({"error": f"Failed to load data: {e}"})
 
     da = _normalize_to_2d(da)
-    logger.info(f"[find_daily_peak] After normalize_to_2d. Shape: {da.shape}, Dims: {list(da.dims)}, Coords: {list(da.coords.keys())}")
 
     # Mask to region
     region = _resolver.resolve_location(location)
     if region is None:
-        logger.error(f"[find_daily_peak] Could not resolve location: '{location}'")
         return json.dumps({"error": f"Could not resolve location: '{location}'"})
 
     geom   = region['geometry']
     bounds = geom.bounds
-    logger.info(f"[find_daily_peak] Region bounds: minx={bounds[0]:.2f}, miny={bounds[1]:.2f}, maxx={bounds[2]:.2f}, maxy={bounds[3]:.2f}")
 
     da_before   = da.copy()
     da          = mask_data_by_geometry(da, geom)
     before_valid = int(np.sum(np.isfinite(da_before.values)))
     after_valid  = int(np.sum(np.isfinite(da.values)))
-    logger.info(f"[find_daily_peak] Valid pixels before mask: {before_valid}, after mask: {after_valid}")
 
     # Resolve dim names and positions early
     lat_dim = next((d for d in da.dims if d.lower() in ['lat', 'latitude']), None)
     lon_dim = next((d for d in da.dims if d.lower() in ['lon', 'longitude']), None)
-    logger.info(f"[find_daily_peak] Resolved lat_dim='{lat_dim}', lon_dim='{lon_dim}'")
 
     if lat_dim is None or lon_dim is None:
         msg = f"Could not find lat/lon dimensions. Available dims: {list(da.dims)}"
-        logger.error(f"[find_daily_peak] {msg}")
         return json.dumps({"error": msg})
 
     lat_array = da[lat_dim].values
     lon_array = da[lon_dim].values
-    logger.info(f"[find_daily_peak] lat_array shape={lat_array.shape}, lon_array shape={lon_array.shape}")
-    logger.info(f"[find_daily_peak] Lat range: {float(lat_array.min()):.4f} to {float(lat_array.max()):.4f}")
-    logger.info(f"[find_daily_peak] Lon range: {float(lon_array.min()):.4f} to {float(lon_array.max()):.4f}")
 
     # Filter
     var        = data_dict.get("variable", "")
@@ -317,8 +297,6 @@ def find_daily_peak(
     fill_value = col_info.get("fill_value", -1.267651e+30)
     max_valid  = col_info.get("valid_max",   1e18)
     min_valid  = col_info.get("valid_min",  -1e15)
-    logger.info(f"[find_daily_peak] Filter params — fill_value={fill_value}, min_valid={min_valid}, max_valid={max_valid}")
-
     values     = da.values
     valid_mask = (
         np.isfinite(values) &
@@ -327,11 +305,9 @@ def find_daily_peak(
         (values < max_valid)
     )
     valid_count = int(np.sum(valid_mask))
-    logger.info(f"[find_daily_peak] Valid pixel count after filtering: {valid_count}")
 
     if not np.any(valid_mask):
         msg = f"No valid data found for '{location}'. The region may be outside the data bbox."
-        logger.warning(f"[find_daily_peak] {msg}")
         return json.dumps({"error": msg})
 
     # Find peak
@@ -347,27 +323,16 @@ def find_daily_peak(
     lat_idx = indices[lat_pos]
     lon_idx = indices[lon_pos]
 
-    logger.info(f"[find_daily_peak] dims={dims}, lat_pos={lat_pos}, lon_pos={lon_pos}")
-    logger.info(f"[find_daily_peak] Peak array indices — lat_idx={lat_idx}, lon_idx={lon_idx}")
-    logger.info(f"[find_daily_peak] Peak raw value at index: {masked_values[dim0_idx, dim1_idx]:.6f}")
+ 
 
     try:
         peak_lat = float(lat_array[lat_idx] if lat_array.ndim == 1 else lat_array[lat_idx, lon_idx])
         peak_lon = float(lon_array[lon_idx] if lon_array.ndim == 1 else lon_array[lat_idx, lon_idx])
     except (IndexError, TypeError) as e:
-        logger.error(f"[find_daily_peak] Failed to extract peak coordinates: {e}", exc_info=True)
         return json.dumps({"error": f"Failed to extract peak coordinates: {e}"})
 
     peak_val = float(masked_values[dim0_idx, dim1_idx])
 
-    # Sanity check
-    if not (bounds[1] <= peak_lat <= bounds[3] and bounds[0] <= peak_lon <= bounds[2]):
-        logger.warning(
-            f"[find_daily_peak] COORDINATE MISMATCH — peak lat={peak_lat}, lon={peak_lon} "
-            f"is OUTSIDE region bounds {bounds}. mask_data_by_geometry may not be working correctly."
-        )
-    else:
-        logger.info(f"[find_daily_peak] Coordinate check passed — peak is inside region bounds.")
 
     result = json.dumps({
         "location":   location,
@@ -378,7 +343,6 @@ def find_daily_peak(
         "peak_lat":   peak_lat,
         "peak_lon":   peak_lon,
     })
-    logger.info(f"[find_daily_peak] Returning: {result}")
     return result
 
 

@@ -208,7 +208,6 @@ def geocode_location(location_name: str) -> dict:
 
     Returns:
         dict with keys: location, bbox, center_lat, center_lon.
-        On failure: JSON string with key 'error'.
     """
     result = _geocoder.geocode(location_name)
     if result is None:
@@ -242,17 +241,7 @@ def fetch_environmental_data(
     max_results: int = 10,
 ) -> dict:
     """
-    Fetch environmental / atmospheric data from NASA Harmony (TEMPO satellite).
-
-    Cache lookup order (handled transparently by DataLoader):
-      1. PostgreSQL/PostGIS metadata index — exact group_key match; fastest path.
-      2. Zarr store key check              — fallback when the DB is unavailable.
-      3. NASA Harmony fetch               — only on a true cache miss; result is
-                                            written to both the Zarr store and the
-                                            PostGIS metadata catalog.
-
-    Repeated queries for the same parameters are served from cache without any
-    network calls to NASA Harmony.
+    Fetch environmental / atmospheric data from NASA Harmony.
 
     Args:
         variable    : Pollutant key e.g. 'OMI_NO2' or 'TEMPO_NO2'.
@@ -337,13 +326,7 @@ def check_data_availability(
     end_date: str,
 )-> dict:
     """
-    Check if granules exist for a variable over a location and time range BEFORE fetching. Returns a list of available dates so the agent can inform the user exactly which days have data.
-
-    Always call this before fetch_environmental_data when:
-    - Unsure if data exists for a location or time period
-    - A previous fetch returned no granules
-    - User asks about data availability
-    - You want to suggest alternatives or broader ranges    
+    Check if granules exist for a variable over a location and time range BEFORE fetching. Returns a list of available dates so the agent can inform the user exactly which days have data.  
 
     Args:
         variable    : Pollutant key e.g. 'OMI_NO2' or 'TEMPO_NO2'.
