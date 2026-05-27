@@ -8,9 +8,13 @@ can be composed by the supervisor.
 import sys
 import os
 import psycopg
+from typing import Callable
 from langchain_groq import ChatGroq
 from langchain.agents import create_agent
+from langchain_core.messages import trim_messages
+from langchain.agents.middleware import wrap_model_call, ModelRequest, ModelResponse
 from langgraph.checkpoint.postgres import PostgresSaver
+
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config.ground_sensor_agent_prompt import GROUND_SYSTEM_PROMPT
@@ -56,11 +60,29 @@ def build_ground_agent(model: str = "llama-3.1-8b-instant", checkpointer=None):
     )
     if checkpointer is None:
         checkpointer = get_checkpointer()
+    
+    @wrap_model_call
+    def trim_middleware(
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse:
+        trimmed = trim_messages(
+            request.state["messages"],
+            max_tokens=5000,
+            strategy="last",
+            token_counter="approximate",
+            include_system=True,
+            allow_partial=False,
+            start_on="human",
+        )
+        return handler(request.override(messages=trimmed))
+
     agent = create_agent(
-        model=llm,
+        model=llm,                    # bare llm — no pipe
         tools=GROUND_TOOLS,
         system_prompt=GROUND_SYSTEM_PROMPT,
         checkpointer=checkpointer,
+        middleware=[trim_middleware],
     )
     return agent
 

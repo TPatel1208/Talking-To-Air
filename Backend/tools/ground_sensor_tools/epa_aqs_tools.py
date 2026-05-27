@@ -311,6 +311,8 @@ def _resolve_filter(
     elif cbsa_code:
         return f"{prefix}/byCBSA", {"cbsa": cbsa_code}
     elif all(v is not None for v in [minlat, maxlat, minlon, maxlon]):
+        minlat, maxlat = float(minlat), float(maxlat)
+        minlon, maxlon = float(minlon), float(maxlon)
         return f"{prefix}/byBox", {"minlat": minlat, "maxlat": maxlat, "minlon": minlon, "maxlon": maxlon}
     else:
         raise ValueError(
@@ -389,10 +391,10 @@ def get_daily_summary(
     county_code: Optional[str] = None,
     site_number: Optional[str] = None,
     cbsa_code: Optional[str] = None,
-    minlat: Optional[float] = None,
-    maxlat: Optional[float] = None,
-    minlon: Optional[float] = None,
-    maxlon: Optional[float] = None,
+    minlat: Optional[Union[float, str]] = None,
+    maxlat: Optional[Union[float, str]] = None,
+    minlon: Optional[Union[float, str]] = None,
+    maxlon: Optional[Union[float, str]] = None,
     cbdate: Optional[str] = None,
     cedate: Optional[str] = None,
     pollutant_standard: Optional[str] = None,
@@ -446,10 +448,10 @@ def get_quarterly_summary(
     county_code: Optional[str] = None,
     site_number: Optional[str] = None,
     cbsa_code: Optional[str] = None,
-    minlat: Optional[float] = None,
-    maxlat: Optional[float] = None,
-    minlon: Optional[float] = None,
-    maxlon: Optional[float] = None,
+    minlat: Optional[Union[float, str]] = None,
+    maxlat: Optional[Union[float, str]] = None,
+    minlon: Optional[Union[float, str]] = None,
+    maxlon: Optional[Union[float, str]] = None,
     cbdate: Optional[str] = None,
     cedate: Optional[str] = None,
     pollutant_standard: Optional[str] = None,
@@ -505,10 +507,10 @@ def get_annual_summary(
     county_code: Optional[str] = None,
     site_number: Optional[str] = None,
     cbsa_code: Optional[str] = None,
-    minlat: Optional[float] = None,
-    maxlat: Optional[float] = None,
-    minlon: Optional[float] = None,
-    maxlon: Optional[float] = None,
+    minlat: Optional[Union[float, str]] = None,
+    maxlat: Optional[Union[float, str]] = None,
+    minlon: Optional[Union[float, str]] = None,
+    maxlon: Optional[Union[float, str]] = None,
     cbdate: Optional[str] = None,
     cedate: Optional[str] = None,
     pollutant_standard: Optional[str] = None,
@@ -577,10 +579,10 @@ def find_exceedance_days(
     county_code: Optional[str] = None,
     site_number: Optional[str] = None,
     cbsa_code: Optional[str] = None,
-    minlat: Optional[float] = None,
-    maxlat: Optional[float] = None,
-    minlon: Optional[float] = None,
-    maxlon: Optional[float] = None,
+    minlat: Optional[Union[float, str]] = None,
+    maxlat: Optional[Union[float, str]] = None,
+    minlon: Optional[Union[float, str]] = None,
+    maxlon: Optional[Union[float, str]] = None,
     hard_threshold: Optional[float] = None,
     percentile_threshold: Optional[float] = None,
 ) -> Dict[str, Any]:
@@ -687,10 +689,10 @@ def get_sample_data(
     county_code: Optional[str] = None,
     site_number: Optional[str] = None,
     cbsa_code: Optional[str] = None,
-    minlat: Optional[float] = None,
-    maxlat: Optional[float] = None,
-    minlon: Optional[float] = None,
-    maxlon: Optional[float] = None,
+    minlat: Optional[Union[float, str]] = None,
+    maxlat: Optional[Union[float, str]] = None,
+    minlon: Optional[Union[float, str]] = None,
+    maxlon: Optional[Union[float, str]] = None,
 ) -> Dict[str, Any]:
     """
     Retrieve raw hourly measurements from EPA AQS monitors.

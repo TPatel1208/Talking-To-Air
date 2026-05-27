@@ -2,9 +2,13 @@ import sys
 import uuid
 import os
 import psycopg
+from typing import Callable
 from langchain_groq import ChatGroq
 from langchain.agents import create_agent
+from langchain_core.messages import trim_messages
+from langchain.agents.middleware import wrap_model_call, ModelRequest, ModelResponse
 from langgraph.checkpoint.postgres import PostgresSaver
+
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config.satellite_agent_prompt import SATELLITE_AGENT_PROMPT
@@ -50,14 +54,36 @@ def build_satellite_agent(model: str = "llama-3.1-8b-instant", checkpointer=None
         model=model,
         groq_api_key=os.getenv("GROQ_API_KEY")
     )
+
     if checkpointer is None:
         checkpointer = get_checkpointer()
+
+    
+    
+    @wrap_model_call
+    def trim_middleware(
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse:
+        trimmed = trim_messages(
+            request.state["messages"],
+            max_tokens=5000,
+            strategy="last",
+            token_counter="approximate",
+            include_system=True,
+            allow_partial=False,
+            start_on="human",
+        )
+        return handler(request.override(messages=trimmed))
+
     agent = create_agent(
         model=llm,
         tools=SATELLITE_TOOLS,
         system_prompt=SATELLITE_AGENT_PROMPT,
         checkpointer=checkpointer,
+        middleware=[trim_middleware],
     )
+        
     return agent
 
 
