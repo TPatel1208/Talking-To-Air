@@ -1,0 +1,204 @@
+# ---------------------------------------------------------------------------
+# Dataset registry — one block per NASA collection.
+#
+# To add a new dataset:
+#   1. Add a block here following the same structure.
+#   2. Restart the backend — no code changes needed.
+#
+# To onboard automatically from CMR, run:
+#   python datasets/tools/generate_collection.py --short-name <NAME> --version <VER>
+#
+# Required fields:
+#   collection_id, primary_var, units, fill_value, valid_min, valid_max
+#
+# Optional fields (default shown):
+#   variables: []                  # subset passed to Harmony; empty = all
+#   groups: []                     # HDF groups to merge (OMI HCHO pattern)
+#   quality_flag_var: null         # variable to use for QA masking
+#   supports_variable_subsetting: false
+#   description: ""
+# ---------------------------------------------------------------------------
+
+# ── NO2 ─────────────────────────────────────────────────────────────────────
+
+OMI_NO2:
+  collection_id: C1266136111-GES_DISC
+  short_name: OMI_MINDS_NO2d
+  version: "1.1"
+  description: OMI NO2 tropospheric column
+  primary_var: ColumnAmountNO2TropCloudScreened
+  quality_flag_var: null
+  variables:
+    - ColumnAmountNO2
+    - ColumnAmountNO2CloudScreened
+    - ColumnAmountNO2TropCloudScreened
+    - Weight
+  supports_variable_subsetting: false
+  units: molecules/cm^2
+  fill_value: -1.267651e+30
+  valid_min: -1.0e+15
+  valid_max:  1.0e+18
+  groups: []
+
+TROPOMI_NO2:
+  collection_id: C3087325222-GES_DISC
+  short_name: HAQ_TROPOMI_NO2_GLOBAL_M_L3
+  version: "2.4"
+  description: Tropomi NO2 monthly mean
+  primary_var: Tropospheric_NO2
+  quality_flag_var: null
+  variables:
+    - Tropospheric_NO2
+    - Number_obs
+  supports_variable_subsetting: false
+  units: molecules/cm^2
+  fill_value: -999.0
+  valid_min: -1.0e+15
+  valid_max:  1.0e+18
+  groups: []
+
+TEMPO_NO2:
+  collection_id: C3685896708-LARC_CLOUD
+  short_name: TEMPO_NO2_L3
+  version: V04
+  description: TEMPO tropospheric NO2 vertical column
+  primary_var: vertical_column_troposphere
+  quality_flag_var: main_data_quality_flag
+  variables:
+    - product/vertical_column_troposphere
+    - product/main_data_quality_flag
+  supports_variable_subsetting: true
+  units: molecules/cm^2
+  fill_value: -1.0e+30   # np.float32(-1e30)
+  valid_min: -1.0e+15
+  valid_max:  1.0e+18
+  groups:
+    - product
+
+# ── Ozone ────────────────────────────────────────────────────────────────────
+
+TEMPO_O3TOT:
+  collection_id: C3685896625-LARC_CLOUD
+  short_name: TEMPO_O3TOT_L3
+  version: V04
+  description: TEMPO Level 3 total ozone column
+  primary_var: column_amount_o3
+  quality_flag_var: null
+  variables:
+    - product/column_amount_o3
+    - product/radiative_cloud_frac
+    - product/fc
+    - product/o3_below_cloud
+    - product/so2_index
+    - product/uv_aerosol_index
+  supports_variable_subsetting: true
+  units: DU
+  fill_value: -1.0e+30   # np.float32(-1e30)
+  valid_min: 50.0
+  valid_max: 700.0
+  groups:
+    - product
+
+OMI_O3:
+  collection_id: C1266136037-GES_DISC
+  short_name: OMDOAO3e
+  version: "003"
+  description: OMI daily total ozone column
+  primary_var: ColumnAmountO3
+  quality_flag_var: null
+  variables: []
+  supports_variable_subsetting: false
+  units: DU
+  fill_value: -1.267651e+30
+  valid_min: 50.0
+  valid_max: 700.0
+  groups: []
+
+# ── Formaldehyde ─────────────────────────────────────────────────────────────
+
+TEMPO_HCHO:
+  collection_id: C3685897141-LARC_CLOUD
+  short_name: TEMPO_HCHO_L3
+  version: V04
+  description: TEMPO formaldehyde (HCHO) vertical column
+  primary_var: vertical_column
+  quality_flag_var: main_data_quality_flag
+  variables:
+    - product/vertical_column
+    - product/vertical_column_uncertainty
+    - product/main_data_quality_flag
+  supports_variable_subsetting: true
+  units: molecules/cm^2
+  fill_value: -1.0e+30
+  valid_min: 0.0
+  valid_max: .inf
+  groups:
+    - product
+
+TEMPO_HCHO_V03:
+  collection_id: C2930761273-LARC_CLOUD
+  short_name: TEMPO_HCHO_L3
+  version: V03
+  description: TEMPO formaldehyde (HCHO) vertical column (V03)
+  primary_var: vertical_column
+  quality_flag_var: main_data_quality_flag
+  variables:
+    - product/vertical_column
+    - product/vertical_column_uncertainty
+    - product/main_data_quality_flag
+  supports_variable_subsetting: true
+  units: molecules/cm^2
+  fill_value: -1.0e+30
+  valid_min: 0.0
+  valid_max: .inf
+  groups:
+    - product
+
+OMI_HCHO:
+  collection_id: C1626121562-GES_DISC
+  short_name: OMHCHOd
+  version: "003"
+  description: OMI HCHO total column daily
+  primary_var: column_amount
+  quality_flag_var: data_quality_flag
+  variables: []
+  supports_variable_subsetting: false
+  units: molecules/cm^2
+  fill_value: -1.0e+30
+  valid_min: 0.0
+  valid_max: .inf
+  groups:
+    - key_science_data
+    - qa_statistics
+
+# ── Aerosol ───────────────────────────────────────────────────────────────────
+
+MODIS_AOD_TERRA:
+  collection_id: C3618500076-GES_DISC
+  short_name: AER_DBDT_D10KM_L3_MODIS_TERRA
+  version: "001"
+  description: MODIS Terra AOD at 550nm combined Dark Target + Deep Blue
+  primary_var: COMBINE_AOD_550_AVG
+  quality_flag_var: null
+  variables: []
+  supports_variable_subsetting: false
+  units: AOD (550nm)
+  fill_value: -999.0
+  valid_min: -0.05
+  valid_max:  5.0
+  groups: []
+
+MODIS_AOD_AQUA:
+  collection_id: C3618504061-GES_DISC
+  short_name: AER_DBDT_D10KM_L3_MODIS_AQUA
+  version: "001"
+  description: MODIS Aqua AOD at 550nm combined Dark Target + Deep Blue
+  primary_var: COMBINE_AOD_550_AVG
+  quality_flag_var: null
+  variables: []
+  supports_variable_subsetting: false
+  units: AOD (550nm)
+  fill_value: -999.0
+  valid_min: -0.05
+  valid_max:  5.0
+  groups: []

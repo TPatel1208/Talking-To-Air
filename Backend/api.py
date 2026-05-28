@@ -12,7 +12,8 @@ from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from agents.supervisor_agent import build_agent, stream_response, list_sessions, delete_session
+from agents.supervisor_agent import build_agent, list_sessions, delete_session
+from utils.streaming import stream_response
 
 app = FastAPI(title="Talking to Air API")
 

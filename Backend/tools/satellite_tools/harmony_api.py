@@ -10,8 +10,22 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils.plotting import GeocodingService
 from preprocessing.data_loader import DataLoader
 
-_geocoder = GeocodingService()
-_data_loader = DataLoader()
+_geocoder = None
+_data_loader = None
+
+
+def _get_geocoder():
+    global _geocoder
+    if _geocoder is None:
+        _geocoder = GeocodingService()
+    return _geocoder
+
+
+def _get_data_loader():
+    global _data_loader
+    if _data_loader is None:
+        _data_loader = DataLoader()
+    return _data_loader
 
 COLLECTIONS = {
     # OMI NO2 (Default for 'NO2' variable)
@@ -209,7 +223,7 @@ def geocode_location(location_name: str) -> dict:
     Returns:
         dict with keys: location, bbox, center_lat, center_lon.
     """
-    result = _geocoder.geocode(location_name)
+    result = _get_geocoder().geocode(location_name)
     if result is None:
         return {"error": f"Could not geocode '{location_name}'"}
 
@@ -289,7 +303,7 @@ def fetch_environmental_data(
     if col.get("supports_variable_subsetting", False):
         fetch_params["variables"] = col["variables"]
     try:
-        ds = _data_loader.download_dataset_harmony(**fetch_params)
+        ds = _get_data_loader().download_dataset_harmony(**fetch_params)
     except ValueError as e:
         return {"error": str(e)}
     except RuntimeError as e:
