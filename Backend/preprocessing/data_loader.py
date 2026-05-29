@@ -24,41 +24,9 @@ _EPOCH_1990 = datetime(1990, 1, 1, tzinfo=timezone.utc)   # MODIS AOD
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# PostGIS metadata index — imported lazily so the module still loads when
-# psycopg / the DB is unavailable (e.g. unit-test runs without a live DB).
-# ---------------------------------------------------------------------------
-try:
-    from preprocessing import cache_index as _ci
-    _CI_AVAILABLE = True
-except ImportError:
-    try:
-        import cache_index as _ci   # fallback when run as __main__
-        _CI_AVAILABLE = True
-    except ImportError:
-        _ci = None
-        _CI_AVAILABLE = False
-
-
-def _get_db_conn():
-    """
-    Return an open psycopg (v3) connection to the metadata DB, or None if the
-    cache-index module is unavailable or the DB is unreachable.
-    Calls ensure_schema() on every connection so the table always exists.
-    """
-    if not _CI_AVAILABLE:
-        return None
-    try:
-        conn = _ci.get_connection()
-        _ci.ensure_schema(conn)
-        return conn
-    except Exception as exc:
-        logger.warning("data_loader: DB metadata index unavailable — %s", exc)
-        return None
-
 
 class DataLoader:
-    def __init__(self):
+    def __init__(self, cache_path: str = "cache.zarr"):
         try:
             self.auth = earthaccess.login(strategy="environment")
             if not self.auth:
@@ -71,6 +39,22 @@ class DataLoader:
             env=Environment.PROD,
             auth=(os.getenv("EDL_USERNAME"), os.getenv("EDL_PASSWORD")),
         )
+
+        # Build the three-tier cache manager from the dedicated repository/manager
+        # classes instead of duplicating that logic inline.
+        from repositories.zarr_repository import ZarrRepository
+        from repositories.cache_index_repository import CacheIndexRepository
+        from preprocessing.cache_manager import CacheManager
+
+        zarr_repo  = ZarrRepository(cache_path)
+        try:
+            index_repo = CacheIndexRepository()
+        except Exception as exc:
+            logger.warning("DataLoader: PostGIS index unavailable — Zarr-only mode (%s)", exc)
+            index_repo = None
+
+        self._cache = CacheManager(zarr_repo, index_repository=index_repo)
+        self._default_cache_path = cache_path
 
     # -------------------------------------------------------------------------
     # Public entry point
@@ -89,10 +73,9 @@ class DataLoader:
         """
         Return a dataset for the requested collection / time range / bbox.
 
-        Lookup order
-        ------------
-        1. PostGIS metadata index — exact group_key match (B-tree); fastest path,
-           avoids opening the Zarr store at all.
+        Lookup order (handled by CacheManager)
+        ----------------------------------------
+        1. PostGIS metadata index — exact group_key match (B-tree); fastest path.
         2. Zarr store key check   — safety fallback when the DB is unreachable.
         3. NASA Harmony fetch     — only on a true cache miss; result is written to
                                     the Zarr store and a metadata row is inserted.
@@ -123,55 +106,15 @@ class DataLoader:
         logger.info(f"Cache group key: {group_key}")
 
         # ------------------------------------------------------------------
-        # 1. PostGIS metadata index lookup
+        # 1 + 2. Three-tier cache lookup (PostGIS → Zarr → miss)
         # ------------------------------------------------------------------
-        conn = _get_db_conn()
-        if conn is not None:
-            try:
-                meta_row = _ci.lookup(conn, collection_id, group_key, temporal, bounding_box)
-                if meta_row is not None:
-                    stored_path      = meta_row["cache_path"]
-                    cached_group_key = meta_row["group_key"]
-                    is_superset      = meta_row.get("superset_hit", False)
-                    logger.info(
-                        "Metadata index %s — loading from Zarr at %s  group=%s",
-                        "superset hit" if is_superset else "exact hit",
-                        stored_path, cached_group_key,
-                    )
-                    try:
-                        combined = xr.open_zarr(
-                            stored_path, group=cached_group_key, consolidated=False
-                        )
-
-                        # --------------------------------------------------
-                        # Spatial superset: trim the cached dataset down to
-                        # the originally requested bbox.
-                        # Only safe when lat/lon are 1-D and monotonic.
-                        # --------------------------------------------------
-                        if is_superset and bounding_box:
-                            combined = self._subset_bbox(combined, bounding_box)
-
-                        conn.close()
-                        return combined
-                    except Exception as zarr_exc:
-                        logger.warning(
-                            "Metadata index pointed to stale Zarr entry (%s) — "
-                            "falling through to re-fetch. Error: %s",
-                            stored_path, zarr_exc,
-                        )
-            except Exception as exc:
-                logger.warning("Metadata index lookup error — %s", exc)
-            # conn stays open; we'll use it for the insert after a Harmony fetch
-        else:
-            # ------------------------------------------------------------------
-            # 2. Zarr-only fallback (DB unavailable)
-            # ------------------------------------------------------------------
-            if self.is_cached(cache_path, group_key):
-                logger.info(
-                    "Zarr cache hit (no DB) — loading from %s  group=%s",
-                    cache_path, group_key,
-                )
-                return xr.open_zarr(cache_path, group=group_key, consolidated=False)
+        cached = self._cache.lookup(
+            collection_id=collection_id,
+            temporal=temporal,
+            bbox=bounding_box,
+        )
+        if cached is not None:
+            return cached
 
         # ------------------------------------------------------------------
         # 3. NASA Harmony fetch (true cache miss)
@@ -193,8 +136,6 @@ class DataLoader:
         request = Request(**request_params)
         if not request.is_valid():
             logger.error("Invalid Harmony request parameters")
-            if conn:
-                conn.close()
             raise ValueError("Harmony request parameters are invalid")
 
         logger.info("Submitting Harmony request")
@@ -208,12 +149,21 @@ class DataLoader:
         for future in concurrent.futures.as_completed(futures):
             filename = future.result()
             logger.info(f"Downloaded: {filename}")
-            datasets.append(self._open_dataset(filename, granule_times=granule_times))
+            try:
+                datasets.append(self._open_dataset(filename, granule_times=granule_times))
+            finally:
+                # Delete the .nc staging file immediately after parsing into memory.
+                # The data is preserved in the Zarr cache — the file is never needed again.
+                try:
+                    os.remove(filename)
+                    logger.debug(f"Deleted staging file: {filename}")
+                except OSError as e:
+                    logger.warning(f"Could not delete staging file {filename}: {e}")
 
+        # Check AFTER the loop — checking inside the finally block fires prematurely
+        # on the first iteration before any dataset has been appended.
         if not datasets:
             logger.error("No datasets were downloaded")
-            if conn:
-                conn.close()
             raise RuntimeError("Failed to download any datasets from Harmony")
 
         if len(datasets) == 1:
@@ -224,8 +174,6 @@ class DataLoader:
             if dropped:
                 logger.warning(f"{dropped} granule(s) had no time coordinate and were dropped")
             if not valid:
-                if conn:
-                    conn.close()
                 raise RuntimeError("No granules with a time coordinate — cannot concatenate")
             combined = xr.concat(valid, dim="time")
 
@@ -233,29 +181,11 @@ class DataLoader:
             combined[coord].attrs.pop("units", None)
             combined[coord].attrs.pop("calendar", None)
 
-        # Write Zarr (unchanged behaviour)
-        combined.to_zarr(cache_path, group=group_key, mode="w", consolidated=True)
-        logger.info(f"Cached to: {cache_path}  group={group_key}")
+        # ------------------------------------------------------------------
+        # 4. Store via CacheManager (Zarr write + PostGIS insert in one call)
+        # ------------------------------------------------------------------
+        self._cache.store(combined, collection_id, temporal, bounding_box, cache_path)
         logger.info(f"Harmony fetch + load: {time.time() - fetch_start:.2f}s")
-
-        # ------------------------------------------------------------------
-        # 4. Insert metadata row into PostGIS index
-        # ------------------------------------------------------------------
-        if conn is not None:
-            try:
-                _ci.insert(
-                    conn,
-                    collection_id=collection_id,
-                    group_key=group_key,
-                    cache_path=cache_path,
-                    temporal=temporal,
-                    bounding_box=bounding_box,
-                )
-            except Exception as exc:
-                # Non-fatal: Zarr data is already safely on disk
-                logger.warning("Metadata index insert failed (non-fatal) — %s", exc)
-            finally:
-                conn.close()
 
         return combined
 
@@ -270,19 +200,15 @@ class DataLoader:
         end_str: str,
         bbox: tuple,
     ) -> str:
-        """Stable MD5-based key that addresses a group inside the Zarr store."""
+        """Stable SHA-256-based key that addresses a group inside the Zarr store.
+
+        Uses the first 16 hex characters of the SHA-256 digest (64 bits of
+        collision resistance) instead of the earlier MD5/12-char scheme.
+        """
         bbox_str = "_".join(map(str, bbox))
         raw = f"{collection_id}_{start_str}_{end_str}_{bbox_str}"
-        return hashlib.md5(raw.encode()).hexdigest()[:12]
+        return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
-    @staticmethod
-    def is_cached(cache_path: str, group_key: str) -> bool:
-        """Return True if group_key already exists in the Zarr store."""
-        try:
-            store = zarr.open(cache_path, mode="r")
-            return group_key in store
-        except Exception:
-            return False
     @staticmethod
     def _subset_bbox(
         ds: xr.Dataset,

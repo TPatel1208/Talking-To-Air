@@ -30,23 +30,29 @@
 }
 
 html, body, #root {
-  height: 100%;
+  /* Use dvh so the layout tracks the *dynamic* viewport (browser chrome
+     showing/hiding on mobile). 100vh is the initial viewport and doesn't
+     update when the address bar hides, causing the page to drift up. */
+  height: 100dvh;
   width: 100%;
+  max-height: 100dvh;
   background: var(--bg-primary);
   color: var(--text-primary);
   font-family: var(--font);
   font-size: 14px;
   line-height: 1.6;
+  /* overflow: hidden on html/body blocks the native scroll-back gesture.
+     The message container handles its own scroll internally. */
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
 }
 
-/* Fix Chrome viewport height bug — dvh accounts for dynamic browser UI */
-html {
-  height: -webkit-fill-available;
-}
-body {
-  min-height: -webkit-fill-available;
+/* Fallback for browsers that don't support dvh yet */
+@supports not (height: 100dvh) {
+  html, body, #root {
+    height: 100%;
+    min-height: -webkit-fill-available;
+  }
 }
 
 ::-webkit-scrollbar { width: 4px; }

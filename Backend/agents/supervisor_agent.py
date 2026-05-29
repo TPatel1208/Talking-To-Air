@@ -1,7 +1,6 @@
 """
 Supervisor agent that orchestrates the Ground Sensor and Satellite agents.
 """
-import psycopg
 import os
 import sys
 import uuid
@@ -9,31 +8,14 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.agents import create_agent
 from langchain.tools import tool
 from langchain_core.messages import HumanMessage
-from langgraph.checkpoint.postgres import PostgresSaver
 
 from agents.ground_sensor_agent import build_ground_agent
 from agents.satellite_agent import build_satellite_agent
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config.supervisor_prompt import SUPERVISOR_PROMPT
+from utils.db import get_checkpointer, pg_connect
 from utils.streaming import stream_response
-
-def _pg_connect(autocommit: bool = False):
-    return psycopg.connect(
-        host=os.getenv("DB_HOST", "localhost"),
-        port=int(os.getenv("DB_PORT", 5432)),
-        dbname=os.getenv("DB_NAME", "talking_to_air_memory"),
-        user=os.getenv("DB_USER", "postgres"),
-        password=os.getenv("DB_PASSWORD"),
-        autocommit=autocommit,
-    )
-
-
-def get_checkpointer():
-    conn = _pg_connect(autocommit=True)
-    checkpointer = PostgresSaver(conn)
-    checkpointer.setup()
-    return checkpointer
 
 
 # ── Build supervisor ──────────────────────────────────────────────────────────
@@ -164,7 +146,7 @@ def build_agent(model: str = "llama-3.1-8b-instant", ground_agent_model: str = "
 # ── list_sessions, delete_session ─────────────────────────────────────────────
 
 def list_sessions() -> list[str]:
-    with _pg_connect() as conn:
+    with pg_connect() as conn:
         rows = conn.execute(
             "SELECT DISTINCT thread_id FROM checkpoints ORDER BY thread_id"
         ).fetchall()
@@ -174,7 +156,7 @@ def list_sessions() -> list[str]:
 
 def delete_session(thread_id: str):
     threads = [thread_id, f"ground-{thread_id}", f"satellite-{thread_id}"]
-    with _pg_connect() as conn:
+    with pg_connect() as conn:
         for table in ("checkpoint_writes", "checkpoint_blobs", "checkpoints"):
             conn.execute(
                 f"DELETE FROM {table} WHERE thread_id = ANY(%s)", (threads,)

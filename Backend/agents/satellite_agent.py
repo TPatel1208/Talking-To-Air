@@ -1,40 +1,19 @@
 import sys
 import uuid
 import os
-import psycopg
 from typing import Callable
 from langchain_groq import ChatGroq
 from langchain.agents import create_agent
 from langchain_core.messages import trim_messages
 from langchain.agents.middleware import wrap_model_call, ModelRequest, ModelResponse
-from langgraph.checkpoint.postgres import PostgresSaver
 
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config.satellite_agent_prompt import SATELLITE_AGENT_PROMPT
 from tools import SATELLITE_TOOLS
+from utils.db import get_checkpointer
 from utils.streaming import stream_response
 print("Tools imported:", [tool.name for tool in SATELLITE_TOOLS])
-
-
-def _pg_connect(autocommit: bool = False):
-    """Return a psycopg connection using individual env vars (avoids URL encoding issues)."""
-    return psycopg.connect(
-        host=os.getenv("DB_HOST", "localhost"),
-        port=int(os.getenv("DB_PORT", 5432)),
-        dbname=os.getenv("DB_NAME", "talking_to_air_memory"),
-        user=os.getenv("DB_USER", "postgres"),
-        password=os.getenv("DB_PASSWORD"),
-        autocommit=autocommit,
-    )
-
-
-def get_checkpointer():
-    """Returns a persistent PostgreSQL checkpointer."""
-    conn = _pg_connect(autocommit=True)
-    checkpointer = PostgresSaver(conn)
-    checkpointer.setup()  # creates tables on first run, no-op after
-    return checkpointer
 
 
 def build_satellite_agent(model: str = "llama-3.1-8b-instant", checkpointer=None):
@@ -89,7 +68,8 @@ def build_satellite_agent(model: str = "llama-3.1-8b-instant", checkpointer=None
 
 def list_sessions() -> list[str]:
     """Return all known thread_ids from the DB."""
-    with _pg_connect() as conn:
+    from utils.db import pg_connect
+    with pg_connect() as conn:
         rows = conn.execute(
             "SELECT DISTINCT thread_id FROM checkpoints ORDER BY thread_id"
         ).fetchall()
@@ -97,8 +77,9 @@ def list_sessions() -> list[str]:
 
 
 def delete_session(thread_id: str):
+    from utils.db import pg_connect
     threads = [thread_id, f"ground-{thread_id}", f"satellite-{thread_id}"]
-    with _pg_connect() as conn:
+    with pg_connect() as conn:
         for table in ("checkpoint_writes", "checkpoint_blobs", "checkpoints"):
             conn.execute(
                 f"DELETE FROM {table} WHERE thread_id = ANY(%s)", (threads,)
@@ -107,6 +88,9 @@ def delete_session(thread_id: str):
 
 
 if __name__ == "__main__":
+    # Standalone REPL — satellite agent only, no supervisor.
+    # stream_response is called without thread_ref because thread_ref is
+    # supervisor-only; passing None (the default) is correct here.
     agent = build_satellite_agent()
 
     sessions = list_sessions()
@@ -129,7 +113,8 @@ if __name__ == "__main__":
         if not user_input or user_input.lower() in {"quit", "exit", "q"}:
             break
 
-        for event_type, data in stream_response(agent, user_input, thread_id):
+        # thread_ref=None is correct — this agent is not a supervisor subagent
+        for event_type, data in stream_response(agent, user_input, thread_id, thread_ref=None):
             if event_type == "tool_call":
                 print(f"\n⚙ Calling: {data['name']} | args: {data['args']}")
             elif event_type == "tool_result":

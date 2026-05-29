@@ -7,38 +7,18 @@ can be composed by the supervisor.
 """
 import sys
 import os
-import psycopg
 from typing import Callable
 from langchain_groq import ChatGroq
 from langchain.agents import create_agent
 from langchain_core.messages import trim_messages
 from langchain.agents.middleware import wrap_model_call, ModelRequest, ModelResponse
-from langgraph.checkpoint.postgres import PostgresSaver
 
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config.ground_sensor_agent_prompt import GROUND_SYSTEM_PROMPT
 from tools import GROUND_TOOLS
+from utils.db import get_checkpointer
 from utils.streaming import stream_response
-
-def _pg_connect(autocommit: bool = False):
-    """Return a psycopg connection using individual env vars."""
-    return psycopg.connect(
-        host=os.getenv("DB_HOST", "localhost"),
-        port=int(os.getenv("DB_PORT", 5432)),
-        dbname=os.getenv("DB_NAME", "talking_to_air_memory"),
-        user=os.getenv("DB_USER", "postgres"),
-        password=os.getenv("DB_PASSWORD"),
-        autocommit=autocommit,
-    )
-
-
-def get_checkpointer():
-    """Returns a persistent PostgreSQL checkpointer."""
-    conn = _pg_connect(autocommit=True)
-    checkpointer = PostgresSaver(conn)
-    checkpointer.setup()
-    return checkpointer
 
 
 def build_ground_agent(model: str = "llama-3.1-8b-instant", checkpointer=None):

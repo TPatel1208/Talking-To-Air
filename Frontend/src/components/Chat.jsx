@@ -361,11 +361,15 @@ function EmptyState({ onChipClick }) {
 /* ── Main Chat component ── */
 export default function Chat({ messages, loading, error, onSend, onClear }) {
   const [input, setInput] = useState('')
-  const bottomRef = useRef(null)
+  const scrollContainerRef = useRef(null)
   const textareaRef = useRef(null)
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    // Scroll the message container itself — never the document/window.
+    // scrollIntoView() on a child element can escape the overflow:hidden
+    // root and shift the whole page with no way to scroll back.
+    const el = scrollContainerRef.current
+    if (el) el.scrollTop = el.scrollHeight
   }, [messages, loading])
 
   const handleSend = (text) => {
@@ -429,10 +433,13 @@ export default function Chat({ messages, loading, error, onSend, onClear }) {
       </div>
 
       {/* Message area */}
-      <div style={{
-        flex: 1, minHeight: 0, overflowY: 'auto',
-        display: 'flex', flexDirection: 'column',
-      }}>
+      <div
+        ref={scrollContainerRef}
+        style={{
+          flex: 1, minHeight: 0, overflowY: 'auto',
+          display: 'flex', flexDirection: 'column',
+        }}
+      >
         {isEmpty ? (
           <EmptyState onChipClick={handleSend} />
         ) : (
@@ -444,7 +451,7 @@ export default function Chat({ messages, loading, error, onSend, onClear }) {
                 <MessageBubble key={i} msg={msg} />
               )
             )}
-            <div ref={bottomRef} style={{ height: '8px' }} />
+            <div style={{ height: '8px' }} />
           </div>
         )}
       </div>

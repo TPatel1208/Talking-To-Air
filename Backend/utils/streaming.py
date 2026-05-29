@@ -17,9 +17,10 @@ Subagents (no thread_ref):
 
 Yields
 ------
-("tool_call",   {"name": str, "args": dict})   — agent is about to call a tool
-("tool_result", {"name": str, "content": str}) — tool returned; PNG path or truncated text
-("text",        str)                           — final assistant response text
+("tool_call",   {"name": str, "args": dict})         — agent is about to call a tool
+("image",       {"name": str, "path": str})          — a PNG path found inside a tool result
+("tool_result", {"name": str, "content": str})       — tool returned; full content (truncated at 300 chars)
+("text",        str)                                 — final assistant response text
 """
 
 import re
@@ -69,11 +70,14 @@ def stream_response(
                 # ── Tool result returned ──────────────────────────────────
                 elif hasattr(msg, "name") and msg.name:
                     raw = str(msg.content)
-                    # Always extract a PNG path first so it's never lost
-                    # even when buried inside a long result string.
+                    # If the result contains a PNG path, emit it as a separate
+                    # "image" event so callers can render it.  The full content
+                    # string is always passed through as "tool_result" so no
+                    # text is discarded when a PNG path is present.
                     img = re.search(r'[\w\-./]+\.png', raw)
-                    content_out = img.group(0) if img else raw[:300]
-                    yield ("tool_result", {"name": msg.name, "content": content_out})
+                    if img:
+                        yield ("image", {"name": msg.name, "path": img.group(0)})
+                    yield ("tool_result", {"name": msg.name, "content": raw[:300]})
 
                 # ── Assistant text response ───────────────────────────────
                 elif hasattr(msg, "content") and msg.content:
