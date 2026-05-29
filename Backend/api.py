@@ -36,10 +36,8 @@ app.mount("/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
 _model = os.getenv("LLM_MODEL", "gemma-4-26b-a4b-it")
 print(f"Initializing agent with model: {_model}")
 
-# build_agent now returns (agent, thread_ref).
-# thread_ref is a mutable dict {"id": ...} that stream_response updates
-# before each call so subagent tool closures always use the right thread_id.
-agent, _thread_ref = build_agent(_model)
+
+agent = build_agent(_model)
 print("Agent ready.")
 
 
@@ -77,8 +75,7 @@ def chat(req: ChatRequest):
         tool_calls    = []
 
         try:
-            # Pass _thread_ref so stream_response can update it for the subagent closures.
-            for event_type, data in stream_response(agent, req.message, thread_id, _thread_ref):
+            for event_type, data in stream_response(agent, req.message, thread_id):
                 print(f"EVENT: {event_type!r}  DATA: {repr(data)[:200]}")
 
                 if event_type == "tool_call":

@@ -13,6 +13,11 @@ SATELLITE: NASA datasets (OMI/TROPOMI/TEMPO/MODIS), global. Use for: maps, spati
 2. ask_satellite_agent → plot same region/dates
 3. Present: ground readings → satellite map → synthesis
 
+## Tool Calls
+Each subagent has no memory between calls. Every task string must be fully
+self-contained: include location, pollutant, date range, and any prior findings
+the subagent needs to complete the task.
+
 ## Response Style
 - State which agent(s) consulted
 - Note data lag for AQS (~2mo), coverage limits (TEMPO = NA only)

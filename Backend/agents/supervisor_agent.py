@@ -1,13 +1,22 @@
 """
 Supervisor agent that orchestrates the Ground Sensor and Satellite agents.
+
+Memory model
+------------
+- Supervisor : stateful — uses a Postgres checkpointer, one thread per session.
+- Subagents  : stateless — no checkpointer; each tool call is a fresh invocation.
+               The supervisor includes all necessary context in the task string
+               it passes to each subagent tool.
 """
 import os
 import sys
 import uuid
+from typing import Callable
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.agents import create_agent
 from langchain.tools import tool
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, trim_messages
+from langchain.agents.middleware import wrap_model_call, ModelRequest, ModelResponse
 
 from agents.ground_sensor_agent import build_ground_agent
 from agents.satellite_agent import build_satellite_agent
@@ -20,37 +29,51 @@ from utils.streaming import stream_response
 
 # ── Build supervisor ──────────────────────────────────────────────────────────
 
-def build_agent(model: str = "llama-3.1-8b-instant", ground_agent_model: str = "meta-llama/llama-4-scout-17b-16e-instruct", satellite_agent_model: str = "meta-llama/llama-4-scout-17b-16e-instruct"):
+def build_agent(
+    model: str = "llama-3.1-8b-instant",
+    ground_agent_model: str = "meta-llama/llama-4-scout-17b-16e-instruct",
+    satellite_agent_model: str = "meta-llama/llama-4-scout-17b-16e-instruct",
+):
     """
     Build and return the supervisor agent.
 
-    Uses a SINGLE shared checkpointer for the supervisor and both subagents
-    to avoid multiple psycopg connections racing on the same Postgres tables.
+    The supervisor is the only stateful component — it owns the Postgres
+    checkpointer and persists the full conversation history under one
+    thread_id per user session.
 
-    Sub-thread IDs are derived from the active supervisor thread_id so they
-    are stable across the conversation (same thread = same sub-agent memory)
-    but isolated across sessions.
-
-    Returns (agent, thread_ref) where thread_ref is a dict with key "id"
-    that must be updated to the current thread_id before each stream call.
+    Subagents are stateless: each tool call creates a fresh invocation with
+    no checkpointer attached, so they write nothing to the DB and accumulate
+    no history of their own.
     """
     llm = ChatGoogleGenerativeAI(
         model=model,
         google_api_key=os.getenv("GOOGLE_API_KEY"),
     )
-    ground_agent_model = os.getenv("GROUND_AGENT_MODEL", ground_agent_model)
+
+    ground_agent_model   = os.getenv("GROUND_AGENT_MODEL",   ground_agent_model)
     satellite_agent_model = os.getenv("SATELLITE_AGENT_MODEL", satellite_agent_model)
-    # ONE checkpointer shared across supervisor + both subagents.
-    # This eliminates the race condition caused by three separate
-    # autocommit=True connections hitting the same checkpoint tables.
-    checkpointer = get_checkpointer()
 
-    ground_agent    = build_ground_agent(model=ground_agent_model,    checkpointer=checkpointer)
-    satellite_agent = build_satellite_agent(model=satellite_agent_model, checkpointer=checkpointer)
+    # Stateless subagents — no checkpointer passed.
+    ground_agent    = build_ground_agent(model=ground_agent_model)
+    satellite_agent = build_satellite_agent(model=satellite_agent_model)
 
-    # Mutable container so the tool closures can always read the current
-    # supervisor thread_id even though the tools are defined once at build time.
-    _thread_ref = {"id": "default"}
+    # ── Trim middleware — keeps the supervisor's context window bounded ───────
+
+    @wrap_model_call
+    def trim_middleware(
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse:
+        trimmed = trim_messages(
+            request.state["messages"],
+            max_tokens=8000,
+            strategy="last",
+            token_counter="approximate",
+            include_system=True,
+            allow_partial=False,
+            start_on="human",
+        )
+        return handler(request.override(messages=trimmed))
 
     # ── Wrap subagents as tools ───────────────────────────────────────────────
 
@@ -71,29 +94,11 @@ def build_agent(model: str = "llama-3.1-8b-instant", ground_agent_model: str = "
         Output: text summary including monitor name, site_id, coordinates,
                 exceedance dates, and peak concentration values.
         """
-        # Derive sub-thread from the active supervisor thread so the ground
-        # agent retains context within a session but is isolated across sessions.
-        # Using a fixed suffix (not uuid4) means the ground agent remembers
-        # prior tool calls made during this same conversation.
-        sub_thread = f"ground-{_thread_ref['id']}"
         result = ground_agent.invoke(
             {"messages": [HumanMessage(content=task)]},
-            config={"configurable": {"thread_id": sub_thread}},
+            config={"configurable": {"thread_id": str(uuid.uuid4())}},
         )
-        messages = result.get("messages", [])
-        for msg in reversed(messages):
-            if hasattr(msg, "content") and msg.content:
-                content = msg.content
-                if isinstance(content, str):
-                    return content
-                if isinstance(content, list):
-                    return " ".join(
-                        b.get("text", "") if isinstance(b, dict) else getattr(b, "text", "")
-                        for b in content
-                        if (isinstance(b, dict) and b.get("type") == "text")
-                        or hasattr(b, "text")
-                    )
-        return "Ground sensor agent returned no response."
+        return _extract_last_text(result, "Ground sensor agent returned no response.")
 
     @tool
     def ask_satellite_agent(task: str) -> str:
@@ -111,55 +116,67 @@ def build_agent(model: str = "llama-3.1-8b-instant", ground_agent_model: str = "
                (e.g. 'Plot TROPOMI NO2 over New Jersey for 2024-01-15').
         Output: text summary with plot path and spatial statistics.
         """
-        sub_thread = f"satellite-{_thread_ref['id']}"
         result = satellite_agent.invoke(
             {"messages": [HumanMessage(content=task)]},
-            config={"configurable": {"thread_id": sub_thread}},
+            config={"configurable": {"thread_id": str(uuid.uuid4())}},
         )
-        messages = result.get("messages", [])
-        for msg in reversed(messages):
-            if hasattr(msg, "content") and msg.content:
-                content = msg.content
-                if isinstance(content, str):
-                    return content
-                if isinstance(content, list):
-                    return " ".join(
-                        b.get("text", "") if isinstance(b, dict) else getattr(b, "text", "")
-                        for b in content
-                        if (isinstance(b, dict) and b.get("type") == "text")
-                        or hasattr(b, "text")
-                    )
-        return "Satellite agent returned no response."
+        return _extract_last_text(result, "Satellite agent returned no response.")
 
     # ── Build supervisor ──────────────────────────────────────────────────────
+    checkpointer = get_checkpointer()
     supervisor = create_agent(
         model=llm,
         tools=[ask_ground_sensor_agent, ask_satellite_agent],
         system_prompt=SUPERVISOR_PROMPT,
         checkpointer=checkpointer,
+        middleware=[trim_middleware],
     )
-    return supervisor, _thread_ref
+    return supervisor
 
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _extract_last_text(result: dict, fallback: str, max_chars: int = 2000) -> str:
+    """Return the last non-empty text content from an agent invoke() result.
+
+    Capped at max_chars to prevent large subagent responses from bloating the
+    supervisor's checkpoint and inflating token counts on every subsequent turn.
+    """
+    for msg in reversed(result.get("messages", [])):
+        if not (hasattr(msg, "content") and msg.content):
+            continue
+        content = msg.content
+        if isinstance(content, str):
+            return content[:max_chars]
+        if isinstance(content, list):
+            text = " ".join(
+                b.get("text", "") if isinstance(b, dict) else getattr(b, "text", "")
+                for b in content
+                if (isinstance(b, dict) and b.get("type") == "text")
+                or hasattr(b, "text")
+            )
+            if text:
+                return text[:max_chars]
+    return fallback
 
 
 # ── list_sessions, delete_session ─────────────────────────────────────────────
 
 def list_sessions() -> list[str]:
+    """Return all supervisor session thread_ids (subagent threads no longer exist)."""
     with pg_connect() as conn:
         rows = conn.execute(
             "SELECT DISTINCT thread_id FROM checkpoints ORDER BY thread_id"
         ).fetchall()
-    # Filter out sub-agent threads so the sidebar only shows supervisor sessions.
-    return [r[0] for r in rows if not r[0].startswith(("ground-", "satellite-"))]
+    return [r[0] for r in rows]
 
 
 def delete_session(thread_id: str):
-    threads = [thread_id, f"ground-{thread_id}", f"satellite-{thread_id}"]
+    """Delete a supervisor session from the checkpoint tables."""
     with pg_connect() as conn:
         for table in ("checkpoint_writes", "checkpoint_blobs", "checkpoints"):
             conn.execute(
-                f"DELETE FROM {table} WHERE thread_id = ANY(%s)", (threads,)
+                f"DELETE FROM {table} WHERE thread_id = %s", (thread_id,)
             )
         conn.commit()
 
@@ -167,7 +184,7 @@ def delete_session(thread_id: str):
 # ── Standalone test ───────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    agent, thread_ref = build_agent()
+    agent = build_agent()
 
     sessions = list_sessions()
     print("Existing sessions:", sessions or "none")
@@ -189,7 +206,7 @@ if __name__ == "__main__":
         if not user_input or user_input.lower() in {"quit", "exit", "q"}:
             break
 
-        for event_type, data in stream_response(agent, user_input, thread_id, thread_ref):
+        for event_type, data in stream_response(agent, user_input, thread_id):
             if event_type == "tool_call":
                 print(f"\n⚙ Calling: {data['name']} | args: {data['args']}")
             elif event_type == "tool_result":
