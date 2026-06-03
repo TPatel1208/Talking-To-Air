@@ -118,12 +118,20 @@ def ensure_schema(conn=None) -> None:
 # Query helpers
 # ---------------------------------------------------------------------------
 
-def _bbox_to_polygon_wkt(bbox: Tuple[float, float, float, float]) -> str:
+def _bbox_to_polygon_wkt(bbox) -> str:
     """
     Convert (min_lon, min_lat, max_lon, max_lat) to a WKT polygon string
     suitable for ST_GeomFromText(..., 4326).
+
+    Accepts a 4-tuple/list of floats or a comma-separated string.
     """
-    min_lon, min_lat, max_lon, max_lat = bbox
+    if isinstance(bbox, str):
+        parts = [float(x) for x in bbox.split(",")]
+        if len(parts) != 4:
+            raise ValueError(f"bbox string must have 4 values, got {len(parts)}: {bbox!r}")
+        min_lon, min_lat, max_lon, max_lat = parts
+    else:
+        min_lon, min_lat, max_lon, max_lat = bbox
     return (
         f"POLYGON(("
         f"{min_lon} {min_lat}, "

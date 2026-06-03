@@ -32,7 +32,7 @@ from utils.streaming import stream_response
 def build_agent(
     model: str = "llama-3.1-8b-instant",
     ground_agent_model: str = "meta-llama/llama-4-scout-17b-16e-instruct",
-    satellite_agent_model: str = "meta-llama/llama-4-scout-17b-16e-instruct",
+    satellite_agent_model: str = "openai/gpt-oss-20b",
 ):
     """
     Build and return the supervisor agent.
@@ -116,11 +116,32 @@ def build_agent(
                (e.g. 'Plot TROPOMI NO2 over New Jersey for 2024-01-15').
         Output: text summary with plot path and spatial statistics.
         """
-        result = satellite_agent.invoke(
-            {"messages": [HumanMessage(content=task)]},
-            config={"configurable": {"thread_id": str(uuid.uuid4())}},
-        )
-        return _extract_last_text(result, "Satellite agent returned no response.")
+        chart_paths = []
+        text_parts  = []
+
+        for event_type, data in stream_response(
+            satellite_agent, task, thread_id=str(uuid.uuid4())
+        ):
+            if event_type == "tool_result":
+                content = data.get("content", "")
+                if isinstance(content, str) and content.strip().endswith(".chart.json"):
+                    p = content.strip()
+                    # Fix #4: resolve relative paths the same way api.py does so
+                    # the file check succeeds regardless of the working directory.
+                    if not os.path.isabs(p):
+                        from tools.satellite_tools.plot_tools import OUTPUT_DIR as _PLOT_OUTPUT_DIR
+                        p = os.path.join(_PLOT_OUTPUT_DIR, os.path.basename(p))
+                    if os.path.isfile(p):
+                        chart_paths.append(p)
+            elif event_type in ("text", "done"):
+                t = data if isinstance(data, str) else data.get("response", "")
+                if t:
+                    text_parts.append(t)
+
+        summary = " ".join(text_parts)[:2000] or "Satellite agent returned no response."
+        if chart_paths:
+            summary += "\nCHART_PATHS: " + " ".join(chart_paths)
+        return summary
 
     # ── Build supervisor ──────────────────────────────────────────────────────
     checkpointer = get_checkpointer()

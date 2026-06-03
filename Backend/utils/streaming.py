@@ -77,7 +77,7 @@ def stream_response(
                     img = re.search(r'[\w\-./]+\.png', raw)
                     if img:
                         yield ("image", {"name": msg.name, "path": img.group(0)})
-                    yield ("tool_result", {"name": msg.name, "content": raw[:300]})
+                    yield ("tool_result", {"name": msg.name, "content": raw})
 
                 # ── Assistant text response ───────────────────────────────
                 elif hasattr(msg, "content") and msg.content:

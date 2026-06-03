@@ -58,7 +58,7 @@ export function useChat() {
     setMessages(prev => [
       ...prev,
       { role: 'user',      content: text },
-      { role: 'assistant', content: '', toolCalls: [], imageUrls: [], isLoading: true },
+      { role: 'assistant', content: '', toolCalls: [], imageUrls: [], charts: [], isLoading: true },
     ])
     setLoading(true)
     setError(null)
@@ -105,12 +105,27 @@ export function useChat() {
             }))
           }
 
+          else if (event === 'chart') {
+            // Only accept chart payloads that are plain objects with a type field.
+            // The backend occasionally forwards the raw file-path string instead of
+            // the parsed JSON object (supervisor → subagent path); that string must
+            // never reach ChartMessage or React will throw error #130.
+            if (!data || typeof data !== 'object' || !data.type) {
+              console.warn('[useChat] Ignoring non-object chart event:', data)
+            } else {
+              updateLastAssistant(msg => ({
+                charts: [...(msg.charts || []), data],
+              }))
+            }
+          }
+
           else if (event === 'done') {
             const newId = data.thread_id
             setThreadId(newId)
-            updateLastAssistant(() => ({
+            updateLastAssistant(msg => ({
               content:   data.response,
               imageUrls: (data.image_urls || []).map(u => `${API_BASE}${u}`),
+              charts:    msg.charts || [],   // preserve charts accumulated during stream
               isLoading: false,
             }))
             setSessions(prev => prev.includes(newId) ? prev : [...prev, newId])

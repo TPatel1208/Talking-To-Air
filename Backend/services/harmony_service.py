@@ -31,9 +31,35 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Tuple
 
+import requests
 from harmony import BBox, Client, Collection, Environment, Request
+from tenacity import (
+    retry,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential,
+    before_sleep_log,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    """Return True for transient errors that should be retried."""
+    if isinstance(exc, requests.exceptions.Timeout):
+        return True
+    if isinstance(exc, requests.exceptions.HTTPError):
+        return exc.response.status_code >= 500
+    return False
+
+
+_RETRY = dict(
+    retry=retry_if_exception(_is_retryable),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
 
 
 class HarmonyService:
@@ -61,6 +87,7 @@ class HarmonyService:
             )
         self.client = client
 
+    @retry(**_RETRY)
     def submit_and_download(
         self,
         collection_id: str,

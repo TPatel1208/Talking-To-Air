@@ -583,8 +583,8 @@ def find_exceedance_days(
     maxlat: Optional[Union[float, str]] = None,
     minlon: Optional[Union[float, str]] = None,
     maxlon: Optional[Union[float, str]] = None,
-    hard_threshold: Optional[float] = None,
-    percentile_threshold: Optional[float] = None,
+    hard_threshold: Optional[Union[float, str]] = None,
+    percentile_threshold: Optional[Union[float, str]] = None,
 ) -> Dict[str, Any]:
     """
     Find days exceeding pollutant thresholds. No prior get_daily_summary needed.
@@ -593,6 +593,12 @@ def find_exceedance_days(
     hard_threshold: fixed value (defaults to regulatory limit for known param_codes).
     percentile_threshold: top N% of period, e.g. 90.0 = top 10%. Both can combine.
     """
+    # Coerce string inputs — the LLM occasionally passes numbers as strings
+    if hard_threshold is not None:
+        hard_threshold = float(hard_threshold)
+    if percentile_threshold is not None:
+        percentile_threshold = float(percentile_threshold)
+
     # Resolve the regulatory standard and measurement field for this param
     reg = _REGULATORY_THRESHOLDS.get(param_code)
     if reg is None and hard_threshold is None and percentile_threshold is None:
@@ -814,4 +820,3 @@ if __name__ == "__main__":
             "edate": first_exceedance["date"],
         })
         print(json.dumps(sample_result, indent=2))
- 

@@ -1,7 +1,7 @@
 from .satellite_tools.date_tools   import convert_date_to_iso, convert_temporal_range_to_iso
 from .satellite_tools.harmony_api  import check_data_availability, geocode_location, fetch_environmental_data
-from .satellite_tools.plot_tools   import plot_singular, plot_multiple
-from .satellite_tools.stat_tools   import  compute_statistic_tool,conduct_temporal_statistic, find_daily_peak
+from .satellite_tools.plot_tools   import plot_singular, plot_multiple, conduct_temporal_statistic
+from .satellite_tools.stat_tools   import compute_statistic_tool, find_daily_peak
 
 SATELLITE_TOOLS = [
     convert_date_to_iso,

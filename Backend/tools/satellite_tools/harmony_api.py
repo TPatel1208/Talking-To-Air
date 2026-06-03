@@ -9,6 +9,7 @@ import json
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils.plotting import GeocodingService
 from preprocessing.data_loader import DataLoader
+from tools.satellite_tools.models import DataDict
 
 _geocoder = None
 _data_loader = None
@@ -316,20 +317,30 @@ def fetch_environmental_data(
     except Exception:
         times = []
 
-    return {
-        "variable":      variable,
-        "units":         col["units"],
-        "bbox":          bbox,
-        "times":         times,
-        "n_granules":    len(times) or 1,
-        "source":        f"NASA Harmony — {col['description']}",
-        "_fetch_params": {
-            "variable":   variable,
-            "bbox":       bbox_list,
-            "start_date": start_date,
-            "end_date":   end_date,
-        },
+    # Build a clean, JSON-safe fetch_params for storage on DataDict.
+    # The internal fetch_params (used above for download) contains tuples
+    # which are not JSON-serialisable — don't reuse it here.
+    serialisable_fetch_params = {
+        "variable":     variable,
+        "start_date":   start_date,
+        "end_date":     end_date,
+        "bbox":         bbox_list,
+        "bounding_box": bbox_list,
+        "cache_path":   "./data/cache.zarr",
+        "max_results":  max_results,
     }
+    if col.get("supports_variable_subsetting", False):
+        serialisable_fetch_params["variables"] = list(col["variables"])
+
+    return DataDict(
+        variable=variable,
+        units=col["units"],
+        bbox=bbox,
+        times=times,
+        n_granules=len(times) or 1,
+        source=f"NASA Harmony — {col['description']}",
+        fetch_params=serialisable_fetch_params,
+    )
 
 
 @tool

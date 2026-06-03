@@ -5,9 +5,7 @@ import numpy as np
 from langchain.tools import tool
 import pandas as pd
 from typing import Optional
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
+from tools.satellite_tools.models import DataDict
 import re
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -20,6 +18,13 @@ _resolver = RegionResolver()
 
 VALID_STATS = {"mean", "median", "max", "min", "std"}
 
+
+
+def _get(data_dict, key, default=None):
+    """Access a field from a DataDict object or plain dict interchangeably."""
+    if isinstance(data_dict, dict):
+        return data_dict.get(key, default)
+    return getattr(data_dict, key, default)
 
 @tool
 def compute_statistic_tool(
@@ -61,7 +66,7 @@ def compute_statistic_tool(
     da = mask_data_by_geometry(da, region['geometry'])
 
     # --- 3. Extract valid pixels ---'
-    var = data_dict.get("variable")
+    var = _get(data_dict, "variable", "")
     col_info = COLLECTIONS.get(var, {})
     values = da.values
     fill_value = col_info.get("fill_value", -1.267651e+30)
@@ -94,148 +99,15 @@ def compute_statistic_tool(
 
     result = {
         "location": location,
-        "variable": data_dict.get("variable"),
-        "units":    data_dict.get("units"),
+        "variable": _get(data_dict, "variable", ""),
+        "units":    _get(data_dict, "units", ""),
         "n_pixels": int(len(valid)),
-        "times":    data_dict.get("times", []),
+        "times":    list(_get(data_dict, "times", [])),
     }
     for s in stats:
         result[s] = stat_fns[s](valid)
 
     return json.dumps(result)
-
-
-@tool
-def conduct_temporal_statistic(
-    data_dict: dict,
-    location: str,
-    stat: str = "mean",
-) -> str:
-    """
-    Compute a statistic over each time step in a dataset and plot the trend.
-
-    Args:
-        data_dict: dict directly from fetch_environmental_data
-                   (should cover a multi-day or multi-month range)
-        location:  place name to spatially mask before computing e.g. 'Texas'
-        stat:      statistic to compute at each time step.
-                   One of: 'mean', 'median', 'max', 'min', 'std'
-
-    Returns:
-        File path of the saved trend plot PNG, or error JSON string.
-    """
-    import matplotlib.dates as mdates
-    from datetime import datetime
-
-    # --- 1. Load --- 
-    try:
-        da = _load_data(data_dict)
-    except Exception as e:
-        return json.dumps({"error": f"Failed to load data: {e}"})
-
-    # No 2D normilization, we need the time dimension
-    if "time" not in da.dims:
-        return json.dumps({"error": f"No time dimension found. dims={list(da.dims)}"})
-
-    # --- 2. Mask to region ---
-    region = _resolver.resolve_location(location)
-    if region is None:
-        return json.dumps({"error": f"Could not resolve location: '{location}'"})
-
-    # Mask the full 3D array, mask_data_by_geometry handles 3D
-    da = mask_data_by_geometry(da, region['geometry'])
-
-    # --- 3. Filter setup ---
-    var        = data_dict.get("variable", "")
-    col_info   = COLLECTIONS.get(var, {})
-    fill_value = col_info.get("fill_value", -1.267651e+30)
-    max_valid  = col_info.get("valid_max",   1e18)
-    min_valid  = col_info.get("valid_min",  -1e15)
-
-    stat_fn = {
-        "mean":   np.nanmean,
-        "median": np.nanmedian,
-        "max":    np.nanmax,
-        "min":    np.nanmin,
-        "std":    np.nanstd,
-    }.get(stat)
-
-    if stat_fn is None:
-        return json.dumps({"error": f"Unknown stat '{stat}'. Use: mean, median, max, min, std"})
-
-    # --- 4. Iterate over time steps ---
-    times  = []
-    values = []
-
-    for i in range(da.sizes["time"]):
-        slice_2d = da.isel(time=i).values
-
-        # Apply validity filter
-        valid = slice_2d[
-            np.isfinite(slice_2d) &
-            (slice_2d != fill_value) &
-            (slice_2d > min_valid) &
-            (slice_2d < max_valid)
-        ]
-
-        if len(valid) == 0:
-            continue
-
-        # Parse timestamp
-        raw_time = da["time"].values[i]
-        timestamp = pd.Timestamp(raw_time).to_pydatetime()
-
-        times.append(timestamp)
-        values.append(float(stat_fn(valid)))
-
-    if not times:
-        return json.dumps({"error": f"No valid data found for '{location}' across any time step."})
-
-    # --- 5. Sort by time (granules may be unordered) ---
-    paired = sorted(zip(times, values), key=lambda x: x[0])
-    times, values = zip(*paired)
-
-    # --- 6. Plot ---
-    fig, ax = plt.subplots(figsize=(10, 4), dpi=150)
-
-    ax.plot(times, values, marker='o', linewidth=1.5, markersize=4, color='steelblue')
-    ax.fill_between(times, values, alpha=0.1, color='steelblue')
-
-   
-    time_range_days = (times[-1] - times[0]).days
-    time_range_hours = (times[-1] - times[0]).total_seconds() / 3600
-
-    if time_range_hours <= 24:
-        # Same day — show hours
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-        ax.set_xlabel("Time (UTC)")
-    elif time_range_days <= 31:
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %d'))
-        ax.set_xlabel("Date")
-    elif time_range_days <= 366:
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
-        ax.set_xlabel("Date")
-    else:
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
-        ax.set_xlabel("Year")
-
-    plt.xticks(rotation=45)
-    date_str = times[0].strftime('%Y-%m-%d')
-    if time_range_hours <= 24:
-        ax.set_title(f"{var} {stat} over {location} ({date_str})", fontsize=12, fontweight='bold')
-    else:
-        ax.set_title(f"{var} {stat} over {location}", fontsize=12, fontweight='bold')
-    ax.set_ylabel(f"{stat} ({data_dict.get('units', '')})")
-    ax.grid(True, alpha=0.3, linestyle='--')
-    plt.tight_layout()
-
-    # --- 7. Save ---
-    safe_location = re.sub(r'[^\w\-]', '_', location)
-    output_path = os.path.join(OUTPUT_DIR, f"{var}_{stat}_trend_{safe_location}.png")
-    fig.savefig(output_path, dpi=150, bbox_inches='tight')
-    plt.close(fig)
-
-    return output_path
 
 
 @tool
@@ -292,7 +164,7 @@ def find_daily_peak(
     lon_array = da[lon_dim].values
 
     # Filter
-    var        = data_dict.get("variable", "")
+    var        = _get(data_dict, "variable", "")
     col_info   = COLLECTIONS.get(var, {})
     fill_value = col_info.get("fill_value", -1.267651e+30)
     max_valid  = col_info.get("valid_max",   1e18)
@@ -337,8 +209,8 @@ def find_daily_peak(
     result = json.dumps({
         "location":   location,
         "variable":   var,
-        "units":      data_dict.get("units"),
-        "times":      data_dict.get("times", []),
+        "units":      _get(data_dict, "units", ""),
+        "times":      list(_get(data_dict, "times", [])),
         "peak_value": peak_val,
         "peak_lat":   peak_lat,
         "peak_lon":   peak_lon,

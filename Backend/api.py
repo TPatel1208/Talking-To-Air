@@ -84,9 +84,33 @@ def chat(req: ChatRequest):
 
                 elif event_type == "tool_result":
                     content = data.get("content", "")
-                    # Use regex to find a .png path anywhere in the content string.
-                    # The old endswith(".png") check missed paths embedded mid-sentence
-                    # in longer summaries returned by the satellite agent.
+                    # Detect chart paths forwarded by ask_satellite_agent
+                    if "CHART_PATHS:" in content:
+                        for chart_path in content.split("CHART_PATHS:")[1].strip().split():
+                            if chart_path.endswith(".chart.json") and os.path.isfile(chart_path):
+                                try:
+                                    with open(chart_path) as _cf:
+                                        chart_payload = json.load(_cf)
+                                    # Validate payload is a dict with a type key before emitting.
+                                    # Emitting a raw string here is what causes React error #130.
+                                    if isinstance(chart_payload, dict) and "type" in chart_payload:
+                                        yield sse("chart", chart_payload)
+                                except Exception:
+                                    pass
+                        continue
+                    # Detect chart files saved by plot_tools (.chart.json)
+                    chart_path = content.strip()
+                    if chart_path.endswith(".chart.json") and os.path.isfile(chart_path):
+                        try:
+                            with open(chart_path) as _cf:
+                                chart_payload = json.load(_cf)
+                            # Same validation here — ensures only proper chart objects go to the frontend.
+                            if isinstance(chart_payload, dict) and "type" in chart_payload:
+                                yield sse("chart", chart_payload)
+                                continue
+                        except Exception:
+                            pass
+                    # Legacy: detect .png paths for any remaining static image tools
                     png_match = re.search(r'(/outputs/[\w\-./]+\.png|[\w\-./]+\.png)', content)
                     if png_match:
                         url = normalize_image_url(png_match.group(1))
@@ -197,6 +221,7 @@ def get_history(thread_id: str):
                     "content":   content,
                     "toolCalls": tool_calls,
                     "imageUrls": [],
+                    "charts":    [],
                 })
 
             elif role == "tool":
@@ -226,6 +251,35 @@ def get_history(thread_id: str):
                                     m["imageUrls"].append(url)
                                 break
 
+                # Find all .chart.json paths and re-attach the payload to the
+                # preceding assistant message so charts survive page refresh.
+                #
+                # Fix #5: deduplicate by resolved file path rather than by payload
+                # object identity.  When ask_satellite_agent embeds a CHART_PATHS:
+                # summary AND the bare path also appears in tool_text, the regex
+                # would otherwise attach the same payload twice.
+                _seen_chart_paths = set()
+                for chart_match in re.finditer(r'[\w\-./]+\.chart\.json', tool_text):
+                    chart_path = chart_match.group(0)
+                    # Resolve relative paths the same way the streaming path does
+                    if not os.path.isabs(chart_path):
+                        chart_path = os.path.join(OUTPUT_DIR, os.path.basename(chart_path))
+                    if chart_path in _seen_chart_paths:
+                        continue
+                    _seen_chart_paths.add(chart_path)
+                    if os.path.isfile(chart_path):
+                        try:
+                            with open(chart_path) as _cf:
+                                chart_payload = json.load(_cf)
+                            if isinstance(chart_payload, dict) and "type" in chart_payload:
+                                for m in reversed(result):
+                                    if m["role"] == "assistant":
+                                        m.setdefault("charts", [])
+                                        m["charts"].append(chart_payload)
+                                        break
+                        except Exception:
+                            pass
+
         merged = []
         for msg in result:
             if (
@@ -240,6 +294,10 @@ def get_history(thread_id: str):
                 for url in msg["imageUrls"]:
                     if url not in prev["imageUrls"]:
                         prev["imageUrls"].append(url)
+                for chart in msg.get("charts", []):
+                    prev.setdefault("charts", [])
+                    if chart not in prev["charts"]:
+                        prev["charts"].append(chart)
             else:
                 merged.append(msg)
 

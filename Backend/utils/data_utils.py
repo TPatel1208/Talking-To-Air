@@ -16,18 +16,27 @@ def get_loader():
     return _loader_instance
 
 
-def _load_data(data_json: dict, apply_quality_flag: bool = True) -> xr.DataArray:
+def _load_data(data_json, apply_quality_flag: bool = True) -> xr.DataArray:
     from tools.satellite_tools.harmony_api import COLLECTIONS
 
-    data = data_json if isinstance(data_json, dict) else json.loads(data_json)
+    # Coerce input to a plain dict regardless of how LangChain serialised it:
+    #   • DataDict Pydantic object  → .model_dump()
+    #   • JSON string (LLM output)  → json.loads()
+    #   • plain dict                → use as-is
+    if hasattr(data_json, "model_dump"):
+        data = data_json.model_dump()
+    elif isinstance(data_json, str):
+        data = json.loads(data_json)
+    else:
+        data = data_json
 
-    if "_fetch_params" not in data:
-        raise ValueError("Missing '_fetch_params' — pass the direct output of fetch_environmental_data.")
+    if "fetch_params" not in data:
+        raise ValueError("Missing 'fetch_params' — pass the direct output of fetch_environmental_data.")
 
-    params  = data["_fetch_params"]
+    params  = data["fetch_params"]
     missing = [k for k in ("variable", "bbox", "start_date", "end_date") if k not in params]
     if missing:
-        raise ValueError(f"'_fetch_params' is missing required keys: {missing}")
+        raise ValueError(f"'fetch_params' is missing required keys: {missing}")
 
     variable  = params["variable"].upper()
     bbox_list = params["bbox"]
