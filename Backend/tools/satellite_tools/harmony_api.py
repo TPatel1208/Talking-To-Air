@@ -8,7 +8,7 @@ import json
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils.plotting import GeocodingService
-from preprocessing.data_loader import DataLoader
+from preprocessing.data_loader import DataLoader, _bounded_max_results
 from tools.satellite_tools.models import DataDict
 
 _geocoder = None
@@ -279,6 +279,7 @@ def fetch_environmental_data(
                             the dataset without re-downloading.
     """
     variable  = variable.upper()
+    max_results = _bounded_max_results(max_results)
     available = ", ".join(COLLECTIONS.keys())
 
     if variable not in COLLECTIONS:
@@ -310,7 +311,7 @@ def fetch_environmental_data(
     except RuntimeError as e:
         return {"error": str(e)}
     except Exception as e:
-        return {"error": f"Unexpected error: {str(e)}"}
+        return {"error": f"Unexpected {type(e).__name__}: {str(e)}"}
 
     try:
         times = [str(t) for t in ds.time.values] if "time" in ds.coords else []

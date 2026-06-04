@@ -56,6 +56,7 @@ def _load_data(data_json, apply_quality_flag: bool = True) -> xr.DataArray:
         "temporal":      (start, end),
         "bounding_box":  tuple(bbox_list),
         "cache_path":    "./data/cache.zarr",
+        "max_results":   params.get("max_results", 10),
     }
 
     if col.get("supports_variable_subsetting", False):

@@ -118,20 +118,32 @@ def ensure_schema(conn=None) -> None:
 # Query helpers
 # ---------------------------------------------------------------------------
 
+def _normalise_bbox(bbox) -> Tuple[float, float, float, float]:
+    """
+    Return bbox as (min_lon, min_lat, max_lon, max_lat).
+
+    Accepts a comma-separated string, a flat 4-item iterable, or a nested
+    single-item wrapper around either form.
+    """
+    while isinstance(bbox, (list, tuple)) and len(bbox) == 1:
+        bbox = bbox[0]
+
+    if isinstance(bbox, str):
+        parts = [float(x) for x in bbox.split(",")]
+    else:
+        parts = [float(x) for x in bbox]
+
+    if len(parts) != 4:
+        raise ValueError(f"bbox must have 4 values, got {len(parts)}: {bbox!r}")
+    return parts[0], parts[1], parts[2], parts[3]
+
+
 def _bbox_to_polygon_wkt(bbox) -> str:
     """
     Convert (min_lon, min_lat, max_lon, max_lat) to a WKT polygon string
     suitable for ST_GeomFromText(..., 4326).
-
-    Accepts a 4-tuple/list of floats or a comma-separated string.
     """
-    if isinstance(bbox, str):
-        parts = [float(x) for x in bbox.split(",")]
-        if len(parts) != 4:
-            raise ValueError(f"bbox string must have 4 values, got {len(parts)}: {bbox!r}")
-        min_lon, min_lat, max_lon, max_lat = parts
-    else:
-        min_lon, min_lat, max_lon, max_lat = bbox
+    min_lon, min_lat, max_lon, max_lat = _normalise_bbox(bbox)
     return (
         f"POLYGON(("
         f"{min_lon} {min_lat}, "

@@ -20,11 +20,11 @@ Routing override
 ----------------
 Set ``DATA_FETCH_MODE`` in the environment to lock the fetch path:
 
-  DATA_FETCH_MODE=harmony   — always use Harmony (fast for tight bbox)
-  DATA_FETCH_MODE=opendap   — always use OPeNDAP CE (GES_DISC only)
-  DATA_FETCH_MODE=s3        — always use S3 (requires S3_FORCE_FETCH=1
+  DATA_FETCH_MODE=auto      — default: Harmony primary, provider fallback
+  DATA_FETCH_MODE=harmony   — force Harmony only; no provider fallback
+  DATA_FETCH_MODE=opendap   — force OPeNDAP CE (GES_DISC only)
+  DATA_FETCH_MODE=s3        — force S3 (requires S3_FORCE_FETCH=1
                               outside us-west-2 or you'll get an error)
-  DATA_FETCH_MODE=auto      — default provider routing described above
 
 No file-parsing logic lives here. All normalisation is in DatasetParser.
 All cache logic is in CacheManager.
@@ -40,7 +40,7 @@ from typing import List, Optional, Tuple
 import earthaccess
 import xarray as xr
 
-from preprocessing.cache_manager import CacheManager, make_group_key
+from preprocessing.cache_manager import CacheManager, make_group_key, _normalise_bbox
 from preprocessing.dataset_parser import DatasetParser
 from repositories.cache_index_repository import CacheIndexRepository
 from repositories.zarr_repository import ZarrRepository
@@ -63,6 +63,7 @@ _GES_DISC_SUFFIX = "-GES_DISC"
 
 # Valid values for DATA_FETCH_MODE
 _VALID_MODES = {"auto", "harmony", "opendap", "s3"}
+_DEFAULT_MAX_RESULTS_CAP = 20
 
 
 def _provider(collection_id: str) -> str:
@@ -86,9 +87,43 @@ def _fetch_mode() -> str:
     return mode
 
 
+def _max_results_cap() -> int:
+    """Read the safety cap for provider result counts."""
+    raw = os.getenv("SATELLITE_MAX_RESULTS_CAP", str(_DEFAULT_MAX_RESULTS_CAP))
+    try:
+        cap = int(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid SATELLITE_MAX_RESULTS_CAP=%r; using %d",
+            raw,
+            _DEFAULT_MAX_RESULTS_CAP,
+        )
+        return _DEFAULT_MAX_RESULTS_CAP
+    return max(1, cap)
+
+
+def _bounded_max_results(max_results: int) -> int:
+    """Keep LLM/tool input from requesting an unexpectedly large fetch."""
+    try:
+        requested = int(max_results)
+    except (TypeError, ValueError):
+        logger.warning("Invalid max_results=%r; using 10", max_results)
+        return 10
+
+    if requested < 1:
+        logger.warning("Invalid max_results=%r; using 1", max_results)
+        return 1
+
+    cap = _max_results_cap()
+    if requested > cap:
+        logger.warning("Capping max_results from %d to %d", requested, cap)
+        return cap
+    return requested
+
+
 class DataLoader:
 
-    def __init__(self, cache_path: str = "cache.zarr"):
+    def __init__(self, cache_path: str = "./data/cache.zarr"):
         # Auth — must happen before S3FetchService is created
         try:
             self.auth = earthaccess.login(strategy="environment")
@@ -133,7 +168,7 @@ class DataLoader:
         variables: Optional[List[str]] = None,
         max_results: int = 10,
         output_format: str = "application/x-netcdf4",
-        cache_path: str = "cache.zarr",
+        cache_path: str = "./data/cache.zarr",
     ) -> xr.Dataset:
         """
         Return a dataset for the requested collection / time range / bbox.
@@ -142,6 +177,9 @@ class DataLoader:
         The method name is kept as-is so nothing in the agent/tool layer changes.
         """
         # ── Cache lookup ──────────────────────────────────────────────────
+        max_results = _bounded_max_results(max_results)
+        bounding_box = _normalise_bbox(bounding_box) if bounding_box else None
+
         cached = self._cache.lookup(
             collection_id=collection_id,
             temporal=temporal,
@@ -220,50 +258,52 @@ class DataLoader:
             )
 
         # ── Auto routing ──────────────────────────────────────────────────
-        # Strategy: Harmony is preferred for any collection that supports
-        # server-side variable subsetting (tight, pre-clipped NetCDF4
-        # responses are reliably faster than protocol or HDF5 overhead).
-        # Fall through to provider-native paths only when Harmony is not
-        # available or the collection doesn't support subsetting.
+        # Strategy: Harmony is the primary fetch path for every collection.
+        # Provider-native paths are fallbacks only: S3 for LARC_CLOUD and
+        # OPeNDAP for GES_DISC.
 
         supports_var_sub = col.supports_variable_subsetting if col else False
         col_variables = col.variables if col else None
+        harmony_variables = variables
+        if supports_var_sub:
+            harmony_variables = variables or col_variables or None
+        elif variables:
+            logger.info(
+                "Ignoring variable subset for %s because collection metadata "
+                "does not advertise Harmony variable subsetting",
+                collection_id,
+            )
+            harmony_variables = None
+
+        harmony_error = None
+        try:
+            return self._fetch_harmony_fallback(
+                collection_id, temporal, bounding_box,
+                harmony_variables, max_results, output_format
+            )
+        except Exception as exc:
+            harmony_error = exc
+            logger.warning(
+                "Harmony primary fetch failed for %s (%s) — trying %s fallback",
+                collection_id, harmony_error, provider,
+            )
 
         if provider == "LARC_CLOUD":
-            if supports_var_sub:
-                # Harmony variable subsetting — fast server-side clip
-                effective_vars = variables or col_variables or None
-                try:
-                    return self._fetch_harmony_fallback(
-                        collection_id, temporal, bounding_box,
-                        effective_vars, max_results, output_format
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "Harmony variable subsetting failed for %s (%s) "
-                        "— falling back to S3",
-                        collection_id, exc,
-                    )
-
-            # S3 direct — only worthwhile inside us-west-2
             group = col.groups[0] if col and col.groups else None
             try:
                 return self._fetch_s3(
                     collection_id, temporal, bounding_box, group, max_results
                 )
             except S3OutsideRegionError as exc:
-                logger.info("%s — routing to Harmony", exc)
+                raise RuntimeError(
+                    "Harmony primary fetch failed, and S3 fallback is unavailable "
+                    f"outside us-west-2: Harmony={harmony_error}; S3={exc}"
+                ) from harmony_error
             except Exception as exc:
-                logger.warning(
-                    "S3 fetch failed for %s (%s) — falling back to Harmony",
-                    collection_id, exc,
-                )
-
-            # Final fallback for LARC_CLOUD
-            return self._fetch_harmony_fallback(
-                collection_id, temporal, bounding_box,
-                variables, max_results, output_format
-            )
+                raise RuntimeError(
+                    "Harmony primary fetch and S3 fallback both failed: "
+                    f"Harmony={harmony_error}; S3={exc}"
+                ) from exc
 
         elif provider == "GES_DISC":
             try:
@@ -271,22 +311,16 @@ class DataLoader:
                     collection_id, temporal, bounding_box, variables, max_results
                 )
             except Exception as exc:
-                logger.warning(
-                    "OPeNDAP fetch failed for %s (%s) — falling back to Harmony",
-                    collection_id, exc,
-                )
-                return self._fetch_harmony_fallback(
-                    collection_id, temporal, bounding_box,
-                    variables, max_results, output_format
-                )
+                raise RuntimeError(
+                    "Harmony primary fetch and OPeNDAP fallback both failed: "
+                    f"Harmony={harmony_error}; OPeNDAP={exc}"
+                ) from exc
 
         else:
-            # Unknown provider — go straight to Harmony
-            logger.warning("Unknown provider for %s — using Harmony", collection_id)
-            return self._fetch_harmony_fallback(
-                collection_id, temporal, bounding_box,
-                variables, max_results, output_format
-            )
+            raise RuntimeError(
+                f"Harmony primary fetch failed for {collection_id}, and no "
+                f"fallback is configured for provider={provider}: {harmony_error}"
+            ) from harmony_error
 
     # ─────────────────────────────────────────────────────────────────────────
     # Fetch strategies
@@ -325,10 +359,10 @@ class DataLoader:
         fallback for any provider.
         """
         if self._harmony_service is None:
-            from services.harmony_service import HarmonyService
-            self._harmony_service = HarmonyService()
+            from services.async_harmony_service import AsyncHarmonyService
+            self._harmony_service = AsyncHarmonyService()
 
-        files = self._harmony_service.submit_and_download(
+        files = self._harmony_service.submit_and_download_sync(
             collection_id=collection_id,
             temporal=temporal,
             bbox=bbox,

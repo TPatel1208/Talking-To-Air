@@ -9,6 +9,9 @@ Memory model
                it passes to each subagent tool.
 """
 import os
+import calendar
+import logging
+import re
 import sys
 import uuid
 from typing import Callable
@@ -25,6 +28,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config.supervisor_prompt import SUPERVISOR_PROMPT
 from utils.db import get_checkpointer, pg_connect
 from utils.streaming import stream_response
+
+logger = logging.getLogger(__name__)
 
 
 # ── Build supervisor ──────────────────────────────────────────────────────────
@@ -116,31 +121,67 @@ def build_agent(
                (e.g. 'Plot TROPOMI NO2 over New Jersey for 2024-01-15').
         Output: text summary with plot path and spatial statistics.
         """
-        chart_paths = []
-        text_parts  = []
+        def _run_satellite(task_text: str) -> str:
+            chart_paths = []
+            text_parts  = []
 
-        for event_type, data in stream_response(
-            satellite_agent, task, thread_id=str(uuid.uuid4())
-        ):
-            if event_type == "tool_result":
-                content = data.get("content", "")
-                if isinstance(content, str) and content.strip().endswith(".chart.json"):
-                    p = content.strip()
-                    # Fix #4: resolve relative paths the same way api.py does so
-                    # the file check succeeds regardless of the working directory.
-                    if not os.path.isabs(p):
-                        from tools.satellite_tools.plot_tools import OUTPUT_DIR as _PLOT_OUTPUT_DIR
-                        p = os.path.join(_PLOT_OUTPUT_DIR, os.path.basename(p))
-                    if os.path.isfile(p):
-                        chart_paths.append(p)
-            elif event_type in ("text", "done"):
-                t = data if isinstance(data, str) else data.get("response", "")
-                if t:
-                    text_parts.append(t)
+            try:
+                for event_type, data in stream_response(
+                    satellite_agent, task_text, thread_id=str(uuid.uuid4())
+                ):
+                    if event_type == "tool_result":
+                        content = data.get("content", "")
+                        if isinstance(content, str) and content.strip().endswith(".chart.json"):
+                            p = content.strip()
+                            # Fix #4: resolve relative paths the same way api.py does so
+                            # the file check succeeds regardless of the working directory.
+                            if not os.path.isabs(p):
+                                from tools.satellite_tools.plot_tools import OUTPUT_DIR as _PLOT_OUTPUT_DIR
+                                p = os.path.join(_PLOT_OUTPUT_DIR, os.path.basename(p))
+                            if os.path.isfile(p):
+                                chart_paths.append(p)
+                    elif event_type in ("text", "done"):
+                        t = data if isinstance(data, str) else data.get("response", "")
+                        if t:
+                            text_parts.append(t)
+            except Exception as exc:
+                text_parts.append(str(exc))
 
-        summary = " ".join(text_parts)[:2000] or "Satellite agent returned no response."
-        if chart_paths:
-            summary += "\nCHART_PATHS: " + " ".join(chart_paths)
+            summary = " ".join(text_parts)[:2000] or "Satellite agent returned no response."
+            if chart_paths:
+                summary += "\nCHART_PATHS: " + " ".join(chart_paths)
+            return summary
+
+        direct_first = _try_direct_satellite_plot(task)
+        if direct_first is not None:
+            return direct_first
+
+        summary = _run_satellite(task)
+        refusal_markers = (
+            "necessary tools are not present",
+            "don't have access to fetch_environmental_data",
+            "do not have access to fetch_environmental_data",
+            "failed to call a function",
+            "failed_generation",
+        )
+        if any(marker in summary.lower() for marker in refusal_markers):
+            retry_task = (
+                "The satellite tools are registered and available in this runtime: "
+                "convert_temporal_range_to_iso, geocode_location, "
+                "check_data_availability, fetch_environmental_data, plot_singular, "
+                "plot_multiple, compute_statistic_tool, conduct_temporal_statistic, "
+                "find_daily_peak. Retry the task using those tools exactly as needed. "
+                f"Task: {task}"
+            )
+            summary = _run_satellite(retry_task)
+            if (
+                any(marker in summary.lower() for marker in refusal_markers)
+                or "CHART_PATHS:" not in summary
+            ):
+                fallback = _try_direct_satellite_plot(task)
+                if fallback is not None:
+                    summary = fallback
+
         return summary
 
     # ── Build supervisor ──────────────────────────────────────────────────────
@@ -179,6 +220,160 @@ def _extract_last_text(result: dict, fallback: str, max_chars: int = 2000) -> st
             if text:
                 return text[:max_chars]
     return fallback
+
+
+def _try_direct_satellite_plot(task: str) -> str | None:
+    """
+    Deterministic fallback for simple one-location satellite plot requests.
+
+    This is deliberately narrow: it only handles requests that name a known
+    satellite collection, a location, and either a YYYY-MM-DD date or
+    Month YYYY range.
+    """
+    parsed = _parse_simple_satellite_plot_task(task)
+    if parsed is None:
+        return None
+
+    variable, location, start_date, end_date = parsed
+    logger.info(
+        "Direct satellite plot fallback: variable=%s location=%s temporal=%s..%s",
+        variable,
+        location,
+        start_date,
+        end_date,
+    )
+
+    try:
+        from tools.satellite_tools.harmony_api import (
+            check_data_availability,
+            fetch_environmental_data,
+            geocode_location,
+        )
+        from tools.satellite_tools.plot_tools import (
+            OUTPUT_DIR as _PLOT_OUTPUT_DIR,
+            plot_singular,
+        )
+
+        geocoded = geocode_location.invoke({"location_name": location})
+        if isinstance(geocoded, dict) and geocoded.get("error"):
+            return geocoded["error"]
+        bbox = geocoded["bbox"]
+        logger.info("Direct satellite plot fallback: geocoded bbox=%s", bbox)
+
+        availability = check_data_availability.invoke({
+            "variable": variable,
+            "bbox": bbox,
+            "start_date": start_date,
+            "end_date": end_date,
+        })
+        if isinstance(availability, dict) and availability.get("error"):
+            logger.warning(
+                "Direct satellite plot fallback: availability check failed; continuing to Harmony fetch: %s",
+                availability["error"],
+            )
+        elif isinstance(availability, dict) and availability.get("num_granules", 0) == 0:
+            return (
+                f"No {variable} granules were found for {location} between "
+                f"{start_date} and {end_date}."
+            )
+        else:
+            logger.info(
+                "Direct satellite plot fallback: availability num_granules=%s",
+                availability.get("num_granules") if isinstance(availability, dict) else None,
+            )
+
+        logger.info("Direct satellite plot fallback: calling fetch_environmental_data")
+        data = fetch_environmental_data.invoke({
+            "variable": variable,
+            "bbox": bbox,
+            "start_date": start_date,
+            "end_date": end_date,
+            "max_results": 1 if variable == "TROPOMI_NO2" else 10,
+        })
+        if isinstance(data, dict) and data.get("error"):
+            return f"Fetch failed: {data['error']}"
+        logger.info("Direct satellite plot fallback: fetch_environmental_data returned data")
+        plot_data = data.model_dump() if hasattr(data, "model_dump") else data
+
+        title = f"{variable} over {location}"
+        chart_path = plot_singular.invoke({
+            "data_dict": plot_data,
+            "variable": variable,
+            "location": location,
+            "title": title,
+        })
+        if isinstance(chart_path, str) and chart_path.strip().endswith(".chart.json"):
+            p = chart_path.strip()
+            if not os.path.isabs(p):
+                p = os.path.join(_PLOT_OUTPUT_DIR, os.path.basename(p))
+            if os.path.isfile(p):
+                logger.info("Direct satellite plot fallback: chart created at %s", p)
+                return f"Created {title}.\nCHART_PATHS: {p}"
+        return str(chart_path)
+    except Exception as exc:
+        return f"Satellite fallback failed: {exc}"
+
+
+def _parse_simple_satellite_plot_task(task: str):
+    text = " ".join(task.strip().split())
+    lower = text.lower()
+
+    variable_aliases = {
+        "TROPOMI_NO2": ("tropomi no2", "tropomi_no2"),
+        "OMI_NO2": ("omi no2", "omi_no2"),
+        "TEMPO_NO2": ("tempo no2", "tempo_no2"),
+        "TEMPO_O3TOT": ("tempo o3tot", "tempo ozone", "tempo_o3tot"),
+        "OMI_O3": ("omi o3", "omi ozone", "omi_o3"),
+        "TEMPO_HCHO": ("tempo hcho", "tempo_hcho"),
+        "TEMPO_HCHO_V03": ("tempo hcho v03", "tempo_hcho_v03"),
+        "OMI_HCHO": ("omi hcho", "omi_hcho"),
+        "MODIS_AOD_TERRA": ("modis aod terra", "modis_aod_terra"),
+        "MODIS_AOD_AQUA": ("modis aod aqua", "modis_aod_aqua"),
+    }
+
+    variable = next(
+        (
+            key
+            for key, aliases in variable_aliases.items()
+            if any(alias in lower for alias in aliases)
+        ),
+        None,
+    )
+    if variable is None:
+        return None
+
+    location_match = re.search(
+        r"\b(?:over|in|for)\s+(.+?)\s+\b(?:for|on|during)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not location_match:
+        return None
+    location = location_match.group(1).strip(" .")
+
+    iso_day = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", text)
+    if iso_day:
+        day = iso_day.group(1)
+        return variable, location, f"{day}T00:00:00Z", f"{day}T23:59:59Z"
+
+    month_names = "|".join(calendar.month_name[1:])
+    month_match = re.search(
+        rf"\b({month_names})\s+(\d{{4}})\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if month_match:
+        month = list(calendar.month_name).index(month_match.group(1).title())
+        year = int(month_match.group(2))
+        last_day = calendar.monthrange(year, month)[1]
+        return (
+            variable,
+            location,
+            f"{year:04d}-{month:02d}-01T00:00:00Z",
+            f"{year:04d}-{month:02d}-{last_day:02d}T23:59:59Z",
+        )
+
+    return None
 
 
 # ── list_sessions, delete_session ─────────────────────────────────────────────

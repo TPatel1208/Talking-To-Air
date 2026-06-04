@@ -38,6 +38,7 @@ Example
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import os
 from datetime import datetime
@@ -45,6 +46,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 import httpx
+import requests
 from harmony import BBox, Client, Collection, Environment, Request
 from tenacity import (
     retry,
@@ -67,6 +69,12 @@ def _is_retryable(exc: BaseException) -> bool:
     if isinstance(exc, httpx.HTTPStatusError):
         # Retry server errors; do not retry client errors (4xx)
         return exc.response.status_code >= 500
+    if isinstance(exc, requests.exceptions.HTTPError):
+        response = exc.response
+        return response is not None and response.status_code >= 500
+    message = str(exc).lower()
+    if "service unavailable" in message or "temporarily unavailable" in message:
+        return True
     return False
 
 
@@ -182,16 +190,21 @@ class AsyncHarmonyService:
         request = self._build_request(
             collection_id, temporal, bbox, variables, max_results, output_format
         )
-        job_id = self._client.submit(request)
+        logger.info(
+            "Submitting Harmony request: collection=%s temporal=%s bbox=%s variables=%s max_results=%s",
+            collection_id,
+            temporal,
+            bbox,
+            variables,
+            max_results,
+        )
+        job_id = await self._submit_request(request)
         logger.info("Harmony job submitted: %s", job_id)
 
         # ── 2. Async poll until done ──────────────────────────────────────
-        status_url = self._status_url(job_id)
-        await self._wait_for_processing(status_url)
+        files = await asyncio.to_thread(self._wait_and_download_with_client, job_id, dest)
 
         # ── 3. Fetch links then download concurrently ─────────────────────
-        links = await self._fetch_download_links(status_url)
-        files = await self._download_all(links, dest)
 
         if not files:
             raise RuntimeError(f"No files downloaded for job {job_id}")
@@ -207,7 +220,16 @@ class AsyncHarmonyService:
         that cannot use ``await``.  FastAPI request handlers should call
         ``await submit_and_download(...)`` directly instead.
         """
-        return asyncio.run(self.submit_and_download(**kwargs))
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.submit_and_download(**kwargs))
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                lambda: asyncio.run(self.submit_and_download(**kwargs))
+            )
+            return future.result()
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -253,6 +275,26 @@ class AsyncHarmonyService:
         return f"{base}/jobs/{job_id}"
 
     @retry(**_RETRY)
+    async def _submit_request(self, request: Request) -> str:
+        """Submit a Harmony request, retrying only pre-job transient failures."""
+        return await asyncio.to_thread(self._client.submit, request)
+
+    def _wait_and_download_with_client(self, job_id: str, dest: str) -> List[Path]:
+        """Use harmony.Client for authenticated wait/download orchestration."""
+        self._client.wait_for_processing(job_id, show_progress=True)
+        futures = self._client.download_all(job_id, directory=dest, overwrite=True)
+
+        files: List[Path] = []
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                filepath = future.result()
+                files.append(Path(filepath))
+                logger.info("Downloaded: %s", filepath)
+            except Exception as exc:
+                logger.error("Download failed: %s", exc)
+        return files
+
+    @retry(**_RETRY)
     async def _poll_status(
         self, client: httpx.AsyncClient, url: str
     ) -> dict:
@@ -267,6 +309,7 @@ class AsyncHarmonyService:
         async with httpx.AsyncClient(
             auth=self._auth,
             timeout=httpx.Timeout(30.0),
+            follow_redirects=True,
         ) as client:
             while True:
                 data   = await self._poll_status(client, status_url)
@@ -292,6 +335,7 @@ class AsyncHarmonyService:
         async with httpx.AsyncClient(
             auth=self._auth,
             timeout=httpx.Timeout(30.0),
+            follow_redirects=True,
         ) as client:
             resp = await client.get(status_url)
             resp.raise_for_status()
@@ -318,7 +362,7 @@ class AsyncHarmonyService:
             resp.raise_for_status()
             with open(out_path, "wb") as fh:
                 async for chunk in resp.aiter_bytes(chunk_size=65536):
-                    fh.write(chunk)
+                    await asyncio.to_thread(fh.write, chunk)
 
         logger.info("Downloaded: %s", out_path)
         return out_path

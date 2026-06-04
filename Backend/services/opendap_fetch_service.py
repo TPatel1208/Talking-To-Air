@@ -19,11 +19,37 @@ from io import BytesIO
 import numpy as np
 import requests
 import xarray as xr
+from tenacity import (
+    before_sleep_log,
+    retry,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 logger = logging.getLogger(__name__)
 
 # Variables that are required coordinates — never dropped during subsetting
 _COORD_VARS = {"lat", "latitude", "lon", "longitude", "time", "Time"}
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    """Return True for transient CMR/OPeNDAP HTTP errors."""
+    if isinstance(exc, (requests.exceptions.Timeout, requests.exceptions.ConnectionError)):
+        return True
+    if isinstance(exc, requests.exceptions.HTTPError):
+        response = exc.response
+        return response is not None and response.status_code >= 500
+    return False
+
+
+_RETRY = dict(
+    retry=retry_if_exception(_is_retryable),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=15),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
 
 
 class OPeNDAPFetchService:
@@ -76,6 +102,7 @@ class OPeNDAPFetchService:
     # CMR search
     # ─────────────────────────────────────────────────────────────────────────
 
+    @retry(**_RETRY)
     def _search_opendap_urls(
         self,
         collection_id: str,
@@ -100,7 +127,7 @@ class OPeNDAPFetchService:
         resp = self._session.get(
             "https://cmr.earthdata.nasa.gov/search/granules.json",
             params=params,
-            timeout=15,
+            timeout=60,
         )
         resp.raise_for_status()
 
