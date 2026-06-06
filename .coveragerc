@@ -1,6 +1,9 @@
 [run]
 source =
-    Backend
+    Backend.api
+    Backend.utils.db
+    Backend.preprocessing.data_loader
+    Backend.preprocessing.cache_manager
 
 [report]
 show_missing = True
