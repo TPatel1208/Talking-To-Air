@@ -1,9 +1,9 @@
 [run]
 source =
-    Backend.api
-    Backend.utils.db
-    Backend.preprocessing.data_loader
-    Backend.preprocessing.cache_manager
+    Backend/api.py
+    Backend/utils/db.py
+    Backend/preprocessing/data_loader.py
+    Backend/preprocessing/cache_manager.py
 
 [report]
 show_missing = True
