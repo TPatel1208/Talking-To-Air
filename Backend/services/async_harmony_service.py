@@ -40,13 +40,13 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import logging
-import os
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 import httpx
 import requests
+from config.settings import get_settings
 from harmony import BBox, Client, Collection, Environment, Request
 from tenacity import (
     retry,
@@ -116,9 +116,10 @@ class AsyncHarmonyService:
         poll_interval: int = _POLL_INTERVAL,
         download_dir: str = ".",
     ) -> None:
+        settings = get_settings()
         if client is None:
-            username = os.getenv("EDL_USERNAME")
-            password = os.getenv("EDL_PASSWORD")
+            username = settings.edl_username
+            password = settings.edl_password
             if not username or not password:
                 raise RuntimeError(
                     "EDL credentials required: set EDL_USERNAME and EDL_PASSWORD"
@@ -128,10 +129,7 @@ class AsyncHarmonyService:
                 auth=(username, password),
             )
         self._client = client
-        self._auth = (
-            os.getenv("EDL_USERNAME", ""),
-            os.getenv("EDL_PASSWORD", ""),
-        )
+        self._auth = (settings.edl_username, settings.edl_password)
         self._poll_interval = poll_interval
         self._download_dir = download_dir
 

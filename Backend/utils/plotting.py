@@ -1,3 +1,4 @@
+import logging
 import requests
 import time
 
@@ -14,6 +15,8 @@ from rasterio.features import rasterize
 from affine import Affine
 
 from typing import Optional, Tuple, Union, List
+
+logger = logging.getLogger(__name__)
 
 
 def plot_map(
@@ -87,7 +90,7 @@ def plot_map(
         if time_slice is None:
             time_slice = 0
         
-        print(f"Selecting time slice {time_slice} from dimension '{time_dim}'")
+        logger.info("Selecting time slice %s from dimension '%s'", time_slice, time_dim)
         time_size = data_array.sizes[time_dim]
 
         if time_size == 1:
@@ -146,7 +149,11 @@ def plot_map(
         
         # Prevent divide by zero for degenerate regions
         if lat_range <= 0 or lon_range <= 0:
-            print(f"Warning: Degenerate extent detected (lon_range={lon_range}, lat_range={lat_range}). Using default figure size.")
+            logger.warning(
+                "Degenerate extent detected (lon_range=%s, lat_range=%s). Using default figure size.",
+                lon_range,
+                lat_range,
+            )
             fig_width, fig_height = 10, 6
         else:
             aspect_ratio = lon_range / lat_range
@@ -254,7 +261,7 @@ def _normalize_to_2d(data_array: xr.DataArray) -> xr.DataArray:
     # average over any remaining non-spatial dims
     extra_dims = [d for d in data_array.dims if d not in SPATIAL]
     if extra_dims:
-        print(f"_normalize_to_2d: averaging over {extra_dims}")
+        logger.info("_normalize_to_2d: averaging over %s", extra_dims)
         data_array = data_array.mean(dim=extra_dims)
 
     return data_array
@@ -537,7 +544,7 @@ class GeocodingService:
                 self.cache[location_name] = result
                 return result
         except Exception as e:
-            print(f"Geocoding error: {e}")
+            logger.warning("Geocoding error: %s", e)
         
         return None
     

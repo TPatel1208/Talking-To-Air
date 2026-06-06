@@ -3,8 +3,8 @@ services/s3_fetch_service.py
 ============================
 Direct S3 fetch for NASA Earthdata Cloud (LARC_CLOUD) collections.
 
-IMPORTANT: Caller must have called earthaccess.login() before instantiating
-this class. DataLoader.__init__ does this automatically.
+EarthAccess authentication is lazy. The service authenticates only when S3
+data is actually requested.
 
 Performance note
 ----------------
@@ -29,12 +29,13 @@ file handle.
 from __future__ import annotations
 
 import logging
-import os
 from typing import Optional, Tuple
 
 import earthaccess
 import numpy as np
 import xarray as xr
+from config.settings import get_settings
+from utils.earthaccess_client import get_earthaccess_auth
 
 logger = logging.getLogger(__name__)
 
@@ -78,8 +79,8 @@ class S3FetchService:
     """
     Fetch LARC_CLOUD granules directly from S3.
 
-    IMPORTANT: Caller must have called earthaccess.login() before
-    instantiating this class. DataLoader.__init__ does this.
+    EarthAccess authentication is performed on first fetch, not at import or
+    construction time.
 
     Parameters
     ----------
@@ -89,7 +90,7 @@ class S3FetchService:
     """
 
     def __init__(self, force: bool = False) -> None:
-        self._force = force or os.getenv("S3_FORCE_FETCH", "").strip() == "1"
+        self._force = force or get_settings().s3_force_fetch
 
     def fetch(
         self,
@@ -119,6 +120,7 @@ class S3FetchService:
                 "Set S3_FORCE_FETCH=1 to override. Routing to Harmony instead."
             )
 
+        get_earthaccess_auth()
         try:
             return self._fetch_inner(collection_id, temporal, bbox, group, max_results)
         except S3OutsideRegionError:
@@ -129,7 +131,7 @@ class S3FetchService:
                 logger.warning(
                     "S3 credential may have expired, re-authenticating and retrying"
                 )
-                earthaccess.login(strategy="environment", force=True)
+                get_earthaccess_auth(force=True)
                 return self._fetch_inner(collection_id, temporal, bbox, group, max_results)
             raise
 

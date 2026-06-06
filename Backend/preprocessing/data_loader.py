@@ -37,14 +37,15 @@ import time
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-import earthaccess
 import xarray as xr
 
 from preprocessing.cache_manager import CacheManager, make_group_key, _normalise_bbox
 from preprocessing.dataset_parser import DatasetParser
 from repositories.cache_index_repository import CacheIndexRepository
 from repositories.zarr_repository import ZarrRepository
+from config.settings import get_settings
 from datasets.registry import load_registry
+from utils.earthaccess_client import get_earthaccess_auth
 
 logger = logging.getLogger(__name__)
 
@@ -75,8 +76,8 @@ def _provider(collection_id: str) -> str:
 
 
 def _fetch_mode() -> str:
-    """Read DATA_FETCH_MODE from environment, defaulting to 'auto'."""
-    mode = os.getenv("DATA_FETCH_MODE", "auto").strip().lower()
+    """Read DATA_FETCH_MODE from centralized settings."""
+    mode = get_settings().data_fetch_mode
     if mode not in _VALID_MODES:
         logger.warning(
             "Unknown DATA_FETCH_MODE=%r — falling back to 'auto'. "
@@ -89,17 +90,7 @@ def _fetch_mode() -> str:
 
 def _max_results_cap() -> int:
     """Read the safety cap for provider result counts."""
-    raw = os.getenv("SATELLITE_MAX_RESULTS_CAP", str(_DEFAULT_MAX_RESULTS_CAP))
-    try:
-        cap = int(raw)
-    except ValueError:
-        logger.warning(
-            "Invalid SATELLITE_MAX_RESULTS_CAP=%r; using %d",
-            raw,
-            _DEFAULT_MAX_RESULTS_CAP,
-        )
-        return _DEFAULT_MAX_RESULTS_CAP
-    return max(1, cap)
+    return get_settings().satellite_max_results_cap
 
 
 def _bounded_max_results(max_results: int) -> int:
@@ -124,14 +115,8 @@ def _bounded_max_results(max_results: int) -> int:
 class DataLoader:
 
     def __init__(self, cache_path: str = "./data/cache.zarr"):
-        # Auth — must happen before S3FetchService is created
-        try:
-            self.auth = earthaccess.login(strategy="environment")
-            if not self.auth:
-                raise RuntimeError("earthaccess login returned no credentials")
-        except Exception as exc:
-            logger.error("earthaccess auth failed: %s", exc)
-            raise
+        # Auth is lazy: only satellite paths that need EarthAccess log in.
+        self.auth = None
 
         self._default_cache_path = cache_path
         self._parser = DatasetParser()
@@ -186,7 +171,7 @@ class DataLoader:
             bbox=bounding_box,
         )
         if cached is not None:
-            logger.info("Cache hit for %s", collection_id)
+            logger.info("cache_hit", extra={"_collection_id": collection_id})
             return cached
 
         # ── Fetch ─────────────────────────────────────────────────────────
@@ -195,8 +180,8 @@ class DataLoader:
         col = self._registry_by_id.get(collection_id)
 
         logger.info(
-            "Cache miss — fetching %s (provider=%s, mode=%s)",
-            collection_id, provider, mode,
+            "cache_miss",
+            extra={"_collection_id": collection_id, "_provider": provider, "_mode": mode},
         )
         t0 = time.time()
 
@@ -327,6 +312,7 @@ class DataLoader:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _fetch_s3(self, collection_id, temporal, bbox, group, max_results):
+        self.auth = get_earthaccess_auth()
         if self._s3_service is None:
             from services.s3_fetch_service import S3FetchService
             self._s3_service = S3FetchService()
@@ -410,7 +396,9 @@ class DataLoader:
     @staticmethod
     def _get_granule_times(collection_id, temporal, bbox) -> dict:
         """CMR time lookup — only called for collections without embedded time."""
+        import earthaccess
         import pandas as pd
+        get_earthaccess_auth()
         try:
             params = {"concept_id": collection_id, "temporal": temporal}
             if bbox:
@@ -453,12 +441,12 @@ def main():
         cache_path="cache_test.zarr",
     )
 
-    print("\n=== Dataset structure ===")
-    print("Data vars:", list(ds.data_vars))
-    print("Coords:   ", list(ds.coords))
-    print("Dims:     ", dict(ds.sizes))
+    logger.info("Dataset structure")
+    logger.info("Data vars: %s", list(ds.data_vars))
+    logger.info("Coords: %s", list(ds.coords))
+    logger.info("Dims: %s", dict(ds.sizes))
     for var in ds.data_vars:
-        print(f"  {var}: {ds[var].dims} {ds[var].shape}")
+        logger.info("%s: %s %s", var, ds[var].dims, ds[var].shape)
 
 
 if __name__ == "__main__":

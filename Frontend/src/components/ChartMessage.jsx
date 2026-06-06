@@ -78,6 +78,59 @@ function flattenGrid(lats, lons, values) {
   return { lat: flatLat, lon: flatLon, val: flatVal }
 }
 
+function flattenPayload(payload) {
+  if (Array.isArray(payload.lats) && Array.isArray(payload.lons) && Array.isArray(payload.values)) {
+    const grid = flattenGrid(payload.lats, payload.lons, payload.values)
+    if (grid.val.length) return grid
+  }
+
+  const points = payload.points
+  if (
+    points &&
+    Array.isArray(points.lats) &&
+    Array.isArray(points.lons) &&
+    Array.isArray(points.values) &&
+    points.values.length
+  ) {
+    const lat = []
+    const lon = []
+    const val = []
+    for (let i = 0; i < points.values.length; i++) {
+      const value = points.values[i]
+      if (!Number.isFinite(value)) continue
+      lat.push(points.lats[i])
+      lon.push(points.lons[i])
+      val.push(value)
+    }
+    return {
+      lat,
+      lon,
+      val,
+    }
+  }
+
+  return { lat: [], lon: [], val: [] }
+}
+
+function colorRange(vmin, vmax, values) {
+  if (Number.isFinite(vmin) && Number.isFinite(vmax) && vmin !== vmax) {
+    return { cmin: vmin, cmax: vmax }
+  }
+
+  const finite = values.filter(v => Number.isFinite(v))
+  if (!finite.length) return { cmin: 0, cmax: 1 }
+
+  let min = Math.min(...finite)
+  let max = Math.max(...finite)
+  if (min === max) {
+    const delta = Math.abs(min) * 0.01 || 1
+    min -= delta
+    max += delta
+  }
+
+  return { cmin: min, cmax: max }
+}
+
 // Compute marker size so each square fills one grid cell at the *current* zoom.
 //
 // Arguments
@@ -103,6 +156,205 @@ const BASE_CONFIG = {
   displaylogo:    false,
   responsive:     true,
   toImageButtonOptions: { format: 'png', scale: 2 },
+}
+
+function sanitizeFilename(value, fallback = 'chart') {
+  return String(value || fallback)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80) || fallback
+}
+
+function csvEscape(value) {
+  if (value == null) return ''
+  const text = String(value)
+  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
+}
+
+function rowsToCsv(rows) {
+  if (!rows.length) return ''
+  const headers = Object.keys(rows[0])
+  return [
+    headers.map(csvEscape).join(','),
+    ...rows.map(row => headers.map(header => csvEscape(row[header])).join(',')),
+  ].join('\n')
+}
+
+function heatmapRows(payload, panelName = '') {
+  const { variable, units } = payload
+  const { lat, lon, val } = flattenPayload(payload)
+  return val.map((value, i) => ({
+    ...(panelName ? { panel: panelName } : {}),
+    variable,
+    latitude: lat[i],
+    longitude: lon[i],
+    value,
+    units,
+  }))
+}
+
+function chartRows(chart) {
+  if (chart.type === 'heatmap') return heatmapRows(chart)
+  if (chart.type === 'heatmap_multi') {
+    return (chart.panels || []).flatMap(panel => heatmapRows(panel, panel.title || panel.provenance?.region_name || 'panel'))
+  }
+  if (chart.type === 'timeseries') {
+    return (chart.times || []).map((time, i) => ({
+      variable: chart.variable,
+      time,
+      stat: chart.stat,
+      value: chart.values?.[i],
+      units: chart.units,
+    }))
+  }
+  return []
+}
+
+function downloadText(filename, content, type) {
+  const blob = new Blob([content], { type })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+}
+
+function downloadUrl(url) {
+  const link = document.createElement('a')
+  link.href = url
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+}
+
+function compactDate(value) {
+  if (!value) return ''
+  return String(value).replace('T00:00:00', '').replace('T23:59:59', '').replace(/Z$/, '')
+}
+
+function formatBBox(bbox) {
+  if (!Array.isArray(bbox)) return bbox || ''
+  return bbox.map(value => Number.isFinite(value) ? value.toFixed(4) : value).join(', ')
+}
+
+function ProvenanceBlock({ provenance }) {
+  if (!provenance || typeof provenance !== 'object') return null
+  const items = [
+    ['Dataset', [provenance.dataset, provenance.variable].filter(Boolean).join(' / ')],
+    ['Date Range', [compactDate(provenance.start_date), compactDate(provenance.end_date)].filter(Boolean).join(' to ')],
+    ['Region', provenance.region_name || formatBBox(provenance.bbox)],
+    ['Aggregation Method', provenance.aggregation],
+    ['Source', provenance.source || provenance.endpoint],
+  ].filter(([, value]) => value)
+
+  if (!items.length) return null
+
+  return (
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+      gap: '8px',
+      padding: '10px',
+      borderTop: '1px solid var(--border)',
+      background: 'var(--bg-secondary)',
+    }}>
+      {items.map(([label, value]) => (
+        <div key={label} style={{ minWidth: 0 }}>
+          <div style={{ fontSize: '10px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+            {label}
+          </div>
+          <div style={{ fontSize: '11px', color: 'var(--text-secondary)', overflowWrap: 'anywhere', lineHeight: 1.45 }}>
+            {value}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function ChartToolbar({ chart, plotRootRef }) {
+  const [copyState, setCopyState] = useState('')
+  const fileBase = sanitizeFilename(chart.title || chart.metadata?.name || chart.type)
+  const query = chart.query || chart.provenance || {}
+
+  const handleCopyQuery = async () => {
+    const text = JSON.stringify(query, null, 2)
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopyState('Copied')
+    } catch {
+      downloadText(`${fileBase}-query.json`, text, 'application/json;charset=utf-8')
+      setCopyState('Saved')
+    }
+    window.setTimeout(() => setCopyState(''), 1600)
+  }
+
+  const handleCsv = () => {
+    if (chart.chart_id && chart.export) {
+      downloadUrl(`/api/chart/${chart.chart_id}/export.csv`)
+      return
+    }
+
+    const rows = chartRows(chart)
+    if (!rows.length) return
+    downloadText(`${fileBase}.csv`, rowsToCsv(rows), 'text/csv;charset=utf-8')
+  }
+
+  const handlePng = () => {
+    if (chart.chart_id && chart.export) {
+      downloadUrl(`/api/chart/${chart.chart_id}/export.png`)
+      return
+    }
+
+    const plotDivs = Array.from(plotRootRef.current?.querySelectorAll?.('.js-plotly-plot') || [])
+    if (!plotDivs.length) return
+    plotDivs.forEach((plotDiv, index) => {
+      const width = Math.max(plotDiv.clientWidth || 900, 900)
+      const height = Math.max(plotDiv.clientHeight || 500, 500)
+      Plotly.downloadImage(plotDiv, {
+        format: 'png',
+        filename: plotDivs.length > 1 ? `${fileBase}-${index + 1}` : fileBase,
+        width,
+        height,
+        scale: 2,
+      })
+    })
+  }
+
+  const buttonStyle = {
+    border: '1px solid var(--border)',
+    background: 'var(--bg-card)',
+    color: 'var(--text-secondary)',
+    borderRadius: '7px',
+    padding: '5px 9px',
+    fontSize: '11px',
+    fontFamily: 'var(--font)',
+    cursor: 'pointer',
+  }
+
+  return (
+    <div style={{
+      display: 'flex',
+      gap: '6px',
+      flexWrap: 'wrap',
+      justifyContent: 'flex-end',
+      padding: '2px 2px 8px',
+    }}>
+      <button type="button" onClick={handleCopyQuery} style={buttonStyle}>
+        {copyState || 'Copy Query JSON'}
+      </button>
+      <button type="button" onClick={handleCsv} style={buttonStyle}>
+        Export CSV
+      </button>
+      <button type="button" onClick={handlePng} style={buttonStyle}>
+        Export PNG
+      </button>
+    </div>
+  )
 }
 
 // ── Geo layout ────────────────────────────────────────────────────────────────
@@ -285,7 +537,8 @@ function HeatmapPanel({ payload, height = 420 }) {
 
   const scaleName  = toPlotlyCmap(cmap)
   const colorscale = getColorscale(scaleName)
-  const { lat, lon, val } = flattenGrid(lats, lons, values)
+  const { lat, lon, val } = flattenPayload(payload)
+  const { cmin, cmax } = colorRange(vmin, vmax, val)
 
   // Initial marker size — will be immediately overridden by handleInitialized,
   // but set to something reasonable so the first paint isn't obviously broken.
@@ -310,8 +563,8 @@ function HeatmapPanel({ payload, height = 420 }) {
         symbol:     'square',
         size:       initMarkerSize,
         color:      val,
-        cmin:       vmin,
-        cmax:       vmax,
+        cmin,
+        cmax,
         colorscale,
         showscale:  true,
         colorbar: {
@@ -420,6 +673,7 @@ function TimeSeriesPanel({ payload }) {
 
 // ── Public component ──────────────────────────────────────────────────────────
 export default function ChartMessage({ chart }) {
+  const plotRootRef = useRef(null)
   if (!chart || typeof chart !== 'object' || !chart.type) return null
 
   const inner = (() => {
@@ -438,7 +692,11 @@ export default function ChartMessage({ chart }) {
       border: '1px solid var(--border)', borderRadius: '10px',
       overflow: 'hidden', padding: '8px',
     }}>
-      {inner}
+      <ChartToolbar chart={chart} plotRootRef={plotRootRef} />
+      <div ref={plotRootRef}>
+        {inner}
+      </div>
+      <ProvenanceBlock provenance={chart.provenance} />
     </div>
   )
 }

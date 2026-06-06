@@ -1,24 +1,59 @@
+import asyncio
 import uuid
 import os
 import re
 import sys
 import json
+import logging
+import time
+import csv
+import io
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from agents.supervisor_agent import build_agent, list_sessions, delete_session
+from config.settings import get_settings
+from models import parse_agent_result, parse_chart_payload
+from repositories.chart_repository import ensure_chart_table, get_chart, save_chart
+from utils.db import close_db_pool, init_db_pool, validate_config
+from utils.logging import configure_logging
 from utils.streaming import stream_response
 
-app = FastAPI(title="Talking to Air API")
+agent = None
+settings = get_settings()
+configure_logging(settings)
+logger = logging.getLogger(__name__)
 
-_raw_origins = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost")
-origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global agent
+    validate_config()
+    init_db_pool()
+    await asyncio.to_thread(ensure_chart_table)
+
+    logger.info("startup_begin", extra={"_model": settings.llm_model})
+    agent = await asyncio.to_thread(build_agent, settings.llm_model)
+    app.state.agent = agent
+    logger.info("startup_complete")
+    try:
+        yield
+    finally:
+        agent = None
+        app.state.agent = None
+        close_db_pool()
+        logger.info("shutdown_complete")
+
+
+app = FastAPI(title="Talking to Air API", lifespan=lifespan)
+origins = settings.cors_origins
 
 app.add_middleware(
     CORSMiddleware,
@@ -31,14 +66,6 @@ app.add_middleware(
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "outputs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 app.mount("/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
-
-
-_model = os.getenv("LLM_MODEL", "gemma-4-26b-a4b-it")
-print(f"Initializing agent with model: {_model}")
-
-
-agent = build_agent(_model)
-print("Agent ready.")
 
 
 class ChatRequest(BaseModel):
@@ -60,23 +87,278 @@ def sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
+def _persist_chart_payload(thread_id: str, chart) -> dict:
+    payload = chart.model_dump(exclude_none=True) if hasattr(chart, "model_dump") else dict(chart)
+    if payload.get("chart_id"):
+        stored = get_chart(payload["chart_id"])
+        if stored:
+            return stored
+    return save_chart(thread_id, payload)
+
+
+async def _persist_chart_payload_async(thread_id: str, chart) -> dict:
+    return await asyncio.to_thread(_persist_chart_payload, thread_id, chart)
+
+
+def _safe_export_name(payload: dict, suffix: str) -> str:
+    name = payload.get("title") or payload.get("metadata", {}).get("name") or payload.get("type") or "chart"
+    safe = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(name)).strip("-").lower()[:80] or "chart"
+    return f"{safe}.{suffix}"
+
+
+def _export_data_dict(export: dict) -> dict:
+    fetch_params = export.get("fetch_params") or {}
+    return {
+        "variable": export.get("variable") or fetch_params.get("variable", ""),
+        "units": export.get("units", ""),
+        "bbox": ",".join(str(v) for v in fetch_params.get("bbox", [])),
+        "source": export.get("source", ""),
+        "fetch_params": fetch_params,
+    }
+
+
+def _export_lat_lon_names(da):
+    lat_coord = next((c for c in ["lat", "latitude", "Latitude"] if c in da.coords), None)
+    lon_coord = next((c for c in ["lon", "longitude", "Longitude"] if c in da.coords), None)
+    if lat_coord is None or lon_coord is None:
+        raise ValueError(f"Cannot find lat/lon coords. Available: {list(da.coords)}")
+    return lat_coord, lon_coord
+
+
+def _export_data_array(export: dict, collapse_to_2d: bool = True):
+    from tools.satellite_tools.plot_tools import _normalize_longitudes, _sel_bounds
+    from utils.data_utils import _load_data
+    from utils.plotting import RegionResolver, _normalize_to_2d, mask_data_by_geometry
+
+    da = _load_data(_export_data_dict(export))
+    lat_coord, lon_coord = _export_lat_lon_names(da)
+    da = _normalize_longitudes(da, lon_coord)
+
+    region = None
+    region_name = export.get("region_name")
+    if region_name:
+        try:
+            region = RegionResolver().resolve_location(region_name)
+        except Exception:
+            region = None
+
+    if region:
+        da = mask_data_by_geometry(da, region["geometry"])
+        bounds = region["bounds"]
+    else:
+        bounds = (export.get("fetch_params") or {}).get("bbox")
+
+    if bounds:
+        lat_coord, lon_coord = _export_lat_lon_names(da)
+        da = _sel_bounds(da, lat_coord, lon_coord, bounds)
+
+    if collapse_to_2d:
+        da = _normalize_to_2d(da)
+        lat_coord, lon_coord = _export_lat_lon_names(da)
+        if da.dims.index(lat_coord) != 0:
+            da = da.transpose(lat_coord, lon_coord)
+
+    return da
+
+
+def _write_heatmap_csv(writer, export: dict, panel_name: str | None = None) -> None:
+    import numpy as np
+
+    da = _export_data_array(export, collapse_to_2d=True)
+    lat_coord, lon_coord = _export_lat_lon_names(da)
+    lats = da[lat_coord].values
+    lons = da[lon_coord].values
+    values = da.values.astype(float)
+    variable = export.get("variable", "")
+    units = export.get("units", "")
+
+    for row_idx, col_idx in zip(*np.where(np.isfinite(values))):
+        row = []
+        if panel_name is not None:
+            row.append(panel_name)
+        row.extend([
+            variable,
+            float(lats[row_idx]),
+            float(lons[col_idx]),
+            float(values[row_idx, col_idx]),
+            units,
+        ])
+        writer.writerow(row)
+
+
+def _timeseries_rows(export: dict):
+    import numpy as np
+    import pandas as pd
+
+    da = _export_data_array(export, collapse_to_2d=False)
+    if "time" not in da.dims:
+        raise ValueError("Time-series export requires a time dimension.")
+
+    stat = export.get("aggregation") or export.get("chart_parameters", {}).get("stat") or "mean"
+    stat_fn = {
+        "mean": np.nanmean,
+        "median": np.nanmedian,
+        "max": np.nanmax,
+        "min": np.nanmin,
+        "std": np.nanstd,
+    }.get(stat)
+    if stat_fn is None:
+        raise ValueError(f"Unsupported time-series statistic: {stat}")
+
+    rows = []
+    for i in range(da.sizes["time"]):
+        arr = da.isel(time=i).values.astype(float)
+        valid = arr[np.isfinite(arr)]
+        if not len(valid):
+            continue
+        rows.append([
+            export.get("variable", ""),
+            pd.Timestamp(da["time"].values[i]).isoformat(),
+            stat,
+            float(stat_fn(valid)),
+            export.get("units", ""),
+        ])
+    return rows
+
+
+def _build_chart_csv(payload: dict) -> str:
+    export = payload.get("export") or {}
+    if not export:
+        raise ValueError("This chart does not include full-resolution export metadata.")
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    export_type = export.get("type")
+
+    if export_type == "heatmap_multi":
+        writer.writerow(["panel", "variable", "latitude", "longitude", "value", "units"])
+        for idx, panel in enumerate(export.get("panels") or []):
+            _write_heatmap_csv(writer, panel, panel.get("region_name") or f"panel-{idx + 1}")
+    elif export_type == "timeseries":
+        writer.writerow(["variable", "time", "stat", "value", "units"])
+        writer.writerows(_timeseries_rows(export))
+    else:
+        writer.writerow(["variable", "latitude", "longitude", "value", "units"])
+        _write_heatmap_csv(writer, export)
+
+    return output.getvalue()
+
+
+def _plot_heatmap_axis(ax, export: dict, title: str) -> None:
+    da = _export_data_array(export, collapse_to_2d=True)
+    lat_coord, lon_coord = _export_lat_lon_names(da)
+    mesh = ax.pcolormesh(da[lon_coord].values, da[lat_coord].values, da.values.astype(float), shading="auto", cmap="Spectral_r")
+    ax.set_title(title, fontsize=10)
+    ax.set_xlabel("Longitude")
+    ax.set_ylabel("Latitude")
+    return mesh
+
+
+def _build_chart_png(payload: dict) -> bytes:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    export = payload.get("export") or {}
+    if not export:
+        raise ValueError("This chart does not include full-resolution export metadata.")
+
+    export_type = export.get("type")
+    if export_type == "heatmap_multi":
+        panels = export.get("panels") or []
+        if not panels:
+            raise ValueError("Comparison chart has no export panels.")
+        fig, axes = plt.subplots(1, len(panels), figsize=(6 * len(panels), 5), squeeze=False)
+        mesh = None
+        for idx, panel in enumerate(panels):
+            mesh = _plot_heatmap_axis(axes[0][idx], panel, panel.get("region_name") or f"Panel {idx + 1}")
+        if mesh is not None:
+            fig.colorbar(mesh, ax=axes.ravel().tolist(), label=export.get("units", ""))
+    elif export_type == "timeseries":
+        rows = _timeseries_rows(export)
+        fig, ax = plt.subplots(figsize=(9, 5))
+        ax.plot([row[1] for row in rows], [row[3] for row in rows], marker="o", linewidth=1.5)
+        ax.set_title(payload.get("title") or export.get("variable") or "Time series")
+        ax.set_xlabel("Time")
+        ax.set_ylabel(f"{export.get('aggregation', 'value')} ({export.get('units', '')})")
+        ax.tick_params(axis="x", rotation=30)
+    else:
+        fig, ax = plt.subplots(figsize=(8, 6))
+        mesh = _plot_heatmap_axis(ax, export, payload.get("title") or export.get("region_name") or "Chart")
+        fig.colorbar(mesh, ax=ax, label=export.get("units", ""))
+
+    fig.tight_layout()
+    output = io.BytesIO()
+    fig.savefig(output, format="png", dpi=220, bbox_inches="tight")
+    plt.close(fig)
+    return output.getvalue()
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
 
-@app.post("/chat")
-def chat(req: ChatRequest):
-    thread_id = req.thread_id or str(uuid.uuid4())
+@app.get("/chart/{chart_id}/export.csv")
+async def export_chart_csv(chart_id: str):
+    payload = await asyncio.to_thread(get_chart, chart_id)
+    if not payload:
+        raise HTTPException(status_code=404, detail="Chart not found")
+    try:
+        content = await asyncio.to_thread(_build_chart_csv, payload)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
-    def generate():
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{_safe_export_name(payload, "csv")}"'},
+    )
+
+
+@app.get("/chart/{chart_id}/export.png")
+async def export_chart_png(chart_id: str):
+    payload = await asyncio.to_thread(get_chart, chart_id)
+    if not payload:
+        raise HTTPException(status_code=404, detail="Chart not found")
+    try:
+        content = await asyncio.to_thread(_build_chart_png, payload)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    return Response(
+        content=content,
+        media_type="image/png",
+        headers={"Content-Disposition": f'attachment; filename="{_safe_export_name(payload, "png")}"'},
+    )
+
+
+@app.post("/chat")
+async def chat(req: ChatRequest):
+    active_agent = getattr(app.state, "agent", None) or agent
+    if active_agent is None:
+        raise HTTPException(status_code=503, detail="Agent is not ready")
+    thread_id = req.thread_id or str(uuid.uuid4())
+    request_id = str(uuid.uuid4())
+
+    async def generate():
         response_text = ""
         image_urls    = []
         tool_calls    = []
+        started = time.monotonic()
 
         try:
-            for event_type, data in stream_response(agent, req.message, thread_id):
-                print(f"EVENT: {event_type!r}  DATA: {repr(data)[:200]}")
+            events = stream_response(active_agent, req.message, thread_id)
+            sentinel = object()
+            while True:
+                item = await asyncio.to_thread(next, events, sentinel)
+                if item is sentinel:
+                    break
+                event_type, data = item
+                logger.debug(
+                    "stream_event",
+                    extra={"_request_id": request_id, "_thread_id": thread_id, "_event_type": event_type},
+                )
 
                 if event_type == "tool_call":
                     tool_calls.append({"name": data["name"], "args": data["args"]})
@@ -84,32 +366,18 @@ def chat(req: ChatRequest):
 
                 elif event_type == "tool_result":
                     content = data.get("content", "")
-                    # Detect chart paths forwarded by ask_satellite_agent
-                    if "CHART_PATHS:" in content:
-                        for chart_path in content.split("CHART_PATHS:")[1].strip().split():
-                            if chart_path.endswith(".chart.json") and os.path.isfile(chart_path):
-                                try:
-                                    with open(chart_path) as _cf:
-                                        chart_payload = json.load(_cf)
-                                    # Validate payload is a dict with a type key before emitting.
-                                    # Emitting a raw string here is what causes React error #130.
-                                    if isinstance(chart_payload, dict) and "type" in chart_payload:
-                                        yield sse("chart", chart_payload)
-                                except Exception:
-                                    pass
+
+                    structured_result = parse_agent_result(content)
+                    if structured_result is not None:
+                        for chart in structured_result.charts:
+                            yield sse("chart", await _persist_chart_payload_async(thread_id, chart))
                         continue
-                    # Detect chart files saved by plot_tools (.chart.json)
-                    chart_path = content.strip()
-                    if chart_path.endswith(".chart.json") and os.path.isfile(chart_path):
-                        try:
-                            with open(chart_path) as _cf:
-                                chart_payload = json.load(_cf)
-                            # Same validation here — ensures only proper chart objects go to the frontend.
-                            if isinstance(chart_payload, dict) and "type" in chart_payload:
-                                yield sse("chart", chart_payload)
-                                continue
-                        except Exception:
-                            pass
+
+                    chart = parse_chart_payload(content)
+                    if chart is not None:
+                        yield sse("chart", await _persist_chart_payload_async(thread_id, chart))
+                        continue
+
                     # Legacy: detect .png paths for any remaining static image tools
                     png_match = re.search(r'(/outputs/[\w\-./]+\.png|[\w\-./]+\.png)', content)
                     if png_match:
@@ -118,9 +386,21 @@ def chat(req: ChatRequest):
                             image_urls.append(url)
                             yield sse("image", {"url": url})
 
+                elif event_type == "image":
+                    url = normalize_image_url(data.get("path", ""))
+                    if url:
+                        image_urls.append(url)
+                        yield sse("image", {"url": url})
+
                 elif event_type == "text":
                     if isinstance(data, str):
-                        response_text += data
+                        structured_result = parse_agent_result(data)
+                        if structured_result is not None:
+                            response_text += structured_result.text
+                            for chart in structured_result.charts:
+                                yield sse("chart", await _persist_chart_payload_async(thread_id, chart))
+                        else:
+                            response_text += data
                     elif isinstance(data, list):
                         for block in data:
                             if isinstance(block, str):
@@ -137,8 +417,23 @@ def chat(req: ChatRequest):
                 "image_urls": image_urls,
                 "tool_calls": tool_calls,
             })
+            elapsed = time.monotonic() - started
+            if elapsed >= settings.long_request_seconds:
+                logger.warning(
+                    "long_running_request",
+                    extra={"_request_id": request_id, "_thread_id": thread_id, "_elapsed_seconds": round(elapsed, 3)},
+                )
+            else:
+                logger.info(
+                    "request_completed",
+                    extra={"_request_id": request_id, "_thread_id": thread_id, "_elapsed_seconds": round(elapsed, 3)},
+                )
 
         except Exception as e:
+            logger.exception(
+                "agent_failure",
+                extra={"_request_id": request_id, "_thread_id": thread_id},
+            )
             yield sse("error", {"detail": str(e)})
 
     return StreamingResponse(
@@ -149,18 +444,23 @@ def chat(req: ChatRequest):
 
 
 @app.get("/sessions")
-def get_sessions():
+async def get_sessions():
     try:
-        return {"sessions": list_sessions()}
+        return {"sessions": await asyncio.to_thread(list_sessions)}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/session/{thread_id}/history")
-def get_history(thread_id: str):
+async def get_history(thread_id: str):
     try:
+        active_agent = getattr(app.state, "agent", None) or agent
+        if active_agent is None:
+            raise HTTPException(status_code=503, detail="Agent is not ready")
         config = {"configurable": {"thread_id": thread_id}}
-        state  = agent.get_state(config)
+        state  = await asyncio.to_thread(active_agent.get_state, config)
         if not state or not state.values:
             return {"messages": []}
 
@@ -251,34 +551,23 @@ def get_history(thread_id: str):
                                     m["imageUrls"].append(url)
                                 break
 
-                # Find all .chart.json paths and re-attach the payload to the
-                # preceding assistant message so charts survive page refresh.
-                #
-                # Fix #5: deduplicate by resolved file path rather than by payload
-                # object identity.  When ask_satellite_agent embeds a CHART_PATHS:
-                # summary AND the bare path also appears in tool_text, the regex
-                # would otherwise attach the same payload twice.
-                _seen_chart_paths = set()
-                for chart_match in re.finditer(r'[\w\-./]+\.chart\.json', tool_text):
-                    chart_path = chart_match.group(0)
-                    # Resolve relative paths the same way the streaming path does
-                    if not os.path.isabs(chart_path):
-                        chart_path = os.path.join(OUTPUT_DIR, os.path.basename(chart_path))
-                    if chart_path in _seen_chart_paths:
-                        continue
-                    _seen_chart_paths.add(chart_path)
-                    if os.path.isfile(chart_path):
-                        try:
-                            with open(chart_path) as _cf:
-                                chart_payload = json.load(_cf)
-                            if isinstance(chart_payload, dict) and "type" in chart_payload:
-                                for m in reversed(result):
-                                    if m["role"] == "assistant":
-                                        m.setdefault("charts", [])
-                                        m["charts"].append(chart_payload)
-                                        break
-                        except Exception:
-                            pass
+                charts = []
+                structured_result = parse_agent_result(tool_text)
+                if structured_result is not None:
+                    charts.extend(structured_result.charts)
+                else:
+                    chart = parse_chart_payload(tool_text)
+                    if chart is not None:
+                        charts.append(chart)
+
+                for chart in charts:
+                    chart_payload = await _persist_chart_payload_async(thread_id, chart)
+                    for m in reversed(result):
+                        if m["role"] == "assistant":
+                            m.setdefault("charts", [])
+                            if chart_payload not in m["charts"]:
+                                m["charts"].append(chart_payload)
+                            break
 
         merged = []
         for msg in result:
@@ -303,23 +592,28 @@ def get_history(thread_id: str):
 
         return {"messages": merged}
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.delete("/session/{thread_id}")
-def remove_session(thread_id: str):
+async def remove_session(thread_id: str):
     try:
-        delete_session(thread_id)
+        await asyncio.to_thread(delete_session, thread_id)
         return {"deleted": thread_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     
 
 @app.get("/debug/{thread_id}")
-def debug_history(thread_id: str):
+async def debug_history(thread_id: str):
+    active_agent = getattr(app.state, "agent", None) or agent
+    if active_agent is None:
+        raise HTTPException(status_code=503, detail="Agent is not ready")
     config = {"configurable": {"thread_id": thread_id}}
-    state = agent.get_state(config)
+    state = await asyncio.to_thread(active_agent.get_state, config)
     raw = state.values.get("messages", [])
     return [
         {

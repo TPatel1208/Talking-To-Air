@@ -14,12 +14,13 @@ from langchain_groq import ChatGroq
 from langchain.agents import create_agent
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from config.settings import get_settings
 from config.satellite_agent_prompt import SATELLITE_AGENT_PROMPT
 from tools import SATELLITE_TOOLS
 from utils.streaming import stream_response
 
 
-def build_satellite_agent(model: str = "llama-3.1-8b-instant"):
+def build_satellite_agent(model: str | None = None):
     """
     Build and return a stateless satellite agent.
 
@@ -32,9 +33,10 @@ def build_satellite_agent(model: str = "llama-3.1-8b-instant"):
     model : str
         GROQ model identifier.
     """
+    settings = get_settings()
     llm = ChatGroq(
-        model=model,
-        groq_api_key=os.getenv("GROQ_API_KEY"),
+        model=model or settings.satellite_agent_model,
+        groq_api_key=settings.groq_api_key,
     )
 
     agent = create_agent(

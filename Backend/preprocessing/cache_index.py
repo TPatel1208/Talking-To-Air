@@ -21,9 +21,10 @@ Public API
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime, timezone
 from typing import Optional, Tuple
+
+from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -61,11 +62,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_zarr_cache_group_key
 
 def _dsn() -> str:
     """Build a libpq DSN from the same DB * env vars used by the rest of the app."""
-    host     = os.environ.get("DB_HOST", "localhost")
-    port     = os.environ.get("DB_PORT", "5432")
-    dbname   = os.environ.get("DB_NAME", os.environ.get("POSTGRES_DB", "talking_to_air_memory"))
-    user     = os.environ.get("DB_USER", os.environ.get("POSTGRES_USER", "postgres"))
-    password = os.environ.get("DB_PASSWORD", "")
+    settings = get_settings()
+    host = settings.db_host
+    port = settings.db_port
+    dbname = settings.db_name
+    user = settings.db_user
+    password = settings.db_password or ""
     return f"host={host} port={port} dbname={dbname} user={user} password={password}"
 
 
@@ -82,10 +84,8 @@ def get_connection():
     and leaves connection lifecycle to the caller (data_loader.py).
     """
     try:
-        import psycopg 
-        conn = psycopg.connect(_dsn())
-        conn.autocommit = False
-        return conn
+        from utils.db import pg_connection
+        return pg_connection()
     except Exception as exc:
         logger.error("cache_index: could not connect to PostgreSQL — %s", exc)
         raise
@@ -96,10 +96,12 @@ def ensure_schema(conn=None) -> None:
     Create the zarr_cache_entries table and its indexes if they don't exist.
     Accepts an existing connection or opens (and closes) one internally.
     """
-    _own_conn = conn is None
+    if conn is None:
+        with get_connection() as owned_conn:
+            ensure_schema(owned_conn)
+        return
+
     try:
-        if _own_conn:
-            conn = get_connection()
         with conn.cursor() as cur:
             cur.execute(_SCHEMA_SQL)
         conn.commit()
@@ -109,9 +111,6 @@ def ensure_schema(conn=None) -> None:
         if conn:
             conn.rollback()
         raise
-    finally:
-        if _own_conn and conn:
-            conn.close()
 
 
 # ---------------------------------------------------------------------------

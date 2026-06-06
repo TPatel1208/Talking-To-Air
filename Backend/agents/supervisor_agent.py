@@ -25,8 +25,11 @@ from agents.ground_sensor_agent import build_ground_agent
 from agents.satellite_agent import build_satellite_agent
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from config.settings import get_settings
 from config.supervisor_prompt import SUPERVISOR_PROMPT
-from utils.db import get_checkpointer, pg_connect
+from models import AgentResult, agent_result_to_json, parse_agent_result, parse_chart_payload
+from repositories.chart_repository import delete_charts_for_session
+from utils.db import get_checkpointer, pg_connection
 from utils.streaming import stream_response
 
 logger = logging.getLogger(__name__)
@@ -35,9 +38,9 @@ logger = logging.getLogger(__name__)
 # ── Build supervisor ──────────────────────────────────────────────────────────
 
 def build_agent(
-    model: str = "llama-3.1-8b-instant",
-    ground_agent_model: str = "meta-llama/llama-4-scout-17b-16e-instruct",
-    satellite_agent_model: str = "openai/gpt-oss-20b",
+    model: str | None = None,
+    ground_agent_model: str | None = None,
+    satellite_agent_model: str | None = None,
 ):
     """
     Build and return the supervisor agent.
@@ -50,13 +53,14 @@ def build_agent(
     no checkpointer attached, so they write nothing to the DB and accumulate
     no history of their own.
     """
+    settings = get_settings()
+    model = model or settings.llm_model
+    ground_agent_model = ground_agent_model or settings.ground_agent_model
+    satellite_agent_model = satellite_agent_model or settings.satellite_agent_model
     llm = ChatGoogleGenerativeAI(
         model=model,
-        google_api_key=os.getenv("GOOGLE_API_KEY"),
+        google_api_key=settings.google_api_key,
     )
-
-    ground_agent_model   = os.getenv("GROUND_AGENT_MODEL",   ground_agent_model)
-    satellite_agent_model = os.getenv("SATELLITE_AGENT_MODEL", satellite_agent_model)
 
     # Stateless subagents — no checkpointer passed.
     ground_agent    = build_ground_agent(model=ground_agent_model)
@@ -69,8 +73,9 @@ def build_agent(
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
+        messages = [_compact_model_input_message(msg) for msg in request.state["messages"]]
         trimmed = trim_messages(
-            request.state["messages"],
+            messages,
             max_tokens=8000,
             strategy="last",
             token_counter="approximate",
@@ -78,6 +83,11 @@ def build_agent(
             allow_partial=False,
             start_on="human",
         )
+        # Gemini rejects an empty contents list, so never let trimming remove
+        # the only usable turn from a request. Fall back to the original
+        # message list if trimming collapses everything.
+        if not trimmed:
+            trimmed = messages
         return handler(request.override(messages=trimmed))
 
     # ── Wrap subagents as tools ───────────────────────────────────────────────
@@ -103,7 +113,12 @@ def build_agent(
             {"messages": [HumanMessage(content=task)]},
             config={"configurable": {"thread_id": str(uuid.uuid4())}},
         )
-        return _extract_last_text(result, "Ground sensor agent returned no response.")
+        text = _extract_last_text(
+            result,
+            "Ground sensor agent returned no response.",
+            agent_name="ground_sensor",
+        )
+        return agent_result_to_json(AgentResult(text=text))
 
     @tool
     def ask_satellite_agent(task: str) -> str:
@@ -121,8 +136,8 @@ def build_agent(
                (e.g. 'Plot TROPOMI NO2 over New Jersey for 2024-01-15').
         Output: text summary with plot path and spatial statistics.
         """
-        def _run_satellite(task_text: str) -> str:
-            chart_paths = []
+        def _run_satellite(task_text: str) -> AgentResult:
+            charts = []
             text_parts  = []
 
             try:
@@ -131,15 +146,14 @@ def build_agent(
                 ):
                     if event_type == "tool_result":
                         content = data.get("content", "")
-                        if isinstance(content, str) and content.strip().endswith(".chart.json"):
-                            p = content.strip()
-                            # Fix #4: resolve relative paths the same way api.py does so
-                            # the file check succeeds regardless of the working directory.
-                            if not os.path.isabs(p):
-                                from tools.satellite_tools.plot_tools import OUTPUT_DIR as _PLOT_OUTPUT_DIR
-                                p = os.path.join(_PLOT_OUTPUT_DIR, os.path.basename(p))
-                            if os.path.isfile(p):
-                                chart_paths.append(p)
+                        chart = parse_chart_payload(content)
+                        if chart is not None:
+                            charts.append(chart)
+                            continue
+                        nested = parse_agent_result(content)
+                        if nested is not None:
+                            text_parts.append(nested.text)
+                            charts.extend(nested.charts)
                     elif event_type in ("text", "done"):
                         t = data if isinstance(data, str) else data.get("response", "")
                         if t:
@@ -147,16 +161,18 @@ def build_agent(
             except Exception as exc:
                 text_parts.append(str(exc))
 
-            summary = " ".join(text_parts)[:2000] or "Satellite agent returned no response."
-            if chart_paths:
-                summary += "\nCHART_PATHS: " + " ".join(chart_paths)
-            return summary
+            text = _truncate_text(
+                " ".join(text_parts),
+                2000,
+                agent_name="satellite",
+            ) or "Satellite agent returned no response."
+            return AgentResult(text=text, charts=charts)
 
         direct_first = _try_direct_satellite_plot(task)
         if direct_first is not None:
-            return direct_first
+            return agent_result_to_json(direct_first)
 
-        summary = _run_satellite(task)
+        result = _run_satellite(task)
         refusal_markers = (
             "necessary tools are not present",
             "don't have access to fetch_environmental_data",
@@ -164,7 +180,7 @@ def build_agent(
             "failed to call a function",
             "failed_generation",
         )
-        if any(marker in summary.lower() for marker in refusal_markers):
+        if any(marker in result.text.lower() for marker in refusal_markers):
             retry_task = (
                 "The satellite tools are registered and available in this runtime: "
                 "convert_temporal_range_to_iso, geocode_location, "
@@ -173,16 +189,16 @@ def build_agent(
                 "find_daily_peak. Retry the task using those tools exactly as needed. "
                 f"Task: {task}"
             )
-            summary = _run_satellite(retry_task)
+            result = _run_satellite(retry_task)
             if (
-                any(marker in summary.lower() for marker in refusal_markers)
-                or "CHART_PATHS:" not in summary
+                any(marker in result.text.lower() for marker in refusal_markers)
+                or not result.charts
             ):
                 fallback = _try_direct_satellite_plot(task)
                 if fallback is not None:
-                    summary = fallback
+                    result = fallback
 
-        return summary
+        return agent_result_to_json(result)
 
     # ── Build supervisor ──────────────────────────────────────────────────────
     checkpointer = get_checkpointer()
@@ -198,7 +214,13 @@ def build_agent(
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _extract_last_text(result: dict, fallback: str, max_chars: int = 2000) -> str:
+def _extract_last_text(
+    result: dict,
+    fallback: str,
+    max_chars: int = 2000,
+    agent_name: str = "unknown",
+    request_id: str | None = None,
+) -> str:
     """Return the last non-empty text content from an agent invoke() result.
 
     Capped at max_chars to prevent large subagent responses from bloating the
@@ -209,7 +231,7 @@ def _extract_last_text(result: dict, fallback: str, max_chars: int = 2000) -> st
             continue
         content = msg.content
         if isinstance(content, str):
-            return content[:max_chars]
+            return _truncate_text(content, max_chars, agent_name, request_id)
         if isinstance(content, list):
             text = " ".join(
                 b.get("text", "") if isinstance(b, dict) else getattr(b, "text", "")
@@ -218,11 +240,80 @@ def _extract_last_text(result: dict, fallback: str, max_chars: int = 2000) -> st
                 or hasattr(b, "text")
             )
             if text:
-                return text[:max_chars]
+                return _truncate_text(text, max_chars, agent_name, request_id)
     return fallback
 
 
-def _try_direct_satellite_plot(task: str) -> str | None:
+def _truncate_text(text: str, max_chars: int, agent_name: str, request_id: str | None = None) -> str:
+    if len(text) <= max_chars:
+        return text
+    logger.warning(
+        "response_truncated",
+        extra={
+            "_agent_name": agent_name,
+            "_original_length": len(text),
+            "_final_length": max_chars,
+            "_request_id": request_id,
+        },
+    )
+    return text[:max_chars]
+
+
+def _compact_model_input_message(msg):
+    """Replace bulky chart payloads with concise summaries before LLM calls."""
+    content = getattr(msg, "content", None)
+    compacted = _compact_model_input_content(content)
+    if compacted is content:
+        return msg
+    if hasattr(msg, "model_copy"):
+        return msg.model_copy(update={"content": compacted})
+    try:
+        copied = msg.copy()
+        copied.content = compacted
+        return copied
+    except Exception:
+        return msg
+
+
+def _compact_model_input_content(content):
+    if not isinstance(content, str):
+        return content
+
+    result = parse_agent_result(content)
+    if result is not None and result.charts:
+        summaries = [_chart_summary(chart) for chart in result.charts]
+        chart_text = "; ".join(summary for summary in summaries if summary)
+        if chart_text:
+            return f"{result.text}\n\nCharts generated: {chart_text}"
+        return result.text
+
+    chart = parse_chart_payload(content)
+    if chart is not None:
+        summary = _chart_summary(chart)
+        return f"Chart generated: {summary}" if summary else "Chart generated."
+
+    return content
+
+
+def _chart_summary(chart) -> str:
+    payload = chart.model_dump(exclude_none=True) if hasattr(chart, "model_dump") else dict(chart)
+    chart_type = payload.get("type", "chart")
+    title = payload.get("title") or payload.get("metadata", {}).get("name") or "Untitled chart"
+    variable = payload.get("variable")
+    units = payload.get("units")
+    bits = [f"{chart_type} '{title}'"]
+    if variable:
+        bits.append(f"variable={variable}")
+    if units:
+        bits.append(f"units={units}")
+    if payload.get("lats") and payload.get("lons"):
+        bits.append(f"grid={len(payload['lats'])}x{len(payload['lons'])}")
+    if payload.get("times"):
+        bits.append(f"points={len(payload['times'])}")
+    return ", ".join(bits)
+
+
+def _try_direct_satellite_plot(task: str) -> AgentResult | None:
     """
     Deterministic fallback for simple one-location satellite plot requests.
 
@@ -250,13 +341,12 @@ def _try_direct_satellite_plot(task: str) -> str | None:
             geocode_location,
         )
         from tools.satellite_tools.plot_tools import (
-            OUTPUT_DIR as _PLOT_OUTPUT_DIR,
             plot_singular,
         )
 
         geocoded = geocode_location.invoke({"location_name": location})
         if isinstance(geocoded, dict) and geocoded.get("error"):
-            return geocoded["error"]
+            return AgentResult(text=geocoded["error"])
         bbox = geocoded["bbox"]
         logger.info("Direct satellite plot fallback: geocoded bbox=%s", bbox)
 
@@ -272,10 +362,10 @@ def _try_direct_satellite_plot(task: str) -> str | None:
                 availability["error"],
             )
         elif isinstance(availability, dict) and availability.get("num_granules", 0) == 0:
-            return (
+            return AgentResult(text=(
                 f"No {variable} granules were found for {location} between "
                 f"{start_date} and {end_date}."
-            )
+            ))
         else:
             logger.info(
                 "Direct satellite plot fallback: availability num_granules=%s",
@@ -291,27 +381,24 @@ def _try_direct_satellite_plot(task: str) -> str | None:
             "max_results": 1 if variable == "TROPOMI_NO2" else 10,
         })
         if isinstance(data, dict) and data.get("error"):
-            return f"Fetch failed: {data['error']}"
+            return AgentResult(text=f"Fetch failed: {data['error']}")
         logger.info("Direct satellite plot fallback: fetch_environmental_data returned data")
         plot_data = data.model_dump() if hasattr(data, "model_dump") else data
 
         title = f"{variable} over {location}"
-        chart_path = plot_singular.invoke({
+        chart_result = plot_singular.invoke({
             "data_dict": plot_data,
             "variable": variable,
             "location": location,
             "title": title,
         })
-        if isinstance(chart_path, str) and chart_path.strip().endswith(".chart.json"):
-            p = chart_path.strip()
-            if not os.path.isabs(p):
-                p = os.path.join(_PLOT_OUTPUT_DIR, os.path.basename(p))
-            if os.path.isfile(p):
-                logger.info("Direct satellite plot fallback: chart created at %s", p)
-                return f"Created {title}.\nCHART_PATHS: {p}"
-        return str(chart_path)
+        chart = parse_chart_payload(chart_result)
+        if chart is not None:
+            logger.info("Direct satellite plot fallback: chart created for %s", title)
+            return AgentResult(text=f"Created {title}.", charts=[chart])
+        return AgentResult(text=str(chart_result))
     except Exception as exc:
-        return f"Satellite fallback failed: {exc}"
+        return AgentResult(text=f"Satellite fallback failed: {exc}")
 
 
 def _parse_simple_satellite_plot_task(task: str):
@@ -380,7 +467,7 @@ def _parse_simple_satellite_plot_task(task: str):
 
 def list_sessions() -> list[str]:
     """Return all supervisor session thread_ids (subagent threads no longer exist)."""
-    with pg_connect() as conn:
+    with pg_connection() as conn:
         rows = conn.execute(
             "SELECT DISTINCT thread_id FROM checkpoints ORDER BY thread_id"
         ).fetchall()
@@ -389,7 +476,8 @@ def list_sessions() -> list[str]:
 
 def delete_session(thread_id: str):
     """Delete a supervisor session from the checkpoint tables."""
-    with pg_connect() as conn:
+    delete_charts_for_session(thread_id)
+    with pg_connection() as conn:
         for table in ("checkpoint_writes", "checkpoint_blobs", "checkpoints"):
             conn.execute(
                 f"DELETE FROM {table} WHERE thread_id = %s", (thread_id,)

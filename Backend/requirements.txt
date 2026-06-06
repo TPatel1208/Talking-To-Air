@@ -22,6 +22,7 @@ requests>=2.32.3,<2.33
 Shapely>=2.0.4,<2.1
 xarray==2025.6.1
 psycopg[binary]>=3.1.0
+psycopg_pool>=3.2.0
 zarr==3.1.6
 h5py>=3.10.0
 PyYAML==6.0.2

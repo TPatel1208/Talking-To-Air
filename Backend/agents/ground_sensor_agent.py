@@ -13,12 +13,13 @@ from langchain_groq import ChatGroq
 from langchain.agents import create_agent
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config.settings import get_settings
 from config.ground_sensor_agent_prompt import GROUND_SYSTEM_PROMPT
 from tools import GROUND_TOOLS
 from utils.streaming import stream_response
 
 
-def build_ground_agent(model: str = "llama-3.1-8b-instant"):
+def build_ground_agent(model: str | None = None):
     """
     Build and return a stateless ground sensor agent.
 
@@ -31,9 +32,10 @@ def build_ground_agent(model: str = "llama-3.1-8b-instant"):
     model : str
         GROQ model identifier.
     """
+    settings = get_settings()
     llm = ChatGroq(
-        model=model,
-        groq_api_key=os.getenv("GROQ_API_KEY"),
+        model=model or settings.ground_agent_model,
+        groq_api_key=settings.groq_api_key,
     )
 
     agent = create_agent(

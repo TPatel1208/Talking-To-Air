@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Optional, List, Tuple
 
 import requests
+from config.settings import get_settings
 from harmony import BBox, Client, Collection, Environment, Request
 from tenacity import (
     retry,
@@ -74,9 +75,9 @@ class HarmonyService:
             (EDL_USERNAME, EDL_PASSWORD).
         """
         if client is None:
-            import os
-            username = os.getenv("EDL_USERNAME")
-            password = os.getenv("EDL_PASSWORD")
+            settings = get_settings()
+            username = settings.edl_username
+            password = settings.edl_password
             if not username or not password:
                 raise RuntimeError(
                     "EDL credentials required: set EDL_USERNAME and EDL_PASSWORD"

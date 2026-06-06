@@ -6,18 +6,18 @@ import sys
 import time
 import math
 from datetime import date, timedelta
-from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+from config.settings import get_settings
 from utils.plotting import GeocodingService
 
 geocoding_service = GeocodingService()
 
-load_dotenv()
+settings = get_settings()
 
 AQS_BASE_URL = "https://aqs.epa.gov/data/api"
-AQS_EMAIL = os.environ.get("AQS_API_EMAIL", "your_email@example.com")
-AQS_KEY = os.environ.get("AQS_API_KEY", "your_aqs_key")
+AQS_EMAIL = settings.aqs_api_email
+AQS_KEY = settings.aqs_api_key
 DEFAULT_PARAM_CODE = "42602"  # NO2
 
 # Initial bbox half-width for street-level addresses (degrees, ~17 miles).

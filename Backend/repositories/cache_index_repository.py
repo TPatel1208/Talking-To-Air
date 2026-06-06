@@ -49,7 +49,6 @@ class CacheIndexRepository:
     """
 
     def __init__(self) -> None:
-        self._conn = None
         self._ci = None
         self._available = False
         self._init_connection()
@@ -62,9 +61,8 @@ class CacheIndexRepository:
         """Open DB connection and ensure schema exists. Non-fatal on failure."""
         try:
             from preprocessing import cache_index as ci  # noqa: PLC0415
-            conn = ci.get_connection()
-            ci.ensure_schema(conn)
-            self._conn = conn
+            with ci.get_connection() as conn:
+                ci.ensure_schema(conn)
             self._ci = ci
             self._available = True
             logger.info("CacheIndexRepository: connected to PostGIS metadata index")
@@ -81,15 +79,7 @@ class CacheIndexRepository:
         """
         if not self._available:
             return False
-        try:
-            # psycopg v3: conn.closed is 0 when open
-            if self._conn is None or self._conn.closed:
-                self._init_connection()
-            return self._available
-        except Exception as exc:
-            logger.warning("CacheIndexRepository: reconnect failed — %s", exc)
-            self._available = False
-            return False
+        return self._ci is not None
 
     # ------------------------------------------------------------------
     # Public API (matches CacheManager expectations)
@@ -126,13 +116,14 @@ class CacheIndexRepository:
         if not self._ensure_connected():
             return None
         try:
-            return self._ci.lookup(
-                self._conn,
-                collection_id=collection_id,
-                group_key=group_key,
-                temporal=temporal,
-                bounding_box=bbox,
-            )
+            with self._ci.get_connection() as conn:
+                return self._ci.lookup(
+                    conn,
+                    collection_id=collection_id,
+                    group_key=group_key,
+                    temporal=temporal,
+                    bounding_box=bbox,
+                )
         except Exception as exc:
             logger.warning("CacheIndexRepository.lookup failed: %s", exc)
             return None
@@ -169,27 +160,21 @@ class CacheIndexRepository:
         if not self._ensure_connected():
             return False
         try:
-            return self._ci.insert(
-                self._conn,
-                collection_id=collection_id,
-                group_key=group_key,
-                cache_path=cache_path,
-                temporal=temporal,
-                bounding_box=bbox,
-            )
+            with self._ci.get_connection() as conn:
+                return self._ci.insert(
+                    conn,
+                    collection_id=collection_id,
+                    group_key=group_key,
+                    cache_path=cache_path,
+                    temporal=temporal,
+                    bounding_box=bbox,
+                )
         except Exception as exc:
             logger.warning("CacheIndexRepository.insert failed: %s", exc)
             return False
 
     def close(self) -> None:
-        """Close the underlying database connection."""
-        if self._conn is not None and not self._conn.closed:
-            try:
-                self._conn.close()
-                logger.debug("CacheIndexRepository: connection closed")
-            except Exception as exc:
-                logger.warning("CacheIndexRepository.close: %s", exc)
-        self._conn = None
+        """Mark the repository unavailable; pool shutdown owns connections."""
         self._available = False
 
     def __repr__(self) -> str:

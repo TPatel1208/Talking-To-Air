@@ -140,10 +140,13 @@ class CacheManager:
                     is_superset = row.get("superset_hit", False)
 
                     logger.info(
-                        "Index hit (%s): %s group=%s",
-                        "superset" if is_superset else "exact",
-                        stored_path,
-                        cached_group_key,
+                        "cache_hit",
+                        extra={
+                            "_tier": "index",
+                            "_hit_type": "superset" if is_superset else "exact",
+                            "_cache_path": stored_path,
+                            "_group_key": cached_group_key,
+                        },
                     )
 
                     try:
@@ -165,10 +168,10 @@ class CacheManager:
         # Tier 2: Zarr store (if DB unavailable or miss)
         # ─────────────────────────────────────────────────────────────────
         if self.zarr_repo.exists(group_key):
-            logger.info("Zarr hit: group=%s", group_key)
+            logger.info("cache_hit", extra={"_tier": "zarr", "_group_key": group_key})
             return self.zarr_repo.read(group_key)
 
-        logger.info("Cache miss")
+        logger.info("cache_miss", extra={"_collection_id": collection_id, "_group_key": group_key})
         return None
 
     def store(

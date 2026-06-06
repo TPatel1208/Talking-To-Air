@@ -4,7 +4,8 @@ plot_tools.py
 Satellite plotting tools.
 
 Returns chart payloads (JSON) instead of PNG files so the frontend can
-render interactive Plotly charts. The payload schema is:
+render interactive Plotly charts. The API persists these payloads durably
+in PostgreSQL when they are attached to a session. The payload schema is:
 
 Spatial heatmap
 ---------------
@@ -93,10 +94,27 @@ def _percentile_bounds(arr: np.ndarray):
     valid = arr[np.isfinite(arr)]
     if len(valid) == 0:
         return 0.0, 1.0
-    return float(np.percentile(valid, 2)), float(np.percentile(valid, 98))
+    vmin = float(np.percentile(valid, 2))
+    vmax = float(np.percentile(valid, 98))
+    if not np.isfinite(vmin) or not np.isfinite(vmax):
+        return 0.0, 1.0
+    if vmin == vmax:
+        delta = abs(vmin) * 0.01 or 1.0
+        return vmin - delta, vmax + delta
+    return vmin, vmax
 
 
 _MAX_GRID_CELLS = 8_000   # match the frontend MAX_POINTS constant
+
+
+def _normalize_longitudes(da, lon_coord):
+    """Convert 0..360 longitude coordinates to -180..180 and keep them sorted."""
+    lon_vals = np.asarray(da[lon_coord].values)
+    if lon_vals.size == 0 or np.nanmin(lon_vals) < 0 or np.nanmax(lon_vals) <= 180:
+        return da
+
+    normalized = ((lon_vals + 180) % 360) - 180
+    return da.assign_coords({lon_coord: normalized}).sortby(lon_coord)
 
 
 def _downsample_grid(lats: np.ndarray, lons: np.ndarray, arr: np.ndarray):
@@ -122,25 +140,48 @@ def _downsample_grid(lats: np.ndarray, lons: np.ndarray, arr: np.ndarray):
     return lats[::row_step], lons[::col_step], arr[::row_step, ::col_step]
 
 
+def _points_from_grid(lats: np.ndarray, lons: np.ndarray, arr: np.ndarray):
+    row_idx, col_idx = np.where(np.isfinite(arr))
+    count = len(row_idx)
+    if count == 0:
+        return {"lats": [], "lons": [], "values": []}
+
+    if count > _MAX_GRID_CELLS:
+        take = np.linspace(0, count - 1, _MAX_GRID_CELLS, dtype=int)
+        row_idx = row_idx[take]
+        col_idx = col_idx[take]
+
+    point_values = arr[row_idx, col_idx]
+    return {
+        "lats": [round(float(lats[i]), 6) for i in row_idx],
+        "lons": [round(float(lons[i]), 6) for i in col_idx],
+        "values": [float(f"{v:.6e}") for v in point_values],
+    }
+
+
 def _da_to_heatmap_payload(da, title: str, variable: str, units: str) -> dict:
     lat_coord = next((c for c in ["lat", "latitude", "Latitude"] if c in da.coords), None)
     lon_coord = next((c for c in ["lon", "longitude", "Longitude"] if c in da.coords), None)
     if lat_coord is None or lon_coord is None:
         raise ValueError(f"Cannot find lat/lon coords. Available: {list(da.coords)}")
 
+    da = _normalize_longitudes(da, lon_coord)
+
     if da.dims.index(lat_coord) != 0:
         da = da.transpose(lat_coord, lon_coord)
 
     arr = da.values.astype(float)
+    arr = np.where(np.isfinite(arr), arr, np.nan)
     vmin, vmax = _percentile_bounds(arr)
 
-    # ── Fix #1: downsample BEFORE serialising so the JSON payload is small ──
     lats_out = da[lat_coord].values
     lons_out = da[lon_coord].values
+    points = _points_from_grid(lats_out, lons_out, arr)
+
     lats_out, lons_out, arr = _downsample_grid(lats_out, lons_out, arr)
 
     values_json = [
-        [None if np.isnan(v) else float(f"{v:.6e}") for v in row]
+        [None if not np.isfinite(v) else float(f"{v:.6e}") for v in row]
         for row in arr
     ]
 
@@ -152,18 +193,16 @@ def _da_to_heatmap_payload(da, title: str, variable: str, units: str) -> dict:
         "lats":     [round(float(v), 6) for v in lats_out],
         "lons":     [round(float(v), 6) for v in lons_out],
         "values":   values_json,
+        "points":   points,
         "vmin": float(f"{vmin:.6e}"),
         "vmax": float(f"{vmax:.6e}"),
     }
 
 def _save_chart(payload: dict, name: str) -> str:
-    """Write chart payload to /outputs/<name>.chart.json and return the path."""
-    import re
-    safe = re.sub(r'[^\w\-]', '_', name)[:80]
-    path = os.path.join(OUTPUT_DIR, f"{safe}.chart.json")
-    with open(path, "w") as f:
-        json.dump(payload, f)
-    return path
+    """Return a structured chart payload for the API to persist."""
+    payload.setdefault("metadata", {})
+    payload["metadata"].setdefault("name", name)
+    return json.dumps(payload)
 
 # ── Tools ─────────────────────────────────────────────────────────────────────
 
@@ -173,6 +212,94 @@ def _get(data_dict, key, default=None):
     if isinstance(data_dict, dict):
         return data_dict.get(key, default)
     return getattr(data_dict, key, default)
+
+
+def _coerce_bbox(value):
+    if value in (None, ""):
+        return None
+    if isinstance(value, str):
+        try:
+            return [float(part.strip()) for part in value.split(",")]
+        except Exception:
+            return value
+    if isinstance(value, (list, tuple)):
+        return [float(v) for v in value]
+    return value
+
+
+def _date_range(data_dict):
+    fetch_params = _get(data_dict, "fetch_params") or {}
+    start_date = fetch_params.get("start_date")
+    end_date = fetch_params.get("end_date")
+
+    temporal = fetch_params.get("temporal")
+    if (not start_date or not end_date) and isinstance(temporal, (list, tuple)) and len(temporal) >= 2:
+        start_date, end_date = temporal[0], temporal[1]
+
+    times = _get(data_dict, "times") or []
+    if (not start_date or not end_date) and times:
+        ordered = sorted(str(t) for t in times)
+        start_date = start_date or ordered[0]
+        end_date = end_date or ordered[-1]
+
+    return start_date, end_date
+
+
+def _dataset_label(variable: str) -> str:
+    if not variable:
+        return ""
+    return variable.split("_", 1)[0].upper()
+
+
+def _query_definition(data_dict, aggregation: str, chart_parameters: dict | None = None) -> dict:
+    variable = _get(data_dict, "variable", "")
+    fetch_params = _get(data_dict, "fetch_params") or {}
+    start_date, end_date = _date_range(data_dict)
+    bbox = _coerce_bbox(fetch_params.get("bbox") or fetch_params.get("bounding_box") or _get(data_dict, "bbox"))
+
+    query = {
+        "dataset": variable,
+        "mission": _dataset_label(variable),
+        "start_date": start_date,
+        "end_date": end_date,
+        "bbox": bbox,
+        "aggregation": aggregation,
+    }
+    if chart_parameters:
+        query["chart_parameters"] = chart_parameters
+    return {k: v for k, v in query.items() if v not in (None, "", [])}
+
+
+def _provenance(data_dict, region_name: str, aggregation: str) -> dict:
+    variable = _get(data_dict, "variable", "")
+    query = _query_definition(data_dict, aggregation)
+    return {
+        "dataset": query.get("mission") or _dataset_label(variable),
+        "variable": variable,
+        "start_date": query.get("start_date"),
+        "end_date": query.get("end_date"),
+        "bbox": query.get("bbox"),
+        "region_name": region_name,
+        "aggregation": aggregation,
+        "source": _get(data_dict, "source") or "NASA Harmony endpoint",
+        "endpoint": "NASA Harmony endpoint",
+    }
+
+
+def _attach_reproducibility(payload: dict, data_dict, region_name: str, aggregation: str, chart_parameters: dict | None = None) -> dict:
+    payload["provenance"] = _provenance(data_dict, region_name, aggregation)
+    payload["query"] = _query_definition(data_dict, aggregation, chart_parameters)
+    payload["export"] = {
+        "type": payload.get("type"),
+        "variable": _get(data_dict, "variable", ""),
+        "units": _get(data_dict, "units", ""),
+        "source": _get(data_dict, "source", ""),
+        "fetch_params": _get(data_dict, "fetch_params") or {},
+        "region_name": region_name,
+        "aggregation": aggregation,
+        "chart_parameters": chart_parameters or {},
+    }
+    return payload
 
 @tool
 def plot_singular(data_dict: Annotated[dict, Field(description="The complete JSON object returned by fetch_environmental_data. Pass the entire object — do not extract fields or convert to a string.")], variable: str, location: str,
@@ -206,10 +333,11 @@ def plot_singular(data_dict: Annotated[dict, Field(description="The complete JSO
         return json.dumps({"error": f"Could not geocode location: '{location}'"})
 
     try:
-        da = mask_data_by_geometry(da, region["geometry"])
-        bounds = region["bounds"]  # (minx, miny, maxx, maxy)
         lat_coord = next(c for c in ["lat", "latitude", "Latitude"] if c in da.coords)
         lon_coord = next(c for c in ["lon", "longitude", "Longitude"] if c in da.coords)
+        da = _normalize_longitudes(da, lon_coord)
+        da = mask_data_by_geometry(da, region["geometry"])
+        bounds = region["bounds"]  # (minx, miny, maxx, maxy)
         da = _sel_bounds(da, lat_coord, lon_coord, bounds
 
 )
@@ -224,6 +352,13 @@ def plot_singular(data_dict: Annotated[dict, Field(description="The complete JSO
         payload = _da_to_heatmap_payload(da, resolved_title, variable, units)
         payload["cmap"]   = cmap or "Spectral_r"
         payload["bounds"] = list(region["bounds"])  # (minx, miny, maxx, maxy)
+        _attach_reproducibility(
+            payload,
+            data_dict,
+            region["name"],
+            "single snapshot",
+            {"chart_type": "heatmap", "cmap": payload["cmap"], "location": location},
+        )
     except Exception as e:
         return json.dumps({"error": f"Failed to build chart payload: {e}"})
 
@@ -273,12 +408,13 @@ def plot_multiple(
             return json.dumps({"error": f"Could not geocode location: '{location}'"})
 
         try:
+            lat_coord = next(c for c in ["lat", "latitude", "Latitude"] if c in da.coords)
+            lon_coord = next(c for c in ["lon", "longitude", "Longitude"] if c in da.coords)
+            da = _normalize_longitudes(da, lon_coord)
             da = mask_data_by_geometry(da, region["geometry"])
         except Exception as e:
             return json.dumps({"error": f"Masking failed for '{location}': {e}"})
 
-        lat_coord = next(c for c in ["lat", "latitude", "Latitude"] if c in da.coords)
-        lon_coord = next(c for c in ["lon", "longitude", "Longitude"] if c in da.coords)
         bounds = region["bounds"]
         da = _sel_bounds(da, lat_coord, lon_coord, bounds
         )
@@ -290,12 +426,40 @@ def plot_multiple(
             panel = _da_to_heatmap_payload(da, region["name"], variable, units)
             panel["cmap"]   = cmap or "Spectral_r"
             panel["bounds"] = list(region["bounds"])
+            _attach_reproducibility(
+                panel,
+                data_dict,
+                region["name"],
+                "single snapshot",
+                {"chart_type": "heatmap", "cmap": panel["cmap"], "location": location},
+            )
         except Exception as e:
             return json.dumps({"error": f"Failed to build panel for '{location}': {e}"})
 
         panels.append(panel)
 
     multi_payload = {"type": "heatmap_multi", "title": title or f"{variable} Comparison", "panels": panels}
+    if panels:
+        multi_payload["provenance"] = {
+            **panels[0].get("provenance", {}),
+            "region_name": ", ".join(panel.get("provenance", {}).get("region_name", "") for panel in panels),
+            "aggregation": "single snapshot comparison",
+        }
+        multi_payload["query"] = {
+            "dataset": variable,
+            "mission": _dataset_label(variable),
+            "aggregation": "single snapshot comparison",
+            "panels": [panel.get("query", {}) for panel in panels],
+            "chart_parameters": {"chart_type": "heatmap_multi", "cmap": cmap or "Spectral_r"},
+        }
+        multi_payload["export"] = {
+            "type": "heatmap_multi",
+            "variable": variable,
+            "units": panels[0].get("units", ""),
+            "aggregation": "single snapshot comparison",
+            "chart_parameters": {"chart_type": "heatmap_multi", "cmap": cmap or "Spectral_r"},
+            "panels": [panel.get("export", {}) for panel in panels],
+        }
     return _save_chart(multi_payload, title or f"{variable}_comparison")
 
 
@@ -393,4 +557,11 @@ def conduct_temporal_statistic(
         "times":    list(times),
         "values":   list(values),
     }
+    _attach_reproducibility(
+        ts_payload,
+        data_dict,
+        region["name"],
+        stat,
+        {"chart_type": "timeseries", "location": location},
+    )
     return _save_chart(ts_payload, f"{var}_{stat}_{location}")

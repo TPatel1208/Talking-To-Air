@@ -12,13 +12,13 @@ Typical latency improvement over pydap: 40-70% for tight bounding boxes.
 from __future__ import annotations
 
 import logging
-import os
 from typing import List, Optional, Tuple
 from io import BytesIO
 
 import numpy as np
 import requests
 import xarray as xr
+from config.settings import get_settings
 from tenacity import (
     before_sleep_log,
     retry,
@@ -55,7 +55,8 @@ _RETRY = dict(
 class OPeNDAPFetchService:
 
     def __init__(self):
-        self._token = os.getenv("EARTHDATA_TOKEN") or self._get_edl_token()
+        settings = get_settings()
+        self._token = settings.earthdata_token or self._get_edl_token()
         self._session = self._make_session()
 
     def fetch(
@@ -351,8 +352,9 @@ class OPeNDAPFetchService:
 
     @staticmethod
     def _get_edl_token() -> str:
-        username = os.getenv("EDL_USERNAME", "")
-        password = os.getenv("EDL_PASSWORD", "")
+        settings = get_settings()
+        username = settings.edl_username
+        password = settings.edl_password
         if not username or not password:
             raise RuntimeError(
                 "Set EARTHDATA_TOKEN or both EDL_USERNAME and EDL_PASSWORD"
