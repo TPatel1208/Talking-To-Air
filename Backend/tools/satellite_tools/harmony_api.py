@@ -8,10 +8,25 @@ import json
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils.plotting import GeocodingService
-from preprocessing.data_loader import DataLoader
+from preprocessing.data_loader import DataLoader, _bounded_max_results
+from tools.satellite_tools.models import DataDict
 
-_geocoder = GeocodingService()
-_data_loader = DataLoader()
+_geocoder = None
+_data_loader = None
+
+
+def _get_geocoder():
+    global _geocoder
+    if _geocoder is None:
+        _geocoder = GeocodingService()
+    return _geocoder
+
+
+def _get_data_loader():
+    global _data_loader
+    if _data_loader is None:
+        _data_loader = DataLoader()
+    return _data_loader
 
 COLLECTIONS = {
     # OMI NO2 (Default for 'NO2' variable)
@@ -208,9 +223,8 @@ def geocode_location(location_name: str) -> dict:
 
     Returns:
         dict with keys: location, bbox, center_lat, center_lon.
-        On failure: JSON string with key 'error'.
     """
-    result = _geocoder.geocode(location_name)
+    result = _get_geocoder().geocode(location_name)
     if result is None:
         return {"error": f"Could not geocode '{location_name}'"}
 
@@ -242,17 +256,7 @@ def fetch_environmental_data(
     max_results: int = 10,
 ) -> dict:
     """
-    Fetch environmental / atmospheric data from NASA Harmony (TEMPO satellite).
-
-    Cache lookup order (handled transparently by DataLoader):
-      1. PostgreSQL/PostGIS metadata index — exact group_key match; fastest path.
-      2. Zarr store key check              — fallback when the DB is unavailable.
-      3. NASA Harmony fetch               — only on a true cache miss; result is
-                                            written to both the Zarr store and the
-                                            PostGIS metadata catalog.
-
-    Repeated queries for the same parameters are served from cache without any
-    network calls to NASA Harmony.
+    Fetch environmental / atmospheric data from NASA Harmony.
 
     Args:
         variable    : Pollutant key e.g. 'OMI_NO2' or 'TEMPO_NO2'.
@@ -275,6 +279,7 @@ def fetch_environmental_data(
                             the dataset without re-downloading.
     """
     variable  = variable.upper()
+    max_results = _bounded_max_results(max_results)
     available = ", ".join(COLLECTIONS.keys())
 
     if variable not in COLLECTIONS:
@@ -300,33 +305,43 @@ def fetch_environmental_data(
     if col.get("supports_variable_subsetting", False):
         fetch_params["variables"] = col["variables"]
     try:
-        ds = _data_loader.download_dataset_harmony(**fetch_params)
+        ds = _get_data_loader().download_dataset_harmony(**fetch_params)
     except ValueError as e:
         return {"error": str(e)}
     except RuntimeError as e:
         return {"error": str(e)}
     except Exception as e:
-        return {"error": f"Unexpected error: {str(e)}"}
+        return {"error": f"Unexpected {type(e).__name__}: {str(e)}"}
 
     try:
         times = [str(t) for t in ds.time.values] if "time" in ds.coords else []
     except Exception:
         times = []
 
-    return {
-        "variable":      variable,
-        "units":         col["units"],
-        "bbox":          bbox,
-        "times":         times,
-        "n_granules":    len(times) or 1,
-        "source":        f"NASA Harmony — {col['description']}",
-        "_fetch_params": {
-            "variable":   variable,
-            "bbox":       bbox_list,
-            "start_date": start_date,
-            "end_date":   end_date,
-        },
+    # Build a clean, JSON-safe fetch_params for storage on DataDict.
+    # The internal fetch_params (used above for download) contains tuples
+    # which are not JSON-serialisable — don't reuse it here.
+    serialisable_fetch_params = {
+        "variable":     variable,
+        "start_date":   start_date,
+        "end_date":     end_date,
+        "bbox":         bbox_list,
+        "bounding_box": bbox_list,
+        "cache_path":   "./data/cache.zarr",
+        "max_results":  max_results,
     }
+    if col.get("supports_variable_subsetting", False):
+        serialisable_fetch_params["variables"] = list(col["variables"])
+
+    return DataDict(
+        variable=variable,
+        units=col["units"],
+        bbox=bbox,
+        times=times,
+        n_granules=len(times) or 1,
+        source=f"NASA Harmony — {col['description']}",
+        fetch_params=serialisable_fetch_params,
+    )
 
 
 @tool
@@ -337,13 +352,7 @@ def check_data_availability(
     end_date: str,
 )-> dict:
     """
-    Check if granules exist for a variable over a location and time range BEFORE fetching. Returns a list of available dates so the agent can inform the user exactly which days have data.
-
-    Always call this before fetch_environmental_data when:
-    - Unsure if data exists for a location or time period
-    - A previous fetch returned no granules
-    - User asks about data availability
-    - You want to suggest alternatives or broader ranges    
+    Check if granules exist for a variable over a location and time range BEFORE fetching. Returns a list of available dates so the agent can inform the user exactly which days have data.  
 
     Args:
         variable    : Pollutant key e.g. 'OMI_NO2' or 'TEMPO_NO2'.

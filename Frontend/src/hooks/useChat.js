@@ -1,160 +1,333 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
+import { createSseParser } from '../utils/sseParser'
 
 const API_BASE = '/api'
+const ACTIVE_THREAD_STORAGE_KEY = 'tta.activeThreadId'
 
 export function useChat() {
   const [messages, setMessages] = useState([])
   const [threadId, setThreadId] = useState(null)
   const [sessions, setSessions] = useState([])
-  const [loading,  setLoading]  = useState(false)
-  const [error,    setError]    = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
 
-  // ── Fetch session list ──────────────────────────────────────────────────────
-  const fetchSessions = useCallback(async () => {
-    try {
-      const res  = await fetch(`${API_BASE}/sessions`)
-      const data = await res.json()
-      setSessions(data.sessions || [])
-    } catch { /* non-fatal */ }
+  const abortControllerRef = useRef(null)
+  const activeRequestIdRef = useRef(0)
+  const activeStreamIdRef = useRef(null)
+  const frameRef = useRef(null)
+  const loadingRef = useRef(false)
+  const pendingAssistantUpdatesRef = useRef([])
+  const threadIdRef = useRef(null)
+  const didRestoreRef = useRef(false)
+
+  useEffect(() => {
+    loadingRef.current = loading
+  }, [loading])
+
+  useEffect(() => {
+    threadIdRef.current = threadId
+  }, [threadId])
+
+  const persistActiveThread = useCallback((id) => {
+    if (id) {
+      window.localStorage.setItem(ACTIVE_THREAD_STORAGE_KEY, id)
+    } else {
+      window.localStorage.removeItem(ACTIVE_THREAD_STORAGE_KEY)
+    }
   }, [])
 
-  useEffect(() => { fetchSessions() }, [fetchSessions])
+  const isCurrentRequest = useCallback((requestId) => {
+    return activeRequestIdRef.current === requestId
+  }, [])
 
-  // ── Load history for a thread and hydrate messages ──────────────────────────
+  const flushAssistantUpdates = useCallback(() => {
+    frameRef.current = null
+
+    const updates = pendingAssistantUpdatesRef.current
+    pendingAssistantUpdatesRef.current = []
+    if (!updates.length) return
+
+    setMessages(prev => {
+      let next = prev
+
+      updates.forEach(({ streamId, updater }) => {
+        const idx = next.findIndex(msg => msg.streamId === streamId)
+        if (idx === -1 || next[idx].role !== 'assistant') return
+
+        if (next === prev) next = [...prev]
+        next[idx] = { ...next[idx], ...updater(next[idx]) }
+      })
+
+      return next
+    })
+  }, [])
+
+  const queueAssistantUpdate = useCallback((streamId, updater) => {
+    pendingAssistantUpdatesRef.current.push({ streamId, updater })
+    if (frameRef.current !== null) return
+
+    frameRef.current = window.requestAnimationFrame
+      ? window.requestAnimationFrame(flushAssistantUpdates)
+      : window.setTimeout(flushAssistantUpdates, 16)
+  }, [flushAssistantUpdates])
+
+  const cancelScheduledFlush = useCallback(() => {
+    if (frameRef.current === null) return
+
+    if (window.cancelAnimationFrame) {
+      window.cancelAnimationFrame(frameRef.current)
+    } else {
+      window.clearTimeout(frameRef.current)
+    }
+    frameRef.current = null
+  }, [])
+
+  const abortActiveRequest = useCallback((markCancelled = false) => {
+    const controller = abortControllerRef.current
+    const streamId = activeStreamIdRef.current
+
+    if (controller && !controller.signal.aborted) {
+      controller.abort()
+    }
+
+    abortControllerRef.current = null
+    activeStreamIdRef.current = null
+    loadingRef.current = false
+    setLoading(false)
+
+    if (markCancelled && streamId !== null) {
+      pendingAssistantUpdatesRef.current = pendingAssistantUpdatesRef.current
+        .filter(update => update.streamId !== streamId)
+
+      setMessages(prev => prev.map(msg => (
+        msg.streamId === streamId && msg.role === 'assistant'
+          ? {
+              ...msg,
+              content: msg.content || 'Request cancelled.',
+              isLoading: false,
+              isCancelled: true,
+            }
+          : msg
+      )))
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      abortActiveRequest()
+      cancelScheduledFlush()
+    }
+  }, [abortActiveRequest, cancelScheduledFlush])
+
   const loadHistory = useCallback(async (id) => {
     try {
-      const res  = await fetch(`${API_BASE}/session/${id}/history`)
+      const res = await fetch(`${API_BASE}/session/${id}/history`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       const hydrated = (data.messages || []).map(m => ({
         ...m,
-        // Prepend API base to image URLs so they resolve correctly
         imageUrls: (m.imageUrls || []).map(u =>
           u.startsWith('http') ? u : `${API_BASE}${u}`
         ),
       }))
       setMessages(hydrated)
+      return true
     } catch {
       setMessages([])
+      return false
     }
   }, [])
 
-  // ── Helpers ─────────────────────────────────────────────────────────────────
-  const updateLastAssistant = (updater) => {
-    setMessages(prev => {
-      const next = [...prev]
-      const idx  = next.length - 1
-      if (idx >= 0 && next[idx].role === 'assistant') {
-        next[idx] = { ...next[idx], ...updater(next[idx]) }
+  const fetchSessions = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/sessions`)
+      const data = await res.json()
+      const nextSessions = data.sessions || []
+      setSessions(nextSessions)
+
+      if (!didRestoreRef.current) {
+        didRestoreRef.current = true
+        const storedThreadId = window.localStorage.getItem(ACTIVE_THREAD_STORAGE_KEY)
+        if (storedThreadId && nextSessions.includes(storedThreadId)) {
+          setThreadId(storedThreadId)
+          threadIdRef.current = storedThreadId
+          const loaded = await loadHistory(storedThreadId)
+          if (!loaded) persistActiveThread(null)
+        } else if (storedThreadId) {
+          persistActiveThread(null)
+        }
       }
-      return next
-    })
-  }
+    } catch {
+      // Non-fatal; the active chat can continue without the sidebar list.
+      if (!didRestoreRef.current) {
+        didRestoreRef.current = true
+        const storedThreadId = window.localStorage.getItem(ACTIVE_THREAD_STORAGE_KEY)
+        if (storedThreadId) {
+          setThreadId(storedThreadId)
+          threadIdRef.current = storedThreadId
+          const loaded = await loadHistory(storedThreadId)
+          if (!loaded) persistActiveThread(null)
+        }
+      }
+    }
+  }, [loadHistory, persistActiveThread])
 
-  // ── Send a message ──────────────────────────────────────────────────────────
+  useEffect(() => { fetchSessions() }, [fetchSessions])
+
   const sendMessage = useCallback(async (text) => {
-    if (!text.trim() || loading) return
+    const message = text.trim()
+    if (!message) return
 
-    // Only append — don't re-add history that's already shown
+    if (loadingRef.current) {
+      abortActiveRequest(true)
+    }
+
+    const requestId = activeRequestIdRef.current + 1
+    const streamId = `stream-${requestId}`
+    const controller = new AbortController()
+
+    activeRequestIdRef.current = requestId
+    activeStreamIdRef.current = streamId
+    abortControllerRef.current = controller
+
     setMessages(prev => [
       ...prev,
-      { role: 'user',      content: text },
-      { role: 'assistant', content: '', toolCalls: [], imageUrls: [], isLoading: true },
+      { role: 'user', content: text },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [],
+        imageUrls: [],
+        charts: [],
+        isLoading: true,
+        streamId,
+      },
     ])
     setLoading(true)
     setError(null)
 
     try {
       const res = await fetch(`${API_BASE}/chat`, {
-        method:  'POST',
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ message: text, thread_id: threadId }),
+        body: JSON.stringify({ message: text, thread_id: threadIdRef.current }),
+        signal: controller.signal,
       })
 
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      if (!res.body) throw new Error('Streaming response was empty')
 
-      const reader  = res.body.getReader()
       const decoder = new TextDecoder()
-      let   buffer  = ''
+      const reader = res.body.getReader()
+      const parser = createSseParser(({ event, data: rawData }) => {
+        if (!isCurrentRequest(requestId)) return
+
+        let data
+        try {
+          data = JSON.parse(rawData)
+        } catch {
+          queueAssistantUpdate(streamId, () => ({
+            content: 'Error: Received malformed stream data.',
+            isError: true,
+            isLoading: false,
+          }))
+          throw new Error('Malformed stream data')
+        }
+
+        if (event === 'tool_call') {
+          queueAssistantUpdate(streamId, msg => ({
+            toolCalls: [...(msg.toolCalls || []), { name: data.name, args: data.args }],
+          }))
+        } else if (event === 'image') {
+          queueAssistantUpdate(streamId, msg => ({
+            imageUrls: [...(msg.imageUrls || []), `${API_BASE}${data.url}`],
+          }))
+        } else if (event === 'chart') {
+          if (!data || typeof data !== 'object' || !data.type) {
+            console.warn('[useChat] Ignoring non-object chart event:', data)
+          } else {
+            queueAssistantUpdate(streamId, msg => ({
+              charts: [...(msg.charts || []), data],
+            }))
+          }
+        } else if (event === 'done') {
+          const newId = data.thread_id
+          setThreadId(newId)
+          threadIdRef.current = newId
+          persistActiveThread(newId)
+          queueAssistantUpdate(streamId, msg => ({
+            content: data.response,
+            imageUrls: (data.image_urls || []).map(u => `${API_BASE}${u}`),
+            charts: msg.charts || [],
+            isLoading: false,
+          }))
+          setSessions(prev => prev.includes(newId) ? prev : [...prev, newId])
+        } else if (event === 'error') {
+          throw new Error(data.detail || 'Stream error')
+        }
+      })
 
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-
-        buffer += decoder.decode(value, { stream: true })
-        const parts = buffer.split('\n\n')
-        buffer = parts.pop()
-
-        for (const part of parts) {
-          const eventMatch = part.match(/^event:\s*(.+)$/m)
-          const dataMatch  = part.match(/^data:\s*(.+)$/m)
-          if (!eventMatch || !dataMatch) continue
-
-          const event = eventMatch[1].trim()
-          let   data
-          try { data = JSON.parse(dataMatch[1]) } catch { continue }
-
-          if (event === 'tool_call') {
-            updateLastAssistant(msg => ({
-              toolCalls: [...msg.toolCalls, { name: data.name, args: data.args }],
-            }))
-          }
-
-          else if (event === 'image') {
-            updateLastAssistant(msg => ({
-              imageUrls: [...msg.imageUrls, `${API_BASE}${data.url}`],
-            }))
-          }
-
-          else if (event === 'done') {
-            const newId = data.thread_id
-            setThreadId(newId)
-            updateLastAssistant(() => ({
-              content:   data.response,
-              imageUrls: (data.image_urls || []).map(u => `${API_BASE}${u}`),
-              isLoading: false,
-            }))
-            setSessions(prev => prev.includes(newId) ? prev : [...prev, newId])
-          }
-
-          else if (event === 'error') {
-            throw new Error(data.detail || 'Stream error')
-          }
-        }
+        parser.feed(decoder.decode(value, { stream: true }))
       }
 
+      const finalChunk = decoder.decode()
+      if (finalChunk) parser.feed(finalChunk)
+      parser.end()
     } catch (err) {
+      if (err.name === 'AbortError') return
+      if (!isCurrentRequest(requestId)) return
+
       const msg = err.message || 'Request failed'
       setError(msg)
-      updateLastAssistant(() => ({
-        content:   `Error: ${msg}`,
-        isError:   true,
+      queueAssistantUpdate(streamId, () => ({
+        content: `Error: ${msg}`,
+        isError: true,
         isLoading: false,
       }))
     } finally {
-      setLoading(false)
+      if (isCurrentRequest(requestId)) {
+        abortControllerRef.current = null
+        activeStreamIdRef.current = null
+        loadingRef.current = false
+        setLoading(false)
+      }
     }
-  }, [threadId, loading])
+  }, [abortActiveRequest, isCurrentRequest, persistActiveThread, queueAssistantUpdate])
 
-  // ── Session management ──────────────────────────────────────────────────────
   const newSession = useCallback(() => {
+    abortActiveRequest()
+    pendingAssistantUpdatesRef.current = []
+    cancelScheduledFlush()
     setMessages([])
     setThreadId(null)
+    threadIdRef.current = null
+    persistActiveThread(null)
     setError(null)
-  }, [])
+  }, [abortActiveRequest, cancelScheduledFlush, persistActiveThread])
 
   const switchSession = useCallback(async (id) => {
+    abortActiveRequest()
+    pendingAssistantUpdatesRef.current = []
+    cancelScheduledFlush()
     setError(null)
     setThreadId(id)
-    await loadHistory(id)   // hydrate UI with Postgres history
-  }, [loadHistory])
+    threadIdRef.current = id
+    persistActiveThread(id)
+    await loadHistory(id)
+  }, [abortActiveRequest, cancelScheduledFlush, loadHistory, persistActiveThread])
 
   const deleteSession = useCallback(async (id) => {
     try {
       await fetch(`${API_BASE}/session/${id}`, { method: 'DELETE' })
       setSessions(prev => prev.filter(s => s !== id))
-      if (id === threadId) newSession()
-    } catch { /* non-fatal */ }
-  }, [threadId, newSession])
+      if (id === threadIdRef.current) newSession()
+    } catch {
+      // Non-fatal; keep local state as-is if the backend delete fails.
+    }
+  }, [newSession])
 
   return {
     messages,

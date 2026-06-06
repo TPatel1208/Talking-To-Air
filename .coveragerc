@@ -1,0 +1,14 @@
+[run]
+source =
+    Backend/api.py
+    Backend/agents/supervisor_agent.py
+    Backend/config/settings.py
+    Backend/preprocessing/cache_manager.py
+    Backend/preprocessing/data_loader.py
+    Backend/utils/db.py
+    Backend/utils/logging.py
+
+[report]
+show_missing = True
+skip_empty = True
+fail_under = 60

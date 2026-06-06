@@ -14,16 +14,6 @@ def convert_date_to_iso(date_str: str) -> dict:
     """
     Convert a natural language date/time string to an ISO 8601 range.
 
-    This tool is intended for user inputs like "tomorrow at 3pm" or
-    "2026-02-10 18:00".  The returned value is a JSON string containing
-    ``start_date`` and ``end_date`` where ``end_date`` is exactly one
-    hour after ``start_date``.  The timestamps are formatted with a
-    trailing ``Z`` to indicate UTC, which is what the downstream Harmony
-    API expects.
-
-    Example return value::
-        "{\"start_date\": \"YYYY-MM-DDT00:00:00Z\", \"end_date\": \"YYYY-MM-DDT01:00:00Z\"}"
-
     Args:
         date_str (str): free‑form date/time expression.
 
@@ -46,14 +36,6 @@ def convert_temporal_range_to_iso(start_str: str, end_str: str) -> dict:
     """
     Turn two natural language date expressions into a full-day ISO 8601 date range.
     Always spans from 00:00:00Z on the start date to 23:59:59Z on the end date.
-
-    Use this for date ranges like "January 1 to January 31" or "last week".
-    For queries involving a specific time of day e.g. "April 8 at 2pm",
-    use convert_date_to_iso instead.
-    ...
-
-    Example::
-        "{\"start_date\": \"2026-01-01T00:00:00Z\", \"end_date\": \"2026-01-05T23:59:59Z\"}"
 
     Args:
         start_str (str): free‑form start date expression.

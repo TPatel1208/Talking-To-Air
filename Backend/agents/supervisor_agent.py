@@ -1,74 +1,94 @@
 """
 Supervisor agent that orchestrates the Ground Sensor and Satellite agents.
+
+Memory model
+------------
+- Supervisor : stateful — uses a Postgres checkpointer, one thread per session.
+- Subagents  : stateless — no checkpointer; each tool call is a fresh invocation.
+               The supervisor includes all necessary context in the task string
+               it passes to each subagent tool.
 """
-import psycopg
 import os
+import calendar
+import logging
 import re
 import sys
 import uuid
+from typing import Callable
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.agents import create_agent
 from langchain.tools import tool
-from langchain_core.messages import HumanMessage
-from langgraph.checkpoint.postgres import PostgresSaver
+from langchain_core.messages import HumanMessage, trim_messages
+from langchain.agents.middleware import wrap_model_call, ModelRequest, ModelResponse
 
 from agents.ground_sensor_agent import build_ground_agent
 from agents.satellite_agent import build_satellite_agent
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from config.settings import get_settings
 from config.supervisor_prompt import SUPERVISOR_PROMPT
+from models import AgentResult, agent_result_to_json, parse_agent_result, parse_chart_payload
+from repositories.chart_repository import delete_charts_for_session
+from utils.db import get_checkpointer, pg_connection
+from utils.streaming import stream_response
 
-
-def _pg_connect(autocommit: bool = False):
-    return psycopg.connect(
-        host=os.getenv("DB_HOST", "localhost"),
-        port=int(os.getenv("DB_PORT", 5432)),
-        dbname=os.getenv("DB_NAME", "talking_to_air_memory"),
-        user=os.getenv("DB_USER", "postgres"),
-        password=os.getenv("DB_PASSWORD"),
-        autocommit=autocommit,
-    )
-
-
-def get_checkpointer():
-    conn = _pg_connect(autocommit=True)
-    checkpointer = PostgresSaver(conn)
-    checkpointer.setup()
-    return checkpointer
+logger = logging.getLogger(__name__)
 
 
 # ── Build supervisor ──────────────────────────────────────────────────────────
 
-def build_agent(model: str = "gemini-2.0-flash-lite"):
+def build_agent(
+    model: str | None = None,
+    ground_agent_model: str | None = None,
+    satellite_agent_model: str | None = None,
+):
     """
     Build and return the supervisor agent.
 
-    Uses a SINGLE shared checkpointer for the supervisor and both subagents
-    to avoid multiple psycopg connections racing on the same Postgres tables.
+    The supervisor is the only stateful component — it owns the Postgres
+    checkpointer and persists the full conversation history under one
+    thread_id per user session.
 
-    Sub-thread IDs are derived from the active supervisor thread_id so they
-    are stable across the conversation (same thread = same sub-agent memory)
-    but isolated across sessions.
-
-    Returns (agent, thread_ref) where thread_ref is a dict with key "id"
-    that must be updated to the current thread_id before each stream call.
+    Subagents are stateless: each tool call creates a fresh invocation with
+    no checkpointer attached, so they write nothing to the DB and accumulate
+    no history of their own.
     """
+    settings = get_settings()
+    model = model or settings.llm_model
+    ground_agent_model = ground_agent_model or settings.ground_agent_model
+    satellite_agent_model = satellite_agent_model or settings.satellite_agent_model
     llm = ChatGoogleGenerativeAI(
         model=model,
-        google_api_key=os.getenv("GOOGLE_API_KEY"),
+        google_api_key=settings.google_api_key,
     )
 
-    # ONE checkpointer shared across supervisor + both subagents.
-    # This eliminates the race condition caused by three separate
-    # autocommit=True connections hitting the same checkpoint tables.
-    checkpointer = get_checkpointer()
+    # Stateless subagents — no checkpointer passed.
+    ground_agent    = build_ground_agent(model=ground_agent_model)
+    satellite_agent = build_satellite_agent(model=satellite_agent_model)
 
-    ground_agent    = build_ground_agent(model=model,    checkpointer=checkpointer)
-    satellite_agent = build_satellite_agent(model=model, checkpointer=checkpointer)
+    # ── Trim middleware — keeps the supervisor's context window bounded ───────
 
-    # Mutable container so the tool closures can always read the current
-    # supervisor thread_id even though the tools are defined once at build time.
-    _thread_ref = {"id": "default"}
+    @wrap_model_call
+    def trim_middleware(
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse:
+        messages = [_compact_model_input_message(msg) for msg in request.state["messages"]]
+        trimmed = trim_messages(
+            messages,
+            max_tokens=8000,
+            strategy="last",
+            token_counter="approximate",
+            include_system=True,
+            allow_partial=False,
+            start_on="human",
+        )
+        # Gemini rejects an empty contents list, so never let trimming remove
+        # the only usable turn from a request. Fall back to the original
+        # message list if trimming collapses everything.
+        if not trimmed:
+            trimmed = messages
+        return handler(request.override(messages=trimmed))
 
     # ── Wrap subagents as tools ───────────────────────────────────────────────
 
@@ -89,29 +109,16 @@ def build_agent(model: str = "gemini-2.0-flash-lite"):
         Output: text summary including monitor name, site_id, coordinates,
                 exceedance dates, and peak concentration values.
         """
-        # Derive sub-thread from the active supervisor thread so the ground
-        # agent retains context within a session but is isolated across sessions.
-        # Using a fixed suffix (not uuid4) means the ground agent remembers
-        # prior tool calls made during this same conversation.
-        sub_thread = f"ground-{_thread_ref['id']}"
         result = ground_agent.invoke(
             {"messages": [HumanMessage(content=task)]},
-            config={"configurable": {"thread_id": sub_thread}},
+            config={"configurable": {"thread_id": str(uuid.uuid4())}},
         )
-        messages = result.get("messages", [])
-        for msg in reversed(messages):
-            if hasattr(msg, "content") and msg.content:
-                content = msg.content
-                if isinstance(content, str):
-                    return content
-                if isinstance(content, list):
-                    return " ".join(
-                        b.get("text", "") if isinstance(b, dict) else getattr(b, "text", "")
-                        for b in content
-                        if (isinstance(b, dict) and b.get("type") == "text")
-                        or hasattr(b, "text")
-                    )
-        return "Ground sensor agent returned no response."
+        text = _extract_last_text(
+            result,
+            "Ground sensor agent returned no response.",
+            agent_name="ground_sensor",
+        )
+        return agent_result_to_json(AgentResult(text=text))
 
     @tool
     def ask_satellite_agent(task: str) -> str:
@@ -129,97 +136,359 @@ def build_agent(model: str = "gemini-2.0-flash-lite"):
                (e.g. 'Plot TROPOMI NO2 over New Jersey for 2024-01-15').
         Output: text summary with plot path and spatial statistics.
         """
-        sub_thread = f"satellite-{_thread_ref['id']}"
-        result = satellite_agent.invoke(
-            {"messages": [HumanMessage(content=task)]},
-            config={"configurable": {"thread_id": sub_thread}},
+        def _run_satellite(task_text: str) -> AgentResult:
+            charts = []
+            text_parts  = []
+
+            try:
+                for event_type, data in stream_response(
+                    satellite_agent, task_text, thread_id=str(uuid.uuid4())
+                ):
+                    if event_type == "tool_result":
+                        content = data.get("content", "")
+                        chart = parse_chart_payload(content)
+                        if chart is not None:
+                            charts.append(chart)
+                            continue
+                        nested = parse_agent_result(content)
+                        if nested is not None:
+                            text_parts.append(nested.text)
+                            charts.extend(nested.charts)
+                    elif event_type in ("text", "done"):
+                        t = data if isinstance(data, str) else data.get("response", "")
+                        if t:
+                            text_parts.append(t)
+            except Exception as exc:
+                text_parts.append(str(exc))
+
+            text = _truncate_text(
+                " ".join(text_parts),
+                2000,
+                agent_name="satellite",
+            ) or "Satellite agent returned no response."
+            return AgentResult(text=text, charts=charts)
+
+        direct_first = _try_direct_satellite_plot(task)
+        if direct_first is not None:
+            return agent_result_to_json(direct_first)
+
+        result = _run_satellite(task)
+        refusal_markers = (
+            "necessary tools are not present",
+            "don't have access to fetch_environmental_data",
+            "do not have access to fetch_environmental_data",
+            "failed to call a function",
+            "failed_generation",
         )
-        messages = result.get("messages", [])
-        for msg in reversed(messages):
-            if hasattr(msg, "content") and msg.content:
-                content = msg.content
-                if isinstance(content, str):
-                    return content
-                if isinstance(content, list):
-                    return " ".join(
-                        b.get("text", "") if isinstance(b, dict) else getattr(b, "text", "")
-                        for b in content
-                        if (isinstance(b, dict) and b.get("type") == "text")
-                        or hasattr(b, "text")
-                    )
-        return "Satellite agent returned no response."
+        if any(marker in result.text.lower() for marker in refusal_markers):
+            retry_task = (
+                "The satellite tools are registered and available in this runtime: "
+                "convert_temporal_range_to_iso, geocode_location, "
+                "check_data_availability, fetch_environmental_data, plot_singular, "
+                "plot_multiple, compute_statistic_tool, conduct_temporal_statistic, "
+                "find_daily_peak. Retry the task using those tools exactly as needed. "
+                f"Task: {task}"
+            )
+            result = _run_satellite(retry_task)
+            if (
+                any(marker in result.text.lower() for marker in refusal_markers)
+                or not result.charts
+            ):
+                fallback = _try_direct_satellite_plot(task)
+                if fallback is not None:
+                    result = fallback
+
+        return agent_result_to_json(result)
 
     # ── Build supervisor ──────────────────────────────────────────────────────
+    checkpointer = get_checkpointer()
     supervisor = create_agent(
         model=llm,
         tools=[ask_ground_sensor_agent, ask_satellite_agent],
         system_prompt=SUPERVISOR_PROMPT,
         checkpointer=checkpointer,
+        middleware=[trim_middleware],
     )
-    return supervisor, _thread_ref
+    return supervisor
 
 
-# ── stream_response ───────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
-def stream_response(agent, user_input: str, thread_id: str, thread_ref: dict):
+def _extract_last_text(
+    result: dict,
+    fallback: str,
+    max_chars: int = 2000,
+    agent_name: str = "unknown",
+    request_id: str | None = None,
+) -> str:
+    """Return the last non-empty text content from an agent invoke() result.
+
+    Capped at max_chars to prevent large subagent responses from bloating the
+    supervisor's checkpoint and inflating token counts on every subsequent turn.
     """
-    Stream one turn, yield (event_type, data) tuples.
+    for msg in reversed(result.get("messages", [])):
+        if not (hasattr(msg, "content") and msg.content):
+            continue
+        content = msg.content
+        if isinstance(content, str):
+            return _truncate_text(content, max_chars, agent_name, request_id)
+        if isinstance(content, list):
+            text = " ".join(
+                b.get("text", "") if isinstance(b, dict) else getattr(b, "text", "")
+                for b in content
+                if (isinstance(b, dict) and b.get("type") == "text")
+                or hasattr(b, "text")
+            )
+            if text:
+                return _truncate_text(text, max_chars, agent_name, request_id)
+    return fallback
 
-    thread_ref must be the dict returned by build_agent. It is updated here
-    so the subagent tool closures always know the current supervisor thread_id.
+
+def _truncate_text(text: str, max_chars: int, agent_name: str, request_id: str | None = None) -> str:
+    if len(text) <= max_chars:
+        return text
+    logger.warning(
+        "response_truncated",
+        extra={
+            "_agent_name": agent_name,
+            "_original_length": len(text),
+            "_final_length": max_chars,
+            "_request_id": request_id,
+        },
+    )
+    return text[:max_chars]
+
+
+def _compact_model_input_message(msg):
+    """Replace bulky chart payloads with concise summaries before LLM calls."""
+    content = getattr(msg, "content", None)
+    compacted = _compact_model_input_content(content)
+    if compacted is content:
+        return msg
+    if hasattr(msg, "model_copy"):
+        return msg.model_copy(update={"content": compacted})
+    try:
+        copied = msg.copy()
+        copied.content = compacted
+        return copied
+    except Exception:
+        return msg
+
+
+def _compact_model_input_content(content):
+    if not isinstance(content, str):
+        return content
+
+    result = parse_agent_result(content)
+    if result is not None and result.charts:
+        summaries = [_chart_summary(chart) for chart in result.charts]
+        chart_text = "; ".join(summary for summary in summaries if summary)
+        if chart_text:
+            return f"{result.text}\n\nCharts generated: {chart_text}"
+        return result.text
+
+    chart = parse_chart_payload(content)
+    if chart is not None:
+        summary = _chart_summary(chart)
+        return f"Chart generated: {summary}" if summary else "Chart generated."
+
+    return content
+
+
+def _chart_summary(chart) -> str:
+    payload = chart.model_dump(exclude_none=True) if hasattr(chart, "model_dump") else dict(chart)
+    chart_type = payload.get("type", "chart")
+    title = payload.get("title") or payload.get("metadata", {}).get("name") or "Untitled chart"
+    variable = payload.get("variable")
+    units = payload.get("units")
+    bits = [f"{chart_type} '{title}'"]
+    if variable:
+        bits.append(f"variable={variable}")
+    if units:
+        bits.append(f"units={units}")
+    if payload.get("lats") and payload.get("lons"):
+        bits.append(f"grid={len(payload['lats'])}x{len(payload['lons'])}")
+    if payload.get("times"):
+        bits.append(f"points={len(payload['times'])}")
+    return ", ".join(bits)
+
+
+def _try_direct_satellite_plot(task: str) -> AgentResult | None:
     """
-    # Update the shared ref so tool closures derive the correct sub-thread IDs.
-    thread_ref["id"] = thread_id
+    Deterministic fallback for simple one-location satellite plot requests.
 
-    config = {"configurable": {"thread_id": thread_id}}
+    This is deliberately narrow: it only handles requests that name a known
+    satellite collection, a location, and either a YYYY-MM-DD date or
+    Month YYYY range.
+    """
+    parsed = _parse_simple_satellite_plot_task(task)
+    if parsed is None:
+        return None
 
-    for stream_mode, chunk in agent.stream(
-        {"messages": [{"role": "user", "content": user_input}]},
-        config=config,
-        stream_mode=["updates", "messages"],
-    ):
-        if stream_mode == "updates":
-            for node, data in chunk.items():
-                for msg in data.get("messages", []):
-                    if hasattr(msg, "tool_calls") and msg.tool_calls:
-                        for tc in msg.tool_calls:
-                            yield ("tool_call", {"name": tc["name"], "args": tc["args"]})
-                    elif hasattr(msg, "name") and msg.name:
-                        raw_content = str(msg.content)
-                        # Extract image path BEFORE truncating so it's never lost
-                        # even when it appears deep in a long summary string.
-                        img_match = re.search(r'[\w\-./]+\.png', raw_content)
-                        content_out = img_match.group(0) if img_match else raw_content[:300]
-                        yield ("tool_result", {"name": msg.name, "content": content_out})
-                    elif hasattr(msg, "content") and msg.content:
-                        yield ("text", msg.content)
+    variable, location, start_date, end_date = parsed
+    logger.info(
+        "Direct satellite plot fallback: variable=%s location=%s temporal=%s..%s",
+        variable,
+        location,
+        start_date,
+        end_date,
+    )
+
+    try:
+        from tools.satellite_tools.harmony_api import (
+            check_data_availability,
+            fetch_environmental_data,
+            geocode_location,
+        )
+        from tools.satellite_tools.plot_tools import (
+            plot_singular,
+        )
+
+        geocoded = geocode_location.invoke({"location_name": location})
+        if isinstance(geocoded, dict) and geocoded.get("error"):
+            return AgentResult(text=geocoded["error"])
+        bbox = geocoded["bbox"]
+        logger.info("Direct satellite plot fallback: geocoded bbox=%s", bbox)
+
+        availability = check_data_availability.invoke({
+            "variable": variable,
+            "bbox": bbox,
+            "start_date": start_date,
+            "end_date": end_date,
+        })
+        if isinstance(availability, dict) and availability.get("error"):
+            logger.warning(
+                "Direct satellite plot fallback: availability check failed; continuing to Harmony fetch: %s",
+                availability["error"],
+            )
+        elif isinstance(availability, dict) and availability.get("num_granules", 0) == 0:
+            return AgentResult(text=(
+                f"No {variable} granules were found for {location} between "
+                f"{start_date} and {end_date}."
+            ))
+        else:
+            logger.info(
+                "Direct satellite plot fallback: availability num_granules=%s",
+                availability.get("num_granules") if isinstance(availability, dict) else None,
+            )
+
+        logger.info("Direct satellite plot fallback: calling fetch_environmental_data")
+        data = fetch_environmental_data.invoke({
+            "variable": variable,
+            "bbox": bbox,
+            "start_date": start_date,
+            "end_date": end_date,
+            "max_results": 1 if variable == "TROPOMI_NO2" else 10,
+        })
+        if isinstance(data, dict) and data.get("error"):
+            return AgentResult(text=f"Fetch failed: {data['error']}")
+        logger.info("Direct satellite plot fallback: fetch_environmental_data returned data")
+        plot_data = data.model_dump() if hasattr(data, "model_dump") else data
+
+        title = f"{variable} over {location}"
+        chart_result = plot_singular.invoke({
+            "data_dict": plot_data,
+            "variable": variable,
+            "location": location,
+            "title": title,
+        })
+        chart = parse_chart_payload(chart_result)
+        if chart is not None:
+            logger.info("Direct satellite plot fallback: chart created for %s", title)
+            return AgentResult(text=f"Created {title}.", charts=[chart])
+        return AgentResult(text=str(chart_result))
+    except Exception as exc:
+        return AgentResult(text=f"Satellite fallback failed: {exc}")
+
+
+def _parse_simple_satellite_plot_task(task: str):
+    text = " ".join(task.strip().split())
+    lower = text.lower()
+
+    variable_aliases = {
+        "TROPOMI_NO2": ("tropomi no2", "tropomi_no2"),
+        "OMI_NO2": ("omi no2", "omi_no2"),
+        "TEMPO_NO2": ("tempo no2", "tempo_no2"),
+        "TEMPO_O3TOT": ("tempo o3tot", "tempo ozone", "tempo_o3tot"),
+        "OMI_O3": ("omi o3", "omi ozone", "omi_o3"),
+        "TEMPO_HCHO": ("tempo hcho", "tempo_hcho"),
+        "TEMPO_HCHO_V03": ("tempo hcho v03", "tempo_hcho_v03"),
+        "OMI_HCHO": ("omi hcho", "omi_hcho"),
+        "MODIS_AOD_TERRA": ("modis aod terra", "modis_aod_terra"),
+        "MODIS_AOD_AQUA": ("modis aod aqua", "modis_aod_aqua"),
+    }
+
+    variable = next(
+        (
+            key
+            for key, aliases in variable_aliases.items()
+            if any(alias in lower for alias in aliases)
+        ),
+        None,
+    )
+    if variable is None:
+        return None
+
+    location_match = re.search(
+        r"\b(?:over|in|for)\s+(.+?)\s+\b(?:for|on|during)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not location_match:
+        return None
+    location = location_match.group(1).strip(" .")
+
+    iso_day = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", text)
+    if iso_day:
+        day = iso_day.group(1)
+        return variable, location, f"{day}T00:00:00Z", f"{day}T23:59:59Z"
+
+    month_names = "|".join(calendar.month_name[1:])
+    month_match = re.search(
+        rf"\b({month_names})\s+(\d{{4}})\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if month_match:
+        month = list(calendar.month_name).index(month_match.group(1).title())
+        year = int(month_match.group(2))
+        last_day = calendar.monthrange(year, month)[1]
+        return (
+            variable,
+            location,
+            f"{year:04d}-{month:02d}-01T00:00:00Z",
+            f"{year:04d}-{month:02d}-{last_day:02d}T23:59:59Z",
+        )
+
+    return None
 
 
 # ── list_sessions, delete_session ─────────────────────────────────────────────
 
 def list_sessions() -> list[str]:
-    with _pg_connect() as conn:
+    """Return all supervisor session thread_ids (subagent threads no longer exist)."""
+    with pg_connection() as conn:
         rows = conn.execute(
             "SELECT DISTINCT thread_id FROM checkpoints ORDER BY thread_id"
         ).fetchall()
-    # Filter out sub-agent threads so the sidebar only shows supervisor sessions.
-    return [r[0] for r in rows if not r[0].startswith(("ground-", "satellite-"))]
+    return [r[0] for r in rows]
 
 
 def delete_session(thread_id: str):
-    with _pg_connect() as conn:
-        # Also delete the corresponding sub-agent threads for this session.
-        conn.execute(
-            "DELETE FROM checkpoints WHERE thread_id IN (%s, %s, %s)",
-            (thread_id, f"ground-{thread_id}", f"satellite-{thread_id}"),
-        )
+    """Delete a supervisor session from the checkpoint tables."""
+    delete_charts_for_session(thread_id)
+    with pg_connection() as conn:
+        for table in ("checkpoint_writes", "checkpoint_blobs", "checkpoints"):
+            conn.execute(
+                f"DELETE FROM {table} WHERE thread_id = %s", (thread_id,)
+            )
         conn.commit()
 
 
 # ── Standalone test ───────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    agent, thread_ref = build_agent()
+    agent = build_agent()
 
     sessions = list_sessions()
     print("Existing sessions:", sessions or "none")
@@ -241,7 +510,7 @@ if __name__ == "__main__":
         if not user_input or user_input.lower() in {"quit", "exit", "q"}:
             break
 
-        for event_type, data in stream_response(agent, user_input, thread_id, thread_ref):
+        for event_type, data in stream_response(agent, user_input, thread_id):
             if event_type == "tool_call":
                 print(f"\n⚙ Calling: {data['name']} | args: {data['args']}")
             elif event_type == "tool_result":

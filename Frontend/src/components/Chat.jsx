@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
+import ChartMessage from './ChartMessage'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
@@ -234,20 +235,39 @@ function MessageBubble({ msg }) {
                       ol:     ({ children }) => <ol style={{ margin: '0 0 8px', paddingLeft: '18px' }}>{children}</ol>,
                       li:     ({ children }) => <li style={{ marginBottom: '3px' }}>{children}</li>,
                       strong: ({ children }) => <strong style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{children}</strong>,
-                      code: ({ inline, children }) => inline ? (
-                        <code style={{
-                          background: 'var(--bg-secondary)', borderRadius: '4px',
-                          padding: '1px 5px', fontFamily: 'var(--font-mono, monospace)',
-                          fontSize: '12px', color: 'var(--teal-text)',
-                        }}>{children}</code>
-                      ) : (
+                      // ── FIX: react-markdown v10 removed the `inline` prop.
+                      // Detect inline vs block via className: fenced blocks get
+                      // className="language-*"; bare backtick spans do not.
+                      // We also override `pre` so the outer wrapper is ours.
+                      pre: ({ children }) => (
                         <pre style={{
                           background: 'var(--bg-secondary)', borderRadius: '8px',
                           padding: '10px 12px', overflowX: 'auto', fontSize: '12px',
                           fontFamily: 'var(--font-mono, monospace)', margin: '4px 0 8px',
                           border: '1px solid var(--border)',
-                        }}><code>{children}</code></pre>
+                        }}>{children}</pre>
                       ),
+                      code: ({ className, children }) => {
+                        // Fenced code blocks have a className like "language-python".
+                        // Inline backtick spans have no className.
+                        const isBlock = Boolean(className)
+                        if (isBlock) {
+                          // Rendered inside our custom <pre> above — just emit <code>
+                          return (
+                            <code style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: '12px' }}>
+                              {children}
+                            </code>
+                          )
+                        }
+                        // Inline code
+                        return (
+                          <code style={{
+                            background: 'var(--bg-secondary)', borderRadius: '4px',
+                            padding: '1px 5px', fontFamily: 'var(--font-mono, monospace)',
+                            fontSize: '12px', color: 'var(--teal-text)',
+                          }}>{children}</code>
+                        )
+                      },
                       a: ({ href, children }) => (
                         <a href={href} target="_blank" rel="noreferrer"
                           style={{ color: 'var(--teal-text)', textDecoration: 'underline', textUnderlineOffset: '2px' }}>
@@ -272,6 +292,9 @@ function MessageBubble({ msg }) {
                 )}
                 {msg.imageUrls?.filter(Boolean).map((url, i) => (
                   <InlineImage key={i} url={url} />
+                ))}
+                {msg.charts?.map((chart, i) => (
+                  <ChartMessage key={i} chart={chart} />
                 ))}
               </>
             )}
@@ -361,11 +384,12 @@ function EmptyState({ onChipClick }) {
 /* ── Main Chat component ── */
 export default function Chat({ messages, loading, error, onSend, onClear }) {
   const [input, setInput] = useState('')
-  const bottomRef = useRef(null)
+  const scrollContainerRef = useRef(null)
   const textareaRef = useRef(null)
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const el = scrollContainerRef.current
+    if (el) el.scrollTop = el.scrollHeight
   }, [messages, loading])
 
   const handleSend = (text) => {
@@ -387,7 +411,6 @@ export default function Chat({ messages, loading, error, onSend, onClear }) {
 
   const handleInput = (e) => {
     setInput(e.target.value)
-    // Auto-grow textarea
     e.target.style.height = 'auto'
     e.target.style.height = Math.min(e.target.scrollHeight, 140) + 'px'
   }
@@ -429,10 +452,13 @@ export default function Chat({ messages, loading, error, onSend, onClear }) {
       </div>
 
       {/* Message area */}
-      <div style={{
-        flex: 1, minHeight: 0, overflowY: 'auto',
-        display: 'flex', flexDirection: 'column',
-      }}>
+      <div
+        ref={scrollContainerRef}
+        style={{
+          flex: 1, minHeight: 0, overflowY: 'auto',
+          display: 'flex', flexDirection: 'column',
+        }}
+      >
         {isEmpty ? (
           <EmptyState onChipClick={handleSend} />
         ) : (
@@ -444,7 +470,7 @@ export default function Chat({ messages, loading, error, onSend, onClear }) {
                 <MessageBubble key={i} msg={msg} />
               )
             )}
-            <div ref={bottomRef} style={{ height: '8px' }} />
+            <div style={{ height: '8px' }} />
           </div>
         )}
       </div>

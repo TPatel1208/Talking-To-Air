@@ -1,0 +1,98 @@
+import os
+import sys
+import importlib.util
+import unittest
+from unittest.mock import patch
+from types import SimpleNamespace
+
+import httpx
+
+BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if BACKEND_DIR not in sys.path:
+    sys.path.insert(0, BACKEND_DIR)
+
+
+@unittest.skipIf(importlib.util.find_spec("fastapi") is None, "fastapi is not installed")
+class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        import api
+
+        self.api = api
+        self.api.app.state.agent = object()
+
+    async def test_chat_streams_done_event(self):
+        def fake_stream_response(agent, message, thread_id):
+            yield "text", "hello"
+
+        transport = httpx.ASGITransport(app=self.api.app)
+        with patch.object(self.api, "stream_response", fake_stream_response):
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                response = await client.post("/chat", json={"message": "hi"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("event: done", response.text)
+        self.assertIn('"response": "hello"', response.text)
+
+    async def test_session_flow_lists_history_and_deletes(self):
+        class FakeAgent:
+            def get_state(self, config):
+                return SimpleNamespace(
+                    values={
+                        "messages": [
+                            SimpleNamespace(type="human", content="hi"),
+                            SimpleNamespace(type="ai", content="hello", tool_calls=[]),
+                        ]
+                    }
+                )
+
+        self.api.app.state.agent = FakeAgent()
+        transport = httpx.ASGITransport(app=self.api.app)
+        with patch.object(self.api, "list_sessions", return_value=["thread-1"]), \
+             patch.object(self.api, "delete_session") as delete_session:
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                sessions = await client.get("/sessions")
+                history = await client.get("/session/thread-1/history")
+                deleted = await client.delete("/session/thread-1")
+
+        self.assertEqual(sessions.json(), {"sessions": ["thread-1"]})
+        self.assertEqual(history.status_code, 200)
+        self.assertEqual(
+            history.json()["messages"],
+            [
+                {"role": "user", "content": "hi", "toolCalls": [], "imageUrls": []},
+                {"role": "assistant", "content": "hello", "toolCalls": [], "imageUrls": [], "charts": []},
+            ],
+        )
+        self.assertEqual(deleted.json(), {"deleted": "thread-1"})
+        delete_session.assert_called_once_with("thread-1")
+
+    async def test_chart_export_endpoints_return_downloads(self):
+        payload = {"chart_id": "chart-1", "title": "TEMPO over Texas", "export": {"type": "heatmap"}}
+
+        transport = httpx.ASGITransport(app=self.api.app)
+        with patch.object(self.api, "get_chart", return_value=payload), \
+             patch.object(self.api, "_build_chart_csv", return_value="variable,latitude,longitude,value,units\n"), \
+             patch.object(self.api, "_build_chart_png", return_value=b"\x89PNG\r\n\x1a\n"):
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                csv_response = await client.get("/chart/chart-1/export.csv")
+                png_response = await client.get("/chart/chart-1/export.png")
+
+        self.assertEqual(csv_response.status_code, 200)
+        self.assertEqual(csv_response.headers["content-type"], "text/csv; charset=utf-8")
+        self.assertIn("tempo-over-texas.csv", csv_response.headers["content-disposition"])
+        self.assertEqual(png_response.status_code, 200)
+        self.assertEqual(png_response.headers["content-type"], "image/png")
+        self.assertEqual(png_response.content, b"\x89PNG\r\n\x1a\n")
+
+
+if __name__ == "__main__":
+    unittest.main()

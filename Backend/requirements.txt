@@ -22,5 +22,13 @@ requests>=2.32.3,<2.33
 Shapely>=2.0.4,<2.1
 xarray==2025.6.1
 psycopg[binary]>=3.1.0
+psycopg_pool>=3.2.0
 zarr==3.1.6
 h5py>=3.10.0
+PyYAML==6.0.2
+httpx>=0.27.0
+tenacity>=8.2.0
+langchain_groq==1.1.2
+pydap>=3.4
+h5netcdf>=1.3
+dask>=2024.0.0
