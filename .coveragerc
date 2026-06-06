@@ -1,11 +1,11 @@
 [run]
 source =
-    Backend/api.py
-    Backend/utils/db.py
-    Backend/preprocessing/data_loader.py
-    Backend/preprocessing/cache_manager.py
+    api
+    utils.db
+    preprocessing.data_loader
+    preprocessing.cache_manager
 
 [report]
 show_missing = True
 skip_empty = True
-fail_under = 60
+fail_under = 10

@@ -5,18 +5,23 @@ import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
 
-import httpx
-
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
+_REQUIRED = ["fastapi", "httpx", "langchain", "langgraph"]
 
-@unittest.skipIf(importlib.util.find_spec("fastapi") is None, "fastapi is not installed")
+
+@unittest.skipIf(
+    any(importlib.util.find_spec(m) is None for m in _REQUIRED),
+    "chat endpoint dependencies are not installed",
+)
 class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        import httpx
         import api
 
+        self.httpx = httpx
         self.api = api
         self.api.app.state.agent = object()
 
@@ -24,9 +29,9 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         def fake_stream_response(agent, message, thread_id):
             yield "text", "hello"
 
-        transport = httpx.ASGITransport(app=self.api.app)
+        transport = self.httpx.ASGITransport(app=self.api.app)
         with patch.object(self.api, "stream_response", fake_stream_response):
-            async with httpx.AsyncClient(
+            async with self.httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",
             ) as client:
@@ -49,10 +54,10 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         self.api.app.state.agent = FakeAgent()
-        transport = httpx.ASGITransport(app=self.api.app)
+        transport = self.httpx.ASGITransport(app=self.api.app)
         with patch.object(self.api, "list_sessions", return_value=["thread-1"]), \
              patch.object(self.api, "delete_session") as delete_session:
-            async with httpx.AsyncClient(
+            async with self.httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",
             ) as client:
@@ -75,11 +80,11 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
     async def test_chart_export_endpoints_return_downloads(self):
         payload = {"chart_id": "chart-1", "title": "TEMPO over Texas", "export": {"type": "heatmap"}}
 
-        transport = httpx.ASGITransport(app=self.api.app)
+        transport = self.httpx.ASGITransport(app=self.api.app)
         with patch.object(self.api, "get_chart", return_value=payload), \
              patch.object(self.api, "_build_chart_csv", return_value="variable,latitude,longitude,value,units\n"), \
              patch.object(self.api, "_build_chart_png", return_value=b"\x89PNG\r\n\x1a\n"):
-            async with httpx.AsyncClient(
+            async with self.httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",
             ) as client:

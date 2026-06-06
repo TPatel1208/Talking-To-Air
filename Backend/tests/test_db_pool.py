@@ -4,68 +4,70 @@ import importlib.util
 import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
-import psycopg
+
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
 
-class FakeConnection:
-    def __init__(self):
-        self.autocommit = False
-        self.closed = False
-
-        self.info = SimpleNamespace(
-            transaction_status=psycopg.pq.TransactionStatus.IDLE
-        )
-
-    def rollback(self):
-        pass
-
-
-class FakeConnectionContext:
-    def __init__(self, conn):
-        self.conn = conn
-
-    def __enter__(self):
-        return self.conn
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-
-class FakePool:
-    def __init__(self, *args, **kwargs):
-        self.closed = False
-        self.conn = FakeConnection()
-        self.connection_calls = 0
-
-    def connection(self):
-        self.connection_calls += 1
-        return FakeConnectionContext(self.conn)
-
-    def close(self):
-        self.closed = True
-
-
 @unittest.skipIf(importlib.util.find_spec("psycopg") is None, "psycopg is not installed")
 class DbPoolTests(unittest.TestCase):
+    def setUp(self):
+        import psycopg
+        self.psycopg = psycopg
+
     def tearDown(self):
         from utils import db
-
         db.close_db_pool()
+
+    def _make_fake_connection(self):
+        psycopg = self.psycopg
+
+        class FakeConnection:
+            def __init__(self):
+                self.autocommit = False
+                self.closed = False
+                self.info = SimpleNamespace(
+                    transaction_status=psycopg.pq.TransactionStatus.IDLE
+                )
+
+            def rollback(self):
+                pass
+
+        return FakeConnection()
 
     def test_pg_connection_acquires_from_pool_and_restores_autocommit(self):
         from utils import db
 
+        conn = self._make_fake_connection()
+
+        class FakeConnectionContext:
+            def __init__(self, c):
+                self.conn = c
+            def __enter__(self):
+                return self.conn
+            def __exit__(self, *args):
+                return False
+
+        class FakePool:
+            def __init__(self, *args, **kwargs):
+                self.closed = False
+                self.connection_calls = 0
+                self._conn = conn
+            def connection(self):
+                self.connection_calls += 1
+                return FakeConnectionContext(self._conn)
+            def close(self):
+                self.closed = True
+
         db.close_db_pool()
         with patch("utils.db.ConnectionPool", FakePool):
             pool = db.init_db_pool()
-            with db.pg_connection(autocommit=True) as conn:
-                self.assertTrue(conn.autocommit)
+            with db.pg_connection(autocommit=True) as c:
+                self.assertTrue(c.autocommit)
 
             self.assertEqual(pool.connection_calls, 1)
-            self.assertFalse(pool.conn.autocommit)
+            self.assertFalse(pool._conn.autocommit)
 
 
 if __name__ == "__main__":

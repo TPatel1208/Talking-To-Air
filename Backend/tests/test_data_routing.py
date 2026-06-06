@@ -9,7 +9,7 @@ BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
-REQUIRED_MODULES = ["xarray", "earthaccess"]
+REQUIRED_MODULES = ["xarray", "earthaccess", "harmony_py"]
 
 
 @unittest.skipIf(

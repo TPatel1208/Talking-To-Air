@@ -23,10 +23,8 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            libproj-dev proj-data proj-bin libgeos-dev \
-            libgdal-dev gdal-bin \
-            libhdf5-dev libnetcdf-dev
+          sudo apt-get install -y libproj-dev proj-data proj-bin libgeos-dev \
+            libgdal-dev gdal-bin libhdf5-dev libnetcdf-dev
 
       - name: Install Python dependencies
         run: |
@@ -38,7 +36,11 @@ jobs:
         run: python -m compileall -q Backend
 
       - name: Run unit and integration tests with coverage
+        env:
+          PYTHONPATH: Backend
         run: coverage run -m unittest discover -s Backend/tests -p "test_*.py"
 
       - name: Coverage report
+        env:
+          PYTHONPATH: Backend
         run: coverage report
