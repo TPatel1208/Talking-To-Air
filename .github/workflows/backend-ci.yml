@@ -23,7 +23,10 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libproj-dev proj-data proj-bin libgeos-dev
+          sudo apt-get install -y \
+            libproj-dev proj-data proj-bin libgeos-dev \
+            libgdal-dev gdal-bin \
+            libhdf5-dev libnetcdf-dev
 
       - name: Install Python dependencies
         run: |
