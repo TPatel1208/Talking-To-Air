@@ -3,7 +3,8 @@ import sys
 import importlib.util
 import unittest
 from unittest.mock import patch
-
+from types import SimpleNamespace
+import psycopg
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
@@ -13,6 +14,13 @@ class FakeConnection:
     def __init__(self):
         self.autocommit = False
         self.closed = False
+
+        self.info = SimpleNamespace(
+            transaction_status=psycopg.pq.TransactionStatus.IDLE
+        )
+
+    def rollback(self):
+        pass
 
 
 class FakeConnectionContext:
