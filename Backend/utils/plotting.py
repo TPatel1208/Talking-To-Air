@@ -599,42 +599,59 @@ class RegionResolver:
         self.geocoding_service = GeocodingService()
         # Define special global regions that don't need geocoding
         self.global_regions = {
-            'global': {
-                'geometry': box(-180, -90, 180, 90),
-                'bounds': (-180, -90, 180, 90),
-                'name': 'Global'
-            },
-            'world': {
-                'geometry': box(-180, -90, 180, 90),
-                'bounds': (-180, -90, 180, 90),
-                'name': 'World'
-            },
-            'earth': {
-                'geometry': box(-180, -90, 180, 90),
-                'bounds': (-180, -90, 180, 90),
-                'name': 'Earth'
-            },
-            'continental us': {
-                'geometry': box(-125, 24, -66, 50),
-                'bounds': (-125, 24, -66, 50),
-                'name': 'Continental US'
-            },
-            'conus': {
-                'geometry': box(-125, 24, -66, 50),
-                'bounds': (-125, 24, -66, 50),
-                'name': 'Continental US'
-            },
-            'contiguous us': {
-                'geometry': box(-125, 24, -66, 50),
-                'bounds': (-125, 24, -66, 50),
-                'name': 'Continental US'
-            },
-            'united states': {
-                'geometry': box(-125, 24, -66, 50),
-                'bounds': (-125, 24, -66, 50),
-                'name': 'Continental US'
-            }
-        }
+        # --- Global ---
+        'global': {'geometry': box(-180, -90, 180, 90), 'bounds': (-180, -90, 180, 90), 'name': 'Global'},
+        'world':  {'geometry': box(-180, -90, 180, 90), 'bounds': (-180, -90, 180, 90), 'name': 'World'},
+        'earth':  {'geometry': box(-180, -90, 180, 90), 'bounds': (-180, -90, 180, 90), 'name': 'Earth'},
+
+        # --- Continents ---
+        'north america': {'geometry': box(-168,   7,  -52, 84), 'bounds': (-168,   7,  -52, 84), 'name': 'North America'},
+        'south america': {'geometry': box( -82, -56,  -34, 13), 'bounds': ( -82, -56,  -34, 13), 'name': 'South America'},
+        'europe':        {'geometry': box( -25,  34,   45, 72), 'bounds': ( -25,  34,   45, 72), 'name': 'Europe'},
+        'africa':        {'geometry': box( -18, -35,   52, 38), 'bounds': ( -18, -35,   52, 38), 'name': 'Africa'},
+        'asia':          {'geometry': box(  26, -10,  180, 78), 'bounds': (  26, -10,  180, 78), 'name': 'Asia'},
+        'oceania':       {'geometry': box( 110, -50,  180, 25), 'bounds': ( 110, -50,  180, 25), 'name': 'Oceania'},
+        'antarctica':    {'geometry': box(-180, -90,  180, -60), 'bounds': (-180, -90,  180, -60), 'name': 'Antarctica'},
+
+        # --- United States ---
+        'the united states':  {'geometry': box(-125, 24, -66, 50), 'bounds': (-125, 24, -66, 50), 'name': 'United States'},
+        'usa':            {'geometry': box(-125, 24, -66, 50), 'bounds': (-125, 24, -66, 50), 'name': 'United States'},
+        'us':             {'geometry': box(-125, 24, -66, 50), 'bounds': (-125, 24, -66, 50), 'name': 'United States'},
+        'conus':          {'geometry': box(-125, 24, -66, 50), 'bounds': (-125, 24, -66, 50), 'name': 'Continental US'},
+        'continental us': {'geometry': box(-125, 24, -66, 50), 'bounds': (-125, 24, -66, 50), 'name': 'Continental US'},
+        'contiguous us':  {'geometry': box(-125, 24, -66, 50), 'bounds': (-125, 24, -66, 50), 'name': 'Continental US'},
+        'lower 48':       {'geometry': box(-125, 24, -66, 50), 'bounds': (-125, 24, -66, 50), 'name': 'Continental US'},
+
+        # --- US Regions ---
+        'northeast us':  {'geometry': box( -80, 37,  -66, 48), 'bounds': ( -80, 37,  -66, 48), 'name': 'Northeast US'},
+        'southeast us':  {'geometry': box( -92, 24,  -75, 37), 'bounds': ( -92, 24,  -75, 37), 'name': 'Southeast US'},
+        'midwest us':    {'geometry': box(-104, 36,  -80, 50), 'bounds': (-104, 36,  -80, 50), 'name': 'Midwest US'},
+        'southwest us':  {'geometry': box(-125, 31, -102, 42), 'bounds': (-125, 31, -102, 42), 'name': 'Southwest US'},
+        'northwest us':  {'geometry': box(-125, 42, -110, 50), 'bounds': (-125, 42, -110, 50), 'name': 'Northwest US'},
+        'great plains':  {'geometry': box(-105, 36,  -96, 50), 'bounds': (-105, 36,  -96, 50), 'name': 'Great Plains'},
+        'great lakes':   {'geometry': box( -92, 41,  -76, 48), 'bounds': ( -92, 41,  -76, 48), 'name': 'Great Lakes'},
+
+        # --- Europe Subregions ---
+        'western europe':  {'geometry': box(-10, 35,  20, 60), 'bounds': (-10, 35,  20, 60), 'name': 'Western Europe'},
+        'eastern europe':  {'geometry': box( 14, 44,  33, 55), 'bounds': ( 14, 44,  33, 55), 'name': 'Eastern Europe'},
+        'northern europe': {'geometry': box(-25, 54,  32, 72), 'bounds': (-25, 54,  32, 72), 'name': 'Northern Europe'},
+        'southern europe': {'geometry': box(-10, 35,  30, 46), 'bounds': (-10, 35,  30, 46), 'name': 'Southern Europe'},
+        'scandinavia':     {'geometry': box(  4, 55,  32, 72), 'bounds': (  4, 55,  32, 72), 'name': 'Scandinavia'},
+
+        # --- Asia Subregions ---
+        'east asia':     {'geometry': box(100, 20, 145, 54), 'bounds': (100, 20, 145, 54), 'name': 'East Asia'},
+        'southeast asia':{'geometry': box( 95, -10, 141, 28), 'bounds': ( 95, -10, 141, 28), 'name': 'Southeast Asia'},
+        'south asia':    {'geometry': box( 61,  6,  97, 37), 'bounds': ( 61,  6,  97, 37), 'name': 'South Asia'},
+        'central asia':  {'geometry': box( 46, 36,  87, 56), 'bounds': ( 46, 36,  87, 56), 'name': 'Central Asia'},
+        'middle east':   {'geometry': box( 26, 12,  63, 42), 'bounds': ( 26, 12,  63, 42), 'name': 'Middle East'},
+
+        # --- Africa Subregions ---
+        'north africa':       {'geometry': box(-18, 15,  38, 38), 'bounds': (-18, 15,  38, 38), 'name': 'North Africa'},
+        'sub-saharan africa': {'geometry': box(-18, -35, 52, 15), 'bounds': (-18, -35, 52, 15), 'name': 'Sub-Saharan Africa'},
+        'west africa':        {'geometry': box(-18,  4,  16, 20), 'bounds': (-18,  4,  16, 20), 'name': 'West Africa'},
+        'east africa':        {'geometry': box( 29, -12, 52, 16), 'bounds': ( 29, -12, 52, 16), 'name': 'East Africa'},
+        'southern africa':    {'geometry': box( 11, -35, 40, -15), 'bounds': ( 11, -35, 40, -15), 'name': 'Southern Africa'},
+    }
 
     def resolve_location(self, location_name: str):
         """Convert location name to RegionResult with geometry"""
