@@ -11,8 +11,8 @@ _loader_instance = None
 def get_loader():
     global _loader_instance
     if _loader_instance is None:
-        from preprocessing.data_loader import DataLoader
-        _loader_instance = DataLoader()
+        from tools.satellite_tools.harmony_api import _get_data_loader
+        _loader_instance = _get_data_loader()
     return _loader_instance
 
 

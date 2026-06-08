@@ -35,6 +35,7 @@ import logging
 import os
 import time
 from pathlib import Path
+from collections import OrderedDict
 from typing import List, Optional, Tuple
 
 import xarray as xr
@@ -65,6 +66,7 @@ _GES_DISC_SUFFIX = "-GES_DISC"
 # Valid values for DATA_FETCH_MODE
 _VALID_MODES = {"auto", "harmony", "opendap", "s3"}
 _DEFAULT_MAX_RESULTS_CAP = 20
+_MEMORY_CACHE_MAX_ITEMS = 8
 
 
 def _provider(collection_id: str) -> str:
@@ -134,6 +136,7 @@ class DataLoader:
             logger.warning("PostGIS index unavailable — Zarr-only mode (%s)", exc)
             index_repo = None
         self._cache = CacheManager(zarr_repo, index_repository=index_repo)
+        self._memory_cache: OrderedDict[str, xr.Dataset] = OrderedDict()
 
         # Registry (lru_cached after first load)
         self._registry_by_id: dict = {
@@ -164,6 +167,21 @@ class DataLoader:
         # ── Cache lookup ──────────────────────────────────────────────────
         max_results = _bounded_max_results(max_results)
         bounding_box = _normalise_bbox(bounding_box) if bounding_box else None
+        memory_key = make_group_key(
+            collection_id,
+            temporal[0],
+            temporal[1],
+            bounding_box if bounding_box else (),
+        )
+
+        cached_in_memory = self._memory_cache.get(memory_key)
+        if cached_in_memory is not None:
+            self._memory_cache.move_to_end(memory_key)
+            logger.info(
+                "cache_hit",
+                extra={"_tier": "memory", "_collection_id": collection_id, "_group_key": memory_key},
+            )
+            return cached_in_memory
 
         cached = self._cache.lookup(
             collection_id=collection_id,
@@ -172,6 +190,7 @@ class DataLoader:
         )
         if cached is not None:
             logger.info("cache_hit", extra={"_collection_id": collection_id})
+            self._remember_dataset(memory_key, cached)
             return cached
 
         # ── Fetch ─────────────────────────────────────────────────────────
@@ -201,7 +220,14 @@ class DataLoader:
 
         # ── Cache write ───────────────────────────────────────────────────
         self._cache.store(ds, collection_id, temporal, bounding_box, cache_path)
+        self._remember_dataset(memory_key, ds)
         return ds
+
+    def _remember_dataset(self, key: str, ds: xr.Dataset) -> None:
+        self._memory_cache[key] = ds
+        self._memory_cache.move_to_end(key)
+        while len(self._memory_cache) > _MEMORY_CACHE_MAX_ITEMS:
+            self._memory_cache.popitem(last=False)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Routing

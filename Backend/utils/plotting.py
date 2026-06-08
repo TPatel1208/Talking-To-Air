@@ -19,6 +19,15 @@ from affine import Affine
 from typing import Optional, Tuple, Union, List
 
 logger = logging.getLogger(__name__)
+_geocoding_service = None
+
+
+def get_geocoding_service() -> "GeocodingService":
+    """Return the shared geocoder so agent and plotting tools share cache."""
+    global _geocoding_service
+    if _geocoding_service is None:
+        _geocoding_service = GeocodingService()
+    return _geocoding_service
 
 
 def plot_map(
@@ -490,15 +499,39 @@ def plot_diff_maps(
 class GeocodingService:
     """Free geocoding using Nominatim (OpenStreetMap) with polygon and bounding box"""
     
-    def __init__(self):
+    def __init__(self, cache_ttl_seconds: int = 24 * 60 * 60):
         self.cache = {}
+        self.cache_ttl_seconds = cache_ttl_seconds
         self.last_request = 0
+
+    def _cache_key(self, location_name: str) -> str:
+        return " ".join(location_name.lower().strip().split())
+
+    def _get_cached(self, location_name: str):
+        key = self._cache_key(location_name)
+        entry = self.cache.get(key)
+        if not entry:
+            logger.info("satellite_geocode_cache_miss", extra={"_location": location_name})
+            return None
+
+        expires_at, result = entry
+        if expires_at >= time.time():
+            logger.info("satellite_geocode_cache_hit", extra={"_location": location_name})
+            return result
+
+        self.cache.pop(key, None)
+        logger.info("satellite_geocode_cache_miss", extra={"_location": location_name})
+        return None
+
+    def _store_cached(self, location_name: str, result: dict):
+        key = self._cache_key(location_name)
+        self.cache[key] = (time.time() + self.cache_ttl_seconds, result)
     
     def geocode(self, location_name):
         """Convert location name to coordinates, polygon, and bounding box"""
-        # Check cache first
-        if location_name in self.cache:
-            return self.cache[location_name]
+        cached = self._get_cached(location_name)
+        if cached is not None:
+            return cached
         
         # Rate limit: 1 request per second
         time_since_last = time.time() - self.last_request
@@ -517,6 +550,7 @@ class GeocodingService:
         }
         
         self.last_request = time.time()
+        logger.info("satellite_geocode_requests", extra={"_location": location_name})
         
         try:
             response = requests.get(url, params=params, headers=headers)
@@ -543,7 +577,7 @@ class GeocodingService:
                     'bbox': bbox         # None if not available
                 }
                 
-                self.cache[location_name] = result
+                self._store_cached(location_name, result)
                 return result
         except Exception as e:
             logger.warning("Geocoding error: %s", e)
@@ -552,8 +586,9 @@ class GeocodingService:
 
     async def ageocode(self, location_name):
         """Async version of geocode() for agent tools running on the event loop."""
-        if location_name in self.cache:
-            return self.cache[location_name]
+        cached = self._get_cached(location_name)
+        if cached is not None:
+            return cached
 
         time_since_last = time.time() - self.last_request
         if time_since_last < 1.0:
@@ -569,6 +604,7 @@ class GeocodingService:
         headers = {'User-Agent': '(Educational project)'}
 
         self.last_request = time.time()
+        logger.info("satellite_geocode_requests", extra={"_location": location_name})
 
         try:
             async with httpx.AsyncClient(timeout=30) as client:
@@ -585,7 +621,7 @@ class GeocodingService:
                     'polygon': item.get('geojson', None),
                     'bbox': [float(coord) for coord in item.get('boundingbox', [])],
                 }
-                self.cache[location_name] = result
+                self._store_cached(location_name, result)
                 return result
         except Exception as e:
             logger.warning("Geocoding error: %s", e)
@@ -595,8 +631,8 @@ class GeocodingService:
 
 class RegionResolver: 
     """resolves user location inputs into singular plot or multiple plots"""
-    def __init__(self):
-        self.geocoding_service = GeocodingService()
+    def __init__(self, geocoding_service: GeocodingService | None = None):
+        self.geocoding_service = geocoding_service or get_geocoding_service()
         # Define special global regions that don't need geocoding
         self.global_regions = {
         # --- Global ---

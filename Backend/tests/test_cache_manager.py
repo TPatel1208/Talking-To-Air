@@ -2,6 +2,7 @@ import importlib.util
 import os
 import sys
 import unittest
+from collections import OrderedDict
 
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_DIR not in sys.path:
@@ -30,6 +31,16 @@ class FakeIndexRepository:
 
     def lookup(self, **kwargs):
         return self.row
+
+
+class FakeCache:
+    def __init__(self, dataset):
+        self.dataset = dataset
+        self.lookups = 0
+
+    def lookup(self, **kwargs):
+        self.lookups += 1
+        return self.dataset
 
 
 @unittest.skipIf(importlib.util.find_spec("xarray") is None, "xarray is not installed")
@@ -83,6 +94,31 @@ class CacheManagerTests(unittest.TestCase):
 
         self.assertIs(result, dataset)
         self.assertEqual(zarr.reads, ["stored"])
+
+    @unittest.skipIf(importlib.util.find_spec("netCDF4") is None, "netCDF4 is not installed")
+    def test_data_loader_reuses_in_memory_cache_for_identical_lookup(self):
+        import xarray as xr
+        from preprocessing.data_loader import DataLoader
+
+        temporal = ("2024-01-01T00:00:00Z", "2024-01-02T00:00:00Z")
+        dataset = xr.Dataset()
+        loader = DataLoader.__new__(DataLoader)
+        loader._memory_cache = OrderedDict()
+        loader._cache = FakeCache(dataset)
+
+        kwargs = {
+            "collection_id": "C1",
+            "temporal": temporal,
+            "bounding_box": (-74, 40, -73, 41),
+            "max_results": 1,
+        }
+
+        first = loader.download_dataset_harmony(**kwargs)
+        second = loader.download_dataset_harmony(**kwargs)
+
+        self.assertIs(first, dataset)
+        self.assertIs(second, dataset)
+        self.assertEqual(loader._cache.lookups, 1)
 
 
 if __name__ == "__main__":

@@ -3,24 +3,21 @@ import os
 import asyncio
 from langchain.tools import tool
 from typing import Tuple
-import numpy as np
 import httpx
 import json
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from utils.plotting import GeocodingService
+from utils.plotting import get_geocoding_service
 from preprocessing.data_loader import DataLoader, _bounded_max_results
 from tools.satellite_tools.models import DataDict
+from tools.satellite_tools.query_parser import is_valid_location_candidate
+from datasets.registry import load_registry
 
-_geocoder = None
 _data_loader = None
 
 
 def _get_geocoder():
-    global _geocoder
-    if _geocoder is None:
-        _geocoder = GeocodingService()
-    return _geocoder
+    return get_geocoding_service()
 
 
 def _get_data_loader():
@@ -29,190 +26,15 @@ def _get_data_loader():
         _data_loader = DataLoader()
     return _data_loader
 
-COLLECTIONS = {
-    # OMI NO2 (Default for 'NO2' variable)
-    "OMI_NO2": {
-        'collection_id': "C1266136111-GES_DISC",
-        'variables': ["ColumnAmountNO2","ColumnAmountNO2CloudScreened","ColumnAmountNO2TropCloudScreened","Weight"],
-        'primary_var': "ColumnAmountNO2TropCloudScreened",
-        'quality_flag_var': None,
-        'short_name': "OMI_MINDS_NO2d",
-        'version': "1.1",
-        'groups': [],
-        'units': "molecules/cm^2",
-        'description': "OMI NO2 tropospheric column",
-        'supports_variable_subsetting': False,
-        'fill_value': -1.267651e+30,       # from _FillValue attribute
-        'valid_min': -1e15,                # from valid_min attribute
-        'valid_max': 1e18,                 # from valid_max attribute
-    },
-    # Tropomi NO2 Monthly
-    "TROPOMI_NO2": {
-        'collection_id': "C3087325222-GES_DISC",
-        'variables': ["Tropospheric_NO2",'Number_obs'],
-        'primary_var': "Tropospheric_NO2",
-        'quality_flag_var': None,
-        'short_name': "HAQ_TROPOMI_NO2_GLOBAL_M_L3",
-        'version': "2.4",
-        'groups': [],
-        'units': "molecules/cm^2",
-        'description': "Tropomi NO2 monthly mean",
-        'supports_variable_subsetting': False,
-        'fill_value': -999.0,                # from _FillValue attribute
-        'valid_min': -1e15,             
-        'valid_max': 1e18,                 
-    },
-    # Tempo NO2 used for specific time series queries
-    "TEMPO_NO2": {
-        "collection_id": "C3685896708-LARC_CLOUD",
-        "variables":     ["product/vertical_column_troposphere",
-                          "product/main_data_quality_flag"],
-        "primary_var":   "vertical_column_troposphere",
-        "quality_flag_var": "main_data_quality_flag", 
-        "short_name":    "TEMPO_NO2_L3",
-        "version":       "V04",
-        "groups":        ["product"],
-        "units":         "molecules/cm^2",
-        "description":   "TEMPO tropospheric NO2 vertical column",
-        'supports_variable_subsetting': True,
-        'fill_value': np.float32(-1e30),         # from _FillValue attribute
-        "valid_min": -1e15,               
-        "valid_max": 1e18,
-    },
+def _load_collections() -> dict:
+    """Expose collections.yaml as the legacy dict shape used by tool modules."""
+    return {
+        key: config.model_dump()
+        for key, config in load_registry().items()
+    }
 
-    #--------------
-    #Ozone datasets
-    #--------------
 
-    # TEMPO Total Ozone
-    "TEMPO_O3TOT": {
-        "collection_id": "C3685896625-LARC_CLOUD",
-        "variables": [
-            "product/column_amount_o3",
-            "product/radiative_cloud_frac",
-            "product/fc",
-            "product/o3_below_cloud",
-            "product/so2_index",
-            "product/uv_aerosol_index",
-        ],
-        "primary_var": "column_amount_o3",
-        "quality_flag_var": None,
-        "short_name": "TEMPO_O3TOT_L3",
-        "version": "V04",
-        "groups": ["product"],
-        "units": "DU",
-        "description": "TEMPO Level 3 total ozone column",
-        "supports_variable_subsetting": True,
-        "fill_value": np.float32(-1e30),
-        "valid_min": 50.0,        # valid_min on column_amount_o3
-        "valid_max": 700.0,       # valid_max on column_amount_o3
-    },
-
-    # OMI Total Ozone
-    "OMI_O3": {
-        "collection_id":  "C1266136037-GES_DISC",
-        "variables":      [],
-        "primary_var":    "ColumnAmountO3",
-        "quality_flag_var": None,
-        "short_name":     "OMDOAO3e",
-        "version":        "003",
-        "groups":         [],
-        "units":          "DU",
-        "description":    "OMI daily total ozone column",
-        "supports_variable_subsetting": False,
-        "fill_value":     -1.267651e+30,
-        "valid_min":      50.0,
-        "valid_max":      700.0,
-    },
-    #---------------------
-    #Formaldehyde datasets
-    #---------------------
-    "TEMPO_HCHO": {
-        "collection_id": "C3685897141-LARC_CLOUD",
-        "variables": [
-            "product/vertical_column",
-            "product/vertical_column_uncertainty",
-            "product/main_data_quality_flag",
-        ],
-        "primary_var":        "vertical_column",
-        "quality_flag_var":   "main_data_quality_flag",
-        "short_name":         "TEMPO_HCHO_L3",
-        "version":            "V04",
-        "groups":             ["product"],
-        "units":              "molecules/cm^2",
-        "description":        "TEMPO formaldehyde (HCHO) vertical column",
-        "supports_variable_subsetting": True,
-        "fill_value":  -1e30,
-        "valid_min":   np.float32(0.0),
-        "valid_max":   np.inf,
-    },
-
-    "TEMPO_HCHO_V03": {
-        "collection_id": "C2930761273-LARC_CLOUD",
-        "variables": [
-            "product/vertical_column",
-            "product/vertical_column_uncertainty",
-            "product/main_data_quality_flag",
-        ],
-        "primary_var":        "vertical_column",
-        "quality_flag_var":   "main_data_quality_flag",
-        "short_name":         "TEMPO_HCHO_L3",
-        "version":            "V03",
-        "groups":             ["product"],
-        "units":              "molecules/cm^2",
-        "description":        "TEMPO formaldehyde (HCHO) vertical column (V03)",
-        "supports_variable_subsetting": True,
-        "fill_value":  -1e30,
-        "valid_min":   np.float32(0.0),
-        "valid_max":   np.inf,
-    },
-    "OMI_HCHO": {
-        "collection_id":  "C1626121562-GES_DISC",
-        "variables":      [],
-        "primary_var":    "column_amount",
-        "quality_flag_var": "data_quality_flag",
-        "short_name":     "OMHCHOd",
-        "version":        "003",
-        "groups":         ["key_science_data", "qa_statistics"],
-        "units":          "molecules/cm^2",
-        "description":    "OMI HCHO total column daily",
-        "supports_variable_subsetting": False,
-        "fill_value":     -1e30,
-        "valid_min":      np.float32(0.0),
-        "valid_max":      np.inf,
-    },
-    #Modis Aerosol datasets
-    "MODIS_AOD_TERRA": {
-        "collection_id":  "C3618500076-GES_DISC",  # verify with CMR search
-        "variables":      [],
-        "primary_var":    "COMBINE_AOD_550_AVG",
-        "quality_flag_var": None,
-        "short_name":     "AER_DBDT_D10KM_L3_MODIS_TERRA",
-        "version":        "001",
-        "groups":         [],
-        "units":          "AOD (550nm)",
-        "description":    "MODIS Terra AOD at 550nm combined Dark Target + Deep Blue",
-        "supports_variable_subsetting": False,
-        "fill_value":     -999.0,
-        "valid_min":      -0.05,
-        "valid_max":      5.0,
-    },
-    "MODIS_AOD_AQUA": {
-        "collection_id":  "C3618504061-GES_DISC",  
-        "variables":      [],
-        "primary_var":    "COMBINE_AOD_550_AVG",
-        "quality_flag_var": None,
-        "short_name":     "AER_DBDT_D10KM_L3_MODIS_AQUA",
-        "version":        "001",
-        "groups":         [],
-        "units":          "AOD (550nm)",
-        "description":    "MODIS Aqua AOD at 550nm combined Dark Target + Deep Blue",
-        "supports_variable_subsetting": False,
-        "fill_value":     -999.0,
-        "valid_min":      -0.05,
-        "valid_max":      5.0,
-    },
-}
+COLLECTIONS = _load_collections()
 @tool
 async def geocode_location(location_name: str) -> dict:
     """
@@ -225,6 +47,9 @@ async def geocode_location(location_name: str) -> dict:
     Returns:
         dict with keys: location, bbox, center_lat, center_lon.
     """
+    if not is_valid_location_candidate(location_name):
+        return {"error": f"Invalid location candidate '{location_name}'"}
+
     result = await _get_geocoder().ageocode(location_name)
     if result is None:
         return {"error": f"Could not geocode '{location_name}'"}

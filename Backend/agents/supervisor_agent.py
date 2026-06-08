@@ -10,9 +10,7 @@ Memory model
 """
 import os
 import asyncio
-import calendar
 import logging
-import re
 import sys
 import uuid
 from collections.abc import Awaitable, Callable
@@ -30,6 +28,7 @@ from config.settings import get_settings
 from config.supervisor_prompt import SUPERVISOR_PROMPT
 from models import AgentResult, agent_result_to_json, parse_agent_result, parse_chart_payload
 from repositories.chart_repository import delete_charts_for_session
+from tools.satellite_tools.query_parser import parse_satellite_plot_query
 from utils.db import get_checkpointer, pg_connection
 from utils.streaming import stream_response
 
@@ -282,11 +281,12 @@ def _compact_model_input_content(content):
 
     result = parse_agent_result(content)
     if result is not None and result.charts:
-        summaries = [_chart_summary(chart) for chart in result.charts]
-        chart_text = "; ".join(summary for summary in summaries if summary)
-        if chart_text:
-            return f"{result.text}\n\nCharts generated: {chart_text}"
-        return result.text
+        summaries = [
+            _chart_summary(chart) or f"chart {index}"
+            for index, chart in enumerate(result.charts, start=1)
+        ]
+        chart_text = "; ".join(summaries)
+        return f"{result.text}\n\nCharts generated: {chart_text}"
 
     chart = parse_chart_payload(content)
     if chart is not None:
@@ -298,11 +298,12 @@ def _compact_model_input_content(content):
 
 def _chart_summary(chart) -> str:
     payload = chart.model_dump(exclude_none=True) if hasattr(chart, "model_dump") else dict(chart)
-    chart_type = payload.get("type", "chart")
-    title = payload.get("title") or payload.get("metadata", {}).get("name") or "Untitled chart"
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    chart_type = str(payload.get("type") or "").strip() or "chart"
+    title = str(payload.get("title") or metadata.get("name") or "").strip()
     variable = payload.get("variable")
     units = payload.get("units")
-    bits = [f"{chart_type} '{title}'"]
+    bits = [f"{chart_type} '{title}'" if title else chart_type]
     if variable:
         bits.append(f"variable={variable}")
     if units:
@@ -324,9 +325,19 @@ async def _try_direct_satellite_plot(task: str) -> AgentResult | None:
     """
     parsed = _parse_simple_satellite_plot_task(task)
     if parsed is None:
+        logger.info("satellite_parser_failure", extra={"_task": task[:500]})
         return None
 
     variable, location, start_date, end_date = parsed
+    logger.info(
+        "satellite_parser_success",
+        extra={
+            "_variable": variable,
+            "_location": location,
+            "_start_date": start_date,
+            "_end_date": end_date,
+        },
+    )
     logger.info(
         "Direct satellite plot fallback: variable=%s location=%s temporal=%s..%s",
         variable,
@@ -403,65 +414,15 @@ async def _try_direct_satellite_plot(task: str) -> AgentResult | None:
 
 
 def _parse_simple_satellite_plot_task(task: str):
-    text = " ".join(task.strip().split())
-    lower = text.lower()
-
-    variable_aliases = {
-        "TROPOMI_NO2": ("tropomi no2", "tropomi_no2"),
-        "OMI_NO2": ("omi no2", "omi_no2"),
-        "TEMPO_NO2": ("tempo no2", "tempo_no2"),
-        "TEMPO_O3TOT": ("tempo o3tot", "tempo ozone", "tempo_o3tot"),
-        "OMI_O3": ("omi o3", "omi ozone", "omi_o3"),
-        "TEMPO_HCHO": ("tempo hcho", "tempo_hcho"),
-        "TEMPO_HCHO_V03": ("tempo hcho v03", "tempo_hcho_v03"),
-        "OMI_HCHO": ("omi hcho", "omi_hcho"),
-        "MODIS_AOD_TERRA": ("modis aod terra", "modis_aod_terra"),
-        "MODIS_AOD_AQUA": ("modis aod aqua", "modis_aod_aqua"),
-    }
-
-    variable = next(
-        (
-            key
-            for key, aliases in variable_aliases.items()
-            if any(alias in lower for alias in aliases)
-        ),
-        None,
-    )
-    if variable is None:
+    parsed = parse_satellite_plot_query(task)
+    if parsed is None:
         return None
-
-    location_match = re.search(
-        r"\b(?:over|in|for)\s+(.+?)\s+\b(?:for|on|during)\b",
-        text,
-        flags=re.IGNORECASE,
+    return (
+        parsed.variable,
+        parsed.location,
+        parsed.temporal.start,
+        parsed.temporal.end,
     )
-    if not location_match:
-        return None
-    location = location_match.group(1).strip(" .")
-
-    iso_day = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", text)
-    if iso_day:
-        day = iso_day.group(1)
-        return variable, location, f"{day}T00:00:00Z", f"{day}T23:59:59Z"
-
-    month_names = "|".join(calendar.month_name[1:])
-    month_match = re.search(
-        rf"\b({month_names})\s+(\d{{4}})\b",
-        text,
-        flags=re.IGNORECASE,
-    )
-    if month_match:
-        month = list(calendar.month_name).index(month_match.group(1).title())
-        year = int(month_match.group(2))
-        last_day = calendar.monthrange(year, month)[1]
-        return (
-            variable,
-            location,
-            f"{year:04d}-{month:02d}-01T00:00:00Z",
-            f"{year:04d}-{month:02d}-{last_day:02d}T23:59:59Z",
-        )
-
-    return None
 
 
 # ── list_sessions, delete_session ─────────────────────────────────────────────

@@ -84,8 +84,8 @@ def get_connection():
     and leaves connection lifecycle to the caller (data_loader.py).
     """
     try:
-        from utils.db import pg_connection
-        return pg_connection()
+        import psycopg
+        return psycopg.connect(**get_settings().db_kwargs)
     except Exception as exc:
         logger.error("cache_index: could not connect to PostgreSQL — %s", exc)
         raise
