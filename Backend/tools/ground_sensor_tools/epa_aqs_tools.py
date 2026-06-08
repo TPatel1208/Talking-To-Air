@@ -1,5 +1,5 @@
 from langchain.tools import tool
-import requests
+import httpx
 from typing import Dict, Any, List, Optional, Union
 import os
 import sys
@@ -33,11 +33,12 @@ _BBOX_EXPANSIONS = [0.0, 0.5, 1.5, 3.0, 5.0]
 # Helper functions
 # ---------------------------------------------------------------------------
 
-def _aqs_get(endpoint: str, params: Dict[str, Any]) -> Dict[str, Any]:
+async def _aqs_get(endpoint: str, params: Dict[str, Any]) -> Dict[str, Any]:
     """GET request to the AQS API; raises on HTTP errors or unexpected statuses."""
     full_params = {**params, "email": AQS_EMAIL, "key": AQS_KEY}
-    resp = requests.get(f"{AQS_BASE_URL}/{endpoint}", params=full_params, timeout=30)
-    resp.raise_for_status()
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(f"{AQS_BASE_URL}/{endpoint}", params=full_params)
+        resp.raise_for_status()
     data = resp.json()
     header = data.get("Header", [{}])
     status = header[0].get("status", "").lower()
@@ -97,11 +98,11 @@ def _resolve_dates(bdate: Optional[str], edate: Optional[str]):
     return bdate_obj, edate_obj, bdate_obj.strftime("%Y%m%d"), edate_obj.strftime("%Y%m%d")
 
 
-def _fetch_active_monitors(bbox, param_code, bdate_str, edate_str, k=1):
+async def _fetch_active_monitors(bbox, param_code, bdate_str, edate_str, k=1):
     best = []
     for expansion in _BBOX_EXPANSIONS:
         south, north, west, east = _expand_bbox(bbox, expansion)
-        data = _aqs_get(
+        data = await _aqs_get(
             "monitors/byBox",
             {
                 "param": param_code,
@@ -159,7 +160,7 @@ def _build_body(nearest: List[Dict], param_code: str) -> List[Dict]:
 # ---------------------------------------------------------------------------
 
 @tool
-def list_states() -> Dict[str, Any]:
+async def list_states() -> Dict[str, Any]:
     """
     Retrieve a list of all US states with EPA AQS air quality monitoring data.
 
@@ -170,17 +171,11 @@ def list_states() -> Dict[str, Any]:
     -------
     dict : raw AQS API response with Header and Data fields.
     """
-    resp = requests.get(
-        f"{AQS_BASE_URL}/list/states",
-        params={"email": AQS_EMAIL, "key": AQS_KEY},
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json()
+    return await _aqs_get("list/states", {})
 
 
 @tool
-def find_closest_monitor(
+async def find_closest_monitor(
     location: str,
     param_code: str = DEFAULT_PARAM_CODE,
     bdate: Optional[str] = None,
@@ -204,7 +199,7 @@ def find_closest_monitor(
     """
     bdate_obj, edate_obj, bdate_str, edate_str = _resolve_dates(bdate, edate)
 
-    geo = geocoding_service.geocode(location)
+    geo = await geocoding_service.ageocode(location)
     if geo is None:
         raise ValueError(f"Could not geocode location: '{location}'")
     lat_q, lon_q = geo["latitude"], geo["longitude"]
@@ -212,7 +207,7 @@ def find_closest_monitor(
     # Clamp Nominatim bbox to minimum size before the expansion ladder
     bbox = _enforce_min_bbox(geo["bbox"])
 
-    monitors = _fetch_active_monitors(bbox, param_code, bdate_str, edate_str, k)
+    monitors = await _fetch_active_monitors(bbox, param_code, bdate_str, edate_str, k)
     if not monitors:
         raise RuntimeError(
             f"No active {param_code} monitors found near '{location}' "
@@ -237,7 +232,7 @@ def find_closest_monitor(
 
 
 @tool
-def find_closest_monitor_by_coords(
+async def find_closest_monitor_by_coords(
     latitude: Union[float, str],
     longitude: Union[float, str],
     param_code: str = DEFAULT_PARAM_CODE,
@@ -269,7 +264,7 @@ def find_closest_monitor_by_coords(
     bdate_obj, edate_obj, bdate_str, edate_str = _resolve_dates(bdate, edate)
 
     bbox = _bbox_from_point(latitude, longitude)
-    monitors = _fetch_active_monitors(bbox, param_code, bdate_str, edate_str, k)
+    monitors = await _fetch_active_monitors(bbox, param_code, bdate_str, edate_str, k)
     if not monitors:
         raise RuntimeError(
             f"No active {param_code} monitors found near ({latitude}, {longitude}) "
@@ -322,7 +317,7 @@ def _resolve_filter(
         )
  
  
-def _fetch_summary(
+async def _fetch_summary(
     prefix: str,
     param_code: str,
     bdate_obj, edate_obj, bdate_str, edate_str,
@@ -344,7 +339,7 @@ def _fetch_summary(
     if cedate:
         params["cedate"] = date.fromisoformat(cedate).strftime("%Y%m%d")
  
-    data = _aqs_get(endpoint, params)
+    data = await _aqs_get(endpoint, params)
     records = data.get("Data", data.get("Body", []))
  
     if pollutant_standard:
@@ -383,7 +378,7 @@ def _site_id(r):
 # ---------------------------------------------------------------------------
  
 @tool
-def get_daily_summary(
+async def get_daily_summary(
     param_code: str = DEFAULT_PARAM_CODE,
     bdate: Optional[str] = None,
     edate: Optional[str] = None,
@@ -406,7 +401,7 @@ def get_daily_summary(
     Always pass pollutant_standard (see ground prompt table).
     """
     bdate_obj, edate_obj, bdate_str, edate_str = _resolve_dates(bdate, edate)
-    records, endpoint, _ = _fetch_summary(
+    records, endpoint, _ = await _fetch_summary(
         "dailyData", param_code, bdate_obj, edate_obj, bdate_str, edate_str,
         state_code, county_code, site_number, cbsa_code,
         minlat, maxlat, minlon, maxlon, cbdate, cedate, pollutant_standard,
@@ -440,7 +435,7 @@ def get_daily_summary(
 # ---------------------------------------------------------------------------
  
 @tool
-def get_quarterly_summary(
+async def get_quarterly_summary(
     param_code: str = DEFAULT_PARAM_CODE,
     bdate: Optional[str] = None,
     edate: Optional[str] = None,
@@ -463,7 +458,7 @@ def get_quarterly_summary(
     Always pass pollutant_standard (see ground prompt table).
     """
     bdate_obj, edate_obj, bdate_str, edate_str = _resolve_dates(bdate, edate)
-    records, endpoint, _ = _fetch_summary(
+    records, endpoint, _ = await _fetch_summary(
         "quarterlyData", param_code, bdate_obj, edate_obj, bdate_str, edate_str,
         state_code, county_code, site_number, cbsa_code,
         minlat, maxlat, minlon, maxlon, cbdate, cedate, pollutant_standard,
@@ -499,7 +494,7 @@ def get_quarterly_summary(
 # ---------------------------------------------------------------------------
  
 @tool
-def get_annual_summary(
+async def get_annual_summary(
     param_code: str = DEFAULT_PARAM_CODE,
     bdate: Optional[str] = None,
     edate: Optional[str] = None,
@@ -522,7 +517,7 @@ def get_annual_summary(
     Always pass pollutant_standard (see ground prompt table).
     """
     bdate_obj, edate_obj, bdate_str, edate_str = _resolve_dates(bdate, edate)
-    records, endpoint, _ = _fetch_summary(
+    records, endpoint, _ = await _fetch_summary(
         "annualData", param_code, bdate_obj, edate_obj, bdate_str, edate_str,
         state_code, county_code, site_number, cbsa_code,
         minlat, maxlat, minlon, maxlon, cbdate, cedate, pollutant_standard,
@@ -571,7 +566,7 @@ _REGULATORY_THRESHOLDS = {
  
  
 @tool
-def find_exceedance_days(
+async def find_exceedance_days(
     param_code: str = DEFAULT_PARAM_CODE,
     bdate: Optional[str] = None,
     edate: Optional[str] = None,
@@ -618,7 +613,7 @@ def find_exceedance_days(
  
     # Fetch daily summaries using the shared helper
     bdate_obj, edate_obj, bdate_str, edate_str = _resolve_dates(bdate, edate)
-    records, endpoint, filter_params = _fetch_summary(
+    records, endpoint, filter_params = await _fetch_summary(
         "dailyData", param_code, bdate_obj, edate_obj, bdate_str, edate_str,
         state_code, county_code, site_number, cbsa_code,
         minlat, maxlat, minlon, maxlon, None, None, pollutant_standard,
@@ -687,7 +682,7 @@ def find_exceedance_days(
 # ---------------------------------------------------------------------------
  
 @tool
-def get_sample_data(
+async def get_sample_data(
     param_code: str = DEFAULT_PARAM_CODE,
     bdate: Optional[str] = None,
     edate: Optional[str] = None,
@@ -728,7 +723,7 @@ def get_sample_data(
         **filter_params,
     }
  
-    data = _aqs_get(endpoint, params)
+    data = await _aqs_get(endpoint, params)
     records = data.get("Data", data.get("Body", []))
  
     if not records:

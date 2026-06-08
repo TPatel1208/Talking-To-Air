@@ -18,7 +18,8 @@ class DbPoolTests(unittest.TestCase):
 
     def tearDown(self):
         from utils import db
-        db.close_db_pool()
+        import asyncio
+        asyncio.run(db.close_db_pool())
 
     def _make_fake_connection(self):
         psycopg = self.psycopg
@@ -31,22 +32,27 @@ class DbPoolTests(unittest.TestCase):
                     transaction_status=psycopg.pq.TransactionStatus.IDLE
                 )
 
-            def rollback(self):
+            async def rollback(self):
                 pass
+            async def commit(self):
+                pass
+            async def set_autocommit(self, value):
+                self.autocommit = value
 
         return FakeConnection()
 
     def test_pg_connection_acquires_from_pool_and_restores_autocommit(self):
         from utils import db
+        import asyncio
 
         conn = self._make_fake_connection()
 
         class FakeConnectionContext:
             def __init__(self, c):
                 self.conn = c
-            def __enter__(self):
+            async def __aenter__(self):
                 return self.conn
-            def __exit__(self, *args):
+            async def __aexit__(self, *args):
                 return False
 
         class FakePool:
@@ -54,20 +60,25 @@ class DbPoolTests(unittest.TestCase):
                 self.closed = False
                 self.connection_calls = 0
                 self._conn = conn
+            async def open(self):
+                pass
             def connection(self):
                 self.connection_calls += 1
                 return FakeConnectionContext(self._conn)
-            def close(self):
+            async def close(self):
                 self.closed = True
 
-        db.close_db_pool()
-        with patch("utils.db.ConnectionPool", FakePool):
-            pool = db.init_db_pool()
-            with db.pg_connection(autocommit=True) as c:
-                self.assertTrue(c.autocommit)
+        async def run_test():
+            await db.close_db_pool()
+            with patch("utils.db.AsyncConnectionPool", FakePool):
+                pool = await db.init_db_pool()
+                async with db.pg_connection(autocommit=True) as c:
+                    self.assertTrue(c.autocommit)
 
-            self.assertEqual(pool.connection_calls, 1)
-            self.assertFalse(pool._conn.autocommit)
+                self.assertEqual(pool.connection_calls, 1)
+                self.assertFalse(pool._conn.autocommit)
+
+        asyncio.run(run_test())
 
 
 if __name__ == "__main__":

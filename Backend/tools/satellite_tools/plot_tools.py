@@ -43,6 +43,7 @@ Time-series
 import json
 import os
 import sys
+import asyncio
 import numpy as np
 from langchain.tools import tool
 from typing import Annotated,  List, Optional
@@ -302,7 +303,7 @@ def _attach_reproducibility(payload: dict, data_dict, region_name: str, aggregat
     return payload
 
 @tool
-def plot_singular(data_dict: Annotated[dict, Field(description="The complete JSON object returned by fetch_environmental_data. Pass the entire object — do not extract fields or convert to a string.")], variable: str, location: str,
+async def plot_singular(data_dict: Annotated[dict, Field(description="The complete JSON object returned by fetch_environmental_data. Pass the entire object — do not extract fields or convert to a string.")], variable: str, location: str,
                   title: str = "", cmap: Optional[str] = "Spectral_r") -> str:
     """
     Plot a spatial heatmap of a variable over a single location at one point in time.
@@ -322,13 +323,13 @@ def plot_singular(data_dict: Annotated[dict, Field(description="The complete JSO
         JSON string — chart payload for the frontend to render interactively.
     """
     try:
-        da = _load_data(data_dict)
+        da = await asyncio.to_thread(_load_data, data_dict)
     except Exception as e:
         return json.dumps({"error": f"Failed to load data: {e}"})
 
     da = _normalize_to_2d(da)
 
-    region = _resolver.resolve_location(location)
+    region = await _resolver.aresolve_location(location)
     if region is None:
         return json.dumps({"error": f"Could not geocode location: '{location}'"})
 
@@ -366,7 +367,7 @@ def plot_singular(data_dict: Annotated[dict, Field(description="The complete JSO
 
 
 @tool
-def plot_multiple(
+async def plot_multiple(
     data_dicts: Annotated[List[dict], Field(description="List of complete JSON objects, each returned by a separate fetch_environmental_data call.")],
     variable: str,
     locations: List[str],
@@ -397,13 +398,13 @@ def plot_multiple(
     panels = []
     for data_dict, location in zip(data_dicts, locations):
         try:
-            da = _load_data(data_dict)
+            da = await asyncio.to_thread(_load_data, data_dict)
         except Exception as e:
             return json.dumps({"error": f"Failed to load data for '{location}': {e}"})
 
         da = _normalize_to_2d(da)
 
-        region = _resolver.resolve_location(location)
+        region = await _resolver.aresolve_location(location)
         if region is None:
             return json.dumps({"error": f"Could not geocode location: '{location}'"})
 
@@ -464,7 +465,7 @@ def plot_multiple(
 
 
 @tool
-def conduct_temporal_statistic(
+async def conduct_temporal_statistic(
     data_dict: Annotated[dict, Field(description="The complete JSON object returned by fetch_environmental_data. Pass the entire object — do not extract fields or convert to a string.")],
     location: str,
     stat: str = "mean",
@@ -489,14 +490,14 @@ def conduct_temporal_statistic(
     import pandas as pd
 
     try:
-        da = _load_data(data_dict)
+        da = await asyncio.to_thread(_load_data, data_dict)
     except Exception as e:
         return json.dumps({"error": f"Failed to load data: {e}"})
 
     if "time" not in da.dims:
         return json.dumps({"error": f"No time dimension found. dims={list(da.dims)}"})
 
-    region = _resolver.resolve_location(location)
+    region = await _resolver.aresolve_location(location)
     if region is None:
         return json.dumps({"error": f"Could not resolve location: '{location}'"})
 

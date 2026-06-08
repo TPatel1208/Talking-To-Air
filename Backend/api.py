@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import uuid
 import os
 import re
@@ -36,11 +37,11 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     global agent
     validate_config()
-    init_db_pool()
-    await asyncio.to_thread(ensure_chart_table)
+    await init_db_pool()
+    await ensure_chart_table()
 
     logger.info("startup_begin", extra={"_model": settings.llm_model})
-    agent = await asyncio.to_thread(build_agent, settings.llm_model)
+    agent = await build_agent(settings.llm_model)
     app.state.agent = agent
     logger.info("startup_complete")
     try:
@@ -48,7 +49,7 @@ async def lifespan(app: FastAPI):
     finally:
         agent = None
         app.state.agent = None
-        close_db_pool()
+        await close_db_pool()
         logger.info("shutdown_complete")
 
 
@@ -87,17 +88,13 @@ def sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
-def _persist_chart_payload(thread_id: str, chart) -> dict:
+async def _persist_chart_payload_async(thread_id: str, chart) -> dict:
     payload = chart.model_dump(exclude_none=True) if hasattr(chart, "model_dump") else dict(chart)
     if payload.get("chart_id"):
-        stored = get_chart(payload["chart_id"])
+        stored = await get_chart(payload["chart_id"])
         if stored:
             return stored
-    return save_chart(thread_id, payload)
-
-
-async def _persist_chart_payload_async(thread_id: str, chart) -> dict:
-    return await asyncio.to_thread(_persist_chart_payload, thread_id, chart)
+    return await save_chart(thread_id, payload)
 
 
 def _safe_export_name(payload: dict, suffix: str) -> str:
@@ -301,7 +298,7 @@ def health():
 
 @app.get("/chart/{chart_id}/export.csv")
 async def export_chart_csv(chart_id: str):
-    payload = await asyncio.to_thread(get_chart, chart_id)
+    payload = await get_chart(chart_id)
     if not payload:
         raise HTTPException(status_code=404, detail="Chart not found")
     try:
@@ -318,7 +315,7 @@ async def export_chart_csv(chart_id: str):
 
 @app.get("/chart/{chart_id}/export.png")
 async def export_chart_png(chart_id: str):
-    payload = await asyncio.to_thread(get_chart, chart_id)
+    payload = await get_chart(chart_id)
     if not payload:
         raise HTTPException(status_code=404, detail="Chart not found")
     try:
@@ -348,13 +345,7 @@ async def chat(req: ChatRequest):
         started = time.monotonic()
 
         try:
-            events = stream_response(active_agent, req.message, thread_id)
-            sentinel = object()
-            while True:
-                item = await asyncio.to_thread(next, events, sentinel)
-                if item is sentinel:
-                    break
-                event_type, data = item
+            async for event_type, data in stream_response(active_agent, req.message, thread_id):
                 logger.debug(
                     "stream_event",
                     extra={"_request_id": request_id, "_thread_id": thread_id, "_event_type": event_type},
@@ -446,7 +437,7 @@ async def chat(req: ChatRequest):
 @app.get("/sessions")
 async def get_sessions():
     try:
-        return {"sessions": await asyncio.to_thread(list_sessions)}
+        return {"sessions": await list_sessions()}
     except HTTPException:
         raise
     except Exception as e:
@@ -460,7 +451,11 @@ async def get_history(thread_id: str):
         if active_agent is None:
             raise HTTPException(status_code=503, detail="Agent is not ready")
         config = {"configurable": {"thread_id": thread_id}}
-        state  = await asyncio.to_thread(active_agent.get_state, config)
+        if hasattr(active_agent, "aget_state"):
+            state = await active_agent.aget_state(config)
+        else:
+            maybe_state = active_agent.get_state(config)
+            state = await maybe_state if inspect.isawaitable(maybe_state) else maybe_state
         if not state or not state.values:
             return {"messages": []}
 
@@ -601,7 +596,7 @@ async def get_history(thread_id: str):
 @app.delete("/session/{thread_id}")
 async def remove_session(thread_id: str):
     try:
-        await asyncio.to_thread(delete_session, thread_id)
+        await delete_session(thread_id)
         return {"deleted": thread_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -613,7 +608,11 @@ async def debug_history(thread_id: str):
     if active_agent is None:
         raise HTTPException(status_code=503, detail="Agent is not ready")
     config = {"configurable": {"thread_id": thread_id}}
-    state = await asyncio.to_thread(active_agent.get_state, config)
+    if hasattr(active_agent, "aget_state"):
+        state = await active_agent.aget_state(config)
+    else:
+        maybe_state = active_agent.get_state(config)
+        state = await maybe_state if inspect.isawaitable(maybe_state) else maybe_state
     raw = state.values.get("messages", [])
     return [
         {

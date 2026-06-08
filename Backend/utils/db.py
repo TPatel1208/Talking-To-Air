@@ -1,27 +1,27 @@
 """
 utils/db.py
 -----------
-Shared database connection helpers used by every agent and the cache layer.
+Shared asynchronous database connection helpers used by agents and request handlers.
 
 Import from here instead of duplicating these functions:
 
-    from utils.db import pg_connect, get_checkpointer
+    from utils.db import pg_connection, get_checkpointer
 """
 
 import contextlib
 import logging
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 
 import psycopg
-from langgraph.checkpoint.postgres import PostgresSaver
-from psycopg_pool import ConnectionPool
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from psycopg_pool import AsyncConnectionPool
 
 from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
-_pool: ConnectionPool | None = None
-_checkpointer_conn: psycopg.Connection | None = None
+_pool: AsyncConnectionPool | None = None
+_checkpointer_conn: psycopg.AsyncConnection | None = None
 
 
 def _db_config() -> dict:
@@ -33,108 +33,97 @@ def validate_config() -> None:
     get_settings().validate_startup()
 
 
-def init_db_pool() -> ConnectionPool:
-    """Create the shared PostgreSQL connection pool used by request handlers."""
+async def init_db_pool() -> AsyncConnectionPool:
+    """Create the shared asynchronous PostgreSQL connection pool."""
     global _pool
     if _pool is None or _pool.closed:
         settings = get_settings()
         min_size = settings.db_pool_min_size
         max_size = settings.db_pool_max_size
-        _pool = ConnectionPool(
+        _pool = AsyncConnectionPool(
             kwargs=_db_config(),
             min_size=min_size,
             max_size=max_size,
-            open=True,
+            open=False,
         )
+        await _pool.open()
         logger.info("database_reconnect", extra={"_min_size": min_size, "_max_size": max_size})
     return _pool
 
 
-def close_db_pool() -> None:
+async def close_db_pool() -> None:
     """Close shared database resources on application shutdown."""
     global _pool, _checkpointer_conn
     if _checkpointer_conn is not None and not _checkpointer_conn.closed:
         try:
             if _pool is not None and not _pool.closed:
-                _pool.putconn(_checkpointer_conn)
+                await _pool.putconn(_checkpointer_conn)
             else:
-                _checkpointer_conn.close()
+                await _checkpointer_conn.close()
         finally:
             _checkpointer_conn = None
     if _pool is not None and not _pool.closed:
-        _pool.close()
+        await _pool.close()
     _pool = None
 
 
-def pg_connect(autocommit: bool = False) -> psycopg.Connection:
-    """
-    Return an open psycopg (v3) connection built from environment variables.
-
-    Reads:  DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
-    Falls back to sensible defaults for all except DB_PASSWORD.
-
-    Parameters
-    ----------
-    autocommit : bool
-        When True the connection operates in autocommit mode, which is
-        required by PostgresSaver (LangGraph checkpoint backend).
-    """
+async def pg_connect(autocommit: bool = False) -> psycopg.AsyncConnection:
+    """Return an open async psycopg connection built from environment variables."""
     config = _db_config()
-    return psycopg.connect(**config, autocommit=autocommit)
+    return await psycopg.AsyncConnection.connect(**config, autocommit=autocommit)
 
 
-def _rollback_if_in_transaction(conn: psycopg.Connection) -> None:
+async def _rollback_if_in_transaction(conn: psycopg.AsyncConnection) -> None:
     if conn.info.transaction_status != psycopg.pq.TransactionStatus.IDLE:
-        conn.rollback()
+        await conn.rollback()
 
 
-@contextlib.contextmanager
-def pg_connection(autocommit: bool = False) -> Iterator[psycopg.Connection]:
+@contextlib.asynccontextmanager
+async def pg_connection(autocommit: bool = False) -> AsyncIterator[psycopg.AsyncConnection]:
     """
-    Acquire a connection from the shared pool when available.
+    Acquire an async connection from the shared pool when available.
 
-    Command-line scripts can still use this before FastAPI startup; in that
-    case it falls back to a short-lived direct connection.
+    Command-line scripts can still use this before FastAPI startup; in that case
+    it falls back to a short-lived direct async connection.
     """
     if _pool is None or _pool.closed:
-        with pg_connect(autocommit=autocommit) as conn:
+        async with await pg_connect(autocommit=autocommit) as conn:
             yield conn
         return
 
-    with _pool.connection() as conn:
-        _rollback_if_in_transaction(conn)
+    async with _pool.connection() as conn:
+        await _rollback_if_in_transaction(conn)
         previous = conn.autocommit
-        conn.autocommit = autocommit
+        await conn.set_autocommit(autocommit)
         try:
             yield conn
             if not conn.autocommit:
-                conn.commit()
+                await conn.commit()
         except Exception:
             if not conn.autocommit:
-                conn.rollback()
+                await conn.rollback()
             raise
         finally:
-            conn.autocommit = previous
+            await conn.set_autocommit(previous)
 
 
-def get_checkpointer() -> PostgresSaver:
+async def get_checkpointer() -> AsyncPostgresSaver:
     """
-    Build and return a PostgresSaver for use as a LangGraph checkpointer.
+    Build and return an AsyncPostgresSaver for use as a LangGraph checkpointer.
 
-    Opens a dedicated autocommit=True connection (required by PostgresSaver),
-    calls setup() to create checkpoint tables on first run (no-op thereafter),
-    and returns the ready-to-use saver.
+    Opens a dedicated autocommit=True connection, calls async setup() to create
+    checkpoint tables on first run, and returns the ready-to-use saver.
 
     The supervisor should call this once and share the returned instance with
     both sub-agents to avoid multiple connections racing on the same tables.
     """
     global _checkpointer_conn
     if _pool is None or _pool.closed:
-        init_db_pool()
+        await init_db_pool()
     if _checkpointer_conn is None or _checkpointer_conn.closed:
-        _checkpointer_conn = _pool.getconn()
-        _checkpointer_conn.autocommit = True
+        _checkpointer_conn = await _pool.getconn()
+        await _checkpointer_conn.set_autocommit(True)
     conn = _checkpointer_conn
-    checkpointer = PostgresSaver(conn)
-    checkpointer.setup()
+    checkpointer = AsyncPostgresSaver(conn)
+    await checkpointer.setup()
     return checkpointer

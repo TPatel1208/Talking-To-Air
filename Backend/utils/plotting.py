@@ -1,4 +1,6 @@
 import logging
+import asyncio
+import httpx
 import requests
 import time
 
@@ -547,6 +549,48 @@ class GeocodingService:
             logger.warning("Geocoding error: %s", e)
         
         return None
+
+    async def ageocode(self, location_name):
+        """Async version of geocode() for agent tools running on the event loop."""
+        if location_name in self.cache:
+            return self.cache[location_name]
+
+        time_since_last = time.time() - self.last_request
+        if time_since_last < 1.0:
+            await asyncio.sleep(1.0 - time_since_last)
+
+        url = "https://nominatim.openstreetmap.org/search"
+        params = {
+            'q': location_name,
+            'format': 'json',
+            'limit': 1,
+            'polygon_geojson': 1,
+        }
+        headers = {'User-Agent': '(Educational project)'}
+
+        self.last_request = time.time()
+
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.get(url, params=params, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+
+            if data:
+                item = data[0]
+                result = {
+                    'latitude': float(item['lat']),
+                    'longitude': float(item['lon']),
+                    'display_name': item['display_name'],
+                    'polygon': item.get('geojson', None),
+                    'bbox': [float(coord) for coord in item.get('boundingbox', [])],
+                }
+                self.cache[location_name] = result
+                return result
+        except Exception as e:
+            logger.warning("Geocoding error: %s", e)
+
+        return None
     
 
 class RegionResolver: 
@@ -615,6 +659,29 @@ class RegionResolver:
         return {
             'geometry': geometry,
             'bounds': geometry.bounds,  # (minx, miny, maxx, maxy)
+            'name': geo_result['display_name']
+        }
+
+    async def aresolve_location(self, location_name: str):
+        """Async version of resolve_location() for agent tool execution."""
+        location_lower = location_name.lower().strip()
+        if location_lower in self.global_regions:
+            return self.global_regions[location_lower]
+
+        geo_result = await self.geocoding_service.ageocode(location_name)
+        if geo_result is None:
+            return None
+
+        if geo_result['polygon']:
+            geometry = shape(geo_result['polygon'])
+        else:
+            lon, lat = geo_result['longitude'], geo_result['latitude']
+            delta = 0.1
+            geometry = box(lon - delta, lat - delta, lon + delta, lat + delta)
+
+        return {
+            'geometry': geometry,
+            'bounds': geometry.bounds,
             'name': geo_result['display_name']
         }
         

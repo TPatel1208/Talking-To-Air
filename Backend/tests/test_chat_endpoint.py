@@ -26,7 +26,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.api.app.state.agent = object()
 
     async def test_chat_streams_done_event(self):
-        def fake_stream_response(agent, message, thread_id):
+        async def fake_stream_response(agent, message, thread_id):
             yield "text", "hello"
 
         transport = self.httpx.ASGITransport(app=self.api.app)
@@ -43,7 +43,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_session_flow_lists_history_and_deletes(self):
         class FakeAgent:
-            def get_state(self, config):
+            async def aget_state(self, config):
                 return SimpleNamespace(
                     values={
                         "messages": [
@@ -55,8 +55,16 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         self.api.app.state.agent = FakeAgent()
         transport = self.httpx.ASGITransport(app=self.api.app)
-        with patch.object(self.api, "list_sessions", return_value=["thread-1"]), \
-             patch.object(self.api, "delete_session") as delete_session:
+        async def fake_list_sessions():
+            return ["thread-1"]
+
+        async def fake_delete_session(thread_id):
+            fake_delete_session.called_with = thread_id
+
+        fake_delete_session.called_with = None
+
+        with patch.object(self.api, "list_sessions", fake_list_sessions), \
+             patch.object(self.api, "delete_session", fake_delete_session):
             async with self.httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",
@@ -75,13 +83,16 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
         self.assertEqual(deleted.json(), {"deleted": "thread-1"})
-        delete_session.assert_called_once_with("thread-1")
+        self.assertEqual(fake_delete_session.called_with, "thread-1")
 
     async def test_chart_export_endpoints_return_downloads(self):
         payload = {"chart_id": "chart-1", "title": "TEMPO over Texas", "export": {"type": "heatmap"}}
 
         transport = self.httpx.ASGITransport(app=self.api.app)
-        with patch.object(self.api, "get_chart", return_value=payload), \
+        async def fake_get_chart(chart_id):
+            return payload
+
+        with patch.object(self.api, "get_chart", fake_get_chart), \
              patch.object(self.api, "_build_chart_csv", return_value="variable,latitude,longitude,value,units\n"), \
              patch.object(self.api, "_build_chart_png", return_value=b"\x89PNG\r\n\x1a\n"):
             async with self.httpx.AsyncClient(

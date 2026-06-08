@@ -1,9 +1,10 @@
 import sys
 import os
+import asyncio
 from langchain.tools import tool
 from typing import Tuple
 import numpy as np
-import requests
+import httpx
 import json
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -213,7 +214,7 @@ COLLECTIONS = {
     },
 }
 @tool
-def geocode_location(location_name: str) -> dict:
+async def geocode_location(location_name: str) -> dict:
     """
     Convert a place name into a bounding box string 'min_lon,min_lat,max_lon,max_lat'.
     Always call this before fetch_environmental_data to get the bbox argument.
@@ -224,7 +225,7 @@ def geocode_location(location_name: str) -> dict:
     Returns:
         dict with keys: location, bbox, center_lat, center_lon.
     """
-    result = _get_geocoder().geocode(location_name)
+    result = await _get_geocoder().ageocode(location_name)
     if result is None:
         return {"error": f"Could not geocode '{location_name}'"}
 
@@ -248,7 +249,7 @@ def geocode_location(location_name: str) -> dict:
 
 
 @tool
-def fetch_environmental_data(
+async def fetch_environmental_data(
     variable: str,
     bbox: str,
     start_date: str,
@@ -305,7 +306,7 @@ def fetch_environmental_data(
     if col.get("supports_variable_subsetting", False):
         fetch_params["variables"] = col["variables"]
     try:
-        ds = _get_data_loader().download_dataset_harmony(**fetch_params)
+        ds = await asyncio.to_thread(_get_data_loader().download_dataset_harmony, **fetch_params)
     except ValueError as e:
         return {"error": str(e)}
     except RuntimeError as e:
@@ -345,7 +346,7 @@ def fetch_environmental_data(
 
 
 @tool
-def check_data_availability(
+async def check_data_availability(
     variable: str,
     bbox: str,
     start_date: str,
@@ -396,12 +397,12 @@ def check_data_availability(
     }
 
     try:
-        resp = requests.get(
-            "https://cmr.earthdata.nasa.gov/search/granules.json",
-            params=params,
-            timeout=15
-        )
-        resp.raise_for_status()
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                "https://cmr.earthdata.nasa.gov/search/granules.json",
+                params=params,
+            )
+            resp.raise_for_status()
 
         total   = int(resp.headers.get('CMR-Hits', 0))
         entries = resp.json().get('feed', {}).get('entry', [])

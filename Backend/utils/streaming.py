@@ -24,15 +24,16 @@ Yields
 """
 
 import re
-from typing import Generator, Optional
+from collections.abc import AsyncGenerator
+from typing import Optional
 
 
-def stream_response(
+async def stream_response(
     agent,
     user_input: str,
     thread_id: str,
     thread_ref: Optional[dict] = None,
-) -> Generator[tuple, None, None]:
+) -> AsyncGenerator[tuple, None]:
     """
     Stream one conversation turn, yielding (event_type, data) tuples.
 
@@ -51,7 +52,7 @@ def stream_response(
 
     config = {"configurable": {"thread_id": thread_id}}
 
-    for stream_mode, chunk in agent.stream(
+    async for stream_mode, chunk in agent.astream(
         {"messages": [{"role": "user", "content": user_input}]},
         config=config,
         stream_mode=["updates", "messages"],

@@ -9,12 +9,13 @@ Memory model
                it passes to each subagent tool.
 """
 import os
+import asyncio
 import calendar
 import logging
 import re
 import sys
 import uuid
-from typing import Callable
+from collections.abc import Awaitable, Callable
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.agents import create_agent
 from langchain.tools import tool
@@ -37,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 # ── Build supervisor ──────────────────────────────────────────────────────────
 
-def build_agent(
+async def build_agent(
     model: str | None = None,
     ground_agent_model: str | None = None,
     satellite_agent_model: str | None = None,
@@ -69,9 +70,9 @@ def build_agent(
     # ── Trim middleware — keeps the supervisor's context window bounded ───────
 
     @wrap_model_call
-    def trim_middleware(
+    async def trim_middleware(
         request: ModelRequest,
-        handler: Callable[[ModelRequest], ModelResponse],
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
         messages = [_compact_model_input_message(msg) for msg in request.state["messages"]]
         trimmed = trim_messages(
@@ -88,12 +89,12 @@ def build_agent(
         # message list if trimming collapses everything.
         if not trimmed:
             trimmed = messages
-        return handler(request.override(messages=trimmed))
+        return await handler(request.override(messages=trimmed))
 
     # ── Wrap subagents as tools ───────────────────────────────────────────────
 
     @tool
-    def ask_ground_sensor_agent(task: str) -> str:
+    async def ask_ground_sensor_agent(task: str) -> str:
         """
         Delegate a task to the ground sensor agent which has access to EPA AQS
         air quality monitor data across the United States.
@@ -109,7 +110,7 @@ def build_agent(
         Output: text summary including monitor name, site_id, coordinates,
                 exceedance dates, and peak concentration values.
         """
-        result = ground_agent.invoke(
+        result = await ground_agent.ainvoke(
             {"messages": [HumanMessage(content=task)]},
             config={"configurable": {"thread_id": str(uuid.uuid4())}},
         )
@@ -121,7 +122,7 @@ def build_agent(
         return agent_result_to_json(AgentResult(text=text))
 
     @tool
-    def ask_satellite_agent(task: str) -> str:
+    async def ask_satellite_agent(task: str) -> str:
         """
         Delegate a task to the satellite agent which has access to NASA
         satellite data via NASA Harmony (TROPOMI NO2, aerosol optical depth,
@@ -136,12 +137,12 @@ def build_agent(
                (e.g. 'Plot TROPOMI NO2 over New Jersey for 2024-01-15').
         Output: text summary with plot path and spatial statistics.
         """
-        def _run_satellite(task_text: str) -> AgentResult:
+        async def _run_satellite(task_text: str) -> AgentResult:
             charts = []
             text_parts  = []
 
             try:
-                for event_type, data in stream_response(
+                async for event_type, data in stream_response(
                     satellite_agent, task_text, thread_id=str(uuid.uuid4())
                 ):
                     if event_type == "tool_result":
@@ -168,11 +169,11 @@ def build_agent(
             ) or "Satellite agent returned no response."
             return AgentResult(text=text, charts=charts)
 
-        direct_first = _try_direct_satellite_plot(task)
+        direct_first = await _try_direct_satellite_plot(task)
         if direct_first is not None:
             return agent_result_to_json(direct_first)
 
-        result = _run_satellite(task)
+        result = await _run_satellite(task)
         refusal_markers = (
             "necessary tools are not present",
             "don't have access to fetch_environmental_data",
@@ -189,19 +190,19 @@ def build_agent(
                 "find_daily_peak. Retry the task using those tools exactly as needed. "
                 f"Task: {task}"
             )
-            result = _run_satellite(retry_task)
+            result = await _run_satellite(retry_task)
             if (
                 any(marker in result.text.lower() for marker in refusal_markers)
                 or not result.charts
             ):
-                fallback = _try_direct_satellite_plot(task)
+                fallback = await _try_direct_satellite_plot(task)
                 if fallback is not None:
                     result = fallback
 
         return agent_result_to_json(result)
 
     # ── Build supervisor ──────────────────────────────────────────────────────
-    checkpointer = get_checkpointer()
+    checkpointer = await get_checkpointer()
     supervisor = create_agent(
         model=llm,
         tools=[ask_ground_sensor_agent, ask_satellite_agent],
@@ -313,7 +314,7 @@ def _chart_summary(chart) -> str:
     return ", ".join(bits)
 
 
-def _try_direct_satellite_plot(task: str) -> AgentResult | None:
+async def _try_direct_satellite_plot(task: str) -> AgentResult | None:
     """
     Deterministic fallback for simple one-location satellite plot requests.
 
@@ -344,13 +345,13 @@ def _try_direct_satellite_plot(task: str) -> AgentResult | None:
             plot_singular,
         )
 
-        geocoded = geocode_location.invoke({"location_name": location})
+        geocoded = await geocode_location.ainvoke({"location_name": location})
         if isinstance(geocoded, dict) and geocoded.get("error"):
             return AgentResult(text=geocoded["error"])
         bbox = geocoded["bbox"]
         logger.info("Direct satellite plot fallback: geocoded bbox=%s", bbox)
 
-        availability = check_data_availability.invoke({
+        availability = await check_data_availability.ainvoke({
             "variable": variable,
             "bbox": bbox,
             "start_date": start_date,
@@ -373,7 +374,7 @@ def _try_direct_satellite_plot(task: str) -> AgentResult | None:
             )
 
         logger.info("Direct satellite plot fallback: calling fetch_environmental_data")
-        data = fetch_environmental_data.invoke({
+        data = await fetch_environmental_data.ainvoke({
             "variable": variable,
             "bbox": bbox,
             "start_date": start_date,
@@ -386,7 +387,7 @@ def _try_direct_satellite_plot(task: str) -> AgentResult | None:
         plot_data = data.model_dump() if hasattr(data, "model_dump") else data
 
         title = f"{variable} over {location}"
-        chart_result = plot_singular.invoke({
+        chart_result = await plot_singular.ainvoke({
             "data_dict": plot_data,
             "variable": variable,
             "location": location,
@@ -465,32 +466,33 @@ def _parse_simple_satellite_plot_task(task: str):
 
 # ── list_sessions, delete_session ─────────────────────────────────────────────
 
-def list_sessions() -> list[str]:
+async def list_sessions() -> list[str]:
     """Return all supervisor session thread_ids (subagent threads no longer exist)."""
-    with pg_connection() as conn:
-        rows = conn.execute(
+    async with pg_connection() as conn:
+        cursor = await conn.execute(
             "SELECT DISTINCT thread_id FROM checkpoints ORDER BY thread_id"
-        ).fetchall()
+        )
+        rows = await cursor.fetchall()
     return [r[0] for r in rows]
 
 
-def delete_session(thread_id: str):
+async def delete_session(thread_id: str):
     """Delete a supervisor session from the checkpoint tables."""
-    delete_charts_for_session(thread_id)
-    with pg_connection() as conn:
+    await delete_charts_for_session(thread_id)
+    async with pg_connection() as conn:
         for table in ("checkpoint_writes", "checkpoint_blobs", "checkpoints"):
-            conn.execute(
+            await conn.execute(
                 f"DELETE FROM {table} WHERE thread_id = %s", (thread_id,)
             )
-        conn.commit()
+        await conn.commit()
 
 
 # ── Standalone test ───────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    agent = build_agent()
+    agent = asyncio.run(build_agent())
 
-    sessions = list_sessions()
+    sessions = asyncio.run(list_sessions())
     print("Existing sessions:", sessions or "none")
 
     thread_id = input("Enter session ID to resume (or press Enter for new): ").strip()
