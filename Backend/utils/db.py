@@ -14,6 +14,7 @@ from collections.abc import AsyncIterator
 
 import psycopg
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from config.settings import get_settings
@@ -21,7 +22,8 @@ from config.settings import get_settings
 logger = logging.getLogger(__name__)
 
 _pool: AsyncConnectionPool | None = None
-_checkpointer_conn: psycopg.AsyncConnection | None = None
+_checkpointer_pool: AsyncConnectionPool | None = None
+_checkpointer: AsyncPostgresSaver | None = None
 
 
 def _db_config() -> dict:
@@ -53,15 +55,12 @@ async def init_db_pool() -> AsyncConnectionPool:
 
 async def close_db_pool() -> None:
     """Close shared database resources on application shutdown."""
-    global _pool, _checkpointer_conn
-    if _checkpointer_conn is not None and not _checkpointer_conn.closed:
-        try:
-            if _pool is not None and not _pool.closed:
-                await _pool.putconn(_checkpointer_conn)
-            else:
-                await _checkpointer_conn.close()
-        finally:
-            _checkpointer_conn = None
+    global _pool, _checkpointer_pool, _checkpointer
+    _checkpointer = None
+    if _checkpointer_pool is not None and not _checkpointer_pool.closed:
+        await _checkpointer_pool.close()
+        logger.info("checkpointer_pool_closed")
+    _checkpointer_pool = None
     if _pool is not None and not _pool.closed:
         await _pool.close()
     _pool = None
@@ -111,19 +110,44 @@ async def get_checkpointer() -> AsyncPostgresSaver:
     """
     Build and return an AsyncPostgresSaver for use as a LangGraph checkpointer.
 
-    Opens a dedicated autocommit=True connection, calls async setup() to create
-    checkpoint tables on first run, and returns the ready-to-use saver.
+    Uses a dedicated one-connection async pool instead of retaining a raw
+    PostgreSQL connection. The pool owns reconnection behavior after transient
+    database failures and prevents a stale module-level connection from
+    permanently breaking checkpoint persistence.
 
     The supervisor should call this once and share the returned instance with
     both sub-agents to avoid multiple connections racing on the same tables.
     """
-    global _checkpointer_conn
-    if _pool is None or _pool.closed:
-        await init_db_pool()
-    if _checkpointer_conn is None or _checkpointer_conn.closed:
-        _checkpointer_conn = await _pool.getconn()
-        await _checkpointer_conn.set_autocommit(True)
-    conn = _checkpointer_conn
-    checkpointer = AsyncPostgresSaver(conn)
-    await checkpointer.setup()
-    return checkpointer
+    global _checkpointer_pool, _checkpointer
+    if _checkpointer is not None and _checkpointer_pool is not None and not _checkpointer_pool.closed:
+        return _checkpointer
+
+    if _checkpointer_pool is not None and _checkpointer_pool.closed:
+        logger.warning("checkpointer_pool_closed_reinitializing")
+        _checkpointer_pool = None
+        _checkpointer = None
+
+    if _checkpointer_pool is None:
+        _checkpointer_pool = AsyncConnectionPool(
+            kwargs={**_db_config(), "autocommit": True, "row_factory": dict_row},
+            min_size=1,
+            max_size=1,
+            open=False,
+            check=AsyncConnectionPool.check_connection,
+        )
+        await _checkpointer_pool.open()
+        logger.info("checkpointer_pool_initialized", extra={"_min_size": 1, "_max_size": 1})
+
+    # Use a local variable so a failed setup() never caches a broken instance.
+    # Assigning to _checkpointer only after setup() succeeds means a subsequent
+    # call will retry pool creation rather than returning a partially-initialized
+    # saver.
+    checkpointer = AsyncPostgresSaver(conn=_checkpointer_pool)
+    try:
+        await checkpointer.setup()
+    except Exception:
+        logger.exception("checkpointer_setup_failed")
+        raise
+    _checkpointer = checkpointer
+    logger.info("checkpointer_initialized")
+    return _checkpointer

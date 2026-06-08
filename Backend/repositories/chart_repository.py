@@ -32,7 +32,6 @@ async def ensure_chart_table() -> None:
 
 
 async def save_chart(thread_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    await ensure_chart_table()
     stored_payload = dict(payload)
     chart_id = stored_payload.get("chart_id")
     if not chart_id:
@@ -58,7 +57,6 @@ async def save_chart(thread_id: str, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 async def get_chart(chart_id: str) -> dict[str, Any] | None:
-    await ensure_chart_table()
     async with pg_connection() as conn:
         cursor = await conn.execute(
             "SELECT payload FROM agent_charts WHERE id = %s",
@@ -69,7 +67,6 @@ async def get_chart(chart_id: str) -> dict[str, Any] | None:
 
 
 async def delete_charts_for_session(thread_id: str) -> None:
-    await ensure_chart_table()
     async with pg_connection() as conn:
         await conn.execute("DELETE FROM agent_charts WHERE thread_id = %s", (thread_id,))
         await conn.commit()

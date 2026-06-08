@@ -682,6 +682,7 @@ class RegionResolver:
     async def aresolve_location(self, location_name: str):
         """Async version of resolve_location() for agent tool execution."""
         location_lower = location_name.lower().strip()
+        location_lower = location_lower.removeprefix('the ')
         if location_lower in self.global_regions:
             return self.global_regions[location_lower]
 
