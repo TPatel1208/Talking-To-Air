@@ -11,10 +11,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from utils.data_utils import _load_data
 from utils.plotting import _normalize_to_2d, mask_data_by_geometry, RegionResolver
+from preprocessing.aggregation_service import AggregationService
 from tools.satellite_tools.harmony_api import COLLECTIONS
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "outputs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 _resolver = RegionResolver()
+_aggregation_service = AggregationService()
 
 VALID_STATS = {"mean", "median", "max", "min", "std"}
 
@@ -56,8 +58,6 @@ def compute_statistic_tool(
     except Exception as e:
         return json.dumps({"error": f"Failed to load data: {e}"})
 
-    da = _normalize_to_2d(da)
-
     # --- 2. Mask to region ---
     region = _resolver.resolve_location(location)
     if region is None:
@@ -65,33 +65,27 @@ def compute_statistic_tool(
 
     da = mask_data_by_geometry(da, region['geometry'])
 
-    # --- 3. Extract valid pixels ---'
     var = _get(data_dict, "variable", "")
     col_info = COLLECTIONS.get(var, {})
+    try:
+        aggregation = _aggregation_service.aggregate(
+            da,
+            variable=var,
+            stat="mean",
+            col_info=col_info,
+        )
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+    da = next(iter(aggregation.ds.data_vars.values()))
+    da = _normalize_to_2d(da)
+
     values = da.values
-    fill_value = col_info.get("fill_value", -1.267651e+30)
-    max_valid  = col_info.get("valid_max",   1e18)
-    min_valid  = col_info.get("valid_min",  -1e15)
-    valid = values[
-        (~np.isnan(values)) &
-        (values > fill_value * 0.5) &  
-        (values > min_valid) &              
-        (values < max_valid)              
-    ]
+    valid = values[np.isfinite(values)]
     if len(valid) == 0:
         return json.dumps({
             "error": f"No valid data found for '{location}'. "
                      "The region may be outside the data bbox."
         })
-
-    # --- 4. Compute requested stats ---
-    stat_fns = {
-        "mean":   lambda v: float(np.mean(v)),
-        "median": lambda v: float(np.median(v)),
-        "max":    lambda v: float(np.max(v)),
-        "min":    lambda v: float(np.min(v)),
-        "std":    lambda v: float(np.std(v)),
-    }
 
     invalid_stats = [s for s in stats if s not in VALID_STATS]
     if invalid_stats:
@@ -103,9 +97,10 @@ def compute_statistic_tool(
         "units":    _get(data_dict, "units", ""),
         "n_pixels": int(len(valid)),
         "times":    list(_get(data_dict, "times", [])),
+        "aggregation_meta": aggregation.meta,
     }
     for s in stats:
-        result[s] = stat_fns[s](valid)
+        result[s] = _aggregation_service.compute_values_stat(valid, s)
 
     return json.dumps(result)
 
@@ -137,8 +132,6 @@ def find_daily_peak(
     except Exception as e:
         return json.dumps({"error": f"Failed to load data: {e}"})
 
-    da = _normalize_to_2d(da)
-
     # Mask to region
     region = _resolver.resolve_location(location)
     if region is None:
@@ -152,6 +145,20 @@ def find_daily_peak(
     before_valid = int(np.sum(np.isfinite(da_before.values)))
     after_valid  = int(np.sum(np.isfinite(da.values)))
 
+    var = _get(data_dict, "variable", "")
+    col_info = COLLECTIONS.get(var, {})
+    try:
+        aggregation = _aggregation_service.aggregate(
+            da,
+            variable=var,
+            stat="mean",
+            col_info=col_info,
+        )
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+    da = next(iter(aggregation.ds.data_vars.values()))
+    da = _normalize_to_2d(da)
+
     # Resolve dim names and positions early
     lat_dim = next((d for d in da.dims if d.lower() in ['lat', 'latitude']), None)
     lon_dim = next((d for d in da.dims if d.lower() in ['lon', 'longitude']), None)
@@ -164,18 +171,8 @@ def find_daily_peak(
     lon_array = da[lon_dim].values
 
     # Filter
-    var        = _get(data_dict, "variable", "")
-    col_info   = COLLECTIONS.get(var, {})
-    fill_value = col_info.get("fill_value", -1.267651e+30)
-    max_valid  = col_info.get("valid_max",   1e18)
-    min_valid  = col_info.get("valid_min",  -1e15)
     values     = da.values
-    valid_mask = (
-        np.isfinite(values) &
-        (values != fill_value) &
-        (values > min_valid) &
-        (values < max_valid)
-    )
+    valid_mask = np.isfinite(values)
     valid_count = int(np.sum(valid_mask))
 
     if not np.any(valid_mask):
@@ -214,6 +211,7 @@ def find_daily_peak(
         "peak_value": peak_val,
         "peak_lat":   peak_lat,
         "peak_lon":   peak_lon,
+        "aggregation_meta": aggregation.meta,
     })
     return result
 

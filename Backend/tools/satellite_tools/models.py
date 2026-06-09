@@ -26,6 +26,8 @@ class DataDict(BaseModel):
                                                     description="ISO timestamps of available granules")
     n_granules:   int                       = Field(default=0,
                                                     description="Number of granules found")
+    cadence:      str                       = Field(default="daily",
+                                                    description="Temporal cadence: hourly, daily, or monthly")
     source:       str                       = Field(default="",
                                                     description="Human-readable data source label")
     fetch_params: Optional[Dict[str, Any]]  = Field(default=None,

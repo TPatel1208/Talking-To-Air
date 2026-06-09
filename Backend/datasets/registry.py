@@ -21,7 +21,7 @@ import math
 import pathlib
 import logging
 from functools import lru_cache
-from typing import Optional
+from typing import Literal, Optional
 
 import yaml
 from pydantic import BaseModel, field_validator, model_validator
@@ -37,6 +37,7 @@ class CollectionConfig(BaseModel):
     short_name:    str = ""
     version:       str = ""
     description:   str = ""
+    cadence:       Literal["hourly", "daily", "monthly"] = "daily"
 
     # ── Variable selection ────────────────────────────────────────────────
     primary_var:                 str

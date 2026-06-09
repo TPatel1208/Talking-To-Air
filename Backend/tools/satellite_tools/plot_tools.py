@@ -54,9 +54,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from utils.data_utils import _load_data
 from utils.plotting import _normalize_to_2d, mask_data_by_geometry, RegionResolver
+from preprocessing.aggregation_service import AggregationService
 from tools.satellite_tools.harmony_api import COLLECTIONS
 
 _resolver = RegionResolver()
+_aggregation_service = AggregationService()
 
 
 def _sel_bounds(da, lat_coord, lon_coord, bounds):
@@ -111,7 +113,8 @@ _MAX_GRID_CELLS = 8_000   # match the frontend MAX_POINTS constant
 def _normalize_longitudes(da, lon_coord):
     """Convert 0..360 longitude coordinates to -180..180 and keep them sorted."""
     lon_vals = np.asarray(da[lon_coord].values)
-    if lon_vals.size == 0 or np.nanmin(lon_vals) < 0 or np.nanmax(lon_vals) <= 180:
+    finite_lons = lon_vals[np.isfinite(lon_vals)]
+    if finite_lons.size == 0 or finite_lons.min() < 0 or finite_lons.max() <= 180:
         return da
 
     normalized = ((lon_vals + 180) % 360) - 180
@@ -271,10 +274,10 @@ def _query_definition(data_dict, aggregation: str, chart_parameters: dict | None
     return {k: v for k, v in query.items() if v not in (None, "", [])}
 
 
-def _provenance(data_dict, region_name: str, aggregation: str) -> dict:
+def _provenance(data_dict, region_name: str, aggregation: str, agg_meta: dict | None = None) -> dict:
     variable = _get(data_dict, "variable", "")
     query = _query_definition(data_dict, aggregation)
-    return {
+    provenance = {
         "dataset": query.get("mission") or _dataset_label(variable),
         "variable": variable,
         "start_date": query.get("start_date"),
@@ -284,12 +287,20 @@ def _provenance(data_dict, region_name: str, aggregation: str) -> dict:
         "aggregation": aggregation,
         "source": _get(data_dict, "source") or "NASA Harmony endpoint",
         "endpoint": "NASA Harmony endpoint",
+        "fetch_params": _get(data_dict, "fetch_params") or {},
     }
+    if agg_meta:
+        provenance["aggregation"] = agg_meta["aggregation_label"]
+        provenance["n_granules"] = agg_meta["n_granules"]
+        provenance["cadence"] = agg_meta["cadence"]
+        provenance["granule_dates"] = agg_meta["granule_dates"]
+    return provenance
 
 
-def _attach_reproducibility(payload: dict, data_dict, region_name: str, aggregation: str, chart_parameters: dict | None = None) -> dict:
-    payload["provenance"] = _provenance(data_dict, region_name, aggregation)
-    payload["query"] = _query_definition(data_dict, aggregation, chart_parameters)
+def _attach_reproducibility(payload: dict, data_dict, region_name: str, aggregation: str, chart_parameters: dict | None = None, agg_meta: dict | None = None) -> dict:
+    aggregation_label = agg_meta["aggregation_label"] if agg_meta else aggregation
+    payload["provenance"] = _provenance(data_dict, region_name, aggregation_label, agg_meta)
+    payload["query"] = _query_definition(data_dict, aggregation_label, chart_parameters)
     payload["export"] = {
         "type": payload.get("type"),
         "variable": _get(data_dict, "variable", ""),
@@ -297,9 +308,13 @@ def _attach_reproducibility(payload: dict, data_dict, region_name: str, aggregat
         "source": _get(data_dict, "source", ""),
         "fetch_params": _get(data_dict, "fetch_params") or {},
         "region_name": region_name,
-        "aggregation": aggregation,
+        "aggregation": aggregation_label,
+        "aggregation_meta": agg_meta or payload.get("aggregation_meta") or {},
         "chart_parameters": chart_parameters or {},
     }
+    if agg_meta:
+        payload["query"]["aggregation"] = agg_meta["aggregation_label"]
+    payload.setdefault("fetch_params", _get(data_dict, "fetch_params") or {})
     return payload
 
 @tool
@@ -327,8 +342,6 @@ async def plot_singular(data_dict: Annotated[dict, Field(description="The comple
     except Exception as e:
         return json.dumps({"error": f"Failed to load data: {e}"})
 
-    da = _normalize_to_2d(da)
-
     region = await _resolver.aresolve_location(location)
     if region is None:
         return json.dumps({"error": f"Could not geocode location: '{location}'"})
@@ -347,18 +360,36 @@ async def plot_singular(data_dict: Annotated[dict, Field(description="The comple
 
     col    = COLLECTIONS.get(variable.upper(), {})
     units  = _get(data_dict, "units") or col.get("units", "")
-    resolved_title = title or f"{variable} over {region['name']}"
+    aggregation = _aggregation_service.aggregate(
+        da,
+        variable=_get(data_dict, "variable", variable),
+        stat="mean",
+        col_info=col,
+    )
+    da = next(iter(aggregation.ds.data_vars.values()))
+    da = _normalize_to_2d(da)
+    agg_meta = aggregation.meta
+    is_aggregated = agg_meta["n_granules"] > 1
+    if title:
+        resolved_title = title
+    elif is_aggregated:
+        resolved_title = f"{variable} {agg_meta['title_suffix']} over {region['name']}"
+    else:
+        resolved_title = f"{variable} over {region['name']}"
 
     try:
         payload = _da_to_heatmap_payload(da, resolved_title, variable, units)
         payload["cmap"]   = cmap or "Spectral_r"
         payload["bounds"] = list(region["bounds"])  # (minx, miny, maxx, maxy)
+        payload["aggregation_meta"] = agg_meta
+        payload["is_aggregated"] = is_aggregated
         _attach_reproducibility(
             payload,
             data_dict,
             region["name"],
-            "single snapshot",
+            agg_meta["aggregation_label"] if is_aggregated else "single snapshot",
             {"chart_type": "heatmap", "cmap": payload["cmap"], "location": location},
+            agg_meta,
         )
     except Exception as e:
         return json.dumps({"error": f"Failed to build chart payload: {e}"})
@@ -402,8 +433,6 @@ async def plot_multiple(
         except Exception as e:
             return json.dumps({"error": f"Failed to load data for '{location}': {e}"})
 
-        da = _normalize_to_2d(da)
-
         region = await _resolver.aresolve_location(location)
         if region is None:
             return json.dumps({"error": f"Could not geocode location: '{location}'"})
@@ -424,15 +453,27 @@ async def plot_multiple(
         units = _get(data_dict, "units") or col.get("units", "")
 
         try:
+            aggregation = _aggregation_service.aggregate(
+                da,
+                variable=_get(data_dict, "variable", variable),
+                stat="mean",
+                col_info=col,
+            )
+            da = next(iter(aggregation.ds.data_vars.values()))
+            da = _normalize_to_2d(da)
+            agg_meta = aggregation.meta
             panel = _da_to_heatmap_payload(da, region["name"], variable, units)
             panel["cmap"]   = cmap or "Spectral_r"
             panel["bounds"] = list(region["bounds"])
+            panel["aggregation_meta"] = agg_meta
+            panel["is_aggregated"] = agg_meta["n_granules"] > 1
             _attach_reproducibility(
                 panel,
                 data_dict,
                 region["name"],
-                "single snapshot",
+                agg_meta["aggregation_label"] if agg_meta["n_granules"] > 1 else "single snapshot",
                 {"chart_type": "heatmap", "cmap": panel["cmap"], "location": location},
+                agg_meta,
             )
         except Exception as e:
             return json.dumps({"error": f"Failed to build panel for '{location}': {e}"})
@@ -509,38 +550,21 @@ async def conduct_temporal_statistic(
     da = _sel_bounds(da, lat_coord, lon_coord, bounds
     )
 
-    var        = _get(data_dict, "variable", "")
-    col_info   = COLLECTIONS.get(var, {})
-    fill_value = col_info.get("fill_value", -1.267651e+30)
-    max_valid  = col_info.get("valid_max", 1e18)
-    min_valid  = col_info.get("valid_min", -1e15)
-
-    stat_fn = {
-        "mean":   np.nanmean,
-        "median": np.nanmedian,
-        "max":    np.nanmax,
-        "min":    np.nanmin,
-        "std":    np.nanstd,
-    }.get(stat)
-
-    if stat_fn is None:
+    var = _get(data_dict, "variable", "")
+    if stat not in AggregationService._STAT_FUNCS:
         return json.dumps({"error": f"Unknown stat '{stat}'. Use: mean, median, max, min, std"})
 
     times, values = [], []
     for i in range(da.sizes["time"]):
         slice_2d = da.isel(time=i).values
-        valid = slice_2d[
-            np.isfinite(slice_2d) &
-            (slice_2d != fill_value) &
-            (slice_2d > min_valid) &
-            (slice_2d < max_valid)
-        ]
-        if len(valid) == 0:
+        try:
+            value = _aggregation_service.compute_values_stat(slice_2d, stat)
+        except ValueError:
             continue
         raw_time = da["time"].values[i]
         timestamp = pd.Timestamp(raw_time).isoformat()
         times.append(timestamp)
-        values.append(round(float(stat_fn(valid)), 6))
+        values.append(round(float(value), 6))
 
     if not times:
         return json.dumps({"error": f"No valid data found for '{location}' across any time step."})

@@ -93,7 +93,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
             return payload
 
         with patch.object(self.api, "get_chart", fake_get_chart), \
-             patch.object(self.api, "_build_chart_csv", return_value="variable,latitude,longitude,value,units\n"), \
+             patch.object(self.api, "_iter_chart_csv_chunks", return_value=iter([b"variable,latitude,longitude,value,units\n"])), \
              patch.object(self.api, "_build_chart_png", return_value=b"\x89PNG\r\n\x1a\n"):
             async with self.httpx.AsyncClient(
                 transport=transport,
@@ -105,6 +105,8 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(csv_response.status_code, 200)
         self.assertEqual(csv_response.headers["content-type"], "text/csv; charset=utf-8")
         self.assertIn("tempo-over-texas.csv", csv_response.headers["content-disposition"])
+        self.assertEqual(csv_response.headers["x-accel-buffering"], "no")
+        self.assertEqual(csv_response.content, b"variable,latitude,longitude,value,units\n")
         self.assertEqual(png_response.status_code, 200)
         self.assertEqual(png_response.headers["content-type"], "image/png")
         self.assertEqual(png_response.content, b"\x89PNG\r\n\x1a\n")

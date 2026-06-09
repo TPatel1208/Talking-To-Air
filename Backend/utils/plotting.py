@@ -148,10 +148,11 @@ def plot_map(
                     vmax = np.percentile(valid_data, 98)
         else:
             # Fallback to min/max
+            finite_values = data_array.values[np.isfinite(data_array.values)]
             if vmin is None:
-                vmin = np.nanmin(data_array.values)
+                vmin = np.min(finite_values) if len(finite_values) else 0.0
             if vmax is None:
-                vmax = np.nanmax(data_array.values)
+                vmax = np.max(finite_values) if len(finite_values) else 1.0
     
     # --- 3. Calculate figure size based on extent aspect ratio ---
     if extent:

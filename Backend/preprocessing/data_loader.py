@@ -177,6 +177,7 @@ class DataLoader:
         cached_in_memory = self._memory_cache.get(memory_key)
         if cached_in_memory is not None:
             self._memory_cache.move_to_end(memory_key)
+            self._ensure_granule_attrs(cached_in_memory, collection_id)
             logger.info(
                 "cache_hit",
                 extra={"_tier": "memory", "_collection_id": collection_id, "_group_key": memory_key},
@@ -190,6 +191,7 @@ class DataLoader:
         )
         if cached is not None:
             logger.info("cache_hit", extra={"_collection_id": collection_id})
+            self._ensure_granule_attrs(cached, collection_id)
             self._remember_dataset(memory_key, cached)
             return cached
 
@@ -215,6 +217,7 @@ class DataLoader:
             max_results=max_results,
             output_format=output_format,
         )
+        self._ensure_granule_attrs(ds, collection_id)
 
         logger.info("Fetch complete in %.2fs", time.time() - t0)
 
@@ -228,6 +231,13 @@ class DataLoader:
         self._memory_cache.move_to_end(key)
         while len(self._memory_cache) > _MEMORY_CACHE_MAX_ITEMS:
             self._memory_cache.popitem(last=False)
+
+    def _ensure_granule_attrs(self, ds: xr.Dataset, collection_id: str) -> None:
+        col = getattr(self, "_registry_by_id", {}).get(collection_id)
+        if "n_granules" not in ds.attrs:
+            ds.attrs["n_granules"] = int(ds.sizes.get("time", 1) or 1)
+        if "cadence" not in ds.attrs:
+            ds.attrs["cadence"] = col.cadence if col else "daily"
 
     # ─────────────────────────────────────────────────────────────────────────
     # Routing
@@ -408,6 +418,10 @@ class DataLoader:
             if not valid:
                 raise RuntimeError("No Harmony granules had a time coordinate")
             combined = xr.concat(valid, dim="time")
+
+        col = self._registry_by_id.get(collection_id)
+        combined.attrs["n_granules"] = len(datasets)
+        combined.attrs["cadence"] = col.cadence if col else "daily"
 
         for coord in combined.coords:
             combined[coord].attrs.pop("units", None)

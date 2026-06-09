@@ -26,6 +26,7 @@ OMI_NO2:
   short_name: OMI_MINDS_NO2d
   version: "1.1"
   description: OMI NO2 tropospheric column
+  cadence: daily
   primary_var: ColumnAmountNO2TropCloudScreened
   quality_flag_var: null
   variables:
@@ -45,6 +46,7 @@ TROPOMI_NO2:
   short_name: HAQ_TROPOMI_NO2_GLOBAL_M_L3
   version: "2.4"
   description: Tropomi NO2 monthly mean
+  cadence: monthly
   primary_var: Tropospheric_NO2
   quality_flag_var: null
   variables:
@@ -62,6 +64,7 @@ TEMPO_NO2:
   short_name: TEMPO_NO2_L3
   version: V04
   description: TEMPO tropospheric NO2 vertical column
+  cadence: hourly
   primary_var: vertical_column_troposphere
   quality_flag_var: main_data_quality_flag
   variables:
@@ -82,6 +85,7 @@ TEMPO_O3TOT:
   short_name: TEMPO_O3TOT_L3
   version: V04
   description: TEMPO Level 3 total ozone column
+  cadence: hourly
   primary_var: column_amount_o3
   quality_flag_var: null
   variables:
@@ -104,6 +108,7 @@ OMI_O3:
   short_name: OMDOAO3e
   version: "003"
   description: OMI daily total ozone column
+  cadence: daily
   primary_var: ColumnAmountO3
   quality_flag_var: null
   variables: []
@@ -121,6 +126,7 @@ TEMPO_HCHO:
   short_name: TEMPO_HCHO_L3
   version: V04
   description: TEMPO formaldehyde (HCHO) vertical column
+  cadence: hourly
   primary_var: vertical_column
   quality_flag_var: main_data_quality_flag
   variables:
@@ -140,6 +146,7 @@ TEMPO_HCHO_V03:
   short_name: TEMPO_HCHO_L3
   version: V03
   description: TEMPO formaldehyde (HCHO) vertical column (V03)
+  cadence: hourly
   primary_var: vertical_column
   quality_flag_var: main_data_quality_flag
   variables:
@@ -159,6 +166,7 @@ OMI_HCHO:
   short_name: OMHCHOd
   version: "003"
   description: OMI HCHO total column daily
+  cadence: daily
   primary_var: column_amount
   quality_flag_var: data_quality_flag
   variables: []
@@ -178,6 +186,7 @@ MODIS_AOD_TERRA:
   short_name: AER_DBDT_D10KM_L3_MODIS_TERRA
   version: "001"
   description: MODIS Terra AOD at 550nm combined Dark Target + Deep Blue
+  cadence: daily
   primary_var: COMBINE_AOD_550_AVG
   quality_flag_var: null
   variables: []
@@ -193,6 +202,7 @@ MODIS_AOD_AQUA:
   short_name: AER_DBDT_D10KM_L3_MODIS_AQUA
   version: "001"
   description: MODIS Aqua AOD at 550nm combined Dark Target + Deep Blue
+  cadence: daily
   primary_var: COMBINE_AOD_550_AVG
   quality_flag_var: null
   variables: []

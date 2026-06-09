@@ -143,6 +143,8 @@ async def fetch_environmental_data(
         times = [str(t) for t in ds.time.values] if "time" in ds.coords else []
     except Exception:
         times = []
+    n_granules = int(ds.attrs.get("n_granules", len(times) or 1))
+    cadence = str(ds.attrs.get("cadence", col.get("cadence", "daily")))
 
     # Build a clean, JSON-safe fetch_params for storage on DataDict.
     # The internal fetch_params (used above for download) contains tuples
@@ -164,7 +166,8 @@ async def fetch_environmental_data(
         units=col["units"],
         bbox=bbox,
         times=times,
-        n_granules=len(times) or 1,
+        n_granules=n_granules,
+        cadence=cadence,
         source=f"NASA Harmony — {col['description']}",
         fetch_params=serialisable_fetch_params,
     )

@@ -12,6 +12,7 @@ import io
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
@@ -56,6 +57,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Talking to Air API", lifespan=lifespan)
 origins = settings.cors_origins
 
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -123,9 +125,10 @@ def _export_lat_lon_names(da):
 
 
 def _export_data_array(export: dict, collapse_to_2d: bool = True):
+    from preprocessing.aggregation_service import AggregationService
     from tools.satellite_tools.plot_tools import _normalize_longitudes, _sel_bounds
     from utils.data_utils import _load_data
-    from utils.plotting import RegionResolver, _normalize_to_2d, mask_data_by_geometry
+    from utils.plotting import RegionResolver, mask_data_by_geometry
 
     da = _load_data(_export_data_dict(export))
     lat_coord, lon_coord = _export_lat_lon_names(da)
@@ -150,7 +153,12 @@ def _export_data_array(export: dict, collapse_to_2d: bool = True):
         da = _sel_bounds(da, lat_coord, lon_coord, bounds)
 
     if collapse_to_2d:
-        da = _normalize_to_2d(da)
+        aggregation = AggregationService().aggregate(
+            da,
+            variable=export.get("variable") or (export.get("fetch_params") or {}).get("variable"),
+            stat=(export.get("aggregation_meta") or {}).get("stat", "mean"),
+        )
+        da = next(iter(aggregation.ds.data_vars.values()))
         lat_coord, lon_coord = _export_lat_lon_names(da)
         if da.dims.index(lat_coord) != 0:
             da = da.transpose(lat_coord, lon_coord)
@@ -158,7 +166,7 @@ def _export_data_array(export: dict, collapse_to_2d: bool = True):
     return da
 
 
-def _write_heatmap_csv(writer, export: dict, panel_name: str | None = None) -> None:
+def _iter_heatmap_csv_rows(export: dict, panel_name: str | None = None):
     import numpy as np
 
     da = _export_data_array(export, collapse_to_2d=True)
@@ -180,26 +188,114 @@ def _write_heatmap_csv(writer, export: dict, panel_name: str | None = None) -> N
             float(values[row_idx, col_idx]),
             units,
         ])
-        writer.writerow(row)
+        yield row
+
+
+def _write_heatmap_csv(writer, export: dict, panel_name: str | None = None) -> None:
+    writer.writerows(_iter_heatmap_csv_rows(export, panel_name))
+
+
+def _unique_headers(values: list[str]) -> list[str]:
+    counts: dict[str, int] = {}
+    headers = []
+    for value in values:
+        base = value or "granule"
+        counts[base] = counts.get(base, 0) + 1
+        headers.append(base if counts[base] == 1 else f"{base}_{counts[base]}")
+    return headers
+
+
+def _iter_aggregated_heatmap_csv_rows(export: dict, panel_name: str | None = None):
+    import numpy as np
+    import pandas as pd
+    from preprocessing.aggregation_service import AggregationService
+
+    da = _export_data_array(export, collapse_to_2d=False)
+    lat_coord, lon_coord = _export_lat_lon_names(da)
+    if "time" not in da.dims:
+        yield from _iter_heatmap_csv_rows(export, panel_name)
+        return
+
+    meta = export.get("aggregation_meta") or {}
+    granule_dates = list(meta.get("granule_dates") or [])
+    if not granule_dates:
+        granule_dates = [pd.Timestamp(v).isoformat()[:10] for v in da["time"].values]
+
+    cap = settings.csv_export_max_granules
+    capped = len(granule_dates) > cap
+    granule_dates = granule_dates[:cap]
+    granule_headers = _unique_headers(granule_dates)
+
+    if capped:
+        yield [f"# CSV granule columns capped at {cap}; additional granules omitted."]
+
+    header = []
+    if panel_name is not None:
+        header.append("panel")
+    header.extend(["variable", "latitude", "longitude", *granule_headers, "mean", "units"])
+    yield header
+
+    aggregation = AggregationService().aggregate(
+        da,
+        variable=export.get("variable") or (export.get("fetch_params") or {}).get("variable"),
+        stat=meta.get("stat", "mean"),
+    )
+    mean_da = next(iter(aggregation.ds.data_vars.values()))
+    lat_coord, lon_coord = _export_lat_lon_names(mean_da)
+    if mean_da.dims.index(lat_coord) != 0:
+        mean_da = mean_da.transpose(lat_coord, lon_coord)
+    if da.dims[-2:] != (lat_coord, lon_coord):
+        time_dim = next(d for d in da.dims if d not in (lat_coord, lon_coord))
+        da = da.transpose(time_dim, lat_coord, lon_coord)
+
+    lats = mean_da[lat_coord].values
+    lons = mean_da[lon_coord].values
+    mean_values = mean_da.values.astype(float)
+    granule_count = min(len(granule_dates), da.sizes["time"])
+    granule_values = da.isel(time=slice(0, granule_count)).values.astype(float)
+    variable = export.get("variable", "")
+    units = export.get("units", "")
+
+    valid_mask = np.isfinite(mean_values)
+    if granule_count:
+        valid_mask = valid_mask | np.any(np.isfinite(granule_values), axis=0)
+
+    for row_idx, col_idx in np.argwhere(valid_mask):
+        mean_value = mean_values[row_idx, col_idx]
+        row_granules = [
+            float(value) if np.isfinite(value) else ""
+            for value in granule_values[:, row_idx, col_idx]
+        ]
+        row = []
+        if panel_name is not None:
+            row.append(panel_name)
+        row.extend([
+            variable,
+            float(lats[row_idx]),
+            float(lons[col_idx]),
+            *row_granules,
+            float(mean_value) if np.isfinite(mean_value) else "",
+            units,
+        ])
+        yield row
+
+
+def _write_aggregated_heatmap_csv(writer, export: dict, panel_name: str | None = None) -> None:
+    writer.writerows(_iter_aggregated_heatmap_csv_rows(export, panel_name))
 
 
 def _timeseries_rows(export: dict):
     import numpy as np
     import pandas as pd
+    from preprocessing.aggregation_service import AggregationService
 
     da = _export_data_array(export, collapse_to_2d=False)
     if "time" not in da.dims:
         raise ValueError("Time-series export requires a time dimension.")
 
     stat = export.get("aggregation") or export.get("chart_parameters", {}).get("stat") or "mean"
-    stat_fn = {
-        "mean": np.nanmean,
-        "median": np.nanmedian,
-        "max": np.nanmax,
-        "min": np.nanmin,
-        "std": np.nanstd,
-    }.get(stat)
-    if stat_fn is None:
+    service = AggregationService()
+    if stat not in AggregationService._STAT_FUNCS:
         raise ValueError(f"Unsupported time-series statistic: {stat}")
 
     rows = []
@@ -212,31 +308,58 @@ def _timeseries_rows(export: dict):
             export.get("variable", ""),
             pd.Timestamp(da["time"].values[i]).isoformat(),
             stat,
-            float(stat_fn(valid)),
+            service.compute_values_stat(valid, stat),
             export.get("units", ""),
         ])
     return rows
 
 
-def _build_chart_csv(payload: dict) -> str:
+def _iter_chart_csv_rows(payload: dict):
     export = payload.get("export") or {}
     if not export:
         raise ValueError("This chart does not include full-resolution export metadata.")
 
-    output = io.StringIO()
-    writer = csv.writer(output)
     export_type = export.get("type")
 
     if export_type == "heatmap_multi":
-        writer.writerow(["panel", "variable", "latitude", "longitude", "value", "units"])
         for idx, panel in enumerate(export.get("panels") or []):
-            _write_heatmap_csv(writer, panel, panel.get("region_name") or f"panel-{idx + 1}")
+            if panel.get("aggregation_meta", {}).get("n_granules", 1) > 1:
+                yield from _iter_aggregated_heatmap_csv_rows(panel, panel.get("region_name") or f"panel-{idx + 1}")
+            else:
+                if idx == 0:
+                    yield ["panel", "variable", "latitude", "longitude", "value", "units"]
+                yield from _iter_heatmap_csv_rows(panel, panel.get("region_name") or f"panel-{idx + 1}")
     elif export_type == "timeseries":
-        writer.writerow(["variable", "time", "stat", "value", "units"])
-        writer.writerows(_timeseries_rows(export))
+        yield ["variable", "time", "stat", "value", "units"]
+        yield from _timeseries_rows(export)
     else:
-        writer.writerow(["variable", "latitude", "longitude", "value", "units"])
-        _write_heatmap_csv(writer, export)
+        if export.get("aggregation_meta", {}).get("n_granules", 1) > 1:
+            yield from _iter_aggregated_heatmap_csv_rows(export)
+        else:
+            yield ["variable", "latitude", "longitude", "value", "units"]
+            yield from _iter_heatmap_csv_rows(export)
+
+
+def _iter_chart_csv_chunks(payload: dict, chunk_size: int = 64 * 1024):
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    for row in _iter_chart_csv_rows(payload):
+        writer.writerow(row)
+        if output.tell() >= chunk_size:
+            yield output.getvalue().encode("utf-8")
+            output.seek(0)
+            output.truncate(0)
+
+    remaining = output.getvalue()
+    if remaining:
+        yield remaining.encode("utf-8")
+
+
+def _build_chart_csv(payload: dict) -> str:
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerows(_iter_chart_csv_rows(payload))
 
     return output.getvalue()
 
@@ -280,9 +403,23 @@ def _build_chart_png(payload: dict) -> bytes:
         ax.set_ylabel(f"{export.get('aggregation', 'value')} ({export.get('units', '')})")
         ax.tick_params(axis="x", rotation=30)
     else:
-        fig, ax = plt.subplots(figsize=(8, 6))
-        mesh = _plot_heatmap_axis(ax, export, payload.get("title") or export.get("region_name") or "Chart")
-        fig.colorbar(mesh, ax=ax, label=export.get("units", ""))
+        from utils.plotting import RegionResolver, plot_map
+
+        da = _export_data_array(export, collapse_to_2d=True)
+        region = None
+        region_name = export.get("region_name")
+        if region_name:
+            try:
+                region = RegionResolver().resolve_location(region_name)
+            except Exception:
+                region = None
+        fig, ax = plot_map(
+            da,
+            title=payload.get("title") or export.get("region_name") or "Chart",
+            extent=region["bounds"] if region else export.get("fetch_params", {}).get("bbox"),
+            mask_geometry=region["geometry"] if region else None,
+            cmap=payload.get("cmap") or export.get("chart_parameters", {}).get("cmap") or "Spectral_r",
+        )
 
     fig.tight_layout()
     output = io.BytesIO()
@@ -302,14 +439,20 @@ async def export_chart_csv(chart_id: str):
     if not payload:
         raise HTTPException(status_code=404, detail="Chart not found")
     try:
-        content = await asyncio.to_thread(_build_chart_csv, payload)
+        export = payload.get("export") or {}
+        if not export:
+            raise ValueError("This chart does not include full-resolution export metadata.")
     except Exception as e:
         raise HTTPException(status_code=422, detail=str(e))
 
-    return Response(
-        content=content,
+    return StreamingResponse(
+        _iter_chart_csv_chunks(payload),
         media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{_safe_export_name(payload, "csv")}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{_safe_export_name(payload, "csv")}"',
+            "Cache-Control": "no-store",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
