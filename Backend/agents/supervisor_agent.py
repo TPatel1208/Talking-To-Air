@@ -13,6 +13,7 @@ import asyncio
 import logging
 import sys
 import uuid
+from datetime import datetime, timezone
 from collections.abc import Awaitable, Callable
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.agents import create_agent
@@ -136,6 +137,9 @@ async def build_agent(
                (e.g. 'Plot TROPOMI NO2 over New Jersey for 2024-01-15').
         Output: text summary with plot path and spatial statistics.
         """
+
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        enriched_task = f"[Current UTC time: {now}]\n\n{task}"
         async def _run_satellite(task_text: str) -> AgentResult:
             charts = []
             text_parts  = []
@@ -168,11 +172,11 @@ async def build_agent(
             ) or "Satellite agent returned no response."
             return AgentResult(text=text, charts=charts)
 
-        direct_first = await _try_direct_satellite_plot(task)
+        direct_first = await _try_direct_satellite_plot(enriched_task)
         if direct_first is not None:
             return agent_result_to_json(direct_first)
 
-        result = await _run_satellite(task)
+        result = await _run_satellite(enriched_task)
         refusal_markers = (
             "necessary tools are not present",
             "don't have access to fetch_environmental_data",
@@ -183,18 +187,18 @@ async def build_agent(
         if any(marker in result.text.lower() for marker in refusal_markers):
             retry_task = (
                 "The satellite tools are registered and available in this runtime: "
-                "convert_temporal_range_to_iso, geocode_location, "
+                "geocode_location, "
                 "check_data_availability, fetch_environmental_data, plot_singular, "
-                "plot_multiple, compute_statistic_tool, conduct_temporal_statistic, "
+                "plot_multiple, compute_statistic_tool, conduct_temporal_statistic"
                 "find_daily_peak. Retry the task using those tools exactly as needed. "
-                f"Task: {task}"
+                f"Task: {enriched_task}"
             )
             result = await _run_satellite(retry_task)
             if (
                 any(marker in result.text.lower() for marker in refusal_markers)
                 or not result.charts
             ):
-                fallback = await _try_direct_satellite_plot(task)
+                fallback = await _try_direct_satellite_plot(enriched_task)
                 if fallback is not None:
                     result = fallback
 

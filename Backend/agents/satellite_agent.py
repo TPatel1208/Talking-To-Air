@@ -15,7 +15,7 @@ from langchain.agents import create_agent
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config.settings import get_settings
-from config.satellite_agent_prompt import SATELLITE_AGENT_PROMPT
+from config.satellite_agent_prompt import get_satellite_agent_prompt
 from tools import SATELLITE_TOOLS
 from utils.streaming import stream_response
 
@@ -42,7 +42,7 @@ def build_satellite_agent(model: str | None = None):
     agent = create_agent(
         model=llm,
         tools=SATELLITE_TOOLS,
-        system_prompt=SATELLITE_AGENT_PROMPT,
+        system_prompt=get_satellite_agent_prompt(),
         checkpointer=None,
     )
     return agent

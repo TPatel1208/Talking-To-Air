@@ -4,8 +4,6 @@ from .satellite_tools.plot_tools   import plot_singular, plot_multiple, conduct_
 from .satellite_tools.stat_tools   import compute_statistic_tool, find_daily_peak
 
 SATELLITE_TOOLS = [
-    convert_date_to_iso,
-    convert_temporal_range_to_iso,
     geocode_location,
     fetch_environmental_data,
     plot_singular,
