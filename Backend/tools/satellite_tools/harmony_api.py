@@ -8,6 +8,7 @@ import json
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils.plotting import get_geocoding_service
+from utils.streaming import emit_status
 from preprocessing.data_loader import DataLoader, _bounded_max_results
 from tools.satellite_tools.models import DataDict
 from tools.satellite_tools.query_parser import is_valid_location_candidate
@@ -47,11 +48,14 @@ async def geocode_location(location_name: str) -> dict:
     Returns:
         dict with keys: location, bbox, center_lat, center_lon.
     """
+    emit_status("Resolving requested location...")
     if not is_valid_location_candidate(location_name):
+        emit_status("Location lookup failed.")
         return {"error": f"Invalid location candidate '{location_name}'"}
 
     result = await _get_geocoder().ageocode(location_name)
     if result is None:
+        emit_status("Location lookup failed.")
         return {"error": f"Could not geocode '{location_name}'"}
 
     # Nominatim bbox: [south, north, west, east]
@@ -62,6 +66,7 @@ async def geocode_location(location_name: str) -> dict:
         south, north, west, east = lat - 1, lat + 1, lon - 1, lon + 1
 
     bbox_str = f"{west:.4f},{south:.4f},{east:.4f},{north:.4f}"
+    emit_status("Location identified.")
     return {
         "location":   location_name,
         "bbox":       bbox_str,
@@ -104,11 +109,13 @@ async def fetch_environmental_data(
             _fetch_params : Parameters for downstream plot/stat tools to reload
                             the dataset without re-downloading.
     """
+    emit_status("Preparing satellite data request...")
     variable  = variable.upper()
     max_results = _bounded_max_results(max_results)
     available = ", ".join(COLLECTIONS.keys())
 
     if variable not in COLLECTIONS:
+        emit_status("Satellite data request failed.")
         return {"error": f"Unknown variable '{variable}'. Available: {available}"}
 
     try:
@@ -117,6 +124,7 @@ async def fetch_environmental_data(
             raise ValueError()
         min_lon, min_lat, max_lon, max_lat = bbox_list
     except Exception:
+        emit_status("Satellite data request failed.")
         return {"error": f"bbox must be 'min_lon,min_lat,max_lon,max_lat', got: '{bbox}'"}
 
     col = COLLECTIONS[variable]
@@ -131,12 +139,17 @@ async def fetch_environmental_data(
     if col.get("supports_variable_subsetting", False):
         fetch_params["variables"] = col["variables"]
     try:
+        emit_status("Downloading satellite granules...")
         ds = await asyncio.to_thread(_get_data_loader().download_dataset_harmony, **fetch_params)
+        emit_status("Processing downloaded data...")
     except ValueError as e:
+        emit_status("Download failed while retrieving NASA Harmony output.")
         return {"error": str(e)}
     except RuntimeError as e:
+        emit_status("Download failed while retrieving NASA Harmony output.")
         return {"error": str(e)}
     except Exception as e:
+        emit_status("Download failed while retrieving NASA Harmony output.")
         return {"error": f"Unexpected {type(e).__name__}: {str(e)}"}
 
     try:
@@ -161,6 +174,7 @@ async def fetch_environmental_data(
     if col.get("supports_variable_subsetting", False):
         serialisable_fetch_params["variables"] = list(col["variables"])
 
+    emit_status("Satellite data ready.")
     return DataDict(
         variable=variable,
         units=col["units"],
@@ -198,10 +212,12 @@ async def check_data_availability(
             dates_available: List of ISO date strings for which data is available
 
     """
+    emit_status("Checking satellite data availability...")
     variable = variable.upper()
     try:
         col = COLLECTIONS[variable]
     except KeyError:
+        emit_status("Satellite data availability check failed.")
         return {"error": f"Unknown variable '{variable}'. Available: {', '.join(COLLECTIONS.keys())}"}
 
     try:
@@ -209,6 +225,7 @@ async def check_data_availability(
         if len(bbox_list) != 4:
             raise ValueError()
     except Exception:
+        emit_status("Satellite data availability check failed.")
         return {"error": f"bbox must be 'min_lon,min_lat,max_lon,max_lat', got: '{bbox}'"}
 
     # Ensure correct format for CMR temporal parameter
@@ -244,6 +261,7 @@ async def check_data_availability(
             for g in entries if g.get('time_start')
         ]
 
+        emit_status("Satellite data availability checked.")
         return {
             'variable':       variable,
             'num_granules':   total,
@@ -251,6 +269,7 @@ async def check_data_availability(
         }
 
     except Exception as e:
+        emit_status("Satellite data availability check failed.")
         return {'error': str(e)}
 
 

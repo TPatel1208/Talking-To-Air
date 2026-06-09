@@ -1,31 +1,31 @@
 """
-utils/streaming.py
-------------------
 Shared stream_response for supervisor, ground, and satellite agents.
 
-Usage
------
-Supervisor (needs thread_ref to keep subagent closures in sync):
-    from utils.streaming import stream_response
-    for event_type, data in stream_response(agent, user_input, thread_id, thread_ref):
-        ...
-
-Subagents (no thread_ref):
-    from utils.streaming import stream_response
-    for event_type, data in stream_response(agent, user_input, thread_id):
-        ...
-
-Yields
-------
-("tool_call",   {"name": str, "args": dict})         — agent is about to call a tool
-("image",       {"name": str, "path": str})          — a PNG path found inside a tool result
-("tool_result", {"name": str, "content": str})       — tool returned; full content (truncated at 300 chars)
-("text",        str)                                 — final assistant response text
+Yields:
+    ("tool_call", {"name": str, "args": dict})
+    ("status", {"message": str})
+    ("image", {"name": str, "path": str})
+    ("tool_result", {"name": str, "content": str})
+    ("text", str)
 """
 
+import asyncio
 import re
 from collections.abc import AsyncGenerator
-from typing import Optional
+from contextvars import ContextVar
+from typing import Callable, Optional
+
+_status_emitter: ContextVar[Optional[Callable[[str], None]]] = ContextVar(
+    "status_emitter",
+    default=None,
+)
+
+
+def emit_status(message: str) -> None:
+    """Emit a user-visible progress message for the active SSE stream."""
+    emitter = _status_emitter.get()
+    if emitter and message:
+        emitter(str(message))
 
 
 async def stream_response(
@@ -37,49 +37,65 @@ async def stream_response(
     """
     Stream one conversation turn, yielding (event_type, data) tuples.
 
-    Parameters
-    ----------
-    agent       : LangGraph agent returned by build_*_agent().
-    user_input  : The user's message for this turn.
-    thread_id   : LangGraph checkpoint thread ID for this session.
-    thread_ref  : Supervisor-only. The mutable dict returned by build_agent()
-                  whose 'id' key is read by subagent tool closures. Updated
-                  here before streaming so closures always see the current
-                  thread_id. Pass None (default) for ground/satellite agents.
+    Status events can be published from nested tools with emit_status(...).
     """
     if thread_ref is not None:
         thread_ref["id"] = thread_id
 
     config = {"configurable": {"thread_id": thread_id}}
+    queue: asyncio.Queue = asyncio.Queue()
+    done = object()
+    loop = asyncio.get_running_loop()
+    parent_emitter = _status_emitter.get()
 
-    async for stream_mode, chunk in agent.astream(
-        {"messages": [{"role": "user", "content": user_input}]},
-        config=config,
-        stream_mode=["updates", "messages"],
-    ):
-        if stream_mode != "updates":
-            continue
+    def publish_status(message: str) -> None:
+        if parent_emitter:
+            parent_emitter(message)
+        loop.call_soon_threadsafe(queue.put_nowait, ("status", {"message": message}))
 
-        for _node, data in chunk.items():
-            for msg in data.get("messages", []):
+    async def publish(event_type: str, data) -> None:
+        await queue.put((event_type, data))
 
-                # ── Tool call being dispatched ────────────────────────────
-                if hasattr(msg, "tool_calls") and msg.tool_calls:
-                    for tc in msg.tool_calls:
-                        yield ("tool_call", {"name": tc["name"], "args": tc["args"]})
+    async def produce() -> None:
+        try:
+            async for stream_mode, chunk in agent.astream(
+                {"messages": [{"role": "user", "content": user_input}]},
+                config=config,
+                stream_mode=["updates", "messages"],
+            ):
+                if stream_mode != "updates":
+                    continue
 
-                # ── Tool result returned ──────────────────────────────────
-                elif hasattr(msg, "name") and msg.name:
-                    raw = str(msg.content)
-                    # If the result contains a PNG path, emit it as a separate
-                    # "image" event so callers can render it.  The full content
-                    # string is always passed through as "tool_result" so no
-                    # text is discarded when a PNG path is present.
-                    img = re.search(r'[\w\-./]+\.png', raw)
-                    if img:
-                        yield ("image", {"name": msg.name, "path": img.group(0)})
-                    yield ("tool_result", {"name": msg.name, "content": raw})
+                for _node, data in chunk.items():
+                    for msg in data.get("messages", []):
+                        if hasattr(msg, "tool_calls") and msg.tool_calls:
+                            for tc in msg.tool_calls:
+                                await publish("tool_call", {"name": tc["name"], "args": tc["args"]})
+                        elif hasattr(msg, "name") and msg.name:
+                            raw = str(msg.content)
+                            img = re.search(r'[\w\-./]+\.png', raw)
+                            if img:
+                                await publish("image", {"name": msg.name, "path": img.group(0)})
+                            await publish("tool_result", {"name": msg.name, "content": raw})
+                        elif hasattr(msg, "content") and msg.content:
+                            await publish("text", msg.content)
+        except Exception as exc:
+            await queue.put(("__error__", exc))
+        finally:
+            await queue.put(done)
 
-                # ── Assistant text response ───────────────────────────────
-                elif hasattr(msg, "content") and msg.content:
-                    yield ("text", msg.content)
+    token = _status_emitter.set(publish_status)
+    producer = asyncio.create_task(produce())
+    try:
+        while True:
+            item = await queue.get()
+            if item is done:
+                break
+            event_type, data = item
+            if event_type == "__error__":
+                raise data
+            yield event_type, data
+    finally:
+        _status_emitter.reset(token)
+        if not producer.done():
+            producer.cancel()

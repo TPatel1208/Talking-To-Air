@@ -498,6 +498,9 @@ async def chat(req: ChatRequest):
                     tool_calls.append({"name": data["name"], "args": data["args"]})
                     yield sse("tool_call", {"name": data["name"], "args": data["args"]})
 
+                elif event_type == "status":
+                    yield sse("status", {"message": data.get("message", "")})
+
                 elif event_type == "tool_result":
                     content = data.get("content", "")
 

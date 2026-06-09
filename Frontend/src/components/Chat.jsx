@@ -65,7 +65,7 @@ function InlineToolBadge({ name, args }) {
 }
 
 /* ── Loading indicator ── */
-function LoadingMessage({ toolCalls }) {
+function LoadingMessage({ toolCalls, statusMessage }) {
   return (
     <div style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'flex-start', gap: '10px' }}>
       {/* Avatar */}
@@ -90,6 +90,17 @@ function LoadingMessage({ toolCalls }) {
             {toolCalls.map((tc, i) => (
               <InlineToolBadge key={i} name={tc.name} args={tc.args} />
             ))}
+            {statusMessage && (
+              <div style={{
+                marginTop: '5px',
+                paddingLeft: '3px',
+                color: 'var(--text-muted)',
+                fontSize: '12px',
+                lineHeight: 1.45,
+              }}>
+                {statusMessage}
+              </div>
+            )}
             <div style={{ display: 'flex', gap: '4px', paddingTop: '8px' }}>
               {[0, 1, 2].map(i => (
                 <div key={i} style={{
@@ -99,6 +110,10 @@ function LoadingMessage({ toolCalls }) {
                 }}/>
               ))}
             </div>
+          </div>
+        ) : statusMessage ? (
+          <div style={{ color: 'var(--text-muted)', fontSize: '12px', lineHeight: 1.45 }}>
+            {statusMessage}
           </div>
         ) : (
           <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
@@ -465,7 +480,7 @@ export default function Chat({ messages, loading, error, onSend, onClear }) {
           <div style={{ padding: '20px 20px 8px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
             {messages.map((msg, i) =>
               msg.isLoading ? (
-                <LoadingMessage key={i} toolCalls={msg.toolCalls} />
+                <LoadingMessage key={i} toolCalls={msg.toolCalls} statusMessage={msg.statusMessage} />
               ) : (
                 <MessageBubble key={i} msg={msg} />
               )

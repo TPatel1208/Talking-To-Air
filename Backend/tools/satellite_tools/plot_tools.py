@@ -54,6 +54,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from utils.data_utils import _load_data
 from utils.plotting import _normalize_to_2d, mask_data_by_geometry, RegionResolver
+from utils.streaming import emit_status
 from preprocessing.aggregation_service import AggregationService
 from tools.satellite_tools.harmony_api import COLLECTIONS
 
@@ -337,15 +338,20 @@ async def plot_singular(data_dict: Annotated[dict, Field(description="The comple
     Returns:
         JSON string — chart payload for the frontend to render interactively.
     """
+    emit_status("Processing downloaded data...")
     try:
         da = await asyncio.to_thread(_load_data, data_dict)
     except Exception as e:
+        emit_status("Visualization failed while loading data.")
         return json.dumps({"error": f"Failed to load data: {e}"})
 
+    emit_status("Resolving requested location...")
     region = await _resolver.aresolve_location(location)
     if region is None:
+        emit_status("Location lookup failed.")
         return json.dumps({"error": f"Could not geocode location: '{location}'"})
 
+    emit_status("Generating visualization...")
     try:
         lat_coord = next(c for c in ["lat", "latitude", "Latitude"] if c in da.coords)
         lon_coord = next(c for c in ["lon", "longitude", "Longitude"] if c in da.coords)
@@ -356,6 +362,7 @@ async def plot_singular(data_dict: Annotated[dict, Field(description="The comple
 
 )
     except Exception as e:
+        emit_status("Visualization failed while processing map bounds.")
         return json.dumps({"error": f"Masking failed: {e}"})
 
     col    = COLLECTIONS.get(variable.upper(), {})
@@ -392,8 +399,10 @@ async def plot_singular(data_dict: Annotated[dict, Field(description="The comple
             agg_meta,
         )
     except Exception as e:
+        emit_status("Visualization failed while building chart data.")
         return json.dumps({"error": f"Failed to build chart payload: {e}"})
 
+    emit_status("Preparing response...")
     return _save_chart(payload, resolved_title)
 
 
@@ -423,18 +432,24 @@ async def plot_multiple(
     Returns:
         JSON string — multi-panel chart payload for the frontend to render.
     """
+    emit_status("Generating visualization...")
     if len(data_dicts) != len(locations):
+        emit_status("Visualization failed while matching locations to datasets.")
         return json.dumps({"error": f"len(data_dicts)={len(data_dicts)} != len(locations)={len(locations)}"})
 
     panels = []
     for data_dict, location in zip(data_dicts, locations):
+        emit_status("Processing downloaded data...")
         try:
             da = await asyncio.to_thread(_load_data, data_dict)
         except Exception as e:
+            emit_status("Visualization failed while loading data.")
             return json.dumps({"error": f"Failed to load data for '{location}': {e}"})
 
+        emit_status("Resolving requested location...")
         region = await _resolver.aresolve_location(location)
         if region is None:
+            emit_status("Location lookup failed.")
             return json.dumps({"error": f"Could not geocode location: '{location}'"})
 
         try:
@@ -443,6 +458,7 @@ async def plot_multiple(
             da = _normalize_longitudes(da, lon_coord)
             da = mask_data_by_geometry(da, region["geometry"])
         except Exception as e:
+            emit_status("Visualization failed while processing map bounds.")
             return json.dumps({"error": f"Masking failed for '{location}': {e}"})
 
         bounds = region["bounds"]
@@ -476,6 +492,7 @@ async def plot_multiple(
                 agg_meta,
             )
         except Exception as e:
+            emit_status("Visualization failed while building chart data.")
             return json.dumps({"error": f"Failed to build panel for '{location}': {e}"})
 
         panels.append(panel)
@@ -502,6 +519,7 @@ async def plot_multiple(
             "chart_parameters": {"chart_type": "heatmap_multi", "cmap": cmap or "Spectral_r"},
             "panels": [panel.get("export", {}) for panel in panels],
         }
+    emit_status("Preparing response...")
     return _save_chart(multi_payload, title or f"{variable}_comparison")
 
 

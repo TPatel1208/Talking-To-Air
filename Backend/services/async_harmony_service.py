@@ -48,6 +48,7 @@ import httpx
 import requests
 from config.settings import get_settings
 from harmony import BBox, Client, Collection, Environment, Request
+from utils.streaming import emit_status
 from tenacity import (
     retry,
     retry_if_exception,
@@ -184,7 +185,7 @@ class AsyncHarmonyService:
         dest = download_dir or self._download_dir
         Path(dest).mkdir(parents=True, exist_ok=True)
 
-        # ── 1. Build and submit (sync — fast) ────────────────────────────
+        # ── 1. Build and submit (sync, fast) ─────────────────────────────
         request = self._build_request(
             collection_id, temporal, bbox, variables, max_results, output_format
         )
@@ -196,17 +197,24 @@ class AsyncHarmonyService:
             variables,
             max_results,
         )
+        emit_status("Submitting request to NASA Harmony...")
         job_id = await self._submit_request(request)
         logger.info("Harmony job submitted: %s", job_id)
 
-        # ── 2. Async poll until done ──────────────────────────────────────
-        files = await asyncio.to_thread(self._wait_and_download_with_client, job_id, dest)
+        # ── 2. Async poll until done ─────────────────────────────────────
+        status_url = self._status_url(job_id)
+        emit_status("NASA Harmony is preparing data...")
+        await self._wait_for_processing(status_url)
 
-        # ── 3. Fetch links then download concurrently ─────────────────────
-
+        # ── 3. Fetch links then download concurrently ────────────────────
+        emit_status("Downloading satellite granules...")
+        links = await self._fetch_download_links(status_url)
+        files = await self._download_all(links, dest)
         if not files:
+            emit_status("Download failed while retrieving NASA Harmony output.")
             raise RuntimeError(f"No files downloaded for job {job_id}")
 
+        emit_status("Processing downloaded data...")
         logger.info("Download complete: %d file(s) for job %s", len(files), job_id)
         return files
 
@@ -304,6 +312,7 @@ class AsyncHarmonyService:
     async def _wait_for_processing(self, status_url: str) -> None:
         """Poll the job-status endpoint until the job reaches a terminal state."""
         terminal = {"successful", "failed", "canceled"}
+        started = asyncio.get_running_loop().time()
         async with httpx.AsyncClient(
             auth=self._auth,
             timeout=httpx.Timeout(30.0),
@@ -318,11 +327,18 @@ class AsyncHarmonyService:
                 if status in terminal:
                     if status != "successful":
                         msg = data.get("message", "No details provided")
+                        emit_status("Download failed while retrieving NASA Harmony output.")
                         raise RuntimeError(
                             f"Harmony job ended with status '{status}': {msg}"
                         )
+                    emit_status("NASA Harmony finished preparing data.")
                     return
 
+                elapsed = int(asyncio.get_running_loop().time() - started)
+                if pct:
+                    emit_status(f"Waiting for NASA Harmony processing ({pct}% complete, {elapsed}s elapsed)...")
+                else:
+                    emit_status(f"Waiting for NASA Harmony processing ({elapsed}s elapsed)...")
                 await asyncio.sleep(self._poll_interval)
 
     @retry(**_RETRY)
@@ -355,6 +371,7 @@ class AsyncHarmonyService:
         """Download a single file, streaming to disk."""
         filename = Path(url.split("?")[0]).name or "granule.nc"
         out_path = Path(dest) / filename
+        emit_status("Downloading satellite granules...")
 
         async with client.stream("GET", url) as resp:
             resp.raise_for_status()
@@ -382,8 +399,11 @@ class AsyncHarmonyService:
         for r in results:
             if isinstance(r, Exception):
                 logger.error("Download error: %s", r)
+                emit_status("Download failed while retrieving NASA Harmony output.")
             else:
                 files.append(r)
+        if files:
+            emit_status(f"Downloaded {len(files)} satellite granule{'s' if len(files) != 1 else ''}.")
         return files
 
     def __repr__(self) -> str:

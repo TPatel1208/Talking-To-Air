@@ -27,6 +27,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_chat_streams_done_event(self):
         async def fake_stream_response(agent, message, thread_id):
+            yield "status", {"message": "Downloading satellite granules..."}
             yield "text", "hello"
 
         transport = self.httpx.ASGITransport(app=self.api.app)
@@ -38,6 +39,8 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
                 response = await client.post("/chat", json={"message": "hi"})
 
         self.assertEqual(response.status_code, 200)
+        self.assertIn("event: status", response.text)
+        self.assertIn('"message": "Downloading satellite granules..."', response.text)
         self.assertIn("event: done", response.text)
         self.assertIn('"response": "hello"', response.text)
 

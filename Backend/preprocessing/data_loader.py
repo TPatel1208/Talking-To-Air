@@ -47,6 +47,7 @@ from repositories.zarr_repository import ZarrRepository
 from config.settings import get_settings
 from datasets.registry import load_registry
 from utils.earthaccess_client import get_earthaccess_auth
+from utils.streaming import emit_status
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +177,7 @@ class DataLoader:
 
         cached_in_memory = self._memory_cache.get(memory_key)
         if cached_in_memory is not None:
+            emit_status("Using cached satellite data...")
             self._memory_cache.move_to_end(memory_key)
             self._ensure_granule_attrs(cached_in_memory, collection_id)
             logger.info(
@@ -190,6 +192,7 @@ class DataLoader:
             bbox=bounding_box,
         )
         if cached is not None:
+            emit_status("Using cached satellite data...")
             logger.info("cache_hit", extra={"_collection_id": collection_id})
             self._ensure_granule_attrs(cached, collection_id)
             self._remember_dataset(memory_key, cached)
@@ -206,6 +209,7 @@ class DataLoader:
         )
         t0 = time.time()
 
+        emit_status("Retrieving satellite dataset...")
         ds = self._route(
             mode=mode,
             provider=provider,
@@ -217,6 +221,7 @@ class DataLoader:
             max_results=max_results,
             output_format=output_format,
         )
+        emit_status("Processing downloaded data...")
         self._ensure_granule_attrs(ds, collection_id)
 
         logger.info("Fetch complete in %.2fs", time.time() - t0)
@@ -399,6 +404,7 @@ class DataLoader:
         else:
             granule_times = {}
 
+        emit_status("Processing downloaded data...")
         datasets = []
         for path in files:
             try:

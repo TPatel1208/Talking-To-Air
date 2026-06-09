@@ -31,7 +31,7 @@ from models import AgentResult, agent_result_to_json, parse_agent_result, parse_
 from repositories.chart_repository import delete_charts_for_session
 from tools.satellite_tools.query_parser import parse_satellite_plot_query
 from utils.db import get_checkpointer, pg_connection
-from utils.streaming import stream_response
+from utils.streaming import emit_status, stream_response
 
 logger = logging.getLogger(__name__)
 
@@ -378,6 +378,7 @@ async def _try_direct_satellite_plot(task: str) -> AgentResult | None:
                 availability["error"],
             )
         elif isinstance(availability, dict) and availability.get("num_granules", 0) == 0:
+            emit_status("Satellite data availability checked.")
             return AgentResult(text=(
                 f"No {variable} granules were found for {location} between "
                 f"{start_date} and {end_date}."
@@ -397,11 +398,13 @@ async def _try_direct_satellite_plot(task: str) -> AgentResult | None:
             "max_results": 1 if variable == "TROPOMI_NO2" else 10,
         })
         if isinstance(data, dict) and data.get("error"):
+            emit_status("Download failed while retrieving NASA Harmony output.")
             return AgentResult(text=f"Fetch failed: {data['error']}")
         logger.info("Direct satellite plot fallback: fetch_environmental_data returned data")
         plot_data = data.model_dump() if hasattr(data, "model_dump") else data
 
         title = f"{variable} over {location}"
+        emit_status("Generating visualization...")
         chart_result = await plot_singular.ainvoke({
             "data_dict": plot_data,
             "variable": variable,
@@ -411,9 +414,11 @@ async def _try_direct_satellite_plot(task: str) -> AgentResult | None:
         chart = parse_chart_payload(chart_result)
         if chart is not None:
             logger.info("Direct satellite plot fallback: chart created for %s", title)
+            emit_status("Preparing response...")
             return AgentResult(text=f"Created {title}.", charts=[chart])
         return AgentResult(text=str(chart_result))
     except Exception as exc:
+        emit_status("Satellite workflow failed.")
         return AgentResult(text=f"Satellite fallback failed: {exc}")
 
 

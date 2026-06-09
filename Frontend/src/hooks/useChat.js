@@ -106,6 +106,7 @@ export function useChat() {
               content: msg.content || 'Request cancelled.',
               isLoading: false,
               isCancelled: true,
+              statusMessage: '',
             }
           : msg
       )))
@@ -197,6 +198,7 @@ export function useChat() {
         role: 'assistant',
         content: '',
         toolCalls: [],
+        statusMessage: '',
         imageUrls: [],
         charts: [],
         isLoading: true,
@@ -238,6 +240,10 @@ export function useChat() {
           queueAssistantUpdate(streamId, msg => ({
             toolCalls: [...(msg.toolCalls || []), { name: data.name, args: data.args }],
           }))
+        } else if (event === 'status') {
+          queueAssistantUpdate(streamId, () => ({
+            statusMessage: data.message || '',
+          }))
         } else if (event === 'image') {
           queueAssistantUpdate(streamId, msg => ({
             imageUrls: [...(msg.imageUrls || []), `${API_BASE}${data.url}`],
@@ -259,6 +265,7 @@ export function useChat() {
             content: data.response,
             imageUrls: (data.image_urls || []).map(u => `${API_BASE}${u}`),
             charts: msg.charts || [],
+            statusMessage: '',
             isLoading: false,
           }))
           setSessions(prev => prev.includes(newId) ? prev : [...prev, newId])
@@ -286,6 +293,7 @@ export function useChat() {
         content: `Error: ${msg}`,
         isError: true,
         isLoading: false,
+        statusMessage: '',
       }))
     } finally {
       if (isCurrentRequest(requestId)) {
