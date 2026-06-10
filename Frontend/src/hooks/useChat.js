@@ -4,7 +4,7 @@ import { createSseParser } from '../utils/sseParser'
 const API_BASE = '/api'
 const ACTIVE_THREAD_STORAGE_KEY = 'tta.activeThreadId'
 
-export function useChat() {
+export function useChat(accessToken, onUnauthorized) {
   const [messages, setMessages] = useState([])
   const [threadId, setThreadId] = useState(null)
   const [sessions, setSessions] = useState([])
@@ -43,6 +43,15 @@ export function useChat() {
   const getSessionId = useCallback((session) => (
     typeof session === 'string' ? session : session?.id
   ), [])
+
+  const authHeaders = useCallback((extra = {}) => ({
+    ...extra,
+    ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+  }), [accessToken])
+
+  const handleUnauthorized = useCallback((res) => {
+    if (res.status === 401 && onUnauthorized) onUnauthorized()
+  }, [onUnauthorized])
 
   const makeLocalSession = useCallback((id, message) => {
     const title = message.trim().replace(/\s+/g, ' ')
@@ -134,9 +143,15 @@ export function useChat() {
   }, [abortActiveRequest, cancelScheduledFlush])
 
   const loadHistory = useCallback(async (id) => {
+    if (!accessToken) return false
     try {
-      const res = await fetch(`${API_BASE}/session/${id}/history`)
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const res = await fetch(`${API_BASE}/session/${id}/history`, {
+        headers: authHeaders(),
+      })
+      if (!res.ok) {
+        handleUnauthorized(res)
+        throw new Error(`HTTP ${res.status}`)
+      }
       const data = await res.json()
       const hydrated = (data.messages || []).map(m => ({
         ...m,
@@ -150,11 +165,19 @@ export function useChat() {
       setMessages([])
       return false
     }
-  }, [])
+  }, [accessToken, authHeaders, handleUnauthorized])
 
   const fetchSessions = useCallback(async () => {
+    if (!accessToken) {
+      setSessions([])
+      return
+    }
     try {
-      const res = await fetch(`${API_BASE}/sessions`)
+      const res = await fetch(`${API_BASE}/sessions`, { headers: authHeaders() })
+      if (!res.ok) {
+        handleUnauthorized(res)
+        throw new Error(`HTTP ${res.status}`)
+      }
       const data = await res.json()
       const nextSessions = data.sessions || []
       setSessions(nextSessions)
@@ -184,11 +207,15 @@ export function useChat() {
         }
       }
     }
-  }, [getSessionId, loadHistory, persistActiveThread])
+  }, [accessToken, authHeaders, getSessionId, handleUnauthorized, loadHistory, persistActiveThread])
 
   useEffect(() => { fetchSessions() }, [fetchSessions])
 
   const sendMessage = useCallback(async (text) => {
+    if (!accessToken) {
+      setError('Please sign in to continue.')
+      return
+    }
     const message = text.trim()
     if (!message) return
 
@@ -224,12 +251,15 @@ export function useChat() {
     try {
       const res = await fetch(`${API_BASE}/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ message: text, thread_id: threadIdRef.current }),
         signal: controller.signal,
       })
 
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      if (!res.ok) {
+        handleUnauthorized(res)
+        throw new Error(`HTTP ${res.status}`)
+      }
       if (!res.body) throw new Error('Streaming response was empty')
 
       const decoder = new TextDecoder()
@@ -320,7 +350,7 @@ export function useChat() {
         setLoading(false)
       }
     }
-  }, [abortActiveRequest, getSessionId, isCurrentRequest, makeLocalSession, persistActiveThread, queueAssistantUpdate])
+  }, [abortActiveRequest, accessToken, authHeaders, getSessionId, handleUnauthorized, isCurrentRequest, makeLocalSession, persistActiveThread, queueAssistantUpdate])
 
   const newSession = useCallback(() => {
     abortActiveRequest()
@@ -346,14 +376,20 @@ export function useChat() {
 
   const deleteSession = useCallback(async (id) => {
     try {
-      const res = await fetch(`${API_BASE}/session/${id}`, { method: 'DELETE' })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const res = await fetch(`${API_BASE}/session/${id}`, {
+        method: 'DELETE',
+        headers: authHeaders(),
+      })
+      if (!res.ok) {
+        handleUnauthorized(res)
+        throw new Error(`HTTP ${res.status}`)
+      }
       setSessions(prev => prev.filter(session => getSessionId(session) !== id))
       if (id === threadIdRef.current) newSession()
     } catch (err) {
       setError(err.message ? `Failed to delete session: ${err.message}` : 'Failed to delete session. Please try again.')
     }
-  }, [getSessionId, newSession])
+  }, [authHeaders, getSessionId, handleUnauthorized, newSession])
 
   const clearError = useCallback(() => {
     setError(null)

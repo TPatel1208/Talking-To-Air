@@ -232,8 +232,10 @@ function filenameFromDisposition(disposition, fallback) {
   return match?.[1]?.trim() || fallback
 }
 
-async function downloadFromUrl(url, fallbackFilename) {
-  const response = await fetch(url)
+async function downloadFromUrl(url, fallbackFilename, accessToken) {
+  const response = await fetch(url, {
+    headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+  })
   if (!response.ok) {
     let detail = ''
     try {
@@ -344,7 +346,7 @@ function ProvenanceBlock({ provenance, aggregationMeta }) {
   )
 }
 
-function ChartToolbar({ chart, plotRootRef }) {
+function ChartToolbar({ chart, plotRootRef, accessToken }) {
   const [copyState, setCopyState] = useState('')
   const [exportState, setExportState] = useState({ status: '', message: '' })
   const fileBase = sanitizeFilename(chart.title || chart.metadata?.name || chart.type)
@@ -367,7 +369,7 @@ function ChartToolbar({ chart, plotRootRef }) {
     if (chart.chart_id && chart.export) {
       try {
         setExportState({ status: 'progress', message: 'Export in progress' })
-        await downloadFromUrl(`/api/chart/${chart.chart_id}/export.csv`, `${fileBase}.csv`)
+        await downloadFromUrl(`/api/chart/${chart.chart_id}/export.csv`, `${fileBase}.csv`, accessToken)
         setExportState({ status: 'complete', message: 'Export complete' })
         window.setTimeout(() => setExportState({ status: '', message: '' }), 2200)
       } catch (error) {
@@ -391,7 +393,7 @@ function ChartToolbar({ chart, plotRootRef }) {
     if (chart.chart_id && chart.export) {
       try {
         setExportState({ status: 'progress', message: 'Export in progress' })
-        await downloadFromUrl(`/api/chart/${chart.chart_id}/export.png`, `${fileBase}.png`)
+        await downloadFromUrl(`/api/chart/${chart.chart_id}/export.png`, `${fileBase}.png`, accessToken)
         setExportState({ status: 'complete', message: 'Export complete' })
         window.setTimeout(() => setExportState({ status: '', message: '' }), 2200)
       } catch (error) {
@@ -791,7 +793,7 @@ function TimeSeriesPanel({ payload }) {
 }
 
 // ── Public component ──────────────────────────────────────────────────────────
-export default function ChartMessage({ chart }) {
+export default function ChartMessage({ chart, accessToken }) {
   const plotRootRef = useRef(null)
   if (!chart || typeof chart !== 'object' || !chart.type) return null
 
@@ -811,7 +813,7 @@ export default function ChartMessage({ chart }) {
       border: '1px solid var(--border)', borderRadius: '10px',
       overflow: 'hidden', padding: '8px',
     }}>
-      <ChartToolbar chart={chart} plotRootRef={plotRootRef} />
+      <ChartToolbar chart={chart} plotRootRef={plotRootRef} accessToken={accessToken} />
       <div ref={plotRootRef}>
         {inner}
       </div>

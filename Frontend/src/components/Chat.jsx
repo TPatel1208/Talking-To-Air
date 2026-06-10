@@ -132,16 +132,45 @@ function LoadingMessage({ toolCalls, statusMessage }) {
 }
 
 /* ── Inline image with lightbox ── */
-function InlineImage({ url }) {
+function InlineImage({ url, accessToken }) {
   const [lightbox, setLightbox] = useState(false)
+  const [blobUrl, setBlobUrl] = useState(null)
   const src = toImageUrl(url)
+
+  useEffect(() => {
+    if (!src || !accessToken || !src.startsWith('/api/outputs/')) {
+      setBlobUrl(null)
+      return undefined
+    }
+
+    let cancelled = false
+    let objectUrl = null
+
+    fetch(src, { headers: { Authorization: `Bearer ${accessToken}` } })
+      .then(response => response.ok ? response.blob() : null)
+      .then(blob => {
+        if (!blob || cancelled) return
+        objectUrl = URL.createObjectURL(blob)
+        setBlobUrl(objectUrl)
+      })
+      .catch(() => {
+        if (!cancelled) setBlobUrl(null)
+      })
+
+    return () => {
+      cancelled = true
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [src, accessToken])
+
   if (!src) return null
+  const displaySrc = blobUrl || src
 
   return (
     <>
       <div style={{ margin: '8px 0' }}>
         <img
-          src={src}
+          src={displaySrc}
           alt="output"
           onClick={() => setLightbox(true)}
           style={{
@@ -165,7 +194,7 @@ function InlineImage({ url }) {
           }}
         >
           <img
-            src={src} alt="fullscreen"
+            src={displaySrc} alt="fullscreen"
             style={{ maxWidth: '92vw', maxHeight: '92vh', borderRadius: '10px', objectFit: 'contain' }}
           />
         </div>
@@ -175,7 +204,7 @@ function InlineImage({ url }) {
 }
 
 /* ── Message bubble ── */
-function MessageBubble({ msg }) {
+function MessageBubble({ msg, accessToken }) {
   const isUser = msg.role === 'user'
 
   return (
@@ -306,10 +335,10 @@ function MessageBubble({ msg }) {
                   </ReactMarkdown>
                 )}
                 {msg.imageUrls?.filter(Boolean).map((url, i) => (
-                  <InlineImage key={i} url={url} />
+                  <InlineImage key={i} url={url} accessToken={accessToken} />
                 ))}
                 {msg.charts?.map((chart, i) => (
-                  <ChartMessage key={i} chart={chart} />
+                  <ChartMessage key={i} chart={chart} accessToken={accessToken} />
                 ))}
               </>
             )}
@@ -397,7 +426,7 @@ function EmptyState({ onChipClick }) {
 }
 
 /* ── Main Chat component ── */
-export default function Chat({ messages, loading, error, onSend, onAbort, onClear, onClearError }) {
+export default function Chat({ messages, loading, error, accessToken, onSend, onAbort, onClear, onClearError }) {
   const [input, setInput] = useState('')
   const scrollContainerRef = useRef(null)
   const textareaRef = useRef(null)
@@ -520,7 +549,7 @@ export default function Chat({ messages, loading, error, onSend, onAbort, onClea
               msg.isLoading ? (
                 <LoadingMessage key={i} toolCalls={msg.toolCalls} statusMessage={msg.statusMessage} />
               ) : (
-                <MessageBubble key={i} msg={msg} />
+                <MessageBubble key={i} msg={msg} accessToken={accessToken} />
               )
             )}
             <div style={{ height: '8px' }} />

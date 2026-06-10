@@ -16,6 +16,7 @@ async def ensure_chart_table() -> None:
             CREATE TABLE IF NOT EXISTS agent_charts (
                 id UUID PRIMARY KEY,
                 thread_id TEXT NOT NULL,
+                user_id TEXT NOT NULL DEFAULT '__legacy__',
                 payload JSONB NOT NULL,
                 metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -24,32 +25,49 @@ async def ensure_chart_table() -> None:
         )
         await conn.execute(
             """
+            ALTER TABLE agent_charts
+            ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT '__legacy__'
+            """
+        )
+        await conn.execute(
+            """
             CREATE INDEX IF NOT EXISTS idx_agent_charts_thread_created
             ON agent_charts (thread_id, created_at)
+            """
+        )
+        await conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_agent_charts_user_id
+            ON agent_charts (user_id)
             """
         )
         await conn.commit()
 
 
-async def save_chart(thread_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+async def save_chart(thread_id: str, payload: dict[str, Any], user_id: str) -> dict[str, Any]:
     stored_payload = dict(payload)
-    chart_id = stored_payload.get("chart_id")
-    if not chart_id:
-        stable_payload = json.dumps(stored_payload, sort_keys=True, separators=(",", ":"))
-        chart_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{thread_id}:{stable_payload}"))
+    stable_payload = json.dumps(
+        {k: v for k, v in stored_payload.items() if k not in {"chart_id", "thread_id", "user_id"}},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    chart_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{user_id}:{thread_id}:{stable_payload}"))
     stored_payload["chart_id"] = chart_id
+    stored_payload["thread_id"] = thread_id
+    stored_payload["user_id"] = user_id
     metadata = stored_payload.get("metadata") or {}
 
     async with pg_connection() as conn:
         await conn.execute(
             """
-            INSERT INTO agent_charts (id, thread_id, payload, metadata)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO agent_charts (id, thread_id, user_id, payload, metadata)
+            VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT (id) DO UPDATE
             SET payload = EXCLUDED.payload,
-                metadata = EXCLUDED.metadata
+                metadata = EXCLUDED.metadata,
+                user_id = EXCLUDED.user_id
             """,
-            (chart_id, thread_id, Jsonb(stored_payload), Jsonb(metadata)),
+            (chart_id, thread_id, user_id, Jsonb(stored_payload), Jsonb(metadata)),
         )
         await conn.commit()
 
@@ -59,14 +77,23 @@ async def save_chart(thread_id: str, payload: dict[str, Any]) -> dict[str, Any]:
 async def get_chart(chart_id: str) -> dict[str, Any] | None:
     async with pg_connection() as conn:
         cursor = await conn.execute(
-            "SELECT payload FROM agent_charts WHERE id = %s",
+            "SELECT payload, thread_id, user_id FROM agent_charts WHERE id = %s",
             (chart_id,),
         )
         row = await cursor.fetchone()
-    return row[0] if row else None
+    if not row:
+        return None
+    payload = dict(row[0])
+    payload.setdefault("chart_id", chart_id)
+    payload["thread_id"] = row[1]
+    payload["user_id"] = row[2]
+    return payload
 
 
-async def delete_charts_for_session(thread_id: str) -> None:
+async def delete_charts_for_session(thread_id: str, user_id: str) -> None:
     async with pg_connection() as conn:
-        await conn.execute("DELETE FROM agent_charts WHERE thread_id = %s", (thread_id,))
+        await conn.execute(
+            "DELETE FROM agent_charts WHERE thread_id = %s AND user_id = %s",
+            (thread_id, user_id),
+        )
         await conn.commit()

@@ -439,53 +439,22 @@ def _parse_simple_satellite_plot_task(task: str):
 
 # ── list_sessions, delete_session ─────────────────────────────────────────────
 
-async def list_sessions() -> list[dict]:
+async def list_sessions(user_id: str) -> list[dict]:
     """Return supervisor sessions with metadata when available."""
-    return await list_session_metadata()
+    return await list_session_metadata(user_id)
 
 
-async def delete_session(thread_id: str):
+async def delete_session(thread_id: str, user_id: str) -> bool:
     """Delete a supervisor session from the checkpoint tables."""
-    await delete_charts_for_session(thread_id)
-    await delete_session_metadata(thread_id)
+    deleted = await delete_session_metadata(thread_id, user_id)
+    if not deleted:
+        return False
+    await delete_charts_for_session(thread_id, user_id)
     async with pg_connection() as conn:
         for table in ("checkpoint_writes", "checkpoint_blobs", "checkpoints"):
             await conn.execute(
                 f"DELETE FROM {table} WHERE thread_id = %s", (thread_id,)
             )
         await conn.commit()
+    return True
 
-
-# ── Standalone test ───────────────────────────────────────────────────────────
-
-if __name__ == "__main__":
-    agent = asyncio.run(build_agent())
-
-    sessions = asyncio.run(list_sessions())
-    print("Existing sessions:", sessions or "none")
-
-    thread_id = input("Enter session ID to resume (or press Enter for new): ").strip()
-    if not thread_id:
-        thread_id = str(uuid.uuid4())
-        print(f"New session: {thread_id[:8]}...")
-    else:
-        print(f"Resuming session: {thread_id[:8]}...")
-
-    while True:
-        try:
-            user_input = input("You: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\nGoodbye!")
-            break
-
-        if not user_input or user_input.lower() in {"quit", "exit", "q"}:
-            break
-
-        for event_type, data in stream_response(agent, user_input, thread_id):
-            if event_type == "tool_call":
-                print(f"\n⚙ Calling: {data['name']} | args: {data['args']}")
-            elif event_type == "tool_result":
-                print(f"[{data['name']}]: {data['content']}")
-            elif event_type == "text":
-                print(f"\n{data}")
-        print()

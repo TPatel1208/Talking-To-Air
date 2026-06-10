@@ -1,4 +1,4 @@
-export default function SessionSidebar({ sessions, threadId, onSwitch, onNew, onDelete }) {
+export default function SessionSidebar({ sessions, threadId, onSwitch, onNew, onDelete, onLogout }) {
   const getSessionId = (session) => typeof session === 'string' ? session : session?.id
   const getSessionTitle = (session, index) => {
     if (session && typeof session === 'object' && session.title) return session.title
@@ -123,8 +123,8 @@ export default function SessionSidebar({ sessions, threadId, onSwitch, onNew, on
         })}
       </div>
 
-      {/* New chat button */}
-      <div style={{ padding: '12px 10px 16px' }}>
+      {/* Actions */}
+      <div style={{ padding: '12px 10px 16px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
         <button
           onClick={onNew}
           style={{
@@ -150,6 +150,40 @@ export default function SessionSidebar({ sessions, threadId, onSwitch, onNew, on
             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
           </svg>
           New chat
+        </button>
+        <button
+          onClick={onLogout}
+          style={{
+            display:        'flex',
+            alignItems:     'center',
+            gap:            '8px',
+            width:          '100%',
+            padding:        '9px 14px',
+            borderRadius:   '10px',
+            background:     'transparent',
+            color:          'var(--text-secondary)',
+            border:         '1px solid var(--border)',
+            fontSize:       '13px',
+            fontWeight:     '500',
+            fontFamily:     'var(--font)',
+            cursor:         'pointer',
+            transition:     'background 0.15s, color 0.15s',
+          }}
+          onMouseEnter={e => {
+            e.currentTarget.style.background = 'var(--bg-card)'
+            e.currentTarget.style.color = 'var(--text-primary)'
+          }}
+          onMouseLeave={e => {
+            e.currentTarget.style.background = 'transparent'
+            e.currentTarget.style.color = 'var(--text-secondary)'
+          }}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+            <path d="M16 17l5-5-5-5"/>
+            <path d="M21 12H9"/>
+          </svg>
+          Sign out
         </button>
       </div>
 

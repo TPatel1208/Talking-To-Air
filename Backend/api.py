@@ -9,14 +9,18 @@ import logging
 import time
 import csv
 import io
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+from typing import Annotated, Optional
+
+import psycopg
+from fastapi import FastAPI, HTTPException, Path, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import Response, StreamingResponse
-from pydantic import BaseModel
-from typing import Optional
+from pydantic import BaseModel, Field
+from starlette.routing import Match
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -26,8 +30,13 @@ from models import parse_agent_result, parse_chart_payload
 from repositories.chart_repository import ensure_chart_table, get_chart, save_chart
 from repositories.session_metadata_repository import (
     ensure_session_metadata_table,
+    get_session_metadata,
     save_session_metadata_once,
+    session_belongs_to_user,
 )
+from repositories.revoked_token_repository import ensure_revoked_token_table, revoke_token
+from repositories.user_repository import create_user, ensure_user_table, get_user_by_username
+from services.auth_service import authenticate_request, create_access_token, hash_password, verify_password
 from utils.db import close_db_pool, init_db_pool, validate_config
 from utils.logging import configure_logging
 from utils.metrics import snapshot_metrics
@@ -44,6 +53,8 @@ async def lifespan(app: FastAPI):
     global agent
     validate_config()
     await init_db_pool()
+    await ensure_user_table()
+    await ensure_revoked_token_table()
     await ensure_chart_table()
     await ensure_session_metadata_table()
 
@@ -76,10 +87,86 @@ OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "outputs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 app.mount("/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
 
+PUBLIC_ENDPOINTS = {
+    ("GET", "/health"),
+    ("POST", "/auth/login"),
+    ("POST", "/auth/register"),
+}
+ThreadId = Annotated[str, Path(pattern=r"^[A-Za-z0-9-]+$")]
+
+
+@app.middleware("http")
+async def require_authentication(request: Request, call_next):
+    if request.method == "OPTIONS" or (request.method, request.url.path) in PUBLIC_ENDPOINTS:
+        return await call_next(request)
+    if not any(route.matches(request.scope)[0] != Match.NONE for route in app.routes):
+        return await call_next(request)
+    try:
+        request.state.current_user = await authenticate_request(request)
+    except HTTPException as exc:
+        return Response(
+            content=json.dumps({"detail": exc.detail}),
+            status_code=exc.status_code,
+            media_type="application/json",
+            headers=exc.headers,
+        )
+    return await call_next(request)
+
 
 class ChatRequest(BaseModel):
-    message:   str
-    thread_id: Optional[str] = None
+    message: str = Field(min_length=1, max_length=10_000)
+    thread_id: Optional[str] = Field(default=None, min_length=1, pattern=r"^[A-Za-z0-9-]+$")
+
+
+class AuthRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=150)
+    password: str = Field(min_length=1, max_length=1024)
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+
+
+class UserResponse(BaseModel):
+    id: str
+    username: str
+    is_active: bool
+
+
+@app.post("/auth/register", status_code=status.HTTP_201_CREATED, response_model=UserResponse)
+async def register(req: AuthRequest):
+    password_hash = hash_password(req.password)
+    try:
+        user = await create_user(req.username, password_hash)
+    except psycopg.errors.UniqueViolation:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already exists")
+    return UserResponse(id=user.id, username=user.username, is_active=user.is_active)
+
+
+@app.post("/auth/login", response_model=TokenResponse)
+async def login(req: AuthRequest):
+    user = await get_user_by_username(req.username)
+    if user is None or not user.is_active or not verify_password(req.password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    token, expires_in = create_access_token(user)
+    return TokenResponse(access_token=token, expires_in=expires_in)
+
+
+@app.post("/auth/logout")
+async def logout(request: Request):
+    payload = getattr(request.state, "jwt_payload", {})
+    jti = payload.get("jti")
+    exp = payload.get("exp")
+    if not jti or exp is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication credentials")
+    await revoke_token(jti, datetime.fromtimestamp(exp, tz=timezone.utc))
+    return {"detail": "Logged out"}
 
 
 def normalize_image_url(raw: str) -> Optional[str]:
@@ -96,13 +183,13 @@ def sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
-async def _persist_chart_payload_async(thread_id: str, chart) -> dict:
+async def _persist_chart_payload_async(thread_id: str, chart, user_id: str) -> dict:
     payload = chart.model_dump(exclude_none=True) if hasattr(chart, "model_dump") else dict(chart)
     if payload.get("chart_id"):
         stored = await get_chart(payload["chart_id"])
-        if stored:
+        if stored and stored.get("user_id") == user_id:
             return stored
-    return await save_chart(thread_id, payload)
+    return await save_chart(thread_id, payload, user_id)
 
 
 def _safe_export_name(payload: dict, suffix: str) -> str:
@@ -445,9 +532,10 @@ def metrics():
 
 
 @app.get("/chart/{chart_id}/export.csv")
-async def export_chart_csv(chart_id: str):
+async def export_chart_csv(chart_id: str, request: Request):
+    user = request.state.current_user
     payload = await get_chart(chart_id)
-    if not payload:
+    if not payload or payload.get("user_id") != user.id:
         raise HTTPException(status_code=404, detail="Chart not found")
     try:
         export = payload.get("export") or {}
@@ -468,9 +556,10 @@ async def export_chart_csv(chart_id: str):
 
 
 @app.get("/chart/{chart_id}/export.png")
-async def export_chart_png(chart_id: str):
+async def export_chart_png(chart_id: str, request: Request):
+    user = request.state.current_user
     payload = await get_chart(chart_id)
-    if not payload:
+    if not payload or payload.get("user_id") != user.id:
         raise HTTPException(status_code=404, detail="Chart not found")
     try:
         content = await asyncio.to_thread(_build_chart_png, payload)
@@ -485,14 +574,19 @@ async def export_chart_png(chart_id: str):
 
 
 @app.post("/chat")
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest, request: Request):
+    user = request.state.current_user
     active_agent = getattr(app.state, "agent", None) or agent
     if active_agent is None:
         raise HTTPException(status_code=503, detail="Agent is not ready")
     thread_id = req.thread_id or str(uuid.uuid4())
+    if req.thread_id:
+        metadata = await get_session_metadata(thread_id)
+        if metadata is not None and metadata["user_id"] != user.id:
+            raise HTTPException(status_code=404, detail="Session not found")
     request_id = str(uuid.uuid4())
     try:
-        await save_session_metadata_once(thread_id, req.message)
+        await save_session_metadata_once(thread_id, req.message, user.id)
     except Exception:
         logger.exception(
             "session_metadata_save_failed",
@@ -525,12 +619,12 @@ async def chat(req: ChatRequest):
                     structured_result = parse_agent_result(content)
                     if structured_result is not None:
                         for chart in structured_result.charts:
-                            yield sse("chart", await _persist_chart_payload_async(thread_id, chart))
+                            yield sse("chart", await _persist_chart_payload_async(thread_id, chart, user.id))
                         continue
 
                     chart = parse_chart_payload(content)
                     if chart is not None:
-                        yield sse("chart", await _persist_chart_payload_async(thread_id, chart))
+                        yield sse("chart", await _persist_chart_payload_async(thread_id, chart, user.id))
                         continue
 
                     # Legacy: detect .png paths for any remaining static image tools
@@ -553,7 +647,7 @@ async def chat(req: ChatRequest):
                         if structured_result is not None:
                             response_text += structured_result.text
                             for chart in structured_result.charts:
-                                yield sse("chart", await _persist_chart_payload_async(thread_id, chart))
+                                yield sse("chart", await _persist_chart_payload_async(thread_id, chart, user.id))
                         else:
                             response_text += data
                     elif isinstance(data, list):
@@ -599,9 +693,9 @@ async def chat(req: ChatRequest):
 
 
 @app.get("/sessions")
-async def get_sessions():
+async def get_sessions(request: Request):
     try:
-        return {"sessions": await list_sessions()}
+        return {"sessions": await list_sessions(request.state.current_user.id)}
     except HTTPException:
         raise
     except Exception as e:
@@ -609,8 +703,11 @@ async def get_sessions():
 
 
 @app.get("/session/{thread_id}/history")
-async def get_history(thread_id: str):
+async def get_history(thread_id: ThreadId, request: Request):
     try:
+        user_id = request.state.current_user.id
+        if not await session_belongs_to_user(thread_id, user_id):
+            raise HTTPException(status_code=404, detail="Session not found")
         active_agent = getattr(app.state, "agent", None) or agent
         if active_agent is None:
             raise HTTPException(status_code=503, detail="Agent is not ready")
@@ -720,7 +817,7 @@ async def get_history(thread_id: str):
                         charts.append(chart)
 
                 for chart in charts:
-                    chart_payload = await _persist_chart_payload_async(thread_id, chart)
+                    chart_payload = await _persist_chart_payload_async(thread_id, chart, user_id)
                     for m in reversed(result):
                         if m["role"] == "assistant":
                             m.setdefault("charts", [])
@@ -758,32 +855,13 @@ async def get_history(thread_id: str):
 
 
 @app.delete("/session/{thread_id}")
-async def remove_session(thread_id: str):
+async def remove_session(thread_id: ThreadId, request: Request):
     try:
-        await delete_session(thread_id)
+        deleted = await delete_session(thread_id, request.state.current_user.id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Session not found")
         return {"deleted": thread_id}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    
-
-@app.get("/debug/{thread_id}")
-async def debug_history(thread_id: str):
-    active_agent = getattr(app.state, "agent", None) or agent
-    if active_agent is None:
-        raise HTTPException(status_code=503, detail="Agent is not ready")
-    config = {"configurable": {"thread_id": thread_id}}
-    if hasattr(active_agent, "aget_state"):
-        state = await active_agent.aget_state(config)
-    else:
-        maybe_state = active_agent.get_state(config)
-        state = await maybe_state if inspect.isawaitable(maybe_state) else maybe_state
-    raw = state.values.get("messages", [])
-    return [
-        {
-            "type": getattr(m, "type", None),
-            "content_type": type(m.content).__name__,
-            "content_preview": str(m.content)[:300],
-            "has_tool_calls": bool(getattr(m, "tool_calls", None)),
-        }
-        for m in raw
-    ]

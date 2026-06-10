@@ -20,3 +20,4 @@ tests/
 # IDE
 .vscode/
 .idea/
+AGENTS.md

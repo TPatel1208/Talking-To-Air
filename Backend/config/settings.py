@@ -65,6 +65,9 @@ class Settings:
     log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO").upper())
     log_format: str = field(default_factory=lambda: os.getenv("LOG_FORMAT", "text").strip().lower())
     long_request_seconds: float = field(default_factory=lambda: float(os.getenv("LONG_REQUEST_SECONDS", "30")))
+    jwt_secret_key: str | None = field(default_factory=lambda: os.getenv("JWT_SECRET_KEY"))
+    jwt_algorithm: str = field(default_factory=lambda: os.getenv("JWT_ALGORITHM", "HS256"))
+    jwt_expiration_minutes: int = field(default_factory=lambda: max(1, _int_env("JWT_EXPIRATION_MINUTES", 60)))
 
     def __post_init__(self) -> None:
         if self.data_fetch_mode not in _VALID_FETCH_MODES:
@@ -88,6 +91,8 @@ class Settings:
             missing.append("DB_PASSWORD")
         if not self.google_api_key:
             missing.append("GOOGLE_API_KEY")
+        if not self.jwt_secret_key:
+            missing.append("JWT_SECRET_KEY")
         if missing:
             raise RuntimeError(f"Missing required environment variable(s): {', '.join(missing)}")
 
