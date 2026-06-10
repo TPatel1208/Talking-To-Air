@@ -27,6 +27,35 @@ def _get_data_loader():
         _data_loader = DataLoader()
     return _data_loader
 
+
+def _satellite_fetch_error_message(exc: Exception) -> str:
+    """Return a user-safe message for classified satellite fetch failures."""
+    try:
+        from services.async_harmony_service import (
+            HarmonyAuthenticationError,
+            HarmonyJobFailedError,
+            HarmonyProtocolError,
+            HarmonyTimeoutError,
+        )
+    except Exception:
+        return str(exc)
+
+    if isinstance(exc, HarmonyAuthenticationError):
+        return (
+            "NASA Harmony authentication failed. Please refresh the Earthdata "
+            "credentials and try again."
+        )
+    if isinstance(exc, HarmonyTimeoutError):
+        return "Satellite data processing timed out. Please try again later."
+    if isinstance(exc, HarmonyProtocolError):
+        return (
+            "NASA Harmony returned an unexpected response while preparing the "
+            "satellite data. Please try again later."
+        )
+    if isinstance(exc, HarmonyJobFailedError):
+        return f"NASA Harmony could not complete the satellite data request: {exc}"
+    return str(exc)
+
 def _load_collections() -> dict:
     """Expose collections.yaml as the legacy dict shape used by tool modules."""
     return {
@@ -142,14 +171,19 @@ async def fetch_environmental_data(
         emit_status("Downloading satellite granules...")
         ds = await asyncio.to_thread(_get_data_loader().download_dataset_harmony, **fetch_params)
         emit_status("Processing downloaded data...")
-    except ValueError as e:
-        emit_status("Download failed while retrieving NASA Harmony output.")
-        return {"error": str(e)}
-    except RuntimeError as e:
-        emit_status("Download failed while retrieving NASA Harmony output.")
-        return {"error": str(e)}
     except Exception as e:
+        try:
+            from services.async_harmony_service import HarmonyError
+        except Exception:
+            HarmonyError = ()  # type: ignore[assignment]
+        if isinstance(e, HarmonyError):
+            emit_status(_satellite_fetch_error_message(e))
+            return {"error": _satellite_fetch_error_message(e)}
         emit_status("Download failed while retrieving NASA Harmony output.")
+        if isinstance(e, ValueError):
+            return {"error": str(e)}
+        if isinstance(e, RuntimeError):
+            return {"error": str(e)}
         return {"error": f"Unexpected {type(e).__name__}: {str(e)}"}
 
     try:

@@ -104,6 +104,29 @@ class DataRoutingTests(unittest.TestCase):
         self.assertIs(result, dataset)
         s3.assert_called_once_with("C1-LARC_CLOUD", ("start", "end"), None, "product", 1)
 
+    def test_auto_mode_does_not_fallback_for_harmony_operational_errors(self):
+        from services.async_harmony_service import HarmonyAuthenticationError
+
+        with patch.object(
+            self.loader,
+            "_fetch_harmony_fallback",
+            side_effect=HarmonyAuthenticationError("auth expired"),
+        ), patch.object(self.loader, "_fetch_opendap") as opendap:
+            with self.assertRaises(HarmonyAuthenticationError):
+                self.loader._route(
+                    mode="auto",
+                    provider="GES_DISC",
+                    col=SimpleNamespace(supports_variable_subsetting=True, variables=["NO2"], groups=[]),
+                    collection_id="C1-GES_DISC",
+                    temporal=("start", "end"),
+                    bounding_box=None,
+                    variables=None,
+                    max_results=1,
+                    output_format="application/x-netcdf4",
+                )
+
+        opendap.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -31,9 +31,19 @@ class ConfigLoggingTests(unittest.TestCase):
 
         self.assertEqual(loaded.llm_model, "gemma-4-26b-a4b-it")
         self.assertEqual(loaded.data_fetch_mode, "auto")
+        self.assertEqual(loaded.harmony_processing_timeout_seconds, 3600)
         loaded = Settings(db_password=None, google_api_key=None)
         with self.assertRaisesRegex(RuntimeError, "DB_PASSWORD, GOOGLE_API_KEY"):
             loaded.validate_startup()
+
+    def test_settings_loads_harmony_processing_timeout(self):
+        from config.settings import get_settings
+
+        with patch.dict(os.environ, {"HARMONY_PROCESSING_TIMEOUT_SECONDS": "15"}, clear=True):
+            get_settings.cache_clear()
+            loaded = get_settings()
+
+        self.assertEqual(loaded.harmony_processing_timeout_seconds, 15)
 
     def test_settings_normalizes_invalid_modes(self):
         from config.settings import get_settings

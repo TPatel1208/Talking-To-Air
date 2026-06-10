@@ -28,12 +28,19 @@ class EarthAccessClientTests(unittest.TestCase):
     def test_first_request_initializes_and_reuses_auth(self):
         from utils import earthaccess_client
 
-        with patch(
-            "utils.earthaccess_client.earthaccess.login",
-            return_value=object(),
-        ) as login:
+        with patch("utils.earthaccess_client.earthaccess.login", return_value=object()) as login, \
+             patch.dict(
+                 os.environ,
+                 {"EDL_USERNAME": "edl-user", "EDL_PASSWORD": "edl-pass"},
+                 clear=True,
+             ):
+            from config.settings import get_settings
+
+            get_settings.cache_clear()
             first = earthaccess_client.get_earthaccess_auth()
             second = earthaccess_client.get_earthaccess_auth()
+            self.assertEqual(os.environ["EARTHDATA_USERNAME"], "edl-user")
+            self.assertEqual(os.environ["EARTHDATA_PASSWORD"], "edl-pass")
 
         self.assertIs(first, second)
         self.assertEqual(login.call_count, 1)
@@ -54,6 +61,25 @@ class EarthAccessClientTests(unittest.TestCase):
         self.assertIs(result, auth)
         self.assertEqual(login.call_count, 2)
         self.assertEqual(login.call_args.kwargs, {"strategy": "environment"})
+
+    def test_preserves_explicit_earthdata_environment_values(self):
+        from utils import earthaccess_client
+        from config.settings import get_settings
+
+        with patch.dict(
+            os.environ,
+            {
+                "EDL_USERNAME": "edl-user",
+                "EDL_PASSWORD": "edl-pass",
+                "EARTHDATA_USERNAME": "earth-user",
+                "EARTHDATA_PASSWORD": "earth-pass",
+            },
+            clear=True,
+        ):
+            get_settings.cache_clear()
+            earthaccess_client.ensure_earthdata_environment_from_edl()
+            self.assertEqual(os.environ["EARTHDATA_USERNAME"], "earth-user")
+            self.assertEqual(os.environ["EARTHDATA_PASSWORD"], "earth-pass")
 
 
 if __name__ == "__main__":

@@ -309,6 +309,19 @@ class DataLoader:
             )
         except Exception as exc:
             harmony_error = exc
+            try:
+                from services.async_harmony_service import HarmonyError
+            except Exception:
+                HarmonyError = ()  # type: ignore[assignment]
+            if isinstance(harmony_error, HarmonyError):
+                emit_status("Download failed while retrieving NASA Harmony output.")
+                logger.error(
+                    "Harmony primary fetch failed with %s for %s: %s",
+                    type(harmony_error).__name__,
+                    collection_id,
+                    harmony_error,
+                )
+                raise
             logger.warning(
                 "Harmony primary fetch failed for %s (%s) — trying %s fallback",
                 collection_id, harmony_error, provider,

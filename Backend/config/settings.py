@@ -52,6 +52,9 @@ class Settings:
     satellite_max_results_cap: int = field(default_factory=lambda: max(1, _int_env("SATELLITE_MAX_RESULTS_CAP", 20)))
     csv_export_max_granules: int = field(default_factory=lambda: max(1, _int_env("CSV_EXPORT_MAX_GRANULES", 50)))
     s3_force_fetch: bool = field(default_factory=lambda: os.getenv("S3_FORCE_FETCH", "").strip() == "1")
+    harmony_processing_timeout_seconds: int = field(
+        default_factory=lambda: max(1, _int_env("HARMONY_PROCESSING_TIMEOUT_SECONDS", 3600))
+    )
 
     earthdata_token: str | None = field(default_factory=lambda: os.getenv("EARTHDATA_TOKEN"))
     edl_username: str = field(default_factory=lambda: os.getenv("EDL_USERNAME", ""))

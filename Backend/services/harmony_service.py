@@ -34,6 +34,7 @@ from typing import Optional, List, Tuple
 import requests
 from config.settings import get_settings
 from harmony import BBox, Client, Collection, Environment, Request
+from utils.earthaccess_client import ensure_earthdata_environment_from_edl
 from tenacity import (
     retry,
     retry_if_exception,
@@ -76,6 +77,7 @@ class HarmonyService:
         """
         if client is None:
             settings = get_settings()
+            ensure_earthdata_environment_from_edl()
             username = settings.edl_username
             password = settings.edl_password
             if not username or not password:

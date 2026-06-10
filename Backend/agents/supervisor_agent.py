@@ -402,8 +402,7 @@ async def _try_direct_satellite_plot(task: str) -> AgentResult | None:
             "max_results": 1 if variable == "TROPOMI_NO2" else 10,
         })
         if isinstance(data, dict) and data.get("error"):
-            emit_status("Download failed while retrieving NASA Harmony output.")
-            return AgentResult(text=f"Fetch failed: {data['error']}")
+            return AgentResult(text=str(data["error"]))
         logger.info("Direct satellite plot fallback: fetch_environmental_data returned data")
         plot_data = data.model_dump() if hasattr(data, "model_dump") else data
 
@@ -423,7 +422,7 @@ async def _try_direct_satellite_plot(task: str) -> AgentResult | None:
         return AgentResult(text=str(chart_result))
     except Exception as exc:
         emit_status("Satellite workflow failed.")
-        return AgentResult(text=f"Satellite fallback failed: {exc}")
+        return AgentResult(text=str(exc))
 
 
 def _parse_simple_satellite_plot_task(task: str):

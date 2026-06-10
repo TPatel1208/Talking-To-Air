@@ -30,6 +30,7 @@ from repositories.session_metadata_repository import (
 )
 from utils.db import close_db_pool, init_db_pool, validate_config
 from utils.logging import configure_logging
+from utils.metrics import snapshot_metrics
 from utils.streaming import stream_response
 
 agent = None
@@ -436,6 +437,11 @@ def _build_chart_png(payload: dict) -> bytes:
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/metrics")
+def metrics():
+    return {"counters": snapshot_metrics()}
 
 
 @app.get("/chart/{chart_id}/export.csv")

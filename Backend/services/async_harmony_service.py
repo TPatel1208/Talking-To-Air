@@ -43,11 +43,14 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
+from urllib.parse import urlparse
 
 import httpx
 import requests
 from config.settings import get_settings
 from harmony import BBox, Client, Collection, Environment, Request
+from utils.earthaccess_client import ensure_earthdata_environment_from_edl
+from utils.metrics import increment_metric
 from utils.streaming import emit_status
 from tenacity import (
     retry,
@@ -89,6 +92,28 @@ _RETRY = dict(
 
 # Poll interval in seconds for job-status checks
 _POLL_INTERVAL = 5
+_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+_EARTHDATA_LOGIN_HOST = "urs.earthdata.nasa.gov"
+
+
+class HarmonyError(RuntimeError):
+    """Base class for Harmony orchestration failures."""
+
+
+class HarmonyTimeoutError(TimeoutError, HarmonyError):
+    """Raised when a Harmony job exceeds the configured processing timeout."""
+
+
+class HarmonyAuthenticationError(HarmonyError):
+    """Raised when Harmony redirects polling to Earthdata Login."""
+
+
+class HarmonyProtocolError(HarmonyError):
+    """Raised when Harmony returns an unexpected protocol response."""
+
+
+class HarmonyJobFailedError(HarmonyError):
+    """Raised when Harmony reports a terminal non-success job status."""
 
 
 class AsyncHarmonyService:
@@ -118,6 +143,7 @@ class AsyncHarmonyService:
         download_dir: str = ".",
     ) -> None:
         settings = get_settings()
+        ensure_earthdata_environment_from_edl()
         if client is None:
             username = settings.edl_username
             password = settings.edl_password
@@ -133,6 +159,7 @@ class AsyncHarmonyService:
         self._auth = (settings.edl_username, settings.edl_password)
         self._poll_interval = poll_interval
         self._download_dir = download_dir
+        self._processing_timeout_seconds = settings.harmony_processing_timeout_seconds
 
     # ------------------------------------------------------------------
     # Public async API
@@ -199,12 +226,60 @@ class AsyncHarmonyService:
         )
         emit_status("Submitting request to NASA Harmony...")
         job_id = await self._submit_request(request)
+        increment_metric("harmony_jobs_submitted")
         logger.info("Harmony job submitted: %s", job_id)
 
         # ── 2. Async poll until done ─────────────────────────────────────
         status_url = self._status_url(job_id)
         emit_status("NASA Harmony is preparing data...")
-        await self._wait_for_processing(status_url)
+        started = asyncio.get_running_loop().time()
+        client_downloaded_files: Optional[List[Path]] = None
+        try:
+            async with asyncio.timeout(self._processing_timeout_seconds):
+                try:
+                    await self._wait_for_processing(status_url)
+                except HarmonyAuthenticationError:
+                    logger.warning(
+                        "Harmony httpx polling was redirected to Earthdata Login "
+                        "for job %s; falling back to harmony-py authenticated "
+                        "wait/download",
+                        job_id,
+                    )
+                    client_downloaded_files = await asyncio.to_thread(
+                        self._wait_and_download_with_client,
+                        job_id,
+                        dest,
+                    )
+        except TimeoutError as exc:
+            elapsed = int(asyncio.get_running_loop().time() - started)
+            increment_metric("harmony_jobs_timed_out")
+            logger.error(
+                "Harmony processing timeout",
+                extra={
+                    "_job_id": job_id,
+                    "_elapsed_seconds": elapsed,
+                    "_timeout_seconds": self._processing_timeout_seconds,
+                },
+            )
+            emit_status("Satellite data processing timed out. Please try again later.")
+            raise HarmonyTimeoutError(
+                f"Harmony job {job_id} exceeded "
+                f"{self._processing_timeout_seconds}s processing limit"
+            ) from exc
+
+        if client_downloaded_files is not None:
+            if not client_downloaded_files:
+                emit_status("Download failed while retrieving NASA Harmony output.")
+                raise RuntimeError(f"No files downloaded for job {job_id}")
+            increment_metric("harmony_jobs_succeeded")
+            emit_status("NASA Harmony finished preparing data.")
+            emit_status("Processing downloaded data...")
+            logger.info(
+                "Download complete via harmony-py client: %d file(s) for job %s",
+                len(client_downloaded_files),
+                job_id,
+            )
+            return client_downloaded_files
 
         # ── 3. Fetch links then download concurrently ────────────────────
         emit_status("Downloading satellite granules...")
@@ -305,9 +380,45 @@ class AsyncHarmonyService:
         self, client: httpx.AsyncClient, url: str
     ) -> dict:
         """Single status poll — retried on transient errors."""
-        resp = await client.get(url)
+        resp = await client.get(url, follow_redirects=False)
+        self._validate_json_response(resp, url)
         resp.raise_for_status()
         return resp.json()
+
+    def _validate_json_response(self, resp: httpx.Response, url: str) -> None:
+        """Classify redirects and non-JSON Harmony responses before parsing."""
+        location = resp.headers.get("location", "")
+        if resp.status_code in _REDIRECT_STATUSES:
+            host = urlparse(location).netloc.lower()
+            if _EARTHDATA_LOGIN_HOST in host:
+                increment_metric("harmony_auth_failures")
+                raise HarmonyAuthenticationError(
+                    "Harmony authentication failed: job status request was "
+                    f"redirected to Earthdata Login ({location})"
+                )
+            increment_metric("harmony_protocol_failures")
+            raise HarmonyProtocolError(
+                "Harmony returned an unexpected redirect while polling "
+                f"{url}: status={resp.status_code} location={location or '<missing>'}"
+            )
+
+        if resp.status_code in {401, 403}:
+            increment_metric("harmony_auth_failures")
+            raise HarmonyAuthenticationError(
+                f"Harmony authentication failed while polling {url}: "
+                f"status={resp.status_code}"
+            )
+
+        if resp.is_error:
+            return
+
+        content_type = resp.headers.get("content-type", "")
+        if "application/json" not in content_type.lower():
+            increment_metric("harmony_protocol_failures")
+            raise HarmonyProtocolError(
+                "Harmony returned a non-JSON response: "
+                f"url={url} status={resp.status_code} content_type={content_type or '<missing>'}"
+            )
 
     async def _wait_for_processing(self, status_url: str) -> None:
         """Poll the job-status endpoint until the job reaches a terminal state."""
@@ -316,7 +427,7 @@ class AsyncHarmonyService:
         async with httpx.AsyncClient(
             auth=self._auth,
             timeout=httpx.Timeout(30.0),
-            follow_redirects=True,
+            follow_redirects=False,
         ) as client:
             while True:
                 data   = await self._poll_status(client, status_url)
@@ -327,10 +438,12 @@ class AsyncHarmonyService:
                 if status in terminal:
                     if status != "successful":
                         msg = data.get("message", "No details provided")
+                        increment_metric("harmony_jobs_failed")
                         emit_status("Download failed while retrieving NASA Harmony output.")
-                        raise RuntimeError(
+                        raise HarmonyJobFailedError(
                             f"Harmony job ended with status '{status}': {msg}"
                         )
+                    increment_metric("harmony_jobs_succeeded")
                     emit_status("NASA Harmony finished preparing data.")
                     return
 
@@ -349,9 +462,10 @@ class AsyncHarmonyService:
         async with httpx.AsyncClient(
             auth=self._auth,
             timeout=httpx.Timeout(30.0),
-            follow_redirects=True,
+            follow_redirects=False,
         ) as client:
-            resp = await client.get(status_url)
+            resp = await client.get(status_url, follow_redirects=False)
+            self._validate_json_response(resp, status_url)
             resp.raise_for_status()
             data  = resp.json()
             links = data.get("links", [])
@@ -407,4 +521,8 @@ class AsyncHarmonyService:
         return files
 
     def __repr__(self) -> str:
-        return f"AsyncHarmonyService(poll_interval={self._poll_interval}s)"
+        return (
+            "AsyncHarmonyService("
+            f"poll_interval={self._poll_interval}s, "
+            f"processing_timeout={self._processing_timeout_seconds}s)"
+        )
