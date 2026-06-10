@@ -50,8 +50,8 @@ import requests
 from config.settings import get_settings
 from harmony import BBox, Client, Collection, Environment, Request
 from utils.earthaccess_client import ensure_earthdata_environment_from_edl
-from utils.metrics import increment_metric
-from utils.streaming import emit_status
+from utils.metrics import increment_metric, observe_harmony_fetch
+from utils.streaming import current_thread_id, emit_status
 from tenacity import (
     retry,
     retry_if_exception,
@@ -244,6 +244,7 @@ class AsyncHarmonyService:
         status_url = self._status_url(job_id)
         emit_status("NASA Harmony is preparing data...")
         started = asyncio.get_running_loop().time()
+        thread_id = current_thread_id()
         client_downloaded_files: Optional[List[Path]] = None
         try:
             async with asyncio.timeout(self._processing_timeout_seconds):
@@ -269,12 +270,14 @@ class AsyncHarmonyService:
             elapsed = int(asyncio.get_running_loop().time() - started)
             increment_metric("harmony_jobs_timed_out")
             logger.warning(
-                "Harmony processing timeout",
+                "harmony_job_timeout",
                 extra={
+                    "_event": "harmony_job_timeout",
                     "_job_id": job_id,
                     "_job_url": status_url,
                     "_elapsed_seconds": elapsed,
                     "_timeout_seconds": self._processing_timeout_seconds,
+                    "_thread_id": thread_id,
                 },
             )
             emit_status("Satellite data processing timed out. Please try again later.")
@@ -290,6 +293,7 @@ class AsyncHarmonyService:
                 emit_status("Download failed while retrieving NASA Harmony output.")
                 raise RuntimeError(f"No files downloaded for job {job_id}")
             increment_metric("harmony_jobs_succeeded")
+            observe_harmony_fetch(asyncio.get_running_loop().time() - started)
             emit_status("NASA Harmony finished preparing data.")
             emit_status("Processing downloaded data...")
             logger.info(
@@ -309,6 +313,7 @@ class AsyncHarmonyService:
 
         emit_status("Processing downloaded data...")
         logger.info("Download complete: %d file(s) for job %s", len(files), job_id)
+        observe_harmony_fetch(asyncio.get_running_loop().time() - started)
         return files
 
     def submit_and_download_sync(self, **kwargs) -> List[Path]:
@@ -498,6 +503,15 @@ class AsyncHarmonyService:
                         msg = data.get("message", "No details provided")
                         increment_metric("harmony_jobs_failed")
                         emit_status("Download failed while retrieving NASA Harmony output.")
+                        logger.error(
+                            "harmony_job_failed",
+                            extra={
+                                "_event": "harmony_job_failed",
+                                "_job_url": status_url,
+                                "_error_message": str(msg),
+                                "_thread_id": current_thread_id(),
+                            },
+                        )
                         raise HarmonyJobFailedError(
                             f"Harmony job ended with status '{status}': {msg}"
                         )

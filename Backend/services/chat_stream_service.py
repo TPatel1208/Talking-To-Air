@@ -83,6 +83,16 @@ class ChatStreamService:
             if url:
                 image_urls.append(url)
                 yield self.sse("image", {"url": url})
+                return
+        if content:
+            logger.warning(
+                "chart_payload_parse_failure",
+                extra={
+                    "_event": "chart_payload_parse_failure",
+                    "_result_preview": str(content)[:200],
+                    "_thread_id": thread_id,
+                },
+            )
 
     async def _text_events(self, data: Any, thread_id: str, user_id: str) -> tuple[str, list[str]]:
         if isinstance(data, str):

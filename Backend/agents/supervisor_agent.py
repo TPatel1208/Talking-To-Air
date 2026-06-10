@@ -31,7 +31,8 @@ from models import AgentResult, agent_result_to_json, parse_agent_result, parse_
 from tools.satellite_tools.query_parser import parse_satellite_plot_query
 from utils.db import get_checkpointer
 from utils.message_utils import extract_last_text, truncate_text
-from utils.streaming import emit_status, stream_response
+from utils.metrics import record_agent_request
+from utils.streaming import current_thread_id, emit_status, stream_response
 
 logger = logging.getLogger(__name__)
 
@@ -110,10 +111,19 @@ async def build_agent(
         Output: text summary including monitor name, site_id, coordinates,
                 exceedance dates, and peak concentration values.
         """
-        result = await ground_agent.ainvoke(
-            {"messages": [HumanMessage(content=task)]},
-            config={"configurable": {"thread_id": str(uuid.uuid4())}},
-        )
+        sub_thread_id = str(uuid.uuid4())
+        try:
+            result = await ground_agent.ainvoke(
+                {"messages": [HumanMessage(content=task)]},
+                config={"configurable": {"thread_id": sub_thread_id}},
+            )
+            record_agent_request("ground_sensor", "success")
+        except TimeoutError:
+            record_agent_request("ground_sensor", "timeout")
+            raise
+        except Exception:
+            record_agent_request("ground_sensor", "failure")
+            raise
         text = extract_last_text(
             result,
             "Ground sensor agent returned no response.",
@@ -143,10 +153,12 @@ async def build_agent(
         async def _run_satellite(task_text: str) -> AgentResult:
             charts = []
             text_parts  = []
+            sub_thread_id = str(uuid.uuid4())
+            outcome = "success"
 
             try:
                 async for event_type, data in stream_response(
-                    satellite_agent, task_text, thread_id=str(uuid.uuid4())
+                    satellite_agent, task_text, thread_id=sub_thread_id
                 ):
                     if event_type == "tool_result":
                         content = data.get("content", "")
@@ -162,8 +174,16 @@ async def build_agent(
                         t = data if isinstance(data, str) else data.get("response", "")
                         if t:
                             text_parts.append(t)
-            except Exception as exc:
+            except TimeoutError as exc:
+                outcome = "timeout"
                 text_parts.append(str(exc))
+            except Exception as exc:
+                outcome = "failure"
+                if exc.__class__.__name__ == "HarmonyTimeoutError":
+                    outcome = "timeout"
+                text_parts.append(str(exc))
+            finally:
+                record_agent_request("satellite", outcome)
 
             text = truncate_text(
                 " ".join(text_parts),
@@ -185,6 +205,15 @@ async def build_agent(
             "failed_generation",
         )
         if any(marker in result.text.lower() for marker in refusal_markers):
+            logger.warning(
+                "llm_tool_call_refusal",
+                extra={
+                    "_event": "llm_tool_call_refusal",
+                    "_agent_type": "satellite",
+                    "_task_summary": _task_summary(enriched_task),
+                    "_thread_id": current_thread_id(),
+                },
+            )
             retry_task = (
                 "The satellite tools are registered and available in this runtime: "
                 "geocode_location, "
@@ -278,6 +307,10 @@ def _chart_summary(chart) -> str:
     return ", ".join(bits)
 
 
+def _task_summary(task: str, max_chars: int = 200) -> str:
+    return " ".join(str(task).split())[:max_chars]
+
+
 async def _try_direct_satellite_plot(task: str) -> AgentResult | None:
     """
     Deterministic fallback for simple one-location satellite plot requests.
@@ -288,10 +321,25 @@ async def _try_direct_satellite_plot(task: str) -> AgentResult | None:
     """
     parsed = _parse_simple_satellite_plot_task(task)
     if parsed is None:
-        logger.info("satellite_parser_failure", extra={"_task": task[:500]})
+        logger.warning(
+            "direct_satellite_fallback_parse_failure",
+            extra={
+                "_event": "direct_satellite_fallback_parse_failure",
+                "_task_summary": _task_summary(task),
+                "_thread_id": current_thread_id(),
+            },
+        )
         return None
 
     variable, location, start_date, end_date = parsed
+    logger.info(
+        "direct_satellite_fallback_triggered",
+        extra={
+            "_event": "direct_satellite_fallback_triggered",
+            "_reason": "simple_satellite_plot_task",
+            "_thread_id": current_thread_id(),
+        },
+    )
     logger.info(
         "satellite_parser_success",
         extra={
@@ -374,6 +422,14 @@ async def _try_direct_satellite_plot(task: str) -> AgentResult | None:
             logger.info("Direct satellite plot fallback: chart created for %s", title)
             emit_status("Preparing response...")
             return AgentResult(text=f"Created {title}.", charts=[chart])
+        logger.warning(
+            "chart_payload_parse_failure",
+            extra={
+                "_event": "chart_payload_parse_failure",
+                "_result_preview": str(chart_result)[:200],
+                "_thread_id": current_thread_id(),
+            },
+        )
         return AgentResult(text=str(chart_result))
     except Exception as exc:
         emit_status("Satellite workflow failed.")

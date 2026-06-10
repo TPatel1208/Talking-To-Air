@@ -33,6 +33,7 @@ import shutil
 from typing import Optional, Tuple
 
 import xarray as xr
+from utils.metrics import record_cache_hit, record_cache_miss
 
 logger = logging.getLogger(__name__)
 
@@ -145,12 +146,13 @@ class CacheManager:
                     logger.info(
                         "cache_hit",
                         extra={
-                            "_tier": "index",
+                            "_tier": "postgis",
                             "_hit_type": "superset" if is_superset else "exact",
                             "_cache_path": stored_path,
                             "_group_key": cached_group_key,
                         },
                     )
+                    record_cache_hit("postgis")
 
                     try:
                         ds = await asyncio.to_thread(self.zarr_repo.read, cached_group_key)
@@ -172,9 +174,11 @@ class CacheManager:
         # ─────────────────────────────────────────────────────────────────
         if await asyncio.to_thread(self.zarr_repo.exists, group_key):
             logger.info("cache_hit", extra={"_tier": "zarr", "_group_key": group_key})
+            record_cache_hit("zarr")
             return await asyncio.to_thread(self.zarr_repo.read, group_key)
 
         logger.info("cache_miss", extra={"_collection_id": collection_id, "_group_key": group_key})
+        record_cache_miss()
         return None
 
     async def store(
@@ -229,7 +233,12 @@ class CacheManager:
                 )
             except Exception as exc:
                 logger.warning(
-                    "Index insert failed (non-fatal — data is safely cached): %s", exc
+                    "cache_degradation",
+                    extra={
+                        "_event": "cache_degradation",
+                        "_group_key": group_key,
+                        "_error": str(exc),
+                    },
                 )
 
     async def prune(self, older_than_days: int = 30) -> dict:

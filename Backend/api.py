@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import sys
+import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -12,7 +13,7 @@ import psycopg
 from fastapi import FastAPI, HTTPException, Path, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.routing import Match
@@ -37,9 +38,14 @@ from services.chart_service import ChartService
 from services.export_service import ExportService
 from services.history_service import HistoryService
 from tools.satellite_tools.harmony_api import set_data_loader
-from utils.db import close_db_pool, init_db_pool, validate_config
+from utils.db import active_pool_connections, check_db_pool, close_db_pool, init_db_pool, validate_config
 from utils.logging import configure_logging
-from utils.metrics import snapshot_metrics
+from utils.metrics import (
+    observe_http_request,
+    prometheus_content_type,
+    render_prometheus_metrics,
+    set_db_pool_connections_active,
+)
 
 agent = None
 settings = get_settings()
@@ -96,10 +102,34 @@ app.mount("/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
 
 PUBLIC_ENDPOINTS = {
     ("GET", "/health"),
+    ("GET", "/metrics"),
     ("POST", "/auth/login"),
     ("POST", "/auth/register"),
 }
 ThreadId = Annotated[str, Path(pattern=r"^[A-Za-z0-9-]+$")]
+
+
+def _route_path(request: Request) -> str:
+    for route in app.routes:
+        match, _ = route.matches(request.scope)
+        if match != Match.NONE:
+            return getattr(route, "path", request.url.path)
+    return request.url.path
+
+
+@app.middleware("http")
+async def record_request_metrics(request: Request, call_next):
+    started = time.perf_counter()
+    status_code = 500
+    path = _route_path(request)
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    finally:
+        duration = time.perf_counter() - started
+        set_db_pool_connections_active(active_pool_connections())
+        observe_http_request(request.method, path, status_code, duration)
 
 
 @app.middleware("http")
@@ -177,13 +207,24 @@ async def logout(request: Request):
 
 
 @app.get("/health")
-def health():
-    return {"status": "ok"}
+async def health():
+    db_ok, db_error = await check_db_pool(timeout_seconds=2.0)
+    active_agent = getattr(app.state, "agent", None) or agent
+    agent_ok = active_agent is not None
+    if db_ok and agent_ok:
+        return {"status": "ok", "db": True, "agent": True}
+
+    body = {"status": "degraded", "db": db_ok, "agent": agent_ok}
+    if db_error:
+        body["db_error"] = db_error
+    if not agent_ok:
+        body["agent_error"] = "agent is not initialized"
+    return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content=body)
 
 
 @app.get("/metrics")
 def metrics():
-    return {"counters": snapshot_metrics()}
+    return Response(content=render_prometheus_metrics(), media_type=prometheus_content_type())
 
 
 @app.delete("/admin/cache/prune")

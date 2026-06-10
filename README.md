@@ -89,6 +89,8 @@ Cache Layer  ──  Zarr files on disk + PostgreSQL cache index
 4. **Open the app:**
    - Chat interface: http://localhost:5173
    - API docs (Swagger): http://localhost:8000/docs
+   - Health check: http://localhost:8000/health
+   - Prometheus metrics: http://localhost:8000/metrics
 
 5. **Subsequent starts** (no rebuild needed unless dependencies change):
    ```bash
@@ -99,6 +101,14 @@ Cache Layer  ──  Zarr files on disk + PostgreSQL cache index
    ```bash
    docker compose down -v
    ```
+
+---
+
+## Operations
+
+The backend exposes `/health` for dependency-aware readiness and `/metrics` in Prometheus text format. `/metrics` is intentionally exempt from API key authentication so a scraper can collect it, but production deployments should bind or proxy it only on a private, non-public interface.
+
+See [docs/runbook.md](docs/runbook.md) for health response interpretation, key metrics, Harmony timeout diagnosis, stalled request handling, and Zarr cache pruning.
 
 ---
 

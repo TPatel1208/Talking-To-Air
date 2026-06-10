@@ -193,10 +193,70 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
             base_url="http://testserver",
         ) as client:
             health = await client.get("/health")
+            metrics = await client.get("/metrics")
             response = await client.get("/sessions")
 
-        self.assertEqual(health.status_code, 200)
+        self.assertNotEqual(health.status_code, 401)
+        self.assertEqual(metrics.status_code, 200)
+        self.assertIn("http_requests_total", metrics.text)
         self.assertEqual(response.status_code, 401)
+
+    async def test_health_reports_ok_when_dependencies_are_ready(self):
+        transport = self.httpx.ASGITransport(app=self.api.app)
+
+        async def healthy_db(timeout_seconds=2.0):
+            return True, None
+
+        with patch.object(self.api, "check_db_pool", healthy_db):
+            async with self.httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                response = await client.get("/health")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"status": "ok", "db": True, "agent": True})
+
+    async def test_health_reports_degraded_when_database_fails(self):
+        transport = self.httpx.ASGITransport(app=self.api.app)
+
+        async def unhealthy_db(timeout_seconds=2.0):
+            return False, "connection refused"
+
+        with patch.object(self.api, "check_db_pool", unhealthy_db):
+            async with self.httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                response = await client.get("/health")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["status"], "degraded")
+        self.assertFalse(response.json()["db"])
+        self.assertTrue(response.json()["agent"])
+        self.assertEqual(response.json()["db_error"], "connection refused")
+
+    async def test_metrics_endpoint_returns_prometheus_text(self):
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        async with self.httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            response = await client.get("/metrics")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/plain", response.headers["content-type"])
+        for name in [
+            "http_requests_total",
+            "http_request_duration_seconds",
+            "agent_requests_total",
+            "harmony_fetch_duration_seconds",
+            "harmony_timeouts_total",
+            "cache_hits_total",
+            "cache_misses_total",
+            "db_pool_connections_active",
+        ]:
+            self.assertIn(name, response.text)
 
     async def test_chat_validation_happens_before_streaming(self):
         async def fake_stream_response(agent, message, thread_id):

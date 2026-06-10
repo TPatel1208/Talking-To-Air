@@ -19,6 +19,7 @@ _status_emitter: ContextVar[Optional[Callable[[str], None]]] = ContextVar(
     "status_emitter",
     default=None,
 )
+_current_thread_id: ContextVar[Optional[str]] = ContextVar("current_thread_id", default=None)
 
 
 def emit_status(message: str) -> None:
@@ -26,6 +27,10 @@ def emit_status(message: str) -> None:
     emitter = _status_emitter.get()
     if emitter and message:
         emitter(str(message))
+
+
+def current_thread_id() -> str | None:
+    return _current_thread_id.get()
 
 
 async def stream_response(
@@ -85,6 +90,7 @@ async def stream_response(
             await queue.put(done)
 
     token = _status_emitter.set(publish_status)
+    thread_token = _current_thread_id.set(thread_id)
     producer = asyncio.create_task(produce())
     try:
         while True:
@@ -97,5 +103,6 @@ async def stream_response(
             yield event_type, data
     finally:
         _status_emitter.reset(token)
+        _current_thread_id.reset(thread_token)
         if not producer.done():
             producer.cancel()

@@ -9,6 +9,7 @@ Import from here instead of duplicating these functions:
 """
 
 import contextlib
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 
@@ -64,6 +65,36 @@ async def close_db_pool() -> None:
     if _pool is not None and not _pool.closed:
         await _pool.close()
     _pool = None
+
+
+async def check_db_pool(timeout_seconds: float = 2.0) -> tuple[bool, str | None]:
+    """Return whether the shared pool can execute a trivial query."""
+    if _pool is None or _pool.closed:
+        return False, "database pool is not initialized"
+    try:
+        async def _probe() -> None:
+            async with pg_connection(autocommit=True) as conn:
+                await conn.execute("SELECT 1")
+
+        await asyncio.wait_for(_probe(), timeout=timeout_seconds)
+        return True, None
+    except Exception as exc:
+        return False, str(exc)
+
+
+def active_pool_connections() -> int | None:
+    """Best-effort active connection count for the shared request pool."""
+    if _pool is None or _pool.closed:
+        return 0
+    try:
+        stats = _pool.get_stats()
+    except Exception:
+        return None
+    pool_size = stats.get("pool_size")
+    available = stats.get("pool_available")
+    if pool_size is None or available is None:
+        return None
+    return max(0, int(pool_size) - int(available))
 
 
 async def pg_connect(autocommit: bool = False) -> psycopg.AsyncConnection:

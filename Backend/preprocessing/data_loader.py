@@ -49,6 +49,7 @@ from repositories.zarr_repository import ZarrRepository
 from config.settings import ConfigurationError, get_settings
 from datasets.registry import load_registry
 from utils.earthaccess_client import get_earthaccess_auth
+from utils.metrics import record_cache_hit
 from utils.streaming import emit_status
 
 logger = logging.getLogger(__name__)
@@ -265,6 +266,7 @@ class DataLoader:
                 "cache_hit",
                 extra={"_tier": "memory", "_collection_id": collection_id, "_group_key": memory_key},
             )
+            record_cache_hit("memory")
             return cached_in_memory
 
         cached = await self._cache.lookup(
