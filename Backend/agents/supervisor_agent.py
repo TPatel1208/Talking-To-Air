@@ -29,6 +29,10 @@ from config.settings import get_settings
 from config.supervisor_prompt import SUPERVISOR_PROMPT
 from models import AgentResult, agent_result_to_json, parse_agent_result, parse_chart_payload
 from repositories.chart_repository import delete_charts_for_session
+from repositories.session_metadata_repository import (
+    delete_session_metadata,
+    list_session_metadata,
+)
 from tools.satellite_tools.query_parser import parse_satellite_plot_query
 from utils.db import get_checkpointer, pg_connection
 from utils.streaming import emit_status, stream_response
@@ -436,19 +440,15 @@ def _parse_simple_satellite_plot_task(task: str):
 
 # ── list_sessions, delete_session ─────────────────────────────────────────────
 
-async def list_sessions() -> list[str]:
-    """Return all supervisor session thread_ids (subagent threads no longer exist)."""
-    async with pg_connection() as conn:
-        cursor = await conn.execute(
-            "SELECT DISTINCT thread_id FROM checkpoints ORDER BY thread_id"
-        )
-        rows = await cursor.fetchall()
-    return [r[0] for r in rows]
+async def list_sessions() -> list[dict]:
+    """Return supervisor sessions with metadata when available."""
+    return await list_session_metadata()
 
 
 async def delete_session(thread_id: str):
     """Delete a supervisor session from the checkpoint tables."""
     await delete_charts_for_session(thread_id)
+    await delete_session_metadata(thread_id)
     async with pg_connection() as conn:
         for table in ("checkpoint_writes", "checkpoint_blobs", "checkpoints"):
             await conn.execute(

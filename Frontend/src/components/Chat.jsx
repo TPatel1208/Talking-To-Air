@@ -397,7 +397,7 @@ function EmptyState({ onChipClick }) {
 }
 
 /* ── Main Chat component ── */
-export default function Chat({ messages, loading, error, onSend, onClear }) {
+export default function Chat({ messages, loading, error, onSend, onAbort, onClear, onClearError }) {
   const [input, setInput] = useState('')
   const scrollContainerRef = useRef(null)
   const textareaRef = useRef(null)
@@ -409,7 +409,7 @@ export default function Chat({ messages, loading, error, onSend, onClear }) {
 
   const handleSend = (text) => {
     const msg = (text || input).trim()
-    if (!msg || loading) return
+    if (!msg) return
     onSend(msg)
     setInput('')
     if (textareaRef.current) {
@@ -420,6 +420,7 @@ export default function Chat({ messages, loading, error, onSend, onClear }) {
   const handleKey = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
+      if (loading) return
       handleSend()
     }
   }
@@ -431,6 +432,10 @@ export default function Chat({ messages, loading, error, onSend, onClear }) {
   }
 
   const isEmpty = messages.length === 0
+  const canSend = Boolean(input.trim())
+  const visibleError = error?.startsWith('Failed to delete session')
+    ? error
+    : `Request failed: ${error}`
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
@@ -474,6 +479,39 @@ export default function Chat({ messages, loading, error, onSend, onClear }) {
           display: 'flex', flexDirection: 'column',
         }}
       >
+        {error && (
+          <div style={{
+            margin: '14px 20px 0',
+            padding: '10px 12px',
+            border: '1px solid #f0b8b8',
+            borderRadius: '8px',
+            background: '#fff0f0',
+            color: 'var(--error)',
+            display: 'flex',
+            alignItems: 'flex-start',
+            justifyContent: 'space-between',
+            gap: '12px',
+            fontSize: '13px',
+            lineHeight: 1.45,
+          }}>
+            <span>{visibleError}</span>
+            <button
+              onClick={onClearError}
+              aria-label="Dismiss error"
+              style={{
+                border: 'none',
+                background: 'transparent',
+                color: 'var(--error)',
+                cursor: 'pointer',
+                fontSize: '16px',
+                lineHeight: 1,
+                padding: '0 2px',
+              }}
+            >
+              X
+            </button>
+          </div>
+        )}
         {isEmpty ? (
           <EmptyState onChipClick={handleSend} />
         ) : (
@@ -514,7 +552,6 @@ export default function Chat({ messages, loading, error, onSend, onClear }) {
             onChange={handleInput}
             onKeyDown={handleKey}
             placeholder="Ask about air quality data…"
-            disabled={loading}
             rows={1}
             style={{
               flex: 1, background: 'transparent', border: 'none', outline: 'none',
@@ -525,23 +562,24 @@ export default function Chat({ messages, loading, error, onSend, onClear }) {
             }}
           />
           <button
-            onClick={() => handleSend()}
-            disabled={loading || !input.trim()}
+            onClick={() => loading ? onAbort() : handleSend()}
+            disabled={!loading && !canSend}
+            aria-label={loading ? 'Stop request' : 'Send message'}
             style={{
               width: '34px', height: '34px', borderRadius: '50%', flexShrink: 0,
-              background: loading || !input.trim() ? 'var(--bg-tertiary)' : 'var(--accent)',
-              color: loading || !input.trim() ? 'var(--text-hint)' : 'var(--accent-text)',
-              border: 'none', cursor: loading || !input.trim() ? 'not-allowed' : 'pointer',
+              background: loading || canSend ? 'var(--accent)' : 'var(--bg-tertiary)',
+              color: loading || canSend ? 'var(--accent-text)' : 'var(--text-hint)',
+              border: 'none', cursor: loading || canSend ? 'pointer' : 'not-allowed',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               transition: 'background 0.15s, color 0.15s, transform 0.1s',
               fontSize: '16px',
             }}
-            onMouseDown={e => { if (!loading && input.trim()) e.currentTarget.style.transform = 'scale(0.93)' }}
+            onMouseDown={e => { if (loading || canSend) e.currentTarget.style.transform = 'scale(0.93)' }}
             onMouseUp={e => e.currentTarget.style.transform = 'scale(1)'}
           >
             {loading ? (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                <circle cx="12" cy="12" r="10" strokeDasharray="32" strokeDashoffset="8" style={{ animation: 'wm-spin 1s linear infinite' }}/>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <rect x="6" y="6" width="12" height="12" rx="2"/>
               </svg>
             ) : (
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -566,7 +604,6 @@ export default function Chat({ messages, loading, error, onSend, onClear }) {
           to   { transform: rotate(360deg); }
         }
         textarea::placeholder { color: var(--text-hint); }
-        textarea:disabled     { opacity: 0.6; cursor: not-allowed; }
         .msg-bubble p:last-child,
         .msg-bubble ul:last-child,
         .msg-bubble ol:last-child { margin-bottom: 0; }

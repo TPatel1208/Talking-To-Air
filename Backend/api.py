@@ -24,6 +24,10 @@ from agents.supervisor_agent import build_agent, list_sessions, delete_session
 from config.settings import get_settings
 from models import parse_agent_result, parse_chart_payload
 from repositories.chart_repository import ensure_chart_table, get_chart, save_chart
+from repositories.session_metadata_repository import (
+    ensure_session_metadata_table,
+    save_session_metadata_once,
+)
 from utils.db import close_db_pool, init_db_pool, validate_config
 from utils.logging import configure_logging
 from utils.streaming import stream_response
@@ -40,6 +44,7 @@ async def lifespan(app: FastAPI):
     validate_config()
     await init_db_pool()
     await ensure_chart_table()
+    await ensure_session_metadata_table()
 
     logger.info("startup_begin", extra={"_model": settings.llm_model})
     agent = await build_agent(settings.llm_model)
@@ -480,6 +485,13 @@ async def chat(req: ChatRequest):
         raise HTTPException(status_code=503, detail="Agent is not ready")
     thread_id = req.thread_id or str(uuid.uuid4())
     request_id = str(uuid.uuid4())
+    try:
+        await save_session_metadata_once(thread_id, req.message)
+    except Exception:
+        logger.exception(
+            "session_metadata_save_failed",
+            extra={"_request_id": request_id, "_thread_id": thread_id},
+        )
 
     async def generate():
         response_text = ""

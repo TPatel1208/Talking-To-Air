@@ -1,4 +1,16 @@
 export default function SessionSidebar({ sessions, threadId, onSwitch, onNew, onDelete }) {
+  const getSessionId = (session) => typeof session === 'string' ? session : session?.id
+  const getSessionTitle = (session, index) => {
+    if (session && typeof session === 'object' && session.title) return session.title
+    return `Session ${index + 1}`
+  }
+
+  const handleDelete = (event, id) => {
+    event.stopPropagation()
+    if (!window.confirm('Delete this session?\n\nThis action cannot be undone.')) return
+    onDelete(id)
+  }
+
   return (
     <div style={{
       width:         '220px',
@@ -38,8 +50,10 @@ export default function SessionSidebar({ sessions, threadId, onSwitch, onNew, on
           </div>
         )}
 
-        {sessions.map((id, i) => {
+        {sessions.map((session, i) => {
+          const id = getSessionId(session)
           const isActive = id === threadId
+          const title = getSessionTitle(session, i)
           return (
             <div
               key={id}
@@ -79,13 +93,13 @@ export default function SessionSidebar({ sessions, threadId, onSwitch, onNew, on
                   whiteSpace:   'nowrap',
                   transition:   'color 0.15s',
                 }}>
-                  Session {i + 1}
+                  {title}
                 </span>
               </div>
 
               {/* Delete button */}
               <button
-                onClick={e => { e.stopPropagation(); onDelete(id) }}
+                onClick={e => handleDelete(e, id)}
                 style={{
                   background: 'transparent',
                   border:     'none',

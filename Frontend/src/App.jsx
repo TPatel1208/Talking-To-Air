@@ -13,6 +13,8 @@ export default function App() {
     newSession,
     switchSession,
     deleteSession,
+    abortActiveRequest,
+    clearError,
   } = useChat()
 
   return (
@@ -37,7 +39,9 @@ export default function App() {
           loading={loading}
           error={error}
           onSend={sendMessage}
+          onAbort={() => abortActiveRequest(true)}
           onClear={newSession}
+          onClearError={clearError}
         />
       </div>
     </div>

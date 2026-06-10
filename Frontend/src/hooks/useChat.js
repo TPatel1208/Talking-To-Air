@@ -40,6 +40,19 @@ export function useChat() {
     return activeRequestIdRef.current === requestId
   }, [])
 
+  const getSessionId = useCallback((session) => (
+    typeof session === 'string' ? session : session?.id
+  ), [])
+
+  const makeLocalSession = useCallback((id, message) => {
+    const title = message.trim().replace(/\s+/g, ' ')
+    return {
+      id,
+      title: title.length > 60 ? `${title.slice(0, 57).trim()}...` : title,
+      created_at: new Date().toISOString(),
+    }
+  }, [])
+
   const flushAssistantUpdates = useCallback(() => {
     frameRef.current = null
 
@@ -149,7 +162,7 @@ export function useChat() {
       if (!didRestoreRef.current) {
         didRestoreRef.current = true
         const storedThreadId = window.localStorage.getItem(ACTIVE_THREAD_STORAGE_KEY)
-        if (storedThreadId && nextSessions.includes(storedThreadId)) {
+        if (storedThreadId && nextSessions.some(session => getSessionId(session) === storedThreadId)) {
           setThreadId(storedThreadId)
           threadIdRef.current = storedThreadId
           const loaded = await loadHistory(storedThreadId)
@@ -171,7 +184,7 @@ export function useChat() {
         }
       }
     }
-  }, [loadHistory, persistActiveThread])
+  }, [getSessionId, loadHistory, persistActiveThread])
 
   useEffect(() => { fetchSessions() }, [fetchSessions])
 
@@ -268,7 +281,11 @@ export function useChat() {
             statusMessage: '',
             isLoading: false,
           }))
-          setSessions(prev => prev.includes(newId) ? prev : [...prev, newId])
+          setSessions(prev => (
+            prev.some(session => getSessionId(session) === newId)
+              ? prev
+              : [makeLocalSession(newId, message), ...prev]
+          ))
         } else if (event === 'error') {
           throw new Error(data.detail || 'Stream error')
         }
@@ -303,7 +320,7 @@ export function useChat() {
         setLoading(false)
       }
     }
-  }, [abortActiveRequest, isCurrentRequest, persistActiveThread, queueAssistantUpdate])
+  }, [abortActiveRequest, getSessionId, isCurrentRequest, makeLocalSession, persistActiveThread, queueAssistantUpdate])
 
   const newSession = useCallback(() => {
     abortActiveRequest()
@@ -329,13 +346,18 @@ export function useChat() {
 
   const deleteSession = useCallback(async (id) => {
     try {
-      await fetch(`${API_BASE}/session/${id}`, { method: 'DELETE' })
-      setSessions(prev => prev.filter(s => s !== id))
+      const res = await fetch(`${API_BASE}/session/${id}`, { method: 'DELETE' })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      setSessions(prev => prev.filter(session => getSessionId(session) !== id))
       if (id === threadIdRef.current) newSession()
-    } catch {
-      // Non-fatal; keep local state as-is if the backend delete fails.
+    } catch (err) {
+      setError(err.message ? `Failed to delete session: ${err.message}` : 'Failed to delete session. Please try again.')
     }
-  }, [newSession])
+  }, [getSessionId, newSession])
+
+  const clearError = useCallback(() => {
+    setError(null)
+  }, [])
 
   return {
     messages,
@@ -347,5 +369,7 @@ export function useChat() {
     newSession,
     switchSession,
     deleteSession,
+    abortActiveRequest,
+    clearError,
   }
 }

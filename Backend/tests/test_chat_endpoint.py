@@ -59,7 +59,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.api.app.state.agent = FakeAgent()
         transport = self.httpx.ASGITransport(app=self.api.app)
         async def fake_list_sessions():
-            return ["thread-1"]
+            return [{"id": "thread-1", "title": "hi", "created_at": "2026-06-09T00:00:00+00:00"}]
 
         async def fake_delete_session(thread_id):
             fake_delete_session.called_with = thread_id
@@ -76,7 +76,10 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
                 history = await client.get("/session/thread-1/history")
                 deleted = await client.delete("/session/thread-1")
 
-        self.assertEqual(sessions.json(), {"sessions": ["thread-1"]})
+        self.assertEqual(
+            sessions.json(),
+            {"sessions": [{"id": "thread-1", "title": "hi", "created_at": "2026-06-09T00:00:00+00:00"}]},
+        )
         self.assertEqual(history.status_code, 200)
         self.assertEqual(
             history.json()["messages"],
