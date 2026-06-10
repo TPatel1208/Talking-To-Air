@@ -126,21 +126,21 @@ class AgentHelperTests(unittest.TestCase):
         self.assertTrue(is_valid_location_candidate("New Jersey"))
 
     def test_truncate_text_logs_warning_with_lengths(self):
-        from agents.supervisor_agent import _truncate_text
+        from utils.message_utils import truncate_text
 
-        with self.assertLogs("agents.supervisor_agent", level="WARNING") as captured:
-            result = _truncate_text("abcdef", 3, "satellite", "req-1")
+        with self.assertLogs("utils.message_utils", level="WARNING") as captured:
+            result = truncate_text("abcdef", 3, "satellite", "req-1")
 
         self.assertEqual(result, "abc")
         self.assertIn("response_truncated", captured.output[0])
 
     def test_extract_last_text_handles_list_content(self):
-        from agents.supervisor_agent import _extract_last_text
+        from utils.message_utils import extract_last_text
 
         class Message:
             content = [{"type": "text", "text": "hello"}, {"type": "thinking", "text": "hidden"}]
 
-        text = _extract_last_text({"messages": [Message()]}, "fallback", agent_name="ground")
+        text = extract_last_text({"messages": [Message()]}, "fallback", agent_name="ground")
 
         self.assertEqual(text, "hello")
 

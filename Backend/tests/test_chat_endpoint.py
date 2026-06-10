@@ -60,7 +60,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         auth_patches = self._auth_patch()
         with auth_patches[0], auth_patches[1], \
              patch.object(self.api, "save_session_metadata_once", fake_save_session_metadata_once), \
-             patch.object(self.api, "stream_response", fake_stream_response):
+             patch("services.chat_stream_service.stream_response", fake_stream_response):
             async with self.httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",
@@ -103,8 +103,8 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         auth_patches = self._auth_patch()
         with auth_patches[0], auth_patches[1], \
-             patch.object(self.api, "list_sessions", fake_list_sessions), \
-             patch.object(self.api, "delete_session", fake_delete_session), \
+             patch.object(self.api.session_repository, "list_sessions", fake_list_sessions), \
+             patch.object(self.api.session_repository, "delete_session", fake_delete_session), \
              patch.object(self.api, "session_belongs_to_user", fake_session_belongs_to_user):
             async with self.httpx.AsyncClient(
                 transport=transport,
@@ -144,9 +144,9 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         auth_patches = self._auth_patch()
         with auth_patches[0], auth_patches[1], \
-             patch.object(self.api, "get_chart", fake_get_chart), \
-             patch.object(self.api, "_iter_chart_csv_chunks", return_value=iter([b"variable,latitude,longitude,value,units\n"])), \
-             patch.object(self.api, "_build_chart_png", return_value=b"\x89PNG\r\n\x1a\n"):
+             patch.object(self.api.chart_service, "get_chart", fake_get_chart), \
+             patch.object(self.api.export_service, "iter_chart_csv_chunks", return_value=iter([b"variable,latitude,longitude,value,units\n"])), \
+             patch.object(self.api.export_service, "build_chart_png", return_value=b"\x89PNG\r\n\x1a\n"):
             async with self.httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",
@@ -188,7 +188,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         auth_patches = self._auth_patch()
         with auth_patches[0], auth_patches[1], \
              patch.object(self.api, "save_session_metadata_once", fake_save_session_metadata_once), \
-             patch.object(self.api, "stream_response", fake_stream_response):
+             patch("services.chat_stream_service.stream_response", fake_stream_response):
             async with self.httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",

@@ -28,13 +28,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config.settings import get_settings
 from config.supervisor_prompt import SUPERVISOR_PROMPT
 from models import AgentResult, agent_result_to_json, parse_agent_result, parse_chart_payload
-from repositories.chart_repository import delete_charts_for_session
-from repositories.session_metadata_repository import (
-    delete_session_metadata,
-    list_session_metadata,
-)
 from tools.satellite_tools.query_parser import parse_satellite_plot_query
-from utils.db import get_checkpointer, pg_connection
+from utils.db import get_checkpointer
+from utils.message_utils import extract_last_text, truncate_text
 from utils.streaming import emit_status, stream_response
 
 logger = logging.getLogger(__name__)
@@ -118,7 +114,7 @@ async def build_agent(
             {"messages": [HumanMessage(content=task)]},
             config={"configurable": {"thread_id": str(uuid.uuid4())}},
         )
-        text = _extract_last_text(
+        text = extract_last_text(
             result,
             "Ground sensor agent returned no response.",
             agent_name="ground_sensor",
@@ -169,7 +165,7 @@ async def build_agent(
             except Exception as exc:
                 text_parts.append(str(exc))
 
-            text = _truncate_text(
+            text = truncate_text(
                 " ".join(text_parts),
                 2000,
                 agent_name="satellite",
@@ -222,49 +218,8 @@ async def build_agent(
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _extract_last_text(
-    result: dict,
-    fallback: str,
-    max_chars: int = 2000,
-    agent_name: str = "unknown",
-    request_id: str | None = None,
-) -> str:
-    """Return the last non-empty text content from an agent invoke() result.
-
-    Capped at max_chars to prevent large subagent responses from bloating the
-    supervisor's checkpoint and inflating token counts on every subsequent turn.
-    """
-    for msg in reversed(result.get("messages", [])):
-        if not (hasattr(msg, "content") and msg.content):
-            continue
-        content = msg.content
-        if isinstance(content, str):
-            return _truncate_text(content, max_chars, agent_name, request_id)
-        if isinstance(content, list):
-            text = " ".join(
-                b.get("text", "") if isinstance(b, dict) else getattr(b, "text", "")
-                for b in content
-                if (isinstance(b, dict) and b.get("type") == "text")
-                or hasattr(b, "text")
-            )
-            if text:
-                return _truncate_text(text, max_chars, agent_name, request_id)
-    return fallback
-
-
 def _truncate_text(text: str, max_chars: int, agent_name: str, request_id: str | None = None) -> str:
-    if len(text) <= max_chars:
-        return text
-    logger.warning(
-        "response_truncated",
-        extra={
-            "_agent_name": agent_name,
-            "_original_length": len(text),
-            "_final_length": max_chars,
-            "_request_id": request_id,
-        },
-    )
-    return text[:max_chars]
+    return truncate_text(text, max_chars, agent_name, request_id)
 
 
 def _compact_model_input_message(msg):
@@ -436,25 +391,4 @@ def _parse_simple_satellite_plot_task(task: str):
         parsed.temporal.end,
     )
 
-
-# ── list_sessions, delete_session ─────────────────────────────────────────────
-
-async def list_sessions(user_id: str) -> list[dict]:
-    """Return supervisor sessions with metadata when available."""
-    return await list_session_metadata(user_id)
-
-
-async def delete_session(thread_id: str, user_id: str) -> bool:
-    """Delete a supervisor session from the checkpoint tables."""
-    deleted = await delete_session_metadata(thread_id, user_id)
-    if not deleted:
-        return False
-    await delete_charts_for_session(thread_id, user_id)
-    async with pg_connection() as conn:
-        for table in ("checkpoint_writes", "checkpoint_blobs", "checkpoints"):
-            await conn.execute(
-                f"DELETE FROM {table} WHERE thread_id = %s", (thread_id,)
-            )
-        await conn.commit()
-    return True
 
