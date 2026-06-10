@@ -227,7 +227,10 @@ async def build_agent(
                 any(marker in result.text.lower() for marker in refusal_markers)
                 or not result.charts
             ):
-                fallback = await _try_direct_satellite_plot(enriched_task)
+                fallback = await _try_direct_satellite_plot(
+                    enriched_task,
+                    log_parse_failure=True,
+                )
                 if fallback is not None:
                     result = fallback
 
@@ -311,7 +314,11 @@ def _task_summary(task: str, max_chars: int = 200) -> str:
     return " ".join(str(task).split())[:max_chars]
 
 
-async def _try_direct_satellite_plot(task: str) -> AgentResult | None:
+async def _try_direct_satellite_plot(
+    task: str,
+    *,
+    log_parse_failure: bool = False,
+) -> AgentResult | None:
     """
     Deterministic fallback for simple one-location satellite plot requests.
 
@@ -321,14 +328,24 @@ async def _try_direct_satellite_plot(task: str) -> AgentResult | None:
     """
     parsed = _parse_simple_satellite_plot_task(task)
     if parsed is None:
-        logger.warning(
-            "direct_satellite_fallback_parse_failure",
-            extra={
-                "_event": "direct_satellite_fallback_parse_failure",
-                "_task_summary": _task_summary(task),
-                "_thread_id": current_thread_id(),
-            },
-        )
+        if log_parse_failure:
+            logger.warning(
+                "direct_satellite_fallback_parse_failure",
+                extra={
+                    "_event": "direct_satellite_fallback_parse_failure",
+                    "_task_summary": _task_summary(task),
+                    "_thread_id": current_thread_id(),
+                },
+            )
+        else:
+            logger.debug(
+                "direct_satellite_fallback_not_applicable",
+                extra={
+                    "_event": "direct_satellite_fallback_not_applicable",
+                    "_task_summary": _task_summary(task),
+                    "_thread_id": current_thread_id(),
+                },
+            )
         return None
 
     variable, location, start_date, end_date = parsed

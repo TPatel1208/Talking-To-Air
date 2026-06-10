@@ -78,6 +78,45 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("event: done", events[-1])
         self.assertIn('"response": "hello"', events[-1])
 
+    async def test_chat_stream_service_does_not_warn_for_plain_tool_result(self):
+        from services.chat_stream_service import ChatStreamService
+        from services.chart_service import ChartService
+
+        service = ChatStreamService(ChartService(), long_request_seconds=999)
+
+        with self.assertNoLogs("services.chat_stream_service", level="WARNING"):
+            events = [
+                event
+                async for event in service._tool_result_events(
+                    "plain tool text",
+                    "thread-1",
+                    "user-1",
+                    [],
+                )
+            ]
+
+        self.assertEqual(events, [])
+
+    async def test_chat_stream_service_warns_for_malformed_chart_payload(self):
+        from services.chat_stream_service import ChatStreamService
+        from services.chart_service import ChartService
+
+        service = ChatStreamService(ChartService(), long_request_seconds=999)
+
+        with self.assertLogs("services.chat_stream_service", level="WARNING") as captured:
+            events = [
+                event
+                async for event in service._tool_result_events(
+                    '{"type":',
+                    "thread-1",
+                    "user-1",
+                    [],
+                )
+            ]
+
+        self.assertEqual(events, [])
+        self.assertIn("chart_payload_parse_failure", captured.output[0])
+
 
 if __name__ == "__main__":
     unittest.main()

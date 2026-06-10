@@ -15,6 +15,8 @@ from collections.abc import AsyncGenerator
 from contextvars import ContextVar
 from typing import Callable, Optional
 
+from utils.message_utils import flatten_text_content
+
 _status_emitter: ContextVar[Optional[Callable[[str], None]]] = ContextVar(
     "status_emitter",
     default=None,
@@ -77,7 +79,7 @@ async def stream_response(
                             for tc in msg.tool_calls:
                                 await publish("tool_call", {"name": tc["name"], "args": tc["args"]})
                         elif hasattr(msg, "name") and msg.name:
-                            raw = str(msg.content)
+                            raw = flatten_text_content(msg.content)
                             img = re.search(r'[\w\-./]+\.png', raw)
                             if img:
                                 await publish("image", {"name": msg.name, "path": img.group(0)})

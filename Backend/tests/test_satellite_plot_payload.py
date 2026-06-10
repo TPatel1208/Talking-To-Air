@@ -15,6 +15,28 @@ REQUIRED_MODULES = ["affine", "cartopy", "langchain", "numpy", "rasterio", "shap
     "satellite plotting dependencies are not installed",
 )
 class SatellitePlotPayloadTests(unittest.TestCase):
+    def test_geometry_mask_handles_time_lon_lat_dimension_order(self):
+        import numpy as np
+        import xarray as xr
+        from shapely.geometry import box
+        from utils.plotting import mask_data_by_geometry
+
+        da = xr.DataArray(
+            np.ones((1, 5, 4)),
+            dims=("time", "Longitude", "Latitude"),
+            coords={
+                "time": ["2024-01-01"],
+                "Longitude": np.linspace(-100.0, -96.0, 5),
+                "Latitude": np.linspace(30.0, 33.0, 4),
+            },
+        )
+
+        masked = mask_data_by_geometry(da, box(-99.5, 30.5, -96.5, 32.5))
+
+        self.assertEqual(masked.dims, ("time", "Longitude", "Latitude"))
+        self.assertTrue(np.isfinite(masked.values).any())
+        self.assertTrue(np.isnan(masked.values).any())
+
     def test_payload_preserves_sparse_valid_points(self):
         import numpy as np
         import xarray as xr

@@ -357,21 +357,13 @@ def mask_data_by_geometry(
     # Convert to boolean (True = INSIDE geometry = keep)
     mask_2d = (mask_2d == 1)
     
-    # Handle different array dimensions
-    if data_array.ndim == 2:
-        mask_da = xr.DataArray(mask_2d, dims=[lat_coord, lon_coord])
-
-    elif data_array.ndim == 3:
-        # Find time dimension
-        time_dim = [d for d in data_array.dims if d not in [lat_coord, lon_coord]][0]
-        # Broadcast mask across time dimension
-        mask_3d = np.broadcast_to(mask_2d, data_array.shape)
-        mask_da = xr.DataArray(mask_3d, dims=data_array.dims)
-
-    else:
+    if data_array.ndim not in (2, 3):
         raise ValueError(f"Unsupported array dimension: {data_array.ndim}D")
+
+    mask_da = xr.DataArray(mask_2d, dims=[lat_coord, lon_coord])
     
-    # Apply mask using xarray .where() — sets outside points to NaN
+    # xarray aligns by dimension name, so this works for both (lat, lon)
+    # and Harmony-reformatted grids ordered as (time, lon, lat).
     masked = data_array.where(mask_da)
     
     return masked

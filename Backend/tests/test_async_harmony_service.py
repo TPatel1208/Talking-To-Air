@@ -32,7 +32,75 @@ class AsyncHarmonyServiceTests(unittest.IsolatedAsyncioTestCase):
         svc._processing_timeout_seconds = 1
         svc._auth = ("user", "pass")
         svc._download_dir = "."
+        svc._client = None
         return svc
+
+    def test_status_url_requests_https_links(self):
+        svc = self._service()
+
+        self.assertEqual(
+            svc._status_url("abc"),
+            "https://harmony.earthdata.nasa.gov/jobs/abc?linktype=https",
+        )
+
+    def test_httpx_auth_kwargs_reuses_harmony_session_state(self):
+        import requests
+
+        class FakeClient:
+            session = None
+
+            def _session(self):
+                session = requests.Session()
+                session.cookies.set("urs_user_already_logged", "yes", domain=".earthdata.nasa.gov")
+                session.headers["Authorization"] = "Bearer token"
+                self.session = session
+                return session
+
+        svc = self._service()
+        svc._client = FakeClient()
+
+        kwargs = svc._httpx_auth_kwargs()
+
+        self.assertEqual(kwargs["headers"], {"Authorization": "Bearer token"})
+        self.assertIn("urs_user_already_logged", kwargs["cookies"])
+
+    def test_download_auth_error_detects_earthdata_login_401(self):
+        svc = self._service()
+        request = httpx.Request(
+            "GET",
+            "https://urs.earthdata.nasa.gov/oauth/authorize?client_id=abc",
+        )
+        response = httpx.Response(401, request=request)
+        exc = httpx.HTTPStatusError("unauthorized", request=request, response=response)
+
+        self.assertTrue(svc._is_download_auth_error(exc))
+
+    async def test_download_all_falls_back_to_harmony_client_for_auth_redirect(self):
+        class FakeClient:
+            def _download_file(self, url, directory, overwrite):
+                self.called_with = (url, directory, overwrite)
+                return os.path.join(directory, "granule.nc")
+
+        svc = self._service()
+        svc._client = FakeClient()
+        request = httpx.Request(
+            "GET",
+            "https://urs.earthdata.nasa.gov/oauth/authorize?client_id=abc",
+        )
+        response = httpx.Response(401, request=request)
+        auth_error = httpx.HTTPStatusError("unauthorized", request=request, response=response)
+        svc._download_one = AsyncMock(side_effect=auth_error)
+
+        files = await svc._download_all(
+            ["https://data.gesdisc.earthdata.nasa.gov/data/granule.nc"],
+            "/tmp",
+        )
+
+        self.assertEqual(files[0].name, "granule.nc")
+        self.assertEqual(
+            svc._client.called_with,
+            ("https://data.gesdisc.earthdata.nasa.gov/data/granule.nc", "/tmp", True),
+        )
 
     def test_validate_json_response_detects_earthdata_login_redirect(self):
         from services.async_harmony_service import HarmonyAuthenticationError

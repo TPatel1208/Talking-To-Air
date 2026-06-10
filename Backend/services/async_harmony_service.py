@@ -376,7 +376,33 @@ class AsyncHarmonyService:
     def _status_url(self, job_id: str) -> str:
         """Build the Harmony job-status URL."""
         base = "https://harmony.earthdata.nasa.gov"
-        return f"{base}/jobs/{job_id}"
+        return f"{base}/jobs/{job_id}?linktype=https"
+
+    def _httpx_auth_kwargs(self) -> dict:
+        """
+        Reuse auth state from harmony-py's requests session for httpx polling.
+
+        Harmony's Earthdata flow authenticates through redirects and stores the
+        resulting state on the client's session. Basic auth alone is not enough
+        for the job-status endpoint, which is why polling was being bounced to
+        Earthdata Login immediately after submission.
+        """
+        session = getattr(self._client, "session", None)
+        if session is None and hasattr(self._client, "_session"):
+            try:
+                session = self._client._session()
+            except Exception as exc:
+                logger.debug("Unable to reuse harmony-py session for httpx polling: %s", exc)
+                session = None
+
+        kwargs = {}
+        if isinstance(session, requests.Session):
+            if session.cookies:
+                kwargs["cookies"] = session.cookies
+            authorization = session.headers.get("Authorization")
+            if authorization:
+                kwargs["headers"] = {"Authorization": authorization}
+        return kwargs
 
     @retry(**_RETRY)
     async def _submit_request(self, request: Request) -> str:
@@ -397,6 +423,17 @@ class AsyncHarmonyService:
             except Exception as exc:
                 logger.error("Download failed: %s", exc)
         return files
+
+    async def _download_one_with_client(self, url: str, dest: str) -> Path:
+        """Download one data link with harmony-py's authenticated session."""
+        if not hasattr(self._client, "_download_file"):
+            raise HarmonyAuthenticationError(
+                "Harmony authenticated download fallback is unavailable"
+            )
+        filepath = await asyncio.to_thread(self._client._download_file, url, dest, True)
+        path = Path(filepath)
+        logger.info("Downloaded via harmony-py client: %s", path)
+        return path
 
     async def _wait_and_download_with_client_timeout(
         self,
@@ -491,6 +528,7 @@ class AsyncHarmonyService:
             auth=self._auth,
             timeout=httpx.Timeout(30.0),
             follow_redirects=False,
+            **self._httpx_auth_kwargs(),
         ) as client:
             while True:
                 data   = await self._poll_status(client, status_url)
@@ -544,6 +582,7 @@ class AsyncHarmonyService:
             auth=self._auth,
             timeout=httpx.Timeout(30.0),
             follow_redirects=False,
+            **self._httpx_auth_kwargs(),
         ) as client:
             resp = await client.get(status_url, follow_redirects=False)
             self._validate_json_response(resp, status_url)
@@ -577,6 +616,19 @@ class AsyncHarmonyService:
         logger.info("Downloaded: %s", out_path)
         return out_path
 
+    def _is_download_auth_error(self, exc: Exception) -> bool:
+        if isinstance(exc, HarmonyAuthenticationError):
+            return True
+        if isinstance(exc, httpx.HTTPStatusError):
+            response = exc.response
+            request_url = str(response.request.url) if response.request else ""
+            host = urlparse(request_url).netloc.lower()
+            return response.status_code in {401, 403} and (
+                _EARTHDATA_LOGIN_HOST in host
+                or "earthdata.nasa.gov" in host
+            )
+        return False
+
     async def _download_all(self, links: List[str], dest: str) -> List[Path]:
         """Download all links concurrently."""
         if not links:
@@ -586,17 +638,35 @@ class AsyncHarmonyService:
             auth=self._auth,
             timeout=httpx.Timeout(300.0),  # large files need longer timeout
             follow_redirects=True,
+            **self._httpx_auth_kwargs(),
         ) as client:
             tasks = [self._download_one(client, url, dest) for url in links]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
         files: List[Path] = []
-        for r in results:
+        fallback_tasks = []
+        for url, r in zip(links, results):
             if isinstance(r, Exception):
+                if self._is_download_auth_error(r):
+                    logger.warning(
+                        "Harmony httpx download was redirected to Earthdata Login; "
+                        "falling back to harmony-py authenticated download for %s",
+                        url,
+                    )
+                    fallback_tasks.append(self._download_one_with_client(url, dest))
+                    continue
                 logger.error("Download error: %s", r)
                 emit_status("Download failed while retrieving NASA Harmony output.")
             else:
                 files.append(r)
+        if fallback_tasks:
+            fallback_results = await asyncio.gather(*fallback_tasks, return_exceptions=True)
+            for result in fallback_results:
+                if isinstance(result, Exception):
+                    logger.error("Authenticated download fallback error: %s", result)
+                    emit_status("Download failed while retrieving NASA Harmony output.")
+                else:
+                    files.append(result)
         if files:
             emit_status(f"Downloaded {len(files)} satellite granule{'s' if len(files) != 1 else ''}.")
         return files

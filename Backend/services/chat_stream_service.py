@@ -84,7 +84,7 @@ class ChatStreamService:
                 image_urls.append(url)
                 yield self.sse("image", {"url": url})
                 return
-        if content:
+        if self._looks_like_chart_payload(content):
             logger.warning(
                 "chart_payload_parse_failure",
                 extra={
@@ -107,6 +107,22 @@ class ChatStreamService:
         if isinstance(data, list):
             return flatten_text_content(data), []
         return "", []
+
+    def _looks_like_chart_payload(self, content: Any) -> bool:
+        if not isinstance(content, str):
+            return False
+        stripped = content.strip()
+        if not stripped.startswith(("{", "[")):
+            return False
+        chart_markers = (
+            '"charts"',
+            '"type"',
+            "'charts'",
+            "'type'",
+            "ChartPayload",
+            "AgentResult",
+        )
+        return any(marker in stripped for marker in chart_markers)
 
     def _log_request_complete(self, request_id: str, thread_id: str, started: float) -> None:
         elapsed = time.monotonic() - started
