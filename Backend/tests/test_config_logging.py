@@ -31,7 +31,7 @@ class ConfigLoggingTests(unittest.TestCase):
 
         self.assertEqual(loaded.llm_model, "gemma-4-26b-a4b-it")
         self.assertEqual(loaded.data_fetch_mode, "auto")
-        self.assertEqual(loaded.harmony_processing_timeout_seconds, 3600)
+        self.assertEqual(loaded.harmony_processing_timeout_seconds, 600)
         loaded = Settings(db_password=None, google_api_key=None)
         with self.assertRaisesRegex(RuntimeError, "DB_PASSWORD, GOOGLE_API_KEY"):
             loaded.validate_startup()

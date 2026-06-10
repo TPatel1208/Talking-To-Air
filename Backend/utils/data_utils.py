@@ -5,17 +5,14 @@ import xarray as xr
 from preprocessing.aggregation_service import AggregationService
 
 logger = logging.getLogger(__name__)
-_loader_instance = None
 _aggregation_service = AggregationService()
 
 
 
 def get_loader():
-    global _loader_instance
-    if _loader_instance is None:
-        from tools.satellite_tools.harmony_api import _get_data_loader
-        _loader_instance = _get_data_loader()
-    return _loader_instance
+    from tools.satellite_tools.harmony_api import get_data_loader
+
+    return get_data_loader()
 
 
 def _load_data(data_json, apply_quality_flag: bool = True) -> xr.DataArray:

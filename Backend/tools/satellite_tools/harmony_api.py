@@ -1,8 +1,9 @@
 import sys
 import os
 import asyncio
+import logging
 from langchain.tools import tool
-from typing import Tuple
+from typing import Optional, Tuple
 import httpx
 import json
 
@@ -14,22 +15,32 @@ from tools.satellite_tools.models import DataDict
 from tools.satellite_tools.query_parser import is_valid_location_candidate
 from datasets.registry import load_registry
 
-_data_loader = None
+logger = logging.getLogger(__name__)
+_registered_data_loader: Optional[DataLoader] = None
 
 
 def _get_geocoder():
     return get_geocoding_service()
 
 
-def _get_data_loader():
-    global _data_loader
-    if _data_loader is None:
-        _data_loader = DataLoader()
-    return _data_loader
+def get_data_loader():
+    if _registered_data_loader is None:
+        raise RuntimeError("DataLoader has not been initialized at application startup")
+    return _registered_data_loader
+
+
+def set_data_loader(data_loader: Optional[DataLoader]) -> None:
+    global _registered_data_loader
+    _registered_data_loader = data_loader
 
 
 def _satellite_fetch_error_message(exc: Exception) -> str:
     """Return a user-safe message for classified satellite fetch failures."""
+    if isinstance(exc, asyncio.TimeoutError):
+        return (
+            "NASA data fetch timed out while Harmony was preparing the satellite "
+            "data. Please try again or narrow the query."
+        )
     try:
         from services.async_harmony_service import (
             HarmonyAuthenticationError,
@@ -46,7 +57,10 @@ def _satellite_fetch_error_message(exc: Exception) -> str:
             "credentials and try again."
         )
     if isinstance(exc, HarmonyTimeoutError):
-        return "Satellite data processing timed out. Please try again later."
+        return (
+            "NASA data fetch timed out while Harmony was preparing the satellite "
+            "data. Please try again or narrow the query."
+        )
     if isinstance(exc, HarmonyProtocolError):
         return (
             "NASA Harmony returned an unexpected response while preparing the "
@@ -169,16 +183,27 @@ async def fetch_environmental_data(
         fetch_params["variables"] = col["variables"]
     try:
         emit_status("Downloading satellite granules...")
-        ds = await asyncio.to_thread(_get_data_loader().download_dataset_harmony, **fetch_params)
+        ds = await asyncio.to_thread(get_data_loader().download_dataset_harmony, **fetch_params)
         emit_status("Processing downloaded data...")
     except Exception as e:
         try:
-            from services.async_harmony_service import HarmonyError
+            from services.async_harmony_service import HarmonyError, HarmonyTimeoutError
         except Exception:
             HarmonyError = ()  # type: ignore[assignment]
-        if isinstance(e, HarmonyError):
-            emit_status(_satellite_fetch_error_message(e))
-            return {"error": _satellite_fetch_error_message(e)}
+            HarmonyTimeoutError = ()  # type: ignore[assignment]
+        if isinstance(e, (HarmonyError, asyncio.TimeoutError)):
+            message = _satellite_fetch_error_message(e)
+            if isinstance(e, (HarmonyTimeoutError, asyncio.TimeoutError)):
+                logger.warning(
+                    "Harmony fetch timed out",
+                    extra={
+                        "_job_url": getattr(e, "job_url", "unknown"),
+                        "_elapsed_seconds": getattr(e, "elapsed_seconds", None),
+                        "_thread_id": "unknown",
+                    },
+                )
+            emit_status(message)
+            return {"error": message}
         emit_status("Download failed while retrieving NASA Harmony output.")
         if isinstance(e, ValueError):
             return {"error": str(e)}

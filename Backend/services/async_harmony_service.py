@@ -103,6 +103,17 @@ class HarmonyError(RuntimeError):
 class HarmonyTimeoutError(TimeoutError, HarmonyError):
     """Raised when a Harmony job exceeds the configured processing timeout."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        job_url: str | None = None,
+        elapsed_seconds: float | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.job_url = job_url
+        self.elapsed_seconds = elapsed_seconds
+
 
 class HarmonyAuthenticationError(HarmonyError):
     """Raised when Harmony redirects polling to Earthdata Login."""
@@ -237,7 +248,10 @@ class AsyncHarmonyService:
         try:
             async with asyncio.timeout(self._processing_timeout_seconds):
                 try:
-                    await self._wait_for_processing(status_url)
+                    await self._wait_for_processing(
+                        status_url,
+                        max_poll_seconds=self._processing_timeout_seconds,
+                    )
                 except HarmonyAuthenticationError:
                     logger.warning(
                         "Harmony httpx polling was redirected to Earthdata Login "
@@ -245,18 +259,20 @@ class AsyncHarmonyService:
                         "wait/download",
                         job_id,
                     )
-                    client_downloaded_files = await asyncio.to_thread(
+                    client_downloaded_files = await self._wait_and_download_with_client_timeout(
                         self._wait_and_download_with_client,
                         job_id,
                         dest,
+                        max_poll_seconds=self._processing_timeout_seconds,
                     )
         except TimeoutError as exc:
             elapsed = int(asyncio.get_running_loop().time() - started)
             increment_metric("harmony_jobs_timed_out")
-            logger.error(
+            logger.warning(
                 "Harmony processing timeout",
                 extra={
                     "_job_id": job_id,
+                    "_job_url": status_url,
                     "_elapsed_seconds": elapsed,
                     "_timeout_seconds": self._processing_timeout_seconds,
                 },
@@ -264,7 +280,9 @@ class AsyncHarmonyService:
             emit_status("Satellite data processing timed out. Please try again later.")
             raise HarmonyTimeoutError(
                 f"Harmony job {job_id} exceeded "
-                f"{self._processing_timeout_seconds}s processing limit"
+                f"{self._processing_timeout_seconds}s processing limit",
+                job_url=status_url,
+                elapsed_seconds=elapsed,
             ) from exc
 
         if client_downloaded_files is not None:
@@ -375,6 +393,40 @@ class AsyncHarmonyService:
                 logger.error("Download failed: %s", exc)
         return files
 
+    async def _wait_and_download_with_client_timeout(
+        self,
+        fn,
+        job_id: str,
+        dest: str,
+        *,
+        max_poll_seconds: float,
+    ) -> List[Path]:
+        """
+        Run harmony-py's blocking wait/download in an isolated worker.
+
+        ``wait_for`` cannot stop a C extension or blocking HTTP call already in
+        progress, but using a dedicated executor prevents a stalled Harmony job
+        from consuming the event loop's shared default executor indefinitely.
+        """
+        loop = asyncio.get_running_loop()
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = loop.run_in_executor(executor, fn, job_id, dest)
+        timed_out = False
+        try:
+            return await asyncio.wait_for(future, timeout=max_poll_seconds)
+        except asyncio.TimeoutError as exc:
+            timed_out = True
+            future.cancel()
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise HarmonyTimeoutError(
+                f"Harmony job {job_id} exceeded {max_poll_seconds}s processing limit",
+                job_url=self._status_url(job_id),
+                elapsed_seconds=max_poll_seconds,
+            ) from exc
+        finally:
+            if not timed_out:
+                executor.shutdown(wait=True)
+
     @retry(**_RETRY)
     async def _poll_status(
         self, client: httpx.AsyncClient, url: str
@@ -420,10 +472,16 @@ class AsyncHarmonyService:
                 f"url={url} status={resp.status_code} content_type={content_type or '<missing>'}"
             )
 
-    async def _wait_for_processing(self, status_url: str) -> None:
+    async def _wait_for_processing(
+        self,
+        status_url: str,
+        max_poll_seconds: float = 600,
+    ) -> None:
         """Poll the job-status endpoint until the job reaches a terminal state."""
         terminal = {"successful", "failed", "canceled"}
-        started = asyncio.get_running_loop().time()
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        deadline = started + max_poll_seconds
         async with httpx.AsyncClient(
             auth=self._auth,
             timeout=httpx.Timeout(30.0),
@@ -447,12 +505,21 @@ class AsyncHarmonyService:
                     emit_status("NASA Harmony finished preparing data.")
                     return
 
-                elapsed = int(asyncio.get_running_loop().time() - started)
+                elapsed = int(loop.time() - started)
                 if pct:
                     emit_status(f"Waiting for NASA Harmony processing ({pct}% complete, {elapsed}s elapsed)...")
                 else:
                     emit_status(f"Waiting for NASA Harmony processing ({elapsed}s elapsed)...")
                 await asyncio.sleep(self._poll_interval)
+                now = loop.time()
+                if now > deadline:
+                    elapsed = now - started
+                    raise HarmonyTimeoutError(
+                        f"Harmony job polling timed out for {status_url} after "
+                        f"{elapsed:.2f}s",
+                        job_url=status_url,
+                        elapsed_seconds=elapsed,
+                    )
 
     @retry(**_RETRY)
     async def _fetch_download_links(

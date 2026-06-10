@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 from collections import OrderedDict
@@ -44,7 +45,7 @@ from preprocessing.cache_manager import CacheManager, make_group_key, _normalise
 from preprocessing.dataset_parser import DatasetParser
 from repositories.cache_index_repository import CacheIndexRepository
 from repositories.zarr_repository import ZarrRepository
-from config.settings import get_settings
+from config.settings import ConfigurationError, get_settings
 from datasets.registry import load_registry
 from utils.earthaccess_client import get_earthaccess_auth
 from utils.streaming import emit_status
@@ -118,16 +119,17 @@ def _bounded_max_results(max_results: int) -> int:
 class DataLoader:
 
     def __init__(self, cache_path: str = "./data/cache.zarr"):
-        # Auth is lazy: only satellite paths that need EarthAccess log in.
+        # EarthAccess S3 auth remains lazy; Harmony/OPeNDAP credentials are
+        # validated while the process-wide loader is created at startup.
         self.auth = None
 
         self._default_cache_path = cache_path
         self._parser = DatasetParser()
 
-        # Lazy fetch services — instantiated on first use
-        self._s3_service = None
-        self._opendap_service = None
-        self._harmony_service = None
+        # Fetch services are instantiated once for this process-wide loader.
+        self._s3_service = self._create_s3_service()
+        self._opendap_service = self._create_opendap_service()
+        self._harmony_service = self._create_harmony_service()
 
         # Cache stack
         zarr_repo = ZarrRepository(cache_path)
@@ -138,6 +140,7 @@ class DataLoader:
             index_repo = None
         self._cache = CacheManager(zarr_repo, index_repository=index_repo)
         self._memory_cache: OrderedDict[str, xr.Dataset] = OrderedDict()
+        self._memory_cache_lock = threading.Lock()
 
         # Registry (lru_cached after first load)
         self._registry_by_id: dict = {
@@ -148,6 +151,54 @@ class DataLoader:
     # ─────────────────────────────────────────────────────────────────────────
     # Public entry point
     # ─────────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _create_s3_service():
+        from services.s3_fetch_service import S3FetchService
+
+        return S3FetchService()
+
+    @staticmethod
+    def _create_opendap_service():
+        settings = get_settings()
+        if not settings.earthdata_token and (
+            not settings.edl_username or not settings.edl_password
+        ):
+            raise ConfigurationError(
+                "OPeNDAP service requires EARTHDATA_TOKEN or both "
+                "EDL_USERNAME and EDL_PASSWORD"
+            )
+        try:
+            from services.opendap_fetch_service import OPeNDAPFetchService
+
+            return OPeNDAPFetchService()
+        except ConfigurationError:
+            raise
+        except RuntimeError as exc:
+            raise ConfigurationError(f"Could not initialize OPeNDAP service: {exc}") from exc
+
+    @staticmethod
+    def _create_harmony_service():
+        settings = get_settings()
+        if not settings.edl_username or not settings.edl_password:
+            raise ConfigurationError(
+                "Harmony service requires EDL_USERNAME and EDL_PASSWORD"
+            )
+        try:
+            from services.async_harmony_service import AsyncHarmonyService
+
+            return AsyncHarmonyService()
+        except ConfigurationError:
+            raise
+        except RuntimeError as exc:
+            raise ConfigurationError(f"Could not initialize Harmony service: {exc}") from exc
+
+    def _get_memory_cache_lock(self) -> threading.Lock:
+        lock = getattr(self, "_memory_cache_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._memory_cache_lock = lock
+        return lock
 
     def download_dataset_harmony(
         self,
@@ -175,10 +226,12 @@ class DataLoader:
             bounding_box if bounding_box else (),
         )
 
-        cached_in_memory = self._memory_cache.get(memory_key)
+        with self._get_memory_cache_lock():
+            cached_in_memory = self._memory_cache.get(memory_key)
+            if cached_in_memory is not None:
+                self._memory_cache.move_to_end(memory_key)
         if cached_in_memory is not None:
             emit_status("Using cached satellite data...")
-            self._memory_cache.move_to_end(memory_key)
             self._ensure_granule_attrs(cached_in_memory, collection_id)
             logger.info(
                 "cache_hit",
@@ -232,10 +285,11 @@ class DataLoader:
         return ds
 
     def _remember_dataset(self, key: str, ds: xr.Dataset) -> None:
-        self._memory_cache[key] = ds
-        self._memory_cache.move_to_end(key)
-        while len(self._memory_cache) > _MEMORY_CACHE_MAX_ITEMS:
-            self._memory_cache.popitem(last=False)
+        with self._get_memory_cache_lock():
+            self._memory_cache[key] = ds
+            self._memory_cache.move_to_end(key)
+            while len(self._memory_cache) > _MEMORY_CACHE_MAX_ITEMS:
+                self._memory_cache.popitem(last=False)
 
     def _ensure_granule_attrs(self, ds: xr.Dataset, collection_id: str) -> None:
         col = getattr(self, "_registry_by_id", {}).get(collection_id)
@@ -367,9 +421,6 @@ class DataLoader:
 
     def _fetch_s3(self, collection_id, temporal, bbox, group, max_results):
         self.auth = get_earthaccess_auth()
-        if self._s3_service is None:
-            from services.s3_fetch_service import S3FetchService
-            self._s3_service = S3FetchService()
         return self._s3_service.fetch(
             collection_id=collection_id,
             temporal=temporal,
@@ -379,9 +430,6 @@ class DataLoader:
         )
 
     def _fetch_opendap(self, collection_id, temporal, bbox, variables, max_results):
-        if self._opendap_service is None:
-            from services.opendap_fetch_service import OPeNDAPFetchService
-            self._opendap_service = OPeNDAPFetchService()
         return self._opendap_service.fetch(
             collection_id=collection_id,
             temporal=temporal,
@@ -398,10 +446,6 @@ class DataLoader:
         small pre-clipped NetCDF4 response).  Also serves as the universal
         fallback for any provider.
         """
-        if self._harmony_service is None:
-            from services.async_harmony_service import AsyncHarmonyService
-            self._harmony_service = AsyncHarmonyService()
-
         files = self._harmony_service.submit_and_download_sync(
             collection_id=collection_id,
             temporal=temporal,

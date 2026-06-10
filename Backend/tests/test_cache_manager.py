@@ -2,7 +2,9 @@ import importlib.util
 import os
 import sys
 import unittest
+import threading
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_DIR not in sys.path:
@@ -119,6 +121,28 @@ class CacheManagerTests(unittest.TestCase):
         self.assertIs(first, dataset)
         self.assertIs(second, dataset)
         self.assertEqual(loader._cache.lookups, 1)
+
+    def test_data_loader_memory_cache_concurrent_remember_is_consistent(self):
+        import xarray as xr
+        from preprocessing.data_loader import DataLoader, _MEMORY_CACHE_MAX_ITEMS
+
+        loader = DataLoader.__new__(DataLoader)
+        loader._memory_cache = OrderedDict()
+        loader._memory_cache_lock = threading.Lock()
+
+        datasets = [xr.Dataset(attrs={"idx": idx}) for idx in range(10)]
+
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [
+                executor.submit(loader._remember_dataset, f"key-{idx}", dataset)
+                for idx, dataset in enumerate(datasets)
+            ]
+            for future in futures:
+                future.result()
+
+        self.assertEqual(len(loader._memory_cache), _MEMORY_CACHE_MAX_ITEMS)
+        self.assertEqual(len(set(loader._memory_cache.keys())), _MEMORY_CACHE_MAX_ITEMS)
+        self.assertTrue(all(key.startswith("key-") for key in loader._memory_cache))
 
 
 if __name__ == "__main__":

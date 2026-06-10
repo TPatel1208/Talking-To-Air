@@ -12,6 +12,10 @@ _VALID_FETCH_MODES = {"auto", "harmony", "opendap", "s3"}
 _VALID_LOG_FORMATS = {"text", "json"}
 
 
+class ConfigurationError(RuntimeError):
+    """Raised when required runtime configuration is missing or invalid."""
+
+
 def _csv(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
@@ -53,7 +57,7 @@ class Settings:
     csv_export_max_granules: int = field(default_factory=lambda: max(1, _int_env("CSV_EXPORT_MAX_GRANULES", 50)))
     s3_force_fetch: bool = field(default_factory=lambda: os.getenv("S3_FORCE_FETCH", "").strip() == "1")
     harmony_processing_timeout_seconds: int = field(
-        default_factory=lambda: max(1, _int_env("HARMONY_PROCESSING_TIMEOUT_SECONDS", 3600))
+        default_factory=lambda: max(1, _int_env("HARMONY_PROCESSING_TIMEOUT_SECONDS", 600))
     )
 
     earthdata_token: str | None = field(default_factory=lambda: os.getenv("EARTHDATA_TOKEN"))

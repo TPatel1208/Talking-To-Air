@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from agents.supervisor_agent import build_agent, list_sessions, delete_session
 from config.settings import get_settings
 from models import parse_agent_result, parse_chart_payload
+from preprocessing.data_loader import DataLoader
 from repositories.chart_repository import ensure_chart_table, get_chart, save_chart
 from repositories.session_metadata_repository import (
     ensure_session_metadata_table,
@@ -41,6 +42,7 @@ from utils.db import close_db_pool, init_db_pool, validate_config
 from utils.logging import configure_logging
 from utils.metrics import snapshot_metrics
 from utils.streaming import stream_response
+from tools.satellite_tools.harmony_api import set_data_loader
 
 agent = None
 settings = get_settings()
@@ -59,6 +61,9 @@ async def lifespan(app: FastAPI):
     await ensure_session_metadata_table()
 
     logger.info("startup_begin", extra={"_model": settings.llm_model})
+    data_loader = DataLoader()
+    app.state.data_loader = data_loader
+    set_data_loader(data_loader)
     agent = await build_agent(settings.llm_model)
     app.state.agent = agent
     logger.info("startup_complete")
@@ -67,6 +72,8 @@ async def lifespan(app: FastAPI):
     finally:
         agent = None
         app.state.agent = None
+        app.state.data_loader = None
+        set_data_loader(None)
         await close_db_pool()
         logger.info("shutdown_complete")
 

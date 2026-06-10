@@ -83,7 +83,7 @@ class AsyncHarmonyServiceTests(unittest.IsolatedAsyncioTestCase):
         from services.async_harmony_service import HarmonyTimeoutError
         from utils.metrics import get_metric
 
-        async def long_wait(status_url):
+        async def long_wait(status_url, *args, **kwargs):
             await asyncio.sleep(1)
 
         svc = self._service()
@@ -101,6 +101,17 @@ class AsyncHarmonyServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(get_metric("harmony_jobs_submitted"), 1)
         self.assertEqual(get_metric("harmony_jobs_timed_out"), 1)
+
+    async def test_wait_for_processing_raises_timeout_for_stuck_status(self):
+        from services.async_harmony_service import HarmonyTimeoutError
+
+        svc = self._service()
+        svc._poll_interval = 0
+        svc._poll_status = AsyncMock(return_value={"status": "running", "progress": 50})
+        status_url = "https://harmony.earthdata.nasa.gov/jobs/stuck"
+
+        with self.assertRaisesRegex(HarmonyTimeoutError, "timed out"):
+            await svc._wait_for_processing(status_url, max_poll_seconds=0.01)
 
 
 if __name__ == "__main__":
