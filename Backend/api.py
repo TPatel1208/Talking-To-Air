@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Annotated, Optional
 
 import psycopg
-from fastapi import FastAPI, HTTPException, Path, Request, status
+from fastapi import FastAPI, HTTPException, Path, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import Response, StreamingResponse
@@ -22,7 +22,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from agents.supervisor_agent import build_agent
 from config.settings import get_settings
 from preprocessing.data_loader import DataLoader
-from repositories.chart_repository import ensure_chart_table
 from repositories.session_metadata_repository import (
     ensure_session_metadata_table,
     get_session_metadata,
@@ -61,7 +60,6 @@ async def lifespan(app: FastAPI):
     await init_db_pool()
     await ensure_user_table()
     await ensure_revoked_token_table()
-    await ensure_chart_table()
     await ensure_session_metadata_table()
 
     logger.info("startup_begin", extra={"_model": settings.llm_model})
@@ -186,6 +184,14 @@ def health():
 @app.get("/metrics")
 def metrics():
     return {"counters": snapshot_metrics()}
+
+
+@app.delete("/admin/cache/prune")
+async def prune_cache(older_than_days: int = Query(default=30, ge=0)):
+    data_loader = getattr(app.state, "data_loader", None)
+    if data_loader is None:
+        raise HTTPException(status_code=503, detail="Data loader is not ready")
+    return await data_loader._cache.prune(older_than_days)
 
 
 @app.get("/chart/{chart_id}/export.csv")

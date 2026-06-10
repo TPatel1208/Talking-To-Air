@@ -31,7 +31,7 @@ class FakeIndexRepository:
     def __init__(self, row=None):
         self.row = row
 
-    def lookup(self, **kwargs):
+    async def lookup(self, **kwargs):
         return self.row
 
 
@@ -40,14 +40,17 @@ class FakeCache:
         self.dataset = dataset
         self.lookups = 0
 
-    def lookup(self, **kwargs):
+    async def lookup(self, **kwargs):
         self.lookups += 1
         return self.dataset
 
+    async def store(self, *args, **kwargs):
+        return None
+
 
 @unittest.skipIf(importlib.util.find_spec("xarray") is None, "xarray is not installed")
-class CacheManagerTests(unittest.TestCase):
-    def test_bbox_normalization_accepts_string_and_nested_values(self):
+class CacheManagerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_bbox_normalization_accepts_string_and_nested_values(self):
         from preprocessing.cache_manager import _normalise_bbox, make_group_key
 
         self.assertEqual(_normalise_bbox("-74,40,-73,41"), (-74.0, 40.0, -73.0, 41.0))
@@ -57,7 +60,7 @@ class CacheManagerTests(unittest.TestCase):
             "C1/2024-01-01T00:00:00Z_2024-01-02T00:00:00Z/-74.0_40.0_-73.0_41.0",
         )
 
-    def test_zarr_cache_hit_reads_dataset(self):
+    async def test_zarr_cache_hit_reads_dataset(self):
         import xarray as xr
         from preprocessing.cache_manager import CacheManager, make_group_key
 
@@ -66,22 +69,22 @@ class CacheManagerTests(unittest.TestCase):
         dataset = xr.Dataset()
         zarr = FakeZarrRepository({group_key: dataset})
 
-        result = CacheManager(zarr).lookup("C1", temporal)
+        result = await CacheManager(zarr).lookup("C1", temporal)
 
         self.assertIs(result, dataset)
         self.assertEqual(zarr.reads, [group_key])
 
-    def test_cache_miss_returns_none(self):
+    async def test_cache_miss_returns_none(self):
         from preprocessing.cache_manager import CacheManager
 
-        result = CacheManager(FakeZarrRepository()).lookup(
+        result = await CacheManager(FakeZarrRepository()).lookup(
             "C1",
             ("2024-01-01T00:00:00Z", "2024-01-02T00:00:00Z"),
         )
 
         self.assertIsNone(result)
 
-    def test_index_hit_takes_precedence_over_zarr_fallback(self):
+    async def test_index_hit_takes_precedence_over_zarr_fallback(self):
         import xarray as xr
         from preprocessing.cache_manager import CacheManager
 
@@ -89,7 +92,7 @@ class CacheManagerTests(unittest.TestCase):
         zarr = FakeZarrRepository({"stored": dataset})
         index = FakeIndexRepository({"cache_path": "cache.zarr", "group_key": "stored"})
 
-        result = CacheManager(zarr, index).lookup(
+        result = await CacheManager(zarr, index).lookup(
             "C1",
             ("2024-01-01T00:00:00Z", "2024-01-02T00:00:00Z"),
         )
@@ -98,7 +101,7 @@ class CacheManagerTests(unittest.TestCase):
         self.assertEqual(zarr.reads, ["stored"])
 
     @unittest.skipIf(importlib.util.find_spec("netCDF4") is None, "netCDF4 is not installed")
-    def test_data_loader_reuses_in_memory_cache_for_identical_lookup(self):
+    async def test_data_loader_reuses_in_memory_cache_for_identical_lookup(self):
         import xarray as xr
         from preprocessing.data_loader import DataLoader
 
@@ -106,6 +109,8 @@ class CacheManagerTests(unittest.TestCase):
         dataset = xr.Dataset()
         loader = DataLoader.__new__(DataLoader)
         loader._memory_cache = OrderedDict()
+        loader._memory_cache_sizes = {}
+        loader._memory_cache_bytes = 0
         loader._cache = FakeCache(dataset)
 
         kwargs = {
@@ -115,19 +120,21 @@ class CacheManagerTests(unittest.TestCase):
             "max_results": 1,
         }
 
-        first = loader.download_dataset_harmony(**kwargs)
-        second = loader.download_dataset_harmony(**kwargs)
+        first = await loader.download_dataset_harmony_async(**kwargs)
+        second = await loader.download_dataset_harmony_async(**kwargs)
 
         self.assertIs(first, dataset)
         self.assertIs(second, dataset)
         self.assertEqual(loader._cache.lookups, 1)
 
-    def test_data_loader_memory_cache_concurrent_remember_is_consistent(self):
+    async def test_data_loader_memory_cache_concurrent_remember_is_consistent(self):
         import xarray as xr
         from preprocessing.data_loader import DataLoader, _MEMORY_CACHE_MAX_ITEMS
 
         loader = DataLoader.__new__(DataLoader)
         loader._memory_cache = OrderedDict()
+        loader._memory_cache_sizes = {}
+        loader._memory_cache_bytes = 0
         loader._memory_cache_lock = threading.Lock()
 
         datasets = [xr.Dataset(attrs={"idx": idx}) for idx in range(10)]
@@ -140,9 +147,32 @@ class CacheManagerTests(unittest.TestCase):
             for future in futures:
                 future.result()
 
-        self.assertEqual(len(loader._memory_cache), _MEMORY_CACHE_MAX_ITEMS)
-        self.assertEqual(len(set(loader._memory_cache.keys())), _MEMORY_CACHE_MAX_ITEMS)
+        expected_items = min(len(datasets), _MEMORY_CACHE_MAX_ITEMS)
+        self.assertEqual(len(loader._memory_cache), expected_items)
+        self.assertEqual(len(set(loader._memory_cache.keys())), expected_items)
         self.assertTrue(all(key.startswith("key-") for key in loader._memory_cache))
+
+    async def test_data_loader_memory_cache_evicts_by_bytes(self):
+        from unittest.mock import patch
+        from preprocessing.data_loader import DataLoader
+
+        class SizedDataset:
+            def __init__(self, nbytes):
+                self.nbytes = nbytes
+
+        loader = DataLoader.__new__(DataLoader)
+        loader._memory_cache = OrderedDict()
+        loader._memory_cache_sizes = {}
+        loader._memory_cache_bytes = 0
+        loader._memory_cache_lock = threading.Lock()
+
+        with patch("preprocessing.data_loader._memory_cache_max_bytes", return_value=10):
+            loader._remember_dataset("small-1", SizedDataset(4))
+            loader._remember_dataset("small-2", SizedDataset(4))
+            loader._remember_dataset("large", SizedDataset(7))
+
+        self.assertEqual(list(loader._memory_cache.keys()), ["large"])
+        self.assertEqual(loader._memory_cache_bytes, 7)
 
 
 if __name__ == "__main__":

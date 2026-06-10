@@ -127,6 +127,7 @@ Copy `.env.example` to `.env` and fill in the values below.
 | `DATA_FETCH_MODE` | `auto` | Fetch strategy: `auto`, `harmony`, `opendap`, or `s3` |
 | `S3_FORCE_FETCH` | `0` | Set to `1` to bypass the us-west-2 region check for S3 fetches |
 | `SATELLITE_MAX_RESULTS_CAP` | `20` | Maximum granule results per satellite query |
+| `MEMORY_CACHE_MAX_BYTES` | `524288000` | In-memory satellite dataset cache limit in bytes |
 | `LOG_LEVEL` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `LOG_FORMAT` | `text` | Set to `json` for structured production logs |
 | `LONG_REQUEST_SECONDS` | `30` | Threshold (seconds) for `long_running_request` log events |
@@ -190,14 +191,14 @@ Show EPA air quality data for Houston last week
 
 ```bash
 # From the repo root
-python -m unittest discover -s Backend/tests -p "test_*.py"
+docker compose exec backend python -m unittest discover -s tests -p "test_*.py"
 ```
 
 ### Coverage
 
 ```bash
-coverage run -m unittest discover -s Backend/tests -p "test_*.py"
-coverage report
+docker compose exec backend coverage run -m unittest discover -s tests -p "test_*.py"
+docker compose exec backend coverage report
 ```
 
 The CI pipeline (`.github/workflows/backend-ci.yml`) runs on every push and PR to `main`. It installs system dependencies (PROJ, GEOS), lints Python syntax with `compileall`, runs the full test suite, and enforces a minimum 60% coverage threshold.
@@ -210,6 +211,15 @@ python Backend/scripts/load_chat.py --url http://localhost:8000 --concurrency 20
 ```
 
 Tune `DB_POOL_MIN_SIZE` and `DB_POOL_MAX_SIZE` based on observed connection counts during load.
+
+### Database Schema
+
+Fresh PostgreSQL volumes are initialized from SQL scripts mounted into `docker-entrypoint-initdb.d`:
+
+- `sql/init_cache_index.sql` creates PostGIS support and `zarr_cache_entries`.
+- `sql/init_agent_charts.sql` creates `agent_charts`.
+
+Schema changes should be made in these SQL files. To apply init-script changes to a local fresh database, stop the stack and recreate the database volume with `docker compose down -v`, then start it again with `docker compose up --build`.
 
 ### Logging
 

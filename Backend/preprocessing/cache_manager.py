@@ -25,8 +25,11 @@ Example
     cache_mgr.store(ds, collection_id, temporal, bbox, cache_path="cache.zarr")
 """
 
+import asyncio
 import hashlib
 import logging
+import os
+import shutil
 from typing import Optional, Tuple
 
 import xarray as xr
@@ -87,7 +90,7 @@ class CacheManager:
         self.zarr_repo = zarr_repository
         self.index_repo = index_repository
 
-    def lookup(
+    async def lookup(
         self,
         collection_id: str,
         temporal: Tuple[str, str],
@@ -128,7 +131,7 @@ class CacheManager:
         # ─────────────────────────────────────────────────────────────────
         if self.index_repo is not None:
             try:
-                row = self.index_repo.lookup(
+                row = await self.index_repo.lookup(
                     collection_id=collection_id,
                     group_key=group_key,
                     temporal=temporal,
@@ -150,7 +153,7 @@ class CacheManager:
                     )
 
                     try:
-                        ds = self.zarr_repo.read(cached_group_key)
+                        ds = await asyncio.to_thread(self.zarr_repo.read, cached_group_key)
                         if is_superset and bbox:
                             ds = self._subset_bbox(ds, bbox)
                         return ds
@@ -167,14 +170,14 @@ class CacheManager:
         # ─────────────────────────────────────────────────────────────────
         # Tier 2: Zarr store (if DB unavailable or miss)
         # ─────────────────────────────────────────────────────────────────
-        if self.zarr_repo.exists(group_key):
+        if await asyncio.to_thread(self.zarr_repo.exists, group_key):
             logger.info("cache_hit", extra={"_tier": "zarr", "_group_key": group_key})
-            return self.zarr_repo.read(group_key)
+            return await asyncio.to_thread(self.zarr_repo.read, group_key)
 
         logger.info("cache_miss", extra={"_collection_id": collection_id, "_group_key": group_key})
         return None
 
-    def store(
+    async def store(
         self,
         ds: xr.Dataset,
         collection_id: str,
@@ -209,7 +212,7 @@ class CacheManager:
 
         # Write Zarr
         try:
-            self.zarr_repo.write(ds, group_key)
+            await asyncio.to_thread(self.zarr_repo.write, ds, group_key)
         except Exception as exc:
             logger.error("Zarr write failed: %s", exc)
             raise
@@ -217,7 +220,7 @@ class CacheManager:
         # Insert metadata row
         if self.index_repo is not None:
             try:
-                self.index_repo.insert(
+                await self.index_repo.insert(
                     collection_id=collection_id,
                     group_key=group_key,
                     cache_path=cache_path,
@@ -228,6 +231,39 @@ class CacheManager:
                 logger.warning(
                     "Index insert failed (non-fatal — data is safely cached): %s", exc
                 )
+
+    async def prune(self, older_than_days: int = 30) -> dict:
+        if self.index_repo is None:
+            return {"pruned_entries": 0, "bytes_freed": 0}
+
+        entries = await self.index_repo.list_prunable(older_than_days)
+        bytes_freed = 0
+        deleted_ids: list[int] = []
+        for entry in entries:
+            group_path = os.path.join(
+                self.zarr_repo.store_path,
+                *str(entry["group_key"]).split("/"),
+            )
+            bytes_freed += await asyncio.to_thread(self._directory_size, group_path)
+            await asyncio.to_thread(shutil.rmtree, group_path, ignore_errors=True)
+            deleted_ids.append(int(entry["id"]))
+
+        deleted_count = await self.index_repo.delete_entries(deleted_ids)
+        return {"pruned_entries": deleted_count, "bytes_freed": bytes_freed}
+
+    @staticmethod
+    def _directory_size(path: str) -> int:
+        if not os.path.exists(path):
+            return 0
+        total = 0
+        for root, _, files in os.walk(path):
+            for filename in files:
+                file_path = os.path.join(root, filename)
+                try:
+                    total += os.path.getsize(file_path)
+                except OSError:
+                    pass
+        return total
 
     @staticmethod
     def _subset_bbox(

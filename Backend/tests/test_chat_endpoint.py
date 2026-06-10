@@ -163,6 +163,29 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(png_response.headers["content-type"], "image/png")
         self.assertEqual(png_response.content, b"\x89PNG\r\n\x1a\n")
 
+    async def test_admin_cache_prune_endpoint_returns_summary(self):
+        class FakeCache:
+            async def prune(self, older_than_days):
+                FakeCache.called_with = older_than_days
+                return {"pruned_entries": 2, "bytes_freed": 128}
+
+        self.api.app.state.data_loader = SimpleNamespace(_cache=FakeCache())
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        auth_patches = self._auth_patch()
+        with auth_patches[0], auth_patches[1]:
+            async with self.httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                response = await client.delete(
+                    "/admin/cache/prune?older_than_days=7",
+                    headers=self.auth_headers,
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"pruned_entries": 2, "bytes_freed": 128})
+        self.assertEqual(FakeCache.called_with, 7)
+
     async def test_protected_endpoints_require_authentication(self):
         transport = self.httpx.ASGITransport(app=self.api.app)
         async with self.httpx.AsyncClient(

@@ -1,134 +1,76 @@
 """
-repositories/cache_index_repository.py
-=======================================
-Repository wrapper around preprocessing/cache_index.py.
+Async repository for the satellite Zarr cache metadata index.
 
-Provides an object-oriented interface that CacheManager expects, while
-delegating all SQL to the existing cache_index module.  Connection
-lifecycle is managed internally: one connection is opened on first use
-and kept open for the lifetime of the repository instance.
-
-Example
--------
-    from repositories.cache_index_repository import CacheIndexRepository
-
-    repo = CacheIndexRepository()
-    row  = repo.lookup(
-        collection_id="C1266136111-GES_DISC",
-        group_key="C1266136111-GES_DISC/2025-01-01T00:00:00Z_.../...",
-        temporal=("2025-01-01T00:00:00Z", "2025-01-02T00:00:00Z"),
-        bbox=(-74, 40, -73, 41),
-    )
-    if row:
-        print(row["cache_path"], row["group_key"])
-
-    repo.insert(
-        collection_id="C1266136111-GES_DISC",
-        group_key="...",
-        cache_path="./data/cache.zarr",
-        temporal=("2025-01-01T00:00:00Z", "2025-01-02T00:00:00Z"),
-        bbox=(-74, 40, -73, 41),
-    )
+All database work goes through the shared async connection pool in utils.db.
+The repository does not retain a connection between calls.
 """
 
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
+
+from utils.db import pg_connection
 
 logger = logging.getLogger(__name__)
 
 
+def _row_to_dict(cursor, row) -> dict:
+    columns = [column.name for column in cursor.description]
+    return dict(zip(columns, row))
+
+
+def _normalise_bbox(bbox) -> Tuple[float, float, float, float]:
+    while isinstance(bbox, (list, tuple)) and len(bbox) == 1:
+        bbox = bbox[0]
+
+    if isinstance(bbox, str):
+        parts = [float(x) for x in bbox.split(",")]
+    else:
+        parts = [float(x) for x in bbox]
+
+    if len(parts) != 4:
+        raise ValueError(f"bbox must have 4 values, got {len(parts)}: {bbox!r}")
+    return parts[0], parts[1], parts[2], parts[3]
+
+
+def _bbox_to_polygon_wkt(bbox) -> str:
+    min_lon, min_lat, max_lon, max_lat = _normalise_bbox(bbox)
+    return (
+        "POLYGON(("
+        f"{min_lon} {min_lat}, "
+        f"{max_lon} {min_lat}, "
+        f"{max_lon} {max_lat}, "
+        f"{min_lon} {max_lat}, "
+        f"{min_lon} {min_lat}"
+        "))"
+    )
+
+
 class CacheIndexRepository:
-    """
-    Object-oriented facade over the cache_index SQL module.
+    """Pool-backed async facade over zarr_cache_entries."""
 
-    Manages a single psycopg connection.  If the database is unavailable at
-    construction time, all methods return safe defaults (None / False) so
-    the rest of the pipeline degrades gracefully to Zarr-only caching.
-    """
-
-    def __init__(self) -> None:
-        self._ci = None
-        self._available = False
-        self._init_connection()
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _init_connection(self) -> None:
-        """Open DB connection and ensure schema exists. Non-fatal on failure."""
-        try:
-            from preprocessing import cache_index as ci  # noqa: PLC0415
-            with ci.get_connection() as conn:
-                ci.ensure_schema(conn)
-            self._ci = ci
-            self._available = True
-            logger.info("CacheIndexRepository: connected to PostGIS metadata index")
-        except Exception as exc:
-            logger.warning(
-                "CacheIndexRepository: PostGIS unavailable — index disabled (%s)", exc
-            )
-            self._available = False
-
-    def _ensure_connected(self) -> bool:
-        """
-        Return True if the connection is healthy.  Attempt a reconnect once
-        on a closed / broken connection before giving up.
-        """
-        if not self._available:
-            return False
-        return self._ci is not None
-
-    # ------------------------------------------------------------------
-    # Public API (matches CacheManager expectations)
-    # ------------------------------------------------------------------
-
-    def lookup(
+    async def lookup(
         self,
         collection_id: str,
         group_key: str,
         temporal: Optional[Tuple[str, str]] = None,
         bbox: Optional[Tuple[float, float, float, float]] = None,
     ) -> Optional[dict]:
-        """
-        Search for a cached entry.
-
-        Parameters
-        ----------
-        collection_id : str
-            NASA CMR concept ID.
-        group_key : str
-            Zarr group key (from CacheManager.make_group_key).
-        temporal : tuple, optional
-            (start_iso, end_iso) — enables spatial superset fallback.
-        bbox : tuple, optional
-            (min_lon, min_lat, max_lon, max_lat) — enables spatial superset fallback.
-
-        Returns
-        -------
-        dict or None
-            Row dict with keys: id, collection_id, group_key, bbox_wkt,
-            start_date, end_date, cache_path, created_at, superset_hit.
-            None on miss or if the index is unavailable.
-        """
-        if not self._ensure_connected():
-            return None
         try:
-            with self._ci.get_connection() as conn:
-                return self._ci.lookup(
-                    conn,
-                    collection_id=collection_id,
-                    group_key=group_key,
-                    temporal=temporal,
-                    bounding_box=bbox,
-                )
+            async with pg_connection() as conn:
+                row = await self._lookup_exact(conn, group_key)
+                if row is None and temporal is not None and bbox is not None:
+                    row = await self._lookup_spatial(conn, collection_id, temporal, bbox)
+                if row is not None:
+                    await self._mark_accessed(conn, int(row["id"]))
+                return row
         except Exception as exc:
             logger.warning("CacheIndexRepository.lookup failed: %s", exc)
             return None
 
-    def insert(
+    async def insert(
         self,
         collection_id: str,
         group_key: str,
@@ -136,47 +78,126 @@ class CacheIndexRepository:
         temporal: Tuple[str, str],
         bbox: Optional[Tuple[float, float, float, float]] = None,
     ) -> bool:
+        sql = """
+            INSERT INTO zarr_cache_entries
+                (collection_id, group_key, bbox, start_date, end_date, cache_path)
+            VALUES
+                (%s, %s,
+                 CASE WHEN %s::text IS NOT NULL
+                      THEN ST_GeomFromText(%s::text, 4326)
+                      ELSE NULL
+                 END,
+                 %s::timestamptz, %s::timestamptz, %s)
+            ON CONFLICT (group_key) DO UPDATE
+            SET cache_path = EXCLUDED.cache_path,
+                last_accessed_at = now()
+            RETURNING id
         """
-        Write a metadata row for a freshly cached Zarr group.
-
-        Parameters
-        ----------
-        collection_id : str
-            NASA CMR concept ID.
-        group_key : str
-            Zarr group key.
-        cache_path : str
-            Path to the Zarr store directory.
-        temporal : tuple
-            (start_iso, end_iso).
-        bbox : tuple, optional
-            (min_lon, min_lat, max_lon, max_lat).
-
-        Returns
-        -------
-        bool
-            True on successful insert, False otherwise (non-fatal).
-        """
-        if not self._ensure_connected():
-            return False
+        bbox_wkt = _bbox_to_polygon_wkt(bbox) if bbox else None
+        start_iso, end_iso = temporal
         try:
-            with self._ci.get_connection() as conn:
-                return self._ci.insert(
-                    conn,
-                    collection_id=collection_id,
-                    group_key=group_key,
-                    cache_path=cache_path,
-                    temporal=temporal,
-                    bounding_box=bbox,
+            async with pg_connection() as conn:
+                cursor = await conn.execute(
+                    sql,
+                    (
+                        collection_id,
+                        group_key,
+                        bbox_wkt,
+                        bbox_wkt,
+                        start_iso,
+                        end_iso,
+                        cache_path,
+                    ),
                 )
+                returned = await cursor.fetchone()
+            return returned is not None
         except Exception as exc:
             logger.warning("CacheIndexRepository.insert failed: %s", exc)
             return False
 
-    def close(self) -> None:
-        """Mark the repository unavailable; pool shutdown owns connections."""
-        self._available = False
+    async def list_prunable(self, older_than_days: int) -> list[dict]:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
+        sql = """
+            SELECT id, group_key, cache_path, created_at, last_accessed_at
+            FROM zarr_cache_entries
+            WHERE COALESCE(last_accessed_at, created_at) < %s
+            ORDER BY COALESCE(last_accessed_at, created_at) ASC
+        """
+        async with pg_connection() as conn:
+            cursor = await conn.execute(sql, (cutoff,))
+            rows = await cursor.fetchall()
+        return [_row_to_dict(cursor, row) for row in rows]
+
+    async def delete_entries(self, entry_ids: list[int]) -> int:
+        if not entry_ids:
+            return 0
+        async with pg_connection() as conn:
+            cursor = await conn.execute(
+                "DELETE FROM zarr_cache_entries WHERE id = ANY(%s) RETURNING id",
+                (entry_ids,),
+            )
+            rows = await cursor.fetchall()
+        return len(rows)
+
+    async def _lookup_exact(self, conn, group_key: str) -> Optional[dict]:
+        cursor = await conn.execute(
+            """
+            SELECT
+                id, collection_id, group_key,
+                ST_AsText(bbox) AS bbox_wkt,
+                start_date, end_date, cache_path, created_at, last_accessed_at
+            FROM zarr_cache_entries
+            WHERE group_key = %s
+            LIMIT 1
+            """,
+            (group_key,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        result = _row_to_dict(cursor, row)
+        result["superset_hit"] = False
+        return result
+
+    async def _lookup_spatial(
+        self,
+        conn,
+        collection_id: str,
+        temporal: Tuple[str, str],
+        bbox: Tuple[float, float, float, float],
+    ) -> Optional[dict]:
+        start_iso, end_iso = temporal
+        cursor = await conn.execute(
+            """
+            SELECT
+                id, collection_id, group_key,
+                ST_AsText(bbox) AS bbox_wkt,
+                start_date, end_date, cache_path, created_at, last_accessed_at
+            FROM zarr_cache_entries
+            WHERE collection_id = %s
+              AND start_date <= %s::timestamptz
+              AND end_date >= %s::timestamptz
+              AND (bbox IS NULL OR ST_Covers(bbox, ST_GeomFromText(%s, 4326)))
+            ORDER BY COALESCE(last_accessed_at, created_at) DESC
+            LIMIT 1
+            """,
+            (collection_id, start_iso, end_iso, _bbox_to_polygon_wkt(bbox)),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        result = _row_to_dict(cursor, row)
+        result["superset_hit"] = True
+        return result
+
+    async def _mark_accessed(self, conn, entry_id: int) -> None:
+        await conn.execute(
+            "UPDATE zarr_cache_entries SET last_accessed_at = now() WHERE id = %s",
+            (entry_id,),
+        )
+
+    async def close(self) -> None:
+        """Compatibility hook; pooled connections are owned by utils.db."""
 
     def __repr__(self) -> str:
-        status = "connected" if self._available else "unavailable"
-        return f"CacheIndexRepository({status})"
+        return "CacheIndexRepository(async)"

@@ -16,6 +16,9 @@ class SessionRepository:
         if not deleted:
             return False
         await delete_charts_for_session(thread_id, user_id)
+        # LangGraph does not currently expose a session-delete helper here.
+        # These table names are internal to LangGraph's Postgres checkpointer
+        # and should be revisited when upgrading LangGraph.
         async with pg_connection() as conn:
             for table in ("checkpoint_writes", "checkpoint_blobs", "checkpoints"):
                 await conn.execute(

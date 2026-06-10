@@ -9,41 +9,6 @@ from psycopg.types.json import Jsonb
 from utils.db import pg_connection
 
 
-async def ensure_chart_table() -> None:
-    async with pg_connection() as conn:
-        await conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS agent_charts (
-                id UUID PRIMARY KEY,
-                thread_id TEXT NOT NULL,
-                user_id TEXT NOT NULL DEFAULT '__legacy__',
-                payload JSONB NOT NULL,
-                metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-            """
-        )
-        await conn.execute(
-            """
-            ALTER TABLE agent_charts
-            ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT '__legacy__'
-            """
-        )
-        await conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_agent_charts_thread_created
-            ON agent_charts (thread_id, created_at)
-            """
-        )
-        await conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_agent_charts_user_id
-            ON agent_charts (user_id)
-            """
-        )
-        await conn.commit()
-
-
 async def save_chart(thread_id: str, payload: dict[str, Any], user_id: str) -> dict[str, Any]:
     stored_payload = dict(payload)
     stable_payload = json.dumps(

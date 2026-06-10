@@ -183,7 +183,7 @@ async def fetch_environmental_data(
         fetch_params["variables"] = col["variables"]
     try:
         emit_status("Downloading satellite granules...")
-        ds = await asyncio.to_thread(get_data_loader().download_dataset_harmony, **fetch_params)
+        ds = await get_data_loader().download_dataset_harmony_async(**fetch_params)
         emit_status("Processing downloaded data...")
     except Exception as e:
         try:

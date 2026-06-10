@@ -40,8 +40,12 @@ CREATE TABLE IF NOT EXISTS zarr_cache_entries (
     start_date    TIMESTAMPTZ NOT NULL,
     end_date      TIMESTAMPTZ NOT NULL,
     cache_path    TEXT        NOT NULL,
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_accessed_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE zarr_cache_entries
+    ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMPTZ NOT NULL DEFAULT now();
 
 -- spatial index for bbox overlap queries
 CREATE INDEX IF NOT EXISTS idx_zarr_cache_bbox
@@ -54,6 +58,9 @@ CREATE INDEX IF NOT EXISTS idx_zarr_cache_dates
 -- uniqueness guard: one row per logical dataset slice
 CREATE UNIQUE INDEX IF NOT EXISTS idx_zarr_cache_group_key
     ON zarr_cache_entries (group_key);
+
+CREATE INDEX IF NOT EXISTS idx_zarr_cache_last_accessed
+    ON zarr_cache_entries (last_accessed_at);
 """
 
 # ---------------------------------------------------------------------------

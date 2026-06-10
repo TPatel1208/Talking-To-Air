@@ -54,6 +54,9 @@ class Settings:
     cors_origins: list[str] = field(default_factory=lambda: _csv(os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost")))
     data_fetch_mode: str = field(default_factory=lambda: os.getenv("DATA_FETCH_MODE", "auto").strip().lower())
     satellite_max_results_cap: int = field(default_factory=lambda: max(1, _int_env("SATELLITE_MAX_RESULTS_CAP", 20)))
+    memory_cache_max_bytes: int = field(
+        default_factory=lambda: max(1, _int_env("MEMORY_CACHE_MAX_BYTES", 500 * 1024 * 1024))
+    )
     csv_export_max_granules: int = field(default_factory=lambda: max(1, _int_env("CSV_EXPORT_MAX_GRANULES", 50)))
     s3_force_fetch: bool = field(default_factory=lambda: os.getenv("S3_FORCE_FETCH", "").strip() == "1")
     harmony_processing_timeout_seconds: int = field(

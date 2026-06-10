@@ -31,6 +31,7 @@ All cache logic is in CacheManager.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import threading
@@ -68,7 +69,8 @@ _GES_DISC_SUFFIX = "-GES_DISC"
 # Valid values for DATA_FETCH_MODE
 _VALID_MODES = {"auto", "harmony", "opendap", "s3"}
 _DEFAULT_MAX_RESULTS_CAP = 20
-_MEMORY_CACHE_MAX_ITEMS = 8
+_MEMORY_CACHE_MAX_BYTES = 500 * 1024 * 1024
+_MEMORY_CACHE_MAX_ITEMS = 20
 
 
 def _provider(collection_id: str) -> str:
@@ -95,6 +97,10 @@ def _fetch_mode() -> str:
 def _max_results_cap() -> int:
     """Read the safety cap for provider result counts."""
     return get_settings().satellite_max_results_cap
+
+
+def _memory_cache_max_bytes() -> int:
+    return get_settings().memory_cache_max_bytes
 
 
 def _bounded_max_results(max_results: int) -> int:
@@ -140,6 +146,8 @@ class DataLoader:
             index_repo = None
         self._cache = CacheManager(zarr_repo, index_repository=index_repo)
         self._memory_cache: OrderedDict[str, xr.Dataset] = OrderedDict()
+        self._memory_cache_sizes: dict[str, int] = {}
+        self._memory_cache_bytes = 0
         self._memory_cache_lock = threading.Lock()
 
         # Registry (lru_cached after first load)
@@ -200,7 +208,27 @@ class DataLoader:
             self._memory_cache_lock = lock
         return lock
 
+    def _get_memory_cache_sizes(self) -> dict[str, int]:
+        sizes = getattr(self, "_memory_cache_sizes", None)
+        if sizes is None:
+            sizes = {key: self._dataset_nbytes(ds) for key, ds in self._memory_cache.items()}
+            self._memory_cache_sizes = sizes
+            self._memory_cache_bytes = sum(sizes.values())
+        return sizes
+
+    def _get_memory_cache_bytes(self) -> int:
+        if not hasattr(self, "_memory_cache_bytes"):
+            self._memory_cache_bytes = sum(self._get_memory_cache_sizes().values())
+        return self._memory_cache_bytes
+
     def download_dataset_harmony(
+        self,
+        *args,
+        **kwargs,
+    ) -> xr.Dataset:
+        return asyncio.run(self.download_dataset_harmony_async(*args, **kwargs))
+
+    async def download_dataset_harmony_async(
         self,
         collection_id: str,
         temporal: Tuple[str, str],
@@ -239,7 +267,7 @@ class DataLoader:
             )
             return cached_in_memory
 
-        cached = self._cache.lookup(
+        cached = await self._cache.lookup(
             collection_id=collection_id,
             temporal=temporal,
             bbox=bounding_box,
@@ -263,16 +291,17 @@ class DataLoader:
         t0 = time.time()
 
         emit_status("Retrieving satellite dataset...")
-        ds = self._route(
-            mode=mode,
-            provider=provider,
-            col=col,
-            collection_id=collection_id,
-            temporal=temporal,
-            bounding_box=bounding_box,
-            variables=variables,
-            max_results=max_results,
-            output_format=output_format,
+        ds = await asyncio.to_thread(
+            self._route,
+            mode,
+            provider,
+            col,
+            collection_id,
+            temporal,
+            bounding_box,
+            variables,
+            max_results,
+            output_format,
         )
         emit_status("Processing downloaded data...")
         self._ensure_granule_attrs(ds, collection_id)
@@ -280,16 +309,36 @@ class DataLoader:
         logger.info("Fetch complete in %.2fs", time.time() - t0)
 
         # ── Cache write ───────────────────────────────────────────────────
-        self._cache.store(ds, collection_id, temporal, bounding_box, cache_path)
+        await self._cache.store(ds, collection_id, temporal, bounding_box, cache_path)
         self._remember_dataset(memory_key, ds)
         return ds
 
     def _remember_dataset(self, key: str, ds: xr.Dataset) -> None:
         with self._get_memory_cache_lock():
+            sizes = self._get_memory_cache_sizes()
+            previous_size = sizes.pop(key, 0)
+            self._memory_cache_bytes = self._get_memory_cache_bytes() - previous_size
+            dataset_size = self._dataset_nbytes(ds)
             self._memory_cache[key] = ds
+            sizes[key] = dataset_size
+            self._memory_cache_bytes += dataset_size
             self._memory_cache.move_to_end(key)
-            while len(self._memory_cache) > _MEMORY_CACHE_MAX_ITEMS:
-                self._memory_cache.popitem(last=False)
+            max_bytes = _memory_cache_max_bytes()
+            while (
+                len(self._memory_cache) > _MEMORY_CACHE_MAX_ITEMS
+                or self._memory_cache_bytes > max_bytes
+            ):
+                evicted_key, _ = self._memory_cache.popitem(last=False)
+                self._memory_cache_bytes -= sizes.pop(evicted_key, 0)
+                if evicted_key == key and self._memory_cache_bytes > max_bytes:
+                    break
+
+    @staticmethod
+    def _dataset_nbytes(ds: xr.Dataset) -> int:
+        try:
+            return max(0, int(ds.nbytes))
+        except Exception:
+            return 0
 
     def _ensure_granule_attrs(self, ds: xr.Dataset, collection_id: str) -> None:
         col = getattr(self, "_registry_by_id", {}).get(collection_id)
