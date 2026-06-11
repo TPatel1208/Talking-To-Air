@@ -7,12 +7,9 @@ Stateless by design — no checkpointer, no persistent memory.
 Each invocation is a self-contained request/response cycle.
 The supervisor is solely responsible for conversation history.
 """
-import sys
-import os
 from langchain_groq import ChatGroq
 from langchain.agents import create_agent
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config.settings import get_settings
 from config.ground_sensor_agent_prompt import GROUND_SYSTEM_PROMPT
 from tools import GROUND_TOOLS

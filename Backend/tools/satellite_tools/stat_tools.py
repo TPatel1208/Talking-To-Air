@@ -1,13 +1,7 @@
 import json
-import sys
 import os
 import numpy as np
 from langchain.tools import tool
-import pandas as pd
-from typing import Optional
-from tools.satellite_tools.models import DataDict
-import re
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from utils.data_utils import _load_data
 from utils.plotting import _normalize_to_2d, mask_data_by_geometry, RegionResolver
@@ -125,7 +119,7 @@ async def find_daily_peak(
     Returns:
         JSON string with peak value, lat, lon, and metadata.
     """
-  
+
     # Load and normalize
     try:
         da = await _load_data(data_dict)
@@ -138,12 +132,11 @@ async def find_daily_peak(
         return json.dumps({"error": f"Could not resolve location: '{location}'"})
 
     geom   = region['geometry']
-    bounds = geom.bounds
 
     da_before   = da.copy()
     da          = mask_data_by_geometry(da, geom)
-    before_valid = int(np.sum(np.isfinite(da_before.values)))
-    after_valid  = int(np.sum(np.isfinite(da.values)))
+    int(np.sum(np.isfinite(da_before.values)))
+    int(np.sum(np.isfinite(da.values)))
 
     var = _get(data_dict, "variable", "")
     col_info = COLLECTIONS.get(var, {})
@@ -173,7 +166,7 @@ async def find_daily_peak(
     # Filter
     values     = da.values
     valid_mask = np.isfinite(values)
-    valid_count = int(np.sum(valid_mask))
+    int(np.sum(valid_mask))
 
     if not np.any(valid_mask):
         msg = f"No valid data found for '{location}'. The region may be outside the data bbox."
@@ -192,7 +185,7 @@ async def find_daily_peak(
     lat_idx = indices[lat_pos]
     lon_idx = indices[lon_pos]
 
- 
+
 
     try:
         peak_lat = float(lat_array[lat_idx] if lat_array.ndim == 1 else lat_array[lat_idx, lon_idx])
@@ -220,7 +213,7 @@ def main():
     import logging
 
     logging.basicConfig(
-        level=logging.INFO, 
+        level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     )
 

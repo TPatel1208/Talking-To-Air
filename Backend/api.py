@@ -1,8 +1,6 @@
-import asyncio
 import json
 import logging
 import os
-import sys
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -17,8 +15,6 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.routing import Match
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from agents.supervisor_agent import build_agent
 from config.settings import get_settings

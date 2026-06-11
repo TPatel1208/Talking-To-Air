@@ -26,7 +26,6 @@ Example
 """
 
 import asyncio
-import hashlib
 import logging
 import os
 import shutil

@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)
+    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 
 class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):

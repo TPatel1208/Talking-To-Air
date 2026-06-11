@@ -1,4 +1,3 @@
-from datetime import datetime, timezone
 from config.settings import get_settings
 
 
@@ -56,7 +55,9 @@ you cannot resolve confidently (e.g. "April 8" with no year context).
 
 ## Passing data between tools — CRITICAL
 `fetch_environmental_data` returns a JSON object with keys: `variable`, `units`, `bbox`, `times`, `n_granules`, `source`, `fetch_params`.
-When calling `plot_singular`, `plot_multiple`, `compute_statistic_tool`, `conduct_temporal_statistic`, or `find_daily_peak`, pass the **entire object returned by fetch_environmental_data** as the `data_dict` argument — not a string, not a subset, the whole object.
+When calling `plot_singular`, `plot_multiple`, `compute_statistic_tool`, `conduct_temporal_statistic`,
+or `find_daily_peak`, pass the **entire object returned by fetch_environmental_data** as the `data_dict`
+argument — not a string, not a subset, the whole object.
 
 ## Constraints
 - Tool calls are SEQUENTIAL. Wait for each result before calling the next.

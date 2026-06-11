@@ -8,10 +8,7 @@ Memory model
                The supervisor includes all necessary context in the task string
                it passes to each subagent tool.
 """
-import os
-import asyncio
 import logging
-import sys
 import uuid
 from datetime import datetime, timezone
 from collections.abc import Awaitable, Callable
@@ -24,7 +21,6 @@ from langchain.agents.middleware import wrap_model_call, ModelRequest, ModelResp
 from agents.ground_sensor_agent import build_ground_agent
 from agents.satellite_agent import build_satellite_agent
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config.settings import get_settings
 from config.supervisor_prompt import SUPERVISOR_PROMPT
 from models import AgentResult, agent_result_to_json, parse_agent_result, parse_chart_payload

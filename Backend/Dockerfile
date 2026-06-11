@@ -17,9 +17,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-COPY requirements.txt .
+COPY requirements.txt pyproject.toml ./
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+RUN pip install --no-cache-dir -e .
 
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────

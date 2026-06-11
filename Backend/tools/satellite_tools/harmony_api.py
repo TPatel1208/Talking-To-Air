@@ -1,13 +1,9 @@
-import sys
-import os
 import asyncio
 import logging
 from langchain.tools import tool
-from typing import Optional, Tuple
+from typing import Optional
 import httpx
-import json
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils.plotting import get_geocoding_service
 from utils.streaming import emit_status
 from preprocessing.data_loader import DataLoader, _bounded_max_results
@@ -254,7 +250,7 @@ async def check_data_availability(
     end_date: str,
 )-> dict:
     """
-    Check if granules exist for a variable over a location and time range BEFORE fetching. Returns a list of available dates so the agent can inform the user exactly which days have data.  
+    Check if granules exist for a variable over a location and time range BEFORE fetching. Returns a list of available dates so the agent can inform the user exactly which days have data.
 
     Args:
         variable    : Pollutant key e.g. 'OMI_NO2' or 'TEMPO_NO2'.
@@ -262,7 +258,7 @@ async def check_data_availability(
         bbox        : Bounding box 'min_lon,min_lat,max_lon,max_lat'
                       — always get this from geocode_location first.
         start_date  : ISO 8601 start datetime e.g. '2026-02-10T18:00:00Z'.
-        end_date    : ISO 8601 end datetime   e.g. '2026-02-10T19:00:00Z'.  
+        end_date    : ISO 8601 end datetime   e.g. '2026-02-10T19:00:00Z'.
 
     Returns:
         dict with keys:

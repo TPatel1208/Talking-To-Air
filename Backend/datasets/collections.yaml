@@ -6,7 +6,7 @@
 #   2. Restart the backend — no code changes needed.
 #
 # To onboard automatically from CMR, run:
-#   python datasets/tools/generate_collection.py --short-name <NAME> --version <VER>
+#   python scripts/generate_collection.py --short-name <NAME> --version <VER>
 #
 # Required fields:
 #   collection_id, primary_var, units, fill_value, valid_min, valid_max

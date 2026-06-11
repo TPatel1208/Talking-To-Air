@@ -117,7 +117,6 @@ class DatasetParser:
         # ─────────────────────────────────────────────────────────────────
         if "HDFEOS" in groups and "product" not in groups:
             try:
-                import h5py
 
                 ds = self._parse_hdf_eos5(filename, root, granule_times)
                 logger.info("Opened HDF-EOS5 grid file")

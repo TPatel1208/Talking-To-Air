@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tta-backend"
+version = "0.1.0"
+description = "Talking to Air backend services and agents"
+requires-python = ">=3.11"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+    "agents*",
+    "config*",
+    "datasets*",
+    "models*",
+    "preprocessing*",
+    "repositories*",
+    "services*",
+    "tools*",
+    "utils*",
+]
+
+[tool.setuptools.package-data]
+datasets = ["*.yaml"]

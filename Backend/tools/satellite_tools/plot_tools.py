@@ -42,16 +42,13 @@ Time-series
 """
 import json
 import os
-import sys
 import numpy as np
 from langchain.tools import tool
 from typing import Annotated,  List, Optional
 from pydantic import Field
-from tools.satellite_tools.models import DataDict
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from utils.data_utils import _load_data
+from utils.geo_utils import find_lat_coord, find_lon_coord
 from utils.plotting import _normalize_to_2d, mask_data_by_geometry, RegionResolver
 from utils.streaming import emit_status
 from preprocessing.aggregation_service import AggregationService
@@ -164,8 +161,8 @@ def _points_from_grid(lats: np.ndarray, lons: np.ndarray, arr: np.ndarray):
 
 
 def _da_to_heatmap_payload(da, title: str, variable: str, units: str) -> dict:
-    lat_coord = next((c for c in ["lat", "latitude", "Latitude"] if c in da.coords), None)
-    lon_coord = next((c for c in ["lon", "longitude", "Longitude"] if c in da.coords), None)
+    lat_coord = find_lat_coord(da)
+    lon_coord = find_lon_coord(da)
     if lat_coord is None or lon_coord is None:
         raise ValueError(f"Cannot find lat/lon coords. Available: {list(da.coords)}")
 
@@ -318,8 +315,21 @@ def _attach_reproducibility(payload: dict, data_dict, region_name: str, aggregat
     return payload
 
 @tool
-async def plot_singular(data_dict: Annotated[dict, Field(description="The complete JSON object returned by fetch_environmental_data. Pass the entire object — do not extract fields or convert to a string.")], variable: str, location: str,
-                  title: str = "", cmap: Optional[str] = "Spectral_r") -> str:
+async def plot_singular(
+    data_dict: Annotated[
+        dict,
+        Field(
+            description=(
+                "The complete JSON object returned by fetch_environmental_data. "
+                "Pass the entire object — do not extract fields or convert to a string."
+            )
+        ),
+    ],
+    variable: str,
+    location: str,
+    title: str = "",
+    cmap: Optional[str] = "Spectral_r",
+) -> str:
     """
     Plot a spatial heatmap of a variable over a single location at one point in time.
     Use when the user asks for a "map", "plot", or "show" for a single snapshot.
@@ -352,8 +362,10 @@ async def plot_singular(data_dict: Annotated[dict, Field(description="The comple
 
     emit_status("Generating visualization...")
     try:
-        lat_coord = next(c for c in ["lat", "latitude", "Latitude"] if c in da.coords)
-        lon_coord = next(c for c in ["lon", "longitude", "Longitude"] if c in da.coords)
+        lat_coord = find_lat_coord(da)
+        lon_coord = find_lon_coord(da)
+        if lat_coord is None or lon_coord is None:
+            raise ValueError(f"Cannot find lat/lon coords. Available: {list(da.coords)}")
         da = _normalize_longitudes(da, lon_coord)
         da = mask_data_by_geometry(da, region["geometry"])
         bounds = region["bounds"]  # (minx, miny, maxx, maxy)
@@ -452,8 +464,10 @@ async def plot_multiple(
             return json.dumps({"error": f"Could not geocode location: '{location}'"})
 
         try:
-            lat_coord = next(c for c in ["lat", "latitude", "Latitude"] if c in da.coords)
-            lon_coord = next(c for c in ["lon", "longitude", "Longitude"] if c in da.coords)
+            lat_coord = find_lat_coord(da)
+            lon_coord = find_lon_coord(da)
+            if lat_coord is None or lon_coord is None:
+                raise ValueError(f"Cannot find lat/lon coords. Available: {list(da.coords)}")
             da = _normalize_longitudes(da, lon_coord)
             da = mask_data_by_geometry(da, region["geometry"])
         except Exception as e:
@@ -561,8 +575,10 @@ async def conduct_temporal_statistic(
 
     da = mask_data_by_geometry(da, region["geometry"])
 
-    lat_coord = next(c for c in ["lat", "latitude", "Latitude"] if c in da.coords)
-    lon_coord = next(c for c in ["lon", "longitude", "Longitude"] if c in da.coords)
+    lat_coord = find_lat_coord(da)
+    lon_coord = find_lon_coord(da)
+    if lat_coord is None or lon_coord is None:
+        return json.dumps({"error": f"Cannot find lat/lon coords. Available: {list(da.coords)}"})
     bounds = region["bounds"]
     da = _sel_bounds(da, lat_coord, lon_coord, bounds
     )

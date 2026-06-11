@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-datasets/tools/generate_collection.py
+scripts/generate_collection.py
 
 Auto-generate a collections.yaml entry for a NASA dataset by querying CMR
 and inspecting a sample granule.
@@ -8,16 +8,16 @@ and inspecting a sample granule.
 Usage Examples
 --------------
     # Print YAML to stdout (review before committing):
-    python datasets/tools/generate_collection.py --short-name TEMPO_NO2_L3 --version V04
+    python scripts/generate_collection.py --short-name TEMPO_NO2_L3 --version V04
 
     # Append directly to collections.yaml after review prompt:
-    python datasets/tools/generate_collection.py --short-name TEMPO_NO2_L3 --version V04 --append
+    python scripts/generate_collection.py --short-name TEMPO_NO2_L3 --version V04 --append
 
     # Skip granule download (faster; fill_value will be REVIEW_REQUIRED):
-    python datasets/tools/generate_collection.py --short-name TEMPO_NO2_L3 --version V04 --no-granule
+    python scripts/generate_collection.py --short-name TEMPO_NO2_L3 --version V04 --no-granule
 
     # Validate an existing entry against live CMR data:
-    python datasets/tools/generate_collection.py --validate TEMPO_NO2_V04
+    python scripts/generate_collection.py --validate TEMPO_NO2_V04
 
 What This Does
 ---------------
@@ -49,12 +49,12 @@ import yaml
 # Setup
 # ─────────────────────────────────────────────────────────────────────────
 
-_HERE = pathlib.Path(__file__).resolve().parent  # datasets/tools/
-_BACKEND = _HERE.parent.parent  # Backend/
+_HERE = pathlib.Path(__file__).resolve().parent  # scripts/
+_BACKEND = _HERE.parent  # Backend/
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-_DEFAULT_REGISTRY = _HERE.parent / "collections.yaml"
+_DEFAULT_REGISTRY = _BACKEND / "datasets" / "collections.yaml"
 CMR_BASE = "https://cmr.earthdata.nasa.gov/search"
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(message)s")
@@ -450,7 +450,7 @@ def validate_entry(registry_key: str, registry_path: pathlib.Path):
         if live_id != col.collection_id:
             print(f"  ⚠  concept_id MISMATCH — CMR now has {live_id}")
         else:
-            print(f"  ✓  concept_id matches")
+            print("  ✓  concept_id matches")
     except Exception as exc:
         print(f"  ✗  CMR lookup failed: {exc}")
         return

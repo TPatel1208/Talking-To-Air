@@ -30,10 +30,17 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r Backend/requirements.txt
+          pip install -e Backend
           pip install coverage
 
       - name: Lint Python syntax
         run: python -m compileall -q Backend
+
+      - name: Lint Python style
+        run: python -m ruff check Backend/
+
+      - name: Type check selected backend packages
+        run: python -m mypy Backend/services/ Backend/repositories/ Backend/models/ --ignore-missing-imports --config-file Backend/mypy.ini
 
       - name: Run unit and integration tests with coverage
         env:

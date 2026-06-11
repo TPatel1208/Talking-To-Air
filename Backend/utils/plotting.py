@@ -18,6 +18,8 @@ from affine import Affine
 
 from typing import Optional, Tuple, Union, List
 
+from utils.geo_utils import LAT_COORD_CANDIDATES, LON_COORD_CANDIDATES, find_lat_coord, find_lon_coord
+
 logger = logging.getLogger(__name__)
 _geocoding_service = None
 
@@ -44,7 +46,7 @@ def plot_map(
 ):
     """
     Plot air quality data on a Cartopy map with proper extent and masking.
-    
+
     Parameters
     ----------
     data_array : xarray.DataArray
@@ -73,34 +75,34 @@ def plot_map(
     time_slice : int, optional
         For 3D data, which time index to plot
         If None, uses first time slice (index 0)
-        
+
     Returns
     -------
     fig, ax : matplotlib Figure and Axes
         For further customization or saving
-        
-        
+
+
     """
-    
+
     # --- 0. Handle 3D data - select time slice ---
     if data_array.ndim == 3:
         # Find the time dimension
         time_dims = ['time', 'Time', 'TIME', 't']
         time_dim = None
-        
+
         for dim in time_dims:
             if dim in data_array.dims:
                 time_dim = dim
                 break
-        
+
         if time_dim is None:
             # Assume first dimension is time if not found
             time_dim = data_array.dims[0]
-        
+
         # Select time slice
         if time_slice is None:
             time_slice = 0
-        
+
         logger.info("Selecting time slice %s from dimension '%s'", time_slice, time_dim)
         time_size = data_array.sizes[time_dim]
 
@@ -109,34 +111,21 @@ def plot_map(
         else:
             time_slice = min(time_slice, time_size - 1)  # clamp to valid range
             data_array = data_array.isel({time_dim: time_slice})
-    
+
     # --- 1. Apply geometry mask if provided ---
     if mask_geometry is not None:
         data_array = mask_data_by_geometry(data_array, mask_geometry)
-    
+
     # --- 1.5. Find coordinate names (handle different conventions) ---
-    lat_names = ['lat', 'latitude', 'Latitude', 'LAT']
-    lon_names = ['lon', 'longitude', 'Longitude', 'LON', 'long']
-    
-    lat_coord = None
-    lon_coord = None
-    
-    for name in lat_names:
-        if name in data_array.coords:
-            lat_coord = name
-            break
-    
-    for name in lon_names:
-        if name in data_array.coords:
-            lon_coord = name
-            break
-    
+    lat_coord = find_lat_coord(data_array)
+    lon_coord = find_lon_coord(data_array)
+
     if lat_coord is None or lon_coord is None:
         raise ValueError(
             f"Could not find lat/lon coordinates. "
             f"Available: {list(data_array.coords.keys())}"
         )
-    
+
     # --- 2. Compute adaptive color scale ---
     if vmin is None or vmax is None:
         if percentile_scale:
@@ -153,12 +142,12 @@ def plot_map(
                 vmin = np.min(finite_values) if len(finite_values) else 0.0
             if vmax is None:
                 vmax = np.max(finite_values) if len(finite_values) else 1.0
-    
+
     # --- 3. Calculate figure size based on extent aspect ratio ---
     if extent:
-        lon_range = extent[2] - extent[0]  # maxx - minx   
+        lon_range = extent[2] - extent[0]  # maxx - minx
         lat_range = extent[3] - extent[1]  # maxy - miny
-        
+
         # Prevent divide by zero for degenerate regions
         if lat_range <= 0 or lon_range <= 0:
             logger.warning(
@@ -169,21 +158,21 @@ def plot_map(
             fig_width, fig_height = 10, 6
         else:
             aspect_ratio = lon_range / lat_range
-            
+
             # Base height of 6 inches, adjust width
             fig_height = 6
             fig_width = fig_height * aspect_ratio * 1.2  # 1.2 factor for map projection
             fig_width = np.clip(fig_width, 6, 14)  # Reasonable bounds
     else:
         fig_width, fig_height = 10, 6
-    
+
     # --- 4. Create figure with Cartopy projection ---
     fig, ax = plt.subplots(
         figsize=(fig_width, fig_height),
         dpi=150,
         subplot_kw={'projection': ccrs.PlateCarree()}
     )
-    
+
     # --- 5. Plot the data ---
     if lat_coord in data_array.dims and lon_coord in data_array.dims:
         data_array = data_array.transpose(lat_coord, lon_coord)
@@ -200,28 +189,28 @@ def plot_map(
         vmax=vmax,
         shading='nearest'
     )
-    
+
     # Add colorbar manually
-    cbar = plt.colorbar(
+    plt.colorbar(
         im,
         ax=ax,
         shrink=0.7,
         extend='both',
         label=data_array.attrs.get('long_name', data_array.name or '')[:40]
     )
-    
+
     # --- 6. Set extent (FIXED: correct bounds format) ---
     if extent:
         # Convert from shapely bounds (minx, miny, maxx, maxy)
-        # to Cartopy extent [lon_max, lat_max, lon_min, lat_min]  
+        # to Cartopy extent [lon_max, lat_max, lon_min, lat_min]
         cartopy_extent = [extent[0], extent[2], extent[1], extent[3]]
         ax.set_extent(cartopy_extent, crs=ccrs.PlateCarree())
-    
+
     # --- 7. Add geographic features ---
     ax.add_feature(cfeature.STATES, linewidth=0.5, edgecolor='black', alpha=0.6)
     ax.add_feature(cfeature.COASTLINE, linewidth=0.7)
     ax.add_feature(cfeature.BORDERS, linewidth=0.5, linestyle='--', alpha=0.5)
-    
+
     # Optional: add region boundary outline
     if mask_geometry is not None:
         ax.add_geometries(
@@ -232,7 +221,7 @@ def plot_map(
             linewidth=2,
             alpha=0.8
         )
-    
+
     # --- 8. Add gridlines with labels ---
     if add_gridlines:
         gl = ax.gridlines(
@@ -246,12 +235,12 @@ def plot_map(
         gl.right_labels = False
         gl.xformatter = LONGITUDE_FORMATTER
         gl.yformatter = LATITUDE_FORMATTER
-    
+
     # --- 9. Set title ---
     ax.set_title(title, fontsize=12, fontweight='bold', pad=10)
-    
+
     plt.tight_layout()
-    
+
     return fig, ax
 
 def _normalize_to_2d(data_array: xr.DataArray) -> xr.DataArray:
@@ -260,10 +249,7 @@ def _normalize_to_2d(data_array: xr.DataArray) -> xr.DataArray:
       1. Dropping all size-1 dimensions (handles Time=1 cleanly)
       2. Averaging over any remaining non-spatial dimensions (handles 4D layer dim)
     """
-    SPATIAL = {
-        'lat', 'latitude', 'Latitude', 'LAT',
-        'lon', 'longitude', 'Longitude', 'LON', 'long'
-    }
+    SPATIAL = set(LAT_COORD_CANDIDATES + LON_COORD_CANDIDATES)
 
     # squeeze out all size-1 dims
     dims_to_squeeze = [d for d in data_array.dims if data_array.sizes[d] == 1]
@@ -285,7 +271,7 @@ def mask_data_by_geometry(
     """
     Mask xarray data to only show values within a geometry boundary.
     Sets all points outside the geometry to NaN.
-    
+
     Parameters
     ----------
     data_array : xarray.DataArray
@@ -293,40 +279,27 @@ def mask_data_by_geometry(
         Handles common coord names: 'lat'/'latitude', 'lon'/'longitude'
     geometry : Polygon or MultiPolygon
         Boundary geometry from RegionResult
-        
+
     Returns
     -------
     xarray.DataArray
         Masked data array (copy, original unchanged)
     """
-    
+
     # Find lat/lon coordinates (handle different naming conventions)
-    lat_names = ['lat', 'latitude', 'Latitude', 'LAT']
-    lon_names = ['lon', 'longitude', 'Longitude', 'LON', 'long']
-    
-    lat_coord = None
-    lon_coord = None
-    
-    for name in lat_names:
-        if name in data_array.coords:
-            lat_coord = name
-            break
-    
-    for name in lon_names:
-        if name in data_array.coords:
-            lon_coord = name
-            break
-    
+    lat_coord = find_lat_coord(data_array)
+    lon_coord = find_lon_coord(data_array)
+
     if lat_coord is None or lon_coord is None:
         raise ValueError(
             f"Could not find lat/lon coordinates. "
             f"Available coords: {list(data_array.coords.keys())}"
         )
-    
+
     # Get coordinate arrays
     lats = data_array[lat_coord].values
     lons = data_array[lon_coord].values
-    
+
     # Calculate the affine transform for the raster
     # Ensure we have at least 2 points to calculate resolution
     if len(lons) < 2:
@@ -334,16 +307,16 @@ def mask_data_by_geometry(
     else:
         lon_diff = lons[-1] - lons[0]
         lon_res = lon_diff / (len(lons) - 1) if lon_diff != 0 else 1.0
-    
+
     if len(lats) < 2:
         lat_res = 1.0  # Default resolution
     else:
         lat_diff = lats[-1] - lats[0]
         lat_res = lat_diff / (len(lats) - 1) if lat_diff != 0 else 1.0
-    
+
     transform = Affine.translation(lons[0] - lon_res/2, lats[0] - lat_res/2) * \
                 Affine.scale(lon_res, lat_res)
-    
+
     # Rasterize the geometry
     # 1 = inside geometry, 0 = outside
     mask_2d = rasterize(
@@ -353,19 +326,19 @@ def mask_data_by_geometry(
         fill=0,
         dtype=np.uint8
     )
-    
+
     # Convert to boolean (True = INSIDE geometry = keep)
     mask_2d = (mask_2d == 1)
-    
+
     if data_array.ndim not in (2, 3):
         raise ValueError(f"Unsupported array dimension: {data_array.ndim}D")
 
     mask_da = xr.DataArray(mask_2d, dims=[lat_coord, lon_coord])
-    
+
     # xarray aligns by dimension name, so this works for both (lat, lon)
     # and Harmony-reformatted grids ordered as (time, lon, lat).
     masked = data_array.where(mask_da)
-    
+
     return masked
 def plot_diff_maps(
     data_arrays: List[xr.DataArray],
@@ -408,17 +381,17 @@ def plot_diff_maps(
     n_plots = len(data_arrays)
     if len(titles) != n_plots:
         raise ValueError(f"Number of titles ({len(titles)}) must match number of data arrays ({n_plots})")
-    
+
     if n_plots == 0:
         raise ValueError("Must provide at least one data array to plot")
-    
+
     # Determine layout
     if n_plots <= 3:
         nrows, ncols = 1, n_plots
     else:
         ncols = 3
         nrows = int(np.ceil(n_plots / ncols))
-    
+
     # Auto compute figsize
     if figsize is None:
         figsize = (6 * ncols, 5 * nrows)
@@ -491,7 +464,7 @@ def plot_diff_maps(
 
 class GeocodingService:
     """Free geocoding using Nominatim (OpenStreetMap) with polygon and bounding box"""
-    
+
     def __init__(self, cache_ttl_seconds: int = 24 * 60 * 60):
         self.cache = {}
         self.cache_ttl_seconds = cache_ttl_seconds
@@ -519,18 +492,18 @@ class GeocodingService:
     def _store_cached(self, location_name: str, result: dict):
         key = self._cache_key(location_name)
         self.cache[key] = (time.time() + self.cache_ttl_seconds, result)
-    
+
     def geocode(self, location_name):
         """Convert location name to coordinates, polygon, and bounding box"""
         cached = self._get_cached(location_name)
         if cached is not None:
             return cached
-        
+
         # Rate limit: 1 request per second
         time_since_last = time.time() - self.last_request
         if time_since_last < 1.0:
             time.sleep(1.0 - time_since_last)
-        
+
         url = "https://nominatim.openstreetmap.org/search"
         params = {
             'q': location_name,
@@ -541,27 +514,27 @@ class GeocodingService:
         headers = {
             'User-Agent': '(Educational project)'
         }
-        
+
         self.last_request = time.time()
         logger.info("satellite_geocode_requests", extra={"_location": location_name})
-        
+
         try:
             response = requests.get(url, params=params, headers=headers)
             data = response.json()
-            
+
             if data:
                 item = data[0]
-                
+
                 # Centroid
                 latitude = float(item['lat'])
                 longitude = float(item['lon'])
-                
+
                 # Polygon (GeoJSON)
                 polygon = item.get('geojson', None)
-                
+
                 # Bounding box: [south, north, west, east] as floats
                 bbox = [float(coord) for coord in item.get('boundingbox', [])]
-                
+
                 result = {
                     'latitude': latitude,
                     'longitude': longitude,
@@ -569,12 +542,12 @@ class GeocodingService:
                     'polygon': polygon,  # None if not available
                     'bbox': bbox         # None if not available
                 }
-                
+
                 self._store_cached(location_name, result)
                 return result
         except Exception as e:
             logger.warning("Geocoding error: %s", e)
-        
+
         return None
 
     async def ageocode(self, location_name):
@@ -620,9 +593,9 @@ class GeocodingService:
             logger.warning("Geocoding error: %s", e)
 
         return None
-    
 
-class RegionResolver: 
+
+class RegionResolver:
     """resolves user location inputs into singular plot or multiple plots"""
     def __init__(self, geocoding_service: GeocodingService | None = None):
         self.geocoding_service = geocoding_service or get_geocoding_service()
@@ -688,11 +661,11 @@ class RegionResolver:
         location_lower = location_name.lower().strip()
         if location_lower in self.global_regions:
             return self.global_regions[location_lower]
-        
+
         geo_result = self.geocoding_service.geocode(location_name)
         if geo_result is None:
             return None
-        
+
         # Convert GeoJSON polygon to shapely geometry
         if geo_result['polygon']:
             geometry = shape(geo_result['polygon'])
@@ -701,7 +674,7 @@ class RegionResolver:
             lon, lat = geo_result['longitude'], geo_result['latitude']
             delta = 0.1  # degrees
             geometry = box(lon - delta, lat - delta, lon + delta, lat + delta)
-        
+
         return {
             'geometry': geometry,
             'bounds': geometry.bounds,  # (minx, miny, maxx, maxy)
@@ -731,16 +704,16 @@ class RegionResolver:
             'bounds': geometry.bounds,
             'name': geo_result['display_name']
         }
-        
+
     def plot_singular(self, data_array, location_name, **kwargs):
         """Plot data for a single location"""
         region = self.resolve_location(location_name)
         if region is None:
             raise ValueError(f"Could not find location: {location_name}")
-        
+
         # Extract title if provided in kwargs, otherwise use default
         title = kwargs.pop('title', f"Air Quality over {region['name']}")
-        
+
         return plot_map(
             data_array,
             title=title,
@@ -755,15 +728,15 @@ class RegionResolver:
             region = self.resolve_location(name)
             if region:
                 regions.append(region)
-        
+
         data_arrays = [
-            mask_data_by_geometry(data_array, r['geometry']) 
+            mask_data_by_geometry(data_array, r['geometry'])
             for r in regions
         ]
         titles = [r['name'] for r in regions]
         extents = [r['bounds'] for r in regions]
         geometries = [r['geometry'] for r in regions]
-        
+
         return plot_diff_maps(
             data_arrays,
             titles,

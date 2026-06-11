@@ -3,13 +3,13 @@ import os
 import sys
 import unittest
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import httpx
 
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)
+    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 REQUIRED_MODULES = ["harmony"]
 

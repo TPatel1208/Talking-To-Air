@@ -1,13 +1,9 @@
 from langchain.tools import tool
 import httpx
 from typing import Dict, Any, List, Optional, Union
-import os
-import sys
-import time
 import math
 from datetime import date, timedelta
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from config.settings import get_settings
 from utils.plotting import GeocodingService
 
@@ -290,7 +286,7 @@ async def find_closest_monitor_by_coords(
 # ---------------------------------------------------------------------------
 # Shared summary helper (daily / quarterly / annual share identical structure)
 # ---------------------------------------------------------------------------
- 
+
 def _resolve_filter(
     prefix: str,
     state_code, county_code, site_number,
@@ -315,8 +311,8 @@ def _resolve_filter(
             "(state_code + county_code), state_code, cbsa_code, or "
             "(minlat + maxlat + minlon + maxlon)."
         )
- 
- 
+
+
 async def _fetch_summary(
     prefix: str,
     param_code: str,
@@ -338,13 +334,13 @@ async def _fetch_summary(
         params["cbdate"] = date.fromisoformat(cbdate).strftime("%Y%m%d")
     if cedate:
         params["cedate"] = date.fromisoformat(cedate).strftime("%Y%m%d")
- 
+
     data = await _aqs_get(endpoint, params)
     records = data.get("Data", data.get("Body", []))
- 
+
     if pollutant_standard:
         records = [r for r in records if r.get("pollutant_standard") == pollutant_standard]
- 
+
     if not records:
         raise RuntimeError(
             f"No {prefix} data found for param {param_code} "
@@ -353,8 +349,8 @@ async def _fetch_summary(
             + (f" and pollutant_standard='{pollutant_standard}'." if pollutant_standard else ".")
         )
     return records, endpoint, filter_params
- 
- 
+
+
 def _build_summary_header(
     rows, endpoint, param_code, bdate_obj, edate_obj, pollutant_standard
 ):
@@ -367,16 +363,16 @@ def _build_summary_header(
         "edate": edate_obj.isoformat(),
         "pollutant_standard": pollutant_standard,
     }]
- 
- 
+
+
 def _site_id(r):
     return "-".join([r.get("state_code", "??"), r.get("county_code", "??"), r.get("site_number", "??")])
- 
- 
+
+
 # ---------------------------------------------------------------------------
 # Daily summary
 # ---------------------------------------------------------------------------
- 
+
 @tool
 async def get_daily_summary(
     param_code: str = DEFAULT_PARAM_CODE,
@@ -428,12 +424,12 @@ async def get_daily_summary(
         "Header": _build_summary_header(len(body), endpoint, param_code, bdate_obj, edate_obj, pollutant_standard),
         "Body": body,
     }
- 
- 
+
+
 # ---------------------------------------------------------------------------
 # Quarterly summary
 # ---------------------------------------------------------------------------
- 
+
 @tool
 async def get_quarterly_summary(
     param_code: str = DEFAULT_PARAM_CODE,
@@ -487,12 +483,12 @@ async def get_quarterly_summary(
         "Header": _build_summary_header(len(body), endpoint, param_code, bdate_obj, edate_obj, pollutant_standard),
         "Body": body,
     }
- 
- 
+
+
 # ---------------------------------------------------------------------------
 # Annual summary
 # ---------------------------------------------------------------------------
- 
+
 @tool
 async def get_annual_summary(
     param_code: str = DEFAULT_PARAM_CODE,
@@ -548,12 +544,12 @@ async def get_annual_summary(
         "Header": _build_summary_header(len(body), endpoint, param_code, bdate_obj, edate_obj, pollutant_standard),
         "Body": body,
     }
- 
- 
+
+
 # ---------------------------------------------------------------------------
 # Exceedance days tool
 # ---------------------------------------------------------------------------
- 
+
 # Regulatory hard thresholds per param_code:
 # (pollutant_standard, field_to_check, threshold_value, units)
 _REGULATORY_THRESHOLDS = {
@@ -563,8 +559,8 @@ _REGULATORY_THRESHOLDS = {
     "42401": ("SO2 1-hour 2010",   "first_max_value",    75.0,  "ppb"),
     "42101": ("CO 8-hour 1971",    "first_max_value",     9.0,  "ppm"),
 }
- 
- 
+
+
 @tool
 async def find_exceedance_days(
     param_code: str = DEFAULT_PARAM_CODE,
@@ -601,16 +597,16 @@ async def find_exceedance_days(
             f"No regulatory threshold known for param_code '{param_code}'. "
             "Provide hard_threshold or percentile_threshold explicitly."
         )
- 
+
     pollutant_standard = reg[0] if reg else None
     measurement_field  = reg[1] if reg else "first_max_value"
     regulatory_limit   = reg[2] if reg else None
- 
+
     effective_hard = hard_threshold if hard_threshold is not None else regulatory_limit
- 
+
     if effective_hard is None and percentile_threshold is None:
         raise ValueError("Provide at least one of: hard_threshold, percentile_threshold.")
- 
+
     # Fetch daily summaries using the shared helper
     bdate_obj, edate_obj, bdate_str, edate_str = _resolve_dates(bdate, edate)
     records, endpoint, filter_params = await _fetch_summary(
@@ -618,15 +614,15 @@ async def find_exceedance_days(
         state_code, county_code, site_number, cbsa_code,
         minlat, maxlat, minlon, maxlon, None, None, pollutant_standard,
     )
- 
+
     # Extract the measurement value for each day
     def _val(r):
         v = r.get(measurement_field)
         return float(v) if v is not None else None
- 
+
     values = [_val(r) for r in records]
     valid_values = [v for v in values if v is not None]
- 
+
     # Compute percentile cutoff if requested
     percentile_cutoff = None
     if percentile_threshold is not None:
@@ -635,7 +631,7 @@ async def find_exceedance_days(
         sorted_vals = sorted(valid_values)
         idx = min(int(len(sorted_vals) * percentile_threshold / 100), len(sorted_vals) - 1)
         percentile_cutoff = sorted_vals[idx]
- 
+
     # Flag days
     body = []
     for r, v in zip(records, values):
@@ -656,9 +652,9 @@ async def find_exceedance_days(
             "triggered": triggered,
             "local_site_name": r.get("local_site_name"),
         })
- 
+
     body.sort(key=lambda x: x["date"])
- 
+
     return {
         "Header": [{
             "status": "success",
@@ -676,11 +672,11 @@ async def find_exceedance_days(
         }],
         "Body": body,
     }
- 
+
 # ---------------------------------------------------------------------------
 # Sample data (hourly readings)
 # ---------------------------------------------------------------------------
- 
+
 @tool
 async def get_sample_data(
     param_code: str = DEFAULT_PARAM_CODE,
@@ -710,29 +706,29 @@ async def get_sample_data(
     qualifier (null=clean), sample_duration, method, local_site_name.
     """
     bdate_obj, edate_obj, bdate_str, edate_str = _resolve_dates(bdate, edate)
- 
+
     endpoint, filter_params = _resolve_filter(
         "sampleData", state_code, county_code, site_number,
         cbsa_code, minlat, maxlat, minlon, maxlon,
     )
- 
+
     params = {
         "param": param_code,
         "bdate": bdate_str,
         "edate": edate_str,
         **filter_params,
     }
- 
+
     data = await _aqs_get(endpoint, params)
     records = data.get("Data", data.get("Body", []))
- 
+
     if not records:
         raise RuntimeError(
             f"No sample data found for param {param_code} "
             f"between {bdate_obj.isoformat()} and {edate_obj.isoformat()} "
             f"using {endpoint} with {filter_params}."
         )
- 
+
     body = [
         {
             "site_id": _site_id(r),
@@ -748,10 +744,10 @@ async def get_sample_data(
         }
         for r in records
     ]
- 
+
     # Sort by site then datetime
     body.sort(key=lambda x: (x["site_id"], x["datetime_local"]))
- 
+
     return {
         "Header": [{
             "status": "success",
@@ -762,23 +758,23 @@ async def get_sample_data(
             "edate": edate_obj.isoformat(),
         }],
         "Body": body,
-    } 
- 
+    }
+
 # ---------------------------------------------------------------------------
 # test
 # ---------------------------------------------------------------------------
- 
+
 if __name__ == "__main__":
     import json
- 
+
     print("=== find closest monitor ===")
     monitor_result = find_closest_monitor.invoke(
         {"bdate": "2026-04-01", "edate": "2026-05-19", "location": "Tampa Florida", "param_code": "42602", "k": 3}
     )
     print(json.dumps(monitor_result, indent=2))
- 
+
     closest = monitor_result["Body"][0]
- 
+
     print("\n=== daily summary for closest monitor ===")
     summary_result = get_daily_summary.invoke({
         "state_code": closest["state_code"],
@@ -790,7 +786,7 @@ if __name__ == "__main__":
         "pollutant_standard": "NO2 1-hour 2010",
     })
     print(json.dumps(summary_result, indent=2))
- 
+
     print("\n=== exceedance days (regulatory + top 10%) ===")
     exceedance_result = find_exceedance_days.invoke({
         "state_code": closest["state_code"],
@@ -802,7 +798,7 @@ if __name__ == "__main__":
         "percentile_threshold": 90.0,
     })
     print(json.dumps(exceedance_result, indent=2))
- 
+
     print("\n=== hourly sample data for exceedance day ===")
     if exceedance_result["Body"]:
         first_exceedance = exceedance_result["Body"][0]

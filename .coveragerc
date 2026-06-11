@@ -8,4 +8,4 @@ source =
 [report]
 show_missing = True
 skip_empty = True
-fail_under = 10
+fail_under = 60
