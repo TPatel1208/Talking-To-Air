@@ -15,7 +15,7 @@ def get_loader():
     return get_data_loader()
 
 
-def _load_data(data_json, apply_quality_flag: bool = True) -> xr.DataArray:
+async def _load_data(data_json, apply_quality_flag: bool = True) -> xr.DataArray:
     from tools.satellite_tools.harmony_api import COLLECTIONS
 
     # Coerce input to a plain dict regardless of how LangChain serialised it:
@@ -62,7 +62,7 @@ def _load_data(data_json, apply_quality_flag: bool = True) -> xr.DataArray:
         # Use the variables from COLLECTIONS config (already includes quality flags)
         fetch_params["variables"] = list(col.get("variables", []))
     try:
-        ds = get_loader().download_dataset_harmony(**fetch_params)
+        ds = await get_loader().download_dataset_harmony_async(**fetch_params)
     except Exception as e:
         raise RuntimeError(f"Failed to reload dataset for '{variable}': {e}") from e
 

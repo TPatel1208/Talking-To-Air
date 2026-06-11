@@ -35,6 +35,19 @@ def current_thread_id() -> str | None:
     return _current_thread_id.get()
 
 
+def _message_text_chunk(message) -> str:
+    tool_calls = getattr(message, "tool_calls", None)
+    if tool_calls:
+        return ""
+    content = getattr(message, "content", "")
+    if not isinstance(content, str) or not content:
+        return ""
+    message_type = getattr(message, "type", "")
+    if message_type in {"human", "system", "tool"}:
+        return ""
+    return content
+
+
 async def stream_response(
     agent,
     user_input: str,
@@ -64,12 +77,25 @@ async def stream_response(
         await queue.put((event_type, data))
 
     async def produce() -> None:
+        emitted_message_tokens = False
         try:
             async for stream_mode, chunk in agent.astream(
                 {"messages": [{"role": "user", "content": user_input}]},
                 config=config,
                 stream_mode=["updates", "messages"],
             ):
+                if stream_mode == "messages":
+                    if isinstance(chunk, tuple) and len(chunk) == 2:
+                        first, second = chunk
+                        message = second if hasattr(second, "content") else first
+                    else:
+                        message = chunk
+                    text = _message_text_chunk(message)
+                    if text:
+                        emitted_message_tokens = True
+                        await publish("text", text)
+                    continue
+
                 if stream_mode != "updates":
                     continue
 
@@ -84,7 +110,7 @@ async def stream_response(
                             if img:
                                 await publish("image", {"name": msg.name, "path": img.group(0)})
                             await publish("tool_result", {"name": msg.name, "content": raw})
-                        elif hasattr(msg, "content") and msg.content:
+                        elif hasattr(msg, "content") and msg.content and not emitted_message_tokens:
                             await publish("text", msg.content)
         except Exception as exc:
             await queue.put(("__error__", exc))

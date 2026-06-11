@@ -32,7 +32,9 @@ All cache logic is in CacheManager.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
+import multiprocessing
 import os
 import threading
 import time
@@ -72,6 +74,21 @@ _VALID_MODES = {"auto", "harmony", "opendap", "s3"}
 _DEFAULT_MAX_RESULTS_CAP = 20
 _MEMORY_CACHE_MAX_BYTES = 500 * 1024 * 1024
 _MEMORY_CACHE_MAX_ITEMS = 20
+
+
+def _parse_granule_in_process(
+    path: str,
+    granule_times: dict,
+) -> xr.Dataset:
+    """
+    Parse a granule in an isolated process.
+
+    NetCDF4/HDF5 readers can segfault when several files are opened from
+    multiple threads in the same process. Loading here detaches the returned
+    dataset from file-backed handles before it is sent back to the parent.
+    """
+    ds = DatasetParser().parse_granule(path, granule_times)
+    return ds.load()
 
 
 def _provider(collection_id: str) -> str:
@@ -222,13 +239,6 @@ class DataLoader:
             self._memory_cache_bytes = sum(self._get_memory_cache_sizes().values())
         return self._memory_cache_bytes
 
-    def download_dataset_harmony(
-        self,
-        *args,
-        **kwargs,
-    ) -> xr.Dataset:
-        return asyncio.run(self.download_dataset_harmony_async(*args, **kwargs))
-
     async def download_dataset_harmony_async(
         self,
         collection_id: str,
@@ -293,8 +303,7 @@ class DataLoader:
         t0 = time.time()
 
         emit_status("Retrieving satellite dataset...")
-        ds = await asyncio.to_thread(
-            self._route,
+        ds = await self._route(
             mode,
             provider,
             col,
@@ -353,7 +362,7 @@ class DataLoader:
     # Routing
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _route(
+    async def _route(
         self,
         mode: str,
         provider: str,
@@ -373,19 +382,29 @@ class DataLoader:
 
         # ── Explicit overrides ────────────────────────────────────────────
         if mode == "harmony":
-            return self._fetch_harmony_fallback(
+            return await self._fetch_harmony_fallback(
                 collection_id, temporal, bounding_box, variables, max_results, output_format
             )
 
         if mode == "opendap":
-            return self._fetch_opendap(
-                collection_id, temporal, bounding_box, variables, max_results
+            return await asyncio.to_thread(
+                self._fetch_opendap,
+                collection_id,
+                temporal,
+                bounding_box,
+                variables,
+                max_results,
             )
 
         if mode == "s3":
             group = col.groups[0] if col and col.groups else None
-            return self._fetch_s3(
-                collection_id, temporal, bounding_box, group, max_results
+            return await asyncio.to_thread(
+                self._fetch_s3,
+                collection_id,
+                temporal,
+                bounding_box,
+                group,
+                max_results,
             )
 
         # ── Auto routing ──────────────────────────────────────────────────
@@ -408,7 +427,7 @@ class DataLoader:
 
         harmony_error = None
         try:
-            return self._fetch_harmony_fallback(
+            return await self._fetch_harmony_fallback(
                 collection_id, temporal, bounding_box,
                 harmony_variables, max_results, output_format
             )
@@ -435,8 +454,13 @@ class DataLoader:
         if provider == "LARC_CLOUD":
             group = col.groups[0] if col and col.groups else None
             try:
-                return self._fetch_s3(
-                    collection_id, temporal, bounding_box, group, max_results
+                return await asyncio.to_thread(
+                    self._fetch_s3,
+                    collection_id,
+                    temporal,
+                    bounding_box,
+                    group,
+                    max_results,
                 )
             except S3OutsideRegionError as exc:
                 raise RuntimeError(
@@ -451,8 +475,13 @@ class DataLoader:
 
         elif provider == "GES_DISC":
             try:
-                return self._fetch_opendap(
-                    collection_id, temporal, bounding_box, variables, max_results
+                return await asyncio.to_thread(
+                    self._fetch_opendap,
+                    collection_id,
+                    temporal,
+                    bounding_box,
+                    variables,
+                    max_results,
                 )
             except Exception as exc:
                 raise RuntimeError(
@@ -489,7 +518,7 @@ class DataLoader:
             max_results=max_results,
         )
 
-    def _fetch_harmony_fallback(
+    async def _fetch_harmony_fallback(
         self, collection_id, temporal, bbox, variables, max_results, output_format
     ) -> xr.Dataset:
         """
@@ -497,7 +526,7 @@ class DataLoader:
         small pre-clipped NetCDF4 response).  Also serves as the universal
         fallback for any provider.
         """
-        files = self._harmony_service.submit_and_download_sync(
+        files = await self._harmony_service.submit_and_download(
             collection_id=collection_id,
             temporal=temporal,
             bbox=bbox,
@@ -513,14 +542,46 @@ class DataLoader:
             granule_times = {}
 
         emit_status("Processing downloaded data...")
-        datasets = []
-        for path in files:
-            try:
-                datasets.append(self._parser.parse_granule(str(path), granule_times))
-            except Exception as exc:
-                logger.warning("Failed to parse %s: %s", path, exc)
-            finally:
-                path.unlink(missing_ok=True)
+        max_concurrency = get_settings().granule_parse_max_concurrency
+        semaphore = asyncio.Semaphore(max_concurrency)
+        use_process_pool = isinstance(self._parser, DatasetParser)
+        executor = (
+            concurrent.futures.ProcessPoolExecutor(
+                max_workers=max_concurrency,
+                mp_context=multiprocessing.get_context("spawn"),
+            )
+            if use_process_pool
+            else None
+        )
+        loop = asyncio.get_running_loop()
+
+        async def parse_file(path: Path) -> xr.Dataset | None:
+            async with semaphore:
+                try:
+                    if executor is not None:
+                        return await loop.run_in_executor(
+                            executor,
+                            _parse_granule_in_process,
+                            str(path),
+                            granule_times,
+                        )
+                    return await asyncio.to_thread(
+                        self._parser.parse_granule,
+                        str(path),
+                        granule_times,
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to parse %s: %s", path, exc)
+                    return None
+                finally:
+                    path.unlink(missing_ok=True)
+
+        try:
+            parsed = await asyncio.gather(*(parse_file(path) for path in files))
+        finally:
+            if executor is not None:
+                executor.shutdown(wait=True, cancel_futures=True)
+        datasets = [ds for ds in parsed if ds is not None]
 
         if not datasets:
             raise RuntimeError("Harmony returned no parseable datasets")
@@ -586,14 +647,17 @@ def main():
     logging.basicConfig(level=logging.DEBUG)
 
     data_loader = DataLoader()
-    ds = data_loader.download_dataset_harmony(
-        collection_id="C1266136037-GES_DISC",  # OMI Ozone
-        temporal=("2024-07-08T00:00:00Z", "2024-08-08T23:59:59Z"),
-        bounding_box=(-106.6458, 25.8371, -93.5078, 36.5005),
-        output_format="application/x-netcdf4",
-        max_results=1,
-        cache_path="cache_test.zarr",
-    )
+    async def run():
+        return await data_loader.download_dataset_harmony_async(
+            collection_id="C1266136037-GES_DISC",  # OMI Ozone
+            temporal=("2024-07-08T00:00:00Z", "2024-08-08T23:59:59Z"),
+            bounding_box=(-106.6458, 25.8371, -93.5078, 36.5005),
+            output_format="application/x-netcdf4",
+            max_results=1,
+            cache_path="cache_test.zarr",
+        )
+
+    ds = asyncio.run(run())
 
     logger.info("Dataset structure")
     logger.info("Data vars: %s", list(ds.data_vars))

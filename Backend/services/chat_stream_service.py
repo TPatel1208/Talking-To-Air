@@ -47,6 +47,8 @@ class ChatStreamService:
                 elif event_type == "text":
                     text, events = await self._text_events(data, thread_id, user_id)
                     response_text += text
+                    if text:
+                        yield self.sse("text", {"content": text})
                     for event in events:
                         yield event
 

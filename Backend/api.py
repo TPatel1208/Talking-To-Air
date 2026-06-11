@@ -245,7 +245,7 @@ async def export_chart_csv(chart_id: str, request: Request):
         raise HTTPException(status_code=422, detail=str(e))
 
     return StreamingResponse(
-        export_service.iter_chart_csv_chunks(payload),
+        export_service.iter_chart_csv_chunks_async(payload),
         media_type="text/csv; charset=utf-8",
         headers={
             "Content-Disposition": f'attachment; filename="{export_service.safe_export_name(payload, "csv")}"',
@@ -259,7 +259,7 @@ async def export_chart_csv(chart_id: str, request: Request):
 async def export_chart_png(chart_id: str, request: Request):
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
     try:
-        content = await asyncio.to_thread(export_service.build_chart_png, payload)
+        content = await export_service.build_chart_png_async(payload)
     except Exception as e:
         raise HTTPException(status_code=422, detail=str(e))
     return Response(

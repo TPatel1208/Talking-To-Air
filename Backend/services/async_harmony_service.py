@@ -10,8 +10,6 @@ Addresses Phase 4 of the refactor plan:
     blocking loop) with asyncio.sleep.
   - Tenacity provides retry / exponential back-off on transient 5xx errors
     and timeouts; 400 / 401 are not retried (caller's fault).
-  - A sync shim (submit_and_download_sync) wraps the async path for
-    backward-compatible call sites that cannot yet use await.
 
 Retry strategy (per plan):
   - 4 attempts total (initial + 3 retries)
@@ -315,25 +313,6 @@ class AsyncHarmonyService:
         logger.info("Download complete: %d file(s) for job %s", len(files), job_id)
         observe_harmony_fetch(asyncio.get_running_loop().time() - started)
         return files
-
-    def submit_and_download_sync(self, **kwargs) -> List[Path]:
-        """
-        Synchronous shim — runs the async path on a new event loop.
-
-        Use this from sync call sites (e.g. the @tool fallback path)
-        that cannot use ``await``.  FastAPI request handlers should call
-        ``await submit_and_download(...)`` directly instead.
-        """
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(self.submit_and_download(**kwargs))
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(
-                lambda: asyncio.run(self.submit_and_download(**kwargs))
-            )
-            return future.result()
 
     # ------------------------------------------------------------------
     # Private helpers

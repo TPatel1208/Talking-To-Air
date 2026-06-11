@@ -29,7 +29,7 @@ def _get(data_dict, key, default=None):
     return getattr(data_dict, key, default)
 
 @tool
-def compute_statistic_tool(
+async def compute_statistic_tool(
     data_dict: dict,
     location: str,
     stats: list[str] = ["mean", "median", "max", "min"]
@@ -54,7 +54,7 @@ def compute_statistic_tool(
     """
     # --- 1. Load and normalize ---
     try:
-        da = _load_data(data_dict)
+        da = await _load_data(data_dict)
     except Exception as e:
         return json.dumps({"error": f"Failed to load data: {e}"})
 
@@ -106,7 +106,7 @@ def compute_statistic_tool(
 
 
 @tool
-def find_daily_peak(
+async def find_daily_peak(
     data_dict: dict,
     location: str,
 ) -> str:
@@ -128,7 +128,7 @@ def find_daily_peak(
   
     # Load and normalize
     try:
-        da = _load_data(data_dict)
+        da = await _load_data(data_dict)
     except Exception as e:
         return json.dumps({"error": f"Failed to load data: {e}"})
 

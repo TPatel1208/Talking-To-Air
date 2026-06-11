@@ -299,13 +299,20 @@ export function useChat(accessToken, onUnauthorized) {
               charts: [...(msg.charts || []), data],
             }))
           }
+        } else if (event === 'text') {
+          const chunk = typeof data === 'string' ? data : data.content
+          if (chunk) {
+            queueAssistantUpdate(streamId, msg => ({
+              content: `${msg.content || ''}${chunk}`,
+            }))
+          }
         } else if (event === 'done') {
           const newId = data.thread_id
           setThreadId(newId)
           threadIdRef.current = newId
           persistActiveThread(newId)
           queueAssistantUpdate(streamId, msg => ({
-            content: data.response,
+            content: data.response || msg.content || '',
             imageUrls: (data.image_urls || []).map(u => `${API_BASE}${u}`),
             charts: msg.charts || [],
             statusMessage: '',

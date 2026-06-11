@@ -15,6 +15,11 @@ os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
 _REQUIRED = ["fastapi", "httpx", "jwt", "bcrypt", "langchain", "langgraph"]
 
 
+async def _aiter(items):
+    for item in items:
+        yield item
+
+
 @unittest.skipIf(
     any(importlib.util.find_spec(m) is None for m in _REQUIRED),
     "chat endpoint dependencies are not installed",
@@ -145,8 +150,8 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         auth_patches = self._auth_patch()
         with auth_patches[0], auth_patches[1], \
              patch.object(self.api.chart_service, "get_chart", fake_get_chart), \
-             patch.object(self.api.export_service, "iter_chart_csv_chunks", return_value=iter([b"variable,latitude,longitude,value,units\n"])), \
-             patch.object(self.api.export_service, "build_chart_png", return_value=b"\x89PNG\r\n\x1a\n"):
+             patch.object(self.api.export_service, "iter_chart_csv_chunks_async", return_value=_aiter([b"variable,latitude,longitude,value,units\n"])), \
+             patch.object(self.api.export_service, "build_chart_png_async", return_value=b"\x89PNG\r\n\x1a\n"):
             async with self.httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",

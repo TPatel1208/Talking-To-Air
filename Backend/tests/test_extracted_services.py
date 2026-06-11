@@ -75,6 +75,8 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
                 async for event in service.stream_chat_events(object(), "hi", "thread-1", "user-1", "req-1")
             ]
 
+        self.assertIn("event: text", events[0])
+        self.assertIn('"content": "hello"', events[0])
         self.assertIn("event: done", events[-1])
         self.assertIn('"response": "hello"', events[-1])
 

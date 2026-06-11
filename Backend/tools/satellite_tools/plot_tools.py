@@ -43,7 +43,6 @@ Time-series
 import json
 import os
 import sys
-import asyncio
 import numpy as np
 from langchain.tools import tool
 from typing import Annotated,  List, Optional
@@ -340,7 +339,7 @@ async def plot_singular(data_dict: Annotated[dict, Field(description="The comple
     """
     emit_status("Processing downloaded data...")
     try:
-        da = await asyncio.to_thread(_load_data, data_dict)
+        da = await _load_data(data_dict)
     except Exception as e:
         emit_status("Visualization failed while loading data.")
         return json.dumps({"error": f"Failed to load data: {e}"})
@@ -441,7 +440,7 @@ async def plot_multiple(
     for data_dict, location in zip(data_dicts, locations):
         emit_status("Processing downloaded data...")
         try:
-            da = await asyncio.to_thread(_load_data, data_dict)
+            da = await _load_data(data_dict)
         except Exception as e:
             emit_status("Visualization failed while loading data.")
             return json.dumps({"error": f"Failed to load data for '{location}': {e}"})
@@ -549,7 +548,7 @@ async def conduct_temporal_statistic(
     import pandas as pd
 
     try:
-        da = await asyncio.to_thread(_load_data, data_dict)
+        da = await _load_data(data_dict)
     except Exception as e:
         return json.dumps({"error": f"Failed to load data: {e}"})
 
