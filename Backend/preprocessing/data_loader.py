@@ -44,13 +44,14 @@ from typing import List, Optional, Tuple
 
 import xarray as xr
 
-from preprocessing.cache_manager import CacheManager, make_group_key, _normalise_bbox
+from preprocessing.cache_manager import CacheManager, make_group_key
 from preprocessing.dataset_parser import DatasetParser
 from repositories.cache_index_repository import CacheIndexRepository
 from repositories.zarr_repository import ZarrRepository
 from config.settings import ConfigurationError, get_settings
 from datasets.registry import load_registry
 from utils.earthaccess_client import get_earthaccess_auth
+from utils.geo_utils import normalise_bbox
 from utils.metrics import record_cache_hit
 from utils.streaming import emit_status
 
@@ -257,7 +258,7 @@ class DataLoader:
         """
         # ── Cache lookup ──────────────────────────────────────────────────
         max_results = _bounded_max_results(max_results)
-        bounding_box = _normalise_bbox(bounding_box) if bounding_box else None
+        bounding_box = normalise_bbox(bounding_box) if bounding_box else None
         memory_key = make_group_key(
             collection_id,
             temporal[0],

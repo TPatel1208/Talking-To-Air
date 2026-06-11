@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 
 from utils.db import pg_connection
+from utils.geo_utils import normalise_bbox
 
 logger = logging.getLogger(__name__)
 
@@ -21,22 +22,8 @@ def _row_to_dict(cursor, row) -> dict:
     return dict(zip(columns, row))
 
 
-def _normalise_bbox(bbox) -> Tuple[float, float, float, float]:
-    while isinstance(bbox, (list, tuple)) and len(bbox) == 1:
-        bbox = bbox[0]
-
-    if isinstance(bbox, str):
-        parts = [float(x) for x in bbox.split(",")]
-    else:
-        parts = [float(x) for x in bbox]
-
-    if len(parts) != 4:
-        raise ValueError(f"bbox must have 4 values, got {len(parts)}: {bbox!r}")
-    return parts[0], parts[1], parts[2], parts[3]
-
-
 def _bbox_to_polygon_wkt(bbox) -> str:
-    min_lon, min_lat, max_lon, max_lat = _normalise_bbox(bbox)
+    min_lon, min_lat, max_lon, max_lat = normalise_bbox(bbox)
     return (
         "POLYGON(("
         f"{min_lon} {min_lat}, "

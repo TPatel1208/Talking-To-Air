@@ -51,10 +51,11 @@ class FakeCache:
 @unittest.skipIf(importlib.util.find_spec("xarray") is None, "xarray is not installed")
 class CacheManagerTests(unittest.IsolatedAsyncioTestCase):
     async def test_bbox_normalization_accepts_string_and_nested_values(self):
-        from preprocessing.cache_manager import _normalise_bbox, make_group_key
+        from preprocessing.cache_manager import make_group_key
+        from utils.geo_utils import normalise_bbox
 
-        self.assertEqual(_normalise_bbox("-74,40,-73,41"), (-74.0, 40.0, -73.0, 41.0))
-        self.assertEqual(_normalise_bbox([("-74", "40", "-73", "41")]), (-74.0, 40.0, -73.0, 41.0))
+        self.assertEqual(normalise_bbox("-74,40,-73,41"), (-74.0, 40.0, -73.0, 41.0))
+        self.assertEqual(normalise_bbox([("-74", "40", "-73", "41")]), (-74.0, 40.0, -73.0, 41.0))
         self.assertEqual(
             make_group_key("C1", "2024-01-01T00:00:00Z", "2024-01-02T00:00:00Z", ["-74", "40", "-73", "41"]),
             "C1/2024-01-01T00:00:00Z_2024-01-02T00:00:00Z/-74.0_40.0_-73.0_41.0",
