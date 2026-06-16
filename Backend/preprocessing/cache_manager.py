@@ -226,6 +226,41 @@ class CacheManager:
                     },
                 )
 
+    async def index_existing(
+        self,
+        collection_id: str,
+        temporal: Tuple[str, str],
+        bbox: Optional[Tuple[float, float, float, float]],
+        cache_path: str,
+    ) -> None:
+        """Record metadata for a group that has already been written to Zarr."""
+        if self.index_repo is None:
+            return
+
+        group_key = make_group_key(
+            collection_id,
+            temporal[0],
+            temporal[1],
+            bbox if bbox else (),
+        )
+        try:
+            await self.index_repo.insert(
+                collection_id=collection_id,
+                group_key=group_key,
+                cache_path=cache_path,
+                temporal=temporal,
+                bbox=bbox,
+            )
+        except Exception as exc:
+            logger.warning(
+                "cache_degradation",
+                extra={
+                    "_event": "cache_degradation",
+                    "_group_key": group_key,
+                    "_error": str(exc),
+                },
+            )
+
     async def prune(self, older_than_days: int = 30) -> dict:
         if self.index_repo is None:
             return {"pruned_entries": 0, "bytes_freed": 0}

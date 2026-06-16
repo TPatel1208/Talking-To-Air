@@ -314,6 +314,83 @@ class AsyncHarmonyService:
         observe_harmony_fetch(asyncio.get_running_loop().time() - started)
         return files
 
+    async def submit_and_get_download_links(
+        self,
+        collection_id: str,
+        temporal: Tuple[str, str],
+        download_dir: Optional[str] = None,
+        bbox: Optional[Tuple[float, float, float, float]] = None,
+        variables: Optional[List[str]] = None,
+        max_results: int = 10,
+        output_format: str = "application/x-netcdf4",
+    ) -> List[str]:
+        """
+        Submit a Harmony job and return result links without downloading them.
+
+        Callers can download links in bounded windows, process the local files,
+        and delete them before fetching the next window.
+        """
+        dest = download_dir or self._download_dir
+        Path(dest).mkdir(parents=True, exist_ok=True)
+
+        request = self._build_request(
+            collection_id, temporal, bbox, variables, max_results, output_format
+        )
+        logger.info(
+            "Submitting Harmony request for streaming download: collection=%s temporal=%s bbox=%s variables=%s max_results=%s",
+            collection_id,
+            temporal,
+            bbox,
+            variables,
+            max_results,
+        )
+        emit_status("Submitting request to NASA Harmony...")
+        job_id = await self._submit_request(request)
+        increment_metric("harmony_jobs_submitted")
+        logger.info("Harmony job submitted: %s", job_id)
+
+        status_url = self._status_url(job_id)
+        emit_status("NASA Harmony is preparing data...")
+        started = asyncio.get_running_loop().time()
+        thread_id = current_thread_id()
+        try:
+            async with asyncio.timeout(self._processing_timeout_seconds):
+                await self._wait_for_processing(
+                    status_url,
+                    max_poll_seconds=self._processing_timeout_seconds,
+                )
+        except TimeoutError as exc:
+            elapsed = int(asyncio.get_running_loop().time() - started)
+            increment_metric("harmony_jobs_timed_out")
+            logger.warning(
+                "harmony_job_timeout",
+                extra={
+                    "_event": "harmony_job_timeout",
+                    "_job_id": job_id,
+                    "_job_url": status_url,
+                    "_elapsed_seconds": elapsed,
+                    "_timeout_seconds": self._processing_timeout_seconds,
+                    "_thread_id": thread_id,
+                },
+            )
+            emit_status("Satellite data processing timed out. Please try again later.")
+            raise HarmonyTimeoutError(
+                f"Harmony job {job_id} exceeded "
+                f"{self._processing_timeout_seconds}s processing limit",
+                job_url=status_url,
+                elapsed_seconds=elapsed,
+            ) from exc
+
+        emit_status("Downloading satellite granules...")
+        links = await self._fetch_download_links(status_url)
+        if not links:
+            emit_status("Download failed while retrieving NASA Harmony output.")
+            raise RuntimeError(f"No download links returned for job {job_id}")
+
+        logger.info("Harmony prepared %d download link(s) for job %s", len(links), job_id)
+        observe_harmony_fetch(asyncio.get_running_loop().time() - started)
+        return links
+
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------

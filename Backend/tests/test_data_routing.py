@@ -156,6 +156,24 @@ class DataRoutingTests(unittest.IsolatedAsyncioTestCase):
             )
             self.loader._registry_by_id = {"C1-GES_DISC": SimpleNamespace(cadence="daily")}
             self.loader._get_granule_times = lambda *args, **kwargs: {}
+            written_windows = []
+
+            class FakeZarrRepository:
+                def delete_group(self, group_key):
+                    return None
+
+                def append_window(self, ds, group_key, *, append_dim="time", first_write=False):
+                    written_windows.append((first_write, list(ds["time"].values)))
+
+                def update_attrs(self, group_key, attrs):
+                    return None
+
+                def read(self, group_key):
+                    return self.xr.Dataset(coords={"time": [0, 1, 2, 3, 4, 5]})
+
+            fake_repo = FakeZarrRepository()
+            fake_repo.xr = self.xr
+            self.loader._cache = SimpleNamespace(zarr_repo=fake_repo)
 
             active = 0
             max_active = 0
@@ -176,7 +194,7 @@ class DataRoutingTests(unittest.IsolatedAsyncioTestCase):
 
             self.loader._parser = SimpleNamespace(parse_granule=parse_granule)
 
-            with patch("preprocessing.data_loader.get_settings", return_value=SimpleNamespace(granule_parse_max_concurrency=2)):
+            with patch("preprocessing.data_loader.get_settings", return_value=SimpleNamespace(granule_concurrency=2)):
                 result = await self.loader._fetch_harmony_fallback(
                     "C1-GES_DISC",
                     ("start", "end"),
@@ -184,11 +202,82 @@ class DataRoutingTests(unittest.IsolatedAsyncioTestCase):
                     None,
                     6,
                     "application/x-netcdf4",
+                    zarr_group_key="C1-GES_DISC/start_end/global",
                 )
 
             self.assertEqual(max_active, 2)
             self.assertEqual(list(result["time"].values), [0, 1, 2, 3, 4, 5])
+            self.assertEqual(written_windows, [
+                (True, [0, 1]),
+                (False, [2, 3]),
+                (False, [4, 5]),
+            ])
             self.assertTrue(all(not path.exists() for path in files))
+
+    async def test_harmony_fallback_downloads_granules_in_windows(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            downloaded_files = []
+            requested_windows = []
+
+            async def submit_and_get_download_links(**kwargs):
+                return [f"https://example.test/granule-{idx}.nc" for idx in range(5)]
+
+            async def download_all(links, dest):
+                self.assertTrue(all(not path.exists() for path in downloaded_files))
+                requested_windows.append(list(links))
+                files = []
+                for link in links:
+                    idx = int(Path(link).stem.split("-")[-1])
+                    path = Path(tmpdir) / f"granule-{idx}.nc"
+                    path.write_text("placeholder")
+                    files.append(path)
+                    downloaded_files.append(path)
+                return files
+
+            self.loader._harmony_service = SimpleNamespace(
+                submit_and_get_download_links=AsyncMock(side_effect=submit_and_get_download_links),
+                _download_all=AsyncMock(side_effect=download_all),
+            )
+            self.loader._registry_by_id = {"C1-GES_DISC": SimpleNamespace(cadence="daily")}
+            self.loader._get_granule_times = lambda *args, **kwargs: {}
+
+            class FakeZarrRepository:
+                def delete_group(self, group_key):
+                    return None
+
+                def append_window(self, ds, group_key, *, append_dim="time", first_write=False):
+                    return None
+
+                def update_attrs(self, group_key, attrs):
+                    return None
+
+                def read(self, group_key):
+                    return self.xr.Dataset(coords={"time": [0, 1, 2, 3, 4]})
+
+            fake_repo = FakeZarrRepository()
+            fake_repo.xr = self.xr
+            self.loader._cache = SimpleNamespace(zarr_repo=fake_repo)
+
+            def parse_granule(path, granule_times):
+                idx = int(Path(path).stem.split("-")[-1])
+                return self.xr.Dataset(coords={"time": [idx]})
+
+            self.loader._parser = SimpleNamespace(parse_granule=parse_granule)
+
+            with patch("preprocessing.data_loader.get_settings", return_value=SimpleNamespace(granule_concurrency=2)):
+                result = await self.loader._fetch_harmony_fallback(
+                    "C1-GES_DISC",
+                    ("start", "end"),
+                    None,
+                    None,
+                    5,
+                    "application/x-netcdf4",
+                    zarr_group_key="C1-GES_DISC/start_end/global",
+                )
+
+            self.assertEqual([len(window) for window in requested_windows], [2, 2, 1])
+            self.assertEqual(list(result["time"].values), [0, 1, 2, 3, 4])
+            self.assertTrue(all(not path.exists() for path in downloaded_files))
 
 
 if __name__ == "__main__":

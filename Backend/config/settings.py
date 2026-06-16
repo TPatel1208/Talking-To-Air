@@ -54,9 +54,7 @@ class Settings:
     cors_origins: list[str] = field(default_factory=lambda: _csv(os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost")))
     data_fetch_mode: str = field(default_factory=lambda: os.getenv("DATA_FETCH_MODE", "auto").strip().lower())
     satellite_max_results_cap: int = field(default_factory=lambda: max(1, _int_env("SATELLITE_MAX_RESULTS_CAP", 20)))
-    granule_parse_max_concurrency: int = field(
-        default_factory=lambda: max(1, _int_env("GRANULE_PARSE_MAX_CONCURRENCY", 4))
-    )
+    granule_concurrency: int = field(default_factory=lambda: max(1, _int_env("GRANULE_CONCURRENCY", 4)))
     memory_cache_max_bytes: int = field(
         default_factory=lambda: max(1, _int_env("MEMORY_CACHE_MAX_BYTES", 500 * 1024 * 1024))
     )

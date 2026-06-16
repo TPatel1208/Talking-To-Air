@@ -46,6 +46,7 @@ import xarray as xr
 
 from preprocessing.cache_manager import CacheManager, make_group_key
 from preprocessing.dataset_parser import DatasetParser
+from preprocessing.zarr_normalization import normalize_for_zarr_append
 from repositories.cache_index_repository import CacheIndexRepository
 from repositories.zarr_repository import ZarrRepository
 from config.settings import ConfigurationError, get_settings
@@ -75,6 +76,7 @@ _VALID_MODES = {"auto", "harmony", "opendap", "s3"}
 _DEFAULT_MAX_RESULTS_CAP = 20
 _MEMORY_CACHE_MAX_BYTES = 500 * 1024 * 1024
 _MEMORY_CACHE_MAX_ITEMS = 20
+_ZARR_STREAMED_GROUP_ENCODING_KEY = "_streamed_zarr_group_key"
 
 
 def _parse_granule_in_process(
@@ -90,6 +92,11 @@ def _parse_granule_in_process(
     """
     ds = DatasetParser().parse_granule(path, granule_times)
     return ds.load()
+
+
+def _chunked(items: List[Path], size: int):
+    for start in range(0, len(items), size):
+        yield items[start:start + size]
 
 
 def _provider(collection_id: str) -> str:
@@ -314,6 +321,7 @@ class DataLoader:
             variables,
             max_results,
             output_format,
+            zarr_group_key=memory_key,
         )
         emit_status("Processing downloaded data...")
         self._ensure_granule_attrs(ds, collection_id)
@@ -321,7 +329,10 @@ class DataLoader:
         logger.info("Fetch complete in %.2fs", time.time() - t0)
 
         # ── Cache write ───────────────────────────────────────────────────
-        await self._cache.store(ds, collection_id, temporal, bounding_box, cache_path)
+        if ds.encoding.get(_ZARR_STREAMED_GROUP_ENCODING_KEY) == memory_key:
+            await self._cache.index_existing(collection_id, temporal, bounding_box, cache_path)
+        else:
+            await self._cache.store(ds, collection_id, temporal, bounding_box, cache_path)
         self._remember_dataset(memory_key, ds)
         return ds
 
@@ -374,6 +385,7 @@ class DataLoader:
         variables,
         max_results,
         output_format,
+        zarr_group_key: str | None = None,
     ) -> xr.Dataset:
         """
         Select and execute the appropriate fetch strategy, with Harmony
@@ -384,7 +396,8 @@ class DataLoader:
         # ── Explicit overrides ────────────────────────────────────────────
         if mode == "harmony":
             return await self._fetch_harmony_fallback(
-                collection_id, temporal, bounding_box, variables, max_results, output_format
+                collection_id, temporal, bounding_box, variables, max_results, output_format,
+                zarr_group_key=zarr_group_key,
             )
 
         if mode == "opendap":
@@ -430,7 +443,8 @@ class DataLoader:
         try:
             return await self._fetch_harmony_fallback(
                 collection_id, temporal, bounding_box,
-                harmony_variables, max_results, output_format
+                harmony_variables, max_results, output_format,
+                zarr_group_key=zarr_group_key,
             )
         except Exception as exc:
             harmony_error = exc
@@ -520,22 +534,42 @@ class DataLoader:
         )
 
     async def _fetch_harmony_fallback(
-        self, collection_id, temporal, bbox, variables, max_results, output_format
+        self,
+        collection_id,
+        temporal,
+        bbox,
+        variables,
+        max_results,
+        output_format,
+        zarr_group_key: str | None = None,
     ) -> xr.Dataset:
         """
         Harmony path — fast for tight bounding boxes (server-side subsetting,
         small pre-clipped NetCDF4 response).  Also serves as the universal
         fallback for any provider.
         """
-        files = await self._harmony_service.submit_and_download(
-            collection_id=collection_id,
-            temporal=temporal,
-            bbox=bbox,
-            variables=variables,
-            max_results=max_results,
-            output_format=output_format,
-            download_dir=DOWNLOAD_DIR,
-        )
+        download_links = None
+        if hasattr(self._harmony_service, "submit_and_get_download_links"):
+            download_links = await self._harmony_service.submit_and_get_download_links(
+                collection_id=collection_id,
+                temporal=temporal,
+                bbox=bbox,
+                variables=variables,
+                max_results=max_results,
+                output_format=output_format,
+                download_dir=DOWNLOAD_DIR,
+            )
+            files = []
+        else:
+            files = await self._harmony_service.submit_and_download(
+                collection_id=collection_id,
+                temporal=temporal,
+                bbox=bbox,
+                variables=variables,
+                max_results=max_results,
+                output_format=output_format,
+                download_dir=DOWNLOAD_DIR,
+            )
 
         if collection_id in _NEEDS_GRANULE_TIMES:
             granule_times = self._get_granule_times(collection_id, temporal, bbox)
@@ -543,12 +577,12 @@ class DataLoader:
             granule_times = {}
 
         emit_status("Processing downloaded data...")
-        max_concurrency = get_settings().granule_parse_max_concurrency
-        semaphore = asyncio.Semaphore(max_concurrency)
+        granule_concurrency = get_settings().granule_concurrency
+        semaphore = asyncio.Semaphore(granule_concurrency)
         use_process_pool = isinstance(self._parser, DatasetParser)
         executor = (
             concurrent.futures.ProcessPoolExecutor(
-                max_workers=max_concurrency,
+                max_workers=granule_concurrency,
                 mp_context=multiprocessing.get_context("spawn"),
             )
             if use_process_pool
@@ -577,32 +611,76 @@ class DataLoader:
                 finally:
                     path.unlink(missing_ok=True)
 
+        col = self._registry_by_id.get(collection_id)
+        group_key = zarr_group_key or make_group_key(
+            collection_id,
+            temporal[0],
+            temporal[1],
+            bbox if bbox else (),
+        )
+        parsed_count = 0
+        wrote_any = False
+        template: xr.Dataset | None = None
+
+        self._cache.zarr_repo.delete_group(group_key)
+
+        async def file_windows():
+            if download_links is not None:
+                for link_window in _chunked(download_links, granule_concurrency):
+                    yield await self._harmony_service._download_all(link_window, DOWNLOAD_DIR)
+            else:
+                for file_window in _chunked(files, granule_concurrency):
+                    yield file_window
+
         try:
-            parsed = await asyncio.gather(*(parse_file(path) for path in files))
+            async for window in file_windows():
+                parsed = await asyncio.gather(*(parse_file(path) for path in window))
+                datasets = [ds for ds in parsed if ds is not None]
+                if not datasets:
+                    continue
+
+                normalized = normalize_for_zarr_append(
+                    datasets,
+                    append_dim="time",
+                    template=template,
+                )
+                normalized.attrs["n_granules"] = parsed_count + len(datasets)
+                normalized.attrs["cadence"] = col.cadence if col else "daily"
+
+                await asyncio.to_thread(
+                    self._cache.zarr_repo.append_window,
+                    normalized,
+                    group_key,
+                    append_dim="time",
+                    first_write=not wrote_any,
+                )
+                if template is None:
+                    template = normalized
+                parsed_count += len(datasets)
+                wrote_any = True
+
+                for ds in datasets:
+                    ds.close()
+                normalized.close()
+                del parsed, datasets, normalized
+        except Exception:
+            self._cache.zarr_repo.delete_group(group_key)
+            raise
         finally:
             if executor is not None:
                 executor.shutdown(wait=True, cancel_futures=True)
-        datasets = [ds for ds in parsed if ds is not None]
 
-        if not datasets:
+        if not wrote_any:
             raise RuntimeError("Harmony returned no parseable datasets")
 
-        if len(datasets) == 1:
-            combined = datasets[0]
-        else:
-            valid = [d for d in datasets if "time" in d.dims or "time" in d.coords]
-            if not valid:
-                raise RuntimeError("No Harmony granules had a time coordinate")
-            combined = xr.concat(valid, dim="time")
-
-        col = self._registry_by_id.get(collection_id)
-        combined.attrs["n_granules"] = len(datasets)
-        combined.attrs["cadence"] = col.cadence if col else "daily"
-
-        for coord in combined.coords:
-            combined[coord].attrs.pop("units", None)
-            combined[coord].attrs.pop("calendar", None)
-
+        final_attrs = {
+            "n_granules": parsed_count,
+            "cadence": col.cadence if col else "daily",
+        }
+        await asyncio.to_thread(self._cache.zarr_repo.update_attrs, group_key, final_attrs)
+        combined = self._cache.zarr_repo.read(group_key)
+        combined.attrs.update(final_attrs)
+        combined.encoding[_ZARR_STREAMED_GROUP_ENCODING_KEY] = group_key
         return combined
 
     # ─────────────────────────────────────────────────────────────────────────

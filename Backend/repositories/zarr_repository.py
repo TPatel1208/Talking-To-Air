@@ -25,6 +25,8 @@ Example
 """
 
 import logging
+import shutil
+from pathlib import Path
 
 import xarray as xr
 
@@ -74,7 +76,7 @@ class ZarrRepository:
         logger.info(
             "Loaded from Zarr — group=%s dims=%s",
             group_key,
-            dict(ds.dims),
+            dict(ds.sizes),
         )
         return ds
 
@@ -94,8 +96,43 @@ class ZarrRepository:
         logger.info(
             "Written to Zarr — group=%s dims=%s",
             group_key,
-            dict(ds.dims),
+            dict(ds.sizes),
         )
+
+    def delete_group(self, group_key: str) -> None:
+        """Remove a Zarr group if it exists."""
+        group_path = Path(self.store_path).joinpath(*group_key.split("/"))
+        shutil.rmtree(group_path, ignore_errors=True)
+
+    def append_window(
+        self,
+        ds: xr.Dataset,
+        group_key: str,
+        *,
+        append_dim: str = "time",
+        first_write: bool = False,
+    ) -> None:
+        """Write or append one normalized dataset window to a Zarr group."""
+        mode = "w" if first_write else "a"
+        kwargs = {"mode": mode, "consolidated": True}
+        if not first_write:
+            kwargs["append_dim"] = append_dim
+
+        logger.debug(
+            "%s Zarr window: group=%s append_dim=%s dims=%s",
+            "Writing" if first_write else "Appending",
+            group_key,
+            append_dim,
+            dict(ds.sizes),
+        )
+        ds.to_zarr(self.store_path, group=group_key, **kwargs)
+
+    def update_attrs(self, group_key: str, attrs: dict) -> None:
+        """Update root attributes for an existing Zarr group."""
+        import zarr
+
+        group = zarr.open_group(store=self.store_path, mode="a", path=group_key)
+        group.attrs.update(attrs)
 
     def __repr__(self) -> str:
         return f"ZarrRepository({self.store_path!r})"
