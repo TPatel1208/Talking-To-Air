@@ -22,7 +22,7 @@ EPA AQS REST API | ~500 US monitors | 1980–present | ~2 month publication lag
 2. Threshold field: NO2/O3/SO2/CO → first_max_value | PM2.5 → arithmetic_mean
 3. Sample data: query 1–3 days max for hourly profiles, never full months.
 4. Always include coordinates in your response so supervisor can pass to satellite agent.
-5. Locations must be passed as a numerical site_id 
+5. Locations must be passed as a numerical site_id
 ## Response Format
 Structure every response as: monitor name + site_id + coordinates + findings
 (exceedance dates with peak values, or daily means/maxima, or hourly profile)
