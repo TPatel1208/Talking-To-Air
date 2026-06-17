@@ -59,6 +59,39 @@ services:
       retries: 3
       start_period: 20s
 
+  # ── Backend tests (pytest + coverage) ───────────────────────────────────────
+  #  Run with: docker compose --profile test run --rm backend-test
+  backend-test:
+    build:
+      context: ./Backend
+      dockerfile: Dockerfile
+      target: builder
+    profiles: ["test"]
+    working_dir: /app
+    environment:
+      JWT_SECRET_KEY: "test-secret"
+      GROQ_API_KEY: "test"
+      AQS_API_KEY: "test"
+      AQS_API_EMAIL: "test@test.com"
+      DB_HOST: "localhost"
+      DB_PORT: "5432"
+      DB_NAME: "talking_to_air_memory"
+      DB_USER: "postgres"
+      DB_PASSWORD: "test"
+    command: >
+      sh -c "coverage run -m pytest tests/ -v --tb=short && coverage report"
+
+  # ── Frontend tests (Vitest) ───────────────────────────────────────────────────
+  #  Run with: docker compose --profile test run --rm frontend-test
+  frontend-test:
+    build:
+      context: ./Frontend
+      dockerfile: Dockerfile
+      target: builder
+    profiles: ["test"]
+    working_dir: /app
+    command: ["npm", "test"]
+
   # ── React / Vite frontend (nginx) ────────────────────────────────────────────
   frontend:
     build:

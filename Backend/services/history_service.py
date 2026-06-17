@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import inspect
+import json
 from typing import Any
 
+from services.artifact_store import artifact_store
 from services.chart_service import ChartService
 from utils.message_utils import PNG_PATH_RE, flatten_text_content, normalize_image_url
 
@@ -71,6 +73,7 @@ class HistoryService:
             "toolCalls": tool_calls,
             "imageUrls": [],
             "charts": [],
+            "artifacts": [],
         }
 
     async def _attach_tool_output(
@@ -97,6 +100,17 @@ class HistoryService:
                 if chart_payload not in assistant["charts"]:
                     assistant["charts"].append(chart_payload)
 
+        for ref in self._artifact_refs(tool_text):
+            try:
+                artifact = artifact_store.claim(ref["id"], user_id, thread_id).model_dump(exclude_none=True)
+            except KeyError:
+                continue
+            assistant = self._last_assistant(result)
+            if assistant is not None:
+                assistant.setdefault("artifacts", [])
+                if artifact not in assistant["artifacts"]:
+                    assistant["artifacts"].append(artifact)
+
     def _last_assistant(self, messages: list[dict[str, Any]]) -> dict[str, Any] | None:
         for message in reversed(messages):
             if message["role"] == "assistant":
@@ -118,6 +132,26 @@ class HistoryService:
                     prev.setdefault("charts", [])
                     if chart not in prev["charts"]:
                         prev["charts"].append(chart)
+                for artifact in msg.get("artifacts", []):
+                    prev.setdefault("artifacts", [])
+                    if artifact not in prev["artifacts"]:
+                        prev["artifacts"].append(artifact)
             else:
                 merged.append(msg)
         return merged
+
+    def _artifact_refs(self, content: Any) -> list[dict[str, Any]]:
+        try:
+            parsed = json.loads(content) if isinstance(content, str) else content
+        except Exception:
+            return []
+        if not isinstance(parsed, dict):
+            return []
+        refs = parsed.get("_artifact_refs") or []
+        if not isinstance(refs, list):
+            return []
+        return [
+            ref
+            for ref in refs
+            if isinstance(ref, dict) and isinstance(ref.get("id"), str) and isinstance(ref.get("type"), str)
+        ]

@@ -155,6 +155,7 @@ export function useChat(accessToken, onUnauthorized) {
       const data = await res.json()
       const hydrated = (data.messages || []).map(m => ({
         ...m,
+        artifacts: m.artifacts || [],
         imageUrls: (m.imageUrls || []).map(u =>
           u.startsWith('http') ? u : `${API_BASE}${u}`
         ),
@@ -241,6 +242,7 @@ export function useChat(accessToken, onUnauthorized) {
         statusMessage: '',
         imageUrls: [],
         charts: [],
+        artifacts: [],
         isLoading: true,
         streamId,
       },
@@ -299,6 +301,14 @@ export function useChat(accessToken, onUnauthorized) {
               charts: [...(msg.charts || []), data],
             }))
           }
+        } else if (event === 'artifact') {
+          if (!data || typeof data !== 'object' || !data.id || !data.type) {
+            console.warn('[useChat] Ignoring non-object artifact event:', data)
+          } else {
+            queueAssistantUpdate(streamId, msg => ({
+              artifacts: [...(msg.artifacts || []), data],
+            }))
+          }
         } else if (event === 'text') {
           const chunk = typeof data === 'string' ? data : data.content
           if (chunk) {
@@ -315,6 +325,7 @@ export function useChat(accessToken, onUnauthorized) {
             content: data.response || msg.content || '',
             imageUrls: (data.image_urls || []).map(u => `${API_BASE}${u}`),
             charts: msg.charts || [],
+            artifacts: msg.artifacts?.length ? msg.artifacts : (data.artifacts || []),
             statusMessage: '',
             isLoading: false,
           }))

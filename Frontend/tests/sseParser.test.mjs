@@ -40,6 +40,19 @@ test('handles event frames split across chunks', () => {
   }])
 })
 
+test('parses artifact metadata events without row payloads', () => {
+  const events = parseChunks([
+    'event: artifact\n',
+    'data: {"id":"tbl_abc123","type":"table","title":"EPA Summary","row_count":2}\n\n',
+  ])
+
+  assert.deepEqual(events, [{
+    event: 'artifact',
+    data: '{"id":"tbl_abc123","type":"table","title":"EPA Summary","row_count":2}',
+    id: '',
+  }])
+})
+
 test('ignores comments and supports CRLF line endings', () => {
   const events = parseChunks([
     ': keepalive\r\nevent: image\r\ndata: {"url":"/x.png"}\r\n\r\n',

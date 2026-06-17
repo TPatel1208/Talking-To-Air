@@ -1,3 +1,5 @@
+from contextvars import ContextVar
+
 from langchain.tools import tool
 import httpx
 from typing import Dict, Any, List, Optional, Union
@@ -5,6 +7,7 @@ import math
 from datetime import date, timedelta
 
 from config.settings import get_settings
+from services.artifact_store import artifact_store
 from utils.plotting import GeocodingService
 
 geocoding_service = GeocodingService()
@@ -16,6 +19,11 @@ AQS_EMAIL = settings.aqs_api_email
 AQS_KEY = settings.aqs_api_key
 DEFAULT_PARAM_CODE = "42602"  # NO2
 
+# Per-request deduplication cache — keyed by (endpoint, sorted-params-tuple).
+# Each asyncio Task (one per HTTP request) gets its own copy via ContextVar
+# isolation, so cache entries never leak across requests.
+_request_cache: ContextVar[dict | None] = ContextVar("_aqs_request_cache", default=None)
+
 # Initial bbox half-width for street-level addresses (degrees, ~17 miles).
 # Nominatim returns a ~10m box for a street address which AQS returns empty for;
 # we clamp to this minimum before the expansion ladder runs.
@@ -23,6 +31,21 @@ _MIN_BBOX_HALF = 0.25
 
 # Expansion steps added on top of the initial box when no monitors are found
 _BBOX_EXPANSIONS = [0.0, 0.5, 1.5, 3.0, 5.0]
+_SUMMARY_SITE_CAP = 25
+_DAILY_DETAIL_DAY_CAP = 31
+_PLACEHOLDER_FILTER_VALUES = {
+    "",
+    "site",
+    "site_id",
+    "site_number",
+    "station_id",
+    "monitor",
+    "monitor_id",
+    "unknown",
+    "n/a",
+    "na",
+    "??",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -30,8 +53,20 @@ _BBOX_EXPANSIONS = [0.0, 0.5, 1.5, 3.0, 5.0]
 # ---------------------------------------------------------------------------
 
 async def _aqs_get(endpoint: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    """GET request to the AQS API; raises on HTTP errors or unexpected statuses."""
+    """GET request to the AQS API; raises on HTTP errors or unexpected statuses.
+
+    Identical (endpoint, params) pairs within the same asyncio Task are served
+    from an in-memory dict, preventing duplicate EPA calls when the LLM invokes
+    multiple tools with overlapping data requirements in a single request.
+    """
     full_params = {**params, "email": AQS_EMAIL, "key": AQS_KEY}
+    cache_key = (endpoint, tuple(sorted(full_params.items())))
+    cache = _request_cache.get()
+    if cache is None:
+        cache = {}
+        _request_cache.set(cache)
+    if cache_key in cache:
+        return cache[cache_key]
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.get(f"{AQS_BASE_URL}/{endpoint}", params=full_params)
         resp.raise_for_status()
@@ -41,6 +76,7 @@ async def _aqs_get(endpoint: str, params: Dict[str, Any]) -> Dict[str, Any]:
     # "No data matched your selection" is a valid empty result, not an error
     if status not in ("success", "no data matched your selection", ""):
         raise RuntimeError(f"AQS API error: {header[0]}")
+    cache[cache_key] = data
     return data
 
 
@@ -78,6 +114,16 @@ def _bbox_from_point(lat: float, lon: float) -> List[float]:
     """Return a minimum-sized [south, north, west, east] bbox centred on a point."""
     return [lat - _MIN_BBOX_HALF, lat + _MIN_BBOX_HALF,
             lon - _MIN_BBOX_HALF, lon + _MIN_BBOX_HALF]
+
+
+def _positive_int(value: Union[int, str], name: str) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"Invalid {name}: '{value}' must be an integer or castable to integer.")
+    if parsed < 1:
+        raise ValueError(f"Invalid {name}: {parsed} must be >= 1.")
+    return parsed
 
 
 def _resolve_dates(bdate: Optional[str], edate: Optional[str]):
@@ -134,9 +180,11 @@ def _build_body(nearest: List[Dict], param_code: str) -> List[Dict]:
         station_id = "-".join(
             str(m.get(key, "??")) for key in ("state_code", "county_code", "site_number")
         )
+        station_name = m.get("local_site_name") or m.get("address", "N/A")
         body.append({
             "station_id": station_id,
-            "station_name": m.get("local_site_name") or m.get("address", "N/A"),
+            "station_name": station_name,
+            "monitor_name": station_name,
             "latitude": float(m["latitude"]),
             "longitude": float(m["longitude"]),
             "distance_miles": round(m["_dist"], 3),
@@ -176,7 +224,7 @@ async def find_closest_monitor(
     param_code: str = DEFAULT_PARAM_CODE,
     bdate: Optional[str] = None,
     edate: Optional[str] = None,
-    k: int = 1,
+    k: Union[int, str] = 1,
 ) -> Dict[str, Any]:
     """
     Find the closest active EPA AQS monitor to a location name or address.
@@ -188,11 +236,12 @@ async def find_closest_monitor(
         param_code : AQS parameter code (default '42602' = NO2).
         bdate      : Start date YYYY-MM-DD (defaults to 1 year ago).
         edate      : End date YYYY-MM-DD (defaults to bdate).
-        k          : Number of nearest monitors to return (default 1).
+        k          : Number of nearest monitors to return (default 1); numeric strings are accepted.
 
-    Returns Body fields: station_id, station_name, latitude, longitude,
+    Returns Body fields: station_id, station_name, monitor_name, latitude, longitude,
     distance_miles, state_code, county_code, site_number.
     """
+    k = _positive_int(k, "k")
     bdate_obj, edate_obj, bdate_str, edate_str = _resolve_dates(bdate, edate)
 
     geo = await geocoding_service.ageocode(location)
@@ -234,7 +283,7 @@ async def find_closest_monitor_by_coords(
     param_code: str = DEFAULT_PARAM_CODE,
     bdate: Optional[str] = None,
     edate: Optional[str] = None,
-    k: int = 1,
+    k: Union[int, str] = 1,
 ) -> Dict[str, Any]:
     """
     Find the closest active EPA AQS monitor to a lat/lon point.
@@ -247,9 +296,9 @@ async def find_closest_monitor_by_coords(
         param_code : AQS parameter code (default '42602' = NO2).
         bdate      : Start date YYYY-MM-DD (defaults to 1 year ago).
         edate      : End date YYYY-MM-DD (defaults to bdate).
-        k          : Number of nearest monitors to return (default 1).
+        k          : Number of nearest monitors to return (default 1); numeric strings are accepted.
 
-    Returns Body fields: station_id, station_name, latitude, longitude,
+    Returns Body fields: station_id, station_name, monitor_name, latitude, longitude,
     distance_miles, state_code, county_code, site_number.
     """
     try:
@@ -257,6 +306,7 @@ async def find_closest_monitor_by_coords(
         longitude = float(longitude)
     except ValueError:
         raise ValueError(f"Invalid latitude or longitude: '{latitude}', '{longitude}' must be float or castable to float.")
+    k = _positive_int(k, "k")
     bdate_obj, edate_obj, bdate_str, edate_str = _resolve_dates(bdate, edate)
 
     bbox = _bbox_from_point(latitude, longitude)
@@ -293,13 +343,20 @@ def _resolve_filter(
     cbsa_code, minlat, maxlat, minlon, maxlon,
 ) -> tuple:
     """Return (endpoint, filter_params) for a given data prefix and filter inputs."""
-    if site_number and county_code and state_code:
+    if site_number and ((county_code and state_code) or "-" in str(site_number)):
+        state_code, county_code, site_number = _normalise_site_filter(
+            state_code, county_code, site_number
+        )
         return f"{prefix}/bySite", {"state": state_code, "county": county_code, "site": site_number}
     elif county_code and state_code:
+        state_code = _normalise_numeric_filter("state_code", state_code)
+        county_code = _normalise_numeric_filter("county_code", county_code)
         return f"{prefix}/byCounty", {"state": state_code, "county": county_code}
     elif state_code:
+        state_code = _normalise_numeric_filter("state_code", state_code)
         return f"{prefix}/byState", {"state": state_code}
     elif cbsa_code:
+        cbsa_code = _normalise_numeric_filter("cbsa_code", cbsa_code)
         return f"{prefix}/byCBSA", {"cbsa": cbsa_code}
     elif all(v is not None for v in [minlat, maxlat, minlon, maxlon]):
         minlat, maxlat = float(minlat), float(maxlat)
@@ -311,6 +368,36 @@ def _resolve_filter(
             "(state_code + county_code), state_code, cbsa_code, or "
             "(minlat + maxlat + minlon + maxlon)."
         )
+
+
+def _normalise_numeric_filter(name: str, value) -> str:
+    text = str(value).strip()
+    if text.lower() in _PLACEHOLDER_FILTER_VALUES:
+        raise ValueError(
+            f"Invalid {name}: received placeholder {value!r}. "
+            "Use the actual numeric code returned by the monitor lookup tool."
+        )
+    if not text.isdigit():
+        raise ValueError(f"Invalid {name}: {value!r} must contain digits only.")
+    return text
+
+
+def _normalise_site_filter(state_code, county_code, site_number) -> tuple[str, str, str]:
+    site_text = str(site_number).strip()
+    if "-" in site_text:
+        parts = site_text.split("-")
+        if len(parts) != 3:
+            raise ValueError(
+                f"Invalid site_number/station_id: {site_number!r}. "
+                "Expected station_id format state-county-site, e.g. '34-019-0007'."
+            )
+        state_code, county_code, site_number = parts
+
+    return (
+        _normalise_numeric_filter("state_code", state_code),
+        _normalise_numeric_filter("county_code", county_code),
+        _normalise_numeric_filter("site_number", site_number),
+    )
 
 
 async def _fetch_summary(
@@ -365,8 +452,178 @@ def _build_summary_header(
     }]
 
 
+def _table_columns(rows: List[Dict[str, Any]]) -> list[str]:
+    columns: list[str] = []
+    seen = set()
+    for row in rows:
+        for key in row:
+            if key not in seen:
+                seen.add(key)
+                columns.append(key)
+    return columns
+
+
+def _artifact_table_response(
+    header: list[dict[str, Any]],
+    body: list[dict[str, Any]],
+    title: str,
+    metadata: dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    artifact_ref = artifact_store.put_table(
+        title=title,
+        columns=_table_columns(body),
+        rows=body,
+        metadata=metadata or {},
+    )
+    header[0]["artifact_count"] = 1
+    header[0]["table_artifact_id"] = artifact_ref.id
+    return {
+        "Header": header,
+        "Body": body,
+        "_artifact_refs": [artifact_ref.model_dump(exclude_none=True)],
+    }
+
+
 def _site_id(r):
     return "-".join([r.get("state_code", "??"), r.get("county_code", "??"), r.get("site_number", "??")])
+
+
+def _float_or_none(value):
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _mean(values: List[float]) -> Optional[float]:
+    return round(sum(values) / len(values), 6) if values else None
+
+
+def _period_key(record: Dict[str, Any], period: str) -> str:
+    if period == "daily":
+        return str(record.get("date_local") or "")
+    if period == "quarterly":
+        return f"{record.get('year', '')}-Q{record.get('quarter', '')}"
+    return str(record.get("year") or "")
+
+
+def _period_fields(record: Dict[str, Any], period: str) -> Dict[str, Any]:
+    if period == "daily":
+        return {"period": _period_key(record, period), "date": record.get("date_local")}
+    if period == "quarterly":
+        return {
+            "period": _period_key(record, period),
+            "year": record.get("year"),
+            "quarter": record.get("quarter"),
+        }
+    return {"period": _period_key(record, period), "year": record.get("year")}
+
+
+def _aggregate_summary_records(
+    records: List[Dict[str, Any]],
+    period: str,
+) -> tuple[List[Dict[str, Any]], int, int]:
+    site_period_records: Dict[tuple[str, str], List[Dict[str, Any]]] = {}
+    site_ids = set()
+    for record in records:
+        site_id = _site_id(record)
+        site_ids.add(site_id)
+        site_period_records.setdefault((site_id, _period_key(record, period)), []).append(record)
+
+    body = []
+    selected_sites = set(sorted(site_ids)[:_SUMMARY_SITE_CAP])
+    for site_id, period_id in sorted(site_period_records):
+        if site_id not in selected_sites:
+            continue
+
+        site_records = site_period_records[(site_id, period_id)]
+        first = site_records[0]
+        means = [v for v in (_float_or_none(r.get("arithmetic_mean")) for r in site_records) if v is not None]
+        minima = [
+            v
+            for v in (
+                _float_or_none(r.get("minimum_value"))
+                if r.get("minimum_value") is not None
+                else _float_or_none(r.get("arithmetic_mean"))
+                for r in site_records
+            )
+            if v is not None
+        ]
+        maxima = [
+            v
+            for v in (
+                _float_or_none(r.get("maximum_value"))
+                if r.get("maximum_value") is not None
+                else _float_or_none(r.get("arithmetic_mean"))
+                for r in site_records
+            )
+            if v is not None
+        ]
+
+        peak_record = None
+        peak_value = None
+        for record in site_records:
+            value = _float_or_none(record.get("first_max_value")) if period == "daily" else None
+            if value is None:
+                value = _float_or_none(record.get("maximum_value"))
+            if value is None:
+                value = _float_or_none(record.get("arithmetic_mean"))
+            if value is not None and (peak_value is None or value > peak_value):
+                peak_record = record
+                peak_value = value
+
+        peak = {"value": peak_value}
+        if peak_record:
+            if period == "daily":
+                peak["date"] = peak_record.get("date_local")
+                if peak_record.get("first_max_hour") is not None:
+                    peak["first_max_hour"] = peak_record.get("first_max_hour")
+            elif period == "quarterly":
+                peak["year"] = peak_record.get("year")
+                peak["quarter"] = peak_record.get("quarter")
+            else:
+                peak["year"] = peak_record.get("year")
+
+        observation_counts = [
+            v for v in (_float_or_none(r.get("observation_count")) for r in site_records) if v is not None
+        ]
+        observation_percents = [
+            v for v in (_float_or_none(r.get("observation_percent")) for r in site_records) if v is not None
+        ]
+
+        item = {
+            "site_id": site_id,
+            **_period_fields(first, period),
+            "local_site_name": first.get("local_site_name"),
+            "monitor_name": first.get("local_site_name"),
+            "units": first.get("units_of_measure"),
+            "pollutant_standard": first.get("pollutant_standard"),
+            "sample_duration": first.get("sample_duration"),
+            "n_periods": len(site_records),
+            "mean": _mean(means),
+            "min": min(minima) if minima else None,
+            "max": max(maxima) if maxima else None,
+            "peak": peak,
+        }
+        if observation_counts:
+            item["observation_count"] = int(sum(observation_counts))
+        if observation_percents:
+            item["observation_percent"] = _mean(observation_percents)
+        valid_day_counts = [
+            v for v in (_float_or_none(r.get("valid_day_count")) for r in site_records) if v is not None
+        ]
+        required_day_counts = [
+            v for v in (_float_or_none(r.get("required_day_count")) for r in site_records) if v is not None
+        ]
+        if valid_day_counts:
+            item["valid_day_count"] = int(sum(valid_day_counts))
+        if required_day_counts:
+            item["required_day_count"] = int(sum(required_day_counts))
+        body.append(item)
+
+    return body, len(site_ids), len(site_period_records)
 
 
 # ---------------------------------------------------------------------------
@@ -393,37 +650,44 @@ async def get_daily_summary(
     """
     Daily summary stats (midnight-to-midnight local). Use for day-level analysis
     or to feed find_exceedance_days. For trends use quarterly/annual instead.
+    Requests spanning more than 31 days are returned as quarterly period rows.
     Filter (one group): state+county+site | state+county | state | cbsa_code | bbox
     Always pass pollutant_standard (see ground prompt table).
+    Returns period rows for capped sites: date/period, n_periods, mean, min, max,
+    peak date/value, and coverage.
     """
     bdate_obj, edate_obj, bdate_str, edate_str = _resolve_dates(bdate, edate)
+    requested_period = "daily"
+    fetch_prefix = "dailyData"
+    detail_note = None
+    if (edate_obj - bdate_obj).days + 1 > _DAILY_DETAIL_DAY_CAP:
+        requested_period = "quarterly"
+        fetch_prefix = "quarterlyData"
+        detail_note = (
+            f"Requested daily range exceeds {_DAILY_DETAIL_DAY_CAP} days; "
+            "returning quarterly period rows instead. Call with a shorter range for daily detail."
+        )
+
     records, endpoint, _ = await _fetch_summary(
-        "dailyData", param_code, bdate_obj, edate_obj, bdate_str, edate_str,
+        fetch_prefix, param_code, bdate_obj, edate_obj, bdate_str, edate_str,
         state_code, county_code, site_number, cbsa_code,
         minlat, maxlat, minlon, maxlon, cbdate, cedate, pollutant_standard,
     )
-    body = [
-        {
-            "date": r.get("date_local"),
-            "site_id": _site_id(r),
-            "arithmetic_mean": r.get("arithmetic_mean"),
-            "maximum_value": r.get("maximum_value"),
-            "aqi": r.get("aqi"),
-            "units": r.get("units_of_measure"),
-            "sample_duration": r.get("sample_duration"),
-            "pollutant_standard": r.get("pollutant_standard"),
-            "observation_count": r.get("observation_count"),
-            "observation_percent": r.get("observation_percent"),
-            "first_max_value": r.get("first_max_value"),
-            "first_max_hour": r.get("first_max_hour"),
-            "local_site_name": r.get("local_site_name"),
-        }
-        for r in records
-    ]
-    return {
-        "Header": _build_summary_header(len(body), endpoint, param_code, bdate_obj, edate_obj, pollutant_standard),
-        "Body": body,
-    }
+    body, total_sites, total_periods = _aggregate_summary_records(records, requested_period)
+    header = _build_summary_header(len(body), endpoint, param_code, bdate_obj, edate_obj, pollutant_standard)
+    header[0]["total_sites_matched"] = total_sites
+    header[0]["sites_returned"] = min(total_sites, _SUMMARY_SITE_CAP)
+    header[0]["total_periods_matched"] = total_periods
+    header[0]["periods_returned"] = len(body)
+    header[0]["granularity"] = requested_period
+    if detail_note:
+        header[0]["note"] = detail_note
+    return _artifact_table_response(
+        header,
+        body,
+        title=f"EPA {requested_period.title()} Summary",
+        metadata={"endpoint": endpoint, "granularity": requested_period},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -452,6 +716,8 @@ async def get_quarterly_summary(
     bdate/edate used — all 4 quarters per year returned. Use for seasonal trends.
     Filter (one group): state+county+site | state+county | state | cbsa_code | bbox
     Always pass pollutant_standard (see ground prompt table).
+    Returns quarter rows for capped sites: year/quarter/period, n_periods, mean,
+    min, max, peak quarter/value, and coverage.
     """
     bdate_obj, edate_obj, bdate_str, edate_str = _resolve_dates(bdate, edate)
     records, endpoint, _ = await _fetch_summary(
@@ -459,30 +725,19 @@ async def get_quarterly_summary(
         state_code, county_code, site_number, cbsa_code,
         minlat, maxlat, minlon, maxlon, cbdate, cedate, pollutant_standard,
     )
-    body = [
-        {
-            "year": r.get("year"),
-            "quarter": r.get("quarter"),
-            "site_id": _site_id(r),
-            "arithmetic_mean": r.get("arithmetic_mean"),
-            "minimum_value": r.get("minimum_value"),
-            "maximum_value": r.get("maximum_value"),
-            "percentile_25": r.get("first_quartile"),
-            "percentile_75": r.get("third_quartile"),
-            "percentile_98": r.get("ninety_eighth_percentile"),
-            "units": r.get("units_of_measure"),
-            "sample_duration": r.get("sample_duration"),
-            "pollutant_standard": r.get("pollutant_standard"),
-            "observation_count": r.get("observation_count"),
-            "observation_percent": r.get("observation_percent"),
-            "local_site_name": r.get("local_site_name"),
-        }
-        for r in records
-    ]
-    return {
-        "Header": _build_summary_header(len(body), endpoint, param_code, bdate_obj, edate_obj, pollutant_standard),
-        "Body": body,
-    }
+    body, total_sites, total_periods = _aggregate_summary_records(records, "quarterly")
+    header = _build_summary_header(len(body), endpoint, param_code, bdate_obj, edate_obj, pollutant_standard)
+    header[0]["total_sites_matched"] = total_sites
+    header[0]["sites_returned"] = min(total_sites, _SUMMARY_SITE_CAP)
+    header[0]["total_periods_matched"] = total_periods
+    header[0]["periods_returned"] = len(body)
+    header[0]["granularity"] = "quarterly"
+    return _artifact_table_response(
+        header,
+        body,
+        title="EPA Quarterly Summary",
+        metadata={"endpoint": endpoint, "granularity": "quarterly"},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -511,6 +766,8 @@ async def get_annual_summary(
     years returned. Includes design values for NAAQS compliance. Use for long-term trends.
     Filter (one group): state+county+site | state+county | state | cbsa_code | bbox
     Always pass pollutant_standard (see ground prompt table).
+    Returns annual rows for capped sites: year/period, n_periods, mean, min, max,
+    peak year/value, and coverage.
     """
     bdate_obj, edate_obj, bdate_str, edate_str = _resolve_dates(bdate, edate)
     records, endpoint, _ = await _fetch_summary(
@@ -518,32 +775,19 @@ async def get_annual_summary(
         state_code, county_code, site_number, cbsa_code,
         minlat, maxlat, minlon, maxlon, cbdate, cedate, pollutant_standard,
     )
-    body = [
-        {
-            "year": r.get("year"),
-            "site_id": _site_id(r),
-            "arithmetic_mean": r.get("arithmetic_mean"),
-            "minimum_value": r.get("minimum_value"),
-            "maximum_value": r.get("maximum_value"),
-            "percentile_25": r.get("first_quartile"),
-            "percentile_75": r.get("third_quartile"),
-            "percentile_98": r.get("ninety_eighth_percentile"),
-            "design_value": r.get("design_value"),
-            "units": r.get("units_of_measure"),
-            "sample_duration": r.get("sample_duration"),
-            "pollutant_standard": r.get("pollutant_standard"),
-            "observation_count": r.get("observation_count"),
-            "observation_percent": r.get("observation_percent"),
-            "local_site_name": r.get("local_site_name"),
-            "valid_day_count": r.get("valid_day_count"),
-            "required_day_count": r.get("required_day_count"),
-        }
-        for r in records
-    ]
-    return {
-        "Header": _build_summary_header(len(body), endpoint, param_code, bdate_obj, edate_obj, pollutant_standard),
-        "Body": body,
-    }
+    body, total_sites, total_periods = _aggregate_summary_records(records, "annual")
+    header = _build_summary_header(len(body), endpoint, param_code, bdate_obj, edate_obj, pollutant_standard)
+    header[0]["total_sites_matched"] = total_sites
+    header[0]["sites_returned"] = min(total_sites, _SUMMARY_SITE_CAP)
+    header[0]["total_periods_matched"] = total_periods
+    header[0]["periods_returned"] = len(body)
+    header[0]["granularity"] = "annual"
+    return _artifact_table_response(
+        header,
+        body,
+        title="EPA Annual Summary",
+        metadata={"endpoint": endpoint, "granularity": "annual"},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -655,8 +899,7 @@ async def find_exceedance_days(
 
     body.sort(key=lambda x: x["date"])
 
-    return {
-        "Header": [{
+    header = [{
             "status": "success",
             "rows": len(body),
             "endpoint": endpoint,
@@ -669,9 +912,13 @@ async def find_exceedance_days(
             "percentile_threshold": percentile_threshold,
             "percentile_cutoff_value": percentile_cutoff,
             "total_days_in_period": len(records),
-        }],
-        "Body": body,
-    }
+    }]
+    return _artifact_table_response(
+        header,
+        body,
+        title="EPA Exceedance Days",
+        metadata={"endpoint": endpoint, "measurement_field": measurement_field},
+    )
 
 # ---------------------------------------------------------------------------
 # Sample data (hourly readings)

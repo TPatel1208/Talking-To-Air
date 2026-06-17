@@ -131,9 +131,9 @@ Copy `.env.example` to `.env` and fill in the values below.
 
 | Variable | Default | Description |
 |---|---|---|
-| `LLM_MODEL` | `gemma-4-26b-a4b-it` | Supervisor model |
-| `SATELLITE_AGENT_MODEL` | `meta-llama/llama-4-scout-17b-16e-instruct` | Satellite subagent model |
-| `GROUND_AGENT_MODEL` | `meta-llama/llama-4-scout-17b-16e-instruct` | Ground sensor subagent model |
+| `LLM_MODEL` | `llama-3.3-70b-versatile` | Supervisor model |
+| `SATELLITE_AGENT_MODEL` | `openai/gpt-oss-20b` | Satellite subagent model |
+| `GROUND_AGENT_MODEL` | `openai/gpt-oss-20b` | Ground sensor subagent model |
 | `DATA_FETCH_MODE` | `auto` | Fetch strategy: `auto`, `harmony`, `opendap`, or `s3` |
 | `S3_FORCE_FETCH` | `0` | Set to `1` to bypass the us-west-2 region check for S3 fetches |
 | `SATELLITE_MAX_RESULTS_CAP` | `20` | Maximum granule results per satellite query |

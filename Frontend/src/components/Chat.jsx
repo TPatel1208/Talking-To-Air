@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
+import ArtifactMessage from './ArtifactMessage'
 import ChartMessage from './ChartMessage'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
@@ -339,6 +340,9 @@ function MessageBubble({ msg, accessToken }) {
                 ))}
                 {msg.charts?.map((chart, i) => (
                   <ChartMessage key={i} chart={chart} accessToken={accessToken} />
+                ))}
+                {msg.artifacts?.map((artifact, i) => (
+                  <ArtifactMessage key={artifact.id || i} artifact={artifact} accessToken={accessToken} />
                 ))}
               </>
             )}

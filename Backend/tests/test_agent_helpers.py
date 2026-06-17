@@ -1,7 +1,9 @@
 import importlib.util
+import asyncio
 import os
 import sys
 import unittest
+from unittest.mock import AsyncMock, Mock, patch
 
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_DIR not in sys.path:
@@ -158,6 +160,47 @@ class AgentHelperTests(unittest.TestCase):
         compacted = _compact_model_input_content(raw)
 
         self.assertEqual(compacted, "Here is the result.\n\nCharts generated: chart")
+
+    def test_ground_tool_failure_detects_provider_tool_call_errors(self):
+        from agents.supervisor_agent import _is_ground_tool_failure
+
+        self.assertTrue(_is_ground_tool_failure("Error: Failed to call a function. failed_generation"))
+        self.assertTrue(_is_ground_tool_failure("tool call validation failed: parameters for tool did not match schema"))
+        self.assertFalse(_is_ground_tool_failure("The monitor is Rutgers University."))
+
+    def test_ground_context_extracts_and_injects_monitor_facts(self):
+        from agents.supervisor_agent import _extract_ground_monitor_context, _inject_ground_context
+
+        context = _extract_ground_monitor_context(
+            "The closest NO2 monitor is Rutgers University with station_id 34-023-0011 "
+            "located at coordinates (40.462182, -74.429439)."
+        )
+
+        self.assertEqual(context["name"], "Rutgers University")
+        self.assertEqual(context["site_id"], "34-023-0011")
+        self.assertEqual(context["latitude"], "40.462182")
+        self.assertEqual(context["longitude"], "-74.429439")
+        enriched = _inject_ground_context("Give quarterly summary for Q1 2024.", context)
+        self.assertIn("station_id=34-023-0011", enriched)
+        self.assertIn("coordinates=(40.462182, -74.429439)", enriched)
+
+    def test_build_agent_uses_configured_supervisor_model(self):
+        from agents import supervisor_agent
+
+        created = object()
+        with patch.object(supervisor_agent, "ChatGroq", return_value="llm") as chat, patch.object(
+            supervisor_agent, "build_ground_agent", return_value="ground"
+        ), patch.object(
+            supervisor_agent, "build_satellite_agent", return_value="satellite"
+        ), patch.object(
+            supervisor_agent, "get_checkpointer", AsyncMock(return_value="checkpointer")
+        ), patch.object(
+            supervisor_agent, "create_agent", Mock(return_value=created)
+        ):
+            result = asyncio.run(supervisor_agent.build_agent(model="configured-model"))
+
+        self.assertIs(result, created)
+        self.assertEqual(chat.call_args.kwargs["model"], "configured-model")
 
 
 if __name__ == "__main__":

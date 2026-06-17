@@ -29,6 +29,7 @@ from repositories.revoked_token_repository import ensure_revoked_token_table, re
 from repositories.session_repository import SessionRepository
 from repositories.user_repository import create_user, ensure_user_table, get_user_by_username
 from services.auth_service import authenticate_request, create_access_token, hash_password, verify_password
+from services.artifact_store import artifact_store
 from services.chat_stream_service import ChatStreamService
 from services.chart_service import ChartService
 from services.export_service import ExportService
@@ -263,6 +264,45 @@ async def export_chart_png(chart_id: str, request: Request):
         media_type="image/png",
         headers={"Content-Disposition": f'attachment; filename="{export_service.safe_export_name(payload, "png")}"'},
     )
+
+
+@app.get("/artifacts/{artifact_id}")
+async def get_artifact(
+    artifact_id: str,
+    request: Request,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=1000),
+):
+    try:
+        return artifact_store.get_page(artifact_id, request.state.current_user.id, offset, limit)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+
+@app.get("/artifacts/{artifact_id}/csv")
+async def export_artifact_csv(artifact_id: str, request: Request):
+    try:
+        artifact = artifact_store.reference(artifact_id)
+        artifact_store.get_page(artifact_id, request.state.current_user.id, 0, 1)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    filename = _safe_artifact_filename(artifact.title or artifact.id)
+    return StreamingResponse(
+        artifact_store.iter_csv_chunks(artifact_id, request.state.current_user.id),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}.csv"',
+            "Cache-Control": "no-store",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _safe_artifact_filename(value: str) -> str:
+    safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in value.lower())
+    safe = "-".join(part for part in safe.split("-") if part)
+    return safe[:80] or "artifact"
 
 
 async def _get_owned_chart(chart_id: str, user_id: str):

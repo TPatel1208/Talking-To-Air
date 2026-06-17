@@ -129,7 +129,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
             history.json()["messages"],
             [
                 {"role": "user", "content": "hi", "toolCalls": [], "imageUrls": []},
-                {"role": "assistant", "content": "hello", "toolCalls": [], "imageUrls": [], "charts": []},
+                {"role": "assistant", "content": "hello", "toolCalls": [], "imageUrls": [], "charts": [], "artifacts": []},
             ],
         )
         self.assertEqual(deleted.json(), {"deleted": "thread-1"})
@@ -167,6 +167,37 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(png_response.status_code, 200)
         self.assertEqual(png_response.headers["content-type"], "image/png")
         self.assertEqual(png_response.content, b"\x89PNG\r\n\x1a\n")
+
+    async def test_artifact_endpoints_return_paginated_rows_and_csv(self):
+        from services.artifact_store import artifact_store
+
+        ref = artifact_store.put_table(
+            "EPA Summary",
+            ["date", "value"],
+            [{"date": "2024-01-01", "value": 10}, {"date": "2024-01-02", "value": 20}],
+        )
+        artifact_store.claim(ref.id, self.user.id, "thread-1")
+
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        auth_patches = self._auth_patch()
+        with auth_patches[0], auth_patches[1]:
+            async with self.httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                page_response = await client.get(
+                    f"/artifacts/{ref.id}?offset=1&limit=1",
+                    headers=self.auth_headers,
+                )
+                csv_response = await client.get(f"/artifacts/{ref.id}/csv", headers=self.auth_headers)
+
+        self.assertEqual(page_response.status_code, 200)
+        self.assertEqual(page_response.json()["total_rows"], 2)
+        self.assertEqual(page_response.json()["rows"], [{"date": "2024-01-02", "value": 20}])
+        self.assertEqual(csv_response.status_code, 200)
+        self.assertEqual(csv_response.headers["content-type"], "text/csv; charset=utf-8")
+        self.assertIn("epa-summary.csv", csv_response.headers["content-disposition"])
+        self.assertIn(b"2024-01-01,10", csv_response.content)
 
     async def test_admin_cache_prune_endpoint_returns_summary(self):
         class FakeCache:

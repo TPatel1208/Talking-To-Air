@@ -4,6 +4,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from .artifact import ArtifactReference
+
 
 class ChartPayload(BaseModel, extra="allow"):
     type: str
@@ -14,6 +16,7 @@ class ChartPayload(BaseModel, extra="allow"):
 class AgentResult(BaseModel):
     text: str
     charts: list[ChartPayload] = Field(default_factory=list)
+    artifacts: list[ArtifactReference] = Field(default_factory=list)
     images: list[bytes] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 

@@ -28,7 +28,8 @@ class ConfigLoggingTests(unittest.TestCase):
             get_settings.cache_clear()
             loaded = get_settings()
 
-        self.assertEqual(loaded.llm_model, "gemma-4-26b-a4b-it")
+        self.assertEqual(loaded.llm_model, "llama-3.3-70b-versatile")
+        self.assertEqual(loaded.ground_agent_model, "openai/gpt-oss-20b")
         self.assertEqual(loaded.data_fetch_mode, "auto")
         self.assertEqual(loaded.harmony_processing_timeout_seconds, 600)
         loaded = Settings(db_password=None, google_api_key=None)

@@ -51,3 +51,35 @@ jobs:
         env:
           PYTHONPATH: Backend
         run: coverage report
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: Frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: Frontend
+        run: npm ci
+
+      - name: Run frontend tests
+        working-directory: Frontend
+        run: npm test
+
+      - name: Build frontend bundle
+        working-directory: Frontend
+        run: npm run build
+
+      - name: Build frontend Docker image
+        env:
+          DB_PASSWORD: ci-placeholder
+        run: docker compose build frontend

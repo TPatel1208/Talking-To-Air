@@ -77,6 +77,9 @@ async def stream_response(
         await queue.put((event_type, data))
 
     async def produce() -> None:
+        # Track whether messages stream emitted any text this turn.
+        # If it didn't (e.g. model returned a complete message without streaming),
+        # the updates fallback below will carry the response instead.
         emitted_message_tokens = False
         try:
             async for stream_mode, chunk in agent.astream(
@@ -85,6 +88,7 @@ async def stream_response(
                 stream_mode=["updates", "messages"],
             ):
                 if stream_mode == "messages":
+                    # messages stream owns all LLM text output.
                     if isinstance(chunk, tuple) and len(chunk) == 2:
                         first, second = chunk
                         message = second if hasattr(second, "content") else first
@@ -99,6 +103,10 @@ async def stream_response(
                 if stream_mode != "updates":
                     continue
 
+                # updates stream owns tool calls, tool results, and images only.
+                # AIMessage content is intentionally not published here — the
+                # messages stream handles it. Publishing from both paths is what
+                # produces duplicate responses.
                 for _node, data in chunk.items():
                     for msg in data.get("messages", []):
                         if hasattr(msg, "tool_calls") and msg.tool_calls:
@@ -110,8 +118,23 @@ async def stream_response(
                             if img:
                                 await publish("image", {"name": msg.name, "path": img.group(0)})
                             await publish("tool_result", {"name": msg.name, "content": raw})
-                        elif hasattr(msg, "content") and msg.content and not emitted_message_tokens:
-                            await publish("text", msg.content)
+                        elif hasattr(msg, "content") and msg.content:
+                            # Fallback: messages stream emitted nothing this turn,
+                            # so this AIMessage is the only copy of the response.
+                            # Log it so we can confirm this path is only hit when
+                            # the messages stream is genuinely silent (not as a
+                            # duplicate). Once logs confirm it's safe, remove this.
+                            if not emitted_message_tokens:
+                                import logging
+                                logging.getLogger(__name__).warning(
+                                    "updates_aiMessage_fallback",
+                                    extra={
+                                        "_node": _node,
+                                        "_content_preview": flatten_text_content(msg.content)[:100],
+                                        "_thread_id": thread_id,
+                                    },
+                                )
+                                await publish("text", msg.content)
         except Exception as exc:
             await queue.put(("__error__", exc))
         finally:

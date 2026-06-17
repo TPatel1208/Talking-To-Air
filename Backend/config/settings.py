@@ -32,11 +32,11 @@ def _int_env(name: str, default: int) -> int:
 class Settings:
     """Application settings loaded once from environment at startup/import."""
 
-    llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "gemma-4-26b-a4b-it"))
+    llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "llama-3.3-70b-versatile"))
     ground_agent_model: str = field(
         default_factory=lambda: os.getenv(
             "GROUND_AGENT_MODEL",
-            "meta-llama/llama-4-scout-17b-16e-instruct",
+            "openai/gpt-oss-20b",
         )
     )
     satellite_agent_model: str = field(default_factory=lambda: os.getenv("SATELLITE_AGENT_MODEL", "openai/gpt-oss-20b"))

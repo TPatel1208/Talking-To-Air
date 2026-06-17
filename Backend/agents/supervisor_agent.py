@@ -8,11 +8,15 @@ Memory model
                The supervisor includes all necessary context in the task string
                it passes to each subagent tool.
 """
+import json
 import logging
+import re
 import uuid
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from collections.abc import Awaitable, Callable
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_groq import ChatGroq
 from langchain.agents import create_agent
 from langchain.tools import tool
 from langchain_core.messages import HumanMessage, trim_messages
@@ -24,6 +28,7 @@ from agents.satellite_agent import build_satellite_agent
 from config.settings import get_settings
 from config.supervisor_prompt import SUPERVISOR_PROMPT
 from models import AgentResult, agent_result_to_json, parse_agent_result, parse_chart_payload
+from models.artifact import ArtifactReference
 from tools.satellite_tools.query_parser import parse_satellite_plot_query
 from utils.db import get_checkpointer
 from utils.message_utils import extract_last_text, truncate_text
@@ -31,6 +36,12 @@ from utils.metrics import record_agent_request
 from utils.streaming import current_thread_id, emit_status, stream_response
 
 logger = logging.getLogger(__name__)
+
+# Per-request call counters — one integer per asyncio Task (one per HTTP
+# request).  Each Task inherits a copy of the current context, so the default
+# of 0 is always seen at the start of a new request without manual resets.
+_ground_call_count: ContextVar[int] = ContextVar("_ground_call_count", default=0)
+_satellite_call_count: ContextVar[int] = ContextVar("_satellite_call_count", default=0)
 
 
 # ── Build supervisor ──────────────────────────────────────────────────────────
@@ -55,14 +66,16 @@ async def build_agent(
     model = model or settings.llm_model
     ground_agent_model = ground_agent_model or settings.ground_agent_model
     satellite_agent_model = satellite_agent_model or settings.satellite_agent_model
-    llm = ChatGoogleGenerativeAI(
+    logger.info("supervisor_model", extra={"_event": "supervisor_model", "_model": model})
+    llm = ChatGroq(
         model=model,
-        google_api_key=settings.google_api_key,
+        groq_api_key=settings.groq_api_key,
     )
 
     # Stateless subagents — no checkpointer passed.
     ground_agent    = build_ground_agent(model=ground_agent_model)
     satellite_agent = build_satellite_agent(model=satellite_agent_model)
+    last_ground_monitor: dict[str, str] = {}
 
     # ── Trim middleware — keeps the supervisor's context window bounded ───────
 
@@ -107,25 +120,71 @@ async def build_agent(
         Output: text summary including monitor name, site_id, coordinates,
                 exceedance dates, and peak concentration values.
         """
-        sub_thread_id = str(uuid.uuid4())
-        try:
-            result = await ground_agent.ainvoke(
-                {"messages": [HumanMessage(content=task)]},
-                config={"configurable": {"thread_id": sub_thread_id}},
+        count = _ground_call_count.get()
+        if count >= 1:
+            logger.warning(
+                "agent_budget_exceeded",
+                extra={
+                    "_event": "agent_budget_exceeded",
+                    "_agent_type": "ground_sensor",
+                    "_call_count": count,
+                    "_thread_id": current_thread_id(),
+                },
             )
-            record_agent_request("ground_sensor", "success")
-        except TimeoutError:
-            record_agent_request("ground_sensor", "timeout")
-            raise
-        except Exception:
-            record_agent_request("ground_sensor", "failure")
-            raise
-        text = extract_last_text(
-            result,
-            "Ground sensor agent returned no response.",
-            agent_name="ground_sensor",
-        )
-        return agent_result_to_json(AgentResult(text=text))
+            return agent_result_to_json(AgentResult(
+                text="[STOP] Ground sensor agent has already been called for this request — this call is blocked. Do NOT call ask_ground_sensor_agent again. Synthesize your answer from the result already received."
+            ))
+        _ground_call_count.set(count + 1)
+
+        async def _run_ground(task_text: str) -> AgentResult:
+            sub_thread_id = str(uuid.uuid4())
+            outcome = "success"
+            try:
+                result = await ground_agent.ainvoke(
+                    {"messages": [HumanMessage(content=task_text)]},
+                    config={"configurable": {"thread_id": sub_thread_id}},
+                )
+                text = extract_last_text(
+                    result,
+                    "Ground sensor agent returned no response.",
+                    agent_name="ground_sensor",
+                )
+                artifact_refs = _extract_artifact_refs(result.get("messages", []))
+            except TimeoutError:
+                outcome = "timeout"
+                raise
+            except Exception as exc:
+                outcome = "failure"
+                text = str(exc)
+                artifact_refs = []
+            finally:
+                record_agent_request("ground_sensor", outcome)
+            return AgentResult(
+                text=truncate_text(text, 2000, agent_name="ground_sensor"),
+                artifacts=artifact_refs,
+            )
+
+        enriched_task = _inject_ground_context(task, last_ground_monitor)
+        result = await _run_ground(enriched_task)
+        if _is_ground_tool_failure(result.text):
+            logger.warning(
+                "llm_tool_call_refusal",
+                extra={
+                    "_event": "llm_tool_call_refusal",
+                    "_agent_type": "ground_sensor",
+                    "_task_summary": _task_summary(enriched_task),
+                    "_thread_id": current_thread_id(),
+                },
+            )
+            retry_task = _ground_retry_task(enriched_task)
+            result = await _run_ground(retry_task)
+            if _is_ground_tool_failure(result.text):
+                result = AgentResult(text=_clean_ground_failure_message())
+
+        monitor_context = _extract_ground_monitor_context(result.text)
+        if monitor_context:
+            last_ground_monitor.update(monitor_context)
+        return agent_result_to_json(result)
 
     @tool
     async def ask_satellite_agent(task: str) -> str:
@@ -143,6 +202,21 @@ async def build_agent(
                (e.g. 'Plot TROPOMI NO2 over New Jersey for 2024-01-15').
         Output: text summary with plot path and spatial statistics.
         """
+        count = _satellite_call_count.get()
+        if count >= 1:
+            logger.warning(
+                "agent_budget_exceeded",
+                extra={
+                    "_event": "agent_budget_exceeded",
+                    "_agent_type": "satellite",
+                    "_call_count": count,
+                    "_thread_id": current_thread_id(),
+                },
+            )
+            return agent_result_to_json(AgentResult(
+                text="[STOP] Satellite agent has already been called for this request — this call is blocked. Do NOT call ask_satellite_agent again. Synthesize your answer from the result already received."
+            ))
+        _satellite_call_count.set(count + 1)
 
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         enriched_task = f"[Current UTC time: {now}]\n\n{task}"
@@ -246,6 +320,94 @@ async def build_agent(
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+_GROUND_TOOL_FAILURE_MARKERS = (
+    "failed to call a function",
+    "failed_generation",
+    "tool call validation failed",
+    "parameters for tool",
+    "did not match schema",
+    "please adjust your prompt",
+)
+
+_GROUND_RETRY_TOOL_GUIDANCE = (
+    "The ground sensor tools are registered and available in this runtime: "
+    "find_closest_monitor, find_closest_monitor_by_coords, get_daily_summary, "
+    "get_quarterly_summary, get_annual_summary, find_exceedance_days, "
+    "get_sample_data, list_states. Retry using valid tool arguments. "
+    "For by-site summaries, pass either station_id as site_number like "
+    "'34-023-0011' or split it into state_code='34', county_code='023', "
+    "site_number='0011'. Always pass pollutant_standard exactly as one of: "
+    "'NO2 1-hour 2010', 'PM25 24-hour 2024', 'Ozone 8-hour 2015', "
+    "'SO2 1-hour 2010', 'CO 8-hour 1971'. Use integer k values."
+)
+
+
+def _is_ground_tool_failure(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return any(marker in lowered for marker in _GROUND_TOOL_FAILURE_MARKERS)
+
+
+def _ground_retry_task(task: str) -> str:
+    return f"{_GROUND_RETRY_TOOL_GUIDANCE}\n\nTask: {task}"
+
+
+def _clean_ground_failure_message() -> str:
+    return (
+        "The air quality lookup failed while formatting the EPA AQS tool call. "
+        "Please try again with a narrower date range or a specific station_id."
+    )
+
+
+def _inject_ground_context(task: str, context: dict[str, str]) -> str:
+    if not context:
+        return task
+
+    bits = []
+    if context.get("name"):
+        bits.append(f"monitor_name={context['name']}")
+    if context.get("site_id"):
+        bits.append(f"station_id={context['site_id']}")
+    if context.get("latitude") and context.get("longitude"):
+        bits.append(f"coordinates=({context['latitude']}, {context['longitude']})")
+    if context.get("pollutant"):
+        bits.append(f"pollutant={context['pollutant']}")
+
+    if not bits:
+        return task
+    return "Prior ground monitor context: " + "; ".join(bits) + ".\n\n" + task
+
+
+def _extract_ground_monitor_context(text: str) -> dict[str, str]:
+    text = str(text or "")
+    station_match = re.search(r"\b(?:station_id|site_id)\s*[:=]?\s*([0-9]{2}-[0-9]{3}-[0-9]{4})\b", text, re.I)
+    coord_match = re.search(
+        r"(?:coordinates|located at coordinates)?\s*\(?\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)?",
+        text,
+        re.I,
+    )
+    name_match = re.search(
+        r"(?:monitor(?:\s+name)?|station(?:\s+name)?)\s*(?:is|:)\s*"
+        r"(.+?)(?=\s+with\s+(?:station_id|site_id)|\s+located\s+at\s+coordinates|[.\n]|$)",
+        text,
+        re.I,
+    )
+
+    context: dict[str, str] = {}
+    if name_match:
+        name = name_match.group(1).strip(" '\"")
+        if name and not re.search(r"\b(not available|unknown|n/a)\b", name, re.I):
+            context["name"] = name
+    if station_match:
+        context["site_id"] = station_match.group(1)
+    if coord_match:
+        context["latitude"] = coord_match.group(1)
+        context["longitude"] = coord_match.group(2)
+    pollutant_match = re.search(r"\b(NO2|PM2\.5|Ozone|SO2|CO)\b", text, re.I)
+    if pollutant_match:
+        context["pollutant"] = pollutant_match.group(1).upper()
+    return context
+
+
 def _truncate_text(text: str, max_chars: int, agent_name: str, request_id: str | None = None) -> str:
     return truncate_text(text, max_chars, agent_name, request_id)
 
@@ -308,6 +470,28 @@ def _chart_summary(chart) -> str:
 
 def _task_summary(task: str, max_chars: int = 200) -> str:
     return " ".join(str(task).split())[:max_chars]
+
+
+def _extract_artifact_refs(messages: list) -> list[ArtifactReference]:
+    """Collect _artifact_refs from ground agent ToolMessages after ainvoke."""
+    refs = []
+    for msg in messages:
+        if not (hasattr(msg, "name") and msg.name):
+            continue
+        content = getattr(msg, "content", "")
+        if not isinstance(content, str):
+            continue
+        try:
+            parsed = json.loads(content)
+        except Exception:
+            continue
+        for ref in parsed.get("_artifact_refs") or []:
+            if isinstance(ref, dict) and ref.get("id") and ref.get("type"):
+                try:
+                    refs.append(ArtifactReference(**ref))
+                except Exception:
+                    pass
+    return refs
 
 
 async def _try_direct_satellite_plot(
