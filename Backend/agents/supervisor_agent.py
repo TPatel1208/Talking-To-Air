@@ -15,7 +15,7 @@ import uuid
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from collections.abc import Awaitable, Callable
-from langchain_google_genai import ChatGoogleGenerativeAI
+from typing import Any
 from langchain_groq import ChatGroq
 from langchain.agents import create_agent
 from langchain.tools import tool
@@ -131,8 +131,10 @@ async def build_agent(
                     "_thread_id": current_thread_id(),
                 },
             )
-            return agent_result_to_json(AgentResult(
-                text="[STOP] Ground sensor agent has already been called for this request — this call is blocked. Do NOT call ask_ground_sensor_agent again. Synthesize your answer from the result already received."
+            return agent_result_to_json(AgentResultadditional_message = (
+                "The worker has already returned a result. "
+                "Do not call the supervisor_agent again. "
+                "Synthesize your answer from the result already received."
             ))
         _ground_call_count.set(count + 1)
 
@@ -213,9 +215,15 @@ async def build_agent(
                     "_thread_id": current_thread_id(),
                 },
             )
-            return agent_result_to_json(AgentResult(
-                text="[STOP] Satellite agent has already been called for this request — this call is blocked. Do NOT call ask_satellite_agent again. Synthesize your answer from the result already received."
-            ))
+            return agent_result_to_json(
+                AgentResult(
+                    text=(
+                        "[STOP] Satellite agent has already been called for this request — "
+                        "this call is blocked. Do NOT call ask_satellite_agent again. "
+                        "Synthesize your answer from the result already received."
+                    )
+                )
+            )
         _satellite_call_count.set(count + 1)
 
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -369,8 +377,6 @@ def _inject_ground_context(task: str, context: dict[str, str]) -> str:
         bits.append(f"station_id={context['site_id']}")
     if context.get("latitude") and context.get("longitude"):
         bits.append(f"coordinates=({context['latitude']}, {context['longitude']})")
-    if context.get("pollutant"):
-        bits.append(f"pollutant={context['pollutant']}")
 
     if not bits:
         return task
@@ -402,9 +408,6 @@ def _extract_ground_monitor_context(text: str) -> dict[str, str]:
     if coord_match:
         context["latitude"] = coord_match.group(1)
         context["longitude"] = coord_match.group(2)
-    pollutant_match = re.search(r"\b(NO2|PM2\.5|Ozone|SO2|CO)\b", text, re.I)
-    if pollutant_match:
-        context["pollutant"] = pollutant_match.group(1).upper()
     return context
 
 
@@ -479,11 +482,8 @@ def _extract_artifact_refs(messages: list) -> list[ArtifactReference]:
         if not (hasattr(msg, "name") and msg.name):
             continue
         content = getattr(msg, "content", "")
-        if not isinstance(content, str):
-            continue
-        try:
-            parsed = json.loads(content)
-        except Exception:
+        parsed = _parse_tool_content(content)
+        if parsed is None:
             continue
         for ref in parsed.get("_artifact_refs") or []:
             if isinstance(ref, dict) and ref.get("id") and ref.get("type"):
@@ -492,6 +492,25 @@ def _extract_artifact_refs(messages: list) -> list[ArtifactReference]:
                 except Exception:
                     pass
     return refs
+
+
+def _parse_tool_content(content: Any) -> dict | None:
+    """Normalize a ToolMessage content value to a dict, or return None."""
+    if isinstance(content, dict):
+        return content
+    if isinstance(content, str):
+        try:
+            parsed = json.loads(content)
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            return None
+    if isinstance(content, list):
+        # LangChain 0.3+ may wrap content in a list of blocks; check each block.
+        for block in content:
+            result = _parse_tool_content(block)
+            if result is not None:
+                return result
+    return None
 
 
 async def _try_direct_satellite_plot(

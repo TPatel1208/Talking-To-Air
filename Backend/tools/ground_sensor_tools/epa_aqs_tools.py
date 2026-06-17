@@ -1,3 +1,4 @@
+import logging
 from contextvars import ContextVar
 
 from langchain.tools import tool
@@ -9,6 +10,8 @@ from datetime import date, timedelta
 from config.settings import get_settings
 from services.artifact_store import artifact_store
 from utils.plotting import GeocodingService
+
+logger = logging.getLogger(__name__)
 
 geocoding_service = GeocodingService()
 
@@ -69,10 +72,28 @@ async def _aqs_get(endpoint: str, params: Dict[str, Any]) -> Dict[str, Any]:
         return cache[cache_key]
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.get(f"{AQS_BASE_URL}/{endpoint}", params=full_params)
-        resp.raise_for_status()
+    if resp.status_code >= 400:
+        try:
+            body = resp.json()
+            aqs_header = body.get("Header", [{}])
+            aqs_msg = aqs_header[0].get("error") or aqs_header[0].get("status", "")
+            raise RuntimeError(
+                f"AQS HTTP {resp.status_code} on {endpoint}: {aqs_msg or resp.text[:300]}"
+            )
+        except (ValueError, KeyError):
+            resp.raise_for_status()
     data = resp.json()
     header = data.get("Header", [{}])
     status = header[0].get("status", "").lower()
+    rows = len(data.get("Data", data.get("Body", [])))
+    logger.debug(
+        "EPA response endpoint=%s http=%s header_status=%r rows=%s url=%s",
+        endpoint,
+        resp.status_code,
+        header[0].get("status", ""),
+        rows,
+        str(resp.url),
+    )
     # "No data matched your selection" is a valid empty result, not an error
     if status not in ("success", "no data matched your selection", ""):
         raise RuntimeError(f"AQS API error: {header[0]}")
@@ -349,11 +370,11 @@ def _resolve_filter(
         )
         return f"{prefix}/bySite", {"state": state_code, "county": county_code, "site": site_number}
     elif county_code and state_code:
-        state_code = _normalise_numeric_filter("state_code", state_code)
-        county_code = _normalise_numeric_filter("county_code", county_code)
+        state_code = _normalise_numeric_filter("state_code", state_code, min_width=2)
+        county_code = _normalise_numeric_filter("county_code", county_code, min_width=3)
         return f"{prefix}/byCounty", {"state": state_code, "county": county_code}
     elif state_code:
-        state_code = _normalise_numeric_filter("state_code", state_code)
+        state_code = _normalise_numeric_filter("state_code", state_code, min_width=2)
         return f"{prefix}/byState", {"state": state_code}
     elif cbsa_code:
         cbsa_code = _normalise_numeric_filter("cbsa_code", cbsa_code)
@@ -370,7 +391,7 @@ def _resolve_filter(
         )
 
 
-def _normalise_numeric_filter(name: str, value) -> str:
+def _normalise_numeric_filter(name: str, value, *, min_width: int = 0) -> str:
     text = str(value).strip()
     if text.lower() in _PLACEHOLDER_FILTER_VALUES:
         raise ValueError(
@@ -379,7 +400,7 @@ def _normalise_numeric_filter(name: str, value) -> str:
         )
     if not text.isdigit():
         raise ValueError(f"Invalid {name}: {value!r} must contain digits only.")
-    return text
+    return text.zfill(min_width) if min_width else text
 
 
 def _normalise_site_filter(state_code, county_code, site_number) -> tuple[str, str, str]:
@@ -393,10 +414,13 @@ def _normalise_site_filter(state_code, county_code, site_number) -> tuple[str, s
             )
         state_code, county_code, site_number = parts
 
+    # EPA requires zero-padded codes: state=2 digits, county=3, site=4.
+    # The LLM may pass these as integers (e.g. 52 instead of "0052"), so we
+    # pad after normalising rather than rejecting the stripped form.
     return (
-        _normalise_numeric_filter("state_code", state_code),
-        _normalise_numeric_filter("county_code", county_code),
-        _normalise_numeric_filter("site_number", site_number),
+        _normalise_numeric_filter("state_code", state_code, min_width=2),
+        _normalise_numeric_filter("county_code", county_code, min_width=3),
+        _normalise_numeric_filter("site_number", site_number, min_width=4),
     )
 
 
@@ -851,8 +875,12 @@ async def find_exceedance_days(
     if effective_hard is None and percentile_threshold is None:
         raise ValueError("Provide at least one of: hard_threshold, percentile_threshold.")
 
-    # Fetch daily summaries using the shared helper
+    # Fetch daily summaries using the shared helper.
+    # dailyData endpoint rejects ranges longer than ~1 year; cap at 365 days.
     bdate_obj, edate_obj, bdate_str, edate_str = _resolve_dates(bdate, edate)
+    if (edate_obj - bdate_obj).days > 365:
+        edate_obj = bdate_obj + timedelta(days=365)
+        edate_str = edate_obj.strftime("%Y%m%d")
     records, endpoint, filter_params = await _fetch_summary(
         "dailyData", param_code, bdate_obj, edate_obj, bdate_str, edate_str,
         state_code, county_code, site_number, cbsa_code,

@@ -104,7 +104,12 @@ class HistoryService:
             try:
                 artifact = artifact_store.claim(ref["id"], user_id, thread_id).model_dump(exclude_none=True)
             except KeyError:
-                continue
+                # Artifact expired (TTL) or server restarted — fall back to the ref
+                # data carried in the message so the frontend can show a 404 error
+                # rather than silently hiding the table.
+                artifact = {k: v for k, v in ref.items() if k in ("id", "type", "title", "row_count", "metadata")}
+                if not artifact.get("id") or not artifact.get("type"):
+                    continue
             assistant = self._last_assistant(result)
             if assistant is not None:
                 assistant.setdefault("artifacts", [])
@@ -147,7 +152,11 @@ class HistoryService:
             return []
         if not isinstance(parsed, dict):
             return []
-        refs = parsed.get("_artifact_refs") or []
+        # Two formats land in supervisor ToolMessages:
+        #   AgentResult JSON  → key "artifacts"   (ask_ground_sensor_agent return value)
+        #   EPA tool results  → key "_artifact_refs" (never stored at supervisor level,
+        #                        but kept for safety in case of future tool refactors)
+        refs = parsed.get("artifacts") or parsed.get("_artifact_refs") or []
         if not isinstance(refs, list):
             return []
         return [

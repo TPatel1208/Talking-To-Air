@@ -180,9 +180,28 @@ class AgentHelperTests(unittest.TestCase):
         self.assertEqual(context["site_id"], "34-023-0011")
         self.assertEqual(context["latitude"], "40.462182")
         self.assertEqual(context["longitude"], "-74.429439")
+        # Pollutant is intentionally NOT extracted — the user's request is always
+        # authoritative and injecting a stale pollutant caused param_code confusion.
+        self.assertNotIn("pollutant", context)
         enriched = _inject_ground_context("Give quarterly summary for Q1 2024.", context)
         self.assertIn("station_id=34-023-0011", enriched)
         self.assertIn("coordinates=(40.462182, -74.429439)", enriched)
+        self.assertNotIn("pollutant=", enriched)
+
+    def test_ground_context_does_not_bleed_pollutant_across_requests(self):
+        from agents.supervisor_agent import _extract_ground_monitor_context, _inject_ground_context
+
+        # Simulate a failure response that mentions multiple pollutants — the first
+        # match used to be SO2, which then poisoned a subsequent NO2 request.
+        failure_text = (
+            "The Chester, NJ monitor has no daily SO2 records for the requested period. "
+            "No NO2 or PM2.5 data was found either."
+        )
+        context = _extract_ground_monitor_context(failure_text)
+        self.assertNotIn("pollutant", context)
+
+        enriched = _inject_ground_context("Give daily NO2 summary for NJ in Jan 2024.", context)
+        self.assertNotIn("pollutant=", enriched)
 
     def test_build_agent_uses_configured_supervisor_model(self):
         from agents import supervisor_agent
