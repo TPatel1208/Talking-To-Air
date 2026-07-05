@@ -65,6 +65,8 @@ class Settings:
     )
 
     earthdata_token: str | None = field(default_factory=lambda: os.getenv("EARTHDATA_TOKEN"))
+    earthdata_mcp_url: str = field(default_factory=lambda: os.getenv("EARTHDATA_MCP_URL", "http://mcp:8765/mcp"))
+    earthdata_mcp_token: str | None = field(default_factory=lambda: os.getenv("EARTHDATA_MCP_TOKEN"))
     edl_username: str = field(default_factory=lambda: os.getenv("EDL_USERNAME", ""))
     edl_password: str = field(default_factory=lambda: os.getenv("EDL_PASSWORD", ""))
     aqs_api_email: str = field(default_factory=lambda: os.getenv("AQS_API_EMAIL", "your_email@example.com"))
