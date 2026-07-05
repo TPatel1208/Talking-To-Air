@@ -18,6 +18,7 @@ from starlette.routing import Match
 
 from agents.supervisor_agent import build_agent
 from config.settings import get_settings
+from earthdata_mcp.client import load_raw_mcp_tools
 from preprocessing.data_loader import DataLoader
 from repositories.session_metadata_repository import (
     ensure_session_metadata_table,
@@ -69,6 +70,10 @@ async def lifespan(app: FastAPI):
     data_loader = DataLoader()
     app.state.data_loader = data_loader
     set_data_loader(data_loader)
+    # A broken earthdata-retrieval MCP connection should be discovered at
+    # boot, not mid-conversation — see PRD T02. Workspace binding happens
+    # per-request later; this only validates connectivity + required tools.
+    app.state.earthdata_mcp_tools = await load_raw_mcp_tools(settings)
     agent = await build_agent(settings.llm_model)
     app.state.agent = agent
     logger.info("startup_complete")
@@ -78,6 +83,7 @@ async def lifespan(app: FastAPI):
         agent = None
         app.state.agent = None
         app.state.data_loader = None
+        app.state.earthdata_mcp_tools = None
         set_data_loader(None)
         await close_db_pool()
         logger.info("shutdown_complete")

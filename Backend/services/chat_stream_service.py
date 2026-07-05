@@ -42,6 +42,8 @@ class ChatStreamService:
                     yield self.sse("tool_call", {"name": data["name"], "args": data["args"]})
                 elif event_type == "status":
                     yield self.sse("status", {"message": data.get("message", "")})
+                elif event_type == "job_progress":
+                    yield self.sse("job_progress", data)
                 elif event_type == "tool_result":
                     async for event in self._tool_result_events(
                         data.get("content", ""),

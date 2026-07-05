@@ -10,6 +10,7 @@ langchain_google_genai==4.2.1
 langchain_ollama==1.1.0
 langgraph==1.1.6
 langgraph-checkpoint-postgres>=2.0.0
+langchain-mcp-adapters==0.3.0
 matplotlib==3.10.8
 netCDF4==1.7.4
 numpy>=2.0.0
@@ -36,6 +37,7 @@ PyJWT==2.10.1
 bcrypt>=4.0.1,<6
 pytest>=8.3.0
 pytest-asyncio>=0.24.0
+fastmcp==3.4.2
 prometheus-client==0.22.1
 ruff>=0.8.0
 mypy>=1.13.0

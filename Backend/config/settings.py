@@ -67,6 +67,21 @@ class Settings:
     earthdata_token: str | None = field(default_factory=lambda: os.getenv("EARTHDATA_TOKEN"))
     earthdata_mcp_url: str = field(default_factory=lambda: os.getenv("EARTHDATA_MCP_URL", "http://mcp:8765/mcp"))
     earthdata_mcp_token: str | None = field(default_factory=lambda: os.getenv("EARTHDATA_MCP_TOKEN"))
+    retrieval_soft_cap_bytes: int = field(
+        default_factory=lambda: max(1, _int_env("RETRIEVAL_SOFT_CAP_BYTES", 2 * 1024 ** 3))
+    )
+    retrieval_hard_cap_bytes: int = field(
+        default_factory=lambda: max(1, _int_env("RETRIEVAL_HARD_CAP_BYTES", 10 * 1024 ** 3))
+    )
+    await_retrieval_poll_min_seconds: int = field(
+        default_factory=lambda: max(1, _int_env("AWAIT_RETRIEVAL_POLL_MIN_SECONDS", 2))
+    )
+    await_retrieval_poll_max_seconds: int = field(
+        default_factory=lambda: max(1, _int_env("AWAIT_RETRIEVAL_POLL_MAX_SECONDS", 15))
+    )
+    await_retrieval_timeout_seconds: int = field(
+        default_factory=lambda: max(1, _int_env("AWAIT_RETRIEVAL_TIMEOUT_SECONDS", 900))
+    )
     edl_username: str = field(default_factory=lambda: os.getenv("EDL_USERNAME", ""))
     edl_password: str = field(default_factory=lambda: os.getenv("EDL_PASSWORD", ""))
     aqs_api_email: str = field(default_factory=lambda: os.getenv("AQS_API_EMAIL", "your_email@example.com"))

@@ -66,6 +66,39 @@ class ConfigLoggingTests(unittest.TestCase):
         self.assertEqual(loaded.earthdata_mcp_url, "http://mcp:9000/mcp")
         self.assertEqual(loaded.earthdata_mcp_token, "secret")
 
+    def test_settings_loads_retrieval_gate_defaults_and_overrides(self):
+        from config.settings import get_settings
+
+        with patch.dict(os.environ, {}, clear=True):
+            get_settings.cache_clear()
+            loaded = get_settings()
+
+        self.assertEqual(loaded.retrieval_soft_cap_bytes, 2 * 1024 ** 3)
+        self.assertEqual(loaded.retrieval_hard_cap_bytes, 10 * 1024 ** 3)
+        self.assertEqual(loaded.await_retrieval_poll_min_seconds, 2)
+        self.assertEqual(loaded.await_retrieval_poll_max_seconds, 15)
+        self.assertEqual(loaded.await_retrieval_timeout_seconds, 900)
+
+        with patch.dict(
+            os.environ,
+            {
+                "RETRIEVAL_SOFT_CAP_BYTES": "1000",
+                "RETRIEVAL_HARD_CAP_BYTES": "5000",
+                "AWAIT_RETRIEVAL_POLL_MIN_SECONDS": "1",
+                "AWAIT_RETRIEVAL_POLL_MAX_SECONDS": "20",
+                "AWAIT_RETRIEVAL_TIMEOUT_SECONDS": "60",
+            },
+            clear=True,
+        ):
+            get_settings.cache_clear()
+            loaded = get_settings()
+
+        self.assertEqual(loaded.retrieval_soft_cap_bytes, 1000)
+        self.assertEqual(loaded.retrieval_hard_cap_bytes, 5000)
+        self.assertEqual(loaded.await_retrieval_poll_min_seconds, 1)
+        self.assertEqual(loaded.await_retrieval_poll_max_seconds, 20)
+        self.assertEqual(loaded.await_retrieval_timeout_seconds, 60)
+
     def test_settings_normalizes_invalid_modes(self):
         from config.settings import get_settings
 

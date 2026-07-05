@@ -7,6 +7,7 @@ Yields:
     ("image", {"name": str, "path": str})
     ("tool_result", {"name": str, "content": str})
     ("text", str)
+    ("job_progress", {"job_handle": str, "status": str, "progress": Any, "phase": Any, "message": str | None})
 """
 
 import asyncio
@@ -21,6 +22,10 @@ _status_emitter: ContextVar[Optional[Callable[[str], None]]] = ContextVar(
     "status_emitter",
     default=None,
 )
+_job_progress_emitter: ContextVar[Optional[Callable[[dict], None]]] = ContextVar(
+    "job_progress_emitter",
+    default=None,
+)
 _current_thread_id: ContextVar[Optional[str]] = ContextVar("current_thread_id", default=None)
 
 
@@ -29,6 +34,25 @@ def emit_status(message: str) -> None:
     emitter = _status_emitter.get()
     if emitter and message:
         emitter(str(message))
+
+
+def emit_job_progress(
+    job_handle: str,
+    status: str,
+    progress=None,
+    phase: str | None = None,
+    message: str | None = None,
+) -> None:
+    """Emit a structured retrieval-job progress event for the active SSE stream."""
+    emitter = _job_progress_emitter.get()
+    if emitter:
+        emitter({
+            "job_handle": job_handle,
+            "status": status,
+            "progress": progress,
+            "phase": phase,
+            "message": message,
+        })
 
 
 def current_thread_id() -> str | None:
@@ -67,11 +91,17 @@ async def stream_response(
     done = object()
     loop = asyncio.get_running_loop()
     parent_emitter = _status_emitter.get()
+    parent_job_progress_emitter = _job_progress_emitter.get()
 
     def publish_status(message: str) -> None:
         if parent_emitter:
             parent_emitter(message)
         loop.call_soon_threadsafe(queue.put_nowait, ("status", {"message": message}))
+
+    def publish_job_progress(data: dict) -> None:
+        if parent_job_progress_emitter:
+            parent_job_progress_emitter(data)
+        loop.call_soon_threadsafe(queue.put_nowait, ("job_progress", data))
 
     async def publish(event_type: str, data) -> None:
         await queue.put((event_type, data))
@@ -141,6 +171,7 @@ async def stream_response(
             await queue.put(done)
 
     token = _status_emitter.set(publish_status)
+    job_progress_token = _job_progress_emitter.set(publish_job_progress)
     thread_token = _current_thread_id.set(thread_id)
     producer = asyncio.create_task(produce())
     try:
@@ -154,6 +185,7 @@ async def stream_response(
             yield event_type, data
     finally:
         _status_emitter.reset(token)
+        _job_progress_emitter.reset(job_progress_token)
         _current_thread_id.reset(thread_token)
         if not producer.done():
             producer.cancel()

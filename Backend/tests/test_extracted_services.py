@@ -81,6 +81,32 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("event: done", events[-1])
         self.assertIn('"response": "hello"', events[-1])
 
+    async def test_chat_stream_service_forwards_job_progress_events(self):
+        from services.chat_stream_service import ChatStreamService
+        from services.chart_service import ChartService
+
+        job_event = {
+            "job_handle": "job_1",
+            "status": "processing",
+            "progress": 40,
+            "phase": "materializing",
+            "message": "40% complete",
+        }
+
+        async def fake_stream_response(agent, message, thread_id):
+            yield "job_progress", job_event
+
+        service = ChatStreamService(ChartService(), long_request_seconds=999)
+        with patch("services.chat_stream_service.stream_response", fake_stream_response):
+            events = [
+                event
+                async for event in service.stream_chat_events(object(), "hi", "thread-1", "user-1", "req-1")
+            ]
+
+        self.assertIn("event: job_progress", events[0])
+        self.assertIn('"job_handle": "job_1"', events[0])
+        self.assertIn('"status": "processing"', events[0])
+
     async def test_chat_stream_service_does_not_warn_for_plain_tool_result(self):
         from services.chat_stream_service import ChatStreamService
         from services.chart_service import ChartService
