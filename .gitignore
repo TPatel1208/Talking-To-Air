@@ -88,3 +88,4 @@ dist-ssr
 *.sln
 *.sw?
 AGENTS.md
+/prds/

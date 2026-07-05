@@ -10,9 +10,9 @@
 
 services:
 
-  # ── PostgreSQL + PostGIS (conversation memory + Zarr cache metadata) ──────────
+  # ── PostgreSQL + PostGIS (conversation memory) ────────────────────────────────
   db:
-    image: postgis/postgis:16-3.4          
+    image: postgis/postgis:16-3.4
     container_name: tta-db
     restart: unless-stopped
     environment:
@@ -21,8 +21,7 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
       - pg_data:/var/lib/postgresql/data
-      - ./sql/init_cache_index.sql:/docker-entrypoint-initdb.d/01_cache_index.sql:ro
-      - ./sql/init_agent_charts.sql:/docker-entrypoint-initdb.d/02_agent_charts.sql:ro
+      - ./sql/init_agent_charts.sql:/docker-entrypoint-initdb.d/01_agent_charts.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d talking_to_air_memory"]
       interval: 10s
@@ -47,11 +46,17 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - zarr_cache:/app/data
       - plot_outputs:/app/outputs
+      # earthdata-retrieval MCP's materialization volume, read-only, mounted
+      # at the same absolute path (/data) the MCP stack uses internally so
+      # `export_result`'s file:// URIs resolve as a plain filesystem read.
+      - earthdata_data:/data:ro
     depends_on:
       db:
         condition: service_healthy
+    networks:
+      - default
+      - earthdata_net
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -107,11 +112,22 @@ services:
       backend:
         condition: service_healthy
 
+# ── Networks ───────────────────────────────────────────────────────────────────
+# Fixed name (not project-prefixed), created by the harmony-retrieval-mcp
+# stack on its first `docker compose up`. Join it here as external so the
+# backend can reach that stack's `mcp` service at $EARTHDATA_MCP_URL.
+networks:
+  earthdata_net:
+    external: true
+
 # ── Named volumes ─────────────────────────────────────────────────────────────
 volumes:
   pg_data:
     driver: local
-  zarr_cache:
-    driver: local
   plot_outputs:
     driver: local
+  # Owned by the harmony-retrieval-mcp stack (its `data` volume, fixed name
+  # `earthdata_data`); joined here as external, read-only, so this stack is
+  # not a second writer of materialized data.
+  earthdata_data:
+    external: true

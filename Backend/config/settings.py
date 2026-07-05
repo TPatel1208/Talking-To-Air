@@ -32,14 +32,14 @@ def _int_env(name: str, default: int) -> int:
 class Settings:
     """Application settings loaded once from environment at startup/import."""
 
-    llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "llama-3.3-70b-versatile"))
+    llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "openai/gpt-oss-120b"))
     ground_agent_model: str = field(
         default_factory=lambda: os.getenv(
             "GROUND_AGENT_MODEL",
-            "openai/gpt-oss-20b",
+            "meta-llama/llama-4-scout-17b-16e-instruct",
         )
     )
-    satellite_agent_model: str = field(default_factory=lambda: os.getenv("SATELLITE_AGENT_MODEL", "openai/gpt-oss-20b"))
+    satellite_agent_model: str = field(default_factory=lambda: os.getenv("SATELLITE_AGENT_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"))
     google_api_key: str | None = field(default_factory=lambda: os.getenv("GOOGLE_API_KEY"))
     groq_api_key: str | None = field(default_factory=lambda: os.getenv("GROQ_API_KEY"))
 
@@ -65,6 +65,8 @@ class Settings:
     )
 
     earthdata_token: str | None = field(default_factory=lambda: os.getenv("EARTHDATA_TOKEN"))
+    earthdata_mcp_url: str = field(default_factory=lambda: os.getenv("EARTHDATA_MCP_URL", "http://mcp:8765/mcp"))
+    earthdata_mcp_token: str | None = field(default_factory=lambda: os.getenv("EARTHDATA_MCP_TOKEN"))
     edl_username: str = field(default_factory=lambda: os.getenv("EDL_USERNAME", ""))
     edl_password: str = field(default_factory=lambda: os.getenv("EDL_PASSWORD", ""))
     aqs_api_email: str = field(default_factory=lambda: os.getenv("AQS_API_EMAIL", "your_email@example.com"))
