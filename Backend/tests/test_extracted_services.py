@@ -66,7 +66,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         from services.chat_stream_service import ChatStreamService
         from services.chart_service import ChartService
 
-        async def fake_stream_response(agent, message, thread_id):
+        async def fake_stream_response(agent, message, thread_id, **kwargs):
             yield "text", "hello"
 
         service = ChatStreamService(ChartService(), long_request_seconds=999)
@@ -93,7 +93,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
             "message": "40% complete",
         }
 
-        async def fake_stream_response(agent, message, thread_id):
+        async def fake_stream_response(agent, message, thread_id, **kwargs):
             yield "job_progress", job_event
 
         service = ChatStreamService(ChartService(), long_request_seconds=999)

@@ -8,16 +8,18 @@ Each invocation is a self-contained request/response cycle.
 The supervisor is solely responsible for conversation history.
 """
 import uuid
+from typing import Any
+
 from langchain_groq import ChatGroq
 from langchain.agents import create_agent
 
 from config.settings import get_settings
 from config.satellite_agent_prompt import get_satellite_agent_prompt
-from tools import SATELLITE_TOOLS
+from tools.satellite_tools.factory import build_satellite_tools
 from utils.streaming import stream_response
 
 
-def build_satellite_agent(model: str | None = None):
+def build_satellite_agent(model: str | None = None, mcp_tools: dict[str, Any] | None = None):
     """
     Build and return a stateless satellite agent.
 
@@ -29,6 +31,10 @@ def build_satellite_agent(model: str | None = None):
     ----------
     model : str
         GROQ model identifier.
+    mcp_tools : dict[str, BaseTool] | None
+        Workspace-bound earthdata-retrieval MCP tools (see
+        earthdata_mcp.toolset.load_earthdata_tools), used to build this
+        agent's handle-based discovery/retrieval/plot/statistics tools.
     """
     settings = get_settings()
     llm = ChatGroq(
@@ -38,7 +44,7 @@ def build_satellite_agent(model: str | None = None):
 
     agent = create_agent(
         model=llm,
-        tools=SATELLITE_TOOLS,
+        tools=build_satellite_tools(mcp_tools or {}),
         system_prompt=get_satellite_agent_prompt(),
         checkpointer=None,
     )

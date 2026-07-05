@@ -33,6 +33,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.httpx = httpx
         self.api = api
         self.api.app.state.agent = object()
+        self.api.app.state.earthdata_mcp_tools = {}
         self.user = User(
             id="user-1",
             username="tester",
@@ -54,7 +55,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
             patch("services.auth_service.is_token_revoked", fake_is_token_revoked)
 
     async def test_chat_streams_done_event(self):
-        async def fake_stream_response(agent, message, thread_id):
+        async def fake_stream_response(agent, message, thread_id, **kwargs):
             yield "status", {"message": "Downloading satellite granules..."}
             yield "text", "hello"
 
@@ -199,29 +200,6 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("epa-summary.csv", csv_response.headers["content-disposition"])
         self.assertIn(b"2024-01-01,10", csv_response.content)
 
-    async def test_admin_cache_prune_endpoint_returns_summary(self):
-        class FakeCache:
-            async def prune(self, older_than_days):
-                FakeCache.called_with = older_than_days
-                return {"pruned_entries": 2, "bytes_freed": 128}
-
-        self.api.app.state.data_loader = SimpleNamespace(_cache=FakeCache())
-        transport = self.httpx.ASGITransport(app=self.api.app)
-        auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1]:
-            async with self.httpx.AsyncClient(
-                transport=transport,
-                base_url="http://testserver",
-            ) as client:
-                response = await client.delete(
-                    "/admin/cache/prune?older_than_days=7",
-                    headers=self.auth_headers,
-                )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"pruned_entries": 2, "bytes_freed": 128})
-        self.assertEqual(FakeCache.called_with, 7)
-
     async def test_protected_endpoints_require_authentication(self):
         transport = self.httpx.ASGITransport(app=self.api.app)
         async with self.httpx.AsyncClient(
@@ -295,7 +273,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(name, response.text)
 
     async def test_chat_validation_happens_before_streaming(self):
-        async def fake_stream_response(agent, message, thread_id):
+        async def fake_stream_response(agent, message, thread_id, **kwargs):
             fake_stream_response.called = True
             yield "text", "should not run"
 

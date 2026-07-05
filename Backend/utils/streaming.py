@@ -27,6 +27,7 @@ _job_progress_emitter: ContextVar[Optional[Callable[[dict], None]]] = ContextVar
     default=None,
 )
 _current_thread_id: ContextVar[Optional[str]] = ContextVar("current_thread_id", default=None)
+_current_user_id: ContextVar[Optional[str]] = ContextVar("current_user_id", default=None)
 
 
 def emit_status(message: str) -> None:
@@ -59,6 +60,12 @@ def current_thread_id() -> str | None:
     return _current_thread_id.get()
 
 
+def current_user_id() -> str | None:
+    """The authenticated user for the active request — the workspace_id
+    earthdata-retrieval MCP tools bind their calls to (see earthdata_mcp.workspace)."""
+    return _current_user_id.get()
+
+
 def _message_text_chunk(message) -> str:
     tool_calls = getattr(message, "tool_calls", None)
     if tool_calls:
@@ -77,6 +84,7 @@ async def stream_response(
     user_input: str,
     thread_id: str,
     thread_ref: Optional[dict] = None,
+    user_id: Optional[str] = None,
 ) -> AsyncGenerator[tuple, None]:
     """
     Stream one conversation turn, yielding (event_type, data) tuples.
@@ -173,6 +181,7 @@ async def stream_response(
     token = _status_emitter.set(publish_status)
     job_progress_token = _job_progress_emitter.set(publish_job_progress)
     thread_token = _current_thread_id.set(thread_id)
+    user_token = _current_user_id.set(user_id)
     producer = asyncio.create_task(produce())
     try:
         while True:
@@ -187,5 +196,6 @@ async def stream_response(
         _status_emitter.reset(token)
         _job_progress_emitter.reset(job_progress_token)
         _current_thread_id.reset(thread_token)
+        _current_user_id.reset(user_token)
         if not producer.done():
             producer.cancel()

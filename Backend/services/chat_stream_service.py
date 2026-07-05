@@ -35,7 +35,7 @@ class ChatStreamService:
         started = time.monotonic()
         routed_message = inject_routing_hint(message)
         try:
-            async for event_type, data in stream_response(agent, routed_message, thread_id):
+            async for event_type, data in stream_response(agent, routed_message, thread_id, user_id=user_id):
                 if event_type == "tool_call":
                     tool_calls.append({"name": data["name"], "args": data["args"]})
                     response_text = ""

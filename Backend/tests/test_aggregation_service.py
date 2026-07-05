@@ -74,6 +74,46 @@ class AggregationServiceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             service.aggregate(da, stat="mode", col_info=self.col_info)
 
+    def test_apply_quality_mask_falls_back_to_dataset_attrs_when_col_info_empty(self):
+        from preprocessing.aggregation_service import AggregationService
+
+        da = self.xr.DataArray(
+            [[-999.0, 10.0], [200.0, 20.0]],
+            dims=("y", "x"),
+            name="no2",
+            attrs={"_FillValue": -999.0, "valid_min": 0.0, "valid_max": 100.0},
+        )
+
+        masked = AggregationService().apply_quality_mask(da, col_info={})
+
+        values = masked.values
+        self.assertTrue(self.np.isnan(values[0, 0]))
+        self.assertTrue(self.np.isnan(values[1, 0]))
+        self.assertEqual(values[0, 1], 10.0)
+        self.assertEqual(values[1, 1], 20.0)
+
+    def test_apply_quality_mask_col_info_override_wins_over_dataset_attrs(self):
+        from preprocessing.aggregation_service import AggregationService
+
+        # Dataset's own attrs are wrong (a known CMR/UMM-Var quirk); the
+        # override in col_info must take precedence.
+        da = self.xr.DataArray(
+            [[-1.0, 10.0], [200.0, 20.0]],
+            dims=("y", "x"),
+            name="no2",
+            attrs={"_FillValue": -1.0, "valid_min": -1000.0, "valid_max": 1000.0},
+        )
+
+        masked = AggregationService().apply_quality_mask(
+            da, col_info={"fill_value": -1.0, "valid_min": 0.0, "valid_max": 100.0}
+        )
+
+        values = masked.values
+        self.assertTrue(self.np.isnan(values[0, 0]))  # fill
+        self.assertTrue(self.np.isnan(values[1, 0]))  # 200 > override valid_max of 100
+        self.assertEqual(values[0, 1], 10.0)
+        self.assertEqual(values[1, 1], 20.0)
+
 
 if __name__ == "__main__":
     unittest.main()

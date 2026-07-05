@@ -18,8 +18,7 @@ from starlette.routing import Match
 
 from agents.supervisor_agent import build_agent
 from config.settings import get_settings
-from earthdata_mcp.client import load_raw_mcp_tools
-from preprocessing.data_loader import DataLoader
+from earthdata_mcp.toolset import load_earthdata_tools
 from repositories.session_metadata_repository import (
     ensure_session_metadata_table,
     get_session_metadata,
@@ -35,7 +34,6 @@ from services.chat_stream_service import ChatStreamService
 from services.chart_service import ChartService
 from services.export_service import ExportService
 from services.history_service import HistoryService
-from tools.satellite_tools.harmony_api import set_data_loader
 from utils.db import active_pool_connections, check_db_pool, close_db_pool, init_db_pool, validate_config
 from utils.logging import configure_logging
 from utils.metrics import (
@@ -44,6 +42,7 @@ from utils.metrics import (
     render_prometheus_metrics,
     set_db_pool_connections_active,
 )
+from utils.streaming import current_user_id
 
 agent = None
 settings = get_settings()
@@ -67,14 +66,12 @@ async def lifespan(app: FastAPI):
     await ensure_session_metadata_table()
 
     logger.info("startup_begin", extra={"_model": settings.llm_model})
-    data_loader = DataLoader()
-    app.state.data_loader = data_loader
-    set_data_loader(data_loader)
     # A broken earthdata-retrieval MCP connection should be discovered at
-    # boot, not mid-conversation — see PRD T02. Workspace binding happens
-    # per-request later; this only validates connectivity + required tools.
-    app.state.earthdata_mcp_tools = await load_raw_mcp_tools(settings)
-    agent = await build_agent(settings.llm_model)
+    # boot, not mid-conversation — see PRD T02. Tools are bound once here;
+    # bind_workspace resolves workspace_id per-call from current_user_id(),
+    # which stream_response sets for the duration of each request.
+    app.state.earthdata_mcp_tools = await load_earthdata_tools(settings, current_user_id)
+    agent = await build_agent(settings.llm_model, mcp_tools=app.state.earthdata_mcp_tools)
     app.state.agent = agent
     logger.info("startup_complete")
     try:
@@ -82,9 +79,7 @@ async def lifespan(app: FastAPI):
     finally:
         agent = None
         app.state.agent = None
-        app.state.data_loader = None
         app.state.earthdata_mcp_tools = None
-        set_data_loader(None)
         await close_db_pool()
         logger.info("shutdown_complete")
 
@@ -230,14 +225,6 @@ def metrics():
     return Response(content=render_prometheus_metrics(), media_type=prometheus_content_type())
 
 
-@app.delete("/admin/cache/prune")
-async def prune_cache(older_than_days: int = Query(default=30, ge=0)):
-    data_loader = getattr(app.state, "data_loader", None)
-    if data_loader is None:
-        raise HTTPException(status_code=503, detail="Data loader is not ready")
-    return await data_loader._cache.prune(older_than_days)
-
-
 @app.get("/chart/{chart_id}/export.csv")
 async def export_chart_csv(chart_id: str, request: Request):
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
@@ -248,7 +235,7 @@ async def export_chart_csv(chart_id: str, request: Request):
         raise HTTPException(status_code=422, detail=str(e))
 
     return StreamingResponse(
-        export_service.iter_chart_csv_chunks_async(payload),
+        export_service.iter_chart_csv_chunks_async(payload, request.app.state.earthdata_mcp_tools),
         media_type="text/csv; charset=utf-8",
         headers={
             "Content-Disposition": f'attachment; filename="{export_service.safe_export_name(payload, "csv")}"',
@@ -262,7 +249,7 @@ async def export_chart_csv(chart_id: str, request: Request):
 async def export_chart_png(chart_id: str, request: Request):
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
     try:
-        content = await export_service.build_chart_png_async(payload)
+        content = await export_service.build_chart_png_async(payload, request.app.state.earthdata_mcp_tools)
     except Exception as e:
         raise HTTPException(status_code=422, detail=str(e))
     return Response(

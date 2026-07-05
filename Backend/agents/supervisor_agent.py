@@ -50,6 +50,7 @@ async def build_agent(
     model: str | None = None,
     ground_agent_model: str | None = None,
     satellite_agent_model: str | None = None,
+    mcp_tools: dict[str, Any] | None = None,
 ):
     """
     Build and return the supervisor agent.
@@ -61,6 +62,10 @@ async def build_agent(
     Subagents are stateless: each tool call creates a fresh invocation with
     no checkpointer attached, so they write nothing to the DB and accumulate
     no history of their own.
+
+    ``mcp_tools`` is the workspace-bound earthdata-retrieval MCP tool dict
+    (see earthdata_mcp.toolset.load_earthdata_tools) — threaded down to the
+    satellite agent's handle-based plot/statistics tools.
     """
     settings = get_settings()
     model = model or settings.llm_model
@@ -74,7 +79,7 @@ async def build_agent(
 
     # Stateless subagents — no checkpointer passed.
     ground_agent    = build_ground_agent(model=ground_agent_model)
-    satellite_agent = build_satellite_agent(model=satellite_agent_model)
+    satellite_agent = build_satellite_agent(model=satellite_agent_model, mcp_tools=mcp_tools)
     last_ground_monitor: dict[str, str] = {}
 
     # ── Trim middleware — keeps the supervisor's context window bounded ───────
@@ -294,9 +299,9 @@ async def build_agent(
             )
             retry_task = (
                 "The satellite tools are registered and available in this runtime: "
-                "geocode_location, "
-                "check_data_availability, fetch_environmental_data, plot_singular, "
-                "plot_multiple, compute_statistic_tool, conduct_temporal_statistic"
+                "geocode_location, search_datasets, describe_dataset, define_area_of_interest, "
+                "check_availability, retrieve_timeseries, get_retrieval_status, plot_singular, "
+                "plot_multiple, compute_statistic_tool, conduct_temporal_statistic, "
                 "find_daily_peak. Retry the task using those tools exactly as needed. "
                 f"Task: {enriched_task}"
             )
@@ -521,9 +526,12 @@ async def _try_direct_satellite_plot(
     """
     Deterministic fallback for simple one-location satellite plot requests.
 
-    This is deliberately narrow: it only handles requests that name a known
-    satellite collection, a location, and either a YYYY-MM-DD date or
-    Month YYYY range.
+    Disabled pending PRD T04: it used to execute geocode -> check_data_availability
+    -> fetch_environmental_data -> plot_singular directly, but that pipeline is
+    gone now that retrieval is handle-based (search_datasets -> define_area_of_interest
+    -> retrieve_timeseries -> poll -> plot). Simple requests fall through to the
+    LLM-driven satellite agent, which has the new tools, until this fast path is
+    rebuilt against handles.
     """
     parsed = _parse_simple_satellite_plot_task(task)
     if parsed is None:
@@ -545,111 +553,7 @@ async def _try_direct_satellite_plot(
                     "_thread_id": current_thread_id(),
                 },
             )
-        return None
-
-    variable, location, start_date, end_date = parsed
-    logger.info(
-        "direct_satellite_fallback_triggered",
-        extra={
-            "_event": "direct_satellite_fallback_triggered",
-            "_reason": "simple_satellite_plot_task",
-            "_thread_id": current_thread_id(),
-        },
-    )
-    logger.info(
-        "satellite_parser_success",
-        extra={
-            "_variable": variable,
-            "_location": location,
-            "_start_date": start_date,
-            "_end_date": end_date,
-        },
-    )
-    logger.info(
-        "Direct satellite plot fallback: variable=%s location=%s temporal=%s..%s",
-        variable,
-        location,
-        start_date,
-        end_date,
-    )
-
-    try:
-        from tools.satellite_tools.harmony_api import (
-            check_data_availability,
-            fetch_environmental_data,
-            geocode_location,
-        )
-        from tools.satellite_tools.plot_tools import (
-            plot_singular,
-        )
-
-        geocoded = await geocode_location.ainvoke({"location_name": location})
-        if isinstance(geocoded, dict) and geocoded.get("error"):
-            return AgentResult(text=geocoded["error"])
-        bbox = geocoded["bbox"]
-        logger.info("Direct satellite plot fallback: geocoded bbox=%s", bbox)
-
-        availability = await check_data_availability.ainvoke({
-            "variable": variable,
-            "bbox": bbox,
-            "start_date": start_date,
-            "end_date": end_date,
-        })
-        if isinstance(availability, dict) and availability.get("error"):
-            logger.warning(
-                "Direct satellite plot fallback: availability check failed; continuing to Harmony fetch: %s",
-                availability["error"],
-            )
-        elif isinstance(availability, dict) and availability.get("num_granules", 0) == 0:
-            emit_status("Satellite data availability checked.")
-            return AgentResult(text=(
-                f"No {variable} granules were found for {location} between "
-                f"{start_date} and {end_date}."
-            ))
-        else:
-            logger.info(
-                "Direct satellite plot fallback: availability num_granules=%s",
-                availability.get("num_granules") if isinstance(availability, dict) else None,
-            )
-
-        logger.info("Direct satellite plot fallback: calling fetch_environmental_data")
-        data = await fetch_environmental_data.ainvoke({
-            "variable": variable,
-            "bbox": bbox,
-            "start_date": start_date,
-            "end_date": end_date,
-            "max_results": 1 if variable == "TROPOMI_NO2" else 10,
-        })
-        if isinstance(data, dict) and data.get("error"):
-            return AgentResult(text=str(data["error"]))
-        logger.info("Direct satellite plot fallback: fetch_environmental_data returned data")
-        plot_data = data.model_dump() if hasattr(data, "model_dump") else data
-
-        title = f"{variable} over {location}"
-        emit_status("Generating visualization...")
-        chart_result = await plot_singular.ainvoke({
-            "data_dict": plot_data,
-            "variable": variable,
-            "location": location,
-            "title": title,
-        })
-        chart = parse_chart_payload(chart_result)
-        if chart is not None:
-            logger.info("Direct satellite plot fallback: chart created for %s", title)
-            emit_status("Preparing response...")
-            return AgentResult(text=f"Created {title}.", charts=[chart])
-        logger.warning(
-            "chart_payload_parse_failure",
-            extra={
-                "_event": "chart_payload_parse_failure",
-                "_result_preview": str(chart_result)[:200],
-                "_thread_id": current_thread_id(),
-            },
-        )
-        return AgentResult(text=str(chart_result))
-    except Exception as exc:
-        emit_status("Satellite workflow failed.")
-        return AgentResult(text=str(exc))
+    return None
 
 
 def _parse_simple_satellite_plot_task(task: str):

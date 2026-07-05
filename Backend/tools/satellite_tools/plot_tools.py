@@ -3,6 +3,13 @@ plot_tools.py
 -------------
 Satellite plotting tools.
 
+Data access is one seam: every tool takes an ``obs_``/``cube_`` handle and
+calls ``open_handle`` (services.open_handle) to get an opened xarray
+Dataset — never a parameter dict to re-fetch by. ``build_satellite_tools``
+(tools.satellite_tools.factory) binds the MCP tools these need via closure
+before registering them with the agent, since the model itself only ever
+supplies a handle.
+
 Returns chart payloads (JSON) instead of PNG files so the frontend can
 render interactive Plotly charts. The API persists these payloads durably
 in PostgreSQL when they are attached to a session. The payload schema is:
@@ -44,15 +51,16 @@ import json
 import os
 import numpy as np
 from langchain.tools import tool
-from typing import Annotated,  List, Optional
+from langchain_core.tools import BaseTool
+from typing import Annotated, List, Optional
 from pydantic import Field
 
-from utils.data_utils import _load_data
+from datasets.mask_info import override_for
+from services.open_handle import OpenHandleError, open_handle
 from utils.geo_utils import find_lat_coord, find_lon_coord
 from utils.plotting import _normalize_to_2d, mask_data_by_geometry, RegionResolver
 from utils.streaming import emit_status
 from preprocessing.aggregation_service import AggregationService
-from tools.satellite_tools.harmony_api import COLLECTIONS
 
 _resolver = RegionResolver()
 _aggregation_service = AggregationService()
@@ -205,65 +213,42 @@ def _save_chart(payload: dict, name: str) -> str:
     payload["metadata"].setdefault("name", name)
     return json.dumps(payload)
 
-# ── Tools ─────────────────────────────────────────────────────────────────────
+# ── Handle / masking helpers ───────────────────────────────────────────────────
 
 
-def _get(data_dict, key, default=None):
-    """Access a field from a DataDict object or plain dict interchangeably."""
-    if isinstance(data_dict, dict):
-        return data_dict.get(key, default)
-    return getattr(data_dict, key, default)
+def _open_dataarray(ds, tools=None):
+    """Pick the primary data variable off an opened Dataset, unmasked."""
+    return _aggregation_service.to_dataarray(ds)
 
 
-def _coerce_bbox(value):
-    if value in (None, ""):
-        return None
-    if isinstance(value, str):
-        try:
-            return [float(part.strip()) for part in value.split(",")]
-        except Exception:
-            return value
-    if isinstance(value, (list, tuple)):
-        return [float(v) for v in value]
-    return value
+def _mask_col_info(da) -> dict:
+    """Override-table lookup for a variable's masking metadata.
+
+    Masking itself reads fill_value/valid_min/valid_max straight off da.attrs
+    (AggregationService.apply_quality_mask already prefers attrs); this only
+    supplies a correction when the dataset's own attrs are a known-wrong
+    UMM-Var/CF record.
+    """
+    short_name = da.attrs.get("short_name") or da.name or ""
+    return override_for(str(short_name).upper())
 
 
-def _date_range(data_dict):
-    fetch_params = _get(data_dict, "fetch_params") or {}
-    start_date = fetch_params.get("start_date")
-    end_date = fetch_params.get("end_date")
-
-    temporal = fetch_params.get("temporal")
-    if (not start_date or not end_date) and isinstance(temporal, (list, tuple)) and len(temporal) >= 2:
-        start_date, end_date = temporal[0], temporal[1]
-
-    times = _get(data_dict, "times") or []
-    if (not start_date or not end_date) and times:
-        ordered = sorted(str(t) for t in times)
-        start_date = start_date or ordered[0]
-        end_date = end_date or ordered[-1]
-
-    return start_date, end_date
+def _time_range(da) -> tuple[str, str]:
+    if "time" not in da.coords:
+        return "", ""
+    times = sorted(str(t) for t in np.atleast_1d(da["time"].values))
+    if not times:
+        return "", ""
+    return times[0], times[-1]
 
 
-def _dataset_label(variable: str) -> str:
-    if not variable:
-        return ""
-    return variable.split("_", 1)[0].upper()
-
-
-def _query_definition(data_dict, aggregation: str, chart_parameters: dict | None = None) -> dict:
-    variable = _get(data_dict, "variable", "")
-    fetch_params = _get(data_dict, "fetch_params") or {}
-    start_date, end_date = _date_range(data_dict)
-    bbox = _coerce_bbox(fetch_params.get("bbox") or fetch_params.get("bounding_box") or _get(data_dict, "bbox"))
-
+def _query_definition(da, region: dict | None, aggregation: str, chart_parameters: dict | None = None) -> dict:
+    start_date, end_date = _time_range(da)
     query = {
-        "dataset": variable,
-        "mission": _dataset_label(variable),
+        "dataset": da.name or "",
         "start_date": start_date,
         "end_date": end_date,
-        "bbox": bbox,
+        "bbox": list(region["bounds"]) if region else None,
         "aggregation": aggregation,
     }
     if chart_parameters:
@@ -271,20 +256,16 @@ def _query_definition(data_dict, aggregation: str, chart_parameters: dict | None
     return {k: v for k, v in query.items() if v not in (None, "", [])}
 
 
-def _provenance(data_dict, region_name: str, aggregation: str, agg_meta: dict | None = None) -> dict:
-    variable = _get(data_dict, "variable", "")
-    query = _query_definition(data_dict, aggregation)
+def _provenance(handles: list[str], da, region_name: str, aggregation: str, agg_meta: dict | None = None) -> dict:
+    start_date, end_date = _time_range(da)
     provenance = {
-        "dataset": query.get("mission") or _dataset_label(variable),
-        "variable": variable,
-        "start_date": query.get("start_date"),
-        "end_date": query.get("end_date"),
-        "bbox": query.get("bbox"),
+        "variable": da.name or "",
+        "start_date": start_date,
+        "end_date": end_date,
         "region_name": region_name,
         "aggregation": aggregation,
-        "source": _get(data_dict, "source") or "NASA Harmony endpoint",
-        "endpoint": "NASA Harmony endpoint",
-        "fetch_params": _get(data_dict, "fetch_params") or {},
+        "units": da.attrs.get("units", ""),
+        "source_handles": list(handles),
     }
     if agg_meta:
         provenance["aggregation"] = agg_meta["aggregation_label"]
@@ -294,168 +275,73 @@ def _provenance(data_dict, region_name: str, aggregation: str, agg_meta: dict | 
     return provenance
 
 
-def _attach_reproducibility(payload: dict, data_dict, region_name: str, aggregation: str, chart_parameters: dict | None = None, agg_meta: dict | None = None) -> dict:
+def _attach_reproducibility(
+    payload: dict,
+    handles: list[str],
+    da,
+    region_name: str,
+    aggregation: str,
+    chart_parameters: dict | None = None,
+    agg_meta: dict | None = None,
+    region: dict | None = None,
+) -> dict:
     aggregation_label = agg_meta["aggregation_label"] if agg_meta else aggregation
-    payload["provenance"] = _provenance(data_dict, region_name, aggregation_label, agg_meta)
-    payload["query"] = _query_definition(data_dict, aggregation_label, chart_parameters)
+    payload["provenance"] = _provenance(handles, da, region_name, aggregation_label, agg_meta)
+    payload["query"] = _query_definition(da, region, aggregation_label, chart_parameters)
     payload["export"] = {
         "type": payload.get("type"),
-        "variable": _get(data_dict, "variable", ""),
-        "units": _get(data_dict, "units", ""),
-        "source": _get(data_dict, "source", ""),
-        "fetch_params": _get(data_dict, "fetch_params") or {},
+        "variable": da.name or "",
+        "units": da.attrs.get("units", ""),
         "region_name": region_name,
         "aggregation": aggregation_label,
         "aggregation_meta": agg_meta or payload.get("aggregation_meta") or {},
         "chart_parameters": chart_parameters or {},
+        "source_handles": list(handles),
     }
     if agg_meta:
         payload["query"]["aggregation"] = agg_meta["aggregation_label"]
-    payload.setdefault("fetch_params", _get(data_dict, "fetch_params") or {})
+    payload.setdefault("metadata", {})
+    payload["metadata"]["source_handles"] = list(handles)
     return payload
 
-@tool
-async def plot_singular(
-    data_dict: Annotated[
-        dict,
-        Field(
-            description=(
-                "The complete JSON object returned by fetch_environmental_data. "
-                "Pass the entire object — do not extract fields or convert to a string."
-            )
-        ),
-    ],
-    variable: str,
-    location: str,
-    title: str = "",
-    cmap: Optional[str] = "Spectral_r",
-) -> str:
-    """
-    Plot a spatial heatmap of a variable over a single location at one point in time.
-    Use when the user asks for a "map", "plot", or "show" for a single snapshot.
 
-    Do NOT use this for time series, trends, or requests involving change over time —
-    use conduct_temporal_statistic instead.
-
-    Args:
-        data_dict : dict from fetch_environmental_data.
-        variable  : Variable name e.g. 'NO2', 'CO', 'CO2', etc.
-        location  : Place name e.g. 'New York City', 'California'.
-        title     : Plot title. Auto-generated from variable + location if omitted.
-        cmap      : Colormap hint for the frontend (default 'Spectral_r').
-
-    Returns:
-        JSON string — chart payload for the frontend to render interactively.
-    """
-    emit_status("Processing downloaded data...")
-    try:
-        da = await _load_data(data_dict)
-    except Exception as e:
-        emit_status("Visualization failed while loading data.")
-        return json.dumps({"error": f"Failed to load data: {e}"})
-
-    emit_status("Resolving requested location...")
-    region = await _resolver.aresolve_location(location)
-    if region is None:
-        emit_status("Location lookup failed.")
-        return json.dumps({"error": f"Could not geocode location: '{location}'"})
-
-    emit_status("Generating visualization...")
-    try:
-        lat_coord = find_lat_coord(da)
-        lon_coord = find_lon_coord(da)
-        if lat_coord is None or lon_coord is None:
-            raise ValueError(f"Cannot find lat/lon coords. Available: {list(da.coords)}")
-        da = _normalize_longitudes(da, lon_coord)
-        da = mask_data_by_geometry(da, region["geometry"])
-        bounds = region["bounds"]  # (minx, miny, maxx, maxy)
-        da = _sel_bounds(da, lat_coord, lon_coord, bounds
-
-)
-    except Exception as e:
-        emit_status("Visualization failed while processing map bounds.")
-        return json.dumps({"error": f"Masking failed: {e}"})
-
-    col    = COLLECTIONS.get(variable.upper(), {})
-    units  = _get(data_dict, "units") or col.get("units", "")
-    aggregation = _aggregation_service.aggregate(
-        da,
-        variable=_get(data_dict, "variable", variable),
-        stat="mean",
-        col_info=col,
-    )
-    da = next(iter(aggregation.ds.data_vars.values()))
-    da = _normalize_to_2d(da)
-    agg_meta = aggregation.meta
-    is_aggregated = agg_meta["n_granules"] > 1
-    if title:
-        resolved_title = title
-    elif is_aggregated:
-        resolved_title = f"{variable} {agg_meta['title_suffix']} over {region['name']}"
-    else:
-        resolved_title = f"{variable} over {region['name']}"
-
-    try:
-        payload = _da_to_heatmap_payload(da, resolved_title, variable, units)
-        payload["cmap"]   = cmap or "Spectral_r"
-        payload["bounds"] = list(region["bounds"])  # (minx, miny, maxx, maxy)
-        payload["aggregation_meta"] = agg_meta
-        payload["is_aggregated"] = is_aggregated
-        _attach_reproducibility(
-            payload,
-            data_dict,
-            region["name"],
-            agg_meta["aggregation_label"] if is_aggregated else "single snapshot",
-            {"chart_type": "heatmap", "cmap": payload["cmap"], "location": location},
-            agg_meta,
-        )
-    except Exception as e:
-        emit_status("Visualization failed while building chart data.")
-        return json.dumps({"error": f"Failed to build chart payload: {e}"})
-
-    emit_status("Preparing response...")
-    return _save_chart(payload, resolved_title)
+# ── Tools ─────────────────────────────────────────────────────────────────────
 
 
-@tool
-async def plot_multiple(
-    data_dicts: Annotated[List[dict], Field(description="List of complete JSON objects, each returned by a separate fetch_environmental_data call.")],
-    variable: str,
-    locations: List[str],
-    title: str = "",
-    cmap: Optional[str] = "Spectral_r",
-) -> str:
-    """
-    Plot the same environmental variable across multiple locations side by side.
+def make_plot_singular(mcp_tools: dict[str, BaseTool]):
+    @tool
+    async def plot_singular(
+        handle: Annotated[
+            str,
+            Field(description="An obs_/cube_ handle from a retrieval or transform tool."),
+        ],
+        location: str,
+        title: str = "",
+        cmap: Optional[str] = "Spectral_r",
+    ) -> str:
+        """
+        Plot a spatial heatmap of a variable over a single location at one point in time.
+        Use when the user asks for a "map", "plot", or "show" for a single snapshot.
 
-    IMPORTANT — call fetch_environmental_data separately for each location first,
-    collecting each result into a list. If a fetch fails for one dataset, try a
-    fallback dataset before adding to the list. Only call this tool once you have
-    a successful data_dict for every location.
+        Do NOT use this for time series, trends, or requests involving change over time —
+        use conduct_temporal_statistic instead.
 
-    Args:
-        data_dicts : list of dicts from fetch_environmental_data, one per location.
-        variable   : Variable name e.g. 'NO2'.
-        locations  : List of place names matching data_dicts order.
-        title      : Overall title (optional).
-        cmap       : Colormap hint for the frontend (default 'Spectral_r').
+        Args:
+            handle   : obs_/cube_ handle from a retrieval or transform tool.
+            location : Place name e.g. 'New York City', 'California'.
+            title    : Plot title. Auto-generated from variable + location if omitted.
+            cmap     : Colormap hint for the frontend (default 'Spectral_r').
 
-    Returns:
-        JSON string — multi-panel chart payload for the frontend to render.
-    """
-    emit_status("Generating visualization...")
-    if len(data_dicts) != len(locations):
-        emit_status("Visualization failed while matching locations to datasets.")
-        return json.dumps({"error": f"len(data_dicts)={len(data_dicts)} != len(locations)={len(locations)}"})
-
-    panels = []
-    for data_dict, location in zip(data_dicts, locations):
-        emit_status("Processing downloaded data...")
+        Returns:
+            JSON string — chart payload for the frontend to render interactively.
+        """
+        emit_status("Opening retrieved data...")
         try:
-            da = await _load_data(data_dict)
-        except Exception as e:
-            emit_status("Visualization failed while loading data.")
-            return json.dumps({"error": f"Failed to load data for '{location}': {e}"})
+            ds = await open_handle(handle, mcp_tools)
+            da = _open_dataarray(ds)
+        except OpenHandleError as e:
+            emit_status("Visualization failed while opening data.")
+            return json.dumps({"error": f"Failed to open handle '{handle}': {e}"})
 
         emit_status("Resolving requested location...")
         region = await _resolver.aresolve_location(location)
@@ -463,6 +349,7 @@ async def plot_multiple(
             emit_status("Location lookup failed.")
             return json.dumps({"error": f"Could not geocode location: '{location}'"})
 
+        emit_status("Generating visualization...")
         try:
             lat_coord = find_lat_coord(da)
             lon_coord = find_lon_coord(da)
@@ -470,156 +357,273 @@ async def plot_multiple(
                 raise ValueError(f"Cannot find lat/lon coords. Available: {list(da.coords)}")
             da = _normalize_longitudes(da, lon_coord)
             da = mask_data_by_geometry(da, region["geometry"])
+            bounds = region["bounds"]  # (minx, miny, maxx, maxy)
+            da = _sel_bounds(da, lat_coord, lon_coord, bounds)
         except Exception as e:
             emit_status("Visualization failed while processing map bounds.")
-            return json.dumps({"error": f"Masking failed for '{location}': {e}"})
+            return json.dumps({"error": f"Masking failed: {e}"})
 
-        bounds = region["bounds"]
-        da = _sel_bounds(da, lat_coord, lon_coord, bounds
+        units = da.attrs.get("units", "")
+        variable_name = da.name or ""
+        col_info = _mask_col_info(da)
+        aggregation = _aggregation_service.aggregate(
+            da,
+            variable=variable_name,
+            stat="mean",
+            col_info=col_info,
         )
-
-        col   = COLLECTIONS.get(variable.upper(), {})
-        units = _get(data_dict, "units") or col.get("units", "")
+        da = next(iter(aggregation.ds.data_vars.values()))
+        da = _normalize_to_2d(da)
+        agg_meta = aggregation.meta
+        is_aggregated = agg_meta["n_granules"] > 1
+        if title:
+            resolved_title = title
+        elif is_aggregated:
+            resolved_title = f"{variable_name} {agg_meta['title_suffix']} over {region['name']}"
+        else:
+            resolved_title = f"{variable_name} over {region['name']}"
 
         try:
-            aggregation = _aggregation_service.aggregate(
-                da,
-                variable=_get(data_dict, "variable", variable),
-                stat="mean",
-                col_info=col,
-            )
-            da = next(iter(aggregation.ds.data_vars.values()))
-            da = _normalize_to_2d(da)
-            agg_meta = aggregation.meta
-            panel = _da_to_heatmap_payload(da, region["name"], variable, units)
-            panel["cmap"]   = cmap or "Spectral_r"
-            panel["bounds"] = list(region["bounds"])
-            panel["aggregation_meta"] = agg_meta
-            panel["is_aggregated"] = agg_meta["n_granules"] > 1
+            payload = _da_to_heatmap_payload(da, resolved_title, variable_name, units)
+            payload["cmap"]   = cmap or "Spectral_r"
+            payload["bounds"] = list(region["bounds"])  # (minx, miny, maxx, maxy)
+            payload["aggregation_meta"] = agg_meta
+            payload["is_aggregated"] = is_aggregated
             _attach_reproducibility(
-                panel,
-                data_dict,
+                payload,
+                [handle],
+                da,
                 region["name"],
-                agg_meta["aggregation_label"] if agg_meta["n_granules"] > 1 else "single snapshot",
-                {"chart_type": "heatmap", "cmap": panel["cmap"], "location": location},
+                agg_meta["aggregation_label"] if is_aggregated else "single snapshot",
+                {"chart_type": "heatmap", "cmap": payload["cmap"], "location": location},
                 agg_meta,
+                region,
             )
         except Exception as e:
             emit_status("Visualization failed while building chart data.")
-            return json.dumps({"error": f"Failed to build panel for '{location}': {e}"})
+            return json.dumps({"error": f"Failed to build chart payload: {e}"})
 
-        panels.append(panel)
+        emit_status("Preparing response...")
+        return _save_chart(payload, resolved_title)
 
-    multi_payload = {"type": "heatmap_multi", "title": title or f"{variable} Comparison", "panels": panels}
-    if panels:
-        multi_payload["provenance"] = {
-            **panels[0].get("provenance", {}),
-            "region_name": ", ".join(panel.get("provenance", {}).get("region_name", "") for panel in panels),
-            "aggregation": "single snapshot comparison",
-        }
-        multi_payload["query"] = {
-            "dataset": variable,
-            "mission": _dataset_label(variable),
-            "aggregation": "single snapshot comparison",
-            "panels": [panel.get("query", {}) for panel in panels],
-            "chart_parameters": {"chart_type": "heatmap_multi", "cmap": cmap or "Spectral_r"},
-        }
-        multi_payload["export"] = {
-            "type": "heatmap_multi",
-            "variable": variable,
-            "units": panels[0].get("units", ""),
-            "aggregation": "single snapshot comparison",
-            "chart_parameters": {"chart_type": "heatmap_multi", "cmap": cmap or "Spectral_r"},
-            "panels": [panel.get("export", {}) for panel in panels],
-        }
-    emit_status("Preparing response...")
-    return _save_chart(multi_payload, title or f"{variable}_comparison")
+    return plot_singular
 
 
-@tool
-async def conduct_temporal_statistic(
-    data_dict: Annotated[dict, Field(description="The complete JSON object returned by fetch_environmental_data. Pass the entire object — do not extract fields or convert to a string.")],
-    location: str,
-    stat: str = "mean",
-) -> str:
-    """
-    Produce a time-series line chart showing how a variable changes over time.
+def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
+    @tool
+    async def plot_multiple(
+        handles: Annotated[List[str], Field(description="obs_/cube_ handles, one per location.")],
+        locations: List[str],
+        title: str = "",
+        cmap: Optional[str] = "Spectral_r",
+    ) -> str:
+        """
+        Plot the same environmental variable across multiple locations side by side.
 
-    Use this tool when the user asks for a "time series", "trend", "how X changed over time",
-    "monthly values", or anything involving change across multiple time steps.
-    Do NOT use plot_singular for these requests — plot_singular only shows a single snapshot.
+        IMPORTANT — retrieve a handle for each location first, collecting each
+        into a list. Only call this tool once you have a handle for every location.
 
-    Args:
-        data_dict: dict directly from fetch_environmental_data
-                   (must cover a multi-day or multi-month range with multiple granules)
-        location:  place name to spatially mask before computing e.g. 'New Jersey'
-        stat:      statistic to compute at each time step.
-                   One of: 'mean', 'median', 'max', 'min', 'std'  (default: 'mean')
+        Args:
+            handles   : obs_/cube_ handles, one per location.
+            locations : List of place names matching handles order.
+            title     : Overall title (optional).
+            cmap      : Colormap hint for the frontend (default 'Spectral_r').
 
-    Returns:
-        JSON string — time-series chart payload for the frontend to render interactively.
-    """
-    import pandas as pd
+        Returns:
+            JSON string — multi-panel chart payload for the frontend to render.
+        """
+        emit_status("Generating visualization...")
+        if len(handles) != len(locations):
+            emit_status("Visualization failed while matching locations to datasets.")
+            return json.dumps({"error": f"len(handles)={len(handles)} != len(locations)={len(locations)}"})
 
-    try:
-        da = await _load_data(data_dict)
-    except Exception as e:
-        return json.dumps({"error": f"Failed to load data: {e}"})
+        panels = []
+        variable_name = ""
+        for handle, location in zip(handles, locations):
+            emit_status("Processing retrieved data...")
+            try:
+                ds = await open_handle(handle, mcp_tools)
+                da = _open_dataarray(ds)
+            except OpenHandleError as e:
+                emit_status("Visualization failed while opening data.")
+                return json.dumps({"error": f"Failed to open handle '{handle}' for '{location}': {e}"})
 
-    if "time" not in da.dims:
-        return json.dumps({"error": f"No time dimension found. dims={list(da.dims)}"})
+            emit_status("Resolving requested location...")
+            region = await _resolver.aresolve_location(location)
+            if region is None:
+                emit_status("Location lookup failed.")
+                return json.dumps({"error": f"Could not geocode location: '{location}'"})
 
-    region = await _resolver.aresolve_location(location)
-    if region is None:
-        return json.dumps({"error": f"Could not resolve location: '{location}'"})
+            try:
+                lat_coord = find_lat_coord(da)
+                lon_coord = find_lon_coord(da)
+                if lat_coord is None or lon_coord is None:
+                    raise ValueError(f"Cannot find lat/lon coords. Available: {list(da.coords)}")
+                da = _normalize_longitudes(da, lon_coord)
+                da = mask_data_by_geometry(da, region["geometry"])
+            except Exception as e:
+                emit_status("Visualization failed while processing map bounds.")
+                return json.dumps({"error": f"Masking failed for '{location}': {e}"})
 
-    da = mask_data_by_geometry(da, region["geometry"])
+            bounds = region["bounds"]
+            da = _sel_bounds(da, lat_coord, lon_coord, bounds)
 
-    lat_coord = find_lat_coord(da)
-    lon_coord = find_lon_coord(da)
-    if lat_coord is None or lon_coord is None:
-        return json.dumps({"error": f"Cannot find lat/lon coords. Available: {list(da.coords)}"})
-    bounds = region["bounds"]
-    da = _sel_bounds(da, lat_coord, lon_coord, bounds
-    )
+            variable_name = da.name or variable_name
+            units = da.attrs.get("units", "")
+            col_info = _mask_col_info(da)
 
-    var = _get(data_dict, "variable", "")
-    if stat not in AggregationService._STAT_FUNCS:
-        return json.dumps({"error": f"Unknown stat '{stat}'. Use: mean, median, max, min, std"})
+            try:
+                aggregation = _aggregation_service.aggregate(
+                    da,
+                    variable=variable_name,
+                    stat="mean",
+                    col_info=col_info,
+                )
+                da = next(iter(aggregation.ds.data_vars.values()))
+                da = _normalize_to_2d(da)
+                agg_meta = aggregation.meta
+                panel = _da_to_heatmap_payload(da, region["name"], variable_name, units)
+                panel["cmap"]   = cmap or "Spectral_r"
+                panel["bounds"] = list(region["bounds"])
+                panel["aggregation_meta"] = agg_meta
+                panel["is_aggregated"] = agg_meta["n_granules"] > 1
+                _attach_reproducibility(
+                    panel,
+                    [handle],
+                    da,
+                    region["name"],
+                    agg_meta["aggregation_label"] if agg_meta["n_granules"] > 1 else "single snapshot",
+                    {"chart_type": "heatmap", "cmap": panel["cmap"], "location": location},
+                    agg_meta,
+                    region,
+                )
+            except Exception as e:
+                emit_status("Visualization failed while building chart data.")
+                return json.dumps({"error": f"Failed to build panel for '{location}': {e}"})
 
-    times, values = [], []
-    for i in range(da.sizes["time"]):
-        slice_2d = da.isel(time=i).values
+            panels.append(panel)
+
+        multi_payload = {"type": "heatmap_multi", "title": title or f"{variable_name} Comparison", "panels": panels}
+        if panels:
+            multi_payload["provenance"] = {
+                **panels[0].get("provenance", {}),
+                "region_name": ", ".join(panel.get("provenance", {}).get("region_name", "") for panel in panels),
+                "aggregation": "single snapshot comparison",
+            }
+            multi_payload["query"] = {
+                "dataset": variable_name,
+                "aggregation": "single snapshot comparison",
+                "panels": [panel.get("query", {}) for panel in panels],
+                "chart_parameters": {"chart_type": "heatmap_multi", "cmap": cmap or "Spectral_r"},
+            }
+            multi_payload["export"] = {
+                "type": "heatmap_multi",
+                "variable": variable_name,
+                "units": panels[0].get("units", ""),
+                "aggregation": "single snapshot comparison",
+                "chart_parameters": {"chart_type": "heatmap_multi", "cmap": cmap or "Spectral_r"},
+                "panels": [panel.get("export", {}) for panel in panels],
+                "source_handles": list(handles),
+            }
+            multi_payload["metadata"] = {"source_handles": list(handles)}
+        emit_status("Preparing response...")
+        return _save_chart(multi_payload, title or f"{variable_name}_comparison")
+
+    return plot_multiple
+
+
+def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
+    @tool
+    async def conduct_temporal_statistic(
+        handle: Annotated[str, Field(description="An obs_/cube_ handle from a retrieval or transform tool.")],
+        location: str,
+        stat: str = "mean",
+    ) -> str:
+        """
+        Produce a time-series line chart showing how a variable changes over time.
+
+        Use this tool when the user asks for a "time series", "trend", "how X changed over time",
+        "monthly values", or anything involving change across multiple time steps.
+        Do NOT use plot_singular for these requests — plot_singular only shows a single snapshot.
+
+        Args:
+            handle:   obs_/cube_ handle covering a multi-day or multi-month range
+                      with multiple granules.
+            location: place name to spatially mask before computing e.g. 'New Jersey'
+            stat:     statistic to compute at each time step.
+                      One of: 'mean', 'median', 'max', 'min', 'std'  (default: 'mean')
+
+        Returns:
+            JSON string — time-series chart payload for the frontend to render interactively.
+        """
+        import pandas as pd
+
         try:
-            value = _aggregation_service.compute_values_stat(slice_2d, stat)
-        except ValueError:
-            continue
-        raw_time = da["time"].values[i]
-        timestamp = pd.Timestamp(raw_time).isoformat()
-        times.append(timestamp)
-        values.append(round(float(value), 6))
+            ds = await open_handle(handle, mcp_tools)
+            da = _open_dataarray(ds)
+        except OpenHandleError as e:
+            return json.dumps({"error": f"Failed to open handle '{handle}': {e}"})
 
-    if not times:
-        return json.dumps({"error": f"No valid data found for '{location}' across any time step."})
+        if "time" not in da.dims:
+            return json.dumps({"error": f"No time dimension found. dims={list(da.dims)}"})
 
-    # Sort by time
-    paired = sorted(zip(times, values))
-    times, values = zip(*paired)
+        region = await _resolver.aresolve_location(location)
+        if region is None:
+            return json.dumps({"error": f"Could not resolve location: '{location}'"})
 
-    ts_payload = {
-        "type":     "timeseries",
-        "title":    f"{var} {stat} over {location}",
-        "variable": var,
-        "units":    _get(data_dict, "units", ""),
-        "stat":     stat,
-        "times":    list(times),
-        "values":   list(values),
-    }
-    _attach_reproducibility(
-        ts_payload,
-        data_dict,
-        region["name"],
-        stat,
-        {"chart_type": "timeseries", "location": location},
-    )
-    return _save_chart(ts_payload, f"{var}_{stat}_{location}")
+        da = mask_data_by_geometry(da, region["geometry"])
+
+        lat_coord = find_lat_coord(da)
+        lon_coord = find_lon_coord(da)
+        if lat_coord is None or lon_coord is None:
+            return json.dumps({"error": f"Cannot find lat/lon coords. Available: {list(da.coords)}"})
+        bounds = region["bounds"]
+        da = _sel_bounds(da, lat_coord, lon_coord, bounds)
+
+        variable_name = da.name or ""
+        if stat not in AggregationService._STAT_FUNCS:
+            return json.dumps({"error": f"Unknown stat '{stat}'. Use: mean, median, max, min, std"})
+
+        col_info = _mask_col_info(da)
+        da = _aggregation_service.apply_quality_mask(da, col_info=col_info)
+
+        times, values = [], []
+        for i in range(da.sizes["time"]):
+            slice_2d = da.isel(time=i).values
+            try:
+                value = _aggregation_service.compute_values_stat(slice_2d, stat)
+            except ValueError:
+                continue
+            raw_time = da["time"].values[i]
+            timestamp = pd.Timestamp(raw_time).isoformat()
+            times.append(timestamp)
+            values.append(round(float(value), 6))
+
+        if not times:
+            return json.dumps({"error": f"No valid data found for '{location}' across any time step."})
+
+        # Sort by time
+        paired = sorted(zip(times, values))
+        times, values = zip(*paired)
+
+        ts_payload = {
+            "type":     "timeseries",
+            "title":    f"{variable_name} {stat} over {location}",
+            "variable": variable_name,
+            "units":    da.attrs.get("units", ""),
+            "stat":     stat,
+            "times":    list(times),
+            "values":   list(values),
+        }
+        _attach_reproducibility(
+            ts_payload,
+            [handle],
+            da,
+            region["name"],
+            stat,
+            {"chart_type": "timeseries", "location": location},
+            region=region,
+        )
+        return _save_chart(ts_payload, f"{variable_name}_{stat}_{location}")
+
+    return conduct_temporal_statistic

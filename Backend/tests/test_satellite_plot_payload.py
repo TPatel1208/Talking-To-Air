@@ -75,33 +75,36 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         self.assertLess(payload["vmin"], 4.0)
         self.assertGreater(payload["vmax"], 4.0)
 
-    def test_reproducibility_metadata_uses_fetch_params(self):
+    def test_reproducibility_metadata_uses_source_handles(self):
+        import xarray as xr
         from tools.satellite_tools.plot_tools import _attach_reproducibility
 
-        data_dict = {
-            "variable": "TEMPO_NO2",
-            "source": "NASA Harmony — TEMPO tropospheric NO2 vertical column",
-            "fetch_params": {
-                "start_date": "2024-01-01T00:00:00Z",
-                "end_date": "2024-01-02T23:59:59Z",
-                "bbox": [-75.0, 39.0, -73.0, 41.0],
-            },
-        }
+        da = xr.DataArray(
+            [[1.0]],
+            dims=("lat", "lon"),
+            coords={"lat": [40.0], "lon": [-74.0], "time": "2024-01-01T00:00:00Z"},
+            name="TEMPO_NO2",
+            attrs={"units": "mol/m^2"},
+        )
+        region = {"bounds": [-75.0, 39.0, -73.0, 41.0]}
 
         payload = _attach_reproducibility(
             {"type": "heatmap", "title": "TEMPO over NJ"},
-            data_dict,
+            ["obs_1"],
+            da,
             "New Jersey",
             "single snapshot",
             {"chart_type": "heatmap"},
+            region=region,
         )
 
-        self.assertEqual(payload["provenance"]["dataset"], "TEMPO")
         self.assertEqual(payload["provenance"]["variable"], "TEMPO_NO2")
         self.assertEqual(payload["provenance"]["region_name"], "New Jersey")
+        self.assertEqual(payload["provenance"]["source_handles"], ["obs_1"])
         self.assertEqual(payload["query"]["dataset"], "TEMPO_NO2")
         self.assertEqual(payload["query"]["bbox"], [-75.0, 39.0, -73.0, 41.0])
         self.assertEqual(payload["query"]["aggregation"], "single snapshot")
+        self.assertEqual(payload["metadata"]["source_handles"], ["obs_1"])
 
 
 if __name__ == "__main__":

@@ -106,9 +106,9 @@ class AggregationService:
         variable: str | None = None,
     ) -> xr.DataArray:
         col_info = col_info or {}
-        actual_fill = da.attrs.get("_FillValue", col_info.get("fill_value"))
-        valid_min = col_info.get("valid_min")
-        valid_max = col_info.get("valid_max")
+        actual_fill = col_info.get("fill_value", da.attrs.get("_FillValue"))
+        valid_min = col_info.get("valid_min", da.attrs.get("valid_min"))
+        valid_max = col_info.get("valid_max", da.attrs.get("valid_max"))
 
         if actual_fill is not None:
             da = da.where(~np.isclose(da, actual_fill, rtol=0, atol=abs(float(actual_fill)) * 1e-3))

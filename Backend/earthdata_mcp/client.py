@@ -31,11 +31,13 @@ CURATED_TOOL_NAMES = (
     "cite_dataset",
     "get_provenance",
 )
-# Used internally by the await_retrieval/safe_retrieve composites; never
-# exposed to the model as standalone tools.
+# Used internally by the await_retrieval/safe_retrieve/open_handle composites;
+# never exposed to the model as standalone tools.
 INTERNAL_TOOL_NAMES = (
     "retrieve_subset",
     "estimate_retrieval_size",
+    "export_result",
+    "rematerialize",
 )
 REQUIRED_TOOL_NAMES = CURATED_TOOL_NAMES + INTERNAL_TOOL_NAMES
 
