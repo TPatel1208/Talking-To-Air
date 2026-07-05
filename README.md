@@ -104,33 +104,6 @@ Cache Layer  ──  Zarr files on disk + PostgreSQL cache index
 
 ---
 
-## Joining the earthdata-retrieval MCP stack
-
-This stack connects to the [harmony-retrieval-mcp](https://github.com/your-username/harmony-retrieval-mcp) stack over a shared external Docker network, and reads that stack's materialized data volume directly (read-only) so `export_result`'s `file://` URIs resolve as a plain filesystem read in both containers.
-
-1. **Start the MCP stack first** (in the harmony-retrieval-mcp repo, with `EARTHDATA_MCP_TRANSPORT=http` set in its `.env`):
-   ```bash
-   docker compose up --build
-   ```
-   This creates the external network `earthdata_net` and the external volume `earthdata_data` that this stack attaches to.
-
-2. **Set `EARTHDATA_MCP_URL` and `EARTHDATA_MCP_TOKEN`** in this repo's `.env` to match that stack's HTTP endpoint and token.
-
-3. **Start this stack:**
-   ```bash
-   docker compose up --build
-   ```
-   If `earthdata_net` doesn't exist yet, compose will fail with a "network not found" error — bring up the MCP stack first.
-
-4. **Smoke check** — confirm the shared mount and network both resolve:
-   ```bash
-   docker compose exec backend ls /data
-   docker compose exec backend curl -H "Authorization: Bearer $EARTHDATA_MCP_TOKEN" http://mcp:8765/mcp
-   ```
-   The first command should list whatever the MCP stack has materialized; the second should get a response from the MCP's HTTP endpoint rather than a DNS/connection error.
-
----
-
 ## Operations
 
 The backend exposes `/health` for dependency-aware readiness and `/metrics` in Prometheus text format. `/metrics` is intentionally exempt from API key authentication so a scraper can collect it, but production deployments should bind or proxy it only on a private, non-public interface.
@@ -172,8 +145,6 @@ Copy `.env.example` to `.env` and fill in the values below.
 | `DB_POOL_MAX_SIZE` | `10` | Maximum PostgreSQL connection pool size |
 | `LANGSMITH_API_KEY` | — | Enables LangSmith tracing when set |
 | `LANGCHAIN_PROJECT` | `talking_to_air_monitoring` | LangSmith project name |
-| `EARTHDATA_MCP_URL` | `http://mcp:8765/mcp` | URL of the earthdata-retrieval MCP's HTTP endpoint (see [Joining the earthdata-retrieval MCP stack](#joining-the-earthdata-retrieval-mcp-stack)) |
-| `EARTHDATA_MCP_TOKEN` | — | Bearer token for the MCP endpoint; must match that stack's `EARTHDATA_MCP_TOKEN` |
 
 ---
 
@@ -255,6 +226,7 @@ Tune `DB_POOL_MIN_SIZE` and `DB_POOL_MAX_SIZE` based on observed connection coun
 
 Fresh PostgreSQL volumes are initialized from SQL scripts mounted into `docker-entrypoint-initdb.d`:
 
+- `sql/init_cache_index.sql` creates PostGIS support and `zarr_cache_entries`.
 - `sql/init_agent_charts.sql` creates `agent_charts`.
 
 Schema changes should be made in these SQL files. To apply init-script changes to a local fresh database, stop the stack and recreate the database volume with `docker compose down -v`, then start it again with `docker compose up --build`.

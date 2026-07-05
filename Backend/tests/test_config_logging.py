@@ -45,27 +45,6 @@ class ConfigLoggingTests(unittest.TestCase):
 
         self.assertEqual(loaded.harmony_processing_timeout_seconds, 15)
 
-    def test_settings_loads_earthdata_mcp_defaults_and_overrides(self):
-        from config.settings import get_settings
-
-        with patch.dict(os.environ, {}, clear=True):
-            get_settings.cache_clear()
-            loaded = get_settings()
-
-        self.assertEqual(loaded.earthdata_mcp_url, "http://mcp:8765/mcp")
-        self.assertIsNone(loaded.earthdata_mcp_token)
-
-        with patch.dict(
-            os.environ,
-            {"EARTHDATA_MCP_URL": "http://mcp:9000/mcp", "EARTHDATA_MCP_TOKEN": "secret"},
-            clear=True,
-        ):
-            get_settings.cache_clear()
-            loaded = get_settings()
-
-        self.assertEqual(loaded.earthdata_mcp_url, "http://mcp:9000/mcp")
-        self.assertEqual(loaded.earthdata_mcp_token, "secret")
-
     def test_settings_normalizes_invalid_modes(self):
         from config.settings import get_settings
 
