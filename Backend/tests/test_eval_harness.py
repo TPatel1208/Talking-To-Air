@@ -45,7 +45,7 @@ class ContainsSubsequenceTests(unittest.TestCase):
     "eval harness test dependencies are not installed",
 )
 class EvalHarnessStructureTests(unittest.TestCase):
-    """Structural checks that don't spend model tokens — the 10-task shape
+    """Structural checks that don't spend model tokens — the 12-task shape
     itself is verified on every run; only the real agent execution is
     opt-in (see EvalSuiteTests below)."""
 
@@ -63,7 +63,7 @@ class EvalHarnessStructureTests(unittest.TestCase):
     def test_builds_exactly_total_tasks(self):
         self._tasks()
 
-    def test_covers_five_categories_twice_each_plus_one_ground_validation_task(self):
+    def test_covers_five_categories_twice_each_plus_one_ground_validation_and_comparison_task(self):
         from collections import Counter
 
         tasks = self._tasks()
@@ -78,6 +78,7 @@ class EvalHarnessStructureTests(unittest.TestCase):
                 "comparison_setup": 2,
                 "failure_recovery": 2,
                 "ground_validation": 1,
+                "comparison": 1,
             },
         )
 
@@ -100,13 +101,13 @@ def _real_groq_key_available() -> bool:
     "eval harness test dependencies are not installed",
 )
 class EvalSuiteTests(unittest.IsolatedAsyncioTestCase):
-    """The actual 10-task scripted eval. Opt-in (pytest -m eval) because it
+    """The actual 12-task scripted eval. Opt-in (pytest -m eval) because it
     calls a real model and spends real tokens; skipped without a real
     GROQ_API_KEY even when explicitly selected."""
 
     @pytest.mark.eval
     @unittest.skipUnless(_real_groq_key_available(), "requires a real GROQ_API_KEY")
-    async def test_earthdata_agent_passes_at_least_eight_of_ten_tasks(self):
+    async def test_earthdata_agent_passes_at_least_ten_of_twelve_tasks(self):
         from eval_harness import PASS_THRESHOLD, TOTAL_TASKS, run_eval_suite
         from fake_earthdata_mcp import HandleVolume
 

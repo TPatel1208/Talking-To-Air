@@ -82,6 +82,27 @@ class BuildArtifactReferenceComparisonTests(unittest.TestCase):
         self.assertEqual(ref.metadata["panels"][0]["title"], "New Jersey")
         self.assertEqual(ref.metadata["source_handles"], ["obs_1", "obs_2"])
 
+    def test_builds_a_difference_mode_comparison_artifact_when_payload_states_the_mode(self):
+        from services.artifact_registry import build_artifact_reference
+
+        payload = {
+            "chart_id": "cmp_diff1",
+            "type": "heatmap_multi",
+            "mode": "difference",
+            "title": "TEMPO NO2 June 2026 vs June 2025",
+            "panels": [
+                {"title": "June 2025", "metadata": {"source_handles": ["obs_1"]}},
+                {"title": "June 2026", "metadata": {"source_handles": ["obs_2"]}},
+            ],
+            "metadata": {"source_handles": ["obs_1", "obs_2"]},
+        }
+
+        ref = build_artifact_reference(payload)
+
+        self.assertEqual(ref.type, "comparison")
+        self.assertEqual(ref.metadata["mode"], "difference")
+        self.assertEqual(len(ref.metadata["panels"]), 2)
+
     def test_rejects_a_heatmap_multi_payload_with_only_one_panel(self):
         from services.artifact_registry import build_artifact_reference
 

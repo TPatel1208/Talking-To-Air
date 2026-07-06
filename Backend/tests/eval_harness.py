@@ -1,7 +1,7 @@
 """
 eval_harness.py
 =================
-The 10-task scripted eval for the earthdata agent (PRD T04): canned research
+The 12-task scripted eval for the earthdata agent (PRD T04): canned research
 tasks run against the real agent wired to the fake-MCP seam, scored on
 tool-call trace and terminal outcome. Lives beside the test suite behind the
 opt-in "eval" pytest marker (tests/test_eval_harness.py) because it spends
@@ -129,7 +129,7 @@ def _refused_without_retrieving(envelope, tool_calls: list[str]) -> bool:
 
 
 def build_eval_tasks(volume) -> list[EvalTask]:
-    """Build the 10 canned tasks. ``volume`` is a fake_earthdata_mcp.HandleVolume
+    """Build the 12 canned tasks. ``volume`` is a fake_earthdata_mcp.HandleVolume
     used to back the two plotting tasks with real (tiny) Zarr fixtures so
     plot_singular/conduct_temporal_statistic have something to open."""
     import xarray as xr
@@ -303,6 +303,59 @@ def build_eval_tasks(volume) -> list[EvalTask]:
         aqs_get=_ground_validation_aqs_get,
     ))
 
+    # ── Region/period comparison (1) — PRD T08 signature workflow #2 ────
+    def make_compare_period_a():
+        return xr.Dataset(
+            {"no2": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]], {"units": "mol/m^2"})},
+            coords={"lat": [40.0, 41.0], "lon": [-75.0, -74.0]},
+        )
+
+    def make_compare_period_b():
+        return xr.Dataset(
+            {"no2": (("lat", "lon"), [[2.0, 4.0], [6.0, 8.0]], {"units": "mol/m^2"})},
+            coords={"lat": [40.0, 41.0], "lon": [-75.0, -74.0]},
+        )
+
+    def make_compare_aligned():
+        return xr.Dataset(
+            {"no2": (
+                ("source", "lat", "lon"),
+                [[[1.0, 2.0], [3.0, 4.0]], [[2.0, 4.0], [6.0, 8.0]]],
+                {"units": "mol/m^2"},
+            )},
+            coords={"source": [0, 1], "lat": [40.0, 41.0], "lon": [-75.0, -74.0]},
+        )
+
+    volume.add_zarr("obs_compare_period_a", make_compare_period_a)
+    volume.add_zarr("obs_compare_period_b", make_compare_period_b)
+    volume.add_zarr("cube_compare_aligned", make_compare_aligned)
+
+    def _compare_obs_handle_for(time_range: str) -> str:
+        return "obs_compare_period_b" if "2026" in time_range else "obs_compare_period_a"
+
+    async def _compare_retrieve_subset(dataset_handle, aoi_handle, time_range, variables, output_format, workspace_id):
+        obs_handle = _compare_obs_handle_for(time_range)
+        return {"job_handle": f"job_{obs_handle}", "obs_handle": obs_handle}
+
+    async def _compare_align(source_handles, method="outer", workspace_id="default"):
+        return {"handle": "cube_compare_aligned", "status": "ok", "alignment_report": {"method": method}}
+
+    tasks.append(EvalTask(
+        name="comparison_period_tempo_no2",
+        category="comparison",
+        prompt="Compare TEMPO NO2 over New Jersey between June 2025 and June 2026 — did it change?",
+        handlers={
+            **_standard_handlers(dataset_handle="dataset_compare", aoi_handle="aoi_compare"),
+            "retrieve_subset": _compare_retrieve_subset,
+            "align": _compare_align,
+            "export_result": volume.export_result,
+            "rematerialize": volume.rematerialize,
+            "get_retrieval_status": volume.get_retrieval_status,
+        },
+        expected_tool_calls=["safe_retrieve", "await_retrieval", "safe_retrieve", "await_retrieval", "compare"],
+        outcome_check=_handles_nonempty,
+    ))
+
     return tasks
 
 
@@ -350,5 +403,5 @@ async def run_eval_suite(volume, *, model: str | None = None) -> list[EvalTaskRe
     return [await run_eval_task(task, model=model) for task in tasks]
 
 
-PASS_THRESHOLD = 9
-TOTAL_TASKS = 11
+PASS_THRESHOLD = 10
+TOTAL_TASKS = 12

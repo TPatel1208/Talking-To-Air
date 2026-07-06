@@ -24,5 +24,16 @@ class EarthdataAgentPromptT07Tests(unittest.TestCase):
         self.assertIn("exceedance_overlay", prompt)
 
 
+class EarthdataAgentPromptT08Tests(unittest.TestCase):
+    def test_prompt_routes_comparison_requests_to_the_compare_tool(self):
+        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+
+        prompt = get_earthdata_agent_prompt()
+
+        self.assertIn("compare", prompt)
+        self.assertIn("mode=\"region\"", prompt)
+        self.assertIn("mode=\"period\"", prompt)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -45,6 +45,9 @@ class EarthdataToolsetTests(unittest.IsolatedAsyncioTestCase):
         tools = await load_earthdata_tools(self.settings, lambda: "1")
         model_tool_names = {t.name for t in curated_model_tools(tools)}
 
+        # align is internal as of T08 (the compare tool's period mode calls
+        # it directly) but still never model-facing, same as the other
+        # internal/hidden composite plumbing.
         for hidden in ("retrieve_subset", "estimate_retrieval_size", "retrieve_data", "align", "cancel_retrieval"):
             self.assertNotIn(hidden, model_tool_names)
 

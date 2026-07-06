@@ -31,8 +31,8 @@ CURATED_TOOL_NAMES = (
     "cite_dataset",
     "get_provenance",
 )
-# Used internally by the await_retrieval/safe_retrieve/open_handle/jobs
-# composites; never exposed to the model as standalone tools.
+# Used internally by the await_retrieval/safe_retrieve/open_handle/jobs/
+# compare composites; never exposed to the model as standalone tools.
 INTERNAL_TOOL_NAMES = (
     "retrieve_subset",
     "estimate_retrieval_size",
@@ -40,6 +40,9 @@ INTERNAL_TOOL_NAMES = (
     "rematerialize",
     "list_workspace",
     "cancel_retrieval",
+    # T08: the compare tool's period mode calls this directly to grid-align
+    # two retrievals before differencing; deferred until this PRD per T02.
+    "align",
 )
 REQUIRED_TOOL_NAMES = CURATED_TOOL_NAMES + INTERNAL_TOOL_NAMES
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 from langchain_core.tools import BaseTool
 
 from earthdata_mcp.toolset import curated_model_tools
+from tools.satellite_tools.comparison_tools import make_compare
 from tools.satellite_tools.geocode_tools import geocode_location
 from tools.satellite_tools.plot_tools import (
     make_conduct_temporal_statistic,
@@ -37,4 +38,5 @@ def build_satellite_tools(mcp_tools: dict[str, BaseTool]) -> list[BaseTool]:
         make_find_daily_peak(mcp_tools),
         make_validate_against_ground(mcp_tools),
         make_exceedance_overlay(mcp_tools),
+        make_compare(mcp_tools),
     ]

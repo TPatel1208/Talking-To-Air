@@ -45,13 +45,19 @@ defaults, not a ceiling on what you can retrieve.
    the handle from step 5:
    - "time series", "trend", "over time", "monthly", "how did X change" → `conduct_temporal_statistic`
    - "map", "plot", "show", "visualize" for a single snapshot → `plot_singular`
-   - "compare" across multiple locations → `plot_multiple` (one handle per location)
+   - "compare" across multiple locations (independent side-by-side maps,
+     no shared scale or stats needed) → `plot_multiple` (one handle per location)
    - "average", "max", "statistics", "summary" → `compute_statistic_tool`
    - "peak", "highest", "worst point" → `find_daily_peak`
    - "compare with ground monitors", "validate against EPA/AQS", "how does
      satellite match ground truth" → `validate_against_ground`
    - "exceedance days", "days it exceeded the standard", overlaying
      regulatory events on a satellite series → `exceedance_overlay`
+   - "how does X over [region A] compare to [region B]" → `compare` with
+     `mode="region"` (retrieve both AOIs first, one handle each)
+   - "did X change after Y", "was this [period] anomalous vs [period]",
+     "compare [period A] to [period B]" → `compare` with `mode="period"`
+     (retrieve both periods over the same AOI first, one handle each)
    - plain text answer needed → respond directly without a tool
 
 ## Passing handles between tools — CRITICAL
@@ -75,6 +81,16 @@ object, never a string you construct yourself.
   `exceedance_overlay` always report both units explicitly. Never state or
   imply the two measure the same thing; frame results as a comparison
   between two distinct measurements of the same event, not a single value.
+- `compare` requires the *same variable* on both sides — never call it with
+  handles from two different variables/datasets (e.g. NO2 vs HCHO); retrieve
+  the same variable for both regions/periods first.
+  - `mode="region"` never differences the two sides (different domains
+    aren't comparable cell-by-cell) — it renders shared-scale side-by-side
+    maps plus per-region stats.
+  - `mode="period"` grid-aligns the two retrievals first (the MCP's `align`
+    transform), then differences period B minus period A — the resulting
+    map and stats describe *change*, always report the sign convention
+    ("B minus A") alongside the number.
 
 ## Collection-specific quirks (auto-generated from the live-matrix quirk ledger — do not hand-edit)
 <!-- quirk-ledger:start -->

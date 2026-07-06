@@ -42,13 +42,13 @@ INTERNAL_RAW_TOOL_NAMES = (
     "rematerialize",
     "list_workspace",
     "cancel_retrieval",
+    "align",
 )
 # Representative sample of raw tools that must never reach the model,
 # per the PRD's "Hidden" list (transforms / format / inspection
 # plumbing) — enough to prove filtering, not the full real-server surface.
 HIDDEN_RAW_TOOL_NAMES = (
     "retrieve_data",
-    "align",
 )
 ALL_RAW_TOOL_NAMES = CURATED_RAW_TOOL_NAMES + INTERNAL_RAW_TOOL_NAMES + HIDDEN_RAW_TOOL_NAMES
 
@@ -196,8 +196,8 @@ def build_fake_mcp(handlers: dict[str, Handler] | None = None, exclude: tuple[st
         return await h("retrieve_data")(dataset_handle=dataset_handle, workspace_id=workspace_id)
 
     @mcp.tool(name="align")
-    async def align(handle_a: str, handle_b: str, workspace_id: str = "default") -> dict:
-        return await h("align")(handle_a=handle_a, handle_b=handle_b, workspace_id=workspace_id)
+    async def align(source_handles: list[str], method: str = "outer", workspace_id: str = "default") -> dict:
+        return await h("align")(source_handles=source_handles, method=method, workspace_id=workspace_id)
 
     @mcp.tool(name="cancel_retrieval")
     async def cancel_retrieval(job_handle: str, workspace_id: str = "default") -> dict:

@@ -59,7 +59,7 @@ def _build_metadata(artifact_type: str, payload: dict[str, Any]):
             for panel in payload.get("panels", [])
         ]
         return ComparisonArtifactMetadata(
-            mode="n-panel",
+            mode=payload.get("mode", "n-panel"),
             panels=panels,
             source_handles=source_handles,
         )

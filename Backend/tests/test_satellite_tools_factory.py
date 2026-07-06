@@ -180,6 +180,9 @@ class SatelliteToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(self._tool("validate_against_ground"))
         self.assertIsNotNone(self._tool("exceedance_overlay"))
 
+    async def test_factory_registers_the_t08_compare_tool(self):
+        self.assertIsNotNone(self._tool("compare"))
+
 
 if __name__ == "__main__":
     unittest.main()
