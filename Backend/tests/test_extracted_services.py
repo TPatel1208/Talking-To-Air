@@ -46,6 +46,58 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, stored)
 
+    async def test_history_service_surfaces_a_map_artifact_from_a_tool_message(self):
+        from services.chart_service import ChartService
+        from services.history_service import HistoryService
+
+        tool_content = json.dumps({
+            "type": "heatmap",
+            "title": "TEMPO over NJ",
+            "chart_id": "map_abc123",
+            "vmin": 0.0,
+            "vmax": 1.0,
+            "bounds": [-75.0, 39.0, -73.0, 41.0],
+            "variable": "TEMPO_NO2",
+            "units": "mol/m^2",
+            "metadata": {"source_handles": ["obs_1"]},
+            "_artifact_refs": [{
+                "id": "map_abc123",
+                "type": "map",
+                "title": "TEMPO over NJ",
+                "metadata": {
+                    "bbox": [-75.0, 39.0, -73.0, 41.0],
+                    "variable": "TEMPO_NO2",
+                    "units": "mol/m^2",
+                    "colorbar": {"vmin": 0.0, "vmax": 1.0},
+                    "source_handles": ["obs_1"],
+                },
+            }],
+        })
+
+        class FakeAgent:
+            async def aget_state(self, config):
+                return SimpleNamespace(values={"messages": [
+                    SimpleNamespace(type="human", content="plot TEMPO NO2 over NJ"),
+                    SimpleNamespace(type="ai", content="", tool_calls=[{"id": "tc1", "name": "plot_singular", "args": {}}]),
+                    SimpleNamespace(type="tool", name="plot_singular", content=tool_content),
+                    SimpleNamespace(type="ai", content="Here is the map.", tool_calls=[]),
+                ]})
+
+        from services.artifact_store import artifact_store
+
+        with patch("services.chart_service.chart_repository.get_chart", AsyncMock(return_value=None)), \
+             patch("services.chart_service.chart_repository.save_chart", AsyncMock(side_effect=lambda thread_id, payload, user_id: {**payload, "thread_id": thread_id, "user_id": user_id})), \
+             patch.object(artifact_store, "claim", side_effect=AssertionError("map artifacts must not go through the table artifact_store")) as claim:
+            messages = await HistoryService(ChartService()).build_history(FakeAgent(), "thread-1", "user-1")
+
+        claim.assert_not_called()
+        assistant = messages[-1]
+        self.assertEqual(len(assistant["charts"]), 1)
+        self.assertEqual(assistant["charts"][0]["chart_id"], "map_abc123")
+        self.assertEqual(len(assistant["artifacts"]), 1)
+        self.assertEqual(assistant["artifacts"][0]["id"], "map_abc123")
+        self.assertEqual(assistant["artifacts"][0]["type"], "map")
+
     async def test_history_service_builds_plain_history(self):
         from services.chart_service import ChartService
         from services.history_service import HistoryService
@@ -155,6 +207,49 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(ref.id, events[0])
         page = artifact_store.get_page(ref.id, "user-1")
         self.assertEqual(page["rows"], [{"date": "2024-01-01", "value": 10}])
+
+    async def test_chat_stream_service_emits_both_chart_and_artifact_for_a_map_payload(self):
+        from services.chat_stream_service import ChatStreamService
+        from services.chart_service import ChartService
+
+        content = json.dumps({
+            "type": "heatmap",
+            "title": "TEMPO over NJ",
+            "chart_id": "map_abc123",
+            "vmin": 0.0,
+            "vmax": 1.0,
+            "bounds": [-75.0, 39.0, -73.0, 41.0],
+            "variable": "TEMPO_NO2",
+            "units": "mol/m^2",
+            "metadata": {"source_handles": ["obs_1"]},
+            "_artifact_refs": [{
+                "id": "map_abc123",
+                "type": "map",
+                "title": "TEMPO over NJ",
+                "metadata": {
+                    "bbox": [-75.0, 39.0, -73.0, 41.0],
+                    "variable": "TEMPO_NO2",
+                    "units": "mol/m^2",
+                    "colorbar": {"vmin": 0.0, "vmax": 1.0},
+                    "source_handles": ["obs_1"],
+                },
+            }],
+        })
+        service = ChatStreamService(ChartService(), long_request_seconds=999)
+
+        with patch("services.chart_service.chart_repository.get_chart", AsyncMock(return_value=None)), \
+             patch("services.chart_service.chart_repository.save_chart", AsyncMock(side_effect=lambda thread_id, payload, user_id: {**payload, "thread_id": thread_id, "user_id": user_id})):
+            events = [
+                event
+                async for event in service._tool_result_events(content, "thread-1", "user-1", [], [])
+            ]
+
+        self.assertEqual(len(events), 2)
+        self.assertIn("event: chart", events[0])
+        self.assertIn('"chart_id": "map_abc123"', events[0])
+        self.assertIn("event: artifact", events[1])
+        self.assertIn('"id": "map_abc123"', events[1])
+        self.assertIn('"type": "map"', events[1])
 
     async def test_chat_stream_service_warns_for_malformed_chart_payload(self):
         from services.chat_stream_service import ChatStreamService

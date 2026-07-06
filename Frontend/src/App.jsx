@@ -1,9 +1,10 @@
 import Chat from './components/Chat'
+import Dashboard from './components/Dashboard'
 import JobsPanel from './components/JobsPanel'
 import SessionSidebar from './components/SessionSidebar'
 import { useChat } from './hooks/useChat'
 import { useJobs } from './hooks/useJobs'
-import { useCallback, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 
 const API_BASE = '/api'
 const AUTH_STORAGE_KEY = 'tta.accessToken'
@@ -179,6 +180,22 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
     clearError,
   } = useChat(accessToken, onUnauthorized, applyJobProgress)
 
+  const { images, artifacts } = useMemo(() => {
+    const seenArtifactIds = new Set()
+    const dedupedArtifacts = []
+    const allImages = []
+    for (const msg of messages) {
+      for (const url of msg.imageUrls || []) allImages.push(url)
+      for (const artifact of msg.artifacts || []) {
+        const key = artifact.id || JSON.stringify(artifact)
+        if (seenArtifactIds.has(key)) continue
+        seenArtifactIds.add(key)
+        dedupedArtifacts.push(artifact)
+      }
+    }
+    return { images: allImages, artifacts: dedupedArtifacts }
+  }, [messages])
+
   const handleLogout = useCallback(async () => {
     abortActiveRequest(true)
     try {
@@ -221,6 +238,10 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
           onClear={newSession}
           onClearError={clearError}
         />
+      </div>
+
+      <div style={{ width: '320px', flexShrink: 0, borderLeft: '1px solid var(--border)', overflow: 'hidden' }}>
+        <Dashboard images={images} artifacts={artifacts} accessToken={accessToken} />
       </div>
 
       <JobsPanel

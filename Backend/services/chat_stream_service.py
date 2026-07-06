@@ -97,15 +97,11 @@ class ChatStreamService:
         agent_result = parse_agent_result(content)
         if agent_result is not None:
             for artifact_ref in agent_result.artifacts:
-                try:
-                    claimed = artifact_store.claim(artifact_ref.id, user_id, thread_id)
-                except KeyError:
-                    logger.warning(
-                        "artifact_ref_missing",
-                        extra={"_artifact_id": artifact_ref.id, "_thread_id": thread_id},
-                    )
+                payload = self._resolve_artifact_payload(
+                    artifact_ref.model_dump(exclude_none=True), user_id, thread_id,
+                )
+                if payload is None:
                     continue
-                payload = claimed.model_dump(exclude_none=True)
                 if artifacts is not None and payload not in artifacts:
                     artifacts.append(payload)
                 yield self.sse("artifact", payload)
@@ -114,26 +110,30 @@ class ChatStreamService:
             return
 
         artifact_refs = self._artifact_refs(content)
-        if artifact_refs:
-            for ref in artifact_refs:
-                try:
-                    claimed = artifact_store.claim(ref["id"], user_id, thread_id)
-                except KeyError:
-                    logger.warning(
-                        "artifact_ref_missing",
-                        extra={"_artifact_id": ref.get("id"), "_thread_id": thread_id},
-                    )
-                    continue
-                payload = claimed.model_dump(exclude_none=True)
-                if artifacts is not None and payload not in artifacts:
-                    artifacts.append(payload)
-                yield self.sse("artifact", payload)
-            return
+        emitted_something = False
 
+        # A chart-backed artifact type (map/comparison/timeseries) carries its
+        # full render payload (lats/lons/values, panels, series) alongside
+        # `_artifact_refs` in the SAME tool-result content — persist and emit
+        # it first, so the artifact event that follows always has something
+        # durable behind it for PNG/CSV export to read.
         _, charts = self.chart_service.parse_charts(content)
         if charts:
             for chart in charts:
                 yield self.sse("chart", await self.chart_service.persist_chart_payload(thread_id, chart, user_id))
+            emitted_something = True
+
+        if artifact_refs:
+            for ref in artifact_refs:
+                payload = self._resolve_artifact_payload(ref, user_id, thread_id)
+                if payload is None:
+                    continue
+                if artifacts is not None and payload not in artifacts:
+                    artifacts.append(payload)
+                emitted_something = True
+                yield self.sse("artifact", payload)
+
+        if emitted_something:
             return
 
         if self._looks_like_chart_payload(content):
@@ -146,6 +146,29 @@ class ChatStreamService:
                 },
             )
 
+    def _resolve_artifact_payload(
+        self,
+        ref: dict[str, Any],
+        user_id: str,
+        thread_id: str,
+    ) -> dict[str, Any] | None:
+        """Table artifacts live in the ephemeral in-memory artifact_store and
+        need ownership claimed on first sight. Chart-backed artifact types
+        (map/comparison/timeseries) are already fully formed by
+        artifact_registry and persisted durably alongside the chart payload
+        that carries them — pass them through as-is."""
+        if ref.get("type") != "table":
+            return ref
+        try:
+            claimed = artifact_store.claim(ref["id"], user_id, thread_id)
+        except KeyError:
+            logger.warning(
+                "artifact_ref_missing",
+                extra={"_artifact_id": ref.get("id"), "_thread_id": thread_id},
+            )
+            return None
+        return claimed.model_dump(exclude_none=True)
+
     async def _text_events(self, data: Any, thread_id: str, user_id: str) -> tuple[str, list[str]]:
         if isinstance(data, str):
             structured_result = parse_agent_result(data)
@@ -154,11 +177,12 @@ class ChatStreamService:
                 for chart in structured_result.charts:
                     events.append(self.sse("chart", await self.chart_service.persist_chart_payload(thread_id, chart, user_id)))
                 for artifact in structured_result.artifacts:
-                    try:
-                        claimed = artifact_store.claim(artifact.id, user_id, thread_id)
-                    except KeyError:
+                    payload = self._resolve_artifact_payload(
+                        artifact.model_dump(exclude_none=True), user_id, thread_id,
+                    )
+                    if payload is None:
                         continue
-                    events.append(self.sse("artifact", claimed.model_dump(exclude_none=True)))
+                    events.append(self.sse("artifact", payload))
                 return structured_result.text or "", events
 
             text, charts = self.chart_service.parse_charts(data)

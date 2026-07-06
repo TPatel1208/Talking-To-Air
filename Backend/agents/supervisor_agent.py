@@ -245,6 +245,7 @@ async def build_agent(
         enriched_task = f"[Current UTC time: {now}]\n\n{task}"
         async def _run_satellite(task_text: str) -> AgentResult:
             charts = []
+            artifacts = []
             text_parts  = []
             sub_thread_id = str(uuid.uuid4())
             outcome = "success"
@@ -255,6 +256,7 @@ async def build_agent(
                 ):
                     if event_type == "tool_result":
                         content = data.get("content", "")
+                        artifacts.extend(_artifact_refs_from_content(content))
                         chart = parse_chart_payload(content)
                         if chart is not None:
                             charts.append(chart)
@@ -263,6 +265,7 @@ async def build_agent(
                         if nested is not None:
                             text_parts.append(nested.text)
                             charts.extend(nested.charts)
+                            artifacts.extend(nested.artifacts)
                     elif event_type in ("text", "done"):
                         t = data if isinstance(data, str) else data.get("response", "")
                         if t:
@@ -287,7 +290,7 @@ async def build_agent(
                 2000,
                 agent_name="satellite",
             ) or "Earthdata agent returned no response."
-            return AgentResult(text=text, charts=charts)
+            return AgentResult(text=text, charts=charts, artifacts=artifacts)
 
         direct_first = await _try_direct_satellite_plot(enriched_task)
         if direct_first is not None:
@@ -522,22 +525,33 @@ def _task_summary(task: str, max_chars: int = 200) -> str:
     return " ".join(str(task).split())[:max_chars]
 
 
+def _artifact_refs_from_content(content: Any) -> list[ArtifactReference]:
+    """Collect _artifact_refs embedded in one ToolMessage's content.
+
+    Shared by the ground path (_extract_artifact_refs, which walks a full
+    ainvoke() message list) and the satellite path (_run_satellite, which
+    sees tool_result events one at a time via stream_response).
+    """
+    parsed = _parse_tool_content(content)
+    if parsed is None:
+        return []
+    refs = []
+    for ref in parsed.get("_artifact_refs") or []:
+        if isinstance(ref, dict) and ref.get("id") and ref.get("type"):
+            try:
+                refs.append(ArtifactReference(**ref))
+            except Exception:
+                pass
+    return refs
+
+
 def _extract_artifact_refs(messages: list) -> list[ArtifactReference]:
     """Collect _artifact_refs from ground agent ToolMessages after ainvoke."""
     refs = []
     for msg in messages:
         if not (hasattr(msg, "name") and msg.name):
             continue
-        content = getattr(msg, "content", "")
-        parsed = _parse_tool_content(content)
-        if parsed is None:
-            continue
-        for ref in parsed.get("_artifact_refs") or []:
-            if isinstance(ref, dict) and ref.get("id") and ref.get("type"):
-                try:
-                    refs.append(ArtifactReference(**ref))
-                except Exception:
-                    pass
+        refs.extend(_artifact_refs_from_content(getattr(msg, "content", "")))
     return refs
 
 

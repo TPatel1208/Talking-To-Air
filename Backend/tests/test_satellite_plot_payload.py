@@ -106,6 +106,88 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         self.assertEqual(payload["query"]["aggregation"], "single snapshot")
         self.assertEqual(payload["metadata"]["source_handles"], ["obs_1"])
 
+    def test_save_chart_mints_a_map_artifact_id_for_a_heatmap_payload(self):
+        import json
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import _attach_reproducibility, _save_chart
+
+        da = xr.DataArray(
+            [[1.0]],
+            dims=("lat", "lon"),
+            coords={"lat": [40.0], "lon": [-74.0], "time": "2024-01-01T00:00:00Z"},
+            name="TEMPO_NO2",
+            attrs={"units": "mol/m^2"},
+        )
+        region = {"bounds": [-75.0, 39.0, -73.0, 41.0]}
+        payload = _attach_reproducibility(
+            {
+                "type": "heatmap",
+                "title": "TEMPO over NJ",
+                "variable": "TEMPO_NO2",
+                "units": "mol/m^2",
+                "vmin": 0.0,
+                "vmax": 1.0,
+                "bounds": region["bounds"],
+            },
+            ["obs_1"],
+            da,
+            "New Jersey",
+            "single snapshot",
+            region=region,
+        )
+
+        result = json.loads(_save_chart(payload, "TEMPO_NO2_NJ"))
+
+        self.assertTrue(result["chart_id"].startswith("map_"))
+        self.assertEqual(len(result["_artifact_refs"]), 1)
+        ref = result["_artifact_refs"][0]
+        self.assertEqual(ref["id"], result["chart_id"])
+        self.assertEqual(ref["type"], "map")
+        self.assertEqual(ref["metadata"]["bbox"], region["bounds"])
+        self.assertEqual(ref["metadata"]["source_handles"], ["obs_1"])
+
+    def test_save_chart_mints_a_comparison_artifact_id_for_a_heatmap_multi_payload(self):
+        import json
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import _attach_reproducibility, _save_chart
+
+        def _panel(name, handle, lon, lat):
+            da = xr.DataArray(
+                [[1.0]],
+                dims=("lat", "lon"),
+                coords={"lat": [lat], "lon": [lon], "time": "2024-01-01T00:00:00Z"},
+                name="TEMPO_NO2",
+                attrs={"units": "mol/m^2"},
+            )
+            panel = {"type": "heatmap", "title": name, "variable": "TEMPO_NO2", "units": "mol/m^2"}
+            _attach_reproducibility(panel, [handle], da, name, "single snapshot")
+            return panel
+
+        panels = [_panel("New Jersey", "obs_1", -74.0, 40.0), _panel("New York", "obs_2", -73.9, 40.7)]
+        multi_payload = {
+            "type": "heatmap_multi",
+            "title": "TEMPO NO2 Comparison",
+            "panels": panels,
+            "metadata": {"source_handles": ["obs_1", "obs_2"]},
+        }
+
+        result = json.loads(_save_chart(multi_payload, "TEMPO_NO2_comparison"))
+
+        self.assertTrue(result["chart_id"].startswith("cmp_"))
+        ref = result["_artifact_refs"][0]
+        self.assertEqual(ref["type"], "comparison")
+        self.assertEqual(ref["metadata"]["panels"][0]["handle"], "obs_1")
+        self.assertEqual(ref["metadata"]["panels"][1]["handle"], "obs_2")
+        self.assertEqual(ref["metadata"]["source_handles"], ["obs_1", "obs_2"])
+
+    def test_save_chart_omits_artifact_refs_for_an_unmapped_render_type(self):
+        import json
+        from tools.satellite_tools.plot_tools import _save_chart
+
+        result = json.loads(_save_chart({"type": "error"}, "n/a"))
+
+        self.assertNotIn("_artifact_refs", result)
+
 
 if __name__ == "__main__":
     unittest.main()

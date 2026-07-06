@@ -1,7 +1,10 @@
+import ArtifactMessage from './ArtifactMessage'
 import ImageViewer from './ImageViewer'
 import ToolCallBadge from './ToolCallBadge'
 
-export default function Dashboard({ images, toolCalls }) {
+export default function Dashboard({ images, toolCalls, artifacts, accessToken }) {
+  const outputCount = (images?.length || 0) + (artifacts?.length || 0)
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
 
@@ -14,15 +17,15 @@ export default function Dashboard({ images, toolCalls }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <div style={{
             width: '7px', height: '7px', borderRadius: '50%',
-            background: images?.length ? 'var(--teal)' : 'var(--border)',
+            background: outputCount ? 'var(--teal)' : 'var(--border)',
             transition: 'background 0.3s',
           }}/>
           <span style={{
             fontSize: '11px', fontWeight: '500', color: 'var(--text-muted)',
             letterSpacing: '0.06em', textTransform: 'uppercase',
           }}>
-            {images?.length
-              ? `${images.length} output${images.length > 1 ? 's' : ''}`
+            {outputCount
+              ? `${outputCount} output${outputCount > 1 ? 's' : ''}`
               : 'No outputs yet'}
           </span>
         </div>
@@ -37,6 +40,15 @@ export default function Dashboard({ images, toolCalls }) {
 
       {/* Tool call badges */}
       <ToolCallBadge toolCalls={toolCalls} />
+
+      {/* Artifact gallery — every artifact type produced this session */}
+      {artifacts?.length > 0 && (
+        <div style={{ overflow: 'auto', padding: '0 12px', flexShrink: 0, maxHeight: '50%' }}>
+          {artifacts.map((artifact, i) => (
+            <ArtifactMessage key={artifact.id || i} artifact={artifact} accessToken={accessToken} />
+          ))}
+        </div>
+      )}
 
       {/* Image viewer */}
       <ImageViewer images={images} />

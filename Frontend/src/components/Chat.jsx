@@ -341,7 +341,11 @@ function MessageBubble({ msg, accessToken }) {
                 {msg.charts?.map((chart, i) => (
                   <ChartMessage key={i} chart={chart} accessToken={accessToken} />
                 ))}
-                {msg.artifacts?.map((artifact, i) => (
+                {/* Chart-backed artifact types (map/comparison/timeseries) already
+                    render above via ChartMessage — only 'table' needs its own
+                    inline card here. The full gallery (all types) lives in the
+                    Dashboard pane. */}
+                {msg.artifacts?.filter(a => a.type === 'table').map((artifact, i) => (
                   <ArtifactMessage key={artifact.id || i} artifact={artifact} accessToken={accessToken} />
                 ))}
               </>

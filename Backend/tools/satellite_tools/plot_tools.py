@@ -48,7 +48,9 @@ Time-series
 }
 """
 import json
+import logging
 import os
+import uuid
 import numpy as np
 from langchain.tools import tool
 from langchain_core.tools import BaseTool
@@ -56,11 +58,16 @@ from typing import Annotated, List, Optional
 from pydantic import Field
 
 from datasets.mask_info import override_for
+from services.artifact_registry import build_artifact_reference
 from services.open_handle import OpenHandleError, open_handle
 from utils.geo_utils import find_lat_coord, find_lon_coord
 from utils.plotting import _normalize_to_2d, mask_data_by_geometry, RegionResolver
 from utils.streaming import emit_status
 from preprocessing.aggregation_service import AggregationService
+
+logger = logging.getLogger(__name__)
+
+_RENDER_TYPE_TO_ARTIFACT_PREFIX = {"heatmap": "map", "heatmap_multi": "cmp", "timeseries": "ts"}
 
 _resolver = RegionResolver()
 _aggregation_service = AggregationService()
@@ -208,9 +215,28 @@ def _da_to_heatmap_payload(da, title: str, variable: str, units: str) -> dict:
     }
 
 def _save_chart(payload: dict, name: str) -> str:
-    """Return a structured chart payload for the API to persist."""
+    """Return a structured chart payload for the API to persist.
+
+    Mints a stable artifact id for render types the T06 artifact vocabulary
+    covers (map/comparison/timeseries) and embeds an `_artifact_refs` entry
+    so the id is visible to both the calling LLM (to cite in its envelope,
+    see config/earthdata_agent_prompt.py) and the gallery — mirroring the
+    `_artifact_refs` convention EPA table tools already use.
+    """
     payload.setdefault("metadata", {})
     payload["metadata"].setdefault("name", name)
+
+    prefix = _RENDER_TYPE_TO_ARTIFACT_PREFIX.get(payload.get("type"))
+    if prefix is not None:
+        payload["chart_id"] = f"{prefix}_{uuid.uuid4().hex[:12]}"
+        try:
+            ref = build_artifact_reference(payload)
+        except Exception:
+            logger.warning("artifact_reference_build_failed", extra={"_render_type": payload.get("type")})
+            ref = None
+        if ref is not None:
+            payload["_artifact_refs"] = [ref.model_dump(exclude_none=True)]
+
     return json.dumps(payload)
 
 # ── Handle / masking helpers ───────────────────────────────────────────────────

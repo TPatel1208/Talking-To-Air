@@ -66,6 +66,11 @@ class SatelliteToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["variable"], "no2")
         self.assertEqual(payload["units"], "mol/m^2")
         self.assertEqual(payload["metadata"]["source_handles"], ["obs_1"])
+        self.assertTrue(payload["chart_id"].startswith("map_"))
+        ref = payload["_artifact_refs"][0]
+        self.assertEqual(ref["id"], payload["chart_id"])
+        self.assertEqual(ref["type"], "map")
+        self.assertEqual(ref["metadata"]["source_handles"], ["obs_1"])
 
     async def test_plot_multiple_produces_a_multi_panel_artifact_from_handles(self):
         import xarray as xr
@@ -90,6 +95,10 @@ class SatelliteToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["type"], "heatmap_multi")
         self.assertEqual(len(payload["panels"]), 2)
         self.assertEqual(payload["metadata"]["source_handles"], ["obs_a", "obs_b"])
+        self.assertTrue(payload["chart_id"].startswith("cmp_"))
+        ref = payload["_artifact_refs"][0]
+        self.assertEqual(ref["type"], "comparison")
+        self.assertEqual([p["handle"] for p in ref["metadata"]["panels"]], ["obs_a", "obs_b"])
 
     async def test_conduct_temporal_statistic_produces_a_timeseries_artifact_from_a_handle(self):
         import numpy as np
@@ -121,6 +130,10 @@ class SatelliteToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["type"], "timeseries")
         self.assertEqual(len(payload["times"]), 2)
         self.assertEqual(payload["metadata"]["source_handles"], ["obs_ts"])
+        self.assertTrue(payload["chart_id"].startswith("ts_"))
+        ref = payload["_artifact_refs"][0]
+        self.assertEqual(ref["type"], "timeseries")
+        self.assertEqual(ref["metadata"]["series"][0]["source_kind"], "satellite")
 
     async def test_compute_statistic_tool_produces_stats_from_a_handle(self):
         import xarray as xr

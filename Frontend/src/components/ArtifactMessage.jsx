@@ -39,7 +39,136 @@ function sanitizeFilename(value) {
     .slice(0, 80) || 'artifact'
 }
 
-export default function ArtifactMessage({ artifact, accessToken }) {
+const TYPE_LABEL = { map: 'Map', comparison: 'Comparison', timeseries: 'Time series' }
+
+function TypeBadge({ type }) {
+  return (
+    <span style={{
+      fontSize: '10px', fontWeight: 600, color: 'var(--text-muted)',
+      textTransform: 'uppercase', letterSpacing: '0.04em',
+      border: '1px solid var(--border)', borderRadius: '4px', padding: '2px 6px',
+    }}>
+      {TYPE_LABEL[type] || type}
+    </span>
+  )
+}
+
+function ExportButtons({ artifactId, title, accessToken }) {
+  const [state, setState] = useState('')
+
+  async function download(format) {
+    setState('downloading')
+    try {
+      const response = await fetch(`${API_BASE}/chart/${artifactId}/export.${format}`, {
+        headers: authHeaders(accessToken),
+      })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const blob = await response.blob()
+      const filename = filenameFromDisposition(
+        response.headers.get('content-disposition'),
+        `${sanitizeFilename(title)}.${format}`,
+      )
+      downloadBlob(filename, blob)
+      setState('')
+    } catch (err) {
+      setState(err.message || 'Export failed')
+    }
+  }
+
+  const buttonStyle = {
+    border: '1px solid var(--border)', borderRadius: '6px', background: 'var(--bg-secondary)',
+    color: 'var(--text-secondary)', padding: '5px 9px', fontSize: '11px', cursor: 'pointer',
+  }
+
+  return (
+    <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+      <button type="button" onClick={() => download('csv')} disabled={state === 'downloading'} style={buttonStyle}>CSV</button>
+      <button type="button" onClick={() => download('png')} disabled={state === 'downloading'} style={buttonStyle}>PNG</button>
+      {state && state !== 'downloading' && (
+        <span style={{ fontSize: '11px', color: 'var(--danger, #b42318)' }}>{state}</span>
+      )}
+    </div>
+  )
+}
+
+function CardShell({ artifact, accessToken, children }) {
+  return (
+    <div style={{
+      border: '1px solid var(--border)', borderRadius: '8px', margin: '12px 0',
+      background: 'var(--bg-primary)', overflow: 'hidden',
+    }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px',
+        padding: '10px 12px', borderBottom: '1px solid var(--border)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+          <TypeBadge type={artifact.type} />
+          <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', overflowWrap: 'anywhere' }}>
+            {artifact.title || 'Untitled artifact'}
+          </div>
+        </div>
+        <ExportButtons artifactId={artifact.id} title={artifact.title} accessToken={accessToken} />
+      </div>
+      <div style={{ padding: '10px 12px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+        {children}
+      </div>
+    </div>
+  )
+}
+
+function MetaRow({ label, value }) {
+  if (value === null || value === undefined || value === '') return null
+  return (
+    <div style={{ display: 'flex', gap: '6px', marginBottom: '4px' }}>
+      <span style={{ color: 'var(--text-muted)', flexShrink: 0 }}>{label}:</span>
+      <span style={{ overflowWrap: 'anywhere' }}>{value}</span>
+    </div>
+  )
+}
+
+function MapArtifactCard({ artifact, accessToken }) {
+  const meta = artifact.metadata || {}
+  return (
+    <CardShell artifact={artifact} accessToken={accessToken}>
+      <MetaRow label="Variable" value={meta.variable} />
+      <MetaRow label="Units" value={meta.units} />
+      <MetaRow label="Bounding box" value={meta.bbox?.map(v => Number(v).toFixed(2)).join(', ')} />
+      <MetaRow label="Color range" value={meta.colorbar ? `${meta.colorbar.vmin} to ${meta.colorbar.vmax}` : null} />
+      <MetaRow label="Source handles" value={meta.source_handles?.join(', ')} />
+    </CardShell>
+  )
+}
+
+function ComparisonArtifactCard({ artifact, accessToken }) {
+  const meta = artifact.metadata || {}
+  return (
+    <CardShell artifact={artifact} accessToken={accessToken}>
+      <MetaRow label="Mode" value={meta.mode} />
+      <MetaRow
+        label="Panels"
+        value={(meta.panels || []).map(p => p.title || p.handle).join(', ')}
+      />
+      <MetaRow label="Source handles" value={meta.source_handles?.join(', ')} />
+    </CardShell>
+  )
+}
+
+function TimeseriesArtifactCard({ artifact, accessToken }) {
+  const meta = artifact.metadata || {}
+  return (
+    <CardShell artifact={artifact} accessToken={accessToken}>
+      <MetaRow
+        label="Series"
+        value={(meta.series || [])
+          .map(s => s.station_id ? `${s.label} (${s.source_kind}, ${s.station_id})` : `${s.label} (${s.source_kind})`)
+          .join('; ')}
+      />
+      <MetaRow label="Source handles" value={meta.source_handles?.join(', ')} />
+    </CardShell>
+  )
+}
+
+function TableArtifactMessage({ artifact, accessToken }) {
   const [page, setPage] = useState({ columns: [], rows: [], total_rows: artifact?.row_count || 0, offset: 0, limit: PAGE_SIZE })
   const [offset, setOffset] = useState(0)
   const [sort, setSort] = useState({ column: null, direction: 'asc' })
@@ -259,5 +388,16 @@ function pagerStyle(enabled) {
     padding: '5px 9px',
     fontSize: '12px',
     cursor: enabled ? 'pointer' : 'default',
+  }
+}
+
+export default function ArtifactMessage({ artifact, accessToken }) {
+  if (!artifact) return null
+  switch (artifact.type) {
+    case 'table': return <TableArtifactMessage artifact={artifact} accessToken={accessToken} />
+    case 'map': return <MapArtifactCard artifact={artifact} accessToken={accessToken} />
+    case 'comparison': return <ComparisonArtifactCard artifact={artifact} accessToken={accessToken} />
+    case 'timeseries': return <TimeseriesArtifactCard artifact={artifact} accessToken={accessToken} />
+    default: return null
   }
 }
