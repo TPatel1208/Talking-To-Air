@@ -20,6 +20,7 @@ from tools.satellite_tools.plot_tools import (
 )
 from tools.satellite_tools.retrieval_tools import make_await_retrieval, make_safe_retrieve
 from tools.satellite_tools.stat_tools import make_compute_statistic_tool, make_find_daily_peak
+from tools.satellite_tools.validation_tools import make_exceedance_overlay, make_validate_against_ground
 
 
 def build_satellite_tools(mcp_tools: dict[str, BaseTool]) -> list[BaseTool]:
@@ -34,4 +35,6 @@ def build_satellite_tools(mcp_tools: dict[str, BaseTool]) -> list[BaseTool]:
         make_compute_statistic_tool(mcp_tools),
         make_conduct_temporal_statistic(mcp_tools),
         make_find_daily_peak(mcp_tools),
+        make_validate_against_ground(mcp_tools),
+        make_exceedance_overlay(mcp_tools),
     ]

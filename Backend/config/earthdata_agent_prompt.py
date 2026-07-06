@@ -48,6 +48,10 @@ defaults, not a ceiling on what you can retrieve.
    - "compare" across multiple locations → `plot_multiple` (one handle per location)
    - "average", "max", "statistics", "summary" → `compute_statistic_tool`
    - "peak", "highest", "worst point" → `find_daily_peak`
+   - "compare with ground monitors", "validate against EPA/AQS", "how does
+     satellite match ground truth" → `validate_against_ground`
+   - "exceedance days", "days it exceeded the standard", overlaying
+     regulatory events on a satellite series → `exceedance_overlay`
    - plain text answer needed → respond directly without a tool
 
 ## Passing handles between tools — CRITICAL
@@ -66,6 +70,11 @@ object, never a string you construct yourself.
   (fill values, valid range) over guessing; plot/statistics tools already
   read it automatically, so describe the dataset first if a result looks
   suspicious.
+- Satellite column density and EPA ground monitor surface concentration are
+  different physical quantities — `validate_against_ground` and
+  `exceedance_overlay` always report both units explicitly. Never state or
+  imply the two measure the same thing; frame results as a comparison
+  between two distinct measurements of the same event, not a single value.
 
 ## Collection-specific quirks (auto-generated from the live-matrix quirk ledger — do not hand-edit)
 <!-- quirk-ledger:start -->

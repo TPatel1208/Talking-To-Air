@@ -11,10 +11,13 @@ Pass threshold: >= 8/10, recorded here (test_eval_harness.py enforces it).
 """
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
+from unittest.mock import AsyncMock, patch
 
 EnvelopeCheck = Callable[[Any, list[str]], bool]
+AqsGetHandler = Callable[[str, dict], Awaitable[dict]]
 
 
 def _always_valid(envelope, tool_calls: list[str]) -> bool:
@@ -37,6 +40,11 @@ class EvalTask:
     handlers: dict[str, Callable[..., Awaitable[dict]]]
     expected_tool_calls: list[str]
     outcome_check: EnvelopeCheck = field(default=_always_valid)
+    # Optional stub for epa_aqs_tools._aqs_get, applied only for the duration
+    # of this task's agent run — validate_against_ground/exceedance_overlay
+    # call the AQS HTTP boundary directly (not through the fake-MCP seam),
+    # so tasks that exercise them must supply this to avoid a live EPA call.
+    aqs_get: AqsGetHandler | None = None
 
 
 @dataclass
@@ -249,6 +257,52 @@ def build_eval_tasks(volume) -> list[EvalTask]:
         outcome_check=_refused_without_retrieving,
     ))
 
+    # ── Ground validation (1) — PRD T07 signature workflow ──────────────
+    def make_ground_validation_dataset():
+        import pandas as pd
+
+        times = pd.date_range("2024-01-01", periods=3, freq="D")
+        return xr.Dataset(
+            {"no2": (
+                ("time", "lat", "lon"),
+                [[[1.0, 100.0], [100.0, 100.0]],
+                 [[2.0, 100.0], [100.0, 100.0]],
+                 [[3.0, 100.0], [100.0, 100.0]]],
+                {"units": "mol/m^2"},
+            )},
+            coords={"time": times, "lat": [40.0, 41.0], "lon": [-74.0, -73.0]},
+        )
+
+    volume.add_zarr("obs_validate_1", make_ground_validation_dataset)
+
+    async def _ground_validation_aqs_get(endpoint: str, params: dict) -> dict:
+        if endpoint == "monitors/byBox":
+            return {"Header": [{"status": "success"}], "Data": [{
+                "latitude": "40.0", "longitude": "-74.0",
+                "state_code": "34", "county_code": "017", "site_number": "0006",
+                "local_site_name": "Newark Firehouse",
+            }]}
+        if endpoint == "dailyData/byBox":
+            return {"Header": [{"status": "success"}], "Data": [
+                {
+                    "date_local": d, "arithmetic_mean": str(v), "state_code": "34",
+                    "county_code": "017", "site_number": "0006", "units_of_measure": "ppb",
+                    "pollutant_standard": "NO2 1-hour 2010", "local_site_name": "Newark Firehouse",
+                }
+                for d, v in [("2024-01-01", 2.0), ("2024-01-02", 4.0), ("2024-01-03", 6.0)]
+            ]}
+        return {"Header": [{"status": "success"}], "Data": []}
+
+    tasks.append(EvalTask(
+        name="ground_validation_tempo_vs_epa",
+        category="ground_validation",
+        prompt="Compare TEMPO NO2 with EPA ground monitors over Newark NJ for the first week of January 2024.",
+        handlers={**_standard_handlers(obs_handle="obs_validate_1"), **volume_lifecycle_handlers("obs_validate_1")},
+        expected_tool_calls=["safe_retrieve", "await_retrieval", "validate_against_ground"],
+        outcome_check=_handles_nonempty,
+        aqs_get=_ground_validation_aqs_get,
+    ))
+
     return tasks
 
 
@@ -262,6 +316,11 @@ async def run_eval_task(task: EvalTask, *, model: str | None = None) -> EvalTask
 
     server = FakeEarthdataMCPServer(build_fake_mcp(task.handlers))
     server.start()
+    aqs_patch = (
+        patch("tools.ground_sensor_tools.epa_aqs_tools._aqs_get", AsyncMock(side_effect=task.aqs_get))
+        if task.aqs_get is not None
+        else nullcontext()
+    )
     try:
         settings = Settings(earthdata_mcp_url=server.url, earthdata_mcp_token=None)
         mcp_tools = await load_raw_mcp_tools(settings)
@@ -269,11 +328,12 @@ async def run_eval_task(task: EvalTask, *, model: str | None = None) -> EvalTask
 
         tool_calls: list[str] = []
         text_parts: list[str] = []
-        async for event_type, data in stream_response(agent, task.prompt, thread_id=f"eval-{task.name}"):
-            if event_type == "tool_call":
-                tool_calls.append(data["name"])
-            elif event_type == "text":
-                text_parts.append(data if isinstance(data, str) else data.get("response", ""))
+        with aqs_patch:
+            async for event_type, data in stream_response(agent, task.prompt, thread_id=f"eval-{task.name}"):
+                if event_type == "tool_call":
+                    tool_calls.append(data["name"])
+                elif event_type == "text":
+                    text_parts.append(data if isinstance(data, str) else data.get("response", ""))
 
         raw_text = "".join(text_parts)
         envelope = parse_sub_agent_envelope(raw_text)
@@ -290,5 +350,5 @@ async def run_eval_suite(volume, *, model: str | None = None) -> list[EvalTaskRe
     return [await run_eval_task(task, model=model) for task in tasks]
 
 
-PASS_THRESHOLD = 8
-TOTAL_TASKS = 10
+PASS_THRESHOLD = 9
+TOTAL_TASKS = 11

@@ -60,10 +60,10 @@ class EvalHarnessStructureTests(unittest.TestCase):
         self.assertEqual(len(tasks), TOTAL_TASKS)
         return tasks
 
-    def test_builds_exactly_ten_tasks(self):
+    def test_builds_exactly_total_tasks(self):
         self._tasks()
 
-    def test_covers_five_categories_twice_each(self):
+    def test_covers_five_categories_twice_each_plus_one_ground_validation_task(self):
         from collections import Counter
 
         tasks = self._tasks()
@@ -77,6 +77,7 @@ class EvalHarnessStructureTests(unittest.TestCase):
                 "plotting": 2,
                 "comparison_setup": 2,
                 "failure_recovery": 2,
+                "ground_validation": 1,
             },
         )
 

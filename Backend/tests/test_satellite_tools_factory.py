@@ -176,6 +176,10 @@ class SatelliteToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["peak_lon"], 40.0)
         self.assertEqual(payload["source_handles"], ["obs_peak"])
 
+    async def test_factory_registers_the_t07_validation_tools(self):
+        self.assertIsNotNone(self._tool("validate_against_ground"))
+        self.assertIsNotNone(self._tool("exceedance_overlay"))
+
 
 if __name__ == "__main__":
     unittest.main()

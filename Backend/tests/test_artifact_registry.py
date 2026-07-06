@@ -121,6 +121,31 @@ class BuildArtifactReferenceTimeseriesTests(unittest.TestCase):
         self.assertEqual(ref.metadata["series"][0]["label"], "TEMPO NO2 mean over New Jersey")
         self.assertEqual(ref.metadata["source_handles"], ["obs_1"])
 
+    def test_builds_an_overlay_timeseries_artifact_with_explicit_series_list(self):
+        from services.artifact_registry import build_artifact_reference
+
+        payload = {
+            "chart_id": "ts_overlay1",
+            "type": "timeseries",
+            "title": "TEMPO NO2 vs 34-017-0006",
+            "metadata": {
+                "source_handles": ["cube_1"],
+                "series": [
+                    {"label": "TEMPO NO2 (satellite)", "source_kind": "satellite"},
+                    {"label": "EPA monitor 34-017-0006", "source_kind": "ground", "station_id": "34-017-0006"},
+                ],
+            },
+        }
+
+        ref = build_artifact_reference(payload)
+
+        self.assertEqual(ref.type, "timeseries")
+        self.assertEqual(len(ref.metadata["series"]), 2)
+        self.assertEqual(ref.metadata["series"][0]["source_kind"], "satellite")
+        self.assertEqual(ref.metadata["series"][1]["source_kind"], "ground")
+        self.assertEqual(ref.metadata["series"][1]["station_id"], "34-017-0006")
+        self.assertEqual(ref.metadata["source_handles"], ["cube_1"])
+
 
 if __name__ == "__main__":
     unittest.main()

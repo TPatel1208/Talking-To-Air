@@ -63,6 +63,9 @@ def _build_metadata(artifact_type: str, payload: dict[str, Any]):
             panels=panels,
             source_handles=source_handles,
         )
+    series = (payload.get("metadata") or {}).get("series")
+    if series:
+        return TimeseriesArtifactMetadata(series=series, source_handles=source_handles)
     return TimeseriesArtifactMetadata(
         series=[{
             "label": payload.get("title"),
