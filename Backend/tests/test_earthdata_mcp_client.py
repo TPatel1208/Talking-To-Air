@@ -57,6 +57,20 @@ class EarthdataMCPClientTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(EarthdataMCPUnavailableError, "get_provenance"):
             await load_raw_mcp_tools(self._settings(url=server.url))
 
+    async def test_load_raw_mcp_tools_fails_loud_when_list_workspace_missing(self):
+        # T05's jobs panel composes list_workspace + get_retrieval_status;
+        # a stack that can't list a workspace's jobs should fail at boot.
+        from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
+        from earthdata_mcp.client import EarthdataMCPUnavailableError, load_raw_mcp_tools
+
+        mcp = build_fake_mcp(exclude=("list_workspace",))
+        server = FakeEarthdataMCPServer(mcp)
+        server.start()
+        self.addCleanup(server.stop)
+
+        with self.assertRaisesRegex(EarthdataMCPUnavailableError, "list_workspace"):
+            await load_raw_mcp_tools(self._settings(url=server.url))
+
 
 if __name__ == "__main__":
     unittest.main()

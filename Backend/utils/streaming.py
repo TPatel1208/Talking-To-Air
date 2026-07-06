@@ -11,6 +11,7 @@ Yields:
 
 import asyncio
 from collections.abc import AsyncGenerator
+from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Callable, Optional
 
@@ -62,6 +63,18 @@ def current_user_id() -> str | None:
     """The authenticated user for the active request — the workspace_id
     earthdata-retrieval MCP tools bind their calls to (see earthdata_mcp.workspace)."""
     return _current_user_id.get()
+
+
+@contextmanager
+def user_id_context(user_id: str):
+    """Bind ``current_user_id()`` for non-chat endpoints (e.g. the jobs
+    endpoint) that call workspace-bound MCP tools outside of stream_response,
+    which normally sets this for the duration of a chat turn."""
+    token = _current_user_id.set(user_id)
+    try:
+        yield
+    finally:
+        _current_user_id.reset(token)
 
 
 def _message_text_chunk(message) -> str:

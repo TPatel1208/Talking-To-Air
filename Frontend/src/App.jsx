@@ -1,6 +1,8 @@
 import Chat from './components/Chat'
+import JobsPanel from './components/JobsPanel'
 import SessionSidebar from './components/SessionSidebar'
 import { useChat } from './hooks/useChat'
+import { useJobs } from './hooks/useJobs'
 import { useCallback, useState } from 'react'
 
 const API_BASE = '/api'
@@ -156,6 +158,14 @@ function AuthScreen({ onAuthenticated }) {
 
 function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
   const {
+    jobs,
+    error: jobsError,
+    fetchJobs,
+    applyJobProgress,
+    cancelJob,
+  } = useJobs(accessToken)
+
+  const {
     messages,
     loading,
     error,
@@ -167,7 +177,7 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
     deleteSession,
     abortActiveRequest,
     clearError,
-  } = useChat(accessToken, onUnauthorized)
+  } = useChat(accessToken, onUnauthorized, applyJobProgress)
 
   const handleLogout = useCallback(async () => {
     abortActiveRequest(true)
@@ -212,6 +222,13 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
           onClearError={clearError}
         />
       </div>
+
+      <JobsPanel
+        jobs={jobs}
+        error={jobsError}
+        onCancel={cancelJob}
+        onRefresh={fetchJobs}
+      />
     </div>
   )
 }

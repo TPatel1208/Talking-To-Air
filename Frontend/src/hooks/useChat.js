@@ -4,7 +4,7 @@ import { createSseParser } from '../utils/sseParser'
 const API_BASE = '/api'
 const ACTIVE_THREAD_STORAGE_KEY = 'tta.activeThreadId'
 
-export function useChat(accessToken, onUnauthorized) {
+export function useChat(accessToken, onUnauthorized, onJobProgress) {
   const [messages, setMessages] = useState([])
   const [threadId, setThreadId] = useState(null)
   const [sessions, setSessions] = useState([])
@@ -309,6 +309,8 @@ export function useChat(accessToken, onUnauthorized) {
               artifacts: [...(msg.artifacts || []), data],
             }))
           }
+        } else if (event === 'job_progress') {
+          if (onJobProgress) onJobProgress(data)
         } else if (event === 'text') {
           const chunk = typeof data === 'string' ? data : data.content
           if (chunk) {
@@ -368,7 +370,7 @@ export function useChat(accessToken, onUnauthorized) {
         setLoading(false)
       }
     }
-  }, [abortActiveRequest, accessToken, authHeaders, getSessionId, handleUnauthorized, isCurrentRequest, makeLocalSession, persistActiveThread, queueAssistantUpdate])
+  }, [abortActiveRequest, accessToken, authHeaders, getSessionId, handleUnauthorized, isCurrentRequest, makeLocalSession, onJobProgress, persistActiveThread, queueAssistantUpdate])
 
   const newSession = useCallback(() => {
     abortActiveRequest()

@@ -40,15 +40,15 @@ INTERNAL_RAW_TOOL_NAMES = (
     "estimate_retrieval_size",
     "export_result",
     "rematerialize",
+    "list_workspace",
+    "cancel_retrieval",
 )
 # Representative sample of raw tools that must never reach the model,
-# per the PRD's "Hidden" list (transforms / format / inspection / cancel
+# per the PRD's "Hidden" list (transforms / format / inspection
 # plumbing) — enough to prove filtering, not the full real-server surface.
 HIDDEN_RAW_TOOL_NAMES = (
     "retrieve_data",
     "align",
-    "cancel_retrieval",
-    "list_workspace",
 )
 ALL_RAW_TOOL_NAMES = CURATED_RAW_TOOL_NAMES + INTERNAL_RAW_TOOL_NAMES + HIDDEN_RAW_TOOL_NAMES
 

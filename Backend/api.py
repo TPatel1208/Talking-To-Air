@@ -34,6 +34,7 @@ from services.chat_stream_service import ChatStreamService
 from services.chart_service import ChartService
 from services.export_service import ExportService
 from services.history_service import HistoryService
+from services.jobs_service import cancel_job, list_jobs
 from utils.db import active_pool_connections, check_db_pool, close_db_pool, init_db_pool, validate_config
 from utils.logging import configure_logging
 from utils.metrics import (
@@ -42,7 +43,7 @@ from utils.metrics import (
     render_prometheus_metrics,
     set_db_pool_connections_active,
 )
-from utils.streaming import current_user_id
+from utils.streaming import current_user_id, user_id_context
 
 agent = None
 settings = get_settings()
@@ -105,6 +106,7 @@ PUBLIC_ENDPOINTS = {
     ("POST", "/auth/register"),
 }
 ThreadId = Annotated[str, Path(pattern=r"^[A-Za-z0-9-]+$")]
+JobHandle = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]+$")]
 
 
 def _route_path(request: Request) -> str:
@@ -290,6 +292,25 @@ async def export_artifact_csv(artifact_id: str, request: Request):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.get("/jobs")
+async def get_jobs(request: Request):
+    tools = request.app.state.earthdata_mcp_tools
+    if not tools:
+        raise HTTPException(status_code=503, detail="Earthdata MCP is not ready")
+    with user_id_context(request.state.current_user.id):
+        jobs = await list_jobs(tools)
+    return {"jobs": jobs}
+
+
+@app.post("/jobs/{job_handle}/cancel")
+async def cancel_job_endpoint(job_handle: JobHandle, request: Request):
+    tools = request.app.state.earthdata_mcp_tools
+    if not tools:
+        raise HTTPException(status_code=503, detail="Earthdata MCP is not ready")
+    with user_id_context(request.state.current_user.id):
+        return await cancel_job(job_handle, tools)
 
 
 def _safe_artifact_filename(value: str) -> str:

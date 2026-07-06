@@ -42,5 +42,15 @@ class JobProgressStreamingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job_events[1]["phase"], "materializing")
 
 
+class UserIdContextTests(unittest.IsolatedAsyncioTestCase):
+    async def test_user_id_context_sets_and_resets_current_user_id(self):
+        from utils.streaming import current_user_id, user_id_context
+
+        self.assertIsNone(current_user_id())
+        with user_id_context("user-1"):
+            self.assertEqual(current_user_id(), "user-1")
+        self.assertIsNone(current_user_id())
+
+
 if __name__ == "__main__":
     unittest.main()
