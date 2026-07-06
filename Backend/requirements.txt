@@ -2,7 +2,7 @@ affine==2.4.0
 cartopy==0.25.0
 earthaccess==0.17.0
 fastapi==0.135.3
-uvicorn==0.34.3
+uvicorn==0.35.0
 python-multipart==0.0.26
 langchain==1.2.15
 langchain_google_genai==4.2.1
