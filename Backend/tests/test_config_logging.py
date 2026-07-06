@@ -99,6 +99,27 @@ class ConfigLoggingTests(unittest.TestCase):
         self.assertEqual(loaded.await_retrieval_poll_max_seconds, 20)
         self.assertEqual(loaded.await_retrieval_timeout_seconds, 60)
 
+    def test_settings_loads_earthdata_agent_model_default_and_override(self):
+        # Settings() constructed directly (not via get_settings()) so a
+        # developer's local .env can't shadow the default being asserted here.
+        from config.settings import Settings
+
+        with patch.dict(os.environ, {}, clear=True):
+            loaded = Settings()
+        self.assertEqual(loaded.earthdata_agent_model, "openai/gpt-oss-120b")
+
+        with patch.dict(os.environ, {"EARTHDATA_AGENT_MODEL": "some/other-model"}, clear=True):
+            loaded = Settings()
+        self.assertEqual(loaded.earthdata_agent_model, "some/other-model")
+
+    def test_settings_earthdata_agent_model_falls_back_to_legacy_satellite_env_var(self):
+        from config.settings import Settings
+
+        with patch.dict(os.environ, {"SATELLITE_AGENT_MODEL": "legacy/model"}, clear=True):
+            loaded = Settings()
+
+        self.assertEqual(loaded.earthdata_agent_model, "legacy/model")
+
     def test_settings_normalizes_invalid_modes(self):
         from config.settings import get_settings
 

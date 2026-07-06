@@ -24,3 +24,9 @@ include = [
 
 [tool.setuptools.package-data]
 datasets = ["*.yaml"]
+
+[tool.pytest.ini_options]
+addopts = "-m \"not eval\""
+markers = [
+    "eval: scripted agent-behavior eval (T04) — spends real model tokens, run explicitly with -m eval",
+]

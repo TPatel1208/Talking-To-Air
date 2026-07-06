@@ -4,14 +4,12 @@ Shared stream_response for supervisor, ground, and satellite agents.
 Yields:
     ("tool_call", {"name": str, "args": dict})
     ("status", {"message": str})
-    ("image", {"name": str, "path": str})
     ("tool_result", {"name": str, "content": str})
     ("text", str)
     ("job_progress", {"job_handle": str, "status": str, "progress": Any, "phase": Any, "message": str | None})
 """
 
 import asyncio
-import re
 from collections.abc import AsyncGenerator
 from contextvars import ContextVar
 from typing import Callable, Optional
@@ -152,9 +150,6 @@ async def stream_response(
                                 await publish("tool_call", {"name": tc["name"], "args": tc["args"]})
                         elif hasattr(msg, "name") and msg.name:
                             raw = flatten_text_content(msg.content)
-                            img = re.search(r'[\w\-./]+\.png', raw)
-                            if img:
-                                await publish("image", {"name": msg.name, "path": img.group(0)})
                             await publish("tool_result", {"name": msg.name, "content": raw})
                         elif hasattr(msg, "content") and msg.content:
                             # Fallback: messages stream emitted nothing this turn,

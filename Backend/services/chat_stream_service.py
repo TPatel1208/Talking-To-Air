@@ -9,7 +9,7 @@ from models import parse_agent_result
 from services.artifact_store import artifact_store
 from services.chart_service import ChartService
 from services.intent_router import inject_routing_hint
-from utils.message_utils import PNG_PATH_RE, flatten_text_content, normalize_image_url
+from utils.message_utils import flatten_text_content, normalize_image_url
 from utils.streaming import stream_response
 
 logger = logging.getLogger(__name__)
@@ -136,13 +136,6 @@ class ChatStreamService:
                 yield self.sse("chart", await self.chart_service.persist_chart_payload(thread_id, chart, user_id))
             return
 
-        png_match = PNG_PATH_RE.search(content)
-        if png_match:
-            url = normalize_image_url(png_match.group(1))
-            if url:
-                image_urls.append(url)
-                yield self.sse("image", {"url": url})
-                return
         if self._looks_like_chart_payload(content):
             logger.warning(
                 "chart_payload_parse_failure",

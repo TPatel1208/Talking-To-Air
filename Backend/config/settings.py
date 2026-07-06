@@ -39,7 +39,12 @@ class Settings:
             "meta-llama/llama-4-scout-17b-16e-instruct",
         )
     )
-    satellite_agent_model: str = field(default_factory=lambda: os.getenv("SATELLITE_AGENT_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"))
+    earthdata_agent_model: str = field(
+        default_factory=lambda: os.getenv(
+            "EARTHDATA_AGENT_MODEL",
+            os.getenv("SATELLITE_AGENT_MODEL", "openai/gpt-oss-120b"),
+        )
+    )
     google_api_key: str | None = field(default_factory=lambda: os.getenv("GOOGLE_API_KEY"))
     groq_api_key: str | None = field(default_factory=lambda: os.getenv("GROQ_API_KEY"))
 

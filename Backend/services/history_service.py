@@ -6,7 +6,7 @@ from typing import Any
 
 from services.artifact_store import artifact_store
 from services.chart_service import ChartService
-from utils.message_utils import PNG_PATH_RE, flatten_text_content, normalize_image_url
+from utils.message_utils import flatten_text_content
 
 
 class HistoryService:
@@ -84,13 +84,6 @@ class HistoryService:
         user_id: str,
     ) -> None:
         tool_text = flatten_text_content(msg.content)
-        for png_match in PNG_PATH_RE.finditer(tool_text):
-            url = normalize_image_url(png_match.group(1))
-            if url:
-                assistant = self._last_assistant(result)
-                if assistant and url not in assistant["imageUrls"]:
-                    assistant["imageUrls"].append(url)
-
         _, charts = self.chart_service.parse_charts(tool_text)
         for chart in charts:
             chart_payload = await self.chart_service.persist_chart_payload(thread_id, chart, user_id)

@@ -18,14 +18,17 @@ from tools.satellite_tools.plot_tools import (
     make_plot_multiple,
     make_plot_singular,
 )
+from tools.satellite_tools.retrieval_tools import make_await_retrieval, make_safe_retrieve
 from tools.satellite_tools.stat_tools import make_compute_statistic_tool, make_find_daily_peak
 
 
 def build_satellite_tools(mcp_tools: dict[str, BaseTool]) -> list[BaseTool]:
-    """Assemble the satellite agent's tools, bound to this request's mcp_tools."""
+    """Assemble the earthdata agent's tools, bound to this request's mcp_tools."""
     return [
         geocode_location,
         *curated_model_tools(mcp_tools),
+        make_safe_retrieve(mcp_tools),
+        make_await_retrieval(mcp_tools),
         make_plot_singular(mcp_tools),
         make_plot_multiple(mcp_tools),
         make_compute_statistic_tool(mcp_tools),

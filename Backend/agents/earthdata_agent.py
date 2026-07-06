@@ -1,7 +1,8 @@
 """
-satellite_agent.py
-------------------
-LangGraph agent wrapping NASA Harmony satellite tools.
+earthdata_agent.py
+-------------------
+LangGraph agent wrapping the earthdata-retrieval MCP toolset (handle-based
+discovery, retrieval, plot/statistics tools).
 
 Stateless by design — no checkpointer, no persistent memory.
 Each invocation is a self-contained request/response cycle.
@@ -14,14 +15,14 @@ from langchain_groq import ChatGroq
 from langchain.agents import create_agent
 
 from config.settings import get_settings
-from config.satellite_agent_prompt import get_satellite_agent_prompt
+from config.earthdata_agent_prompt import get_earthdata_agent_prompt
 from tools.satellite_tools.factory import build_satellite_tools
 from utils.streaming import stream_response
 
 
-def build_satellite_agent(model: str | None = None, mcp_tools: dict[str, Any] | None = None):
+def build_earthdata_agent(model: str | None = None, mcp_tools: dict[str, Any] | None = None):
     """
-    Build and return a stateless satellite agent.
+    Build and return a stateless earthdata agent.
 
     No checkpointer is attached — the agent holds no memory between calls.
     The supervisor passes all necessary context in the task string and is
@@ -38,14 +39,14 @@ def build_satellite_agent(model: str | None = None, mcp_tools: dict[str, Any] | 
     """
     settings = get_settings()
     llm = ChatGroq(
-        model=model or settings.satellite_agent_model,
+        model=model or settings.earthdata_agent_model,
         groq_api_key=settings.groq_api_key,
     )
 
     agent = create_agent(
         model=llm,
         tools=build_satellite_tools(mcp_tools or {}),
-        system_prompt=get_satellite_agent_prompt(),
+        system_prompt=get_earthdata_agent_prompt(),
         checkpointer=None,
     )
     return agent
@@ -53,8 +54,8 @@ def build_satellite_agent(model: str | None = None, mcp_tools: dict[str, Any] | 
 
 if __name__ == "__main__":
     # Standalone REPL — stateless, so each turn is a fresh invocation.
-    agent = build_satellite_agent()
-    print("Satellite agent started (stateless REPL)")
+    agent = build_earthdata_agent()
+    print("Earthdata agent started (stateless REPL)")
 
     while True:
         try:

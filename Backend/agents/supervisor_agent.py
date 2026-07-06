@@ -23,11 +23,17 @@ from langchain_core.messages import HumanMessage, trim_messages
 from langchain.agents.middleware import wrap_model_call, ModelRequest, ModelResponse
 
 from agents.ground_sensor_agent import build_ground_agent
-from agents.satellite_agent import build_satellite_agent
+from agents.earthdata_agent import build_earthdata_agent
 
 from config.settings import get_settings
 from config.supervisor_prompt import SUPERVISOR_PROMPT
-from models import AgentResult, agent_result_to_json, parse_agent_result, parse_chart_payload
+from models import (
+    AgentResult,
+    agent_result_to_json,
+    parse_agent_result,
+    parse_chart_payload,
+    parse_sub_agent_envelope,
+)
 from models.artifact import ArtifactReference
 from tools.satellite_tools.query_parser import parse_satellite_plot_query
 from utils.db import get_checkpointer
@@ -49,7 +55,7 @@ _satellite_call_count: ContextVar[int] = ContextVar("_satellite_call_count", def
 async def build_agent(
     model: str | None = None,
     ground_agent_model: str | None = None,
-    satellite_agent_model: str | None = None,
+    earthdata_agent_model: str | None = None,
     mcp_tools: dict[str, Any] | None = None,
 ):
     """
@@ -65,12 +71,12 @@ async def build_agent(
 
     ``mcp_tools`` is the workspace-bound earthdata-retrieval MCP tool dict
     (see earthdata_mcp.toolset.load_earthdata_tools) — threaded down to the
-    satellite agent's handle-based plot/statistics tools.
+    earthdata agent's handle-based plot/statistics tools.
     """
     settings = get_settings()
     model = model or settings.llm_model
     ground_agent_model = ground_agent_model or settings.ground_agent_model
-    satellite_agent_model = satellite_agent_model or settings.satellite_agent_model
+    earthdata_agent_model = earthdata_agent_model or settings.earthdata_agent_model
     logger.info("supervisor_model", extra={"_event": "supervisor_model", "_model": model})
     llm = ChatGroq(
         model=model,
@@ -79,7 +85,7 @@ async def build_agent(
 
     # Stateless subagents — no checkpointer passed.
     ground_agent    = build_ground_agent(model=ground_agent_model)
-    satellite_agent = build_satellite_agent(model=satellite_agent_model, mcp_tools=mcp_tools)
+    satellite_agent = build_earthdata_agent(model=earthdata_agent_model, mcp_tools=mcp_tools)
     last_ground_monitor: dict[str, str] = {}
 
     # ── Trim middleware — keeps the supervisor's context window bounded ───────
@@ -136,11 +142,11 @@ async def build_agent(
                     "_thread_id": current_thread_id(),
                 },
             )
-            return agent_result_to_json(AgentResultadditional_message = (
+            return agent_result_to_json(AgentResult(text=(
                 "The worker has already returned a result. "
                 "Do not call the supervisor_agent again. "
                 "Synthesize your answer from the result already received."
-            ))
+            )))
         _ground_call_count.set(count + 1)
 
         async def _run_ground(task_text: str) -> AgentResult:
@@ -187,6 +193,10 @@ async def build_agent(
             result = await _run_ground(retry_task)
             if _is_ground_tool_failure(result.text):
                 result = AgentResult(text=_clean_ground_failure_message())
+            else:
+                result = _finalize_sub_agent_result(result, "ground sensor")
+        else:
+            result = _finalize_sub_agent_result(result, "ground sensor")
 
         monitor_context = _extract_ground_monitor_context(result.text)
         if monitor_context:
@@ -194,11 +204,11 @@ async def build_agent(
         return agent_result_to_json(result)
 
     @tool
-    async def ask_satellite_agent(task: str) -> str:
+    async def ask_earthdata_agent(task: str) -> str:
         """
-        Delegate a task to the satellite agent which has access to NASA
-        satellite data via NASA Harmony (TROPOMI NO2, aerosol optical depth,
-        ozone, HCHO, and other variables).
+        Delegate a task to the earthdata agent which has access to NASA
+        satellite data via the earthdata-retrieval MCP (TROPOMI NO2, aerosol
+        optical depth, ozone, HCHO, and other variables).
 
         Use for: fetching and plotting satellite-derived pollutant maps over a
         region, computing spatial statistics, and visually confirming ground-
@@ -224,7 +234,7 @@ async def build_agent(
                 AgentResult(
                     text=(
                         "[STOP] Satellite agent has already been called for this request — "
-                        "this call is blocked. Do NOT call ask_satellite_agent again. "
+                        "this call is blocked. Do NOT call ask_earthdata_agent again. "
                         "Synthesize your answer from the result already received."
                     )
                 )
@@ -259,20 +269,24 @@ async def build_agent(
                             text_parts.append(t)
             except TimeoutError as exc:
                 outcome = "timeout"
-                text_parts.append(str(exc))
+                text_parts = [str(exc)]
             except Exception as exc:
                 outcome = "failure"
                 if exc.__class__.__name__ == "HarmonyTimeoutError":
                     outcome = "timeout"
-                text_parts.append(str(exc))
+                text_parts = [str(exc)]
             finally:
                 record_agent_request("satellite", outcome)
 
+            # Joined with "" (not " ") — text_parts holds successive streamed
+            # deltas of one final message, and this string must round-trip
+            # through parse_sub_agent_envelope as valid JSON; a space
+            # injected between two delta chunks would corrupt it.
             text = truncate_text(
-                " ".join(text_parts),
+                "".join(text_parts),
                 2000,
                 agent_name="satellite",
-            ) or "Satellite agent returned no response."
+            ) or "Earthdata agent returned no response."
             return AgentResult(text=text, charts=charts)
 
         direct_first = await _try_direct_satellite_plot(enriched_task)
@@ -317,13 +331,14 @@ async def build_agent(
                 if fallback is not None:
                     result = fallback
 
+        result = _finalize_sub_agent_result(result, "earthdata")
         return agent_result_to_json(result)
 
     # ── Build supervisor ──────────────────────────────────────────────────────
     checkpointer = await get_checkpointer()
     supervisor = create_agent(
         model=llm,
-        tools=[ask_ground_sensor_agent, ask_satellite_agent],
+        tools=[ask_ground_sensor_agent, ask_earthdata_agent],
         system_prompt=SUPERVISOR_PROMPT,
         checkpointer=checkpointer,
         middleware=[trim_middleware],
@@ -353,6 +368,33 @@ _GROUND_RETRY_TOOL_GUIDANCE = (
     "'NO2 1-hour 2010', 'PM25 24-hour 2024', 'Ozone 8-hour 2015', "
     "'SO2 1-hour 2010', 'CO 8-hour 1971'. Use integer k values."
 )
+
+
+def _finalize_sub_agent_result(result: AgentResult, agent_label: str) -> AgentResult:
+    """
+    Validate a sub-agent's final message against the {summary, artifact_ids,
+    handles} envelope contract. A missing/invalid envelope is the sub-agent's
+    failure to report — a structured error, never the raw prose passed
+    through as if it were a legitimate answer.
+    """
+    envelope = parse_sub_agent_envelope(result.text)
+    if envelope is None:
+        return AgentResult(
+            text=f"The {agent_label} agent returned an invalid response envelope.",
+            charts=result.charts,
+            metadata={
+                "error": "invalid_envelope",
+                "raw_preview": truncate_text(result.text or "", 300, agent_name=agent_label),
+            },
+        )
+    discovered = {ref.id: ref for ref in result.artifacts}
+    artifacts = [discovered[artifact_id] for artifact_id in envelope.artifact_ids if artifact_id in discovered]
+    return AgentResult(
+        text=envelope.summary,
+        charts=result.charts,
+        artifacts=artifacts,
+        handles=envelope.handles,
+    )
 
 
 def _is_ground_tool_failure(text: str) -> bool:

@@ -203,6 +203,52 @@ class AgentHelperTests(unittest.TestCase):
         enriched = _inject_ground_context("Give daily NO2 summary for NJ in Jan 2024.", context)
         self.assertNotIn("pollutant=", enriched)
 
+    def test_finalize_sub_agent_result_resolves_matching_artifact_ids_and_handles(self):
+        from agents.supervisor_agent import _finalize_sub_agent_result
+        from models import AgentResult
+        from models.artifact import ArtifactReference
+
+        raw = AgentResult(
+            text='{"summary": "Found the closest monitor.", "artifact_ids": ["art_1"], "handles": ["obs_1"]}',
+            artifacts=[
+                ArtifactReference(id="art_1", type="table"),
+                ArtifactReference(id="art_2", type="table"),
+            ],
+        )
+
+        finalized = _finalize_sub_agent_result(raw, "ground sensor")
+
+        self.assertEqual(finalized.text, "Found the closest monitor.")
+        self.assertEqual([a.id for a in finalized.artifacts], ["art_1"])
+        self.assertEqual(finalized.handles, ["obs_1"])
+
+    def test_finalize_sub_agent_result_drops_unknown_artifact_ids(self):
+        from agents.supervisor_agent import _finalize_sub_agent_result
+        from models import AgentResult
+
+        raw = AgentResult(text='{"summary": "ok", "artifact_ids": ["missing"], "handles": []}')
+
+        finalized = _finalize_sub_agent_result(raw, "ground sensor")
+
+        self.assertEqual(finalized.artifacts, [])
+
+    def test_finalize_sub_agent_result_is_a_structured_failure_on_invalid_envelope(self):
+        from agents.supervisor_agent import _finalize_sub_agent_result
+        from models import AgentResult, ChartPayload
+
+        raw = AgentResult(
+            text="I found 3 monitors near Newark, NJ.",
+            charts=[ChartPayload(type="heatmap", title="NO2")],
+        )
+
+        finalized = _finalize_sub_agent_result(raw, "earthdata")
+
+        self.assertNotEqual(finalized.text, raw.text)
+        self.assertEqual(finalized.metadata.get("error"), "invalid_envelope")
+        self.assertIn("earthdata", finalized.text.lower())
+        # Charts already produced this turn are not silently discarded.
+        self.assertEqual(len(finalized.charts), 1)
+
     def test_build_agent_uses_configured_supervisor_model(self):
         from agents import supervisor_agent
 
@@ -210,7 +256,7 @@ class AgentHelperTests(unittest.TestCase):
         with patch.object(supervisor_agent, "ChatGroq", return_value="llm") as chat, patch.object(
             supervisor_agent, "build_ground_agent", return_value="ground"
         ), patch.object(
-            supervisor_agent, "build_satellite_agent", return_value="satellite"
+            supervisor_agent, "build_earthdata_agent", return_value="satellite"
         ), patch.object(
             supervisor_agent, "get_checkpointer", AsyncMock(return_value="checkpointer")
         ), patch.object(
