@@ -43,6 +43,10 @@ INTERNAL_TOOL_NAMES = (
     # T08: the compare tool's period mode calls this directly to grid-align
     # two retrievals before differencing; deferred until this PRD per T02.
     "align",
+    # T10: the data-download endpoints call this directly to materialize a
+    # handle in a downloadable format (e.g. NetCDF); UI-initiated and
+    # deterministic, so it stays off the model-facing surface.
+    "convert_format",
 )
 REQUIRED_TOOL_NAMES = CURATED_TOOL_NAMES + INTERNAL_TOOL_NAMES
 

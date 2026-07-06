@@ -43,6 +43,7 @@ INTERNAL_RAW_TOOL_NAMES = (
     "list_workspace",
     "cancel_retrieval",
     "align",
+    "convert_format",
 )
 # Representative sample of raw tools that must never reach the model,
 # per the PRD's "Hidden" list (transforms / format / inspection
@@ -202,6 +203,10 @@ def build_fake_mcp(handlers: dict[str, Handler] | None = None, exclude: tuple[st
     @mcp.tool(name="cancel_retrieval")
     async def cancel_retrieval(job_handle: str, workspace_id: str = "default") -> dict:
         return await h("cancel_retrieval")(job_handle=job_handle, workspace_id=workspace_id)
+
+    @mcp.tool(name="convert_format")
+    async def convert_format(handle: str, target_format: str, workspace_id: str = "default") -> dict:
+        return await h("convert_format")(handle=handle, target_format=target_format, workspace_id=workspace_id)
 
     @mcp.tool(name="list_workspace")
     async def list_workspace(workspace_id: str = "default") -> dict:

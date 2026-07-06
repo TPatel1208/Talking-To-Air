@@ -34,8 +34,11 @@ from services.chat_stream_service import ChatStreamService
 from services.chart_service import ChartService
 from services.export_service import ExportService
 from services.history_service import HistoryService
+from services.data_download_service import DataDownloadError, export_converted, iter_file_chunks
 from services.discovery_service import check_coverage, describe_dataset, preview_dataset, search_datasets
 from services.jobs_service import cancel_job, list_jobs
+from services.methods_export_service import build_methods_markdown
+from services.provenance_service import get_citations, get_lineage
 from utils.db import active_pool_connections, check_db_pool, close_db_pool, init_db_pool, validate_config
 from utils.logging import configure_logging
 from utils.metrics import (
@@ -279,6 +282,81 @@ async def export_chart_png(chart_id: str, request: Request):
     )
 
 
+@app.get("/chart/{chart_id}/provenance")
+async def chart_provenance_endpoint(chart_id: str, request: Request):
+    tools = request.app.state.earthdata_mcp_tools
+    if not tools:
+        raise HTTPException(status_code=503, detail="Earthdata MCP is not ready")
+    payload = await _get_owned_chart(chart_id, request.state.current_user.id)
+    source_handles = _chart_source_handles(payload)
+    with user_id_context(request.state.current_user.id):
+        return await get_lineage(source_handles, tools)
+
+
+@app.get("/chart/{chart_id}/citations")
+async def chart_citations_endpoint(chart_id: str, request: Request):
+    tools = request.app.state.earthdata_mcp_tools
+    if not tools:
+        raise HTTPException(status_code=503, detail="Earthdata MCP is not ready")
+    payload = await _get_owned_chart(chart_id, request.state.current_user.id)
+    source_handles = _chart_source_handles(payload)
+    with user_id_context(request.state.current_user.id):
+        return {"citations": await get_citations(source_handles, tools)}
+
+
+@app.get("/chart/{chart_id}/methods.md")
+async def chart_methods_endpoint(chart_id: str, request: Request):
+    tools = request.app.state.earthdata_mcp_tools
+    if not tools:
+        raise HTTPException(status_code=503, detail="Earthdata MCP is not ready")
+    payload = await _get_owned_chart(chart_id, request.state.current_user.id)
+    source_handles = _chart_source_handles(payload)
+    with user_id_context(request.state.current_user.id):
+        lineage = await get_lineage(source_handles, tools)
+        citations = await get_citations(source_handles, tools)
+
+    provenance = payload.get("provenance") or {}
+    markdown = build_methods_markdown(
+        artifact_title=payload.get("title") or "Untitled artifact",
+        aoi_description=provenance.get("region_name") or "the study area",
+        time_window=_methods_time_window(provenance),
+        lineage=lineage,
+        citations=citations,
+    )
+    return Response(
+        content=markdown,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="methods-{export_service.safe_export_name(payload, "md")}"'},
+    )
+
+
+@app.get("/chart/{chart_id}/export.nc")
+async def export_chart_netcdf(chart_id: str, request: Request):
+    tools = request.app.state.earthdata_mcp_tools
+    if not tools:
+        raise HTTPException(status_code=503, detail="Earthdata MCP is not ready")
+    payload = await _get_owned_chart(chart_id, request.state.current_user.id)
+    source_handles = _chart_source_handles(payload)
+    if not source_handles:
+        raise HTTPException(status_code=422, detail="This chart does not include a source handle to export.")
+
+    try:
+        with user_id_context(request.state.current_user.id):
+            export = await export_converted(source_handles[0], "netcdf", tools)
+    except DataDownloadError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    return StreamingResponse(
+        iter_file_chunks(export["storage_uri"]),
+        media_type="application/x-netcdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{export_service.safe_export_name(payload, "nc")}"',
+            "Cache-Control": "no-store",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.get("/artifacts/{artifact_id}")
 async def get_artifact(
     artifact_id: str,
@@ -378,6 +456,17 @@ async def _get_owned_chart(chart_id: str, user_id: str):
     if not payload or payload.get("user_id") != user_id:
         raise HTTPException(status_code=404, detail="Chart not found")
     return payload
+
+
+def _chart_source_handles(payload: dict) -> list[str]:
+    return (payload.get("metadata") or {}).get("source_handles") or (payload.get("provenance") or {}).get("source_handles", [])
+
+
+def _methods_time_window(provenance: dict) -> str:
+    start, end = provenance.get("start_date"), provenance.get("end_date")
+    if start and end:
+        return f"{start}/{end}"
+    return "the analyzed period"
 
 
 @app.post("/chat")

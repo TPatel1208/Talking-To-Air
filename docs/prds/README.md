@@ -15,6 +15,12 @@ the harmony-retrieval-mcp repo under `docs/prds/`.
 | [T08](prd-t08-region-period-comparison.md) | Region/period comparison workflow | T06 |
 | [T09](prd-t09-discovery-pane-gibs-quicklook.md) | Discovery pane + GIBS quick-look | T02, T05 |
 | [T10](prd-t10-provenance-citations-exports.md) | Provenance pane, citations, methods & data export | T06, T07/T08 |
+| [T11](prd-t11-agent-contract-repairs.md) | Contract repairs + legacy tool removal — MCP-first minimal toolset | T10 committed |
+| [T12](prd-t12-provider-split-model-factory.md) | Provider split — supervisor on Gemini Flash via model factory | T11 |
+| [T13](prd-t13-tool-result-compaction.md) | Tool-result compaction + subagent trim safety net | T11 |
+| [T14](prd-t14-router-fast-path.md) | Deterministic router fast path + history write-back | T12, T13 |
+| [T15](prd-t15-envelope-enforcement-salvage.md) | Envelope enforcement, salvage, cheap retry | T11, T12 |
+| [T16](prd-t16-eval-latency-budgets-offload.md) | Eval hardening — latency budgets, e2e routing tasks, event-loop offload | T12–T15 |
 
 Cut line (decision record 2026-07-04): Phase 4 (projects/multi-user) slides
 first, then T10's pane; T07/T08/T09's workflows never slide. The MCP live
