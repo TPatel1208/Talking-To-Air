@@ -36,7 +36,7 @@ class Settings:
     ground_agent_model: str = field(
         default_factory=lambda: os.getenv(
             "GROUND_AGENT_MODEL",
-            "meta-llama/llama-4-scout-17b-16e-instruct",
+            "openai/gpt-oss-20b",
         )
     )
     earthdata_agent_model: str = field(

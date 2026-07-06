@@ -158,7 +158,7 @@ Copy `.env.example` to `.env` and fill in the values below.
 
 | Variable | Default | Description |
 |---|---|---|
-| `LLM_MODEL` | `llama-3.3-70b-versatile` | Supervisor model |
+| `LLM_MODEL` | `openai/gpt-oss-120b` | Supervisor model |
 | `SATELLITE_AGENT_MODEL` | `openai/gpt-oss-20b` | Satellite subagent model |
 | `GROUND_AGENT_MODEL` | `openai/gpt-oss-20b` | Ground sensor subagent model |
 | `DATA_FETCH_MODE` | `auto` | Fetch strategy: `auto`, `harmony`, `opendap`, or `s3` |
