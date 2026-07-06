@@ -34,6 +34,7 @@ from services.chat_stream_service import ChatStreamService
 from services.chart_service import ChartService
 from services.export_service import ExportService
 from services.history_service import HistoryService
+from services.discovery_service import check_coverage, describe_dataset, preview_dataset, search_datasets
 from services.jobs_service import cancel_job, list_jobs
 from utils.db import active_pool_connections, check_db_pool, close_db_pool, init_db_pool, validate_config
 from utils.logging import configure_logging
@@ -107,6 +108,7 @@ PUBLIC_ENDPOINTS = {
 }
 ThreadId = Annotated[str, Path(pattern=r"^[A-Za-z0-9-]+$")]
 JobHandle = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]+$")]
+DatasetHandle = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]+$")]
 
 
 def _route_path(request: Request) -> str:
@@ -158,6 +160,22 @@ class ChatRequest(BaseModel):
 class AuthRequest(BaseModel):
     username: str = Field(min_length=1, max_length=150)
     password: str = Field(min_length=1, max_length=1024)
+
+
+class DiscoverySearchRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=500)
+    filters: Optional[dict] = None
+
+
+class DiscoveryPreviewRequest(BaseModel):
+    location: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    time_range: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    layer: Optional[str] = Field(default=None, min_length=1, max_length=200)
+
+
+class DiscoveryCoverageRequest(BaseModel):
+    location: str = Field(min_length=1, max_length=200)
+    time_range: str = Field(min_length=1, max_length=200)
 
 
 class TokenResponse(BaseModel):
@@ -311,6 +329,42 @@ async def cancel_job_endpoint(job_handle: JobHandle, request: Request):
         raise HTTPException(status_code=503, detail="Earthdata MCP is not ready")
     with user_id_context(request.state.current_user.id):
         return await cancel_job(job_handle, tools)
+
+
+@app.post("/discovery/search")
+async def discovery_search_endpoint(req: DiscoverySearchRequest, request: Request):
+    tools = request.app.state.earthdata_mcp_tools
+    if not tools:
+        raise HTTPException(status_code=503, detail="Earthdata MCP is not ready")
+    with user_id_context(request.state.current_user.id):
+        return await search_datasets(req.query, req.filters, tools)
+
+
+@app.get("/discovery/dataset/{dataset_handle}")
+async def discovery_describe_endpoint(dataset_handle: DatasetHandle, request: Request):
+    tools = request.app.state.earthdata_mcp_tools
+    if not tools:
+        raise HTTPException(status_code=503, detail="Earthdata MCP is not ready")
+    with user_id_context(request.state.current_user.id):
+        return await describe_dataset(dataset_handle, tools)
+
+
+@app.post("/discovery/dataset/{dataset_handle}/preview")
+async def discovery_preview_endpoint(dataset_handle: DatasetHandle, req: DiscoveryPreviewRequest, request: Request):
+    tools = request.app.state.earthdata_mcp_tools
+    if not tools:
+        raise HTTPException(status_code=503, detail="Earthdata MCP is not ready")
+    with user_id_context(request.state.current_user.id):
+        return await preview_dataset(dataset_handle, req.location, req.time_range, req.layer, tools)
+
+
+@app.post("/discovery/dataset/{dataset_handle}/coverage")
+async def discovery_coverage_endpoint(dataset_handle: DatasetHandle, req: DiscoveryCoverageRequest, request: Request):
+    tools = request.app.state.earthdata_mcp_tools
+    if not tools:
+        raise HTTPException(status_code=503, detail="Earthdata MCP is not ready")
+    with user_id_context(request.state.current_user.id):
+        return await check_coverage(dataset_handle, req.location, req.time_range, tools)
 
 
 def _safe_artifact_filename(value: str) -> str:

@@ -35,5 +35,27 @@ class EarthdataAgentPromptT08Tests(unittest.TestCase):
         self.assertIn("mode=\"period\"", prompt)
 
 
+class EarthdataAgentPromptT09Tests(unittest.TestCase):
+    def test_prompt_calls_preview_dataset_before_any_retrieval(self):
+        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+
+        prompt = get_earthdata_agent_prompt()
+
+        preview_step = prompt.index("preview_dataset")
+        retrieve_step = prompt.index("safe_retrieve")
+        self.assertLess(
+            preview_step, retrieve_step,
+            "preview_dataset must be called before safe_retrieve, so the researcher "
+            "confirms product-and-region fit before the platform commits resources",
+        )
+
+    def test_prompt_tells_the_agent_to_report_a_missing_gibs_layer_plainly(self):
+        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+
+        prompt = get_earthdata_agent_prompt()
+
+        self.assertIn("no browse layer", prompt.lower())
+
+
 if __name__ == "__main__":
     unittest.main()

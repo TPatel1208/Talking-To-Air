@@ -1,8 +1,10 @@
 import Chat from './components/Chat'
 import Dashboard from './components/Dashboard'
+import DiscoveryPane from './components/DiscoveryPane'
 import JobsPanel from './components/JobsPanel'
 import SessionSidebar from './components/SessionSidebar'
 import { useChat } from './hooks/useChat'
+import { useDiscovery } from './hooks/useDiscovery'
 import { useJobs } from './hooks/useJobs'
 import { useCallback, useMemo, useState } from 'react'
 
@@ -180,6 +182,18 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
     clearError,
   } = useChat(accessToken, onUnauthorized, applyJobProgress)
 
+  const discovery = useDiscovery(accessToken)
+
+  // The card's retrieve action hands off to the standard agent flow (safe_retrieve
+  // gates included) rather than bypassing it — one retrieval pipeline, two entry points.
+  const handleRetrieve = useCallback((dataset, location, timeRange) => {
+    const label = dataset.summary || dataset.dataset_handle
+    const parts = [`Retrieve ${label} (${dataset.dataset_handle})`]
+    if (location.trim()) parts.push(`over ${location.trim()}`)
+    if (timeRange.trim()) parts.push(`for ${timeRange.trim()}`)
+    sendMessage(`${parts.join(' ')}.`)
+  }, [sendMessage])
+
   const { images, artifacts } = useMemo(() => {
     const seenArtifactIds = new Set()
     const dedupedArtifacts = []
@@ -249,6 +263,24 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
         error={jobsError}
         onCancel={cancelJob}
         onRefresh={fetchJobs}
+      />
+
+      <DiscoveryPane
+        query={discovery.query}
+        setQuery={discovery.setQuery}
+        location={discovery.location}
+        setLocation={discovery.setLocation}
+        timeRange={discovery.timeRange}
+        setTimeRange={discovery.setTimeRange}
+        results={discovery.results}
+        loading={discovery.loading}
+        error={discovery.error}
+        previews={discovery.previews}
+        coverages={discovery.coverages}
+        onSearch={discovery.search}
+        onPreview={discovery.preview}
+        onCoverage={discovery.checkCoverage}
+        onRetrieve={handleRetrieve}
       />
     </div>
   )

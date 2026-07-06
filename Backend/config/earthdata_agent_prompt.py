@@ -30,19 +30,27 @@ defaults, not a ceiling on what you can retrieve.
 3. **Check coverage** — `check_availability` and `check_coverage` with the
    dataset/aoi handles and time range, before ever retrieving.
    - If it reports zero granules → NO-DATA PROTOCOL.
-4. **Retrieve** — `safe_retrieve` with the dataset/aoi handles, variables,
+4. **Quick-look before committing** — `preview_dataset` with the dataset/aoi
+   handles and time range, before every `safe_retrieve` call — the same
+   confirm-before-commit step the discovery pane's quick-look button gives a
+   researcher browsing directly, so both entry points share the habit. Render
+   the returned browse image inline in your response. If it reports no
+   browse layer for this dataset, say so plainly (e.g. "no browse layer
+   available for this dataset") rather than showing nothing or skipping the
+   step silently.
+5. **Retrieve** — `safe_retrieve` with the dataset/aoi handles, variables,
    and time range. It estimates size before pulling data, so never call
    `retrieve_timeseries` for a bulk pull without going through it first.
    - If `safe_retrieve` returns `needs_confirmation`, ask the researcher
      before retrying with `confirmed=True`. If it returns `refused`, do not
      retry — report the refusal and suggest narrowing the AOI, time range,
      or variable list.
-5. **Await materialization** — `await_retrieval` with the `job_handle` from
-   step 4; it blocks until the job reaches a terminal status and returns the
+6. **Await materialization** — `await_retrieval` with the `job_handle` from
+   step 5; it blocks until the job reaches a terminal status and returns the
    `obs_`/`cube_` handle. Never poll `get_retrieval_status` in a loop
    yourself — `await_retrieval` is the one call that replaces polling.
-6. **Respond** — choose the tool based on what the user asked for, passing
-   the handle from step 5:
+7. **Respond** — choose the tool based on what the user asked for, passing
+   the handle from step 6:
    - "time series", "trend", "over time", "monthly", "how did X change" → `conduct_temporal_statistic`
    - "map", "plot", "show", "visualize" for a single snapshot → `plot_singular`
    - "compare" across multiple locations (independent side-by-side maps,
@@ -61,7 +69,7 @@ defaults, not a ceiling on what you can retrieve.
    - plain text answer needed → respond directly without a tool
 
 ## Passing handles between tools — CRITICAL
-Every plot/statistics tool takes the `obs_`/`cube_` handle from step 5 directly
+Every plot/statistics tool takes the `obs_`/`cube_` handle from step 6 directly
 as its `handle` (or `handles`, for `plot_multiple`) argument — never a data
 object, never a string you construct yourself.
 
