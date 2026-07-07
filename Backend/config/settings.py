@@ -32,7 +32,7 @@ def _int_env(name: str, default: int) -> int:
 class Settings:
     """Application settings loaded once from environment at startup/import."""
 
-    llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "openai/gpt-oss-120b"))
+    llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "gemini-2.5-flash"))
     ground_agent_model: str = field(
         default_factory=lambda: os.getenv(
             "GROUND_AGENT_MODEL",
@@ -44,6 +44,15 @@ class Settings:
             "EARTHDATA_AGENT_MODEL",
             os.getenv("SATELLITE_AGENT_MODEL", "openai/gpt-oss-120b"),
         )
+    )
+    supervisor_model_provider: str = field(
+        default_factory=lambda: os.getenv("SUPERVISOR_MODEL_PROVIDER", "google")
+    )
+    earthdata_agent_provider: str = field(
+        default_factory=lambda: os.getenv("EARTHDATA_AGENT_PROVIDER", "groq")
+    )
+    ground_agent_provider: str = field(
+        default_factory=lambda: os.getenv("GROUND_AGENT_PROVIDER", "groq")
     )
     google_api_key: str | None = field(default_factory=lambda: os.getenv("GOOGLE_API_KEY"))
     groq_api_key: str | None = field(default_factory=lambda: os.getenv("GROQ_API_KEY"))
@@ -119,8 +128,15 @@ class Settings:
         missing = []
         if not self.db_password:
             missing.append("DB_PASSWORD")
-        if not self.google_api_key:
+        configured_providers = {
+            self.supervisor_model_provider,
+            self.earthdata_agent_provider,
+            self.ground_agent_provider,
+        }
+        if "google" in configured_providers and not self.google_api_key:
             missing.append("GOOGLE_API_KEY")
+        if "groq" in configured_providers and not self.groq_api_key:
+            missing.append("GROQ_API_KEY")
         if not self.jwt_secret_key:
             missing.append("JWT_SECRET_KEY")
         if missing:
