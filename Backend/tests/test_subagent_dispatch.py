@@ -85,22 +85,60 @@ class HelperTests(unittest.TestCase):
 
         self.assertEqual(finalized.artifacts, [])
 
-    def test_finalize_sub_agent_result_is_a_structured_failure_on_invalid_envelope(self):
+    def test_finalize_sub_agent_result_salvages_prose_with_collected_artifacts(self):
         from services.subagent_dispatch import _finalize_sub_agent_result
         from models import AgentResult, ChartPayload
+        from models.artifact import ArtifactReference
 
         raw = AgentResult(
             text="I found 3 monitors near Newark, NJ.",
             charts=[ChartPayload(type="heatmap", title="NO2")],
+            artifacts=[ArtifactReference(id="art_1", type="table")],
         )
 
         finalized = _finalize_sub_agent_result(raw, "earthdata")
 
-        self.assertNotEqual(finalized.text, raw.text)
-        self.assertEqual(finalized.metadata.get("error"), "invalid_envelope")
-        self.assertIn("earthdata", finalized.text.lower())
-        # Charts already produced this turn are not silently discarded.
+        # A malformed envelope no longer discards ninety seconds of correct
+        # work over a formatting technicality (T15) — the raw prose becomes
+        # the summary and everything collected from the tool stream survives.
+        self.assertEqual(finalized.text, raw.text)
         self.assertEqual(len(finalized.charts), 1)
+        self.assertEqual([a.id for a in finalized.artifacts], ["art_1"])
+        self.assertIsNone(finalized.metadata.get("error"))
+        self.assertTrue(finalized.metadata.get("salvaged"))
+        self.assertIn("raw_preview", finalized.metadata)
+
+    def test_finalize_sub_agent_result_salvage_attaches_handles_from_artifact_metadata(self):
+        from services.subagent_dispatch import _finalize_sub_agent_result
+        from models import AgentResult
+        from models.artifact import ArtifactReference
+
+        raw = AgentResult(
+            text="Plotted TROPOMI NO2 over New Jersey.",
+            artifacts=[ArtifactReference(
+                id="map_1", type="map", metadata={"source_handles": ["obs_1"]},
+            )],
+        )
+
+        finalized = _finalize_sub_agent_result(raw, "earthdata")
+
+        # Handles named in the collected artifacts' own metadata are
+        # unambiguous — they come from the tool results, not the prose.
+        self.assertEqual(finalized.handles, ["obs_1"])
+
+    def test_finalize_sub_agent_result_is_a_structured_failure_on_empty_text(self):
+        from services.subagent_dispatch import _finalize_sub_agent_result
+        from models import AgentResult
+
+        raw = AgentResult(text="   ")
+
+        finalized = _finalize_sub_agent_result(raw, "earthdata")
+
+        # Salvage requires something to salvage — empty text stays a
+        # structured failure rather than inventing a cause for it.
+        self.assertEqual(finalized.metadata.get("error"), "invalid_envelope")
+        self.assertFalse(finalized.metadata.get("salvaged"))
+        self.assertIn("earthdata", finalized.text.lower())
 
     def test_finalize_sub_agent_result_parses_an_envelope_longer_than_the_display_limit(self):
         from services.subagent_dispatch import _finalize_sub_agent_result

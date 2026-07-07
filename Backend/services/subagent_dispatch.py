@@ -27,7 +27,7 @@ from repositories.session_metadata_repository import get_ground_monitor_context,
 from tools import GROUND_TOOLS
 from tools.satellite_tools.factory import sanctioned_tool_names
 from utils.message_utils import extract_last_text, truncate_text
-from utils.metrics import record_agent_request
+from utils.metrics import record_agent_request, record_envelope_salvaged
 from utils.streaming import stream_response
 
 logger = logging.getLogger(__name__)
@@ -276,9 +276,10 @@ _GROUND_RETRY_TOOL_GUIDANCE = (
 def _finalize_sub_agent_result(result: AgentResult, agent_label: str) -> AgentResult:
     """
     Validate a sub-agent's final message against the {summary, artifact_ids,
-    handles} envelope contract. A missing/invalid envelope is the sub-agent's
-    failure to report — a structured error, never the raw prose passed
-    through as if it were a legitimate answer.
+    handles} envelope contract. A missing/invalid envelope on its own is no
+    longer fatal (T15) — it is salvaged from the raw prose, since the work
+    collected from the tool stream during the turn (charts, artifacts) was
+    never contingent on the final message parsing cleanly.
 
     ``result.text`` must be the untruncated final message — envelope parsing
     happens first; truncation applies afterwards, to the extracted summary
@@ -287,14 +288,7 @@ def _finalize_sub_agent_result(result: AgentResult, agent_label: str) -> AgentRe
     """
     envelope = parse_sub_agent_envelope(result.text)
     if envelope is None:
-        return AgentResult(
-            text=f"The {agent_label} agent returned an invalid response envelope.",
-            charts=result.charts,
-            metadata={
-                "error": "invalid_envelope",
-                "raw_preview": truncate_text(result.text or "", 300, agent_name=agent_label),
-            },
-        )
+        return _salvage_sub_agent_result(result, agent_label)
     discovered = {ref.id: ref for ref in result.artifacts}
     artifacts = [discovered[artifact_id] for artifact_id in envelope.artifact_ids if artifact_id in discovered]
     return AgentResult(
@@ -303,6 +297,57 @@ def _finalize_sub_agent_result(result: AgentResult, agent_label: str) -> AgentRe
         artifacts=artifacts,
         handles=envelope.handles,
     )
+
+
+def _salvage_sub_agent_result(result: AgentResult, agent_label: str) -> AgentResult:
+    """
+    Policy for a final message that failed envelope parsing (T15). When
+    there is prose, the prose speaks for itself: it becomes the summary,
+    artifacts/charts already collected from the tool stream are attached,
+    and handles named in those artifacts' metadata are carried through.
+    Salvage never invents a cause for the failure — when there is nothing
+    to salvage (empty/whitespace text), this states the observed fact and
+    stops rather than handing the supervisor a free-text error it could
+    dress up as an explanation of the researcher's question.
+    """
+    prose = (result.text or "").strip()
+    if not prose:
+        return AgentResult(
+            text=f"The {agent_label} agent's final message did not parse and contained no text.",
+            charts=result.charts,
+            metadata={"error": "invalid_envelope"},
+        )
+
+    preview = truncate_text(prose, 300, agent_name=agent_label)
+    logger.warning(
+        "envelope_salvaged",
+        extra={
+            "_event": "envelope_salvaged",
+            "_agent_type": agent_label,
+            "_raw_preview": preview,
+            "_artifact_count": len(result.artifacts),
+        },
+    )
+    record_envelope_salvaged(agent_label)
+    return AgentResult(
+        text=truncate_text(prose, 2000, agent_name=agent_label),
+        charts=result.charts,
+        artifacts=result.artifacts,
+        handles=_handles_from_artifacts(result.artifacts),
+        metadata={"salvaged": True, "raw_preview": preview},
+    )
+
+
+def _handles_from_artifacts(artifacts: list[ArtifactReference]) -> list[str]:
+    """Handles named in collected artifacts' metadata (e.g. a map's
+    source_handles) — attached unambiguously since they come straight from
+    the tool results, not from the unparsed prose."""
+    handles: list[str] = []
+    for artifact in artifacts:
+        for handle in artifact.metadata.get("source_handles") or []:
+            if handle not in handles:
+                handles.append(handle)
+    return handles
 
 
 def _is_ground_tool_failure(text: str) -> bool:
