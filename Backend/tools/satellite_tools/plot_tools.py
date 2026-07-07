@@ -62,7 +62,7 @@ from services.artifact_registry import build_artifact_reference
 from services.open_handle import OpenHandleError, open_handle
 from utils.geo_utils import find_lat_coord, find_lon_coord
 from utils.plotting import _normalize_to_2d, mask_data_by_geometry, RegionResolver
-from utils.streaming import emit_status
+from utils.streaming import emit_chart, emit_status
 from preprocessing.aggregation_service import AggregationService
 
 logger = logging.getLogger(__name__)
@@ -214,14 +214,81 @@ def _da_to_heatmap_payload(da, title: str, variable: str, units: str) -> dict:
         "vmax": float(f"{vmax:.6e}"),
     }
 
+def _heatmap_dims(payload: dict | None) -> list[int] | None:
+    if not payload:
+        return None
+    lats, lons = payload.get("lats"), payload.get("lons")
+    if isinstance(lats, list) and isinstance(lons, list):
+        return [len(lats), len(lons)]
+    return None
+
+
+def _summary_dims_and_range(payload: dict, render_type: str | None):
+    """Grid/point dimensions and value range for the compact model-facing
+    summary — enough for the agent to describe the chart (T13 story #4)
+    without re-reading the raw grid/points arrays."""
+    if render_type == "heatmap":
+        return _heatmap_dims(payload), payload.get("vmin"), payload.get("vmax")
+
+    if render_type == "heatmap_multi":
+        if payload.get("mode") == "difference" and isinstance(payload.get("difference"), dict):
+            diff = payload["difference"]
+            return _heatmap_dims(diff), diff.get("vmin"), diff.get("vmax")
+        panels = [p for p in (payload.get("panels") or []) if isinstance(p, dict)]
+        first = next((p for p in panels if p.get("lats")), None)
+        dims = _heatmap_dims(first)
+        if dims:
+            dims = [len(panels), *dims]
+        return dims, (first.get("vmin") if first else None), (first.get("vmax") if first else None)
+
+    if render_type == "timeseries":
+        times = payload.get("times") or []
+        values = [v for v in (payload.get("values") or []) if isinstance(v, (int, float))]
+        dims = [len(times)] if times else None
+        vmin = min(values) if values else None
+        vmax = max(values) if values else None
+        return dims, vmin, vmax
+
+    return None, payload.get("vmin"), payload.get("vmax")
+
+
+def _chart_model_summary(payload: dict) -> dict:
+    """The compact, model-facing view of a chart payload (T13): render type,
+    title, variable, units, dimensions, value range, artifact id, and source
+    handles — everything the agent needs to describe the chart and cite it,
+    never the raw grid/points the frontend renders from ``emit_chart``."""
+    render_type = payload.get("type")
+    grid_dims, vmin, vmax = _summary_dims_and_range(payload, render_type)
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    summary = {
+        "render_type": render_type,
+        "title": payload.get("title"),
+        "variable": payload.get("variable"),
+        "units": payload.get("units"),
+        "grid_dims": grid_dims,
+        "vmin": vmin,
+        "vmax": vmax,
+        "chart_id": payload.get("chart_id"),
+        "source_handles": metadata.get("source_handles"),
+    }
+    summary = {k: v for k, v in summary.items() if v is not None}
+    if payload.get("_artifact_refs"):
+        summary["_artifact_refs"] = payload["_artifact_refs"]
+    return summary
+
+
 def _save_chart(payload: dict, name: str) -> str:
-    """Return a structured chart payload for the API to persist.
+    """Emit the full chart payload out-of-band (frontend chart/artifact
+    pipeline) and return a compact model-facing summary (T13).
 
     Mints a stable artifact id for render types the T06 artifact vocabulary
     covers (map/comparison/timeseries) and embeds an `_artifact_refs` entry
     so the id is visible to both the calling LLM (to cite in its envelope,
     see config/earthdata_agent_prompt.py) and the gallery — mirroring the
-    `_artifact_refs` convention EPA table tools already use.
+    `_artifact_refs` convention EPA table tools already use. The full
+    payload (grid/points/provenance/query/export) is emitted via
+    ``emit_chart`` for the existing chart/artifact pipeline to persist and
+    render; the model only ever sees the compact summary.
     """
     payload.setdefault("metadata", {})
     payload["metadata"].setdefault("name", name)
@@ -237,7 +304,8 @@ def _save_chart(payload: dict, name: str) -> str:
         if ref is not None:
             payload["_artifact_refs"] = [ref.model_dump(exclude_none=True)]
 
-    return json.dumps(payload)
+    emit_chart(payload)
+    return json.dumps(_chart_model_summary(payload))
 
 # ── Handle / masking helpers ───────────────────────────────────────────────────
 

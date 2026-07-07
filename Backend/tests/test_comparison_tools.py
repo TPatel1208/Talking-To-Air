@@ -317,23 +317,38 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
         self.volume.add_zarr("obs_a", make_a)
         self.volume.add_zarr("obs_b", make_b)
 
+        emitted = {}
+
+        def fake_emit_chart(full_payload):
+            emitted["payload"] = full_payload
+
         compare = comparison_tools.make_compare(self.mcp_tools)
-        raw = await compare.ainvoke({
-            "handle_a": "obs_a", "handle_b": "obs_b", "mode": "region",
-            "label_a": "Newark", "label_b": "Philly",
-        })
+        with patch("tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
+            raw = await compare.ainvoke({
+                "handle_a": "obs_a", "handle_b": "obs_b", "mode": "region",
+                "label_a": "Newark", "label_b": "Philly",
+            })
         result = json.loads(raw)
 
         self.assertNotIn("error", result)
-        self.assertEqual(result["type"], "heatmap_multi")
-        self.assertEqual(result["mode"], "n-panel")
-        self.assertEqual(len(result["panels"]), 2)
+
+        # (a) the full panel/stats detail still reaches the frontend pipeline,
+        # out-of-band from the model-facing return value (T13).
+        full = emitted["payload"]
+        self.assertEqual(full["type"], "heatmap_multi")
+        self.assertEqual(full["mode"], "n-panel")
+        self.assertEqual(len(full["panels"]), 2)
         # Shared color scale across both panels (region mode never differences).
-        self.assertEqual(result["panels"][0]["vmin"], result["panels"][1]["vmin"])
-        self.assertEqual(result["panels"][0]["vmax"], result["panels"][1]["vmax"])
-        self.assertAlmostEqual(result["stats"]["Newark"]["mean"], 2.5)
-        self.assertAlmostEqual(result["stats"]["Philly"]["mean"], 25.0)
-        self.assertNotIn("difference", result)
+        self.assertEqual(full["panels"][0]["vmin"], full["panels"][1]["vmin"])
+        self.assertEqual(full["panels"][0]["vmax"], full["panels"][1]["vmax"])
+        self.assertAlmostEqual(full["stats"]["Newark"]["mean"], 2.5)
+        self.assertAlmostEqual(full["stats"]["Philly"]["mean"], 25.0)
+        self.assertNotIn("difference", full)
+
+        # (b) the model-facing result is the compact summary.
+        self.assertEqual(result["render_type"], "heatmap_multi")
+        for bulky_key in ("panels", "stats", "mode"):
+            self.assertNotIn(bulky_key, result)
 
         ref = result["_artifact_refs"][0]
         self.assertEqual(ref["type"], "comparison")
@@ -377,21 +392,39 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
 
         self._align_handler = _align
 
+        emitted = {}
+
+        def fake_emit_chart(full_payload):
+            emitted["payload"] = full_payload
+
         compare = comparison_tools.make_compare(self.mcp_tools)
-        raw = await compare.ainvoke({
-            "handle_a": "obs_june25", "handle_b": "obs_june26", "mode": "period",
-            "label_a": "June 2025", "label_b": "June 2026",
-        })
+        with patch("tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
+            raw = await compare.ainvoke({
+                "handle_a": "obs_june25", "handle_b": "obs_june26", "mode": "period",
+                "label_a": "June 2025", "label_b": "June 2026",
+            })
         result = json.loads(raw)
 
         self.assertNotIn("error", result)
-        self.assertEqual(result["mode"], "difference")
+
+        # (a) the full difference grid/stats still reach the frontend pipeline.
+        full = emitted["payload"]
+        self.assertEqual(full["mode"], "difference")
         # b - a: [[1,2],[3,4]] doubled -> diff = a itself: [[1,2],[3,4]]
-        self.assertEqual(result["difference"]["values"], [[1.0, 2.0], [3.0, 4.0]])
-        self.assertAlmostEqual(result["stats"]["mean_difference"], 2.5)
-        self.assertAlmostEqual(result["stats"]["percent_change"], 100.0)
+        self.assertEqual(full["difference"]["values"], [[1.0, 2.0], [3.0, 4.0]])
+        self.assertAlmostEqual(full["stats"]["mean_difference"], 2.5)
+        self.assertAlmostEqual(full["stats"]["percent_change"], 100.0)
         # Diverging, zero-centered scale.
-        self.assertAlmostEqual(result["difference"]["vmin"], -result["difference"]["vmax"])
+        self.assertAlmostEqual(full["difference"]["vmin"], -full["difference"]["vmax"])
+
+        # (b) the model-facing result is the compact summary, using the
+        # difference grid's own dimensions/value range (T13).
+        self.assertEqual(result["render_type"], "heatmap_multi")
+        self.assertEqual(result["grid_dims"], [2, 2])
+        self.assertAlmostEqual(result["vmin"], full["difference"]["vmin"])
+        self.assertAlmostEqual(result["vmax"], full["difference"]["vmax"])
+        for bulky_key in ("panels", "stats", "mode", "difference"):
+            self.assertNotIn(bulky_key, result)
 
         ref = result["_artifact_refs"][0]
         self.assertEqual(ref["type"], "comparison")

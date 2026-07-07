@@ -7,6 +7,7 @@ Yields:
     ("tool_result", {"name": str, "content": str})
     ("text", str)
     ("job_progress", {"job_handle": str, "status": str, "progress": Any, "phase": Any, "message": str | None})
+    ("chart_payload", dict)  # full render payload — see utils.streaming.emit_chart
 """
 
 import asyncio
@@ -23,6 +24,10 @@ _status_emitter: ContextVar[Optional[Callable[[str], None]]] = ContextVar(
 )
 _job_progress_emitter: ContextVar[Optional[Callable[[dict], None]]] = ContextVar(
     "job_progress_emitter",
+    default=None,
+)
+_chart_emitter: ContextVar[Optional[Callable[[dict], None]]] = ContextVar(
+    "chart_emitter",
     default=None,
 )
 _current_thread_id: ContextVar[Optional[str]] = ContextVar("current_thread_id", default=None)
@@ -53,6 +58,16 @@ def emit_job_progress(
             "phase": phase,
             "message": message,
         })
+
+
+def emit_chart(payload: dict) -> None:
+    """Emit a full chart render payload for the active SSE stream, out-of-band
+    from the tool's model-facing return value (T13 two-audience split: the
+    model gets a compact summary, the frontend gets this full payload via the
+    existing chart/artifact pipeline)."""
+    emitter = _chart_emitter.get()
+    if emitter:
+        emitter(payload)
 
 
 def current_thread_id() -> str | None:
@@ -111,6 +126,7 @@ async def stream_response(
     loop = asyncio.get_running_loop()
     parent_emitter = _status_emitter.get()
     parent_job_progress_emitter = _job_progress_emitter.get()
+    parent_chart_emitter = _chart_emitter.get()
 
     def publish_status(message: str) -> None:
         if parent_emitter:
@@ -121,6 +137,11 @@ async def stream_response(
         if parent_job_progress_emitter:
             parent_job_progress_emitter(data)
         loop.call_soon_threadsafe(queue.put_nowait, ("job_progress", data))
+
+    def publish_chart_payload(data: dict) -> None:
+        if parent_chart_emitter:
+            parent_chart_emitter(data)
+        loop.call_soon_threadsafe(queue.put_nowait, ("chart_payload", data))
 
     async def publish(event_type: str, data) -> None:
         await queue.put((event_type, data))
@@ -188,6 +209,7 @@ async def stream_response(
 
     token = _status_emitter.set(publish_status)
     job_progress_token = _job_progress_emitter.set(publish_job_progress)
+    chart_token = _chart_emitter.set(publish_chart_payload)
     thread_token = _current_thread_id.set(thread_id)
     user_token = _current_user_id.set(user_id)
     producer = asyncio.create_task(produce())
@@ -203,6 +225,7 @@ async def stream_response(
     finally:
         _status_emitter.reset(token)
         _job_progress_emitter.reset(job_progress_token)
+        _chart_emitter.reset(chart_token)
         _current_thread_id.reset(thread_token)
         _current_user_id.reset(user_token)
         if not producer.done():

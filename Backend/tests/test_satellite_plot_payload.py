@@ -146,6 +146,56 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         self.assertEqual(ref["metadata"]["bbox"], region["bounds"])
         self.assertEqual(ref["metadata"]["source_handles"], ["obs_1"])
 
+    def test_save_chart_emits_the_full_payload_and_returns_a_compact_summary(self):
+        import json
+        from unittest.mock import patch
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import (
+            _attach_reproducibility,
+            _da_to_heatmap_payload,
+            _save_chart,
+        )
+
+        da = xr.DataArray(
+            [[1.0, 2.0], [3.0, 4.0]],
+            dims=("lat", "lon"),
+            coords={"lat": [40.0, 41.0], "lon": [-75.0, -74.0], "time": "2024-01-01T00:00:00Z"},
+            name="TEMPO_NO2",
+            attrs={"units": "mol/m^2"},
+        )
+        region = {"bounds": [-75.0, 39.0, -73.0, 41.0]}
+        payload = _da_to_heatmap_payload(da, "TEMPO over NJ", "TEMPO_NO2", "mol/m^2")
+        payload["bounds"] = region["bounds"]
+        _attach_reproducibility(payload, ["obs_1"], da, "New Jersey", "single snapshot", region=region)
+
+        emitted = {}
+
+        def fake_emit_chart(full_payload):
+            emitted["payload"] = full_payload
+
+        with patch("tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
+            result = json.loads(_save_chart(payload, "TEMPO_NO2_NJ"))
+
+        # (a) the frontend's chart/artifact pipeline still gets the full grid,
+        # out-of-band from the model-facing return value.
+        self.assertEqual(emitted["payload"]["values"], payload["values"])
+        self.assertEqual(emitted["payload"]["lats"], payload["lats"])
+
+        # (b) the model-facing tool result is compact — no raw grid/points/
+        # provenance blocks, well under what an 8000-cell grid would cost.
+        for bulky_key in ("values", "points", "lats", "lons", "provenance", "query", "export"):
+            self.assertNotIn(bulky_key, result)
+        self.assertLess(len(json.dumps(result)), 1000)
+
+        # ...but still everything the agent needs to describe and cite it.
+        self.assertEqual(result["render_type"], "heatmap")
+        self.assertEqual(result["variable"], "TEMPO_NO2")
+        self.assertEqual(result["units"], "mol/m^2")
+        self.assertEqual(result["grid_dims"], [2, 2])
+        self.assertTrue(result["chart_id"].startswith("map_"))
+        self.assertEqual(result["source_handles"], ["obs_1"])
+        self.assertEqual(result["_artifact_refs"][0]["id"], result["chart_id"])
+
     def test_save_chart_mints_a_comparison_artifact_id_for_a_heatmap_multi_payload(self):
         import json
         import xarray as xr
