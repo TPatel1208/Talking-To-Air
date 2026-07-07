@@ -25,14 +25,9 @@ CURATED_RAW_TOOL_NAMES = (
     "search_datasets",
     "describe_dataset",
     "preview_dataset",
-    "summarize_dataset",
     "define_area_of_interest",
     "check_availability",
     "check_coverage",
-    "get_retrieval_status",
-    "retrieve_timeseries",
-    "cite_dataset",
-    "get_provenance",
 )
 # Used internally by the composites but never exposed to the model directly.
 INTERNAL_RAW_TOOL_NAMES = (
@@ -44,12 +39,19 @@ INTERNAL_RAW_TOOL_NAMES = (
     "cancel_retrieval",
     "align",
     "convert_format",
+    "get_retrieval_status",
+    "retrieve_timeseries",
+    "cite_dataset",
+    "get_provenance",
 )
 # Representative sample of raw tools that must never reach the model,
 # per the PRD's "Hidden" list (transforms / format / inspection
 # plumbing) — enough to prove filtering, not the full real-server surface.
+# summarize_dataset is real (the MCP still serves it) but this backend has
+# no consumer for it (T11: dropped from CURATED/REQUIRED entirely).
 HIDDEN_RAW_TOOL_NAMES = (
     "retrieve_data",
+    "summarize_dataset",
 )
 ALL_RAW_TOOL_NAMES = CURATED_RAW_TOOL_NAMES + INTERNAL_RAW_TOOL_NAMES + HIDDEN_RAW_TOOL_NAMES
 

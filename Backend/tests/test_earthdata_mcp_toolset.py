@@ -47,8 +47,21 @@ class EarthdataToolsetTests(unittest.IsolatedAsyncioTestCase):
 
         # align is internal as of T08 (the compare tool's period mode calls
         # it directly) but still never model-facing, same as the other
-        # internal/hidden composite plumbing.
-        for hidden in ("retrieve_subset", "estimate_retrieval_size", "retrieve_data", "align", "cancel_retrieval", "convert_format"):
+        # internal/hidden composite plumbing. get_retrieval_status,
+        # retrieve_timeseries, cite_dataset, and get_provenance are demoted
+        # to internal-only as of T11 (MCP-first minimal toolset).
+        for hidden in (
+            "retrieve_subset",
+            "estimate_retrieval_size",
+            "retrieve_data",
+            "align",
+            "cancel_retrieval",
+            "convert_format",
+            "get_retrieval_status",
+            "retrieve_timeseries",
+            "cite_dataset",
+            "get_provenance",
+        ):
             self.assertNotIn(hidden, model_tool_names)
 
 
