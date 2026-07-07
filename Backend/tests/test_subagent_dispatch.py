@@ -235,6 +235,66 @@ class HelperTests(unittest.TestCase):
 
 
 @unittest.skipIf(importlib.util.find_spec("langchain") is None, "langchain is not installed")
+class RepromptFinalEnvelopeTests(unittest.IsolatedAsyncioTestCase):
+    """T15 retry demotion: a refusal-marked first result is recovered with
+    one structured-output model call, never a second tool-workflow run."""
+
+    async def test_reprompts_via_the_model_factorys_structured_output_hook(self):
+        from services.subagent_dispatch import _reprompt_final_envelope
+        from models import SubAgentEnvelope
+
+        envelope = SubAgentEnvelope(summary="Recovered answer.", artifact_ids=[], handles=[])
+
+        class FakeBoundModel:
+            def __init__(self):
+                self.calls = []
+
+            async def ainvoke(self, text):
+                self.calls.append(text)
+                return envelope
+
+        bound = FakeBoundModel()
+
+        class FakeModel:
+            def with_structured_output(self, schema):
+                self.schema = schema
+                return bound
+
+        fake_model = FakeModel()
+        agent = SimpleNamespace(subagent_model=fake_model)
+
+        result = await _reprompt_final_envelope(agent, "Retry: find the closest monitor.", "ground_sensor")
+
+        self.assertEqual(fake_model.schema, SubAgentEnvelope)
+        self.assertEqual(bound.calls, ["Retry: find the closest monitor."])
+        self.assertEqual(json.loads(result.text)["summary"], "Recovered answer.")
+
+    async def test_returns_empty_text_when_the_model_call_raises(self):
+        from services.subagent_dispatch import _reprompt_final_envelope
+
+        class FakeBoundModel:
+            async def ainvoke(self, text):
+                raise RuntimeError("provider rejected the request")
+
+        class FakeModel:
+            def with_structured_output(self, schema):
+                return FakeBoundModel()
+
+        agent = SimpleNamespace(subagent_model=FakeModel())
+
+        result = await _reprompt_final_envelope(agent, "Retry task", "satellite")
+
+        self.assertEqual(result.text, "")
+
+    async def test_returns_empty_text_when_the_agent_has_no_model_attached(self):
+        from services.subagent_dispatch import _reprompt_final_envelope
+
+        result = await _reprompt_final_envelope(SimpleNamespace(), "Retry task", "satellite")
+
+        self.assertEqual(result.text, "")
+
+
+@unittest.skipIf(importlib.util.find_spec("langchain") is None, "langchain is not installed")
 class RunGroundTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_ground_reads_and_merges_persisted_monitor_context(self):
         from services import subagent_dispatch
@@ -302,6 +362,50 @@ class RunGroundTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("already returned a result", second.text)
 
+    async def test_run_ground_refusal_triggers_one_reprompt_not_a_second_workflow_run(self):
+        from services import subagent_dispatch
+
+        class FakeBoundModel:
+            def __init__(self):
+                self.call_count = 0
+
+            async def ainvoke(self, text):
+                self.call_count += 1
+                from models import SubAgentEnvelope
+                return SubAgentEnvelope(summary="Recovered via reprompt.", artifact_ids=[], handles=[])
+
+        class FakeModel:
+            def __init__(self, bound):
+                self._bound = bound
+
+            def with_structured_output(self, schema):
+                return self._bound
+
+        bound_model = FakeBoundModel()
+
+        class FakeGroundAgent:
+            def __init__(self):
+                self.ainvoke_call_count = 0
+                self.subagent_model = FakeModel(bound_model)
+
+            async def ainvoke(self, input_, config):
+                self.ainvoke_call_count += 1
+                return {"messages": [SimpleNamespace(
+                    content="Error: Failed to call a function. failed_generation", type="ai",
+                )]}
+
+        ground_agent = FakeGroundAgent()
+        subagent_dispatch._ground_call_count.set(0)
+        with patch.object(subagent_dispatch, "get_ground_monitor_context", AsyncMock(return_value={})), \
+             patch.object(subagent_dispatch, "save_ground_monitor_context", AsyncMock()):
+            result = await subagent_dispatch.run_ground(ground_agent, "task 1", "thread-1")
+
+        # Exactly one further model interaction (the reprompt) — the tool
+        # workflow itself never ran a second time.
+        self.assertEqual(ground_agent.ainvoke_call_count, 1)
+        self.assertEqual(bound_model.call_count, 1)
+        self.assertEqual(result.text, "Recovered via reprompt.")
+
 
 @unittest.skipIf(importlib.util.find_spec("langchain") is None, "langchain is not installed")
 class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
@@ -348,6 +452,49 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
         second = await subagent_dispatch.run_satellite(FakeSatelliteAgent(), "task 2", "thread-1")
 
         self.assertIn("already been called", second.text)
+
+    async def test_run_satellite_refusal_triggers_one_reprompt_not_a_second_workflow_run(self):
+        from services import subagent_dispatch
+
+        class FakeBoundModel:
+            def __init__(self):
+                self.call_count = 0
+
+            async def ainvoke(self, text):
+                self.call_count += 1
+                from models import SubAgentEnvelope
+                return SubAgentEnvelope(summary="Recovered via reprompt.", artifact_ids=[], handles=[])
+
+        class FakeModel:
+            def __init__(self, bound):
+                self._bound = bound
+
+            def with_structured_output(self, schema):
+                return self._bound
+
+        bound_model = FakeBoundModel()
+
+        class FakeSatelliteAgent:
+            def __init__(self):
+                self.astream_call_count = 0
+                self.subagent_model = FakeModel(bound_model)
+
+            async def astream(self, input_, config, stream_mode):
+                self.astream_call_count += 1
+                yield "messages", (
+                    SimpleNamespace(content="The necessary tools are not present.", type="ai", tool_calls=None),
+                    {},
+                )
+
+        satellite_agent = FakeSatelliteAgent()
+        subagent_dispatch._satellite_call_count.set(0)
+        result = await subagent_dispatch.run_satellite(satellite_agent, "Plot NO2 over NJ", "thread-1")
+
+        # Exactly one further model interaction (the reprompt) — the tool
+        # workflow itself never streamed a second time.
+        self.assertEqual(satellite_agent.astream_call_count, 1)
+        self.assertEqual(bound_model.call_count, 1)
+        self.assertEqual(result.text, "Recovered via reprompt.")
 
 
 if __name__ == "__main__":

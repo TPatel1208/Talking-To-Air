@@ -52,6 +52,10 @@ def build_ground_agent(model: str | None = None, provider: str | None = None):
         checkpointer=None,
         middleware=[build_subagent_trim_middleware("ground_sensor", settings.subagent_trim_token_ceiling)],
     )
+    # This agent is stateless (no checkpointer), so subagent_dispatch's T15
+    # retry demotion — one structured-output re-prompt instead of a full
+    # tool-workflow re-run — has no other way to reach the raw chat model.
+    agent.subagent_model = llm
     return agent
 
 

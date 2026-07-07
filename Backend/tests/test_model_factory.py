@@ -60,6 +60,27 @@ class ModelFactoryTests(unittest.TestCase):
         self.assertEqual(result, "bound-model")
         self.assertEqual(fake.calls, [_Schema])
 
+    def test_structured_output_hook_carries_the_sub_agent_envelope_schema(self):
+        """T15: the retry demotion's single re-prompt routes through this
+        same seam with the real SubAgentEnvelope schema (asserted here
+        hermetically — no live provider call)."""
+        from config.model_factory import structured_output
+        from models import SubAgentEnvelope
+
+        class _FakeModel:
+            def __init__(self):
+                self.calls = []
+
+            def with_structured_output(self, schema):
+                self.calls.append(schema)
+                return "bound-model"
+
+        fake = _FakeModel()
+        result = structured_output(fake, SubAgentEnvelope)
+
+        self.assertEqual(result, "bound-model")
+        self.assertEqual(fake.calls, [SubAgentEnvelope])
+
 
 if __name__ == "__main__":
     unittest.main()

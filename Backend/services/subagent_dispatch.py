@@ -21,7 +21,8 @@ from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any
 
-from models import AgentResult, parse_agent_result, parse_chart_payload, parse_sub_agent_envelope
+from config.model_factory import structured_output
+from models import AgentResult, SubAgentEnvelope, parse_agent_result, parse_chart_payload, parse_sub_agent_envelope
 from models.artifact import ArtifactReference
 from repositories.session_metadata_repository import get_ground_monitor_context, save_ground_monitor_context
 from tools import GROUND_TOOLS
@@ -120,13 +121,9 @@ async def run_ground(
             },
         )
         retry_task = _ground_retry_task(enriched_task)
-        result = await _invoke(retry_task)
-        if _is_ground_tool_failure(result.text):
-            result = AgentResult(text=_clean_ground_failure_message())
-        else:
-            result = _finalize_sub_agent_result(result, "ground sensor")
-    else:
-        result = _finalize_sub_agent_result(result, "ground sensor")
+        result = await _reprompt_final_envelope(ground_agent, retry_task, "ground_sensor")
+
+    result = _finalize_sub_agent_result(result, "ground sensor")
 
     new_context = _extract_ground_monitor_context(result.text)
     if new_context and conversation_thread_id:
@@ -243,7 +240,7 @@ async def run_satellite(
                 "_thread_id": conversation_thread_id,
             },
         )
-        result = await _invoke(_satellite_retry_task(enriched_task))
+        result = await _reprompt_final_envelope(satellite_agent, _satellite_retry_task(enriched_task), "satellite")
 
     return _finalize_sub_agent_result(result, "earthdata")
 
@@ -350,6 +347,41 @@ def _handles_from_artifacts(artifacts: list[ArtifactReference]) -> list[str]:
     return handles
 
 
+async def _reprompt_final_envelope(agent: Any, task_text: str, metric_agent_type: str) -> AgentResult:
+    """
+    T15 retry demotion. When a sub-agent wrongly claims its tools are
+    missing, recovery used to be a full second tool-workflow run — doubling
+    the slowest path exactly when the provider is already throttling.
+    Instead, make exactly one structured-output call (routed through the
+    model factory's provider-aware ``structured_output`` hook, T12) asking
+    for the final envelope directly — never a second tool-workflow run.
+
+    ``agent`` is the compiled sub-agent graph; ``subagent_model`` is the raw
+    chat model attached to it at build time (agents/earthdata_agent.py,
+    agents/ground_sensor_agent.py) since these agents are stateless (no
+    checkpointer) and hold no other handle to it.
+    """
+    model = getattr(agent, "subagent_model", None)
+    if model is None:
+        record_agent_request(metric_agent_type, "failure")
+        return AgentResult(text="")
+
+    outcome = "success"
+    try:
+        bound = structured_output(model, SubAgentEnvelope)
+        envelope = await bound.ainvoke(task_text)
+    except Exception:
+        outcome = "failure"
+        return AgentResult(text="")
+    else:
+        if not isinstance(envelope, SubAgentEnvelope):
+            outcome = "failure"
+            return AgentResult(text="")
+        return AgentResult(text=envelope.model_dump_json())
+    finally:
+        record_agent_request(metric_agent_type, outcome)
+
+
 def _is_ground_tool_failure(text: str) -> bool:
     lowered = str(text or "").lower()
     return any(marker in lowered for marker in _GROUND_TOOL_FAILURE_MARKERS)
@@ -368,13 +400,6 @@ def _satellite_retry_task(task: str) -> str:
         f"{', '.join(sanctioned_tool_names())}. Retry the task using those tools exactly as needed."
     )
     return f"{guidance}\n\nTask: {task}"
-
-
-def _clean_ground_failure_message() -> str:
-    return (
-        "The air quality lookup failed while formatting the EPA AQS tool call. "
-        "Please try again with a narrower date range or a specific station_id."
-    )
 
 
 def _inject_ground_context(task: str, context: dict[str, str]) -> str:
