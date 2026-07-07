@@ -271,6 +271,63 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events, [])
         self.assertIn("chart_payload_parse_failure", captured.output[0])
 
+    async def test_chat_stream_service_persists_and_emits_a_bubbled_chart_payload_event(self):
+        """T13: emit_chart's ("chart_payload", dict) event (bubbled up from a
+        sub-agent's own stream, mirroring job_progress) is persisted and
+        emitted as a "chart" SSE event directly, without waiting for the
+        sub-agent's final tool_result envelope."""
+        from services.chat_stream_service import ChatStreamService
+        from services.chart_service import ChartService
+
+        chart_payload = {"type": "heatmap", "chart_id": "map_abc123", "title": "TEMPO over NJ"}
+
+        async def fake_stream_response(agent, message, thread_id, **kwargs):
+            yield "chart_payload", chart_payload
+
+        service = ChatStreamService(ChartService(), long_request_seconds=999)
+        with patch("services.chat_stream_service.stream_response", fake_stream_response), \
+             patch("services.chart_service.chart_repository.get_chart", AsyncMock(return_value=None)), \
+             patch("services.chart_service.chart_repository.save_chart", AsyncMock(side_effect=lambda thread_id, payload, user_id: {**payload, "thread_id": thread_id, "user_id": user_id})):
+            events = [
+                event
+                async for event in service.stream_chat_events(object(), "hi", "thread-1", "user-1", "req-1")
+            ]
+
+        chart_events = [e for e in events if e.startswith("event: chart")]
+        self.assertEqual(len(chart_events), 1)
+        self.assertIn('"chart_id": "map_abc123"', chart_events[0])
+
+    async def test_chat_stream_service_never_emits_the_same_chart_id_twice(self):
+        """A chart bubbled via chart_payload and the same chart_id later
+        embedded in the sub-agent's tool_result envelope (AgentResult.charts)
+        must not double-render in the UI (Frontend/src/hooks/useChat.js just
+        appends every "chart" event to a list, with no dedup of its own)."""
+        from models import AgentResult, ChartPayload, agent_result_to_json
+        from services.chat_stream_service import ChatStreamService
+        from services.chart_service import ChartService
+
+        chart_payload = {"type": "heatmap", "chart_id": "map_abc123", "title": "TEMPO over NJ"}
+        envelope = agent_result_to_json(AgentResult(
+            text="Plotted NO2.",
+            charts=[ChartPayload(type="heatmap", chart_id="map_abc123", title="TEMPO over NJ")],
+        ))
+
+        async def fake_stream_response(agent, message, thread_id, **kwargs):
+            yield "chart_payload", chart_payload
+            yield "tool_result", {"name": "ask_earthdata_agent", "content": envelope}
+
+        service = ChatStreamService(ChartService(), long_request_seconds=999)
+        with patch("services.chat_stream_service.stream_response", fake_stream_response), \
+             patch("services.chart_service.chart_repository.get_chart", AsyncMock(return_value=None)), \
+             patch("services.chart_service.chart_repository.save_chart", AsyncMock(side_effect=lambda thread_id, payload, user_id: {**payload, "thread_id": thread_id, "user_id": user_id})):
+            events = [
+                event
+                async for event in service.stream_chat_events(object(), "hi", "thread-1", "user-1", "req-1")
+            ]
+
+        chart_events = [e for e in events if e.startswith("event: chart")]
+        self.assertEqual(len(chart_events), 1)
+
     async def test_find_closest_monitor_accepts_string_k(self):
         from tools.ground_sensor_tools import epa_aqs_tools
 

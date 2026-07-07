@@ -5,7 +5,7 @@ import logging
 import time
 from typing import Any, AsyncIterator
 
-from models import parse_agent_result
+from models import parse_agent_result, parse_chart_payload
 from services.artifact_store import artifact_store
 from services.chart_service import ChartService
 from services.intent_router import inject_routing_hint
@@ -32,6 +32,13 @@ class ChatStreamService:
         image_urls = []
         artifacts = []
         tool_calls = []
+        # Charts already emitted this turn, by chart_id — a chart can reach
+        # this loop twice (once bubbled in real time via a chart_payload
+        # event, again batched inside a sub-agent's final tool_result
+        # envelope); the frontend appends every "chart" event with no dedup
+        # of its own (Frontend/src/hooks/useChat.js), so this set is the
+        # single point that keeps each chart_id rendered exactly once (T13).
+        emitted_chart_ids: set[str] = set()
         started = time.monotonic()
         routed_message = inject_routing_hint(message)
         try:
@@ -44,6 +51,12 @@ class ChatStreamService:
                     yield self.sse("status", {"message": data.get("message", "")})
                 elif event_type == "job_progress":
                     yield self.sse("job_progress", data)
+                elif event_type == "chart_payload":
+                    chart = parse_chart_payload(data)
+                    if chart is not None:
+                        event = await self._emit_chart_once(thread_id, chart, user_id, emitted_chart_ids)
+                        if event is not None:
+                            yield event
                 elif event_type == "tool_result":
                     async for event in self._tool_result_events(
                         data.get("content", ""),
@@ -51,6 +64,7 @@ class ChatStreamService:
                         user_id,
                         image_urls,
                         artifacts,
+                        emitted_chart_ids,
                     ):
                         yield event
                 elif event_type == "image":
@@ -59,7 +73,7 @@ class ChatStreamService:
                         image_urls.append(url)
                         yield self.sse("image", {"url": url})
                 elif event_type == "text":
-                    text, events = await self._text_events(data, thread_id, user_id)
+                    text, events = await self._text_events(data, thread_id, user_id, emitted_chart_ids)
                     response_text += text
                     if text:
                         yield self.sse("text", {"content": text})
@@ -93,7 +107,10 @@ class ChatStreamService:
         user_id: str,
         image_urls: list[str],
         artifacts: list[dict[str, Any]] | None = None,
+        emitted_chart_ids: set[str] | None = None,
     ) -> AsyncIterator[str]:
+        if emitted_chart_ids is None:
+            emitted_chart_ids = set()
         agent_result = parse_agent_result(content)
         if agent_result is not None:
             for artifact_ref in agent_result.artifacts:
@@ -106,7 +123,9 @@ class ChatStreamService:
                     artifacts.append(payload)
                 yield self.sse("artifact", payload)
             for chart in agent_result.charts:
-                yield self.sse("chart", await self.chart_service.persist_chart_payload(thread_id, chart, user_id))
+                event = await self._emit_chart_once(thread_id, chart, user_id, emitted_chart_ids)
+                if event is not None:
+                    yield event
             return
 
         artifact_refs = self._artifact_refs(content)
@@ -120,7 +139,9 @@ class ChatStreamService:
         _, charts = self.chart_service.parse_charts(content)
         if charts:
             for chart in charts:
-                yield self.sse("chart", await self.chart_service.persist_chart_payload(thread_id, chart, user_id))
+                event = await self._emit_chart_once(thread_id, chart, user_id, emitted_chart_ids)
+                if event is not None:
+                    yield event
             emitted_something = True
 
         if artifact_refs:
@@ -169,13 +190,19 @@ class ChatStreamService:
             return None
         return claimed.model_dump(exclude_none=True)
 
-    async def _text_events(self, data: Any, thread_id: str, user_id: str) -> tuple[str, list[str]]:
+    async def _text_events(
+        self, data: Any, thread_id: str, user_id: str, emitted_chart_ids: set[str] | None = None,
+    ) -> tuple[str, list[str]]:
+        if emitted_chart_ids is None:
+            emitted_chart_ids = set()
         if isinstance(data, str):
             structured_result = parse_agent_result(data)
             if structured_result is not None:
                 events = []
                 for chart in structured_result.charts:
-                    events.append(self.sse("chart", await self.chart_service.persist_chart_payload(thread_id, chart, user_id)))
+                    event = await self._emit_chart_once(thread_id, chart, user_id, emitted_chart_ids)
+                    if event is not None:
+                        events.append(event)
                 for artifact in structured_result.artifacts:
                     payload = self._resolve_artifact_payload(
                         artifact.model_dump(exclude_none=True), user_id, thread_id,
@@ -187,15 +214,33 @@ class ChatStreamService:
 
             text, charts = self.chart_service.parse_charts(data)
             if text is not None or charts:
-                events = [
-                    self.sse("chart", await self.chart_service.persist_chart_payload(thread_id, chart, user_id))
-                    for chart in charts
-                ]
+                events = []
+                for chart in charts:
+                    event = await self._emit_chart_once(thread_id, chart, user_id, emitted_chart_ids)
+                    if event is not None:
+                        events.append(event)
                 return text or "", events
             return data, []
         if isinstance(data, list):
             return flatten_text_content(data), []
         return "", []
+
+    async def _emit_chart_once(
+        self, thread_id: str, chart: Any, user_id: str, emitted_chart_ids: set[str],
+    ) -> str | None:
+        """Persist and build the "chart" SSE event for ``chart``, or return
+        None if its chart_id was already emitted this turn (T13 dedup — see
+        the comment on stream_chat_events' emitted_chart_ids)."""
+        payload = chart.model_dump(exclude_none=True) if hasattr(chart, "model_dump") else dict(chart)
+        chart_id = payload.get("chart_id")
+        if chart_id is not None and chart_id in emitted_chart_ids:
+            return None
+        stored = await self.chart_service.persist_chart_payload(thread_id, chart, user_id)
+        stored_id = stored.get("chart_id") if isinstance(stored, dict) else None
+        emitted_id = stored_id or chart_id
+        if emitted_id is not None:
+            emitted_chart_ids.add(emitted_id)
+        return self.sse("chart", stored)
 
     def _artifact_refs(self, content: Any) -> list[dict[str, Any]]:
         if isinstance(content, dict):
