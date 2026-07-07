@@ -23,6 +23,14 @@ from utils.geo_utils import LAT_COORD_CANDIDATES, LON_COORD_CANDIDATES, find_lat
 logger = logging.getLogger(__name__)
 _geocoding_service = None
 
+# Nominatim's usage policy (https://operations.osmfoundation.org/policies/nominatim/)
+# requires an identifying User-Agent naming the application and a means of
+# contact — a generic string risks the deployment's IP getting blocked.
+NOMINATIM_USER_AGENT = (
+    "talking-to-air/1.0 (https://github.com/your-username/talking-to-air; "
+    "contact: your_email@example.com)"
+)
+
 
 def get_geocoding_service() -> "GeocodingService":
     """Return the shared geocoder so agent and plotting tools share cache."""
@@ -512,7 +520,7 @@ class GeocodingService:
             'polygon_geojson': 1  # Request polygon boundary
         }
         headers = {
-            'User-Agent': '(Educational project)'
+            'User-Agent': NOMINATIM_USER_AGENT
         }
 
         self.last_request = time.time()
@@ -567,7 +575,7 @@ class GeocodingService:
             'limit': 1,
             'polygon_geojson': 1,
         }
-        headers = {'User-Agent': '(Educational project)'}
+        headers = {'User-Agent': NOMINATIM_USER_AGENT}
 
         self.last_request = time.time()
         logger.info("satellite_geocode_requests", extra={"_location": location_name})
