@@ -154,7 +154,7 @@ Copy `.env.example` to `.env` and fill in the values below.
 | `DB_PASSWORD` | PostgreSQL password (any string you choose) |
 | `EARTHDATA_USERNAME` / `EARTHDATA_PASSWORD` | NASA Earthdata credentials |
 | `EDL_USERNAME` / `EDL_PASSWORD` | Earth Data Login credentials (same account as Earthdata) |
-| `AQS_API_EMAIL` / `AQS_API_KEY` | EPA AQS API credentials |
+| `AQS_API_EMAIL` / `AQS_API_KEY` | EPA AQS API credentials — `AQS_API_EMAIL` is also reused as the contact address in the Nominatim geocoder's User-Agent, so it must be a real email (Nominatim rejects placeholder `@example.com`/`.org`/`.net` addresses) |
 
 ### Optional / Tuning
 

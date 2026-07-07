@@ -18,6 +18,7 @@ from affine import Affine
 
 from typing import Optional, Tuple, Union, List
 
+from config.settings import get_settings
 from utils.geo_utils import LAT_COORD_CANDIDATES, LON_COORD_CANDIDATES, find_lat_coord, find_lon_coord
 
 logger = logging.getLogger(__name__)
@@ -25,11 +26,13 @@ _geocoding_service = None
 
 # Nominatim's usage policy (https://operations.osmfoundation.org/policies/nominatim/)
 # requires an identifying User-Agent naming the application and a means of
-# contact — a generic string risks the deployment's IP getting blocked.
-NOMINATIM_USER_AGENT = (
-    "talking-to-air/1.0 (https://github.com/your-username/talking-to-air; "
-    "contact: your_email@example.com)"
-)
+# contact. Reuses AQS_API_EMAIL (already required for EPA AQS API
+# registration) as that contact address instead of adding a second
+# deployment-operator email setting — an unfilled placeholder here isn't just
+# a policy violation, Nominatim's edge actively 403s any User-Agent
+# containing an @example.com/.org/.net address (verified live 2026-07-07),
+# so a real address is required for geocoding to work at all.
+NOMINATIM_USER_AGENT = f"talking-to-air/1.0 (contact: {get_settings().aqs_api_email})"
 
 
 def get_geocoding_service() -> "GeocodingService":
