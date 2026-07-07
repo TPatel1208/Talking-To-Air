@@ -1,5 +1,4 @@
 import importlib.util
-import itertools
 import os
 import sys
 import unittest
@@ -19,44 +18,53 @@ class SubagentTrimMiddlewareTests(unittest.IsolatedAsyncioTestCase):
     """T13's high-ceiling safety net on the sub-agents: a last-resort trim
     that must never fire in a healthy workflow, but converts an unforeseen
     bloat source into a degraded-but-alive turn instead of a provider 413,
-    logging subagent_trim_activated whenever it actually removes messages."""
+    logging subagent_trim_activated whenever it actually removes messages.
 
-    async def _run_agent(self, *, max_tokens: int, n_messages: int):
-        from langchain.agents import create_agent
-        from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-        from langchain_core.messages import AIMessage, HumanMessage
+    Exercises the middleware's own wrap_model_call hook directly against a
+    hand-built ModelRequest/handler — not a full create_agent/LangGraph
+    invocation, which pulls in a real chat model, a real graph run, and (as
+    observed) can misbehave badly under concurrent test-suite load.
+    """
+
+    async def _invoke(self, *, max_tokens: int, messages: list):
+        from langchain.agents.middleware import ModelRequest
 
         from agents.subagent_trim import build_subagent_trim_middleware
 
-        trim_middleware = build_subagent_trim_middleware("earthdata", max_tokens=max_tokens)
-        # An unbounded supply, not a single item — langgraph's model-node
-        # retry policy can re-invoke the model once on a transient error
-        # unrelated to this middleware, which would otherwise exhaust a
-        # one-item iterator and fail the test on a StopIteration that has
-        # nothing to do with trimming.
-        model = GenericFakeChatModel(messages=itertools.cycle([AIMessage(content="done")]))
-        agent = create_agent(
-            model=model, tools=[], system_prompt="sys", checkpointer=None, middleware=[trim_middleware],
-        )
-        messages = [HumanMessage(content=f"message {i}") for i in range(n_messages)]
-        result = await agent.ainvoke({"messages": messages})
-        return result
+        middleware = build_subagent_trim_middleware("earthdata", max_tokens=max_tokens)
+        request = ModelRequest(model=object(), messages=messages, state={"messages": messages})
+        received: dict = {}
+
+        async def handler(req):
+            received["messages"] = req.messages
+            return "handled"
+
+        result = await middleware.awrap_model_call(request, handler)
+        return result, received["messages"]
 
     async def test_trims_an_oversized_history_and_logs_the_activation_event(self):
+        from langchain_core.messages import HumanMessage
+
+        messages = [HumanMessage(content=f"message {i}") for i in range(200)]
+
         with self.assertLogs("agents.subagent_trim", level="WARNING") as captured:
-            result = await self._run_agent(max_tokens=50, n_messages=200)
+            result, passed_messages = await self._invoke(max_tokens=50, messages=messages)
 
         # The turn completes — degraded, not dropped/errored.
-        self.assertEqual(result["messages"][-1].content, "done")
+        self.assertEqual(result, "handled")
+        self.assertLess(len(passed_messages), len(messages))
         self.assertIn("subagent_trim_activated", captured.output[0])
 
     async def test_never_fires_for_a_history_that_already_fits(self):
-        from agents.subagent_trim import build_subagent_trim_middleware
+        from langchain_core.messages import HumanMessage
+
+        messages = [HumanMessage(content=f"message {i}") for i in range(3)]
 
         with self.assertNoLogs("agents.subagent_trim", level="WARNING"):
-            result = await self._run_agent(max_tokens=20000, n_messages=3)
+            result, passed_messages = await self._invoke(max_tokens=20000, messages=messages)
 
-        self.assertEqual(result["messages"][-1].content, "done")
+        self.assertEqual(result, "handled")
+        self.assertEqual(len(passed_messages), len(messages))
 
 
 if __name__ == "__main__":
