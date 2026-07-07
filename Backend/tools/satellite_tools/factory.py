@@ -11,9 +11,9 @@ from __future__ import annotations
 
 from langchain_core.tools import BaseTool
 
+from earthdata_mcp.client import CURATED_TOOL_NAMES
 from earthdata_mcp.toolset import curated_model_tools
 from tools.satellite_tools.comparison_tools import make_compare
-from tools.satellite_tools.geocode_tools import geocode_location
 from tools.satellite_tools.plot_tools import (
     make_conduct_temporal_statistic,
     make_plot_multiple,
@@ -24,11 +24,9 @@ from tools.satellite_tools.stat_tools import make_compute_statistic_tool, make_f
 from tools.satellite_tools.validation_tools import make_exceedance_overlay, make_validate_against_ground
 
 
-def build_satellite_tools(mcp_tools: dict[str, BaseTool]) -> list[BaseTool]:
-    """Assemble the earthdata agent's tools, bound to this request's mcp_tools."""
+def _handle_tools(mcp_tools: dict[str, BaseTool]) -> list[BaseTool]:
+    """The handle-based plot/statistics tools, bound to this request's mcp_tools."""
     return [
-        geocode_location,
-        *curated_model_tools(mcp_tools),
         make_safe_retrieve(mcp_tools),
         make_await_retrieval(mcp_tools),
         make_plot_singular(mcp_tools),
@@ -40,3 +38,18 @@ def build_satellite_tools(mcp_tools: dict[str, BaseTool]) -> list[BaseTool]:
         make_exceedance_overlay(mcp_tools),
         make_compare(mcp_tools),
     ]
+
+
+def build_satellite_tools(mcp_tools: dict[str, BaseTool]) -> list[BaseTool]:
+    """Assemble the earthdata agent's tools, bound to this request's mcp_tools."""
+    return [*curated_model_tools(mcp_tools), *_handle_tools(mcp_tools)]
+
+
+def sanctioned_tool_names() -> list[str]:
+    """The exact model-facing earthdata tool names, in the same assembly
+    order as ``build_satellite_tools`` — the single source of truth for the
+    supervisor's refusal-retry guidance, so it can never name a tool this
+    backend doesn't register. None of the handle tools' constructors touch
+    ``mcp_tools`` eagerly, so an empty dict is safe here.
+    """
+    return [*CURATED_TOOL_NAMES, *(t.name for t in _handle_tools({}))]

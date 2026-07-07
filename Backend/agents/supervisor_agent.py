@@ -35,7 +35,8 @@ from models import (
     parse_sub_agent_envelope,
 )
 from models.artifact import ArtifactReference
-from tools.satellite_tools.query_parser import parse_satellite_plot_query
+from tools import GROUND_TOOLS
+from tools.satellite_tools.factory import sanctioned_tool_names
 from utils.db import get_checkpointer
 from utils.message_utils import extract_last_text, truncate_text
 from utils.metrics import record_agent_request
@@ -157,10 +158,14 @@ async def build_agent(
                     {"messages": [HumanMessage(content=task_text)]},
                     config={"configurable": {"thread_id": sub_thread_id}},
                 )
+                # Untruncated — _finalize_sub_agent_result parses the
+                # {summary, artifact_ids, handles} envelope out of this
+                # before any length limit is applied (T11).
                 text = extract_last_text(
                     result,
                     "Ground sensor agent returned no response.",
                     agent_name="ground_sensor",
+                    truncate=False,
                 )
                 artifact_refs = _extract_artifact_refs(result.get("messages", []))
             except TimeoutError:
@@ -172,10 +177,7 @@ async def build_agent(
                 artifact_refs = []
             finally:
                 record_agent_request("ground_sensor", outcome)
-            return AgentResult(
-                text=truncate_text(text, 2000, agent_name="ground_sensor"),
-                artifacts=artifact_refs,
-            )
+            return AgentResult(text=text, artifacts=artifact_refs)
 
         enriched_task = _inject_ground_context(task, last_ground_monitor)
         result = await _run_ground(enriched_task)
@@ -284,17 +286,11 @@ async def build_agent(
             # Joined with "" (not " ") — text_parts holds successive streamed
             # deltas of one final message, and this string must round-trip
             # through parse_sub_agent_envelope as valid JSON; a space
-            # injected between two delta chunks would corrupt it.
-            text = truncate_text(
-                "".join(text_parts),
-                2000,
-                agent_name="satellite",
-            ) or "Earthdata agent returned no response."
+            # injected between two delta chunks would corrupt it. Left
+            # untruncated here — _finalize_sub_agent_result parses the
+            # envelope before any length limit is applied (T11).
+            text = "".join(text_parts) or "Earthdata agent returned no response."
             return AgentResult(text=text, charts=charts, artifacts=artifacts)
-
-        direct_first = await _try_direct_satellite_plot(enriched_task)
-        if direct_first is not None:
-            return agent_result_to_json(direct_first)
 
         result = await _run_satellite(enriched_task)
         refusal_markers = (
@@ -314,25 +310,7 @@ async def build_agent(
                     "_thread_id": current_thread_id(),
                 },
             )
-            retry_task = (
-                "The satellite tools are registered and available in this runtime: "
-                "geocode_location, search_datasets, describe_dataset, define_area_of_interest, "
-                "check_availability, retrieve_timeseries, get_retrieval_status, plot_singular, "
-                "plot_multiple, compute_statistic_tool, conduct_temporal_statistic, "
-                "find_daily_peak. Retry the task using those tools exactly as needed. "
-                f"Task: {enriched_task}"
-            )
-            result = await _run_satellite(retry_task)
-            if (
-                any(marker in result.text.lower() for marker in refusal_markers)
-                or not result.charts
-            ):
-                fallback = await _try_direct_satellite_plot(
-                    enriched_task,
-                    log_parse_failure=True,
-                )
-                if fallback is not None:
-                    result = fallback
+            result = await _run_satellite(_satellite_retry_task(enriched_task))
 
         result = _finalize_sub_agent_result(result, "earthdata")
         return agent_result_to_json(result)
@@ -360,11 +338,12 @@ _GROUND_TOOL_FAILURE_MARKERS = (
     "please adjust your prompt",
 )
 
+# Derived from GROUND_TOOLS/sanctioned_tool_names (the actual registered
+# toolsets) rather than hand-maintained, so a retry can never name a tool
+# that has left the surface.
 _GROUND_RETRY_TOOL_GUIDANCE = (
     "The ground sensor tools are registered and available in this runtime: "
-    "find_closest_monitor, find_closest_monitor_by_coords, get_daily_summary, "
-    "get_quarterly_summary, get_annual_summary, find_exceedance_days, "
-    "get_sample_data, list_states. Retry using valid tool arguments. "
+    f"{', '.join(t.name for t in GROUND_TOOLS)}. Retry using valid tool arguments. "
     "For by-site summaries, pass either station_id as site_number like "
     "'34-023-0011' or split it into state_code='34', county_code='023', "
     "site_number='0011'. Always pass pollutant_standard exactly as one of: "
@@ -379,6 +358,11 @@ def _finalize_sub_agent_result(result: AgentResult, agent_label: str) -> AgentRe
     handles} envelope contract. A missing/invalid envelope is the sub-agent's
     failure to report — a structured error, never the raw prose passed
     through as if it were a legitimate answer.
+
+    ``result.text`` must be the untruncated final message — envelope parsing
+    happens first; truncation applies afterwards, to the extracted summary
+    only, so a compliant answer is never destroyed by a length limit fired
+    before it was ever parsed (T11).
     """
     envelope = parse_sub_agent_envelope(result.text)
     if envelope is None:
@@ -393,7 +377,7 @@ def _finalize_sub_agent_result(result: AgentResult, agent_label: str) -> AgentRe
     discovered = {ref.id: ref for ref in result.artifacts}
     artifacts = [discovered[artifact_id] for artifact_id in envelope.artifact_ids if artifact_id in discovered]
     return AgentResult(
-        text=envelope.summary,
+        text=truncate_text(envelope.summary, 2000, agent_name=agent_label),
         charts=result.charts,
         artifacts=artifacts,
         handles=envelope.handles,
@@ -407,6 +391,17 @@ def _is_ground_tool_failure(text: str) -> bool:
 
 def _ground_retry_task(task: str) -> str:
     return f"{_GROUND_RETRY_TOOL_GUIDANCE}\n\nTask: {task}"
+
+
+def _satellite_retry_task(task: str) -> str:
+    # Derived from sanctioned_tool_names() (the actual built toolset) rather
+    # than hand-maintained, so a retry can never name a tool that has left
+    # the model-facing surface.
+    guidance = (
+        "The satellite tools are registered and available in this runtime: "
+        f"{', '.join(sanctioned_tool_names())}. Retry the task using those tools exactly as needed."
+    )
+    return f"{guidance}\n\nTask: {task}"
 
 
 def _clean_ground_failure_message() -> str:
@@ -574,53 +569,5 @@ def _parse_tool_content(content: Any) -> dict | None:
     return None
 
 
-async def _try_direct_satellite_plot(
-    task: str,
-    *,
-    log_parse_failure: bool = False,
-) -> AgentResult | None:
-    """
-    Deterministic fallback for simple one-location satellite plot requests.
-
-    Disabled pending PRD T04: it used to execute geocode -> check_data_availability
-    -> fetch_environmental_data -> plot_singular directly, but that pipeline is
-    gone now that retrieval is handle-based (search_datasets -> define_area_of_interest
-    -> retrieve_timeseries -> poll -> plot). Simple requests fall through to the
-    LLM-driven satellite agent, which has the new tools, until this fast path is
-    rebuilt against handles.
-    """
-    parsed = _parse_simple_satellite_plot_task(task)
-    if parsed is None:
-        if log_parse_failure:
-            logger.warning(
-                "direct_satellite_fallback_parse_failure",
-                extra={
-                    "_event": "direct_satellite_fallback_parse_failure",
-                    "_task_summary": _task_summary(task),
-                    "_thread_id": current_thread_id(),
-                },
-            )
-        else:
-            logger.debug(
-                "direct_satellite_fallback_not_applicable",
-                extra={
-                    "_event": "direct_satellite_fallback_not_applicable",
-                    "_task_summary": _task_summary(task),
-                    "_thread_id": current_thread_id(),
-                },
-            )
-    return None
-
-
-def _parse_simple_satellite_plot_task(task: str):
-    parsed = parse_satellite_plot_query(task)
-    if parsed is None:
-        return None
-    return (
-        parsed.variable,
-        parsed.location,
-        parsed.temporal.start,
-        parsed.temporal.end,
-    )
 
 

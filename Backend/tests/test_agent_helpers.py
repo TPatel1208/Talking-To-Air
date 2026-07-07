@@ -10,123 +10,8 @@ if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 
-def _load_query_parser_module():
-    path = os.path.join(BACKEND_DIR, "tools", "satellite_tools", "query_parser.py")
-    spec = importlib.util.spec_from_file_location("satellite_query_parser", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-class SatelliteQueryParserTests(unittest.TestCase):
-    def test_parser_removes_for_the_month_from_location(self):
-        query_parser = _load_query_parser_module()
-
-        parsed = query_parser.parse_satellite_plot_query(
-            "Plot TROPOMI NO2 over New Jersey for the month of February 2024"
-        )
-
-        self.assertIsNotNone(parsed)
-        self.assertEqual(parsed.variable, "TROPOMI_NO2")
-        self.assertEqual(parsed.location, "New Jersey")
-        self.assertEqual(parsed.temporal.start, "2024-02-01T00:00:00Z")
-        self.assertEqual(parsed.temporal.end, "2024-02-29T23:59:59Z")
-
-    def test_parser_handles_iso_range(self):
-        query_parser = _load_query_parser_module()
-
-        parsed = query_parser.parse_satellite_plot_query(
-            "plot OMI NO2 over Texas from 2024-01-01 to 2024-01-31"
-        )
-
-        self.assertIsNotNone(parsed)
-        self.assertEqual(parsed.variable, "OMI_NO2")
-        self.assertEqual(parsed.location, "Texas")
-        self.assertEqual(parsed.temporal.start, "2024-01-01T00:00:00Z")
-        self.assertEqual(parsed.temporal.end, "2024-01-31T23:59:59Z")
-
-    def test_parser_handles_generic_no2_month_of_year(self):
-        query_parser = _load_query_parser_module()
-
-        parsed = query_parser.parse_satellite_plot_query(
-            "show NO2 over New Jersey during February of 2024"
-        )
-
-        self.assertIsNotNone(parsed)
-        self.assertEqual(parsed.variable, "TROPOMI_NO2")
-        self.assertEqual(parsed.location, "New Jersey")
-        self.assertEqual(parsed.temporal.start, "2024-02-01T00:00:00Z")
-        self.assertEqual(parsed.temporal.end, "2024-02-29T23:59:59Z")
-
-    def test_location_validation_rejects_temporal_pollution(self):
-        query_parser = _load_query_parser_module()
-
-        self.assertFalse(query_parser.is_valid_location_candidate("New Jersey during February 2024"))
-        self.assertTrue(query_parser.is_valid_location_candidate("New Jersey"))
-
-
 @unittest.skipIf(importlib.util.find_spec("langchain") is None, "langchain is not installed")
 class AgentHelperTests(unittest.TestCase):
-    def test_simple_satellite_plot_parser_handles_iso_day(self):
-        from agents.supervisor_agent import _parse_simple_satellite_plot_task
-
-        parsed = _parse_simple_satellite_plot_task("Plot TROPOMI NO2 over Newark NJ for 2024-01-15")
-
-        self.assertEqual(
-            parsed,
-            ("TROPOMI_NO2", "Newark NJ", "2024-01-15T00:00:00Z", "2024-01-15T23:59:59Z"),
-        )
-
-    def test_simple_satellite_plot_parser_handles_over_location_on_day(self):
-        from agents.supervisor_agent import _parse_simple_satellite_plot_task
-
-        parsed = _parse_simple_satellite_plot_task("plot TROPOMI NO2 over New York on 2024-06-01")
-
-        self.assertEqual(
-            parsed,
-            ("TROPOMI_NO2", "New York", "2024-06-01T00:00:00Z", "2024-06-01T23:59:59Z"),
-        )
-
-    def test_simple_satellite_plot_parser_handles_month_range(self):
-        from agents.supervisor_agent import _parse_simple_satellite_plot_task
-
-        parsed = _parse_simple_satellite_plot_task("Show OMI ozone in Tampa FL during February 2024")
-
-        self.assertEqual(
-            parsed,
-            ("OMI_O3", "Tampa FL", "2024-02-01T00:00:00Z", "2024-02-29T23:59:59Z"),
-        )
-
-    def test_simple_satellite_plot_parser_removes_for_the_month_from_location(self):
-        from agents.supervisor_agent import _parse_simple_satellite_plot_task
-
-        parsed = _parse_simple_satellite_plot_task(
-            "Plot TROPOMI NO2 over New Jersey for the month of February 2024"
-        )
-
-        self.assertEqual(
-            parsed,
-            ("TROPOMI_NO2", "New Jersey", "2024-02-01T00:00:00Z", "2024-02-29T23:59:59Z"),
-        )
-
-    def test_simple_satellite_plot_parser_handles_iso_range(self):
-        from agents.supervisor_agent import _parse_simple_satellite_plot_task
-
-        parsed = _parse_simple_satellite_plot_task(
-            "plot OMI NO2 over Texas from 2024-01-01 to 2024-01-31"
-        )
-
-        self.assertEqual(
-            parsed,
-            ("OMI_NO2", "Texas", "2024-01-01T00:00:00Z", "2024-01-31T23:59:59Z"),
-        )
-
-    def test_location_validation_rejects_temporal_pollution(self):
-        from tools.satellite_tools.query_parser import is_valid_location_candidate
-
-        self.assertFalse(is_valid_location_candidate("New Jersey during February 2024"))
-        self.assertTrue(is_valid_location_candidate("New Jersey"))
-
     def test_truncate_text_logs_warning_with_lengths(self):
         from utils.message_utils import truncate_text
 
@@ -248,6 +133,55 @@ class AgentHelperTests(unittest.TestCase):
         self.assertIn("earthdata", finalized.text.lower())
         # Charts already produced this turn are not silently discarded.
         self.assertEqual(len(finalized.charts), 1)
+
+    def test_finalize_sub_agent_result_parses_an_envelope_longer_than_the_display_limit(self):
+        import json
+
+        from agents.supervisor_agent import _finalize_sub_agent_result
+        from models import AgentResult
+        from models.artifact import ArtifactReference
+
+        long_summary = "A" * 2500
+        raw_text = json.dumps({
+            "summary": long_summary,
+            "artifact_ids": ["art_1"],
+            "handles": ["obs_1"],
+        })
+        self.assertGreater(len(raw_text), 2000)
+
+        raw = AgentResult(
+            text=raw_text,
+            artifacts=[ArtifactReference(id="art_1", type="table")],
+        )
+
+        finalized = _finalize_sub_agent_result(raw, "earthdata")
+
+        self.assertNotEqual(finalized.metadata.get("error"), "invalid_envelope")
+        self.assertEqual([a.id for a in finalized.artifacts], ["art_1"])
+        self.assertEqual(finalized.handles, ["obs_1"])
+        # The extracted summary is truncated for display only after parsing.
+        self.assertEqual(len(finalized.text), 2000)
+
+    def test_satellite_retry_task_names_only_the_sanctioned_toolset(self):
+        from agents.supervisor_agent import _satellite_retry_task
+        from tools.satellite_tools.factory import sanctioned_tool_names
+
+        retry_task = _satellite_retry_task("Plot TROPOMI NO2 over New Jersey")
+
+        for name in sanctioned_tool_names():
+            self.assertIn(name, retry_task)
+        # Demoted/removed tools must never appear in retry guidance.
+        for stale in ("geocode_location", "get_retrieval_status", "summarize_dataset"):
+            self.assertNotIn(stale, retry_task)
+        self.assertIn("Task: Plot TROPOMI NO2 over New Jersey", retry_task)
+
+    def test_ground_retry_guidance_names_only_ground_tools(self):
+        from agents.supervisor_agent import _GROUND_RETRY_TOOL_GUIDANCE
+        from tools import GROUND_TOOLS
+
+        for tool in GROUND_TOOLS:
+            self.assertIn(tool.name, _GROUND_RETRY_TOOL_GUIDANCE)
+        self.assertNotIn("geocode_location", _GROUND_RETRY_TOOL_GUIDANCE)
 
     def test_build_agent_uses_configured_supervisor_model(self):
         from agents import supervisor_agent

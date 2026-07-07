@@ -50,14 +50,22 @@ def extract_last_text(
     max_chars: int = 2000,
     agent_name: str = "unknown",
     request_id: str | None = None,
+    truncate: bool = True,
 ) -> str:
-    """Return the last non-empty text content from an agent invoke() result."""
+    """Return the last non-empty text content from an agent invoke() result.
+
+    ``truncate=False`` returns the untruncated text — callers that still
+    need to parse a structured envelope out of it must do so before any
+    length limit is applied, so a compliant answer is never destroyed by
+    truncation (T11). Truncate the envelope's extracted summary afterwards
+    instead.
+    """
     for msg in reversed(result.get("messages", [])):
         if not (hasattr(msg, "content") and msg.content):
             continue
         text = flatten_text_content(msg.content)
         if text:
-            return truncate_text(text, max_chars, agent_name, request_id)
+            return truncate_text(text, max_chars, agent_name, request_id) if truncate else text
     return fallback
 
 
