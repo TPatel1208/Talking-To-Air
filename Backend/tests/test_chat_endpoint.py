@@ -229,7 +229,31 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
                 response = await client.get("/health")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"status": "ok", "db": True, "agent": True})
+        # earthdata_mcp_manager is never started in this test (lifespan
+        # never runs), so it reports its initial "connecting" state (T17).
+        self.assertEqual(
+            response.json(), {"status": "ok", "db": True, "agent": True, "earthdata_mcp": "connecting"},
+        )
+
+    async def test_health_reports_the_earthdata_mcp_connection_state(self):
+        from types import SimpleNamespace
+
+        transport = self.httpx.ASGITransport(app=self.api.app)
+
+        async def healthy_db(timeout_seconds=2.0):
+            return True, None
+
+        self.api.app.state.earthdata_mcp_manager = SimpleNamespace(state="unavailable")
+        self.addCleanup(setattr, self.api.app.state, "earthdata_mcp_manager", None)
+
+        with patch.object(self.api, "check_db_pool", healthy_db):
+            async with self.httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                response = await client.get("/health")
+
+        self.assertEqual(response.json()["earthdata_mcp"], "unavailable")
 
     async def test_health_reports_degraded_when_database_fails(self):
         transport = self.httpx.ASGITransport(app=self.api.app)

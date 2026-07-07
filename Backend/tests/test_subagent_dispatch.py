@@ -453,6 +453,61 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("already been called", second.text)
 
+    async def test_run_satellite_returns_the_deterministic_message_when_the_mcp_is_not_ready(self):
+        # T17 story #13: gate on the connection manager's state before ever
+        # touching the sub-agent, so an outage costs zero model calls.
+        from services import subagent_dispatch
+        from earthdata_mcp.connection import STATE_UNAVAILABLE
+
+        class UntouchedSatelliteAgent:
+            def __getattr__(self, name):
+                raise AssertionError(f"unexpected access to untouched satellite agent: {name}")
+
+        subagent_dispatch.get_call_budget().clear()
+        mcp_manager = SimpleNamespace(state=STATE_UNAVAILABLE)
+
+        result = await subagent_dispatch.run_satellite(
+            UntouchedSatelliteAgent(), "Plot NO2 over NJ", "thread-1", mcp_manager=mcp_manager,
+        )
+
+        self.assertIn("satellite data layer is temporarily unavailable", result.text)
+        self.assertEqual(result.metadata.get("data_layer"), STATE_UNAVAILABLE)
+
+    async def test_run_satellite_dispatches_normally_once_the_mcp_is_ready(self):
+        from services import subagent_dispatch
+        from earthdata_mcp.connection import STATE_READY
+
+        envelope = json.dumps({"summary": "Plotted NO2 over NJ.", "artifact_ids": [], "handles": []})
+
+        class FakeSatelliteAgent:
+            async def astream(self, input_, config, stream_mode):
+                yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
+
+        subagent_dispatch.get_call_budget().clear()
+        mcp_manager = SimpleNamespace(state=STATE_READY)
+
+        result = await subagent_dispatch.run_satellite(
+            FakeSatelliteAgent(), "Plot NO2 over NJ", "thread-1", mcp_manager=mcp_manager,
+        )
+
+        self.assertEqual(result.text, "Plotted NO2 over NJ.")
+
+    async def test_run_satellite_without_a_manager_dispatches_normally(self):
+        # Default (no mcp_manager passed) preserves today's behavior for
+        # every existing caller — the manager must be invisible when unused.
+        from services import subagent_dispatch
+
+        envelope = json.dumps({"summary": "ok", "artifact_ids": [], "handles": []})
+
+        class FakeSatelliteAgent:
+            async def astream(self, input_, config, stream_mode):
+                yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
+
+        subagent_dispatch.get_call_budget().clear()
+        result = await subagent_dispatch.run_satellite(FakeSatelliteAgent(), "task", "thread-1")
+
+        self.assertEqual(result.text, "ok")
+
     async def test_run_satellite_refusal_triggers_one_reprompt_not_a_second_workflow_run(self):
         from services import subagent_dispatch
 

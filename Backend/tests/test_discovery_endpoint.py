@@ -3,6 +3,7 @@ import os
 import sys
 import unittest
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_DIR not in sys.path:
@@ -97,6 +98,12 @@ class DiscoveryEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         settings = Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None)
         self.api.app.state.earthdata_mcp_tools = await load_earthdata_tools(settings, current_user_id)
+        # Discovery endpoints read tools through earthdata_mcp_manager (T17);
+        # a bare ready-state stub is enough since these tests only need
+        # `.state`/`.tools`, not the real connect/retry machinery.
+        self.api.app.state.earthdata_mcp_manager = SimpleNamespace(
+            state="ready", tools=self.api.app.state.earthdata_mcp_tools,
+        )
 
         self.user1 = User(
             id="user-1", username="one", password_hash="hash",
@@ -225,6 +232,24 @@ class DiscoveryEndpointTests(unittest.IsolatedAsyncioTestCase):
             self.preview_calls,
             [("dataset_smap_l3", None, None, None, "user-user-1")],
         )
+
+    async def test_discovery_search_fails_honestly_when_the_mcp_is_not_ready(self):
+        # T17 story #3: a bare 500 becomes a clear, structured "data layer
+        # unavailable" state when the connection manager isn't ready.
+        original_manager = self.api.app.state.earthdata_mcp_manager
+        self.api.app.state.earthdata_mcp_manager = SimpleNamespace(state="unavailable", tools={})
+        self.addCleanup(setattr, self.api.app.state, "earthdata_mcp_manager", original_manager)
+
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        auth_patches = self._auth_patch()
+        with auth_patches[0], auth_patches[1]:
+            async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                response = await client.post(
+                    "/discovery/search", json={"query": "soil moisture"}, headers=self.auth_headers1,
+                )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["error"]["category"], "provider_unavailable")
 
     async def test_discovery_endpoints_require_authentication(self):
         transport = self.httpx.ASGITransport(app=self.api.app)

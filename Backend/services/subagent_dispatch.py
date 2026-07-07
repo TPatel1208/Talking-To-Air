@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from config.model_factory import structured_output
+from earthdata_mcp.connection import STATE_READY
 from models import AgentResult, SubAgentEnvelope, parse_agent_result, parse_chart_payload, parse_sub_agent_envelope
 from models.artifact import ArtifactReference
 from repositories.session_metadata_repository import get_ground_monitor_context, save_ground_monitor_context
@@ -33,6 +34,15 @@ from utils.streaming import get_call_budget, stream_response
 logger = logging.getLogger(__name__)
 
 OnEvent = Callable[[str, Any], Awaitable[None]]
+
+# Deterministic — produced without any model call (T17 Implementation
+# Decisions): a researcher asking a satellite question during an MCP outage
+# or incompatible-schema window gets an honest, instant answer instead of
+# burning a model call to discover the same thing.
+SATELLITE_DATA_LAYER_UNAVAILABLE_MESSAGE = (
+    "The satellite data layer is temporarily unavailable, so I can't answer "
+    "satellite questions right now. Ground/EPA air-quality questions still work."
+)
 
 
 async def run_ground(
@@ -131,6 +141,7 @@ async def run_satellite(
     task: str,
     conversation_thread_id: str | None = None,
     on_event: OnEvent | None = None,
+    mcp_manager: Any = None,
 ) -> AgentResult:
     """
     Invoke the earthdata agent once for ``task``, budget-checked and
@@ -140,7 +151,28 @@ async def run_satellite(
     the sub-agent's own stream produces — the router fast path (T14) uses
     this to forward tool_call/status/job_progress/chart_payload events to the
     SSE stream live instead of buffering them until the turn finishes.
+
+    ``mcp_manager``, if given, gates dispatch on the earthdata-retrieval MCP
+    connection manager's state (T17 story #13): when it isn't ``ready``,
+    ``satellite_agent`` is never touched — the deterministic unavailable
+    answer is returned immediately, at zero model-call cost. ``None`` (the
+    default) preserves prior behavior for every existing caller that doesn't
+    pass one.
     """
+    if mcp_manager is not None and mcp_manager.state != STATE_READY:
+        logger.info(
+            "satellite_dispatch_skipped_mcp_not_ready",
+            extra={
+                "_event": "satellite_dispatch_skipped_mcp_not_ready",
+                "_mcp_state": mcp_manager.state,
+                "_thread_id": conversation_thread_id,
+            },
+        )
+        return AgentResult(
+            text=SATELLITE_DATA_LAYER_UNAVAILABLE_MESSAGE,
+            metadata={"data_layer": mcp_manager.state},
+        )
+
     budget = get_call_budget()
     count = budget.get("satellite", 0)
     if count >= 1:

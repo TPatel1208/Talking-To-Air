@@ -16,11 +16,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.routing import Match
 
-from agents.earthdata_agent import build_earthdata_agent
+from agents.earthdata_agent import LazySatelliteAgent, build_earthdata_agent
 from agents.ground_sensor_agent import build_ground_agent
 from agents.supervisor_agent import build_agent
 from config.settings import get_settings
-from earthdata_mcp.toolset import load_earthdata_tools
+from earthdata_mcp.connection import STATE_CONNECTING, STATE_READY, EarthdataMCPConnectionManager
 from repositories.session_metadata_repository import (
     ensure_session_metadata_table,
     get_session_metadata,
@@ -59,8 +59,25 @@ logger = logging.getLogger(__name__)
 chart_service = ChartService()
 export_service = ExportService(settings.csv_export_max_granules)
 history_service = HistoryService(chart_service)
-chat_stream_service = ChatStreamService(chart_service, settings.long_request_seconds)
 session_repository = SessionRepository()
+
+
+async def _on_earthdata_mcp_ready(tools: dict) -> None:
+    """earthdata_mcp_manager's on_ready hook (T17): populates the legacy
+    app.state.earthdata_mcp_tools mirror (still read directly by the
+    unmigrated chart export.csv/.png/.nc endpoints) and rebuilds the real
+    satellite agent into whatever LazySatelliteAgent the current lifespan
+    cycle assigned to app.state.satellite_agent — see
+    agents/earthdata_agent.py for why a mutable placeholder, not a
+    reassigned reference, is what makes this visible to the supervisor's
+    already-built ask_earthdata_agent tool closure."""
+    app.state.earthdata_mcp_tools = tools
+    app.state.satellite_agent.set_real(build_earthdata_agent(mcp_tools=tools))
+    logger.info("earthdata_mcp_satellite_agent_ready", extra={"_event": "earthdata_mcp_satellite_agent_ready"})
+
+
+earthdata_mcp_manager = EarthdataMCPConnectionManager(settings, current_user_id, on_ready=_on_earthdata_mcp_ready)
+chat_stream_service = ChatStreamService(chart_service, settings.long_request_seconds, earthdata_mcp_manager)
 
 
 @asynccontextmanager
@@ -73,29 +90,43 @@ async def lifespan(app: FastAPI):
     await ensure_session_metadata_table()
 
     logger.info("startup_begin", extra={"_model": settings.llm_model})
-    # A broken earthdata-retrieval MCP connection should be discovered at
-    # boot, not mid-conversation — see PRD T02. Tools are bound once here;
-    # bind_workspace resolves workspace_id per-call from current_user_id(),
-    # which stream_response sets for the duration of each request.
-    app.state.earthdata_mcp_tools = await load_earthdata_tools(settings, current_user_id)
+    # T17: the backend boots without the earthdata-retrieval MCP — ground/EPA
+    # features work immediately. earthdata_mcp_manager runs a background
+    # connect loop (capped exponential backoff) instead of the old hard
+    # boot-time raise; misconfiguration (a malformed URL) still fails loud
+    # from validate_config() above, before any of this runs. satellite_agent
+    # is a LazySatelliteAgent placeholder — services.subagent_dispatch
+    # .run_satellite gates on earthdata_mcp_manager.state before ever
+    # touching it, so it's never invoked before _on_earthdata_mcp_ready
+    # (module scope) fills it in.
+    app.state.earthdata_mcp_tools = {}
+    app.state.earthdata_mcp_manager = earthdata_mcp_manager
+    app.state.satellite_agent = LazySatelliteAgent()
+    earthdata_mcp_manager.start()
+
     # Built once here (not inside build_agent) so the supervisor's tool
     # wrappers and the router fast path (services/chat_stream_service.py,
     # T14) invoke the identical sub-agent instances.
     ground_agent = build_ground_agent()
-    satellite_agent = build_earthdata_agent(mcp_tools=app.state.earthdata_mcp_tools)
     app.state.ground_agent = ground_agent
-    app.state.satellite_agent = satellite_agent
-    agent = await build_agent(settings.llm_model, ground_agent=ground_agent, satellite_agent=satellite_agent)
+    agent = await build_agent(
+        settings.llm_model,
+        ground_agent=ground_agent,
+        satellite_agent=app.state.satellite_agent,
+        mcp_manager=earthdata_mcp_manager,
+    )
     app.state.agent = agent
     logger.info("startup_complete")
     try:
         yield
     finally:
+        await earthdata_mcp_manager.stop()
         agent = None
         app.state.agent = None
         app.state.ground_agent = None
         app.state.satellite_agent = None
         app.state.earthdata_mcp_tools = None
+        app.state.earthdata_mcp_manager = None
         await close_db_pool()
         logger.info("shutdown_complete")
 
@@ -243,10 +274,15 @@ async def health():
     db_ok, db_error = await check_db_pool(timeout_seconds=2.0)
     active_agent = getattr(app.state, "agent", None) or agent
     agent_ok = active_agent is not None
+    # T17 story #6: the data layer's connection state, not just db/agent —
+    # so an MCP outage or schema mismatch is visible to monitoring the same
+    # way it's visible to a researcher.
+    manager = getattr(app.state, "earthdata_mcp_manager", None)
+    earthdata_mcp_state = manager.state if manager is not None else STATE_CONNECTING
     if db_ok and agent_ok:
-        return {"status": "ok", "db": True, "agent": True}
+        return {"status": "ok", "db": True, "agent": True, "earthdata_mcp": earthdata_mcp_state}
 
-    body = {"status": "degraded", "db": db_ok, "agent": agent_ok}
+    body = {"status": "degraded", "db": db_ok, "agent": agent_ok, "earthdata_mcp": earthdata_mcp_state}
     if db_error:
         body["db_error"] = db_error
     if not agent_ok:
@@ -257,6 +293,44 @@ async def health():
 @app.get("/metrics")
 def metrics():
     return Response(content=render_prometheus_metrics(), media_type=prometheus_content_type())
+
+
+class EarthdataMCPUnavailable(Exception):
+    """Raised by ``_earthdata_tools`` when earthdata_mcp_manager isn't ready.
+    Discovery/jobs/provenance endpoints (T17) hand this to FastAPI instead of
+    building the 503 body inline, so every one of them answers with the same
+    structured shape (vocabulary shared with T18's error taxonomy)."""
+
+    def __init__(self, state: str):
+        self.state = state
+        super().__init__(f"earthdata-retrieval MCP is not ready (state={state})")
+
+
+@app.exception_handler(EarthdataMCPUnavailable)
+async def _handle_earthdata_mcp_unavailable(request: Request, exc: EarthdataMCPUnavailable) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={
+            "error": {
+                "category": "provider_unavailable",
+                "message": (
+                    "The satellite data layer is temporarily unavailable "
+                    f"(earthdata_mcp: {exc.state}). Ground/EPA endpoints are unaffected."
+                ),
+            }
+        },
+    )
+
+
+def _earthdata_tools(request: Request) -> dict:
+    """Discovery/jobs/provenance endpoints' MCP tools, read through
+    earthdata_mcp_manager (T17) rather than app.state.earthdata_mcp_tools
+    directly, so a not-ready connection answers with the shared structured
+    503 instead of proxying a bare 500 from an empty/absent tool dict."""
+    manager = getattr(request.app.state, "earthdata_mcp_manager", None)
+    if manager is None or manager.state != STATE_READY:
+        raise EarthdataMCPUnavailable(manager.state if manager is not None else STATE_CONNECTING)
+    return manager.tools
 
 
 @app.get("/chart/{chart_id}/export.csv")
@@ -295,9 +369,7 @@ async def export_chart_png(chart_id: str, request: Request):
 
 @app.get("/chart/{chart_id}/provenance")
 async def chart_provenance_endpoint(chart_id: str, request: Request):
-    tools = request.app.state.earthdata_mcp_tools
-    if not tools:
-        raise HTTPException(status_code=503, detail="Earthdata MCP is not ready")
+    tools = _earthdata_tools(request)
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
     source_handles = _chart_source_handles(payload)
     with user_id_context(request.state.current_user.id):
@@ -306,9 +378,7 @@ async def chart_provenance_endpoint(chart_id: str, request: Request):
 
 @app.get("/chart/{chart_id}/citations")
 async def chart_citations_endpoint(chart_id: str, request: Request):
-    tools = request.app.state.earthdata_mcp_tools
-    if not tools:
-        raise HTTPException(status_code=503, detail="Earthdata MCP is not ready")
+    tools = _earthdata_tools(request)
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
     source_handles = _chart_source_handles(payload)
     with user_id_context(request.state.current_user.id):
@@ -317,9 +387,7 @@ async def chart_citations_endpoint(chart_id: str, request: Request):
 
 @app.get("/chart/{chart_id}/methods.md")
 async def chart_methods_endpoint(chart_id: str, request: Request):
-    tools = request.app.state.earthdata_mcp_tools
-    if not tools:
-        raise HTTPException(status_code=503, detail="Earthdata MCP is not ready")
+    tools = _earthdata_tools(request)
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
     source_handles = _chart_source_handles(payload)
     with user_id_context(request.state.current_user.id):
@@ -403,9 +471,7 @@ async def export_artifact_csv(artifact_id: str, request: Request):
 
 @app.get("/jobs")
 async def get_jobs(request: Request):
-    tools = request.app.state.earthdata_mcp_tools
-    if not tools:
-        raise HTTPException(status_code=503, detail="Earthdata MCP is not ready")
+    tools = _earthdata_tools(request)
     with user_id_context(request.state.current_user.id):
         jobs = await list_jobs(tools)
     return {"jobs": jobs}
@@ -413,45 +479,35 @@ async def get_jobs(request: Request):
 
 @app.post("/jobs/{job_handle}/cancel")
 async def cancel_job_endpoint(job_handle: JobHandle, request: Request):
-    tools = request.app.state.earthdata_mcp_tools
-    if not tools:
-        raise HTTPException(status_code=503, detail="Earthdata MCP is not ready")
+    tools = _earthdata_tools(request)
     with user_id_context(request.state.current_user.id):
         return await cancel_job(job_handle, tools)
 
 
 @app.post("/discovery/search")
 async def discovery_search_endpoint(req: DiscoverySearchRequest, request: Request):
-    tools = request.app.state.earthdata_mcp_tools
-    if not tools:
-        raise HTTPException(status_code=503, detail="Earthdata MCP is not ready")
+    tools = _earthdata_tools(request)
     with user_id_context(request.state.current_user.id):
         return await search_datasets(req.query, req.filters, tools)
 
 
 @app.get("/discovery/dataset/{dataset_handle}")
 async def discovery_describe_endpoint(dataset_handle: DatasetHandle, request: Request):
-    tools = request.app.state.earthdata_mcp_tools
-    if not tools:
-        raise HTTPException(status_code=503, detail="Earthdata MCP is not ready")
+    tools = _earthdata_tools(request)
     with user_id_context(request.state.current_user.id):
         return await describe_dataset(dataset_handle, tools)
 
 
 @app.post("/discovery/dataset/{dataset_handle}/preview")
 async def discovery_preview_endpoint(dataset_handle: DatasetHandle, req: DiscoveryPreviewRequest, request: Request):
-    tools = request.app.state.earthdata_mcp_tools
-    if not tools:
-        raise HTTPException(status_code=503, detail="Earthdata MCP is not ready")
+    tools = _earthdata_tools(request)
     with user_id_context(request.state.current_user.id):
         return await preview_dataset(dataset_handle, req.location, req.time_range, req.layer, tools)
 
 
 @app.post("/discovery/dataset/{dataset_handle}/coverage")
 async def discovery_coverage_endpoint(dataset_handle: DatasetHandle, req: DiscoveryCoverageRequest, request: Request):
-    tools = request.app.state.earthdata_mcp_tools
-    if not tools:
-        raise HTTPException(status_code=503, detail="Earthdata MCP is not ready")
+    tools = _earthdata_tools(request)
     with user_id_context(request.state.current_user.id):
         return await check_coverage(dataset_handle, req.location, req.time_range, tools)
 

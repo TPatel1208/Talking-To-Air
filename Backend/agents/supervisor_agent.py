@@ -36,6 +36,7 @@ async def build_agent(
     *,
     ground_agent: Any,
     satellite_agent: Any,
+    mcp_manager: Any = None,
 ):
     """
     Build and return the supervisor agent.
@@ -49,6 +50,11 @@ async def build_agent(
     — built once at startup (api.py's lifespan) and shared with the router
     fast path (services/chat_stream_service.py, T14) so both callers invoke
     the identical instances via services/subagent_dispatch.py.
+
+    ``mcp_manager`` (T17), if given, is passed through to
+    ``run_satellite`` so ``ask_earthdata_agent`` returns the deterministic
+    unavailable answer instead of burning a model call when the
+    earthdata-retrieval MCP isn't ready.
     """
     settings = get_settings()
     model = model or settings.llm_model
@@ -121,7 +127,7 @@ async def build_agent(
                (e.g. 'Plot TROPOMI NO2 over New Jersey for 2024-01-15').
         Output: text summary with plot path and spatial statistics.
         """
-        result = await run_satellite(satellite_agent, task, current_thread_id())
+        result = await run_satellite(satellite_agent, task, current_thread_id(), mcp_manager=mcp_manager)
         return agent_result_to_json(result)
 
     # ── Build supervisor ──────────────────────────────────────────────────────

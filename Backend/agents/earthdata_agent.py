@@ -24,6 +24,35 @@ from utils.streaming import stream_response
 logger = logging.getLogger(__name__)
 
 
+class LazySatelliteAgent:
+    """Boot-time stand-in for the compiled earthdata agent (PRD T17).
+
+    The supervisor's ``ask_earthdata_agent`` tool and the router fast path
+    both close over one long-lived agent reference. Building the real agent
+    requires real MCP tools (``build_satellite_tools`` indexes the tool dict
+    directly), which aren't necessarily available at boot — so this object is
+    built once at boot instead and handed to both callers; ``set_real`` is
+    called by earthdata_mcp_connection's ``on_ready`` hook once the MCP is
+    reachable, and every attribute access after that transparently delegates
+    to the real agent. Before that, ``services.subagent_dispatch.run_satellite``
+    checks the connection manager's state before ever touching this object,
+    so ``__getattr__`` raising here is a safety net, not a path exercised in
+    normal operation.
+    """
+
+    def __init__(self):
+        self._real: Any = None
+
+    def set_real(self, agent: Any) -> None:
+        self._real = agent
+
+    def __getattr__(self, name: str) -> Any:
+        real = self.__dict__.get("_real")
+        if real is None:
+            raise AttributeError(f"earthdata agent is not ready yet (attribute: {name})")
+        return getattr(real, name)
+
+
 def build_earthdata_agent(
     model: str | None = None,
     provider: str | None = None,

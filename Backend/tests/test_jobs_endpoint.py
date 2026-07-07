@@ -3,6 +3,7 @@ import os
 import sys
 import unittest
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import patch
 
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -68,6 +69,10 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         settings = Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None)
         self.api.app.state.earthdata_mcp_tools = await load_earthdata_tools(settings, current_user_id)
+        # Jobs endpoints read tools through earthdata_mcp_manager (T17).
+        self.api.app.state.earthdata_mcp_manager = SimpleNamespace(
+            state="ready", tools=self.api.app.state.earthdata_mcp_tools,
+        )
 
         self.user1 = User(
             id="user-1", username="one", password_hash="hash",
@@ -126,6 +131,20 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"job_handle": "job_1", "status": "cancelled"})
         self.assertEqual(self.cancel_calls, [("job_1", "user-user-1")])
+
+    async def test_jobs_fails_honestly_when_the_mcp_is_not_ready(self):
+        original_manager = self.api.app.state.earthdata_mcp_manager
+        self.api.app.state.earthdata_mcp_manager = SimpleNamespace(state="incompatible", tools={})
+        self.addCleanup(setattr, self.api.app.state, "earthdata_mcp_manager", original_manager)
+
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        auth_patches = self._auth_patch()
+        with auth_patches[0], auth_patches[1]:
+            async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                response = await client.get("/jobs", headers=self.auth_headers1)
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["error"]["category"], "provider_unavailable")
 
     async def test_jobs_endpoints_require_authentication(self):
         transport = self.httpx.ASGITransport(app=self.api.app)

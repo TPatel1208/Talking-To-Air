@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import patch
 
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -84,6 +85,13 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         settings = Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None)
         self.api.app.state.earthdata_mcp_tools = await load_earthdata_tools(settings, current_user_id)
+        # Provenance/citations/methods read tools through
+        # earthdata_mcp_manager (T17); export.nc stays on the legacy
+        # app.state.earthdata_mcp_tools mirror (see test_export_netcdf_*
+        # below), so both must be kept in sync in this setUp.
+        self.api.app.state.earthdata_mcp_manager = SimpleNamespace(
+            state="ready", tools=self.api.app.state.earthdata_mcp_tools,
+        )
 
         self.user = User(
             id="user-1", username="tester", password_hash="hash",
@@ -211,6 +219,23 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status_code, 422)
         self.assertIn("NetCDF export is not available", response.json()["detail"])
+
+    async def test_provenance_endpoint_fails_honestly_when_the_mcp_is_not_ready(self):
+        original_manager = self.api.app.state.earthdata_mcp_manager
+        self.api.app.state.earthdata_mcp_manager = SimpleNamespace(state="unavailable", tools={})
+        self.addCleanup(setattr, self.api.app.state, "earthdata_mcp_manager", original_manager)
+
+        async def fake_get_chart(chart_id):
+            return self.chart_payload
+
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        auth_patches = self._auth_patch()
+        with auth_patches[0], auth_patches[1], patch.object(self.api.chart_service, "get_chart", fake_get_chart):
+            async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                response = await client.get("/chart/chart-1/provenance", headers=self.auth_headers)
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["error"]["category"], "provider_unavailable")
 
     async def test_provenance_endpoint_404s_for_a_chart_owned_by_someone_else(self):
         async def fake_get_chart(chart_id):

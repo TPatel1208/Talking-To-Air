@@ -25,9 +25,14 @@ _AGENT_CONSULTED_HEADERS = {
 
 
 class ChatStreamService:
-    def __init__(self, chart_service: ChartService, long_request_seconds: float):
+    def __init__(self, chart_service: ChartService, long_request_seconds: float, mcp_manager: Any = None):
         self.chart_service = chart_service
         self.long_request_seconds = long_request_seconds
+        # T17: passed through to run_satellite so the fast path returns the
+        # deterministic unavailable answer instead of dispatching when the
+        # earthdata-retrieval MCP isn't ready. None (the default) preserves
+        # prior behavior for every existing caller that doesn't pass one.
+        self.mcp_manager = mcp_manager
 
     async def stream_chat_events(
         self,
@@ -149,7 +154,9 @@ class ChatStreamService:
                 if intent == "GROUND":
                     result = await run_ground(sub_agent, message, thread_id)
                 else:
-                    result = await run_satellite(sub_agent, message, thread_id, on_event=on_event)
+                    result = await run_satellite(
+                        sub_agent, message, thread_id, on_event=on_event, mcp_manager=self.mcp_manager,
+                    )
                 await queue.put(("__result__", result))
             except Exception as exc:  # noqa: BLE001 — surfaced as an SSE error event below
                 await queue.put(("__error__", exc))
