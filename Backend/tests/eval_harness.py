@@ -1,15 +1,24 @@
 """
 eval_harness.py
 =================
-The 13-task scripted eval for the earthdata agent (PRD T04): canned research
+The scripted eval for the earthdata agent (PRD T04): 13 canned research
 tasks run against the real agent wired to the fake-MCP seam, scored on
-tool-call trace and terminal outcome. Lives beside the test suite behind the
-opt-in "eval" pytest marker (tests/test_eval_harness.py) because it spends
-real model tokens — this module is the harness itself, not a test file.
-The one "robustness" task (T15) is the exception — it is scored at the
-finalization seam instead of the live model loop, so it spends no tokens.
+tool-call trace and terminal outcome, plus 3 end-to-end tasks (T16) that
+enter through ChatStreamService.stream_chat_events with the real
+intent_router and real sub-agents — one ground, one satellite, one
+cross-source — exercising the router fast path and envelope handling under
+the same gate. Lives beside the test suite behind the opt-in "eval" pytest
+marker (tests/test_eval_harness.py) because it spends real model tokens —
+this module is the harness itself, not a test file. The one "robustness"
+task (T15) is the exception — it is scored at the finalization seam
+instead of the live model loop, so it spends no tokens.
 
-Pass threshold: >= 11/13, recorded here (test_eval_harness.py enforces it).
+Every task also records wall-clock (elapsed_seconds) and fails its
+category's latency budget (CATEGORY_BUDGETS, decision record 2026-07-06
+§6); run_eval_suite fails the whole run if any provider retry/429 evidence
+was logged during a single-user run (capture_rate_limit_evidence).
+
+Pass threshold: >= 13/16, recorded here (test_eval_harness.py enforces it).
 """
 from __future__ import annotations
 
@@ -106,6 +115,28 @@ class EvalTaskResult:
     envelope: Any
     passed: bool
     elapsed_seconds: float = 0.0
+
+
+DateCheck = Callable[[list[tuple[str, dict]]], bool]
+
+
+@dataclass
+class E2ETask:
+    """A T16 end-to-end task: enters through ChatStreamService.stream_chat_
+    events (real intent_router, real sub-agents, fake MCP) rather than
+    run_eval_task's direct single-agent invocation. Scored on which
+    agent(s) ran (``expects_ground``/``expects_satellite``) plus a
+    non-error terminal answer; ``date_check`` is an optional extra
+    assertion over EPA AQS calls captured during the run (see
+    _dispatched_correct_relative_date)."""
+    name: str
+    category: str
+    prompt: str
+    handlers: dict[str, Callable[..., Awaitable[dict]]]
+    expects_ground: bool = False
+    expects_satellite: bool = False
+    aqs_get: AqsGetHandler | None = None
+    date_check: DateCheck | None = None
 
 
 def _standard_handlers(
@@ -424,6 +455,114 @@ def build_eval_tasks(volume) -> list[EvalTask]:
     return tasks
 
 
+def _real_yesterday_yyyymmdd() -> str:
+    from datetime import datetime, timedelta, timezone
+
+    return (datetime.now(timezone.utc).date() - timedelta(days=1)).strftime("%Y%m%d")
+
+
+def _dispatched_correct_relative_date(aqs_calls: list[tuple[str, dict]]) -> bool:
+    """True if any captured (endpoint, params) EPA AQS call used real UTC
+    'yesterday' as its bdate/edate. The 2026-07-07 live test caught a
+    "yesterday" query dispatched with *today's* date (T11 Further Notes);
+    after T11 deleted the legacy date-conversion tools, relative-date
+    correctness is enforced only here."""
+    target = _real_yesterday_yyyymmdd()
+    return any(
+        params.get("bdate") == target or params.get("edate") == target
+        for _, params in aqs_calls
+    )
+
+
+def _agents_consulted(text: str) -> set[str]:
+    """Parse the "Agent consulted: ..." header both routing paths emit into
+    the set of agent names named. The router fast path (T14) emits a
+    single-source header ("Agent consulted: GROUND"); the supervisor path
+    (cross-source, config/supervisor_prompt.py) emits one combined header
+    ("Agent consulted: GROUND + SATELLITE") — this handles both shapes."""
+    match = re.search(r"Agent consulted:\s*([A-Z ]+(?:\+ [A-Z]+)?)", text)
+    if not match:
+        return set()
+    return {name.strip() for name in match.group(1).split("+") if name.strip()}
+
+
+def build_e2e_tasks(volume) -> list[E2ETask]:
+    """Build the 3 end-to-end tasks: one ground (fast path), one satellite
+    (fast path), one cross-source (supervisor path, both agents)."""
+    import xarray as xr
+
+    def make_e2e_satellite_dataset():
+        return xr.Dataset(
+            {"no2": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]], {"units": "mol/m^2"})},
+            coords={"lat": [40.0, 41.0], "lon": [-75.0, -74.0]},
+        )
+
+    volume.add_zarr("obs_e2e_satellite_1", make_e2e_satellite_dataset)
+
+    def volume_lifecycle_handlers() -> dict:
+        return {
+            "export_result": volume.export_result,
+            "rematerialize": volume.rematerialize,
+            "get_retrieval_status": volume.get_retrieval_status,
+        }
+
+    async def _e2e_ground_aqs_get(endpoint: str, params: dict) -> dict:
+        if endpoint == "monitors/byBox":
+            return {"Header": [{"status": "success"}], "Data": [{
+                "latitude": "40.0", "longitude": "-74.0",
+                "state_code": "34", "county_code": "017", "site_number": "0006",
+                "local_site_name": "Newark Firehouse",
+            }]}
+        if endpoint == "dailyData/byBox":
+            return {"Header": [{"status": "success"}], "Data": [{
+                "date_local": params.get("bdate", ""), "arithmetic_mean": "5.0", "state_code": "34",
+                "county_code": "017", "site_number": "0006", "units_of_measure": "ppb",
+                "pollutant_standard": "NO2 1-hour 2010", "local_site_name": "Newark Firehouse",
+            }]}
+        return {"Header": [{"status": "success"}], "Data": []}
+
+    tasks: list[E2ETask] = [
+        # ── Ground (router fast path) ────────────────────────────────────
+        E2ETask(
+            name="e2e_ground_relative_date",
+            category="e2e_ground",
+            prompt="What was the NO2 level in Newark, New Jersey yesterday?",
+            handlers={},
+            expects_ground=True,
+            aqs_get=_e2e_ground_aqs_get,
+            date_check=_dispatched_correct_relative_date,
+        ),
+        # ── Satellite (router fast path) ─────────────────────────────────
+        E2ETask(
+            name="e2e_satellite_plot",
+            category="e2e_satellite",
+            prompt="Plot TROPOMI NO2 over New Jersey for 2024-01-15.",
+            handlers={
+                **_standard_handlers(obs_handle="obs_e2e_satellite_1"),
+                **volume_lifecycle_handlers(),
+            },
+            expects_satellite=True,
+        ),
+        # ── Cross-source (supervisor path, both agents) ──────────────────
+        E2ETask(
+            name="e2e_cross_source_ground_vs_satellite",
+            category="e2e_cross_source",
+            prompt=(
+                "Compare the ground NO2 monitors with TROPOMI satellite NO2 "
+                "over Newark NJ for January 2024."
+            ),
+            handlers={
+                **_standard_handlers(obs_handle="obs_e2e_satellite_1"),
+                **volume_lifecycle_handlers(),
+            },
+            expects_ground=True,
+            expects_satellite=True,
+            aqs_get=_e2e_ground_aqs_get,
+        ),
+    ]
+    return tasks
+
+
 async def run_eval_task(task: EvalTask, *, model: str | None = None) -> EvalTaskResult:
     from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
     from earthdata_mcp.client import load_raw_mcp_tools
@@ -513,8 +652,127 @@ async def run_robustness_task() -> EvalTaskResult:
     )
 
 
+class _UnusedAgent:
+    """A fast-pathed e2e task never touches the other agent — stand-in that
+    fails loudly (rather than silently no-oping) if it's invoked anyway."""
+
+    def __getattr__(self, name):
+        raise AssertionError(f"unexpected access to the untouched agent: {name}")
+
+
+class _NoWritebackSupervisor:
+    """Stand-in supervisor for a fast-pathed e2e task (ground- or satellite-
+    only): the real supervisor's own model is never called on that path,
+    only ChatStreamService._write_back_turn's aupdate_state — and a failed
+    write-back is logged and swallowed by design, never fatal."""
+
+    async def aupdate_state(self, *args, **kwargs):
+        raise RuntimeError("no real supervisor built for this fast-pathed e2e task")
+
+
+async def run_e2e_task(task: E2ETask, volume, *, model: str | None = None) -> EvalTaskResult:
+    """Drive ``task.prompt`` through the real chat-streaming layer
+    (ChatStreamService.stream_chat_events) with the real intent_router and
+    real sub-agents, fake MCP — scored on which agent(s) ran plus a
+    non-error terminal answer, per the Technical Implementation Guide."""
+    from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
+    from earthdata_mcp.client import load_raw_mcp_tools
+    from config.settings import Settings
+    from agents.ground_sensor_agent import build_ground_agent
+    from agents.earthdata_agent import build_earthdata_agent
+    from agents.supervisor_agent import build_agent as build_supervisor_agent
+    from services.chart_service import ChartService
+    from services.chat_stream_service import ChatStreamService
+    from utils.streaming import get_call_budget
+
+    # A shared top-level context runs every task in the suite sequentially
+    # (see run_eval_suite) — clear the T16 per-request budget holder so one
+    # task's ground/satellite call count never bleeds into the next.
+    get_call_budget().clear()
+
+    aqs_calls: list[tuple[str, dict]] = []
+
+    async def _capturing_aqs_get(endpoint: str, params: dict) -> dict:
+        aqs_calls.append((endpoint, dict(params)))
+        return await task.aqs_get(endpoint, params)
+
+    aqs_patch = (
+        patch("tools.ground_sensor_tools.epa_aqs_tools._aqs_get", AsyncMock(side_effect=_capturing_aqs_get))
+        if task.aqs_get is not None
+        else nullcontext()
+    )
+
+    server = FakeEarthdataMCPServer(build_fake_mcp(task.handlers)) if task.handlers else None
+    if server is not None:
+        server.start()
+
+    try:
+        ground_agent = build_ground_agent(model=model) if task.expects_ground else _UnusedAgent()
+
+        if task.expects_satellite:
+            settings = Settings(earthdata_mcp_url=server.url, earthdata_mcp_token=None)
+            mcp_tools = await load_raw_mcp_tools(settings)
+            satellite_agent = build_earthdata_agent(model=model, mcp_tools=mcp_tools)
+        else:
+            satellite_agent = _UnusedAgent()
+
+        if task.expects_ground and task.expects_satellite:
+            # Cross-source: the genuinely ambiguous route goes through the
+            # supervisor's own two model calls, so it needs the real,
+            # checkpointed supervisor (real Postgres — this task must run
+            # where the eval always runs, against a live database).
+            supervisor_agent = await build_supervisor_agent(
+                model=model, ground_agent=ground_agent, satellite_agent=satellite_agent,
+            )
+        else:
+            supervisor_agent = _NoWritebackSupervisor()
+
+        service = ChatStreamService(ChartService(), long_request_seconds=999)
+        events: list[str] = []
+        started = time.monotonic()
+        with aqs_patch:
+            async for event in service.stream_chat_events(
+                supervisor_agent, ground_agent, satellite_agent, task.prompt,
+                f"eval-e2e-{task.name}", "eval-e2e-user", f"eval-e2e-{task.name}",
+            ):
+                events.append(event)
+        elapsed_seconds = time.monotonic() - started
+    finally:
+        if server is not None:
+            server.stop()
+
+    joined = "".join(events)
+    tool_calls = re.findall(r'event: tool_call\ndata: \{"name": "([^"]+)"', joined)
+    non_error_done = "event: done" in joined and "event: error" not in joined
+
+    consulted = _agents_consulted(joined)
+    agents_ok = True
+    if task.expects_ground:
+        agents_ok = agents_ok and "GROUND" in consulted
+    if task.expects_satellite:
+        agents_ok = agents_ok and "SATELLITE" in consulted
+
+    date_ok = task.date_check(aqs_calls) if task.date_check is not None else True
+    within_budget = elapsed_seconds <= CATEGORY_BUDGETS[task.category]
+    passed = non_error_done and agents_ok and date_ok and within_budget
+
+    # expected_tool_calls is intentionally empty — e2e tasks are scored on
+    # which agent(s) ran (agents_ok) and outcome, not an MCP tool-call
+    # sequence; contains_subsequence([], []) is vacuously true, so the
+    # table's trace column reads "ok" rather than misrepresenting a miss.
+    wrapping_task = EvalTask(
+        name=task.name, category=task.category, prompt=task.prompt,
+        handlers=task.handlers, expected_tool_calls=[],
+    )
+    return EvalTaskResult(
+        task=wrapping_task, tool_calls=tool_calls, raw_text=joined, envelope=None,
+        passed=passed, elapsed_seconds=elapsed_seconds,
+    )
+
+
 async def run_eval_suite(volume, *, model: str | None = None) -> list[EvalTaskResult]:
     tasks = build_eval_tasks(volume)
+    e2e_tasks = build_e2e_tasks(volume)
     results = []
     with capture_rate_limit_evidence() as rate_limit_evidence:
         for task in tasks:
@@ -522,6 +780,8 @@ async def run_eval_suite(volume, *, model: str | None = None) -> list[EvalTaskRe
                 results.append(await run_robustness_task())
             else:
                 results.append(await run_eval_task(task, model=model))
+        for e2e_task in e2e_tasks:
+            results.append(await run_e2e_task(e2e_task, volume, model=model))
     if rate_limit_evidence.matches:
         raise RateLimitDetected(
             f"provider rate-limit evidence during a single-user eval run: {rate_limit_evidence.matches}"
@@ -529,8 +789,9 @@ async def run_eval_suite(volume, *, model: str | None = None) -> list[EvalTaskRe
     return results
 
 
-PASS_THRESHOLD = 11
-TOTAL_TASKS = 13
+DIRECT_AGENT_TASK_COUNT = 13
+PASS_THRESHOLD = 13
+TOTAL_TASKS = DIRECT_AGENT_TASK_COUNT + 3
 
 # Per-category wall-clock budgets (decision record 2026-07-06 §6). The
 # satellite budget applies against the fake MCP — this measures the
@@ -545,6 +806,9 @@ CATEGORY_BUDGETS: dict[str, float] = {
     "ground_validation": 15.0,
     "comparison": 45.0,
     "robustness": 15.0,
+    "e2e_ground": 15.0,
+    "e2e_satellite": 45.0,
+    "e2e_cross_source": 45.0,
 }
 
 

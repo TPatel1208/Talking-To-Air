@@ -51,14 +51,14 @@ class EvalHarnessStructureTests(unittest.TestCase):
     opt-in (see EvalSuiteTests below)."""
 
     def _tasks(self):
-        from eval_harness import TOTAL_TASKS, build_eval_tasks
+        from eval_harness import DIRECT_AGENT_TASK_COUNT, build_eval_tasks
         from fake_earthdata_mcp import HandleVolume
 
         tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(tmpdir.cleanup)
         volume = HandleVolume(tmpdir.name)
         tasks = build_eval_tasks(volume)
-        self.assertEqual(len(tasks), TOTAL_TASKS)
+        self.assertEqual(len(tasks), DIRECT_AGENT_TASK_COUNT)
         return tasks
 
     def test_builds_exactly_total_tasks(self):
@@ -127,6 +127,115 @@ class RobustnessTaskTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertGreaterEqual(result.elapsed_seconds, 0.0)
         self.assertLess(result.elapsed_seconds, 1.0)  # spends no tokens — must be near-instant
+
+
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
+    "eval harness test dependencies are not installed",
+)
+class E2ETaskStructureTests(unittest.TestCase):
+    """T16: three tasks that enter through ChatStreamService.stream_chat_
+    events with the real intent_router and real sub-agents — extend, not
+    replace, the 13 direct-agent tasks above."""
+
+    def _tasks(self):
+        from eval_harness import build_e2e_tasks
+        from fake_earthdata_mcp import HandleVolume
+
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        volume = HandleVolume(tmpdir.name)
+        return build_e2e_tasks(volume)
+
+    def test_builds_exactly_three_tasks(self):
+        self.assertEqual(len(self._tasks()), 3)
+
+    def test_covers_ground_satellite_and_cross_source(self):
+        categories = {task.category for task in self._tasks()}
+
+        self.assertEqual(categories, {"e2e_ground", "e2e_satellite", "e2e_cross_source"})
+
+    def test_ground_and_cross_source_expect_the_ground_agent(self):
+        by_category = {task.category: task for task in self._tasks()}
+
+        self.assertTrue(by_category["e2e_ground"].expects_ground)
+        self.assertTrue(by_category["e2e_cross_source"].expects_ground)
+        self.assertFalse(by_category["e2e_satellite"].expects_ground)
+
+    def test_satellite_and_cross_source_expect_the_satellite_agent(self):
+        by_category = {task.category: task for task in self._tasks()}
+
+        self.assertTrue(by_category["e2e_satellite"].expects_satellite)
+        self.assertTrue(by_category["e2e_cross_source"].expects_satellite)
+        self.assertFalse(by_category["e2e_ground"].expects_satellite)
+
+    def test_only_the_ground_task_carries_a_relative_date_check(self):
+        by_category = {task.category: task for task in self._tasks()}
+
+        self.assertIsNotNone(by_category["e2e_ground"].date_check)
+        self.assertIsNone(by_category["e2e_satellite"].date_check)
+
+
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
+    "eval harness test dependencies are not installed",
+)
+class RelativeDateCheckTests(unittest.TestCase):
+    """T11 Further Notes / T16: a 'yesterday' query was live-caught
+    dispatching *today's* date (2026-07-07 live test). Pure logic over
+    captured (endpoint, params) tuples — no live model needed."""
+
+    def test_true_when_a_captured_call_used_real_utc_yesterday(self):
+        from datetime import datetime, timedelta, timezone
+
+        from eval_harness import _dispatched_correct_relative_date
+
+        yesterday = (datetime.now(timezone.utc).date() - timedelta(days=1)).strftime("%Y%m%d")
+        calls = [("dailyData/byBox", {"bdate": yesterday, "edate": yesterday})]
+
+        self.assertTrue(_dispatched_correct_relative_date(calls))
+
+    def test_false_when_no_captured_call_used_real_utc_yesterday(self):
+        from eval_harness import _dispatched_correct_relative_date
+
+        calls = [("dailyData/byBox", {"bdate": "20260617", "edate": "20260617"})]
+
+        self.assertFalse(_dispatched_correct_relative_date(calls))
+
+    def test_false_for_no_calls_at_all(self):
+        from eval_harness import _dispatched_correct_relative_date
+
+        self.assertFalse(_dispatched_correct_relative_date([]))
+
+
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
+    "eval harness test dependencies are not installed",
+)
+class AgentsConsultedParsingTests(unittest.TestCase):
+    """The router fast path and the supervisor path emit differently-shaped
+    'Agent consulted: ...' headers — a single source vs. one combined
+    'GROUND + SATELLITE' line — the e2e cross-source task's scoring must
+    handle both."""
+
+    def test_parses_a_single_source_fast_path_header(self):
+        from eval_harness import _agents_consulted
+
+        text = "Agent consulted: GROUND\n\nThe monitor is Rutgers University."
+
+        self.assertEqual(_agents_consulted(text), {"GROUND"})
+
+    def test_parses_a_combined_cross_source_supervisor_header(self):
+        from eval_harness import _agents_consulted
+
+        text = "Agent consulted: GROUND + SATELLITE\n\nBoth sources agree the level rose."
+
+        self.assertEqual(_agents_consulted(text), {"GROUND", "SATELLITE"})
+
+    def test_returns_an_empty_set_when_no_header_is_present(self):
+        from eval_harness import _agents_consulted
+
+        self.assertEqual(_agents_consulted("no header in this text"), set())
 
 
 @unittest.skipIf(
@@ -240,9 +349,15 @@ class RunEvalSuiteRateLimitTests(unittest.IsolatedAsyncioTestCase):
                 task=task, tool_calls=[], raw_text="", envelope=None, passed=True, elapsed_seconds=0.1,
             )
 
+        async def fake_run_e2e_task(task, volume, *, model=None):
+            return EvalTaskResult(
+                task=task, tool_calls=[], raw_text="", envelope=None, passed=True, elapsed_seconds=0.1,
+            )
+
         with tempfile.TemporaryDirectory() as tmpdir:
             volume = HandleVolume(tmpdir)
-            with patch("eval_harness.run_eval_task", side_effect=fake_run_eval_task):
+            with patch("eval_harness.run_eval_task", side_effect=fake_run_eval_task), \
+                 patch("eval_harness.run_e2e_task", side_effect=fake_run_e2e_task):
                 with self.assertRaises(RateLimitDetected):
                     await run_eval_suite(volume)
 
@@ -255,12 +370,54 @@ class RunEvalSuiteRateLimitTests(unittest.IsolatedAsyncioTestCase):
                 task=task, tool_calls=[], raw_text="", envelope=None, passed=True, elapsed_seconds=0.1,
             )
 
+        async def fake_run_e2e_task(task, volume, *, model=None):
+            return EvalTaskResult(
+                task=task, tool_calls=[], raw_text="", envelope=None, passed=True, elapsed_seconds=0.1,
+            )
+
         with tempfile.TemporaryDirectory() as tmpdir:
             volume = HandleVolume(tmpdir)
-            with patch("eval_harness.run_eval_task", side_effect=fake_run_eval_task):
+            with patch("eval_harness.run_eval_task", side_effect=fake_run_eval_task), \
+                 patch("eval_harness.run_e2e_task", side_effect=fake_run_e2e_task):
                 results = await run_eval_suite(volume)
 
         self.assertEqual(len(results), TOTAL_TASKS)
+
+
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
+    "eval harness test dependencies are not installed",
+)
+class RunEvalSuiteIncludesE2ETests(unittest.IsolatedAsyncioTestCase):
+    async def test_run_eval_suite_runs_all_three_e2e_tasks_alongside_the_direct_agent_ones(self):
+        from eval_harness import DIRECT_AGENT_TASK_COUNT, EvalTaskResult, TOTAL_TASKS, run_eval_suite
+        from fake_earthdata_mcp import HandleVolume
+
+        direct_calls = []
+        e2e_calls = []
+
+        async def fake_run_eval_task(task, *, model=None):
+            direct_calls.append(task.name)
+            return EvalTaskResult(
+                task=task, tool_calls=[], raw_text="", envelope=None, passed=True, elapsed_seconds=0.1,
+            )
+
+        async def fake_run_e2e_task(task, volume, *, model=None):
+            e2e_calls.append(task.name)
+            return EvalTaskResult(
+                task=task, tool_calls=[], raw_text="", envelope=None, passed=True, elapsed_seconds=0.1,
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            volume = HandleVolume(tmpdir)
+            with patch("eval_harness.run_eval_task", side_effect=fake_run_eval_task), \
+                 patch("eval_harness.run_e2e_task", side_effect=fake_run_e2e_task):
+                results = await run_eval_suite(volume)
+
+        self.assertEqual(TOTAL_TASKS, DIRECT_AGENT_TASK_COUNT + 3)
+        self.assertEqual(len(results), TOTAL_TASKS)
+        self.assertEqual(len(direct_calls), DIRECT_AGENT_TASK_COUNT - 1)  # robustness skips run_eval_task
+        self.assertEqual(len(e2e_calls), 3)
 
 
 def _real_groq_key_available() -> bool:
