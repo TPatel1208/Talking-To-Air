@@ -264,13 +264,18 @@ async def build_agent(
                 async for event_type, data in stream_response(
                     satellite_agent, task_text, thread_id=sub_thread_id
                 ):
+                    if event_type == "chart_payload":
+                        # T13: plot/statistics tools emit the full render
+                        # payload out-of-band via emit_chart and return the
+                        # model only a compact summary — harvest charts from
+                        # this event, not from tool_result content.
+                        chart = parse_chart_payload(data)
+                        if chart is not None:
+                            charts.append(chart)
+                        continue
                     if event_type == "tool_result":
                         content = data.get("content", "")
                         artifacts.extend(_artifact_refs_from_content(content))
-                        chart = parse_chart_payload(content)
-                        if chart is not None:
-                            charts.append(chart)
-                            continue
                         nested = parse_agent_result(content)
                         if nested is not None:
                             text_parts.append(nested.text)
