@@ -1,4 +1,5 @@
 import importlib.util
+import itertools
 import os
 import sys
 import unittest
@@ -28,7 +29,12 @@ class SubagentTrimMiddlewareTests(unittest.IsolatedAsyncioTestCase):
         from agents.subagent_trim import build_subagent_trim_middleware
 
         trim_middleware = build_subagent_trim_middleware("earthdata", max_tokens=max_tokens)
-        model = GenericFakeChatModel(messages=iter([AIMessage(content="done")]))
+        # An unbounded supply, not a single item — langgraph's model-node
+        # retry policy can re-invoke the model once on a transient error
+        # unrelated to this middleware, which would otherwise exhaust a
+        # one-item iterator and fail the test on a StopIteration that has
+        # nothing to do with trimming.
+        model = GenericFakeChatModel(messages=itertools.cycle([AIMessage(content="done")]))
         agent = create_agent(
             model=model, tools=[], system_prompt="sys", checkpointer=None, middleware=[trim_middleware],
         )
