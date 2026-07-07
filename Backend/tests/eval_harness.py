@@ -1,13 +1,15 @@
 """
 eval_harness.py
 =================
-The 12-task scripted eval for the earthdata agent (PRD T04): canned research
+The 13-task scripted eval for the earthdata agent (PRD T04): canned research
 tasks run against the real agent wired to the fake-MCP seam, scored on
 tool-call trace and terminal outcome. Lives beside the test suite behind the
 opt-in "eval" pytest marker (tests/test_eval_harness.py) because it spends
 real model tokens — this module is the harness itself, not a test file.
+The one "robustness" task (T15) is the exception — it is scored at the
+finalization seam instead of the live model loop, so it spends no tokens.
 
-Pass threshold: >= 8/10, recorded here (test_eval_harness.py enforces it).
+Pass threshold: >= 11/13, recorded here (test_eval_harness.py enforces it).
 """
 from __future__ import annotations
 
@@ -356,6 +358,19 @@ def build_eval_tasks(volume) -> list[EvalTask]:
         outcome_check=_handles_nonempty,
     ))
 
+    # ── Robustness (1) — PRD T15 malformed-envelope salvage ─────────────
+    # A real model cannot be reliably scripted to emit malformed JSON, so
+    # this task is scored at the finalization seam (run_robustness_task)
+    # rather than through the live agent loop the other 12 tasks use — see
+    # decision record §6.
+    tasks.append(EvalTask(
+        name="robustness_malformed_final_envelope",
+        category="robustness",
+        prompt="(scored at the finalization seam — no live model call; see run_robustness_task)",
+        handlers={},
+        expected_tool_calls=["_finalize_sub_agent_result"],
+    ))
+
     return tasks
 
 
@@ -398,10 +413,53 @@ async def run_eval_task(task: EvalTask, *, model: str | None = None) -> EvalTask
         server.stop()
 
 
+async def run_robustness_task() -> EvalTaskResult:
+    """T15's malformed-envelope robustness task: exercises the salvage path
+    directly at the finalization seam (services.subagent_dispatch.
+    _finalize_sub_agent_result) — a successful tool workflow (already-
+    collected chart + artifact) followed by a final message that is prose,
+    not the {summary, artifact_ids, handles} envelope. Passes when the
+    scored outcome is a non-error answer that still carries the artifact.
+    """
+    from models import AgentResult, ChartPayload
+    from models.artifact import ArtifactReference
+    from services.subagent_dispatch import _finalize_sub_agent_result
+
+    task = EvalTask(
+        name="robustness_malformed_final_envelope",
+        category="robustness",
+        prompt="(scored at the finalization seam — no live model call)",
+        handlers={},
+        expected_tool_calls=["_finalize_sub_agent_result"],
+    )
+    prose = "I plotted TROPOMI NO2 over New Jersey for 2024-01-15; the map is attached above."
+    raw = AgentResult(
+        text=prose,
+        charts=[ChartPayload(type="heatmap", title="TROPOMI NO2 over NJ")],
+        artifacts=[ArtifactReference(id="map_robustness_1", type="map", title="TROPOMI NO2 over NJ")],
+    )
+
+    finalized = _finalize_sub_agent_result(raw, "earthdata")
+
+    passed = (
+        not finalized.metadata.get("error")
+        and finalized.metadata.get("salvaged") is True
+        and len(finalized.artifacts) == 1
+        and finalized.artifacts[0].id == "map_robustness_1"
+    )
+    return EvalTaskResult(task=task, tool_calls=[], raw_text=prose, envelope=None, passed=passed)
+
+
 async def run_eval_suite(volume, *, model: str | None = None) -> list[EvalTaskResult]:
     tasks = build_eval_tasks(volume)
-    return [await run_eval_task(task, model=model) for task in tasks]
+    results = []
+    for task in tasks:
+        if task.category == "robustness":
+            results.append(await run_robustness_task())
+        else:
+            results.append(await run_eval_task(task, model=model))
+    return results
 
 
-PASS_THRESHOLD = 10
-TOTAL_TASKS = 12
+PASS_THRESHOLD = 11
+TOTAL_TASKS = 13

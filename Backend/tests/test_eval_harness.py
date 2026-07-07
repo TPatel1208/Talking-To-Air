@@ -79,6 +79,7 @@ class EvalHarnessStructureTests(unittest.TestCase):
                 "failure_recovery": 2,
                 "ground_validation": 1,
                 "comparison": 1,
+                "robustness": 1,
             },
         )
 
@@ -87,6 +88,25 @@ class EvalHarnessStructureTests(unittest.TestCase):
 
         for task in tasks:
             self.assertTrue(task.expected_tool_calls, f"{task.name} has no expected tool calls")
+
+
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
+    "eval harness test dependencies are not installed",
+)
+class RobustnessTaskTests(unittest.IsolatedAsyncioTestCase):
+    """T15: the malformed-envelope robustness task is scripted at the
+    finalization seam (subagent_dispatch._finalize_sub_agent_result) rather
+    than the live model loop — spends no model tokens, runs on every
+    invocation of the suite structure tests above."""
+
+    async def test_robustness_task_scores_a_non_error_answer_carrying_the_artifact(self):
+        from eval_harness import run_robustness_task
+
+        result = await run_robustness_task()
+
+        self.assertTrue(result.passed)
+        self.assertEqual(result.task.category, "robustness")
 
 
 def _real_groq_key_available() -> bool:
@@ -101,13 +121,13 @@ def _real_groq_key_available() -> bool:
     "eval harness test dependencies are not installed",
 )
 class EvalSuiteTests(unittest.IsolatedAsyncioTestCase):
-    """The actual 12-task scripted eval. Opt-in (pytest -m eval) because it
+    """The actual 13-task scripted eval. Opt-in (pytest -m eval) because it
     calls a real model and spends real tokens; skipped without a real
     GROQ_API_KEY even when explicitly selected."""
 
     @pytest.mark.eval
     @unittest.skipUnless(_real_groq_key_available(), "requires a real GROQ_API_KEY")
-    async def test_earthdata_agent_passes_at_least_ten_of_twelve_tasks(self):
+    async def test_earthdata_agent_passes_at_least_eleven_of_thirteen_tasks(self):
         from eval_harness import PASS_THRESHOLD, TOTAL_TASKS, run_eval_suite
         from fake_earthdata_mcp import HandleVolume
 
