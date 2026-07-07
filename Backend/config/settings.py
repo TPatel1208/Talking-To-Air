@@ -101,6 +101,10 @@ class Settings:
     aqs_api_email: str = field(default_factory=lambda: os.getenv("AQS_API_EMAIL", "your_email@example.com"))
     aqs_api_key: str = field(default_factory=lambda: os.getenv("AQS_API_KEY", "your_aqs_key"))
 
+    subagent_trim_token_ceiling: int = field(
+        default_factory=lambda: max(1, _int_env("SUBAGENT_TRIM_TOKEN_CEILING", 20000))
+    )
+
     log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO").upper())
     log_format: str = field(default_factory=lambda: os.getenv("LOG_FORMAT", "text").strip().lower())
     long_request_seconds: float = field(default_factory=lambda: float(os.getenv("LONG_REQUEST_SECONDS", "30")))

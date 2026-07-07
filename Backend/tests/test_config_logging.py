@@ -99,6 +99,21 @@ class ConfigLoggingTests(unittest.TestCase):
         self.assertEqual(loaded.await_retrieval_poll_max_seconds, 20)
         self.assertEqual(loaded.await_retrieval_timeout_seconds, 60)
 
+    def test_settings_loads_subagent_trim_token_ceiling_default_and_override(self):
+        from config.settings import get_settings
+
+        with patch.dict(os.environ, {}, clear=True):
+            get_settings.cache_clear()
+            loaded = get_settings()
+
+        self.assertEqual(loaded.subagent_trim_token_ceiling, 20000)
+
+        with patch.dict(os.environ, {"SUBAGENT_TRIM_TOKEN_CEILING": "4000"}, clear=True):
+            get_settings.cache_clear()
+            loaded = get_settings()
+
+        self.assertEqual(loaded.subagent_trim_token_ceiling, 4000)
+
     def test_settings_loads_earthdata_agent_model_default_and_override(self):
         # Settings() constructed directly (not via get_settings()) so a
         # developer's local .env can't shadow the default being asserted here.

@@ -11,6 +11,7 @@ import logging
 
 from langchain.agents import create_agent
 
+from agents.subagent_trim import build_subagent_trim_middleware
 from config.model_factory import build_chat_model
 from config.settings import get_settings
 from config.ground_sensor_agent_prompt import GROUND_SYSTEM_PROMPT
@@ -49,6 +50,7 @@ def build_ground_agent(model: str | None = None, provider: str | None = None):
         tools=GROUND_TOOLS,
         system_prompt=GROUND_SYSTEM_PROMPT,
         checkpointer=None,
+        middleware=[build_subagent_trim_middleware("ground_sensor", settings.subagent_trim_token_ceiling)],
     )
     return agent
 

@@ -14,6 +14,7 @@ from typing import Any
 
 from langchain.agents import create_agent
 
+from agents.subagent_trim import build_subagent_trim_middleware
 from config.model_factory import build_chat_model
 from config.settings import get_settings
 from config.earthdata_agent_prompt import get_earthdata_agent_prompt
@@ -60,6 +61,7 @@ def build_earthdata_agent(
         tools=build_satellite_tools(mcp_tools or {}),
         system_prompt=get_earthdata_agent_prompt(),
         checkpointer=None,
+        middleware=[build_subagent_trim_middleware("earthdata", settings.subagent_trim_token_ceiling)],
     )
     return agent
 
