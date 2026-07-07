@@ -16,6 +16,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.routing import Match
 
+from agents.earthdata_agent import build_earthdata_agent
+from agents.ground_sensor_agent import build_ground_agent
 from agents.supervisor_agent import build_agent
 from config.settings import get_settings
 from earthdata_mcp.toolset import load_earthdata_tools
@@ -76,7 +78,14 @@ async def lifespan(app: FastAPI):
     # bind_workspace resolves workspace_id per-call from current_user_id(),
     # which stream_response sets for the duration of each request.
     app.state.earthdata_mcp_tools = await load_earthdata_tools(settings, current_user_id)
-    agent = await build_agent(settings.llm_model, mcp_tools=app.state.earthdata_mcp_tools)
+    # Built once here (not inside build_agent) so the supervisor's tool
+    # wrappers and the router fast path (services/chat_stream_service.py,
+    # T14) invoke the identical sub-agent instances.
+    ground_agent = build_ground_agent()
+    satellite_agent = build_earthdata_agent(mcp_tools=app.state.earthdata_mcp_tools)
+    app.state.ground_agent = ground_agent
+    app.state.satellite_agent = satellite_agent
+    agent = await build_agent(settings.llm_model, ground_agent=ground_agent, satellite_agent=satellite_agent)
     app.state.agent = agent
     logger.info("startup_complete")
     try:
@@ -84,6 +93,8 @@ async def lifespan(app: FastAPI):
     finally:
         agent = None
         app.state.agent = None
+        app.state.ground_agent = None
+        app.state.satellite_agent = None
         app.state.earthdata_mcp_tools = None
         await close_db_pool()
         logger.info("shutdown_complete")
@@ -475,11 +486,15 @@ async def chat(req: ChatRequest, request: Request):
     active_agent = getattr(app.state, "agent", None) or agent
     if active_agent is None:
         raise HTTPException(status_code=503, detail="Agent is not ready")
+    ground_agent = getattr(app.state, "ground_agent", None)
+    satellite_agent = getattr(app.state, "satellite_agent", None)
     thread_id = await _resolve_thread(req, user.id)
     request_id = str(uuid.uuid4())
     await _save_session_metadata(thread_id, req.message, user.id, request_id)
     return StreamingResponse(
-        chat_stream_service.stream_chat_events(active_agent, req.message, thread_id, user.id, request_id),
+        chat_stream_service.stream_chat_events(
+            active_agent, ground_agent, satellite_agent, req.message, thread_id, user.id, request_id,
+        ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

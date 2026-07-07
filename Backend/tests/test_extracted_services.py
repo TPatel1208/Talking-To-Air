@@ -125,7 +125,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         with patch("services.chat_stream_service.stream_response", fake_stream_response):
             events = [
                 event
-                async for event in service.stream_chat_events(object(), "hi", "thread-1", "user-1", "req-1")
+                async for event in service.stream_chat_events(object(), None, None, "hi", "thread-1", "user-1", "req-1")
             ]
 
         self.assertIn("event: text", events[0])
@@ -152,7 +152,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         with patch("services.chat_stream_service.stream_response", fake_stream_response):
             events = [
                 event
-                async for event in service.stream_chat_events(object(), "hi", "thread-1", "user-1", "req-1")
+                async for event in service.stream_chat_events(object(), None, None, "hi", "thread-1", "user-1", "req-1")
             ]
 
         self.assertIn("event: job_progress", events[0])
@@ -290,7 +290,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
              patch("services.chart_service.chart_repository.save_chart", AsyncMock(side_effect=lambda thread_id, payload, user_id: {**payload, "thread_id": thread_id, "user_id": user_id})):
             events = [
                 event
-                async for event in service.stream_chat_events(object(), "hi", "thread-1", "user-1", "req-1")
+                async for event in service.stream_chat_events(object(), None, None, "hi", "thread-1", "user-1", "req-1")
             ]
 
         chart_events = [e for e in events if e.startswith("event: chart")]
@@ -322,7 +322,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
              patch("services.chart_service.chart_repository.save_chart", AsyncMock(side_effect=lambda thread_id, payload, user_id: {**payload, "thread_id": thread_id, "user_id": user_id})):
             events = [
                 event
-                async for event in service.stream_chat_events(object(), "hi", "thread-1", "user-1", "req-1")
+                async for event in service.stream_chat_events(object(), None, None, "hi", "thread-1", "user-1", "req-1")
             ]
 
         chart_events = [e for e in events if e.startswith("event: chart")]

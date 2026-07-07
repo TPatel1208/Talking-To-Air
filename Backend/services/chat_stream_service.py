@@ -1,18 +1,27 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
 from typing import Any, AsyncIterator
 
+from langchain_core.messages import AIMessage, HumanMessage
+
 from models import parse_agent_result, parse_chart_payload
 from services.artifact_store import artifact_store
 from services.chart_service import ChartService
-from services.intent_router import inject_routing_hint
+from services.intent_router import route_intent
+from services.subagent_dispatch import run_ground, run_satellite
 from utils.message_utils import flatten_text_content, normalize_image_url
 from utils.streaming import stream_response
 
 logger = logging.getLogger(__name__)
+
+_AGENT_CONSULTED_HEADERS = {
+    "GROUND": "Agent consulted: GROUND",
+    "SATELLITE": "Agent consulted: SATELLITE",
+}
 
 
 class ChatStreamService:
@@ -23,11 +32,27 @@ class ChatStreamService:
     async def stream_chat_events(
         self,
         agent: Any,
+        ground_agent: Any,
+        satellite_agent: Any,
         message: str,
         thread_id: str,
         user_id: str,
         request_id: str,
     ) -> AsyncIterator[str]:
+        intent = route_intent(message)
+        route = "fast_path" if intent in _AGENT_CONSULTED_HEADERS else "supervisor"
+        logger.info(
+            "chat_route_decision",
+            extra={"_request_id": request_id, "_thread_id": thread_id, "_intent": intent, "_route": route},
+        )
+        if route == "fast_path":
+            sub_agent = ground_agent if intent == "GROUND" else satellite_agent
+            async for event in self._fast_path_events(
+                intent, sub_agent, agent, message, thread_id, user_id, request_id,
+            ):
+                yield event
+            return
+
         response_text = ""
         image_urls = []
         artifacts = []
@@ -40,9 +65,8 @@ class ChatStreamService:
         # single point that keeps each chart_id rendered exactly once (T13).
         emitted_chart_ids: set[str] = set()
         started = time.monotonic()
-        routed_message = inject_routing_hint(message)
         try:
-            async for event_type, data in stream_response(agent, routed_message, thread_id, user_id=user_id):
+            async for event_type, data in stream_response(agent, message, thread_id, user_id=user_id):
                 if event_type == "tool_call":
                     tool_calls.append({"name": data["name"], "args": data["args"]})
                     response_text = ""
@@ -91,6 +115,129 @@ class ChatStreamService:
         except Exception as e:
             logger.exception("agent_failure", extra={"_request_id": request_id, "_thread_id": thread_id})
             yield self.sse("error", {"detail": str(e)})
+
+    async def _fast_path_events(
+        self,
+        intent: str,
+        sub_agent: Any,
+        supervisor_agent: Any,
+        message: str,
+        thread_id: str,
+        user_id: str,
+        request_id: str,
+    ) -> AsyncIterator[str]:
+        """Dispatch directly to the ground or satellite sub-agent, bypassing
+        the supervisor's two model calls (T14). Forwards tool_call/status/
+        job_progress/chart events live as the sub-agent works, then emits the
+        finalized answer under the same "Agent consulted: ..." header the
+        supervisor path produces, and writes the turn back into the
+        supervisor's checkpointed thread so follow-ups keep their
+        antecedents."""
+        artifacts: list[dict[str, Any]] = []
+        tool_calls: list[dict[str, Any]] = []
+        emitted_chart_ids: set[str] = set()
+        started = time.monotonic()
+
+        queue: asyncio.Queue = asyncio.Queue()
+        _DONE = object()
+
+        async def on_event(event_type: str, data: Any) -> None:
+            await queue.put((event_type, data))
+
+        async def run() -> None:
+            try:
+                if intent == "GROUND":
+                    result = await run_ground(sub_agent, message, thread_id)
+                else:
+                    result = await run_satellite(sub_agent, message, thread_id, on_event=on_event)
+                await queue.put(("__result__", result))
+            except Exception as exc:  # noqa: BLE001 — surfaced as an SSE error event below
+                await queue.put(("__error__", exc))
+            finally:
+                await queue.put(("__task_done__", None))
+
+        task = asyncio.create_task(run())
+        result = None
+        try:
+            while True:
+                event_type, data = await queue.get()
+                if event_type == "__task_done__":
+                    break
+                if event_type == "__error__":
+                    raise data
+                if event_type == "__result__":
+                    result = data
+                    continue
+                if event_type == "tool_call":
+                    tool_calls.append({"name": data["name"], "args": data["args"]})
+                    yield self.sse("tool_call", {"name": data["name"], "args": data["args"]})
+                elif event_type == "status":
+                    yield self.sse("status", {"message": data.get("message", "")})
+                elif event_type == "job_progress":
+                    yield self.sse("job_progress", data)
+                elif event_type == "chart_payload":
+                    chart = parse_chart_payload(data)
+                    if chart is not None:
+                        event = await self._emit_chart_once(thread_id, chart, user_id, emitted_chart_ids)
+                        if event is not None:
+                            yield event
+                # tool_result/text/done from the sub-agent's own stream are
+                # intentionally not forwarded — the finalized envelope below
+                # becomes the one synthesized answer (T14 Out of Scope: no
+                # sub-agent token streaming through this path either).
+        except Exception as e:
+            logger.exception("agent_failure", extra={"_request_id": request_id, "_thread_id": thread_id})
+            yield self.sse("error", {"detail": str(e)})
+            return
+        finally:
+            if not task.done():
+                task.cancel()
+
+        for chart in result.charts:
+            event = await self._emit_chart_once(thread_id, chart, user_id, emitted_chart_ids)
+            if event is not None:
+                yield event
+        for artifact_ref in result.artifacts:
+            payload = self._resolve_artifact_payload(
+                artifact_ref.model_dump(exclude_none=True), user_id, thread_id,
+            )
+            if payload is None:
+                continue
+            if payload not in artifacts:
+                artifacts.append(payload)
+            yield self.sse("artifact", payload)
+
+        final_text = f"{_AGENT_CONSULTED_HEADERS[intent]}\n\n{result.text}"
+        yield self.sse("text", {"content": final_text})
+
+        await self._write_back_turn(supervisor_agent, thread_id, message, final_text)
+
+        yield self.sse("done", {
+            "thread_id": thread_id,
+            "response": self._strip_supervisor_preamble(final_text),
+            "image_urls": [],
+            "artifacts": artifacts,
+            "tool_calls": tool_calls,
+        })
+        self._log_request_complete(request_id, thread_id, started)
+
+    async def _write_back_turn(self, agent: Any, thread_id: str, user_message: str, final_answer: str) -> None:
+        """Append the fast-pathed turn to the supervisor's checkpointed
+        thread state, so the conversation the supervisor sees on its next
+        genuinely ambiguous turn is complete. Memory degradation (a failed
+        write-back) is acceptable; the turn already answered — but it is
+        logged loudly, never silent."""
+        try:
+            await agent.aupdate_state(
+                {"configurable": {"thread_id": thread_id}},
+                {"messages": [HumanMessage(content=user_message), AIMessage(content=final_answer)]},
+            )
+        except Exception:
+            logger.warning(
+                "fast_path_writeback_failed",
+                exc_info=True,
+                extra={"_thread_id": thread_id},
+            )
 
     def sse(self, event: str, data: dict[str, Any]) -> str:
         return f"event: {event}\ndata: {json.dumps(data)}\n\n"

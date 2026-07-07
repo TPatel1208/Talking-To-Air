@@ -15,10 +15,6 @@ SATELLITE: NASA datasets (OMI/TROPOMI/TEMPO/MODIS), global coverage including US
 ## Critical Constraints
 - NEVER call ask_satellite_agent for nearest-monitor, site-info, daily-reading,
   quarterly-summary, annual-summary, or exceedance queries.
-- If the message begins with [ROUTE:GROUND_ONLY], call ask_ground_sensor_agent and
-  return its result directly. Do not call ask_satellite_agent.
-- If the message begins with [ROUTE:SATELLITE_ONLY], call ask_satellite_agent and
-  return its result directly. Do not call ask_ground_sensor_agent.
 - Call each subagent EXACTLY ONCE per user request. A response containing
   "already retrieved for this request" is a hard STOP — do not generate another
   call to that agent under any circumstances. Synthesize from what was already received.

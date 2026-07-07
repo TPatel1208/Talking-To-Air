@@ -29,11 +29,9 @@ class RunSatelliteChartHarvestingTests(unittest.IsolatedAsyncioTestCase):
             return object()
 
         with patch.object(supervisor_agent, "build_chat_model", return_value="llm"), \
-             patch.object(supervisor_agent, "build_ground_agent", return_value="ground"), \
-             patch.object(supervisor_agent, "build_earthdata_agent", return_value=fake_satellite_agent), \
              patch.object(supervisor_agent, "get_checkpointer", AsyncMock(return_value="checkpointer")), \
              patch.object(supervisor_agent, "create_agent", side_effect=fake_create_agent):
-            await supervisor_agent.build_agent()
+            await supervisor_agent.build_agent(ground_agent="ground", satellite_agent=fake_satellite_agent)
 
         return captured["tools"]["ask_earthdata_agent"]
 

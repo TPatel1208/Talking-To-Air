@@ -4,9 +4,10 @@ intent_router.py
 Deterministic pre-classifier for user messages.
 
 Classifies messages into GROUND, SATELLITE, BOTH, or LLM routing categories
-without making any LLM calls.  When the intent is unambiguous the router
-prepends a [ROUTE:…] directive that the supervisor prompt is instructed to
-honour, eliminating the supervisor's need to reason about which agent to call.
+without making any LLM calls. GROUND/SATELLITE messages are dispatched
+directly to the corresponding sub-agent by the chat streaming service,
+bypassing the supervisor entirely (T14 router fast path); BOTH/LLM messages
+go to the supervisor unchanged.
 
 Intent classes
 --------------
@@ -66,11 +67,6 @@ _GROUND_RE = re.compile("|".join(_GROUND_PATTERNS), re.I | re.S)
 _SATELLITE_RE = re.compile("|".join(_SATELLITE_PATTERNS), re.I | re.S)
 _CROSS_RE = re.compile("|".join(_CROSS_SOURCE_PATTERNS), re.I | re.S)
 
-_ROUTING_PREFIXES: dict[str, str] = {
-    "GROUND": "[ROUTE:GROUND_ONLY]",
-    "SATELLITE": "[ROUTE:SATELLITE_ONLY]",
-}
-
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -98,19 +94,3 @@ def route_intent(message: str) -> str:
     if is_ground and is_satellite:
         return "BOTH"
     return "LLM"
-
-
-def inject_routing_hint(message: str) -> str:
-    """
-    Prepend a [ROUTE:…] directive for unambiguous intents.
-
-    For GROUND and SATELLITE intents the supervisor is instructed (via its
-    system prompt) to call only the appropriate subagent and skip the other.
-    For BOTH and LLM intents the message is returned unchanged so the
-    supervisor uses its own judgement.
-    """
-    intent = route_intent(message)
-    prefix = _ROUTING_PREFIXES.get(intent)
-    if prefix:
-        return f"{prefix}\n\n{message}"
-    return message
