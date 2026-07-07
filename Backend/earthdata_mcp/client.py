@@ -59,6 +59,41 @@ INTERNAL_TOOL_NAMES = (
 )
 REQUIRED_TOOL_NAMES = CURATED_TOOL_NAMES + INTERNAL_TOOL_NAMES
 
+# The parameters this backend actually sends to each required tool (derived
+# from the composites/tool factories that call it directly — see
+# services/discovery_service.py, services/jobs_service.py,
+# services/provenance_service.py, services/retrieval_composites.py,
+# services/data_download_service.py, tools/satellite_tools/comparison_tools.py
+# — plus workspace_id, which earthdata_mcp/workspace.py injects into every
+# call). A tool with no direct call site here (check_availability,
+# retrieve_timeseries — both model-facing/future, per T11) only requires
+# workspace_id: presence is already covered by REQUIRED_TOOL_NAMES, and this
+# backend has no fixed param set to assert beyond that. PRD T17's connect-time
+# schema check (earthdata_mcp/connection.py) verifies each name here appears
+# in the tool's advertised input schema.
+REQUIRED_TOOL_PARAMS: dict[str, tuple[str, ...]] = {
+    "search_datasets": ("query", "filters", "workspace_id"),
+    "describe_dataset": ("dataset_handle", "detail", "workspace_id"),
+    "preview_dataset": ("dataset_handle", "aoi_handle", "time_range", "layer", "workspace_id"),
+    "define_area_of_interest": ("location", "workspace_id"),
+    "check_availability": ("workspace_id",),
+    "check_coverage": ("dataset_handle", "aoi_handle", "time_range", "workspace_id"),
+    "retrieve_subset": (
+        "dataset_handle", "aoi_handle", "time_range", "variables", "output_format", "workspace_id",
+    ),
+    "estimate_retrieval_size": ("dataset_handle", "aoi_handle", "time_range", "workspace_id"),
+    "export_result": ("handle", "workspace_id"),
+    "rematerialize": ("handle", "workspace_id"),
+    "list_workspace": ("workspace_id",),
+    "cancel_retrieval": ("job_handle", "workspace_id"),
+    "align": ("source_handles", "workspace_id"),
+    "convert_format": ("handle", "target_format", "workspace_id"),
+    "get_retrieval_status": ("job_handle", "workspace_id"),
+    "retrieve_timeseries": ("workspace_id",),
+    "cite_dataset": ("dataset_handle", "workspace_id"),
+    "get_provenance": ("handle", "workspace_id"),
+}
+
 
 class EarthdataMCPUnavailableError(RuntimeError):
     """Raised when the earthdata-retrieval MCP is unreachable or missing a required tool."""

@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from functools import lru_cache
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -145,6 +146,15 @@ class Settings:
             missing.append("JWT_SECRET_KEY")
         if missing:
             raise RuntimeError(f"Missing required environment variable(s): {', '.join(missing)}")
+
+        # A malformed earthdata-retrieval MCP URL is a config typo to fix,
+        # not an outage — it must fail loudly at boot rather than being
+        # retried forever by the connection manager (T17).
+        parsed_mcp_url = urlsplit(self.earthdata_mcp_url)
+        if parsed_mcp_url.scheme not in ("http", "https") or not parsed_mcp_url.netloc:
+            raise ConfigurationError(
+                f"Invalid EARTHDATA_MCP_URL {self.earthdata_mcp_url!r}: must be an http(s) URL"
+            )
 
 
 @lru_cache(maxsize=1)

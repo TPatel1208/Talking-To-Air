@@ -200,6 +200,27 @@ class ConfigLoggingTests(unittest.TestCase):
         )
         loaded.validate_startup()
 
+    def test_validate_startup_rejects_a_malformed_earthdata_mcp_url(self):
+        from config.settings import ConfigurationError, Settings
+
+        # A config typo (bad scheme, no host) is a bug to fix at boot, not an
+        # outage the connection manager should retry (T17).
+        loaded = Settings(
+            db_password="x", jwt_secret_key="x", google_api_key="x", groq_api_key="x",
+            earthdata_mcp_url="not-a-url",
+        )
+        with self.assertRaisesRegex(ConfigurationError, "EARTHDATA_MCP_URL"):
+            loaded.validate_startup()
+
+    def test_validate_startup_accepts_a_well_formed_earthdata_mcp_url(self):
+        from config.settings import Settings
+
+        loaded = Settings(
+            db_password="x", jwt_secret_key="x", google_api_key="x", groq_api_key="x",
+            earthdata_mcp_url="http://mcp:8765/mcp",
+        )
+        loaded.validate_startup()  # must not raise
+
     def test_settings_normalizes_invalid_modes(self):
         from config.settings import get_settings
 
