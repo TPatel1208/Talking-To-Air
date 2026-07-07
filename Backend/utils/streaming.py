@@ -32,6 +32,7 @@ _chart_emitter: ContextVar[Optional[Callable[[dict], None]]] = ContextVar(
 )
 _current_thread_id: ContextVar[Optional[str]] = ContextVar("current_thread_id", default=None)
 _current_user_id: ContextVar[Optional[str]] = ContextVar("current_user_id", default=None)
+_call_budget: ContextVar[Optional[dict]] = ContextVar("call_budget", default=None)
 
 
 def emit_status(message: str) -> None:
@@ -68,6 +69,26 @@ def emit_chart(payload: dict) -> None:
     emitter = _chart_emitter.get()
     if emitter:
         emitter(payload)
+
+
+def get_call_budget() -> dict:
+    """Return the current request's mutable per-agent call-budget counters.
+
+    langgraph.prebuilt.tool_node.ToolNode wraps every tool call in
+    asyncio.gather(), which spawns a fresh Task with a *copied* context for
+    each call — a plain ContextVar.set() inside that Task never becomes
+    visible to a sibling Task spawned later from the same parent context.
+    A dict survives that boundary: stream_response sets this ContextVar
+    once, early, in the context that becomes every such Task's parent, and
+    callers mutate the dict in place rather than re-``set()``ing the
+    ContextVar — the mutation is visible through every context copy because
+    it is the same object, not a new binding.
+    """
+    budget = _call_budget.get()
+    if budget is None:
+        budget = {}
+        _call_budget.set(budget)
+    return budget
 
 
 def current_thread_id() -> str | None:
@@ -212,6 +233,14 @@ async def stream_response(
     chart_token = _chart_emitter.set(publish_chart_payload)
     thread_token = _current_thread_id.set(thread_id)
     user_token = _current_user_id.set(user_id)
+    # Established once, before produce()'s Task exists, so every ToolNode
+    # gather-Task this agent's own run spawns copies a context that already
+    # holds a reference to the same budget dict — see get_call_budget().
+    # A nested stream_response call (e.g. run_satellite's inner stream)
+    # reuses the outer holder rather than resetting it.
+    call_budget_token = None
+    if _call_budget.get() is None:
+        call_budget_token = _call_budget.set({})
     producer = asyncio.create_task(produce())
     try:
         while True:
@@ -228,5 +257,7 @@ async def stream_response(
         _chart_emitter.reset(chart_token)
         _current_thread_id.reset(thread_token)
         _current_user_id.reset(user_token)
+        if call_budget_token is not None:
+            _call_budget.reset(call_budget_token)
         if not producer.done():
             producer.cancel()

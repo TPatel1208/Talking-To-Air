@@ -310,7 +310,7 @@ class RunGroundTests(unittest.IsolatedAsyncioTestCase):
                 return {"messages": [SimpleNamespace(content=envelope, type="ai")]}
 
         ground_agent = FakeGroundAgent()
-        subagent_dispatch._ground_call_count.set(0)
+        subagent_dispatch.get_call_budget().clear()
 
         with patch.object(
             subagent_dispatch, "get_ground_monitor_context", AsyncMock(return_value={"site_id": "34-023-0011"})
@@ -334,7 +334,7 @@ class RunGroundTests(unittest.IsolatedAsyncioTestCase):
             async def ainvoke(self, input_, config):
                 return {"messages": [SimpleNamespace(content=envelope, type="ai")]}
 
-        subagent_dispatch._ground_call_count.set(0)
+        subagent_dispatch.get_call_budget().clear()
 
         with patch.object(subagent_dispatch, "get_ground_monitor_context", AsyncMock(return_value={})), \
              patch.object(subagent_dispatch, "save_ground_monitor_context", AsyncMock()) as save_mock:
@@ -354,7 +354,7 @@ class RunGroundTests(unittest.IsolatedAsyncioTestCase):
                     content=json.dumps({"summary": "ok", "artifact_ids": [], "handles": []}), type="ai",
                 )]}
 
-        subagent_dispatch._ground_call_count.set(0)
+        subagent_dispatch.get_call_budget().clear()
         with patch.object(subagent_dispatch, "get_ground_monitor_context", AsyncMock(return_value={})), \
              patch.object(subagent_dispatch, "save_ground_monitor_context", AsyncMock()):
             await subagent_dispatch.run_ground(FakeGroundAgent(), "task 1", "thread-1")
@@ -395,7 +395,7 @@ class RunGroundTests(unittest.IsolatedAsyncioTestCase):
                 )]}
 
         ground_agent = FakeGroundAgent()
-        subagent_dispatch._ground_call_count.set(0)
+        subagent_dispatch.get_call_budget().clear()
         with patch.object(subagent_dispatch, "get_ground_monitor_context", AsyncMock(return_value={})), \
              patch.object(subagent_dispatch, "save_ground_monitor_context", AsyncMock()):
             result = await subagent_dispatch.run_ground(ground_agent, "task 1", "thread-1")
@@ -424,7 +424,7 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0)
                 yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
 
-        subagent_dispatch._satellite_call_count.set(0)
+        subagent_dispatch.get_call_budget().clear()
         forwarded = []
 
         async def on_event(event_type, data):
@@ -447,7 +447,7 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
             async def astream(self, input_, config, stream_mode):
                 yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
 
-        subagent_dispatch._satellite_call_count.set(0)
+        subagent_dispatch.get_call_budget().clear()
         await subagent_dispatch.run_satellite(FakeSatelliteAgent(), "task 1", "thread-1")
         second = await subagent_dispatch.run_satellite(FakeSatelliteAgent(), "task 2", "thread-1")
 
@@ -487,7 +487,7 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         satellite_agent = FakeSatelliteAgent()
-        subagent_dispatch._satellite_call_count.set(0)
+        subagent_dispatch.get_call_budget().clear()
         result = await subagent_dispatch.run_satellite(satellite_agent, "Plot NO2 over NJ", "thread-1")
 
         # Exactly one further model interaction (the reprompt) — the tool
@@ -495,6 +495,87 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(satellite_agent.astream_call_count, 1)
         self.assertEqual(bound_model.call_count, 1)
         self.assertEqual(result.text, "Recovered via reprompt.")
+
+
+@unittest.skipIf(importlib.util.find_spec("langchain") is None, "langchain is not installed")
+class CallBudgetTaskBoundaryTests(unittest.IsolatedAsyncioTestCase):
+    """T16: langgraph.prebuilt.tool_node.ToolNode._afunc wraps every tool
+    call in asyncio.gather() (tool_node.py:857), which spawns a fresh
+    asyncio.Task with a *copied* context for each call. A plain
+    ContextVar.set() inside run_ground/run_satellite only mutates that
+    child Task's own copy — it is never visible to a second such Task, so
+    the "call each agent once per request" budget could silently never
+    fire. This reproduces that Task boundary directly (rather than running
+    the full LangGraph loop) and proves the budget survives it."""
+
+    async def _build_tools(self, ground_agent, satellite_agent):
+        from agents import supervisor_agent
+
+        captured = {}
+
+        def fake_create_agent(*, tools, **kwargs):
+            captured["tools"] = {t.name: t for t in tools}
+            return object()
+
+        with patch.object(supervisor_agent, "build_chat_model", return_value="llm"), \
+             patch.object(supervisor_agent, "get_checkpointer", AsyncMock(return_value="checkpointer")), \
+             patch.object(supervisor_agent, "create_agent", side_effect=fake_create_agent):
+            await supervisor_agent.build_agent(ground_agent=ground_agent, satellite_agent=satellite_agent)
+
+        return captured["tools"]
+
+    async def test_ground_budget_survives_the_tool_node_task_boundary(self):
+        from services import subagent_dispatch
+        from utils.streaming import _call_budget
+
+        envelope = json.dumps({"summary": "ok", "artifact_ids": [], "handles": []})
+
+        class FakeGroundAgent:
+            async def ainvoke(self, input_, config):
+                return {"messages": [SimpleNamespace(content=envelope, type="ai")]}
+
+        tools = await self._build_tools(FakeGroundAgent(), object())
+        ask_ground = tools["ask_ground_sensor_agent"]
+
+        # Simulate what stream_response does: establish the per-request
+        # holder ONCE, in the context that becomes every ToolNode
+        # gather-Task's parent — before either tool-calling step happens.
+        token = _call_budget.set({})
+        try:
+            with patch.object(subagent_dispatch, "get_ground_monitor_context", AsyncMock(return_value={})), \
+                 patch.object(subagent_dispatch, "save_ground_monitor_context", AsyncMock()):
+                # Each call happens inside its own freshly created Task whose
+                # context is copied at creation time — exactly what
+                # ToolNode's asyncio.gather(*coros) does for every graph step.
+                first = await asyncio.create_task(ask_ground.ainvoke({"task": "task 1"}))
+                second = await asyncio.create_task(ask_ground.ainvoke({"task": "task 2"}))
+        finally:
+            _call_budget.reset(token)
+
+        self.assertNotIn("already returned a result", first)
+        self.assertIn("already returned a result", second)
+
+    async def test_satellite_budget_survives_the_tool_node_task_boundary(self):
+        from utils.streaming import _call_budget
+
+        envelope = json.dumps({"summary": "ok", "artifact_ids": [], "handles": []})
+
+        class FakeSatelliteAgent:
+            async def astream(self, input_, config, stream_mode):
+                yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
+
+        tools = await self._build_tools(object(), FakeSatelliteAgent())
+        ask_satellite = tools["ask_earthdata_agent"]
+
+        token = _call_budget.set({})
+        try:
+            first = await asyncio.create_task(ask_satellite.ainvoke({"task": "task 1"}))
+            second = await asyncio.create_task(ask_satellite.ainvoke({"task": "task 2"}))
+        finally:
+            _call_budget.reset(token)
+
+        self.assertNotIn("already been called", first)
+        self.assertIn("already been called", second)
 
 
 if __name__ == "__main__":

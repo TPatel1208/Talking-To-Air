@@ -94,8 +94,7 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from services import subagent_dispatch
 
-        subagent_dispatch._ground_call_count.set(0)
-        subagent_dispatch._satellite_call_count.set(0)
+        subagent_dispatch.get_call_budget().clear()
 
     async def test_ground_only_message_invokes_only_the_ground_agent(self):
         from services.chat_stream_service import ChatStreamService

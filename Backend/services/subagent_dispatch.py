@@ -17,7 +17,6 @@ import logging
 import re
 import uuid
 from collections.abc import Awaitable, Callable
-from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any
 
@@ -29,15 +28,9 @@ from tools import GROUND_TOOLS
 from tools.satellite_tools.factory import sanctioned_tool_names
 from utils.message_utils import extract_last_text, truncate_text
 from utils.metrics import record_agent_request, record_envelope_salvaged
-from utils.streaming import stream_response
+from utils.streaming import get_call_budget, stream_response
 
 logger = logging.getLogger(__name__)
-
-# Per-request call counters — one integer per asyncio Task (one per HTTP
-# request). Each Task inherits a copy of the current context, so the default
-# of 0 is always seen at the start of a new request without manual resets.
-_ground_call_count: ContextVar[int] = ContextVar("_ground_call_count", default=0)
-_satellite_call_count: ContextVar[int] = ContextVar("_satellite_call_count", default=0)
 
 OnEvent = Callable[[str, Any], Awaitable[None]]
 
@@ -57,7 +50,8 @@ async def run_ground(
     every caller on that thread, whether it took the supervisor path or the
     fast path.
     """
-    count = _ground_call_count.get()
+    budget = get_call_budget()
+    count = budget.get("ground", 0)
     if count >= 1:
         logger.warning(
             "agent_budget_exceeded",
@@ -73,7 +67,7 @@ async def run_ground(
             "Do not call the supervisor_agent again. "
             "Synthesize your answer from the result already received."
         ))
-    _ground_call_count.set(count + 1)
+    budget["ground"] = count + 1
 
     monitor_context = await get_ground_monitor_context(conversation_thread_id) if conversation_thread_id else {}
 
@@ -147,7 +141,8 @@ async def run_satellite(
     this to forward tool_call/status/job_progress/chart_payload events to the
     SSE stream live instead of buffering them until the turn finishes.
     """
-    count = _satellite_call_count.get()
+    budget = get_call_budget()
+    count = budget.get("satellite", 0)
     if count >= 1:
         logger.warning(
             "agent_budget_exceeded",
@@ -163,7 +158,7 @@ async def run_satellite(
             "this call is blocked. Do NOT call ask_earthdata_agent again. "
             "Synthesize your answer from the result already received."
         ))
-    _satellite_call_count.set(count + 1)
+    budget["satellite"] = count + 1
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     enriched_task = f"[Current UTC time: {now}]\n\n{task}"
