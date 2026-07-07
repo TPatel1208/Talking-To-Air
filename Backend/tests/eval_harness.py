@@ -13,6 +13,7 @@ Pass threshold: >= 11/13, recorded here (test_eval_harness.py enforces it).
 """
 from __future__ import annotations
 
+import time
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
@@ -56,6 +57,7 @@ class EvalTaskResult:
     raw_text: str
     envelope: Any
     passed: bool
+    elapsed_seconds: float = 0.0
 
 
 def _standard_handlers(
@@ -396,19 +398,27 @@ async def run_eval_task(task: EvalTask, *, model: str | None = None) -> EvalTask
 
         tool_calls: list[str] = []
         text_parts: list[str] = []
+        started = time.monotonic()
         with aqs_patch:
             async for event_type, data in stream_response(agent, task.prompt, thread_id=f"eval-{task.name}"):
                 if event_type == "tool_call":
                     tool_calls.append(data["name"])
                 elif event_type == "text":
                     text_parts.append(data if isinstance(data, str) else data.get("response", ""))
+        elapsed_seconds = time.monotonic() - started
 
         raw_text = "".join(text_parts)
         envelope = parse_sub_agent_envelope(raw_text)
-        passed = contains_subsequence(tool_calls, task.expected_tool_calls) and task.outcome_check(
-            envelope, tool_calls
+        within_budget = elapsed_seconds <= CATEGORY_BUDGETS[task.category]
+        passed = (
+            contains_subsequence(tool_calls, task.expected_tool_calls)
+            and task.outcome_check(envelope, tool_calls)
+            and within_budget
         )
-        return EvalTaskResult(task=task, tool_calls=tool_calls, raw_text=raw_text, envelope=envelope, passed=passed)
+        return EvalTaskResult(
+            task=task, tool_calls=tool_calls, raw_text=raw_text, envelope=envelope,
+            passed=passed, elapsed_seconds=elapsed_seconds,
+        )
     finally:
         server.stop()
 
@@ -439,15 +449,20 @@ async def run_robustness_task() -> EvalTaskResult:
         artifacts=[ArtifactReference(id="map_robustness_1", type="map", title="TROPOMI NO2 over NJ")],
     )
 
+    started = time.monotonic()
     finalized = _finalize_sub_agent_result(raw, "earthdata")
+    elapsed_seconds = time.monotonic() - started
 
     passed = (
         not finalized.metadata.get("error")
         and finalized.metadata.get("salvaged") is True
         and len(finalized.artifacts) == 1
         and finalized.artifacts[0].id == "map_robustness_1"
+        and elapsed_seconds <= CATEGORY_BUDGETS[task.category]
     )
-    return EvalTaskResult(task=task, tool_calls=[], raw_text=prose, envelope=None, passed=passed)
+    return EvalTaskResult(
+        task=task, tool_calls=[], raw_text=prose, envelope=None, passed=passed, elapsed_seconds=elapsed_seconds,
+    )
 
 
 async def run_eval_suite(volume, *, model: str | None = None) -> list[EvalTaskResult]:
@@ -463,3 +478,33 @@ async def run_eval_suite(volume, *, model: str | None = None) -> list[EvalTaskRe
 
 PASS_THRESHOLD = 11
 TOTAL_TASKS = 13
+
+# Per-category wall-clock budgets (decision record 2026-07-06 §6). The
+# satellite budget applies against the fake MCP — this measures the
+# system's own overhead, not NASA's. A task that runs over its category's
+# budget fails, even if its tool trace and outcome check both pass.
+CATEGORY_BUDGETS: dict[str, float] = {
+    "discovery": 15.0,
+    "retrieval": 45.0,
+    "plotting": 45.0,
+    "comparison_setup": 45.0,
+    "failure_recovery": 15.0,
+    "ground_validation": 15.0,
+    "comparison": 45.0,
+    "robustness": 15.0,
+}
+
+
+def format_results_table(results: list[EvalTaskResult]) -> str:
+    """Render the compact per-task table the eval prints after a run: name,
+    category, pass/fail, trace verdict, seconds — so a regression's
+    location is obvious from the output alone (user story 9)."""
+    header = f"{'task':<42} {'category':<18} {'result':<6} {'trace':<6} {'seconds':>8}"
+    lines = [header, "-" * len(header)]
+    for r in results:
+        trace_ok = contains_subsequence(r.tool_calls, r.task.expected_tool_calls)
+        lines.append(
+            f"{r.task.name:<42} {r.task.category:<18} {'PASS' if r.passed else 'FAIL':<6} "
+            f"{'ok' if trace_ok else 'bad':<6} {r.elapsed_seconds:>8.2f}"
+        )
+    return "\n".join(lines)

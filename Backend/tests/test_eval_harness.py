@@ -89,6 +89,17 @@ class EvalHarnessStructureTests(unittest.TestCase):
         for task in tasks:
             self.assertTrue(task.expected_tool_calls, f"{task.name} has no expected tool calls")
 
+    def test_category_budgets_cover_every_task_category(self):
+        from eval_harness import CATEGORY_BUDGETS
+
+        tasks = self._tasks()
+        categories = {task.category for task in tasks}
+
+        missing = categories - CATEGORY_BUDGETS.keys()
+        self.assertFalse(missing, f"categories with no latency budget: {missing}")
+        for category, budget in CATEGORY_BUDGETS.items():
+            self.assertGreater(budget, 0, f"{category} budget must be positive")
+
 
 @unittest.skipIf(
     any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
@@ -107,6 +118,57 @@ class RobustnessTaskTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result.passed)
         self.assertEqual(result.task.category, "robustness")
+
+    async def test_robustness_task_records_elapsed_seconds(self):
+        from eval_harness import run_robustness_task
+
+        result = await run_robustness_task()
+
+        self.assertGreaterEqual(result.elapsed_seconds, 0.0)
+        self.assertLess(result.elapsed_seconds, 1.0)  # spends no tokens — must be near-instant
+
+
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
+    "eval harness test dependencies are not installed",
+)
+class ResultsTableTests(unittest.TestCase):
+    """T16 user story 9: a compact per-task table (pass/fail, trace verdict,
+    seconds) so a regression's location is obvious from the output alone —
+    hermetic, built from fabricated results rather than a live run."""
+
+    def test_table_reports_name_category_pass_trace_and_seconds(self):
+        from eval_harness import EvalTask, EvalTaskResult, format_results_table
+
+        passing_task = EvalTask(
+            name="discovery_no2_dataset", category="discovery", prompt="p",
+            handlers={}, expected_tool_calls=["search_datasets"],
+        )
+        failing_task = EvalTask(
+            name="plotting_single_map", category="plotting", prompt="p",
+            handlers={}, expected_tool_calls=["safe_retrieve", "plot_singular"],
+        )
+        results = [
+            EvalTaskResult(
+                task=passing_task, tool_calls=["search_datasets"], raw_text="", envelope=None,
+                passed=True, elapsed_seconds=1.234,
+            ),
+            EvalTaskResult(
+                task=failing_task, tool_calls=["safe_retrieve"], raw_text="", envelope=None,
+                passed=False, elapsed_seconds=50.5,
+            ),
+        ]
+
+        table = format_results_table(results)
+
+        self.assertIn("discovery_no2_dataset", table)
+        self.assertIn("discovery", table)
+        self.assertIn("plotting_single_map", table)
+        self.assertIn("1.23", table)
+        self.assertIn("50.50", table)
+        # The passing task's full trace is present; the failing one's isn't.
+        self.assertIn("PASS", table)
+        self.assertIn("FAIL", table)
 
 
 def _real_groq_key_available() -> bool:
@@ -128,7 +190,7 @@ class EvalSuiteTests(unittest.IsolatedAsyncioTestCase):
     @pytest.mark.eval
     @unittest.skipUnless(_real_groq_key_available(), "requires a real GROQ_API_KEY")
     async def test_earthdata_agent_passes_at_least_eleven_of_thirteen_tasks(self):
-        from eval_harness import PASS_THRESHOLD, TOTAL_TASKS, run_eval_suite
+        from eval_harness import CATEGORY_BUDGETS, PASS_THRESHOLD, TOTAL_TASKS, format_results_table, run_eval_suite
         from fake_earthdata_mcp import HandleVolume
 
         # T13: the subagent trim safety net's ceiling is sized so it never
@@ -140,10 +202,20 @@ class EvalSuiteTests(unittest.IsolatedAsyncioTestCase):
                 volume = HandleVolume(tmpdir)
                 results = await run_eval_suite(volume)
 
+        # T16 user story 9: the table is the deliverable a human reads —
+        # a regression's location must be obvious from the output alone.
+        print("\n" + format_results_table(results))
+
         passed = sum(1 for r in results if r.passed)
         failures = [r.task.name for r in results if not r.passed]
+        budget_breaches = [
+            f"{r.task.name} ({r.elapsed_seconds:.1f}s > {CATEGORY_BUDGETS[r.task.category]:.0f}s budget)"
+            for r in results
+            if r.elapsed_seconds > CATEGORY_BUDGETS[r.task.category]
+        ]
 
         self.assertEqual(len(results), TOTAL_TASKS)
+        self.assertFalse(budget_breaches, f"tasks over their category latency budget: {budget_breaches}")
         self.assertGreaterEqual(passed, PASS_THRESHOLD, f"failed tasks: {failures}")
 
 
