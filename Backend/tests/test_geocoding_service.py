@@ -59,11 +59,14 @@ class _FakeAsyncClient:
     "geocoding-service test dependencies are not installed",
 )
 class GeocodingServiceUnificationTests(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
-        import utils.plotting as plotting
+    """Deliberately does not reset utils.plotting's module-level singleton:
+    epa_aqs_tools (and every RegionResolver across the test process) already
+    captured a reference to it at import time, so resetting it here would
+    desync those references from a freshly-minted instance. Tests that need
+    an uncached lookup use a location name unique to this file instead.
+    """
 
-        plotting._geocoding_service = None
-        self.addCleanup(setattr, plotting, "_geocoding_service", None)
+    def setUp(self):
         _FakeAsyncClient.calls = 0
 
     async def test_get_geocoding_service_returns_one_shared_singleton(self):
@@ -85,16 +88,18 @@ class GeocodingServiceUnificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(epa_aqs_tools.geocoding_service, get_geocoding_service())
 
     async def test_two_resolutions_of_the_same_place_share_one_network_call(self):
-        from utils.plotting import RegionResolver, get_geocoding_service
+        from tools.ground_sensor_tools import epa_aqs_tools
+        from utils.plotting import RegionResolver
 
+        location = "T11 Unification Test Locale"
         with patch("utils.plotting.httpx.AsyncClient", _FakeAsyncClient):
             resolver = RegionResolver()
-            await resolver.aresolve_location("New York City")
+            await resolver.aresolve_location(location)
 
             # A second consumer (the EPA tools' module-level geocoding_service,
             # unified onto the same singleton) resolving the same place name
             # must hit the shared cache, not the network again.
-            await get_geocoding_service().ageocode("New York City")
+            await epa_aqs_tools.geocoding_service.ageocode(location)
 
         self.assertEqual(_FakeAsyncClient.calls, 1)
 
@@ -102,7 +107,7 @@ class GeocodingServiceUnificationTests(unittest.IsolatedAsyncioTestCase):
         from utils.plotting import NOMINATIM_USER_AGENT, get_geocoding_service
 
         with patch("utils.plotting.httpx.AsyncClient", _FakeAsyncClient):
-            await get_geocoding_service().ageocode("Paris")
+            await get_geocoding_service().ageocode("T11 User-Agent Test Locale")
 
         self.assertEqual(_FakeAsyncClient.last_headers["User-Agent"], NOMINATIM_USER_AGENT)
         self.assertNotIn("Educational project", NOMINATIM_USER_AGENT)
