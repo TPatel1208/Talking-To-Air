@@ -48,11 +48,13 @@ Supervisor Agent  ──── Postgres checkpointer (conversation memory)
 Cache Layer  ──  Zarr files on disk + PostgreSQL cache index
 ```
 
-**Supervisor** — stateful LangGraph agent using Google Gemini. Owns the Postgres checkpointer and maintains one conversation thread per session. Trims its own context window to stay within the model's token budget.
+**Supervisor** — stateful LangGraph agent on Google Gemini 2.5 Flash (its own free-tier rate budget, separate from the Groq subagents). Owns the Postgres checkpointer and maintains one conversation thread per session. Trims its own context window to stay within the model's token budget.
 
-**Satellite Agent** — stateless LangGraph agent (Groq). Delegates data fetching to whichever strategy is configured (Harmony, OPeNDAP CE, or S3 direct). Produces maps and time-series plots using Cartopy and Matplotlib.
+**Satellite Agent** — stateless LangGraph agent on Groq (the large tool-use model, with the full Groq budget to itself). Delegates data fetching to whichever strategy is configured (Harmony, OPeNDAP CE, or S3 direct). Produces maps and time-series plots using Cartopy and Matplotlib.
 
-**Ground Sensor Agent** — stateless LangGraph agent (Groq). Queries the EPA AQS API for PM₂.₅, O₃, NO₂, and other pollutants at monitoring stations.
+**Ground Sensor Agent** — stateless LangGraph agent on Groq (the small model). Queries the EPA AQS API for PM₂.₅, O₃, NO₂, and other pollutants at monitoring stations.
+
+Each agent's provider + model is a configuration entry, resolved through one model factory (`config/model_factory.py`) — switching providers is an environment change, not a code change. See `SUPERVISOR_MODEL_PROVIDER`, `EARTHDATA_AGENT_PROVIDER`, and `GROUND_AGENT_PROVIDER` below.
 
 ---
 
@@ -158,9 +160,12 @@ Copy `.env.example` to `.env` and fill in the values below.
 
 | Variable | Default | Description |
 |---|---|---|
-| `LLM_MODEL` | `openai/gpt-oss-120b` | Supervisor model |
-| `SATELLITE_AGENT_MODEL` | `openai/gpt-oss-20b` | Satellite subagent model |
+| `LLM_MODEL` | `gemini-2.5-flash` | Supervisor model |
+| `SUPERVISOR_MODEL_PROVIDER` | `google` | Supervisor provider (`google` or `groq`) |
+| `EARTHDATA_AGENT_MODEL` | `openai/gpt-oss-120b` | Satellite (earthdata) subagent model |
+| `EARTHDATA_AGENT_PROVIDER` | `groq` | Satellite subagent provider (`groq` or `google`) |
 | `GROUND_AGENT_MODEL` | `openai/gpt-oss-20b` | Ground sensor subagent model |
+| `GROUND_AGENT_PROVIDER` | `groq` | Ground sensor subagent provider (`groq` or `google`) |
 | `DATA_FETCH_MODE` | `auto` | Fetch strategy: `auto`, `harmony`, `opendap`, or `s3` |
 | `S3_FORCE_FETCH` | `0` | Set to `1` to bypass the us-west-2 region check for S3 fetches |
 | `SATELLITE_MAX_RESULTS_CAP` | `20` | Maximum granule results per satellite query |

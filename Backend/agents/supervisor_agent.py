@@ -16,7 +16,6 @@ from contextvars import ContextVar
 from datetime import datetime, timezone
 from collections.abc import Awaitable, Callable
 from typing import Any
-from langchain_groq import ChatGroq
 from langchain.agents import create_agent
 from langchain.tools import tool
 from langchain_core.messages import HumanMessage, trim_messages
@@ -25,6 +24,7 @@ from langchain.agents.middleware import wrap_model_call, ModelRequest, ModelResp
 from agents.ground_sensor_agent import build_ground_agent
 from agents.earthdata_agent import build_earthdata_agent
 
+from config.model_factory import build_chat_model
 from config.settings import get_settings
 from config.supervisor_prompt import SUPERVISOR_PROMPT
 from models import (
@@ -55,8 +55,11 @@ _satellite_call_count: ContextVar[int] = ContextVar("_satellite_call_count", def
 
 async def build_agent(
     model: str | None = None,
+    provider: str | None = None,
     ground_agent_model: str | None = None,
+    ground_agent_provider: str | None = None,
     earthdata_agent_model: str | None = None,
+    earthdata_agent_provider: str | None = None,
     mcp_tools: dict[str, Any] | None = None,
 ):
     """
@@ -76,17 +79,22 @@ async def build_agent(
     """
     settings = get_settings()
     model = model or settings.llm_model
+    provider = provider or settings.supervisor_model_provider
     ground_agent_model = ground_agent_model or settings.ground_agent_model
+    ground_agent_provider = ground_agent_provider or settings.ground_agent_provider
     earthdata_agent_model = earthdata_agent_model or settings.earthdata_agent_model
-    logger.info("supervisor_model", extra={"_event": "supervisor_model", "_model": model})
-    llm = ChatGroq(
-        model=model,
-        groq_api_key=settings.groq_api_key,
+    earthdata_agent_provider = earthdata_agent_provider or settings.earthdata_agent_provider
+    logger.info(
+        "supervisor_model",
+        extra={"_event": "supervisor_model", "_model": model, "_provider": provider},
     )
+    llm = build_chat_model(provider, model, settings)
 
     # Stateless subagents — no checkpointer passed.
-    ground_agent    = build_ground_agent(model=ground_agent_model)
-    satellite_agent = build_earthdata_agent(model=earthdata_agent_model, mcp_tools=mcp_tools)
+    ground_agent    = build_ground_agent(model=ground_agent_model, provider=ground_agent_provider)
+    satellite_agent = build_earthdata_agent(
+        model=earthdata_agent_model, provider=earthdata_agent_provider, mcp_tools=mcp_tools
+    )
     last_ground_monitor: dict[str, str] = {}
 
     # ── Trim middleware — keeps the supervisor's context window bounded ───────

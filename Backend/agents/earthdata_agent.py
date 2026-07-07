@@ -8,19 +8,26 @@ Stateless by design — no checkpointer, no persistent memory.
 Each invocation is a self-contained request/response cycle.
 The supervisor is solely responsible for conversation history.
 """
+import logging
 import uuid
 from typing import Any
 
-from langchain_groq import ChatGroq
 from langchain.agents import create_agent
 
+from config.model_factory import build_chat_model
 from config.settings import get_settings
 from config.earthdata_agent_prompt import get_earthdata_agent_prompt
 from tools.satellite_tools.factory import build_satellite_tools
 from utils.streaming import stream_response
 
+logger = logging.getLogger(__name__)
 
-def build_earthdata_agent(model: str | None = None, mcp_tools: dict[str, Any] | None = None):
+
+def build_earthdata_agent(
+    model: str | None = None,
+    provider: str | None = None,
+    mcp_tools: dict[str, Any] | None = None,
+):
     """
     Build and return a stateless earthdata agent.
 
@@ -31,17 +38,22 @@ def build_earthdata_agent(model: str | None = None, mcp_tools: dict[str, Any] | 
     Parameters
     ----------
     model : str
-        GROQ model identifier.
+        Model identifier for the resolved provider.
+    provider : str
+        Provider name understood by config.model_factory.build_chat_model.
     mcp_tools : dict[str, BaseTool] | None
         Workspace-bound earthdata-retrieval MCP tools (see
         earthdata_mcp.toolset.load_earthdata_tools), used to build this
         agent's handle-based discovery/retrieval/plot/statistics tools.
     """
     settings = get_settings()
-    llm = ChatGroq(
-        model=model or settings.earthdata_agent_model,
-        groq_api_key=settings.groq_api_key,
+    model = model or settings.earthdata_agent_model
+    provider = provider or settings.earthdata_agent_provider
+    logger.info(
+        "earthdata_agent_model",
+        extra={"_event": "earthdata_agent_model", "_model": model, "_provider": provider},
     )
+    llm = build_chat_model(provider, model, settings)
 
     agent = create_agent(
         model=llm,

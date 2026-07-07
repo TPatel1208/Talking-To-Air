@@ -183,11 +183,13 @@ class AgentHelperTests(unittest.TestCase):
             self.assertIn(tool.name, _GROUND_RETRY_TOOL_GUIDANCE)
         self.assertNotIn("geocode_location", _GROUND_RETRY_TOOL_GUIDANCE)
 
-    def test_build_agent_uses_configured_supervisor_model(self):
+    def test_build_agent_builds_the_supervisor_model_via_the_factory(self):
         from agents import supervisor_agent
 
         created = object()
-        with patch.object(supervisor_agent, "ChatGroq", return_value="llm") as chat, patch.object(
+        with patch.object(
+            supervisor_agent, "build_chat_model", return_value="llm"
+        ) as factory, patch.object(
             supervisor_agent, "build_ground_agent", return_value="ground"
         ), patch.object(
             supervisor_agent, "build_earthdata_agent", return_value="satellite"
@@ -196,10 +198,58 @@ class AgentHelperTests(unittest.TestCase):
         ), patch.object(
             supervisor_agent, "create_agent", Mock(return_value=created)
         ):
-            result = asyncio.run(supervisor_agent.build_agent(model="configured-model"))
+            result = asyncio.run(
+                supervisor_agent.build_agent(model="configured-model", provider="groq")
+            )
 
         self.assertIs(result, created)
-        self.assertEqual(chat.call_args.kwargs["model"], "configured-model")
+        self.assertEqual(factory.call_args.args[0], "groq")
+        self.assertEqual(factory.call_args.args[1], "configured-model")
+
+    def test_build_agent_defaults_the_supervisor_provider_from_settings(self):
+        from agents import supervisor_agent
+        from config.settings import get_settings
+
+        created = object()
+        with patch.object(
+            supervisor_agent, "build_chat_model", return_value="llm"
+        ) as factory, patch.object(
+            supervisor_agent, "build_ground_agent", return_value="ground"
+        ), patch.object(
+            supervisor_agent, "build_earthdata_agent", return_value="satellite"
+        ), patch.object(
+            supervisor_agent, "get_checkpointer", AsyncMock(return_value="checkpointer")
+        ), patch.object(
+            supervisor_agent, "create_agent", Mock(return_value=created)
+        ):
+            asyncio.run(supervisor_agent.build_agent())
+
+        self.assertEqual(factory.call_args.args[0], get_settings().supervisor_model_provider)
+
+    def test_build_agent_passes_per_agent_provider_overrides_to_each_subagent(self):
+        from agents import supervisor_agent
+
+        created = object()
+        with patch.object(
+            supervisor_agent, "build_chat_model", return_value="llm"
+        ), patch.object(
+            supervisor_agent, "build_ground_agent", return_value="ground"
+        ) as ground, patch.object(
+            supervisor_agent, "build_earthdata_agent", return_value="satellite"
+        ) as earthdata, patch.object(
+            supervisor_agent, "get_checkpointer", AsyncMock(return_value="checkpointer")
+        ), patch.object(
+            supervisor_agent, "create_agent", Mock(return_value=created)
+        ):
+            asyncio.run(
+                supervisor_agent.build_agent(
+                    ground_agent_provider="google",
+                    earthdata_agent_provider="google",
+                )
+            )
+
+        self.assertEqual(ground.call_args.kwargs["provider"], "google")
+        self.assertEqual(earthdata.call_args.kwargs["provider"], "google")
 
 
 if __name__ == "__main__":
