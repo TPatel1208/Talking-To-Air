@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_DIR not in sys.path:
@@ -57,15 +58,32 @@ class SatelliteToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
 
         self.volume.add_zarr("obs_1", make_dataset)
 
+        emitted = {}
+
+        def fake_emit_chart(full_payload):
+            emitted["payload"] = full_payload
+
         plot_singular = self._tool("plot_singular")
-        result = await plot_singular.ainvoke({"handle": "obs_1", "location": "global"})
+        with patch("tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
+            result = await plot_singular.ainvoke({"handle": "obs_1", "location": "global"})
         payload = json.loads(result)
 
         self.assertNotIn("error", payload)
-        self.assertEqual(payload["type"], "heatmap")
+
+        # The full grid still reaches the frontend chart/artifact pipeline.
+        full = emitted["payload"]
+        self.assertEqual(full["type"], "heatmap")
+        self.assertEqual(full["variable"], "no2")
+        self.assertEqual(full["units"], "mol/m^2")
+        self.assertEqual(full["metadata"]["source_handles"], ["obs_1"])
+
+        # The model-facing result is the compact summary (T13).
+        self.assertEqual(payload["render_type"], "heatmap")
         self.assertEqual(payload["variable"], "no2")
         self.assertEqual(payload["units"], "mol/m^2")
-        self.assertEqual(payload["metadata"]["source_handles"], ["obs_1"])
+        self.assertEqual(payload["source_handles"], ["obs_1"])
+        self.assertNotIn("values", payload)
+        self.assertNotIn("lats", payload)
         self.assertTrue(payload["chart_id"].startswith("map_"))
         ref = payload["_artifact_refs"][0]
         self.assertEqual(ref["id"], payload["chart_id"])
@@ -84,17 +102,29 @@ class SatelliteToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
         self.volume.add_zarr("obs_a", make_dataset)
         self.volume.add_zarr("obs_b", make_dataset)
 
+        emitted = {}
+
+        def fake_emit_chart(full_payload):
+            emitted["payload"] = full_payload
+
         plot_multiple = self._tool("plot_multiple")
-        result = await plot_multiple.ainvoke({
-            "handles": ["obs_a", "obs_b"],
-            "locations": ["global", "global"],
-        })
+        with patch("tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
+            result = await plot_multiple.ainvoke({
+                "handles": ["obs_a", "obs_b"],
+                "locations": ["global", "global"],
+            })
         payload = json.loads(result)
 
         self.assertNotIn("error", payload)
-        self.assertEqual(payload["type"], "heatmap_multi")
-        self.assertEqual(len(payload["panels"]), 2)
-        self.assertEqual(payload["metadata"]["source_handles"], ["obs_a", "obs_b"])
+
+        full = emitted["payload"]
+        self.assertEqual(full["type"], "heatmap_multi")
+        self.assertEqual(len(full["panels"]), 2)
+        self.assertEqual(full["metadata"]["source_handles"], ["obs_a", "obs_b"])
+
+        self.assertEqual(payload["render_type"], "heatmap_multi")
+        self.assertEqual(payload["source_handles"], ["obs_a", "obs_b"])
+        self.assertNotIn("panels", payload)
         self.assertTrue(payload["chart_id"].startswith("cmp_"))
         ref = payload["_artifact_refs"][0]
         self.assertEqual(ref["type"], "comparison")
@@ -122,14 +152,27 @@ class SatelliteToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
 
         self.volume.add_zarr("obs_ts", make_dataset)
 
+        emitted = {}
+
+        def fake_emit_chart(full_payload):
+            emitted["payload"] = full_payload
+
         conduct_temporal_statistic = self._tool("conduct_temporal_statistic")
-        result = await conduct_temporal_statistic.ainvoke({"handle": "obs_ts", "location": "global", "stat": "mean"})
+        with patch("tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
+            result = await conduct_temporal_statistic.ainvoke({"handle": "obs_ts", "location": "global", "stat": "mean"})
         payload = json.loads(result)
 
         self.assertNotIn("error", payload)
-        self.assertEqual(payload["type"], "timeseries")
-        self.assertEqual(len(payload["times"]), 2)
-        self.assertEqual(payload["metadata"]["source_handles"], ["obs_ts"])
+
+        full = emitted["payload"]
+        self.assertEqual(full["type"], "timeseries")
+        self.assertEqual(len(full["times"]), 2)
+        self.assertEqual(full["metadata"]["source_handles"], ["obs_ts"])
+
+        self.assertEqual(payload["render_type"], "timeseries")
+        self.assertEqual(payload["grid_dims"], [2])
+        self.assertEqual(payload["source_handles"], ["obs_ts"])
+        self.assertNotIn("times", payload)
         self.assertTrue(payload["chart_id"].startswith("ts_"))
         ref = payload["_artifact_refs"][0]
         self.assertEqual(ref["type"], "timeseries")
