@@ -68,4 +68,4 @@ async def _resolve_aoi(location: str | None, tools: dict[str, BaseTool]) -> str 
         return None
     raw = await tools["define_area_of_interest"].ainvoke({"location": location})
     aoi = parse_tool_result(raw)
-    return aoi.get("aoi_handle")
+    return aoi.get("handle")

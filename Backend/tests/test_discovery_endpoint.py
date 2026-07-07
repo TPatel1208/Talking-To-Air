@@ -67,7 +67,7 @@ class DiscoveryEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         async def define_area_of_interest(location, workspace_id):
             self.aoi_calls.append((location, workspace_id))
-            return {"aoi_handle": f"aoi_{location.lower().replace(' ', '_')}"}
+            return {"handle": f"aoi_{location.lower().replace(' ', '_')}"}
 
         async def preview_dataset(dataset_handle, aoi_handle, time_range, layer, workspace_id):
             self.preview_calls.append((dataset_handle, aoi_handle, time_range, layer, workspace_id))
