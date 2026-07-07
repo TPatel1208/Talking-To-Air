@@ -110,26 +110,27 @@ Each agent's provider + model is a configuration entry, resolved through one mod
 
 This stack connects to the [harmony-retrieval-mcp](https://github.com/your-username/harmony-retrieval-mcp) stack over a shared external Docker network, and reads that stack's materialized data volume directly (read-only) so `export_result`'s `file://` URIs resolve as a plain filesystem read in both containers.
 
-1. **Start the MCP stack first** (in the harmony-retrieval-mcp repo, with `EARTHDATA_MCP_TRANSPORT=http` set in its `.env`):
+**Startup order no longer matters (T17).** The backend boots without the MCP: ground/EPA features work immediately, and a background task connects to the MCP (with capped retry) and heals the satellite path without a restart once it's up — `/health`'s `earthdata_mcp` field reports `connecting`/`ready`/`unavailable`/`incompatible`. The one exception is a genuinely fresh machine that has never brought up the MCP stack's compose file: Docker's `external: true` network/volume must exist before *this* stack's `docker compose up` will succeed at all, so the MCP stack still needs to run at least once first to create them. After that one-time setup, bring either stack up first, in any order, on every subsequent `docker compose up`.
+
+1. **First time only:** bring up the MCP stack (in the harmony-retrieval-mcp repo, with `EARTHDATA_MCP_TRANSPORT=http` set in its `.env`) to create the external network `earthdata_net` and the external volume `earthdata_data`:
    ```bash
    docker compose up --build
    ```
-   This creates the external network `earthdata_net` and the external volume `earthdata_data` that this stack attaches to.
 
 2. **Set `EARTHDATA_MCP_URL` and `EARTHDATA_MCP_TOKEN`** in this repo's `.env` to match that stack's HTTP endpoint and token.
 
-3. **Start this stack:**
+3. **Start this stack** (in either order relative to the MCP stack, from here on):
    ```bash
    docker compose up --build
    ```
-   If `earthdata_net` doesn't exist yet, compose will fail with a "network not found" error — bring up the MCP stack first.
 
-4. **Smoke check** — confirm the shared mount and network both resolve:
+4. **Smoke check** — confirm the shared mount, network, and MCP connection all resolve:
    ```bash
    docker compose exec backend ls /data
    docker compose exec backend curl -H "Authorization: Bearer $EARTHDATA_MCP_TOKEN" http://mcp:8765/mcp
+   docker compose exec backend curl http://localhost:8000/health
    ```
-   The first command should list whatever the MCP stack has materialized; the second should get a response from the MCP's HTTP endpoint rather than a DNS/connection error.
+   The first command should list whatever the MCP stack has materialized; the second should get a response from the MCP's HTTP endpoint rather than a DNS/connection error; the third's `earthdata_mcp` field should read `ready` once the connect loop catches up (a few seconds).
 
 ---
 

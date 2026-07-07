@@ -116,6 +116,12 @@ services:
 # Fixed name (not project-prefixed), created by the harmony-retrieval-mcp
 # stack on its first `docker compose up`. Join it here as external so the
 # backend can reach that stack's `mcp` service at $EARTHDATA_MCP_URL.
+#
+# T17: the backend no longer requires that stack to be up first (or ever, for
+# ground/EPA-only use) — it boots regardless and connects to the MCP in the
+# background with capped retry, healing without a restart once it's up. Bring
+# up this stack and the harmony-retrieval-mcp stack in either order; see
+# README.md.
 networks:
   earthdata_net:
     external: true
