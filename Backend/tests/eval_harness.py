@@ -13,14 +13,62 @@ Pass threshold: >= 11/13, recorded here (test_eval_harness.py enforces it).
 """
 from __future__ import annotations
 
+import logging
+import re
 import time
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 from unittest.mock import AsyncMock, patch
 
 EnvelopeCheck = Callable[[Any, list[str]], bool]
 AqsGetHandler = Callable[[str, dict], Awaitable[dict]]
+
+
+class RateLimitDetected(RuntimeError):
+    """Raised when provider retry/429 evidence was logged during an eval run."""
+
+
+# Groq's client logs retries on the "groq" logger family (e.g. "Retrying
+# request to /v1/chat/completions in 5.2 seconds") rather than raising on
+# the caller's side; httpx logs the raw response line, which carries the
+# status code. Matching both loggers is cruder than instrumenting httpx
+# directly but has zero production footprint.
+_RATE_LIMIT_LOG_PATTERN = re.compile(r"retrying request|\b429\b|too many requests", re.I)
+
+
+class _RateLimitLogHandler(logging.Handler):
+    def __init__(self):
+        super().__init__(level=logging.DEBUG)
+        self.matches: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        message = record.getMessage()
+        if _RATE_LIMIT_LOG_PATTERN.search(message):
+            self.matches.append(message)
+
+
+@contextmanager
+def capture_rate_limit_evidence():
+    """Watch the groq/httpx loggers for retry/429 evidence for the duration
+    of the ``with`` block. Yields the handler; ``handler.matches`` lists any
+    matching log messages observed (single-user cleanliness is the bar —
+    any evidence at all means rate-limit pressure returned)."""
+    handler = _RateLimitLogHandler()
+    watched_loggers = [logging.getLogger("groq"), logging.getLogger("httpx")]
+    previous_levels = [logger.level for logger in watched_loggers]
+    for logger in watched_loggers:
+        # httpx logs its request-line summary (which carries the status
+        # code) at INFO; without lowering the logger's own effective level
+        # here, records below the ambient root level never reach handlers.
+        logger.addHandler(handler)
+        logger.setLevel(logging.DEBUG)
+    try:
+        yield handler
+    finally:
+        for logger, previous_level in zip(watched_loggers, previous_levels):
+            logger.removeHandler(handler)
+            logger.setLevel(previous_level)
 
 
 def _always_valid(envelope, tool_calls: list[str]) -> bool:
@@ -468,11 +516,16 @@ async def run_robustness_task() -> EvalTaskResult:
 async def run_eval_suite(volume, *, model: str | None = None) -> list[EvalTaskResult]:
     tasks = build_eval_tasks(volume)
     results = []
-    for task in tasks:
-        if task.category == "robustness":
-            results.append(await run_robustness_task())
-        else:
-            results.append(await run_eval_task(task, model=model))
+    with capture_rate_limit_evidence() as rate_limit_evidence:
+        for task in tasks:
+            if task.category == "robustness":
+                results.append(await run_robustness_task())
+            else:
+                results.append(await run_eval_task(task, model=model))
+    if rate_limit_evidence.matches:
+        raise RateLimitDetected(
+            f"provider rate-limit evidence during a single-user eval run: {rate_limit_evidence.matches}"
+        )
     return results
 
 

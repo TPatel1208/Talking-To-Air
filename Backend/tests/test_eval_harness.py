@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import pytest
 
@@ -169,6 +170,97 @@ class ResultsTableTests(unittest.TestCase):
         # The passing task's full trace is present; the failing one's isn't.
         self.assertIn("PASS", table)
         self.assertIn("FAIL", table)
+
+
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
+    "eval harness test dependencies are not installed",
+)
+class RateLimitDetectionTests(unittest.TestCase):
+    """T16 user story 3: single-user rate-limit pressure — the original
+    outage mode — must never silently reappear. Groq's client only logs
+    retries (no exception raised on the caller's side), so the harness
+    watches the groq/httpx loggers for the duration of a run."""
+
+    def test_captures_a_groq_retry_log_record(self):
+        import logging
+
+        from eval_harness import capture_rate_limit_evidence
+
+        with capture_rate_limit_evidence() as handler:
+            logging.getLogger("groq._base_client").warning(
+                "Retrying request to /v1/chat/completions in 5.2 seconds"
+            )
+
+        self.assertEqual(len(handler.matches), 1)
+        self.assertIn("Retrying", handler.matches[0])
+
+    def test_captures_a_429_mention_on_the_httpx_logger(self):
+        import logging
+
+        from eval_harness import capture_rate_limit_evidence
+
+        with capture_rate_limit_evidence() as handler:
+            logging.getLogger("httpx").info(
+                'HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 429 Too Many Requests"'
+            )
+
+        self.assertEqual(len(handler.matches), 1)
+
+    def test_ignores_unrelated_log_records(self):
+        import logging
+
+        from eval_harness import capture_rate_limit_evidence
+
+        with capture_rate_limit_evidence() as handler:
+            logging.getLogger("groq._base_client").info("Request completed successfully")
+            logging.getLogger("httpx").info(
+                'HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"'
+            )
+
+        self.assertEqual(handler.matches, [])
+
+
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
+    "eval harness test dependencies are not installed",
+)
+class RunEvalSuiteRateLimitTests(unittest.IsolatedAsyncioTestCase):
+    async def test_run_eval_suite_fails_the_run_if_rate_limit_evidence_is_logged(self):
+        import logging
+
+        from eval_harness import EvalTaskResult, RateLimitDetected, run_eval_suite
+        from fake_earthdata_mcp import HandleVolume
+
+        async def fake_run_eval_task(task, *, model=None):
+            logging.getLogger("groq._base_client").warning(
+                "Retrying request to /v1/chat/completions in 3.0 seconds"
+            )
+            return EvalTaskResult(
+                task=task, tool_calls=[], raw_text="", envelope=None, passed=True, elapsed_seconds=0.1,
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            volume = HandleVolume(tmpdir)
+            with patch("eval_harness.run_eval_task", side_effect=fake_run_eval_task):
+                with self.assertRaises(RateLimitDetected):
+                    await run_eval_suite(volume)
+
+    async def test_run_eval_suite_succeeds_with_no_rate_limit_evidence(self):
+        from eval_harness import EvalTaskResult, TOTAL_TASKS, run_eval_suite
+        from fake_earthdata_mcp import HandleVolume
+
+        async def fake_run_eval_task(task, *, model=None):
+            return EvalTaskResult(
+                task=task, tool_calls=[], raw_text="", envelope=None, passed=True, elapsed_seconds=0.1,
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            volume = HandleVolume(tmpdir)
+            with patch("eval_harness.run_eval_task", side_effect=fake_run_eval_task):
+                results = await run_eval_suite(volume)
+
+        self.assertEqual(len(results), TOTAL_TASKS)
 
 
 def _real_groq_key_available() -> bool:
