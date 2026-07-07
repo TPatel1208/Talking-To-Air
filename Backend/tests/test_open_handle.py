@@ -1,3 +1,4 @@
+import asyncio
 import importlib.util
 import os
 import sys
@@ -86,6 +87,56 @@ class OpenHandleZarrTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(ds, xr.Dataset)
         self.assertIn("no2", ds.data_vars)
         self.assertEqual(self.volume.rematerialize_calls["obs_2"], 1)
+
+
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
+    "open_handle test dependencies are not installed",
+)
+class OpenHandleEventLoopOffloadTests(unittest.IsolatedAsyncioTestCase):
+    """T16: opening a handle (xr.open_zarr et al.) is CPU/IO work that used
+    to run straight on the event loop, freezing every concurrent stream for
+    its duration. Hermetic per PRD Testing Decisions: no thread-pool
+    internals inspected — only that a concurrent trivial coroutine keeps
+    making progress while a (patched-slow) open call is in flight."""
+
+    async def test_open_handle_does_not_block_a_concurrent_coroutine(self):
+        import time
+        from unittest.mock import AsyncMock, patch
+
+        import xarray as xr
+
+        from services import open_handle as open_handle_module
+        from services.open_handle import open_handle
+
+        def slow_open_zarr(path):
+            time.sleep(0.6)
+            return xr.Dataset({"no2": (("y", "x"), [[1.0, 2.0], [3.0, 4.0]])})
+
+        tick_count = 0
+
+        async def ticker():
+            nonlocal tick_count
+            for _ in range(20):
+                await asyncio.sleep(0.03)
+                tick_count += 1
+
+        fast_export = AsyncMock(return_value={
+            "status": "ready", "storage_uri": "file:///obs_slow.zarr", "media_type": "zarr",
+        })
+        with patch.object(open_handle_module, "_export", fast_export), \
+             patch("xarray.open_zarr", side_effect=slow_open_zarr):
+            start = time.monotonic()
+            ds, _ = await asyncio.gather(open_handle("obs_slow", {}), ticker())
+            elapsed = time.monotonic() - start
+
+        # ticker() and slow_open_zarr each take ~0.6s. If _open ran on the
+        # event loop the two would serialize (~1.5s, measured); offloaded to
+        # a thread they overlap (~1.0s, measured) — 1.25s cleanly separates
+        # the two on this environment's own timer overhead.
+        self.assertLess(elapsed, 1.25)
+        self.assertEqual(tick_count, 20)
+        self.assertIn("no2", ds.data_vars)
 
 
 @unittest.skipIf(

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import numpy as np
@@ -59,44 +60,49 @@ def make_compute_statistic_tool(mcp_tools: dict[str, BaseTool]):
         if region is None:
             return json.dumps({"error": f"Could not resolve location: '{location}'"})
 
-        da = mask_data_by_geometry(da, region['geometry'])
+        def _mask_aggregate_stats():
+            # CPU-bound mask -> aggregate -> stats chain (T16), run off the
+            # event loop via asyncio.to_thread below.
+            masked = mask_data_by_geometry(da, region['geometry'])
 
-        col_info = _mask_col_info(da)
-        try:
-            aggregation = _aggregation_service.aggregate(
-                da,
-                variable=da.name,
-                stat="mean",
-                col_info=col_info,
-            )
-        except ValueError as e:
-            return json.dumps({"error": str(e)})
-        da = next(iter(aggregation.ds.data_vars.values()))
-        da = _normalize_to_2d(da)
+            col_info = _mask_col_info(masked)
+            try:
+                aggregation = _aggregation_service.aggregate(
+                    masked,
+                    variable=masked.name,
+                    stat="mean",
+                    col_info=col_info,
+                )
+            except ValueError as e:
+                return "error", str(e)
+            reduced = next(iter(aggregation.ds.data_vars.values()))
+            reduced = _normalize_to_2d(reduced)
 
-        values = da.values
-        valid = values[np.isfinite(values)]
-        if len(valid) == 0:
-            return json.dumps({
-                "error": f"No valid data found for '{location}'. "
-                         "The region may be outside the data bbox."
-            })
+            values = reduced.values
+            valid = values[np.isfinite(values)]
+            if len(valid) == 0:
+                return "error", f"No valid data found for '{location}'. The region may be outside the data bbox."
 
-        invalid_stats = [s for s in stats if s not in VALID_STATS]
-        if invalid_stats:
-            return json.dumps({"error": f"Unknown stats: {invalid_stats}. Valid: {sorted(VALID_STATS)}"})
+            invalid_stats = [s for s in stats if s not in VALID_STATS]
+            if invalid_stats:
+                return "error", f"Unknown stats: {invalid_stats}. Valid: {sorted(VALID_STATS)}"
 
-        result = {
-            "location": location,
-            "variable": da.name or "",
-            "units":    da.attrs.get("units", ""),
-            "n_pixels": int(len(valid)),
-            "aggregation_meta": aggregation.meta,
-            "source_handles": [handle],
-        }
-        for s in stats:
-            result[s] = _aggregation_service.compute_values_stat(valid, s)
+            result = {
+                "location": location,
+                "variable": reduced.name or "",
+                "units":    reduced.attrs.get("units", ""),
+                "n_pixels": int(len(valid)),
+                "aggregation_meta": aggregation.meta,
+                "source_handles": [handle],
+            }
+            for s in stats:
+                result[s] = _aggregation_service.compute_values_stat(valid, s)
 
+            return None, result
+
+        status, result = await asyncio.to_thread(_mask_aggregate_stats)
+        if status == "error":
+            return json.dumps({"error": result})
         return json.dumps(result)
 
     return compute_statistic_tool
@@ -133,71 +139,76 @@ def make_find_daily_peak(mcp_tools: dict[str, BaseTool]):
         if region is None:
             return json.dumps({"error": f"Could not resolve location: '{location}'"})
 
-        da = mask_data_by_geometry(da, region['geometry'])
+        def _mask_aggregate_peak():
+            # CPU-bound mask -> aggregate -> peak search chain (T16), run
+            # off the event loop via asyncio.to_thread below.
+            masked = mask_data_by_geometry(da, region['geometry'])
 
-        col_info = _mask_col_info(da)
-        try:
-            aggregation = _aggregation_service.aggregate(
-                da,
-                variable=da.name,
-                stat="mean",
-                col_info=col_info,
-            )
-        except ValueError as e:
-            return json.dumps({"error": str(e)})
-        da = next(iter(aggregation.ds.data_vars.values()))
-        da = _normalize_to_2d(da)
+            col_info = _mask_col_info(masked)
+            try:
+                aggregation = _aggregation_service.aggregate(
+                    masked,
+                    variable=masked.name,
+                    stat="mean",
+                    col_info=col_info,
+                )
+            except ValueError as e:
+                return "error", str(e)
+            reduced = next(iter(aggregation.ds.data_vars.values()))
+            reduced = _normalize_to_2d(reduced)
 
-        # Resolve dim names and positions early
-        lat_dim = next((d for d in da.dims if d.lower() in ['lat', 'latitude']), None)
-        lon_dim = next((d for d in da.dims if d.lower() in ['lon', 'longitude']), None)
+            # Resolve dim names and positions early
+            lat_dim = next((d for d in reduced.dims if d.lower() in ['lat', 'latitude']), None)
+            lon_dim = next((d for d in reduced.dims if d.lower() in ['lon', 'longitude']), None)
 
-        if lat_dim is None or lon_dim is None:
-            msg = f"Could not find lat/lon dimensions. Available dims: {list(da.dims)}"
-            return json.dumps({"error": msg})
+            if lat_dim is None or lon_dim is None:
+                return "error", f"Could not find lat/lon dimensions. Available dims: {list(reduced.dims)}"
 
-        lat_array = da[lat_dim].values
-        lon_array = da[lon_dim].values
+            lat_array = reduced[lat_dim].values
+            lon_array = reduced[lon_dim].values
 
-        # Filter
-        values     = da.values
-        valid_mask = np.isfinite(values)
+            # Filter
+            values     = reduced.values
+            valid_mask = np.isfinite(values)
 
-        if not np.any(valid_mask):
-            msg = f"No valid data found for '{location}'. The region may be outside the data bbox."
-            return json.dumps({"error": msg})
+            if not np.any(valid_mask):
+                return "error", f"No valid data found for '{location}'. The region may be outside the data bbox."
 
-        # Find peak
-        masked_values = np.where(valid_mask, values, np.nan)
-        flat_idx      = np.nanargmax(masked_values)
-        dim0_idx, dim1_idx = np.unravel_index(flat_idx, masked_values.shape)
+            # Find peak
+            masked_values = np.where(valid_mask, values, np.nan)
+            flat_idx      = np.nanargmax(masked_values)
+            dim0_idx, dim1_idx = np.unravel_index(flat_idx, masked_values.shape)
 
-        # Determine which axis corresponds to lat and lon
-        dims    = list(da.dims)
-        lat_pos = dims.index(lat_dim)
-        lon_pos = dims.index(lon_dim)
-        indices = [dim0_idx, dim1_idx]
-        lat_idx = indices[lat_pos]
-        lon_idx = indices[lon_pos]
+            # Determine which axis corresponds to lat and lon
+            dims    = list(reduced.dims)
+            lat_pos = dims.index(lat_dim)
+            lon_pos = dims.index(lon_dim)
+            indices = [dim0_idx, dim1_idx]
+            lat_idx = indices[lat_pos]
+            lon_idx = indices[lon_pos]
 
-        try:
-            peak_lat = float(lat_array[lat_idx] if lat_array.ndim == 1 else lat_array[lat_idx, lon_idx])
-            peak_lon = float(lon_array[lon_idx] if lon_array.ndim == 1 else lon_array[lat_idx, lon_idx])
-        except (IndexError, TypeError) as e:
-            return json.dumps({"error": f"Failed to extract peak coordinates: {e}"})
+            try:
+                peak_lat = float(lat_array[lat_idx] if lat_array.ndim == 1 else lat_array[lat_idx, lon_idx])
+                peak_lon = float(lon_array[lon_idx] if lon_array.ndim == 1 else lon_array[lat_idx, lon_idx])
+            except (IndexError, TypeError) as e:
+                return "error", f"Failed to extract peak coordinates: {e}"
 
-        peak_val = float(masked_values[dim0_idx, dim1_idx])
+            peak_val = float(masked_values[dim0_idx, dim1_idx])
 
-        result = json.dumps({
-            "location":   location,
-            "variable":   da.name or "",
-            "units":      da.attrs.get("units", ""),
-            "peak_value": peak_val,
-            "peak_lat":   peak_lat,
-            "peak_lon":   peak_lon,
-            "aggregation_meta": aggregation.meta,
-            "source_handles": [handle],
-        })
-        return result
+            return None, {
+                "location":   location,
+                "variable":   reduced.name or "",
+                "units":      reduced.attrs.get("units", ""),
+                "peak_value": peak_val,
+                "peak_lat":   peak_lat,
+                "peak_lon":   peak_lon,
+                "aggregation_meta": aggregation.meta,
+                "source_handles": [handle],
+            }
+
+        status, result = await asyncio.to_thread(_mask_aggregate_peak)
+        if status == "error":
+            return json.dumps({"error": result})
+        return json.dumps(result)
 
     return find_daily_peak

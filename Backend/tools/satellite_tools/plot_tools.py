@@ -47,6 +47,7 @@ Time-series
   "values":    [float, ...],
 }
 """
+import asyncio
 import json
 import logging
 import os
@@ -444,58 +445,71 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
             return json.dumps({"error": f"Could not geocode location: '{location}'"})
 
         emit_status("Generating visualization...")
-        try:
-            lat_coord = find_lat_coord(da)
-            lon_coord = find_lon_coord(da)
-            if lat_coord is None or lon_coord is None:
-                raise ValueError(f"Cannot find lat/lon coords. Available: {list(da.coords)}")
-            da = _normalize_longitudes(da, lon_coord)
-            da = mask_data_by_geometry(da, region["geometry"])
-            bounds = region["bounds"]  # (minx, miny, maxx, maxy)
-            da = _sel_bounds(da, lat_coord, lon_coord, bounds)
-        except Exception as e:
-            emit_status("Visualization failed while processing map bounds.")
-            return json.dumps({"error": f"Masking failed: {e}"})
 
-        units = da.attrs.get("units", "")
-        variable_name = da.name or ""
-        col_info = _mask_col_info(da)
-        aggregation = _aggregation_service.aggregate(
-            da,
-            variable=variable_name,
-            stat="mean",
-            col_info=col_info,
-        )
-        da = next(iter(aggregation.ds.data_vars.values()))
-        da = _normalize_to_2d(da)
-        agg_meta = aggregation.meta
-        is_aggregated = agg_meta["n_granules"] > 1
-        if title:
-            resolved_title = title
-        elif is_aggregated:
-            resolved_title = f"{variable_name} {agg_meta['title_suffix']} over {region['name']}"
-        else:
-            resolved_title = f"{variable_name} over {region['name']}"
+        def _mask_aggregate_payload():
+            # CPU-bound mask -> aggregate -> payload chain (T16): run off the
+            # event loop via asyncio.to_thread below so a large grid doesn't
+            # freeze every other concurrent stream for its duration.
+            try:
+                lat_coord = find_lat_coord(da)
+                lon_coord = find_lon_coord(da)
+                if lat_coord is None or lon_coord is None:
+                    raise ValueError(f"Cannot find lat/lon coords. Available: {list(da.coords)}")
+                masked = _normalize_longitudes(da, lon_coord)
+                masked = mask_data_by_geometry(masked, region["geometry"])
+                bounds = region["bounds"]  # (minx, miny, maxx, maxy)
+                masked = _sel_bounds(masked, lat_coord, lon_coord, bounds)
+            except Exception as e:
+                return "mask", None, None, f"Masking failed: {e}"
 
-        try:
-            payload = _da_to_heatmap_payload(da, resolved_title, variable_name, units)
-            payload["cmap"]   = cmap or "Spectral_r"
-            payload["bounds"] = list(region["bounds"])  # (minx, miny, maxx, maxy)
-            payload["aggregation_meta"] = agg_meta
-            payload["is_aggregated"] = is_aggregated
-            _attach_reproducibility(
-                payload,
-                [handle],
-                da,
-                region["name"],
-                agg_meta["aggregation_label"] if is_aggregated else "single snapshot",
-                {"chart_type": "heatmap", "cmap": payload["cmap"], "location": location},
-                agg_meta,
-                region,
+            units = masked.attrs.get("units", "")
+            variable_name = masked.name or ""
+            col_info = _mask_col_info(masked)
+            aggregation = _aggregation_service.aggregate(
+                masked,
+                variable=variable_name,
+                stat="mean",
+                col_info=col_info,
             )
-        except Exception as e:
+            reduced = next(iter(aggregation.ds.data_vars.values()))
+            reduced = _normalize_to_2d(reduced)
+            agg_meta = aggregation.meta
+            is_aggregated = agg_meta["n_granules"] > 1
+            if title:
+                resolved_title = title
+            elif is_aggregated:
+                resolved_title = f"{variable_name} {agg_meta['title_suffix']} over {region['name']}"
+            else:
+                resolved_title = f"{variable_name} over {region['name']}"
+
+            try:
+                payload = _da_to_heatmap_payload(reduced, resolved_title, variable_name, units)
+                payload["cmap"]   = cmap or "Spectral_r"
+                payload["bounds"] = list(region["bounds"])  # (minx, miny, maxx, maxy)
+                payload["aggregation_meta"] = agg_meta
+                payload["is_aggregated"] = is_aggregated
+                _attach_reproducibility(
+                    payload,
+                    [handle],
+                    reduced,
+                    region["name"],
+                    agg_meta["aggregation_label"] if is_aggregated else "single snapshot",
+                    {"chart_type": "heatmap", "cmap": payload["cmap"], "location": location},
+                    agg_meta,
+                    region,
+                )
+            except Exception as e:
+                return "payload", None, None, f"Failed to build chart payload: {e}"
+
+            return None, payload, resolved_title, None
+
+        stage, payload, resolved_title, error_message = await asyncio.to_thread(_mask_aggregate_payload)
+        if stage == "mask":
+            emit_status("Visualization failed while processing map bounds.")
+            return json.dumps({"error": error_message})
+        if stage == "payload":
             emit_status("Visualization failed while building chart data.")
-            return json.dumps({"error": f"Failed to build chart payload: {e}"})
+            return json.dumps({"error": error_message})
 
         emit_status("Preparing response...")
         return _save_chart(payload, resolved_title)
@@ -548,53 +562,65 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
                 emit_status("Location lookup failed.")
                 return json.dumps({"error": f"Could not geocode location: '{location}'"})
 
-            try:
-                lat_coord = find_lat_coord(da)
-                lon_coord = find_lon_coord(da)
-                if lat_coord is None or lon_coord is None:
-                    raise ValueError(f"Cannot find lat/lon coords. Available: {list(da.coords)}")
-                da = _normalize_longitudes(da, lon_coord)
-                da = mask_data_by_geometry(da, region["geometry"])
-            except Exception as e:
+            def _mask_aggregate_panel(da=da, region=region, handle=handle, location=location, variable_name=variable_name):
+                # CPU-bound mask -> aggregate -> payload chain (T16), run off
+                # the event loop via asyncio.to_thread below.
+                try:
+                    lat_coord = find_lat_coord(da)
+                    lon_coord = find_lon_coord(da)
+                    if lat_coord is None or lon_coord is None:
+                        raise ValueError(f"Cannot find lat/lon coords. Available: {list(da.coords)}")
+                    masked = _normalize_longitudes(da, lon_coord)
+                    masked = mask_data_by_geometry(masked, region["geometry"])
+                except Exception as e:
+                    return "mask", None, None, f"Masking failed for '{location}': {e}"
+
+                bounds = region["bounds"]
+                masked = _sel_bounds(masked, lat_coord, lon_coord, bounds)
+
+                resolved_variable_name = masked.name or variable_name
+                units = masked.attrs.get("units", "")
+                col_info = _mask_col_info(masked)
+
+                try:
+                    aggregation = _aggregation_service.aggregate(
+                        masked,
+                        variable=resolved_variable_name,
+                        stat="mean",
+                        col_info=col_info,
+                    )
+                    reduced = next(iter(aggregation.ds.data_vars.values()))
+                    reduced = _normalize_to_2d(reduced)
+                    agg_meta = aggregation.meta
+                    panel = _da_to_heatmap_payload(reduced, region["name"], resolved_variable_name, units)
+                    panel["cmap"]   = cmap or "Spectral_r"
+                    panel["bounds"] = list(region["bounds"])
+                    panel["aggregation_meta"] = agg_meta
+                    panel["is_aggregated"] = agg_meta["n_granules"] > 1
+                    _attach_reproducibility(
+                        panel,
+                        [handle],
+                        reduced,
+                        region["name"],
+                        agg_meta["aggregation_label"] if agg_meta["n_granules"] > 1 else "single snapshot",
+                        {"chart_type": "heatmap", "cmap": panel["cmap"], "location": location},
+                        agg_meta,
+                        region,
+                    )
+                except Exception as e:
+                    return "payload", None, None, f"Failed to build panel for '{location}': {e}"
+
+                return None, panel, resolved_variable_name, None
+
+            stage, panel, resolved_variable_name, error_message = await asyncio.to_thread(_mask_aggregate_panel)
+            if stage == "mask":
                 emit_status("Visualization failed while processing map bounds.")
-                return json.dumps({"error": f"Masking failed for '{location}': {e}"})
-
-            bounds = region["bounds"]
-            da = _sel_bounds(da, lat_coord, lon_coord, bounds)
-
-            variable_name = da.name or variable_name
-            units = da.attrs.get("units", "")
-            col_info = _mask_col_info(da)
-
-            try:
-                aggregation = _aggregation_service.aggregate(
-                    da,
-                    variable=variable_name,
-                    stat="mean",
-                    col_info=col_info,
-                )
-                da = next(iter(aggregation.ds.data_vars.values()))
-                da = _normalize_to_2d(da)
-                agg_meta = aggregation.meta
-                panel = _da_to_heatmap_payload(da, region["name"], variable_name, units)
-                panel["cmap"]   = cmap or "Spectral_r"
-                panel["bounds"] = list(region["bounds"])
-                panel["aggregation_meta"] = agg_meta
-                panel["is_aggregated"] = agg_meta["n_granules"] > 1
-                _attach_reproducibility(
-                    panel,
-                    [handle],
-                    da,
-                    region["name"],
-                    agg_meta["aggregation_label"] if agg_meta["n_granules"] > 1 else "single snapshot",
-                    {"chart_type": "heatmap", "cmap": panel["cmap"], "location": location},
-                    agg_meta,
-                    region,
-                )
-            except Exception as e:
+                return json.dumps({"error": error_message})
+            if stage == "payload":
                 emit_status("Visualization failed while building chart data.")
-                return json.dumps({"error": f"Failed to build panel for '{location}': {e}"})
+                return json.dumps({"error": error_message})
 
+            variable_name = resolved_variable_name
             panels.append(panel)
 
         multi_payload = {"type": "heatmap_multi", "title": title or f"{variable_name} Comparison", "panels": panels}
@@ -665,59 +691,68 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
         if region is None:
             return json.dumps({"error": f"Could not resolve location: '{location}'"})
 
-        da = mask_data_by_geometry(da, region["geometry"])
+        def _mask_aggregate_timeseries():
+            # CPU-bound mask -> per-timestep aggregate -> payload chain
+            # (T16), run off the event loop via asyncio.to_thread below.
+            masked = mask_data_by_geometry(da, region["geometry"])
 
-        lat_coord = find_lat_coord(da)
-        lon_coord = find_lon_coord(da)
-        if lat_coord is None or lon_coord is None:
-            return json.dumps({"error": f"Cannot find lat/lon coords. Available: {list(da.coords)}"})
-        bounds = region["bounds"]
-        da = _sel_bounds(da, lat_coord, lon_coord, bounds)
+            lat_coord = find_lat_coord(masked)
+            lon_coord = find_lon_coord(masked)
+            if lat_coord is None or lon_coord is None:
+                return "error", f"Cannot find lat/lon coords. Available: {list(masked.coords)}"
+            bounds = region["bounds"]
+            masked = _sel_bounds(masked, lat_coord, lon_coord, bounds)
 
-        variable_name = da.name or ""
-        if stat not in AggregationService._STAT_FUNCS:
-            return json.dumps({"error": f"Unknown stat '{stat}'. Use: mean, median, max, min, std"})
+            variable_name = masked.name or ""
+            if stat not in AggregationService._STAT_FUNCS:
+                return "error", f"Unknown stat '{stat}'. Use: mean, median, max, min, std"
 
-        col_info = _mask_col_info(da)
-        da = _aggregation_service.apply_quality_mask(da, col_info=col_info)
+            col_info = _mask_col_info(masked)
+            masked = _aggregation_service.apply_quality_mask(masked, col_info=col_info)
 
-        times, values = [], []
-        for i in range(da.sizes["time"]):
-            slice_2d = da.isel(time=i).values
-            try:
-                value = _aggregation_service.compute_values_stat(slice_2d, stat)
-            except ValueError:
-                continue
-            raw_time = da["time"].values[i]
-            timestamp = pd.Timestamp(raw_time).isoformat()
-            times.append(timestamp)
-            values.append(round(float(value), 6))
+            times, values = [], []
+            for i in range(masked.sizes["time"]):
+                slice_2d = masked.isel(time=i).values
+                try:
+                    value = _aggregation_service.compute_values_stat(slice_2d, stat)
+                except ValueError:
+                    continue
+                raw_time = masked["time"].values[i]
+                timestamp = pd.Timestamp(raw_time).isoformat()
+                times.append(timestamp)
+                values.append(round(float(value), 6))
 
-        if not times:
-            return json.dumps({"error": f"No valid data found for '{location}' across any time step."})
+            if not times:
+                return "error", f"No valid data found for '{location}' across any time step."
 
-        # Sort by time
-        paired = sorted(zip(times, values))
-        times, values = zip(*paired)
+            # Sort by time
+            paired = sorted(zip(times, values))
+            sorted_times, sorted_values = zip(*paired)
 
-        ts_payload = {
-            "type":     "timeseries",
-            "title":    f"{variable_name} {stat} over {location}",
-            "variable": variable_name,
-            "units":    da.attrs.get("units", ""),
-            "stat":     stat,
-            "times":    list(times),
-            "values":   list(values),
-        }
-        _attach_reproducibility(
-            ts_payload,
-            [handle],
-            da,
-            region["name"],
-            stat,
-            {"chart_type": "timeseries", "location": location},
-            region=region,
-        )
+            ts_payload = {
+                "type":     "timeseries",
+                "title":    f"{variable_name} {stat} over {location}",
+                "variable": variable_name,
+                "units":    masked.attrs.get("units", ""),
+                "stat":     stat,
+                "times":    list(sorted_times),
+                "values":   list(sorted_values),
+            }
+            _attach_reproducibility(
+                ts_payload,
+                [handle],
+                masked,
+                region["name"],
+                stat,
+                {"chart_type": "timeseries", "location": location},
+                region=region,
+            )
+            return None, (ts_payload, variable_name)
+
+        status, result = await asyncio.to_thread(_mask_aggregate_timeseries)
+        if status == "error":
+            return json.dumps({"error": result})
+        ts_payload, variable_name = result
         return _save_chart(ts_payload, f"{variable_name}_{stat}_{location}")
 
     return conduct_temporal_statistic

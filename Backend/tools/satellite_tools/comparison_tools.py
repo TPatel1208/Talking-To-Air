@@ -15,6 +15,7 @@ plus anomaly statistics.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Optional
 
@@ -285,7 +286,11 @@ def make_compare(mcp_tools: dict[str, BaseTool]):
             disjoint = _disjoint_periods_error(da_a, da_b)
             if disjoint:
                 return json.dumps({"error": disjoint})
-            return _build_region_comparison(handle_a, handle_b, da_a, da_b, label_a, label_b, variable_name, units)
+            # CPU-bound mask -> aggregate -> payload chain (T16), run off
+            # the event loop.
+            return await asyncio.to_thread(
+                _build_region_comparison, handle_a, handle_b, da_a, da_b, label_a, label_b, variable_name, units,
+            )
 
         align_raw = await mcp_tools["align"].ainvoke({"source_handles": [handle_a, handle_b]})
         align_result = parse_tool_result(align_raw)
@@ -307,8 +312,10 @@ def make_compare(mcp_tools: dict[str, BaseTool]):
         except ValueError as e:
             return json.dumps({"error": f"Grid alignment produced an unusable result: {e}"})
 
-        return _build_period_comparison(
-            handle_a, handle_b, aligned_handle, aligned_a, aligned_b,
+        # CPU-bound mask -> aggregate -> payload chain (T16), run off the
+        # event loop.
+        return await asyncio.to_thread(
+            _build_period_comparison, handle_a, handle_b, aligned_handle, aligned_a, aligned_b,
             label_a, label_b, variable_name, units, threshold,
         )
 

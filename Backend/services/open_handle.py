@@ -9,6 +9,7 @@ either an opened Dataset/Table or a clear error — never a missing file.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 from urllib.parse import urlparse
@@ -36,7 +37,7 @@ async def open_handle(handle: str, tools: dict[str, BaseTool]) -> Any:
     export = await _export(handle, tools)
     if export.get("status") != "ready":
         export = await _recover(handle, tools)
-    return _open(export["storage_uri"], export["media_type"])
+    return await asyncio.to_thread(_open, export["storage_uri"], export["media_type"])
 
 
 async def _export(handle: str, tools: dict[str, BaseTool]) -> dict:

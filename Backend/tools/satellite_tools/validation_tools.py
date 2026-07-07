@@ -12,6 +12,7 @@ monitor, per T06's TimeseriesArtifactMetadata.
 """
 from __future__ import annotations
 
+import asyncio
 import datetime
 import json
 import uuid
@@ -262,66 +263,75 @@ def make_validate_against_ground(mcp_tools: dict[str, BaseTool]):
         satellite_units = da.attrs.get("units", "")
         variable_name = da.name or ""
 
-        monitor_results = []
-        artifact_refs = []
-        pooled_paired = []
-        monitor_ids = []
+        def _extract_and_pair_monitors():
+            # CPU-bound per-monitor mask/extraction/pairing loop (T16), run
+            # off the event loop via asyncio.to_thread below.
+            monitor_results = []
+            artifact_refs = []
+            pooled_paired = []
+            monitor_ids = []
 
-        for monitor in monitors:
-            station_id = _station_id(monitor)
-            ground_daily = ground_by_site.get(station_id)
-            if not ground_daily:
-                continue
+            for monitor in monitors:
+                station_id = _station_id(monitor)
+                ground_daily = ground_by_site.get(station_id)
+                if not ground_daily:
+                    continue
 
-            lat, lon = float(monitor["latitude"]), float(monitor["longitude"])
-            times, values, coverage = _extract_monitor_series(da, lat, lon, col_info)
-            paired = _pair_daily(times, values, ground_daily)
-            if not paired:
-                continue
+                lat, lon = float(monitor["latitude"]), float(monitor["longitude"])
+                times, values, coverage = _extract_monitor_series(da, lat, lon, col_info)
+                paired = _pair_daily(times, values, ground_daily)
+                if not paired:
+                    continue
 
-            stats = _correlation_stats(paired, total_ground_days=len(ground_daily))
-            pooled_paired.extend(paired)
-            monitor_ids.append(station_id)
+                stats = _correlation_stats(paired, total_ground_days=len(ground_daily))
+                pooled_paired.extend(paired)
+                monitor_ids.append(station_id)
 
-            station_name = monitor.get("local_site_name") or monitor.get("address") or station_id
-            ts_payload = {
-                "type": "timeseries",
-                "title": f"{variable_name} vs {station_name} ({station_id})",
-                "times": [p["date"] for p in paired],
-                "satellite_values": [p["satellite"] for p in paired],
-                "ground_values": [p["ground"] for p in paired],
-                "satellite_units": satellite_units,
-                "ground_units": ground_units_by_site.get(station_id, ""),
-                "stats": stats,
-                "coverage": coverage,
-                "chart_id": f"ts_{uuid.uuid4().hex[:12]}",
-                "metadata": {
+                station_name = monitor.get("local_site_name") or monitor.get("address") or station_id
+                ts_payload = {
+                    "type": "timeseries",
+                    "title": f"{variable_name} vs {station_name} ({station_id})",
+                    "times": [p["date"] for p in paired],
+                    "satellite_values": [p["satellite"] for p in paired],
+                    "ground_values": [p["ground"] for p in paired],
+                    "satellite_units": satellite_units,
+                    "ground_units": ground_units_by_site.get(station_id, ""),
+                    "stats": stats,
+                    "coverage": coverage,
+                    "chart_id": f"ts_{uuid.uuid4().hex[:12]}",
+                    "metadata": {
+                        "source_handles": [handle],
+                        "series": [
+                            {"label": f"{variable_name} (satellite)", "source_kind": "satellite"},
+                            {
+                                "label": f"EPA {station_id} ({station_name})",
+                                "source_kind": "ground",
+                                "station_id": station_id,
+                            },
+                        ],
+                    },
+                }
+                ref = build_artifact_reference(ts_payload)
+                if ref is not None:
+                    artifact_refs.append(ref.model_dump(exclude_none=True))
+
+                monitor_results.append({
+                    "station_id": station_id,
+                    "station_name": station_name,
+                    "latitude": lat,
+                    "longitude": lon,
+                    "ground_units": ground_units_by_site.get(station_id, ""),
+                    "stats": stats,
+                    "coverage": coverage,
                     "source_handles": [handle],
-                    "series": [
-                        {"label": f"{variable_name} (satellite)", "source_kind": "satellite"},
-                        {
-                            "label": f"EPA {station_id} ({station_name})",
-                            "source_kind": "ground",
-                            "station_id": station_id,
-                        },
-                    ],
-                },
-            }
-            ref = build_artifact_reference(ts_payload)
-            if ref is not None:
-                artifact_refs.append(ref.model_dump(exclude_none=True))
+                    "chart_id": ts_payload["chart_id"],
+                })
 
-            monitor_results.append({
-                "station_id": station_id,
-                "station_name": station_name,
-                "latitude": lat,
-                "longitude": lon,
-                "ground_units": ground_units_by_site.get(station_id, ""),
-                "stats": stats,
-                "coverage": coverage,
-                "source_handles": [handle],
-                "chart_id": ts_payload["chart_id"],
-            })
+            return monitor_results, artifact_refs, pooled_paired, monitor_ids
+
+        monitor_results, artifact_refs, pooled_paired, monitor_ids = await asyncio.to_thread(
+            _extract_and_pair_monitors
+        )
 
         if not monitor_results:
             return json.dumps({
@@ -435,48 +445,57 @@ def make_exceedance_overlay(mcp_tools: dict[str, BaseTool]):
         satellite_units = da.attrs.get("units", "")
         variable_name = da.name or ""
 
-        monitor_results = []
-        artifact_refs = []
+        def _extract_exceedance_monitors():
+            # CPU-bound per-monitor mask/extraction loop (T16), run off the
+            # event loop via asyncio.to_thread below.
+            monitor_results = []
+            artifact_refs = []
 
-        for monitor in monitors:
-            station_id = _station_id(monitor)
-            site_records = [r for r in records if aqs._site_id(r) == station_id]
-            if not site_records:
-                continue
+            for monitor in monitors:
+                station_id = _station_id(monitor)
+                site_records = [r for r in records if aqs._site_id(r) == station_id]
+                if not site_records:
+                    continue
 
-            exceeded_dates = _exceedance_days(site_records, measurement_field, effective_hard, percentile_threshold)
-            if not exceeded_dates:
-                continue
+                exceeded_dates = _exceedance_days(
+                    site_records, measurement_field, effective_hard, percentile_threshold
+                )
+                if not exceeded_dates:
+                    continue
 
-            lat, lon = float(monitor["latitude"]), float(monitor["longitude"])
-            times, values, coverage = _extract_monitor_series(da, lat, lon, col_info)
+                lat, lon = float(monitor["latitude"]), float(monitor["longitude"])
+                times, values, coverage = _extract_monitor_series(da, lat, lon, col_info)
 
-            station_name = monitor.get("local_site_name") or monitor.get("address") or station_id
-            ts_payload = {
-                "type": "timeseries",
-                "title": f"{variable_name} with {station_id} exceedance days",
-                "times": times,
-                "values": values,
-                "exceedance_dates": sorted(exceeded_dates),
-                "satellite_units": satellite_units,
-                "chart_id": f"ts_{uuid.uuid4().hex[:12]}",
-                "metadata": {
+                station_name = monitor.get("local_site_name") or monitor.get("address") or station_id
+                ts_payload = {
+                    "type": "timeseries",
+                    "title": f"{variable_name} with {station_id} exceedance days",
+                    "times": times,
+                    "values": values,
+                    "exceedance_dates": sorted(exceeded_dates),
+                    "satellite_units": satellite_units,
+                    "chart_id": f"ts_{uuid.uuid4().hex[:12]}",
+                    "metadata": {
+                        "source_handles": [handle],
+                        "series": [{"label": f"{variable_name} (satellite)", "source_kind": "satellite"}],
+                    },
+                }
+                ref = build_artifact_reference(ts_payload)
+                if ref is not None:
+                    artifact_refs.append(ref.model_dump(exclude_none=True))
+
+                monitor_results.append({
+                    "station_id": station_id,
+                    "station_name": station_name,
+                    "exceedance_dates": sorted(exceeded_dates),
+                    "coverage": coverage,
                     "source_handles": [handle],
-                    "series": [{"label": f"{variable_name} (satellite)", "source_kind": "satellite"}],
-                },
-            }
-            ref = build_artifact_reference(ts_payload)
-            if ref is not None:
-                artifact_refs.append(ref.model_dump(exclude_none=True))
+                    "chart_id": ts_payload["chart_id"],
+                })
 
-            monitor_results.append({
-                "station_id": station_id,
-                "station_name": station_name,
-                "exceedance_dates": sorted(exceeded_dates),
-                "coverage": coverage,
-                "source_handles": [handle],
-                "chart_id": ts_payload["chart_id"],
-            })
+            return monitor_results, artifact_refs
+
+        monitor_results, artifact_refs = await asyncio.to_thread(_extract_exceedance_monitors)
 
         if not monitor_results:
             return json.dumps({"error": f"No exceedance days found for monitors in '{location}'."})
