@@ -111,9 +111,14 @@ class EvalSuiteTests(unittest.IsolatedAsyncioTestCase):
         from eval_harness import PASS_THRESHOLD, TOTAL_TASKS, run_eval_suite
         from fake_earthdata_mcp import HandleVolume
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            volume = HandleVolume(tmpdir)
-            results = await run_eval_suite(volume)
+        # T13: the subagent trim safety net's ceiling is sized so it never
+        # fires in a healthy workflow — this run is the proof. If it fires
+        # here, either a real compaction gap regressed or the ceiling itself
+        # needs raising, not the tasks.
+        with self.assertNoLogs("agents.subagent_trim", level="WARNING"):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                volume = HandleVolume(tmpdir)
+                results = await run_eval_suite(volume)
 
         passed = sum(1 for r in results if r.passed)
         failures = [r.task.name for r in results if not r.passed]
