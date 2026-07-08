@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
 import ArtifactMessage from './ArtifactMessage'
 import ChartMessage from './ChartMessage'
+import WorkflowStrip from './WorkflowStrip'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
@@ -66,7 +67,8 @@ function InlineToolBadge({ name, args }) {
 }
 
 /* ── Loading indicator ── */
-function LoadingMessage({ toolCalls, statusMessage }) {
+function LoadingMessage({ toolCalls, statusMessage, workflowStage, startedAt }) {
+  const hasWorkflowStrip = workflowStage?.active
   return (
     <div style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'flex-start', gap: '10px' }}>
       {/* Avatar */}
@@ -91,7 +93,11 @@ function LoadingMessage({ toolCalls, statusMessage }) {
             {toolCalls.map((tc, i) => (
               <InlineToolBadge key={i} name={tc.name} args={tc.args} />
             ))}
-            {statusMessage && (
+            {hasWorkflowStrip ? (
+              <div style={{ marginTop: '5px', paddingLeft: '3px' }}>
+                <WorkflowStrip workflowStage={workflowStage} startedAt={startedAt} />
+              </div>
+            ) : statusMessage && (
               <div style={{
                 marginTop: '5px',
                 paddingLeft: '3px',
@@ -112,6 +118,8 @@ function LoadingMessage({ toolCalls, statusMessage }) {
               ))}
             </div>
           </div>
+        ) : hasWorkflowStrip ? (
+          <WorkflowStrip workflowStage={workflowStage} startedAt={startedAt} />
         ) : statusMessage ? (
           <div style={{ color: 'var(--text-muted)', fontSize: '12px', lineHeight: 1.45 }}>
             {statusMessage}
@@ -267,6 +275,9 @@ function MessageBubble({ msg, accessToken }) {
               <span style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</span>
             ) : (
               <>
+                {msg.isError && msg.workflowStage?.failedStage && (
+                  <WorkflowStrip workflowStage={msg.workflowStage} />
+                )}
                 {msg.content && (
                   <ReactMarkdown
                     remarkPlugins={[remarkGfm, remarkMath]}
@@ -555,7 +566,13 @@ export default function Chat({ messages, loading, error, accessToken, onSend, on
           <div style={{ padding: '20px 20px 8px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
             {messages.map((msg, i) =>
               msg.isLoading ? (
-                <LoadingMessage key={i} toolCalls={msg.toolCalls} statusMessage={msg.statusMessage} />
+                <LoadingMessage
+                  key={i}
+                  toolCalls={msg.toolCalls}
+                  statusMessage={msg.statusMessage}
+                  workflowStage={msg.workflowStage}
+                  startedAt={msg.startedAt}
+                />
               ) : (
                 <MessageBubble key={i} msg={msg} accessToken={accessToken} />
               )

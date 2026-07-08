@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { createSseParser } from '../utils/sseParser'
+import { applyWorkflowEvent, INITIAL_WORKFLOW_STATE } from '../utils/workflowStage'
 
 const API_BASE = '/api'
 const ACTIVE_THREAD_STORAGE_KEY = 'tta.activeThreadId'
@@ -240,6 +241,8 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
         content: '',
         toolCalls: [],
         statusMessage: '',
+        workflowStage: INITIAL_WORKFLOW_STATE,
+        startedAt: Date.now(),
         imageUrls: [],
         charts: [],
         artifacts: [],
@@ -286,8 +289,9 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
             toolCalls: [...(msg.toolCalls || []), { name: data.name, args: data.args }],
           }))
         } else if (event === 'status') {
-          queueAssistantUpdate(streamId, () => ({
+          queueAssistantUpdate(streamId, msg => ({
             statusMessage: data.message || '',
+            workflowStage: applyWorkflowEvent(msg.workflowStage || INITIAL_WORKFLOW_STATE, 'status', data),
           }))
         } else if (event === 'image') {
           queueAssistantUpdate(streamId, msg => ({
@@ -311,11 +315,18 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
           }
         } else if (event === 'job_progress') {
           if (onJobProgress) onJobProgress(data)
+          queueAssistantUpdate(streamId, msg => ({
+            workflowStage: applyWorkflowEvent(msg.workflowStage || INITIAL_WORKFLOW_STATE, 'job_progress', data),
+          }))
         } else if (event === 'text') {
           const chunk = typeof data === 'string' ? data : data.content
           if (chunk) {
             queueAssistantUpdate(streamId, msg => ({
               content: `${msg.content || ''}${chunk}`,
+              // User story #6: narration stops cleanly the moment the
+              // answer starts streaming — progress never talks over
+              // results.
+              workflowStage: applyWorkflowEvent(msg.workflowStage || INITIAL_WORKFLOW_STATE, 'text', data),
             }))
           }
         } else if (event === 'done') {
@@ -329,6 +340,7 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
             charts: msg.charts || [],
             artifacts: msg.artifacts?.length ? msg.artifacts : (data.artifacts || []),
             statusMessage: '',
+            workflowStage: INITIAL_WORKFLOW_STATE,
             isLoading: false,
           }))
           setSessions(prev => (
@@ -356,11 +368,15 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
 
       const msg = err.message || 'Request failed'
       setError(msg)
-      queueAssistantUpdate(streamId, () => ({
+      queueAssistantUpdate(streamId, prevMsg => ({
         content: `Error: ${msg}`,
         isError: true,
         isLoading: false,
         statusMessage: '',
+        // User story #9: the strip shows which stage failed, so the error
+        // answer has visible context instead of the progress trail just
+        // vanishing.
+        workflowStage: applyWorkflowEvent(prevMsg.workflowStage || INITIAL_WORKFLOW_STATE, 'error', {}),
       }))
     } finally {
       if (isCurrentRequest(requestId)) {
