@@ -63,7 +63,19 @@ defaults, not a ceiling on what you can retrieve.
    - "did X change after Y", "was this [period] anomalous vs [period]",
      "compare [period A] to [period B]" → `compare` with `mode="period"`
      (retrieve both periods over the same AOI first, one handle each)
+   - a single place's history over time ("how did X change at [place]",
+     "trend at [point]") rather than an area average → `point_timeseries`
+     directly with the dataset handle, the place/point, the time range, and
+     one variable — see the point-over-time exception below
    - plain text answer needed → respond directly without a tool
+
+## Point-over-time exception
+A single location's history over time ("what was NO2 at Newark each day
+last month") uses `point_timeseries` directly instead of steps 2–6: it
+resolves the area of interest, gates the time span, retrieves a point-
+sampled series, and awaits it internally, in one call. Only use it for one
+location's own series — for an area-mean trend over a region, follow the
+full workflow (steps 2–6) and use `conduct_temporal_statistic` instead.
 
 ## Passing handles between tools — CRITICAL
 Every plot/statistics tool takes the `obs_`/`cube_` handle from step 6 directly

@@ -57,5 +57,22 @@ class EarthdataAgentPromptT09Tests(unittest.TestCase):
         self.assertIn("no browse layer", prompt.lower())
 
 
+class EarthdataAgentPromptT20Tests(unittest.TestCase):
+    def test_prompt_routes_a_single_locations_history_to_point_timeseries(self):
+        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+
+        prompt = get_earthdata_agent_prompt()
+
+        self.assertIn("point_timeseries", prompt)
+        self.assertIn("point-over-time", prompt.lower())
+
+    def test_prompt_still_routes_area_mean_trends_to_conduct_temporal_statistic(self):
+        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+
+        prompt = get_earthdata_agent_prompt()
+
+        self.assertIn("conduct_temporal_statistic", prompt)
+
+
 if __name__ == "__main__":
     unittest.main()
