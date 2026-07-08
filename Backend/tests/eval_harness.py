@@ -1,7 +1,7 @@
 """
 eval_harness.py
 =================
-The scripted eval for the earthdata agent (PRD T04): 13 canned research
+The scripted eval for the earthdata agent (PRD T04): 14 canned research
 tasks run against the real agent wired to the fake-MCP seam, scored on
 tool-call trace and terminal outcome, plus 3 end-to-end tasks (T16) that
 enter through ChatStreamService.stream_chat_events with the real
@@ -18,7 +18,7 @@ category's latency budget (CATEGORY_BUDGETS, decision record 2026-07-06
 §6); run_eval_suite fails the whole run if any provider retry/429 evidence
 was logged during a single-user run (capture_rate_limit_evidence).
 
-Pass threshold: >= 13/16, recorded here (test_eval_harness.py enforces it).
+Pass threshold: >= 14/17, recorded here (test_eval_harness.py enforces it).
 """
 from __future__ import annotations
 
@@ -249,10 +249,23 @@ def _refused_without_retrieving(envelope, tool_calls: list[str]) -> bool:
     )
 
 
+def _point_timeseries_used_no_grid_retrieval(envelope, tool_calls: list[str]) -> bool:
+    """T20: the point-timeseries composite is the whole retrieval — a grid
+    pull (safe_retrieve) alongside it means the model reached for the
+    heavier path this composite exists to replace."""
+    return (
+        envelope is not None
+        and len(envelope.handles) > 0
+        and "point_timeseries" in tool_calls
+        and "safe_retrieve" not in tool_calls
+    )
+
+
 def build_eval_tasks(volume) -> list[EvalTask]:
-    """Build the 12 canned tasks. ``volume`` is a fake_earthdata_mcp.HandleVolume
-    used to back the two plotting tasks with real (tiny) Zarr fixtures so
-    plot_singular/conduct_temporal_statistic have something to open."""
+    """Build the 13 canned tasks. ``volume`` is a fake_earthdata_mcp.HandleVolume
+    used to back the plotting tasks with real (tiny) Zarr/Parquet fixtures so
+    plot_singular/conduct_temporal_statistic/point_timeseries have something
+    to open."""
     import xarray as xr
 
     def make_map_dataset():
@@ -270,10 +283,19 @@ def build_eval_tasks(volume) -> list[EvalTask]:
             coords={"time": times, "lat": [10.0], "lon": [30.0, 40.0]},
         )
 
+    def make_point_timeseries_table():
+        import pyarrow as pa
+
+        return pa.table({
+            "time": ["2024-01-01", "2024-01-02", "2024-01-03"],
+            "no2": [1.0, 2.0, 3.0],
+        }).replace_schema_metadata({b"units": b"mol/m^2"})
+
     volume.add_zarr("obs_map_1", make_map_dataset)
     volume.add_zarr("obs_ts_1", make_timeseries_dataset)
     volume.add_zarr("obs_cmp_a", make_map_dataset)
     volume.add_zarr("obs_cmp_b", make_map_dataset)
+    volume.add_parquet("obs_pt_ts_1", make_point_timeseries_table)
 
     def volume_lifecycle_handlers(obs_handle: str) -> dict:
         return {
@@ -318,7 +340,7 @@ def build_eval_tasks(volume) -> list[EvalTask]:
         outcome_check=_handles_nonempty,
     ))
 
-    # ── Plotting (2) ─────────────────────────────────────────────────────
+    # ── Plotting (3) ─────────────────────────────────────────────────────
     tasks.append(EvalTask(
         name="plotting_single_map",
         category="plotting",
@@ -334,6 +356,26 @@ def build_eval_tasks(volume) -> list[EvalTask]:
         handlers={**_standard_handlers(obs_handle="obs_ts_1"), **volume_lifecycle_handlers("obs_ts_1")},
         expected_tool_calls=["safe_retrieve", "await_retrieval", "conduct_temporal_statistic"],
         outcome_check=_handles_nonempty,
+    ))
+    async def _pt_ts_retrieve_timeseries(dataset_handle, time_range, variables, aoi_handle, output_format, point_sample, workspace_id):
+        return {"job_handle": "job_obs_pt_ts_1"}
+
+    tasks.append(EvalTask(
+        name="plotting_point_timeseries",
+        category="plotting",
+        prompt=(
+            "What was the NO2 reading at the single point 40.735,-74.172 "
+            "(Newark, NJ) each day during January 2024? I just need that "
+            "one location's history, not an area average."
+        ),
+        handlers={
+            "search_datasets": _standard_handlers()["search_datasets"],
+            "define_area_of_interest": _standard_handlers()["define_area_of_interest"],
+            "retrieve_timeseries": _pt_ts_retrieve_timeseries,
+            **volume_lifecycle_handlers("obs_pt_ts_1"),
+        },
+        expected_tool_calls=["search_datasets", "point_timeseries"],
+        outcome_check=_point_timeseries_used_no_grid_retrieval,
     ))
 
     # ── Comparison setup (2) ─────────────────────────────────────────────
@@ -829,8 +871,8 @@ async def run_eval_suite(volume, *, model: str | None = None) -> list[EvalTaskRe
     return results
 
 
-DIRECT_AGENT_TASK_COUNT = 13
-PASS_THRESHOLD = 13
+DIRECT_AGENT_TASK_COUNT = 14
+PASS_THRESHOLD = 14
 TOTAL_TASKS = DIRECT_AGENT_TASK_COUNT + 3
 
 # Per-category wall-clock budgets (decision record 2026-07-06 §6). The

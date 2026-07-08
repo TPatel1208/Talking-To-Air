@@ -64,7 +64,7 @@ class EvalHarnessStructureTests(unittest.TestCase):
     def test_builds_exactly_total_tasks(self):
         self._tasks()
 
-    def test_covers_five_categories_twice_each_plus_one_ground_validation_and_comparison_task(self):
+    def test_covers_task_categories_including_the_new_point_timeseries_plotting_task(self):
         from collections import Counter
 
         tasks = self._tasks()
@@ -75,7 +75,7 @@ class EvalHarnessStructureTests(unittest.TestCase):
             {
                 "discovery": 2,
                 "retrieval": 2,
-                "plotting": 2,
+                "plotting": 3,
                 "comparison_setup": 2,
                 "failure_recovery": 2,
                 "ground_validation": 1,
@@ -513,7 +513,7 @@ def _real_google_key_available() -> bool:
     "eval harness test dependencies are not installed",
 )
 class EvalSuiteTests(unittest.IsolatedAsyncioTestCase):
-    """The actual 13-task scripted eval. Opt-in (pytest -m eval) because it
+    """The actual 14-task scripted eval. Opt-in (pytest -m eval) because it
     calls a real model and spends real tokens; skipped without both a real
     GROQ_API_KEY (ground agent) and a real GOOGLE_API_KEY (satellite agent
     and supervisor both default to google/gemini) even when explicitly
