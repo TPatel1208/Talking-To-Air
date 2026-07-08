@@ -77,7 +77,11 @@ class ChatStreamService:
                     response_text = ""
                     yield self.sse("tool_call", {"name": data["name"], "args": data["args"]})
                 elif event_type == "status":
-                    yield self.sse("status", {"message": data.get("message", "")})
+                    # T19: forward the whole payload, not just message —
+                    # stage/detail are additive fields emit_status may set;
+                    # rebuilding a message-only dict here silently dropped
+                    # them before they ever reached the SSE wire.
+                    yield self.sse("status", data)
                 elif event_type == "job_progress":
                     yield self.sse("job_progress", data)
                 elif event_type == "chart_payload":
@@ -179,7 +183,11 @@ class ChatStreamService:
                     tool_calls.append({"name": data["name"], "args": data["args"]})
                     yield self.sse("tool_call", {"name": data["name"], "args": data["args"]})
                 elif event_type == "status":
-                    yield self.sse("status", {"message": data.get("message", "")})
+                    # T19: forward the whole payload, not just message —
+                    # stage/detail are additive fields emit_status may set;
+                    # rebuilding a message-only dict here silently dropped
+                    # them before they ever reached the SSE wire.
+                    yield self.sse("status", data)
                 elif event_type == "job_progress":
                     yield self.sse("job_progress", data)
                 elif event_type == "chart_payload":

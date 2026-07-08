@@ -144,6 +144,45 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Agent consulted: SATELLITE", joined)
         self.assertIn("event: done", joined)
 
+    async def test_satellite_fast_path_forwards_the_stage_and_detail_fields_over_sse(self):
+        """T19: chat_stream_service must not rebuild the status SSE payload
+        as message-only — a stage-tagged emit_status call deep in the
+        sub-agent's own stream has to survive all the way to the wire, or
+        the frontend's workflow strip never lights up."""
+        import json as _json
+
+        from services.chat_stream_service import ChatStreamService
+        from services.chart_service import ChartService
+        from utils.streaming import emit_status
+
+        class StageEmittingSatelliteAgent:
+            async def astream(self, input_, config, stream_mode):
+                emit_status("Checking coverage...", stage="coverage", detail=14)
+                await asyncio.sleep(0)
+                yield "messages", (SimpleNamespace(
+                    content=json.dumps({"summary": "Plotted NO2.", "artifact_ids": [], "handles": ["obs_1"]}),
+                    type="ai", tool_calls=None,
+                ), {})
+
+        ground_agent = UntouchedAgent()
+        satellite_agent = StageEmittingSatelliteAgent()
+        supervisor_agent = AsyncMock()
+        service = ChatStreamService(ChartService(), long_request_seconds=999)
+
+        events = [
+            event
+            async for event in service.stream_chat_events(
+                supervisor_agent, ground_agent, satellite_agent,
+                "Plot TROPOMI NO2 over New Jersey for 2024-01-15", "thread-1", "user-1", "req-1",
+            )
+        ]
+
+        status_lines = [line for line in "".join(events).split("\n\n") if line.startswith("event: status")]
+        self.assertTrue(status_lines, "expected at least one status event")
+        payload = _json.loads(status_lines[0].split("data: ", 1)[1])
+        self.assertEqual(payload["stage"], "coverage")
+        self.assertEqual(payload["detail"], 14)
+
     async def test_ambiguous_message_uses_the_supervisor_and_never_touches_subagents(self):
         from services.chat_stream_service import ChatStreamService
         from services.chart_service import ChartService

@@ -56,7 +56,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_chat_streams_done_event(self):
         async def fake_stream_response(agent, message, thread_id, **kwargs):
-            yield "status", {"message": "Downloading satellite granules..."}
+            yield "status", {"message": "Downloading satellite granules...", "stage": "progress", "detail": 40}
             yield "text", "hello"
 
         async def fake_save_session_metadata_once(thread_id, first_message, user_id):
@@ -76,6 +76,10 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("event: status", response.text)
         self.assertIn('"message": "Downloading satellite granules..."', response.text)
+        # T19: the supervisor path's own status forwarding must not rebuild
+        # a message-only payload — stage/detail have to survive to the wire.
+        self.assertIn('"stage": "progress"', response.text)
+        self.assertIn('"detail": 40', response.text)
         self.assertIn("event: done", response.text)
         self.assertIn('"response": "hello"', response.text)
         self.assertEqual(fake_save_session_metadata_once.called_with[2], self.user.id)
