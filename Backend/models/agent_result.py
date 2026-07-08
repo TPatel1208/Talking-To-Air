@@ -20,6 +20,13 @@ class AgentResult(BaseModel):
     images: list[bytes] = Field(default_factory=list)
     handles: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # T22: up to two follow-up questions grounded in this turn's handles/
+    # artifacts, propagated straight from a sub-agent's envelope (never
+    # synthesized by the backend, story #12). None means the sub-agent
+    # offered none — always legitimate (story #7) — and salvage
+    # (services/subagent_dispatch.py) never sets this, so a malformed
+    # envelope never carries invented suggestions.
+    suggested_followups: list[str] | None = Field(default=None, max_length=2)
 
 
 class SubAgentEnvelope(BaseModel):
@@ -30,6 +37,11 @@ class SubAgentEnvelope(BaseModel):
     summary: str
     artifact_ids: list[str] = Field(default_factory=list)
     handles: list[str] = Field(default_factory=list)
+    # T22 story #7: optional — omitting it is always a legitimate answer.
+    # A sub-agent that names more than two collapses the whole envelope
+    # (caught by the max_length constraint), rather than silently truncating
+    # a model's over-eager list.
+    suggested_followups: list[str] | None = Field(default=None, max_length=2)
 
 
 def agent_result_to_json(result: AgentResult) -> str:

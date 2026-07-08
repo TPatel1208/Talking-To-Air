@@ -116,13 +116,16 @@ None recorded yet.
 
 ## Output Format
 Your final message must be ONLY the JSON envelope, no other text:
-  {{"summary": "<one factual sentence or two>", "artifact_ids": ["<id>", ...], "handles": ["<obs_/cube_ handle>", ...]}}
+  {{"summary": "<one factual sentence or two>", "artifact_ids": ["<id>", ...], "handles": ["<obs_/cube_ handle>", ...], "suggested_followups": ["<question>", ...]}}
 - `summary`: the answer, in plain language — no step numbers, no narration
   of dataset selection, geocoding, or availability steps.
 - `artifact_ids`: any artifact ids returned by a tool call this turn (empty
   list if none).
 - `handles`: every `obs_`/`cube_` handle produced this turn (empty list if
   none).
+- `suggested_followups`: if natural next steps exist grounded in this turn's
+  handles/artifacts, optionally offer up to two suggestions as complete
+  questions; otherwise omit this key entirely.
 - Peak/hotspot queries: summary is exactly `Peak [variable]: [value] [units] at [lat]°N, [lon]°W`
   plus one sentence of context if relevant.
 - Map/plot/statistics queries: summary is the computed value or a one-sentence

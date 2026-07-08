@@ -81,6 +81,39 @@ class ModelFactoryTests(unittest.TestCase):
         self.assertEqual(result, "bound-model")
         self.assertEqual(fake.calls, [SubAgentEnvelope])
 
+    def test_suggested_followups_is_optional_in_the_schema_fed_to_structured_output(self):
+        """T22: the follow-ups field is additive to T15's single schema
+        source — proving it's optional here (not required) is what makes it
+        safe to feed to both providers' with_structured_output without
+        reopening either provider's call site. Hermetic — no live provider
+        call, per the Testing Decisions' factory-seam extension."""
+        from config.model_factory import structured_output
+        from models import SubAgentEnvelope
+
+        class _FakeModel:
+            def __init__(self):
+                self.calls = []
+
+            def with_structured_output(self, schema):
+                self.calls.append(schema)
+                return "bound-model"
+
+        fake = _FakeModel()
+        result = structured_output(fake, SubAgentEnvelope)
+
+        self.assertEqual(result, "bound-model")
+        bound_schema = fake.calls[0]
+        field = bound_schema.model_fields["suggested_followups"]
+        self.assertFalse(field.is_required())
+        self.assertIsNone(field.default)
+
+        # The same schema instance round-trips through the seam whether it
+        # carries suggestions or not — both providers see one JSON schema.
+        with_suggestions = bound_schema(summary="ok", suggested_followups=["Next question?"])
+        without_suggestions = bound_schema(summary="ok")
+        self.assertEqual(with_suggestions.suggested_followups, ["Next question?"])
+        self.assertIsNone(without_suggestions.suggested_followups)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -126,6 +126,43 @@ class HelperTests(unittest.TestCase):
         # unambiguous — they come from the tool results, not the prose.
         self.assertEqual(finalized.handles, ["obs_1"])
 
+    def test_finalize_sub_agent_result_passes_through_suggested_followups(self):
+        from services.subagent_dispatch import _finalize_sub_agent_result
+        from models import AgentResult
+
+        raw = AgentResult(text=(
+            '{"summary": "Found the closest monitor.", "artifact_ids": [], "handles": [], '
+            '"suggested_followups": ["What about last month?"]}'
+        ))
+
+        finalized = _finalize_sub_agent_result(raw, "ground sensor")
+
+        self.assertEqual(finalized.suggested_followups, ["What about last month?"])
+
+    def test_finalize_sub_agent_result_leaves_suggested_followups_none_when_the_envelope_omits_them(self):
+        from services.subagent_dispatch import _finalize_sub_agent_result
+        from models import AgentResult
+
+        raw = AgentResult(text='{"summary": "ok", "artifact_ids": [], "handles": []}')
+
+        finalized = _finalize_sub_agent_result(raw, "ground sensor")
+
+        self.assertIsNone(finalized.suggested_followups)
+
+    def test_finalize_sub_agent_result_salvage_never_carries_suggestions(self):
+        """T22 story #7/#12: salvage never invents a next step — a
+        malformed-envelope prose fallback must never surface suggestions,
+        even though the tool stream may have collected real artifacts."""
+        from services.subagent_dispatch import _finalize_sub_agent_result
+        from models import AgentResult
+
+        raw = AgentResult(text="I found 3 monitors near Newark, NJ.")
+
+        finalized = _finalize_sub_agent_result(raw, "earthdata")
+
+        self.assertTrue(finalized.metadata.get("salvaged"))
+        self.assertIsNone(finalized.suggested_followups)
+
     def test_finalize_sub_agent_result_is_a_structured_failure_on_empty_text(self):
         from services.subagent_dispatch import _finalize_sub_agent_result
         from models import AgentResult

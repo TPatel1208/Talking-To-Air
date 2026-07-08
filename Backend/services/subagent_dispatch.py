@@ -317,6 +317,7 @@ def _finalize_sub_agent_result(result: AgentResult, agent_label: str) -> AgentRe
         charts=result.charts,
         artifacts=artifacts,
         handles=envelope.handles,
+        suggested_followups=envelope.suggested_followups,
     )
 
 
