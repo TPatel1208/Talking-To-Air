@@ -43,14 +43,14 @@ class Settings:
     earthdata_agent_model: str = field(
         default_factory=lambda: os.getenv(
             "EARTHDATA_AGENT_MODEL",
-            os.getenv("SATELLITE_AGENT_MODEL", "openai/gpt-oss-120b"),
+            os.getenv("SATELLITE_AGENT_MODEL", "gemini-3.1-flash-lite"),
         )
     )
     supervisor_model_provider: str = field(
         default_factory=lambda: os.getenv("SUPERVISOR_MODEL_PROVIDER", "google")
     )
     earthdata_agent_provider: str = field(
-        default_factory=lambda: os.getenv("EARTHDATA_AGENT_PROVIDER", "groq")
+        default_factory=lambda: os.getenv("EARTHDATA_AGENT_PROVIDER", "google")
     )
     ground_agent_provider: str = field(
         default_factory=lambda: os.getenv("GROUND_AGENT_PROVIDER", "groq")
