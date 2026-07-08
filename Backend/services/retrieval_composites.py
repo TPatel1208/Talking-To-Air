@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 from typing import Any
 
 from langchain_core.tools import BaseTool
 
 from config.settings import Settings, get_settings
 from config.workflow_stages import STAGE_ESTIMATE, STAGE_PROGRESS, STAGE_SUBMIT
-from earthdata_mcp.results import parse_tool_result
+from earthdata_mcp.results import CATEGORY_TOO_LARGE, MCPToolError, parse_tool_result
 from utils.streaming import emit_job_progress, emit_status
 
 logger = logging.getLogger(__name__)
@@ -151,3 +152,66 @@ async def safe_retrieve(
     })
     subset = parse_tool_result(subset_raw)
     return {"status": "submitted", "estimated_bytes": estimated_bytes, **subset}
+
+
+def _parse_time_span_days(time_range: str) -> int | None:
+    """Days between an ISO 8601 'start/end' interval's two ends, or None if
+    ``time_range`` isn't in that shape. An unparseable range is left for the
+    MCP's own time_range validation to reject rather than folded into the
+    too_large gate below."""
+    try:
+        start_str, end_str = time_range.split("/", 1)
+        return (datetime.fromisoformat(end_str) - datetime.fromisoformat(start_str)).days
+    except (ValueError, AttributeError):
+        return None
+
+
+async def point_timeseries(
+    dataset_handle: str,
+    location: str,
+    time_range: str,
+    variable: str,
+    tools: dict[str, BaseTool],
+    *,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    """Resolve AOI, gate the requested time span, submit a point-sampled
+    timeseries retrieval, and await it to a terminal state (T20) — the
+    point-timeseries analogue of safe_retrieve's gate-then-submit shape,
+    chained straight into await_retrieval so the model spends one tool call
+    instead of three.
+
+    Point sampling is always on (this composite's identity is the MCP's
+    AppEEARS-routed point path, never a gridded cube). Raises
+    ``MCPToolError(category="too_large")`` before any MCP call when the
+    requested span exceeds ``settings.retrieval_max_timeseries_days`` — a
+    span gate rather than safe_retrieve's byte-size estimate, since a point
+    series has no size to estimate.
+    """
+    settings = settings or get_settings()
+
+    span_days = _parse_time_span_days(time_range)
+    if span_days is not None and span_days > settings.retrieval_max_timeseries_days:
+        raise MCPToolError(
+            CATEGORY_TOO_LARGE,
+            f"Requested time span ({span_days} days) exceeds the "
+            f"{settings.retrieval_max_timeseries_days}-day point-timeseries limit.",
+            suggestion="Narrow the time range and try again.",
+        )
+
+    aoi_raw = await tools["define_area_of_interest"].ainvoke({"location": location})
+    aoi = parse_tool_result(aoi_raw)
+    aoi_handle = aoi.get("handle") or aoi.get("aoi_handle")
+
+    emit_status("Submitting point timeseries retrieval...", stage=STAGE_SUBMIT)
+    submit_raw = await tools["retrieve_timeseries"].ainvoke({
+        "dataset_handle": dataset_handle,
+        "aoi_handle": aoi_handle,
+        "time_range": time_range,
+        "variables": [variable],
+        "point_sample": True,
+    })
+    submit = parse_tool_result(submit_raw)
+
+    status = await await_retrieval(submit["job_handle"], tools, settings=settings)
+    return {"aoi_handle": aoi_handle, **status}

@@ -271,5 +271,134 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls["retrieve_subset"], 0)
 
 
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
+    "MCP client test dependencies are not installed",
+)
+class PointTimeseriesTests(unittest.IsolatedAsyncioTestCase):
+    """T20: the point-timeseries composite — resolve AOI, gate the
+    requested span, submit a point-sampled retrieve_timeseries call, and
+    await it to a terminal state. Chart/open concerns live in the tool
+    wrapper (tools/satellite_tools/retrieval_tools.py); this only covers
+    the retrieval mechanics, mirroring safe_retrieve+await_retrieval."""
+
+    async def _tools_and_settings(self, handlers, **settings_kwargs):
+        from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
+        from earthdata_mcp.client import load_raw_mcp_tools
+        from config.settings import Settings
+        from dataclasses import replace
+
+        server = FakeEarthdataMCPServer(build_fake_mcp(handlers))
+        server.start()
+        self.addCleanup(server.stop)
+        settings = replace(
+            Settings(earthdata_mcp_url=server.url, earthdata_mcp_token=None),
+            await_retrieval_poll_min_seconds=0,
+            await_retrieval_poll_max_seconds=0,
+            **settings_kwargs,
+        )
+        tools = await load_raw_mcp_tools(settings)
+        return tools, settings
+
+    async def test_point_timeseries_resolves_aoi_submits_point_sampled_retrieval_and_awaits_to_ready(self):
+        from services.retrieval_composites import point_timeseries
+
+        aoi_calls = []
+        submit_calls = []
+
+        async def define_area_of_interest(location, workspace_id):
+            aoi_calls.append(location)
+            return {"handle": "aoi_newark", "location": location}
+
+        async def retrieve_timeseries(dataset_handle, time_range, variables, aoi_handle, output_format, point_sample, workspace_id):
+            submit_calls.append({
+                "dataset_handle": dataset_handle, "time_range": time_range, "variables": variables,
+                "aoi_handle": aoi_handle, "point_sample": point_sample,
+            })
+            return {"job_handle": "job_ts_1"}
+
+        async def get_retrieval_status(job_handle, workspace_id):
+            return {"job_handle": job_handle, "status": "ready", "obs_handle": "cube_ts_1"}
+
+        tools, settings = await self._tools_and_settings({
+            "define_area_of_interest": define_area_of_interest,
+            "retrieve_timeseries": retrieve_timeseries,
+            "get_retrieval_status": get_retrieval_status,
+        })
+
+        result = await point_timeseries(
+            "dataset_1", "Newark, NJ", "2024-01-01/2024-01-31", "no2", tools, settings=settings,
+        )
+
+        self.assertEqual(aoi_calls, ["Newark, NJ"])
+        self.assertEqual(len(submit_calls), 1)
+        self.assertEqual(submit_calls[0]["aoi_handle"], "aoi_newark")
+        self.assertEqual(submit_calls[0]["variables"], ["no2"])
+        self.assertTrue(submit_calls[0]["point_sample"])
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(result["obs_handle"], "cube_ts_1")
+        self.assertEqual(result["aoi_handle"], "aoi_newark")
+
+    async def test_point_timeseries_refuses_an_over_span_request_without_any_mcp_calls(self):
+        from earthdata_mcp.results import CATEGORY_TOO_LARGE, MCPToolError
+        from services.retrieval_composites import point_timeseries
+
+        calls = []
+
+        async def define_area_of_interest(location, workspace_id):
+            calls.append("define_area_of_interest")
+            return {"handle": "aoi_1", "location": location}
+
+        async def retrieve_timeseries(**kwargs):
+            calls.append("retrieve_timeseries")
+            return {"job_handle": "job_ts_1"}
+
+        tools, settings = await self._tools_and_settings(
+            {
+                "define_area_of_interest": define_area_of_interest,
+                "retrieve_timeseries": retrieve_timeseries,
+            },
+            retrieval_max_timeseries_days=30,
+        )
+
+        with self.assertRaises(MCPToolError) as ctx:
+            await point_timeseries(
+                "dataset_1", "Newark, NJ", "2020-01-01/2024-01-31", "no2", tools, settings=settings,
+            )
+
+        self.assertEqual(ctx.exception.category, CATEGORY_TOO_LARGE)
+        self.assertIsNotNone(ctx.exception.suggestion)
+        self.assertEqual(calls, [])
+
+    async def test_point_timeseries_returns_a_failed_job_verbatim_without_raising(self):
+        from services.retrieval_composites import point_timeseries
+
+        async def define_area_of_interest(location, workspace_id):
+            return {"handle": "aoi_1", "location": location}
+
+        async def retrieve_timeseries(**kwargs):
+            return {"job_handle": "job_ts_failed"}
+
+        async def get_retrieval_status(job_handle, workspace_id):
+            return {
+                "job_handle": job_handle,
+                "status": "failed",
+                "message": "appeears: provider rejected point-sample request",
+            }
+
+        tools, settings = await self._tools_and_settings({
+            "define_area_of_interest": define_area_of_interest,
+            "retrieve_timeseries": retrieve_timeseries,
+            "get_retrieval_status": get_retrieval_status,
+        })
+
+        result = await point_timeseries(
+            "dataset_1", "Newark, NJ", "2024-01-01/2024-01-31", "no2", tools, settings=settings,
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["message"], "appeears: provider rejected point-sample request")
+
+
 if __name__ == "__main__":
     unittest.main()
