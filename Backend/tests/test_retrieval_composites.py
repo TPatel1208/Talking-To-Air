@@ -31,13 +31,13 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
         tools = await load_raw_mcp_tools(settings)
         return tools, settings
 
-    async def test_await_retrieval_polls_until_materialized_and_emits_progress_in_order(self):
+    async def test_await_retrieval_polls_until_ready_and_emits_progress_in_order(self):
         from services.retrieval_composites import await_retrieval
 
         responses = [
             {"job_handle": "job_1", "status": "queued", "progress": 0, "phase": "submitting", "message": None},
             {"job_handle": "job_1", "status": "processing", "progress": 40, "phase": "materializing", "message": "40%"},
-            {"job_handle": "job_1", "status": "materialized", "progress": 100, "phase": "done", "obs_handle": "obs_1"},
+            {"job_handle": "job_1", "status": "ready", "progress": 100, "phase": "done", "obs_handle": "obs_1"},
         ]
         calls = {"n": 0}
 
@@ -58,9 +58,9 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
         finally:
             streaming._job_progress_emitter.reset(token)
 
-        self.assertEqual(result["status"], "materialized")
+        self.assertEqual(result["status"], "ready")
         self.assertEqual(result["obs_handle"], "obs_1")
-        self.assertEqual([e["status"] for e in seen], ["queued", "processing", "materialized"])
+        self.assertEqual([e["status"] for e in seen], ["queued", "processing", "ready"])
 
     async def test_await_retrieval_returns_failed_status_verbatim_without_raising(self):
         from services.retrieval_composites import await_retrieval

@@ -20,7 +20,7 @@ from utils.streaming import emit_job_progress
 
 logger = logging.getLogger(__name__)
 
-TERMINAL_STATUSES = {"materialized", "failed", "cancelled"}
+TERMINAL_STATUSES = {"ready", "failed", "expired", "cancelled"}
 
 
 class RetrievalError(RuntimeError):

@@ -176,7 +176,7 @@ def _standard_handlers(
         return {"job_handle": f"job_{obs_handle}", "obs_handle": obs_handle}
 
     async def get_retrieval_status(job_handle, workspace_id):
-        return {"job_handle": job_handle, "status": "materialized", "obs_handle": obs_handle}
+        return {"job_handle": job_handle, "status": "ready", "obs_handle": obs_handle}
 
     return {
         "search_datasets": search_datasets,

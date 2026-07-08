@@ -228,7 +228,7 @@ class HandleVolume:
     while the fixture exists on disk; ``evict`` deletes it to simulate LRU
     eviction, after which export_result reports "expired" until
     ``rematerialize`` regenerates it from the original factory and
-    get_retrieval_status reports the job materialized.
+    get_retrieval_status reports the job ready.
     """
 
     def __init__(self, root):
@@ -290,11 +290,11 @@ class HandleVolume:
             return {"handle": handle, "status": "not_found", "message": f"Unknown handle '{handle}'."}
         self.rematerialize_calls[handle] = self.rematerialize_calls.get(handle, 0) + 1
         self._write(handle)
-        return {"job_handle": f"job_{handle}", "obs_handle": handle, "status": "materialized"}
+        return {"job_handle": f"job_{handle}", "obs_handle": handle, "status": "ready"}
 
     async def get_retrieval_status(self, job_handle: str, workspace_id: str = "default") -> dict:
         handle = job_handle[len("job_"):] if job_handle.startswith("job_") else job_handle
-        return {"job_handle": job_handle, "status": "materialized", "obs_handle": handle}
+        return {"job_handle": job_handle, "status": "ready", "obs_handle": handle}
 
 
 def _free_port() -> int:

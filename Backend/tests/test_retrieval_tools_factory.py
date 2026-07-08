@@ -97,7 +97,7 @@ class RetrievalToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_await_retrieval_tool_returns_terminal_status(self):
         async def get_retrieval_status(job_handle, workspace_id):
-            return {"job_handle": job_handle, "status": "materialized", "obs_handle": "obs_1"}
+            return {"job_handle": job_handle, "status": "ready", "obs_handle": "obs_1"}
 
         mcp_tools, _ = await self._tools_for({
             "get_retrieval_status": get_retrieval_status,
@@ -107,7 +107,7 @@ class RetrievalToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
         raw = await await_retrieval.ainvoke({"job_handle": "job_1"})
         payload = json.loads(raw)
 
-        self.assertEqual(payload["status"], "materialized")
+        self.assertEqual(payload["status"], "ready")
         self.assertEqual(payload["obs_handle"], "obs_1")
 
 

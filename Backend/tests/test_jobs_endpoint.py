@@ -44,7 +44,7 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
             "user-user-2": [{"job_handle": "job_2", "dataset": "MOD11A1", "submitted_at": "2026-07-02T00:00:00Z"}],
         }
         self.statuses = {
-            "job_1": {"job_handle": "job_1", "status": "materialized", "progress": 100, "phase": "done", "obs_handle": "obs_1"},
+            "job_1": {"job_handle": "job_1", "status": "ready", "progress": 100, "phase": "done", "obs_handle": "obs_1"},
             "job_2": {"job_handle": "job_2", "status": "failed", "message": "harmony: provider GES_DISC rejected request: invalid bbox"},
         }
         self.cancel_calls = []
@@ -112,7 +112,7 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(jobs1), 1)
         self.assertEqual(jobs1[0]["job_handle"], "job_1")
         self.assertEqual(jobs1[0]["dataset"], "TEMPO_NO2")
-        self.assertEqual(jobs1[0]["status"], "materialized")
+        self.assertEqual(jobs1[0]["status"], "ready")
         self.assertEqual(jobs1[0]["obs_handle"], "obs_1")
 
         jobs2 = res2.json()["jobs"]

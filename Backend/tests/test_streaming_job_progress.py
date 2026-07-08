@@ -25,7 +25,7 @@ class JobProgressStreamingTests(unittest.IsolatedAsyncioTestCase):
                 emit_job_progress("job_1", "processing", 40, "materializing", "40% complete")
                 await asyncio.sleep(0)
                 yield "updates", {}
-                emit_job_progress("job_1", "materialized", 100, "done", None)
+                emit_job_progress("job_1", "ready", 100, "done", None)
                 await asyncio.sleep(0)
                 yield "messages", (SimpleNamespace(content="done", type="ai", tool_calls=None), {})
 
@@ -35,7 +35,7 @@ class JobProgressStreamingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             [e["status"] for e in job_events],
-            ["queued", "processing", "materialized"],
+            ["queued", "processing", "ready"],
         )
         self.assertEqual(job_events[0]["job_handle"], "job_1")
         self.assertEqual(job_events[1]["progress"], 40)

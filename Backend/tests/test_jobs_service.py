@@ -42,7 +42,7 @@ class ListJobsTests(unittest.IsolatedAsyncioTestCase):
             }
 
         statuses = {
-            "job_1": {"job_handle": "job_1", "status": "materialized", "progress": 100, "phase": "done", "obs_handle": "obs_1"},
+            "job_1": {"job_handle": "job_1", "status": "ready", "progress": 100, "phase": "done", "obs_handle": "obs_1"},
             "job_2": {"job_handle": "job_2", "status": "processing", "progress": 40, "phase": "materializing"},
         }
 
@@ -59,7 +59,7 @@ class ListJobsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(jobs), 2)
         self.assertEqual(jobs[0]["job_handle"], "job_1")
         self.assertEqual(jobs[0]["dataset"], "TEMPO_NO2")
-        self.assertEqual(jobs[0]["status"], "materialized")
+        self.assertEqual(jobs[0]["status"], "ready")
         self.assertEqual(jobs[0]["obs_handle"], "obs_1")
         self.assertEqual(jobs[1]["status"], "processing")
         self.assertEqual(jobs[1]["progress"], 40)

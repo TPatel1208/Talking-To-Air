@@ -54,7 +54,7 @@ async def _recover(handle: str, tools: dict[str, BaseTool]) -> dict:
     job_handle = remat.get("job_handle")
     if job_handle:
         status = await await_retrieval(job_handle, tools)
-        if status.get("status") != "materialized":
+        if status.get("status") != "ready":
             raise OpenHandleError(status.get("message") or f"Rematerializing handle '{handle}' failed.")
 
     second_export = await _export(handle, tools)
