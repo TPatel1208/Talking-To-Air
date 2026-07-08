@@ -19,7 +19,7 @@ from tools.satellite_tools.plot_tools import (
     make_plot_multiple,
     make_plot_singular,
 )
-from tools.satellite_tools.retrieval_tools import make_await_retrieval, make_safe_retrieve
+from tools.satellite_tools.retrieval_tools import make_await_retrieval, make_point_timeseries, make_safe_retrieve
 from tools.satellite_tools.stat_tools import make_compute_statistic_tool, make_find_daily_peak
 from tools.satellite_tools.validation_tools import make_exceedance_overlay, make_validate_against_ground
 
@@ -29,6 +29,7 @@ def _handle_tools(mcp_tools: dict[str, BaseTool]) -> list[BaseTool]:
     return [
         make_safe_retrieve(mcp_tools),
         make_await_retrieval(mcp_tools),
+        make_point_timeseries(mcp_tools),
         make_plot_singular(mcp_tools),
         make_plot_multiple(mcp_tools),
         make_compute_statistic_tool(mcp_tools),

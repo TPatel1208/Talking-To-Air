@@ -226,6 +226,9 @@ class SatelliteToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
     async def test_factory_registers_the_t08_compare_tool(self):
         self.assertIsNotNone(self._tool("compare"))
 
+    async def test_factory_registers_the_t20_point_timeseries_composite(self):
+        self.assertIsNotNone(self._tool("point_timeseries"))
+
 
 if __name__ == "__main__":
     unittest.main()
