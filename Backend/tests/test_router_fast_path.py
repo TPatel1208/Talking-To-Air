@@ -203,6 +203,117 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         joined = "".join(events)
         self.assertIn("Here is the synthesis.", joined)
 
+    async def test_fast_path_done_event_carries_suggestions_from_a_well_formed_envelope(self):
+        """T22 story #9: the done event is the additive surface for the
+        finalized envelope's suggestions on the router fast path."""
+        from services.chat_stream_service import ChatStreamService
+        from services.chart_service import ChartService
+
+        envelope = json.dumps({
+            "summary": "The closest NO2 monitor is Rutgers University.",
+            "artifact_ids": [], "handles": [],
+            "suggested_followups": ["What about last month?", "Any exceedances nearby?"],
+        })
+        ground_agent = FakeGroundAgent(envelope_text=envelope)
+        service = ChatStreamService(ChartService(), long_request_seconds=999)
+
+        get_ctx, save_ctx = _no_monitor_context()
+        with get_ctx, save_ctx:
+            events = [
+                event
+                async for event in service.stream_chat_events(
+                    AsyncMock(), ground_agent, UntouchedAgent(),
+                    "Find the nearest NO2 monitor to Tampa FL", "thread-1", "user-1", "req-1",
+                )
+            ]
+
+        joined = "".join(events)
+        done_line = next(line for line in joined.split("\n\n") if line.startswith("event: done"))
+        payload = json.loads(done_line.split("data: ", 1)[1])
+        self.assertEqual(
+            payload["suggested_followups"],
+            ["What about last month?", "Any exceedances nearby?"],
+        )
+
+    async def test_fast_path_done_event_omits_suggestions_when_the_envelope_has_none(self):
+        from services.chat_stream_service import ChatStreamService
+        from services.chart_service import ChartService
+
+        ground_agent = FakeGroundAgent()  # default envelope has no suggested_followups key
+        service = ChatStreamService(ChartService(), long_request_seconds=999)
+
+        get_ctx, save_ctx = _no_monitor_context()
+        with get_ctx, save_ctx:
+            events = [
+                event
+                async for event in service.stream_chat_events(
+                    AsyncMock(), ground_agent, UntouchedAgent(),
+                    "Find the nearest NO2 monitor to Tampa FL", "thread-1", "user-1", "req-1",
+                )
+            ]
+
+        joined = "".join(events)
+        done_line = next(line for line in joined.split("\n\n") if line.startswith("event: done"))
+        payload = json.loads(done_line.split("data: ", 1)[1])
+        self.assertNotIn("suggested_followups", payload)
+
+    async def test_fast_path_done_event_omits_suggestions_for_a_salvaged_result(self):
+        """T22 story #7/#12: a malformed final message is salvaged from raw
+        prose (T15) — it must never carry suggestions, even when the
+        salvaged prose happens to contain question marks."""
+        from services.chat_stream_service import ChatStreamService
+        from services.chart_service import ChartService
+
+        ground_agent = FakeGroundAgent(envelope_text="The nearest monitor is Rutgers. What about last month?")
+        service = ChatStreamService(ChartService(), long_request_seconds=999)
+
+        get_ctx, save_ctx = _no_monitor_context()
+        with get_ctx, save_ctx:
+            events = [
+                event
+                async for event in service.stream_chat_events(
+                    AsyncMock(), ground_agent, UntouchedAgent(),
+                    "Find the nearest NO2 monitor to Tampa FL", "thread-1", "user-1", "req-1",
+                )
+            ]
+
+        joined = "".join(events)
+        done_line = next(line for line in joined.split("\n\n") if line.startswith("event: done"))
+        payload = json.loads(done_line.split("data: ", 1)[1])
+        self.assertNotIn("suggested_followups", payload)
+
+    async def test_supervisor_path_done_event_carries_suggestions_from_a_sub_agent_tool_result(self):
+        """T22 story #8: the supervisor's synthesis must not strip a
+        sub-agent's suggestions — chat_stream_service reads them straight
+        off the tool_result envelope, not from the supervisor's own prose."""
+        from services.chat_stream_service import ChatStreamService
+        from services.chart_service import ChartService
+        from models import AgentResult, agent_result_to_json
+
+        sub_agent_result = agent_result_to_json(AgentResult(
+            text="The ground monitor reads 12 ppb.",
+            suggested_followups=["How does that compare to satellite data?"],
+        ))
+
+        async def fake_stream_response(agent, message, thread_id, **kwargs):
+            yield "tool_result", {"content": sub_agent_result}
+            yield "text", "Agent consulted: GROUND + SATELLITE\n\nHere is the synthesis."
+
+        service = ChatStreamService(ChartService(), long_request_seconds=999)
+        with patch("services.chat_stream_service.stream_response", fake_stream_response):
+            events = [
+                event
+                async for event in service.stream_chat_events(
+                    object(), UntouchedAgent(), UntouchedAgent(),
+                    "Compare ground NO2 to TROPOMI over Austin", "thread-1", "user-1", "req-1",
+                )
+            ]
+
+        joined = "".join(events)
+        done_line = next(line for line in joined.split("\n\n") if line.startswith("event: done"))
+        payload = json.loads(done_line.split("data: ", 1)[1])
+        self.assertEqual(payload["suggested_followups"], ["How does that compare to satellite data?"])
+
     async def test_sub_agent_failure_yields_error_and_does_not_write_back(self):
         from services.chat_stream_service import ChatStreamService
         from services.chart_service import ChartService
