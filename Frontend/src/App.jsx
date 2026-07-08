@@ -1,12 +1,11 @@
 import Chat from './components/Chat'
-import Dashboard from './components/Dashboard'
-import DiscoveryPane from './components/DiscoveryPane'
-import JobsPanel from './components/JobsPanel'
+import OutputPanel from './components/OutputPanel'
+import RightPanel from './components/RightPanel'
 import SessionSidebar from './components/SessionSidebar'
 import { useChat } from './hooks/useChat'
 import { useDiscovery } from './hooks/useDiscovery'
 import { useJobs } from './hooks/useJobs'
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 const API_BASE = '/api'
 const AUTH_STORAGE_KEY = 'tta.accessToken'
@@ -194,6 +193,42 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
     sendMessage(`${parts.join(' ')}.`)
   }, [sendMessage])
 
+  // The central OutputPanel shows whichever chart/artifact is "focused" —
+  // the newest one from a completed reply, or whatever the user clicked in
+  // the chat history.
+  const [focusedOutput, setFocusedOutput] = useState(null)
+  const wasLoadingRef = useRef(false)
+
+  useEffect(() => {
+    if (wasLoadingRef.current && !loading) {
+      const last = messages[messages.length - 1]
+      if (last?.role === 'assistant') {
+        if (last.charts?.length) {
+          setFocusedOutput({ kind: 'chart', data: last.charts[last.charts.length - 1] })
+        } else {
+          const tableArtifact = (last.artifacts || []).find(a => a.type === 'table')
+          if (tableArtifact) setFocusedOutput({ kind: 'artifact', data: tableArtifact })
+        }
+      }
+    }
+    wasLoadingRef.current = loading
+  }, [loading, messages])
+
+  const handleNewSession = useCallback(() => {
+    setFocusedOutput(null)
+    newSession()
+  }, [newSession])
+
+  const handleSwitchSession = useCallback((id) => {
+    setFocusedOutput(null)
+    switchSession(id)
+  }, [switchSession])
+
+  const chatTitle = useMemo(() => {
+    const active = sessions.find(session => (typeof session === 'string' ? session : session?.id) === threadId)
+    return (active && typeof active === 'object' ? active.title : null) || (messages.length ? 'Chat' : 'New analysis')
+  }, [sessions, threadId, messages.length])
+
   const { images, artifacts } = useMemo(() => {
     const seenArtifactIds = new Set()
     const dedupedArtifacts = []
@@ -235,53 +270,38 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
       <SessionSidebar
         sessions={sessions}
         threadId={threadId}
-        onSwitch={switchSession}
-        onNew={newSession}
+        onSwitch={handleSwitchSession}
+        onNew={handleNewSession}
         onDelete={deleteSession}
         onLogout={handleLogout}
+        images={images}
+        artifacts={artifacts}
+        accessToken={accessToken}
       />
 
-      <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <div style={{ width: '380px', flexShrink: 0, borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <Chat
           messages={messages}
           loading={loading}
           error={error}
           accessToken={accessToken}
+          chatTitle={chatTitle}
           onSend={sendMessage}
           onAbort={() => abortActiveRequest(true)}
-          onClear={newSession}
           onClearError={clearError}
+          focusedOutput={focusedOutput}
+          onFocusOutput={setFocusedOutput}
         />
       </div>
 
-      <div style={{ width: '320px', flexShrink: 0, borderLeft: '1px solid var(--border)', overflow: 'hidden' }}>
-        <Dashboard images={images} artifacts={artifacts} accessToken={accessToken} />
-      </div>
+      <OutputPanel focusedOutput={focusedOutput} accessToken={accessToken} />
 
-      <JobsPanel
+      <RightPanel
+        discovery={discovery}
         jobs={jobs}
-        error={jobsError}
-        onCancel={cancelJob}
-        onRefresh={fetchJobs}
-      />
-
-      <DiscoveryPane
-        query={discovery.query}
-        setQuery={discovery.setQuery}
-        location={discovery.location}
-        setLocation={discovery.setLocation}
-        timeRange={discovery.timeRange}
-        setTimeRange={discovery.setTimeRange}
-        results={discovery.results}
-        loading={discovery.loading}
-        error={discovery.error}
-        previews={discovery.previews}
-        coverages={discovery.coverages}
-        granules={discovery.granules}
-        onSearch={discovery.search}
-        onPreview={discovery.preview}
-        onCoverage={discovery.checkCoverage}
-        onGranules={discovery.inspectGranules}
+        jobsError={jobsError}
+        onCancelJob={cancelJob}
+        onRefreshJobs={fetchJobs}
         onRetrieve={handleRetrieve}
       />
     </div>

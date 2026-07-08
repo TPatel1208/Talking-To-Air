@@ -116,7 +116,7 @@ function CardShell({ artifact, accessToken, children }) {
   )
 }
 
-function MetaRow({ label, value }) {
+export function MetaRow({ label, value }) {
   if (value === null || value === undefined || value === '') return null
   return (
     <div style={{ display: 'flex', gap: '6px', marginBottom: '4px' }}>
@@ -168,7 +168,7 @@ function TimeseriesArtifactCard({ artifact, accessToken }) {
   )
 }
 
-function TableArtifactMessage({ artifact, accessToken }) {
+export function TableArtifactMessage({ artifact, accessToken }) {
   const [page, setPage] = useState({ columns: [], rows: [], total_rows: artifact?.row_count || 0, offset: 0, limit: PAGE_SIZE })
   const [offset, setOffset] = useState(0)
   const [sort, setSort] = useState({ column: null, direction: 'asc' })

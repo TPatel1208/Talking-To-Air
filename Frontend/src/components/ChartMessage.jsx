@@ -78,7 +78,7 @@ function flattenGrid(lats, lons, values) {
   return { lat: flatLat, lon: flatLon, val: flatVal }
 }
 
-function flattenPayload(payload) {
+export function flattenPayload(payload) {
   if (Array.isArray(payload.lats) && Array.isArray(payload.lons) && Array.isArray(payload.values)) {
     const grid = flattenGrid(payload.lats, payload.lons, payload.values)
     if (grid.val.length) return grid
@@ -309,7 +309,7 @@ function GranuleList({ meta, provenance }) {
   )
 }
 
-function ProvenanceBlock({ provenance, aggregationMeta }) {
+export function ProvenanceBlock({ provenance, aggregationMeta }) {
   if (!provenance || typeof provenance !== 'object') return null
   const items = [
     ['Dataset', [provenance.dataset, provenance.variable].filter(Boolean).join(' / ')],
@@ -346,7 +346,7 @@ function ProvenanceBlock({ provenance, aggregationMeta }) {
   )
 }
 
-function ChartToolbar({ chart, plotRootRef, accessToken }) {
+export function ChartToolbar({ chart, plotRootRef, accessToken }) {
   const [copyState, setCopyState] = useState('')
   const [exportState, setExportState] = useState({ status: '', message: '' })
   const fileBase = sanitizeFilename(chart.title || chart.metadata?.name || chart.type)
@@ -587,7 +587,7 @@ function useBorderTraces(minx, miny, maxx, maxy) {
 }
 
 // ── Heatmap panel ─────────────────────────────────────────────────────────────
-function HeatmapPanel({ payload, height = 420 }) {
+export function HeatmapPanel({ payload, height = 420 }) {
   const { title, variable, units, lats, lons, values, vmin, vmax, cmap, bounds } = payload
 
   const [minx, miny, maxx, maxy] = bounds || [
@@ -703,7 +703,7 @@ function HeatmapPanel({ payload, height = 420 }) {
 
   const layout = {
     paper_bgcolor: 'transparent',
-    font:          { family: "'DM Sans', system-ui, sans-serif", size: 12, color: '#2c2a28' },
+    font:          { family: "'Manrope', system-ui, sans-serif", size: 12, color: '#333333' },
     margin:        { t: 40, r: 80, b: 10, l: 10 },
     height,
     title:         { text: title, font: { size: 13, weight: 500 }, x: 0.5, xanchor: 'center' },
@@ -728,7 +728,7 @@ function HeatmapPanel({ payload, height = 420 }) {
 }
 
 // ── Multi-panel heatmap ───────────────────────────────────────────────────────
-function HeatmapMultiPanel({ payload }) {
+export function HeatmapMultiPanel({ payload }) {
   const { panels, title } = payload
   if (!panels?.length) return null
   return (
@@ -757,7 +757,7 @@ function HeatmapMultiPanel({ payload }) {
 }
 
 // ── Time-series ───────────────────────────────────────────────────────────────
-function TimeSeriesPanel({ payload }) {
+export function TimeSeriesPanel({ payload }) {
   const { title, units, stat, times, values } = payload
 
   const [revision, setRevision] = useState(0)
@@ -777,7 +777,7 @@ function TimeSeriesPanel({ payload }) {
 
   const layout = {
     paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
-    font:   { family: "'DM Sans', system-ui, sans-serif", size: 12, color: '#2c2a28' },
+    font:   { family: "'Manrope', system-ui, sans-serif", size: 12, color: '#333333' },
     margin: { t: 40, r: 16, b: 40, l: 16 },
     title:  { text: title, font: { size: 13, weight: 500 }, x: 0.5, xanchor: 'center' },
     height: 300,
