@@ -6,6 +6,9 @@ import WorkflowStrip from './WorkflowStrip'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
+import { starterMessage } from '../utils/starterPrompts'
+
+const API_BASE = '/api'
 
 function toImageUrl(path) {
   if (!path) return null
@@ -212,8 +215,41 @@ function InlineImage({ url, accessToken }) {
   )
 }
 
+/* ── Follow-up suggestion chips (T22) ── */
+function FollowupChips({ suggestions, onSend }) {
+  if (!suggestions?.length) return null
+
+  return (
+    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', padding: '2px 2px 0' }}>
+      {suggestions.map((text, i) => (
+        <button
+          key={i}
+          onClick={() => onSend(text)}
+          style={{
+            padding: '6px 12px', borderRadius: '100px',
+            fontSize: '12px', fontFamily: 'var(--font)',
+            background: 'var(--bg-card)', border: '1px solid var(--border)',
+            color: 'var(--teal-text)', cursor: 'pointer',
+            transition: 'border-color 0.15s, background 0.15s',
+          }}
+          onMouseEnter={e => {
+            e.currentTarget.style.borderColor = 'var(--teal)'
+            e.currentTarget.style.background  = 'var(--teal-light)'
+          }}
+          onMouseLeave={e => {
+            e.currentTarget.style.borderColor = 'var(--border)'
+            e.currentTarget.style.background  = 'var(--bg-card)'
+          }}
+        >
+          {text}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 /* ── Message bubble ── */
-function MessageBubble({ msg, accessToken }) {
+function MessageBubble({ msg, accessToken, onFollowupClick }) {
   const isUser = msg.role === 'user'
 
   return (
@@ -363,6 +399,12 @@ function MessageBubble({ msg, accessToken }) {
             )}
           </div>
         )}
+
+        {/* T22: follow-up suggestions grounded in this turn's answer —
+            clicking one sends it through the same path as typing. */}
+        {!isUser && !msg.isLoading && (
+          <FollowupChips suggestions={msg.suggestedFollowups} onSend={onFollowupClick} />
+        )}
       </div>
     </div>
   )
@@ -370,13 +412,19 @@ function MessageBubble({ msg, accessToken }) {
 
 /* ── Empty state ── */
 function EmptyState({ onChipClick }) {
-  const chips = [
-    'NO₂ levels today',
-    'Ozone data',
-    'Aerosol depth trends',
-    'HCHO concentration',
-    'Plot AQI on a map',
-  ]
+  // T22: fetched from the backend's own starter-prompt constant (config/
+  // starter_prompts.py) rather than hardcoded here, so every example on
+  // screen is one the eval suite proves works end-to-end (story #4/#11).
+  const [starters, setStarters] = useState([])
+
+  useEffect(() => {
+    let cancelled = false
+    fetch(`${API_BASE}/capabilities/starters`)
+      .then(res => (res.ok ? res.json() : []))
+      .then(data => { if (!cancelled) setStarters(Array.isArray(data) ? data : []) })
+      .catch(() => { if (!cancelled) setStarters([]) })
+    return () => { cancelled = true }
+  }, [])
 
   return (
     <div style={{
@@ -412,12 +460,12 @@ function EmptyState({ onChipClick }) {
         or any other air quality data you can think of.
       </p>
 
-      {/* Suggestion chips */}
+      {/* Starter prompts — span the app's workflow types (story #2) */}
       <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'center' }}>
-        {chips.map(chip => (
+        {starters.map(starter => (
           <button
-            key={chip}
-            onClick={() => onChipClick(chip)}
+            key={starter.id}
+            onClick={() => onChipClick(starterMessage(starter))}
             style={{
               padding: '7px 14px', borderRadius: '100px',
               fontSize: '12px', fontFamily: 'var(--font)',
@@ -436,7 +484,7 @@ function EmptyState({ onChipClick }) {
               e.currentTarget.style.color       = 'var(--text-secondary)'
             }}
           >
-            {chip}
+            {starter.label}
           </button>
         ))}
       </div>
@@ -574,7 +622,7 @@ export default function Chat({ messages, loading, error, accessToken, onSend, on
                   startedAt={msg.startedAt}
                 />
               ) : (
-                <MessageBubble key={i} msg={msg} accessToken={accessToken} />
+                <MessageBubble key={i} msg={msg} accessToken={accessToken} onFollowupClick={handleSend} />
               )
             )}
             <div style={{ height: '8px' }} />
