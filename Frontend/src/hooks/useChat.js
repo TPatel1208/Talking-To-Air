@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { createSseParser } from '../utils/sseParser'
 import { applyWorkflowEvent, INITIAL_WORKFLOW_STATE } from '../utils/workflowStage'
+import { extractSuggestedFollowups } from '../utils/followups'
 
 const API_BASE = '/api'
 const ACTIVE_THREAD_STORAGE_KEY = 'tta.activeThreadId'
@@ -246,6 +247,7 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
         imageUrls: [],
         charts: [],
         artifacts: [],
+        suggestedFollowups: [],
         isLoading: true,
         streamId,
       },
@@ -339,6 +341,7 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
             imageUrls: (data.image_urls || []).map(u => `${API_BASE}${u}`),
             charts: msg.charts || [],
             artifacts: msg.artifacts?.length ? msg.artifacts : (data.artifacts || []),
+            suggestedFollowups: extractSuggestedFollowups(data),
             statusMessage: '',
             workflowStage: INITIAL_WORKFLOW_STATE,
             isLoading: false,
