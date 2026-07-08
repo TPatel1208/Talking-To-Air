@@ -50,6 +50,9 @@ class EarthdataToolsetTests(unittest.IsolatedAsyncioTestCase):
         # internal/hidden composite plumbing. get_retrieval_status,
         # retrieve_timeseries, cite_dataset, and get_provenance are demoted
         # to internal-only as of T11 (MCP-first minimal toolset).
+        # inspect_granules joins the internal set as of T21 (discovery
+        # pane's granule-inspection endpoint) — the agent keeps coverage +
+        # the size gate, so this stays off the model surface too.
         for hidden in (
             "retrieve_subset",
             "estimate_retrieval_size",
@@ -61,6 +64,7 @@ class EarthdataToolsetTests(unittest.IsolatedAsyncioTestCase):
             "retrieve_timeseries",
             "cite_dataset",
             "get_provenance",
+            "inspect_granules",
         ):
             self.assertNotIn(hidden, model_tool_names)
 

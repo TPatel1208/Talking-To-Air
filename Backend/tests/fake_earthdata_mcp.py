@@ -43,6 +43,7 @@ INTERNAL_RAW_TOOL_NAMES = (
     "retrieve_timeseries",
     "cite_dataset",
     "get_provenance",
+    "inspect_granules",
 )
 # Representative sample of raw tools that must never reach the model,
 # per the PRD's "Hidden" list (transforms / format / inspection
@@ -126,6 +127,22 @@ def build_fake_mcp(handlers: dict[str, Handler] | None = None, exclude: tuple[st
     ) -> dict:
         return await h("check_coverage")(
             dataset_handle=dataset_handle, aoi_handle=aoi_handle, time_range=time_range, workspace_id=workspace_id
+        )
+
+    @mcp.tool(name="inspect_granules")
+    async def inspect_granules(
+        dataset_handle: str,
+        aoi_handle: str,
+        time_range: str,
+        workspace_id: str = "default",
+        limit: int = 10,
+    ) -> dict:
+        return await h("inspect_granules")(
+            dataset_handle=dataset_handle,
+            aoi_handle=aoi_handle,
+            time_range=time_range,
+            workspace_id=workspace_id,
+            limit=limit,
         )
 
     @mcp.tool(name="get_retrieval_status")

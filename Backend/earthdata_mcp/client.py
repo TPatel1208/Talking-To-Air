@@ -56,6 +56,11 @@ INTERNAL_TOOL_NAMES = (
     # endpoints, which call these directly by name — demoted, not removed.
     "cite_dataset",
     "get_provenance",
+    # T21: the discovery pane's granule-inspection endpoint calls this
+    # directly (services/discovery_service.py) so a researcher can see what
+    # a retrieval would pull before committing to it; stays off the model
+    # surface (the agent keeps coverage + the size gate).
+    "inspect_granules",
 )
 REQUIRED_TOOL_NAMES = CURATED_TOOL_NAMES + INTERNAL_TOOL_NAMES
 
@@ -96,6 +101,8 @@ REQUIRED_TOOL_PARAMS: dict[str, tuple[str, ...]] = {
     ),
     "cite_dataset": ("dataset_handle", "workspace_id"),
     "get_provenance": ("handle", "workspace_id"),
+    # T21: services/discovery_service.py::inspect_granules's direct call site.
+    "inspect_granules": ("dataset_handle", "aoi_handle", "time_range", "limit", "workspace_id"),
 }
 
 
