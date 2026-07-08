@@ -40,6 +40,7 @@ class DiscoveryEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.describe_calls = []
         self.preview_calls = []
         self.coverage_calls = []
+        self.granules_calls = []
         self.aoi_calls = []
 
         async def search_datasets(query, filters, workspace_id):
@@ -88,12 +89,30 @@ class DiscoveryEndpointTests(unittest.IsolatedAsyncioTestCase):
             self.coverage_calls.append((dataset_handle, aoi_handle, time_range, workspace_id))
             return {"has_data": True, "granule_count": 12}
 
+        async def inspect_granules(dataset_handle, aoi_handle, time_range, workspace_id, limit):
+            self.granules_calls.append((dataset_handle, aoi_handle, time_range, workspace_id, limit))
+            if dataset_handle == "dataset_no_coverage":
+                return {
+                    "dataset_handle": dataset_handle, "aoi_handle": aoi_handle, "time_range": time_range,
+                    "all_time": False, "granules": [], "count": 0,
+                }
+            return {
+                "dataset_handle": dataset_handle, "aoi_handle": aoi_handle, "time_range": time_range,
+                "all_time": False,
+                "granules": [
+                    {"granule_ur": "G1", "size_mb": 12.5, "time_start": "2026-06-01T00:00:00Z", "time_end": "2026-06-01T01:00:00Z"},
+                    {"granule_ur": "G2", "size_mb": 7.5, "time_start": "2026-06-02T00:00:00Z", "time_end": "2026-06-02T01:00:00Z"},
+                ],
+                "count": 2,
+            }
+
         self.server = FakeEarthdataMCPServer(build_fake_mcp({
             "search_datasets": search_datasets,
             "describe_dataset": describe_dataset,
             "define_area_of_interest": define_area_of_interest,
             "preview_dataset": preview_dataset,
             "check_coverage": check_coverage,
+            "inspect_granules": inspect_granules,
         }))
         self.server.start()
         self.addCleanup(self.server.stop)
@@ -181,6 +200,83 @@ class DiscoveryEndpointTests(unittest.IsolatedAsyncioTestCase):
             self.coverage_calls,
             [("dataset_smap_l3", "aoi_raritan_basin", "2026-06-01/2026-06-30", "user-user-1")],
         )
+
+    async def test_granules_lists_records_with_summary_scoped_to_the_caller(self):
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        auth_patches = self._auth_patch()
+        with auth_patches[0], auth_patches[1]:
+            async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                response = await client.post(
+                    "/discovery/dataset/dataset_smap_l3/granules",
+                    json={"location": "Raritan basin", "time_range": "2026-06-01/2026-06-30"},
+                    headers=self.auth_headers1,
+                )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(len(body["granules"]), 2)
+        self.assertEqual(body["count"], 2)
+        self.assertEqual(body["total_size_mb"], 20.0)
+        self.assertEqual(body["limit_applied"], 10)
+        self.assertEqual(self.aoi_calls, [("Raritan basin", "user-user-1")])
+        # The regression T11 repaired: the tool must be called with a
+        # resolved (non-None) aoi_handle, never the raw location string.
+        dataset_handle, aoi_handle, time_range, workspace_id, limit = self.granules_calls[0]
+        self.assertEqual(dataset_handle, "dataset_smap_l3")
+        self.assertIsNotNone(aoi_handle)
+        self.assertEqual(aoi_handle, "aoi_raritan_basin")
+        self.assertEqual(time_range, "2026-06-01/2026-06-30")
+        self.assertEqual(workspace_id, "user-user-1")
+        self.assertEqual(limit, 10)
+
+    async def test_granules_caps_an_oversized_limit_request(self):
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        auth_patches = self._auth_patch()
+        with auth_patches[0], auth_patches[1]:
+            async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                response = await client.post(
+                    "/discovery/dataset/dataset_smap_l3/granules",
+                    json={"location": "Raritan basin", "time_range": "2026-06-01/2026-06-30", "limit": 500},
+                    headers=self.auth_headers1,
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["limit_applied"], 50)
+        self.assertEqual(self.granules_calls[0][4], 50)
+
+    async def test_granules_reports_no_coverage_as_a_plain_answer_not_an_error(self):
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        auth_patches = self._auth_patch()
+        with auth_patches[0], auth_patches[1]:
+            async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                response = await client.post(
+                    "/discovery/dataset/dataset_no_coverage/granules",
+                    json={"location": "Raritan basin", "time_range": "2026-06-01/2026-06-30"},
+                    headers=self.auth_headers1,
+                )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["granules"], [])
+        self.assertEqual(body["count"], 0)
+        self.assertEqual(body["note"]["category"], "no_data")
+
+    async def test_granules_reports_an_unresolvable_location_structurally_not_as_a_bare_500(self):
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        auth_patches = self._auth_patch()
+        with auth_patches[0], auth_patches[1]:
+            async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                response = await client.post(
+                    "/discovery/dataset/dataset_smap_l3/granules",
+                    json={"location": "zzzzqqqq nowhere", "time_range": "2026-06-01/2026-06-30"},
+                    headers=self.auth_headers1,
+                )
+
+        self.assertEqual(response.status_code, 422)
+        body = response.json()
+        self.assertEqual(body["error"]["category"], "user_input")
+        self.assertIn("suggestion", body["error"])
+        self.assertEqual(self.granules_calls, [])
 
     async def test_preview_reports_no_gibs_layer_plainly_instead_of_an_empty_result(self):
         transport = self.httpx.ASGITransport(app=self.api.app)
@@ -283,11 +379,16 @@ class DiscoveryEndpointTests(unittest.IsolatedAsyncioTestCase):
                 "/discovery/dataset/dataset_smap_l3/coverage",
                 json={"location": "Raritan basin", "time_range": "2026-06-01/2026-06-30"},
             )
+            granules_res = await client.post(
+                "/discovery/dataset/dataset_smap_l3/granules",
+                json={"location": "Raritan basin", "time_range": "2026-06-01/2026-06-30"},
+            )
 
         self.assertEqual(search_res.status_code, 401)
         self.assertEqual(describe_res.status_code, 401)
         self.assertEqual(preview_res.status_code, 401)
         self.assertEqual(coverage_res.status_code, 401)
+        self.assertEqual(granules_res.status_code, 401)
 
 
 if __name__ == "__main__":

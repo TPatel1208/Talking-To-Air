@@ -124,6 +124,31 @@ class LiveMCPContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(export_result.get("status"), "ready")
         self.assertIn("storage_uri", export_result, f"export_result missing 'storage_uri': {export_result}")
 
+    async def test_inspect_granules_uses_the_real_contract_keys(self):
+        # T21: the discovery pane's granule-inspection endpoint calls this
+        # tool directly (services/discovery_service.py) — proves the real
+        # MCP's response carries the keys that endpoint reads (`granules`,
+        # `count`) rather than only the fake fixture's mirrored shape.
+        aoi_result = await self._invoke("define_area_of_interest", location=_LOCATION)
+        aoi_handle = aoi_result["handle"]
+
+        search_result = await self._invoke("search_datasets", query=_QUERY, filters=None)
+        datasets = search_result.get("datasets") or search_result.get("results") or []
+        self.assertTrue(datasets, f"search_datasets returned no results for {_QUERY!r}: {search_result}")
+        dataset_handle = datasets[0]["handle"] if "handle" in datasets[0] else datasets[0]["dataset_handle"]
+
+        result = await self._invoke(
+            "inspect_granules",
+            dataset_handle=dataset_handle, aoi_handle=aoi_handle, time_range=_TIME_RANGE, limit=10,
+        )
+        self.assertIn("granules", result, f"inspect_granules missing 'granules': {result}")
+        self.assertIn("count", result, f"inspect_granules missing 'count': {result}")
+        self.assertEqual(result["count"], len(result["granules"]))
+        if result["granules"]:
+            granule = result["granules"][0]
+            self.assertIn("size_mb", granule, f"granule record missing 'size_mb': {granule}")
+            self.assertIn("time_start", granule, f"granule record missing 'time_start': {granule}")
+
     async def _await_terminal_status(self, job_handle: str) -> dict:
         import asyncio
 
