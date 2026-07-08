@@ -121,6 +121,26 @@ class ParseToolResultClassifierTests(unittest.TestCase):
 
         self.assertEqual(ctx.exception.category, "user_input")
 
+    def test_adapter_error_calling_tool_prefix_is_stripped_before_classification(self):
+        # Live-verified 2026-07-08 against the real MCP: langchain_mcp_adapters
+        # wraps a tool-raised exception's text in "Error calling tool 'X': "
+        # before it ever reaches this classifier — that boilerplate carries
+        # no information a researcher needs and must not leak into the
+        # user-facing message or defeat the known-prefix prose match.
+        from earthdata_mcp.results import MCPToolError, parse_tool_result
+
+        raw = (
+            "Error calling tool 'define_area_of_interest': Neither Nominatim nor "
+            "USGS WBD found results for location 'zzzzqqqq nowhere'"
+        )
+
+        with self.assertRaises(MCPToolError) as ctx:
+            parse_tool_result(raw)
+
+        self.assertEqual(ctx.exception.category, "user_input")
+        self.assertNotIn("Error calling tool", ctx.exception.message)
+        self.assertIn("zzzzqqqq nowhere", ctx.exception.message)
+
     def test_unknown_garbage_string_classifies_as_contract_never_crashes(self):
         from earthdata_mcp.results import MCPToolError, parse_tool_result
 
@@ -190,6 +210,30 @@ class CallToolConnectionFailureTests(unittest.IsolatedAsyncioTestCase):
 
             async def ainvoke(self, kwargs):
                 raise McpError(ErrorData(code=-32000, message="session closed"))
+
+        with self.assertRaises(MCPToolError) as ctx:
+            await call_tool(_BrokenTool(), {"query": "no2"})
+
+        self.assertEqual(ctx.exception.category, "provider_unavailable")
+
+    async def test_connect_error_wrapped_in_an_exception_group_classifies_as_provider_unavailable(self):
+        # Live-verified 2026-07-08 (MCP stopped mid-session): the
+        # streamable-HTTP transport's anyio task groups wrap the actual
+        # httpx.ConnectError in a BaseExceptionGroup rather than raising it
+        # bare — a bare `except httpcore.ConnectError` never catches this
+        # and the request 500s with no body. This is the regression test.
+        import httpx
+
+        from earthdata_mcp.results import MCPToolError, call_tool
+
+        class _BrokenTool:
+            name = "search_datasets"
+
+            async def ainvoke(self, kwargs):
+                raise ExceptionGroup(
+                    "unhandled errors in a TaskGroup",
+                    [httpx.ConnectError("[Errno -5] No address associated with hostname")],
+                )
 
         with self.assertRaises(MCPToolError) as ctx:
             await call_tool(_BrokenTool(), {"query": "no2"})

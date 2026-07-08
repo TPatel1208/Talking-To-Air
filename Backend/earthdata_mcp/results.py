@@ -65,6 +65,12 @@ class MCPToolError(Exception):
 
 _VALIDATION_ERROR_RE = re.compile(r"^\s*\d+\s+validation error(s)?\s+for\b", re.IGNORECASE)
 
+# langchain_mcp_adapters wraps a tool-raised exception's text in this prefix
+# (live-verified 2026-07-08 against the real MCP: "Error calling tool
+# 'define_area_of_interest': Neither Nominatim..."). It carries no
+# information a researcher needs — strip it before matching or surfacing.
+_ADAPTER_ERROR_PREFIX_RE = re.compile(r"^Error calling tool '[^']*':\s*")
+
 # Known ValueError prefixes/substrings raised by the MCP's area/coverage/
 # retrieval tools (harmony-retrieval-mcp/src/earthdata_mcp/tools/area.py,
 # providers/base.py) — a researcher-fixable input, so these classify as
@@ -72,7 +78,13 @@ _VALIDATION_ERROR_RE = re.compile(r"^\s*\d+\s+validation error(s)?\s+for\b", re.
 # (a new raise site the MCP adds later) still classifies safely as contract
 # instead of crashing (T18 Implementation Decisions: additive-safe).
 _USER_INPUT_PATTERNS: tuple[tuple[str, str], ...] = (
-    ("found no results for location", "Try a more specific location name."),
+    # Both the single-source ("Nominatim found no results for location ...")
+    # and the fallback-exhausted ("Neither Nominatim nor USGS WBD found
+    # results for location ...") messages share this substring — live-
+    # verified 2026-07-07/08 against the real MCP (F6), which also wraps the
+    # tool's raised message in an adapter-added "Error calling tool 'X': "
+    # prefix this backend never anchors against.
+    ("results for location", "Try a more specific location name."),
     ("location must be provided", "Provide a location."),
     (
         "Ambiguous location",
@@ -128,7 +140,7 @@ def _classify_text(text: str) -> dict:
 
 
 def _classify_prose(text: str) -> MCPToolError:
-    stripped = text.strip()
+    stripped = _ADAPTER_ERROR_PREFIX_RE.sub("", text.strip(), count=1)
 
     if _VALIDATION_ERROR_RE.match(stripped):
         # FastMCP rejected the call's own parameters — always a bug on this
@@ -181,17 +193,25 @@ async def call_tool(tool: Any, kwargs: dict) -> Any:
     returned as tool content (content only carries MCP-side ``isError``
     results, which ``parse_tool_result`` classifies separately) — this is
     the seam that catches it so no consumer ever sees a bare
-    ``httpcore.ConnectError``/``McpError``.
+    ``httpcore``/``httpx``/``mcp`` transport exception.
+
+    Live-verified 2026-07-08 (MCP stopped mid-session): the streamable-HTTP
+    transport's structured concurrency (anyio task groups) wraps the actual
+    ``httpx.ConnectError``/``httpcore.ConnectError`` in a ``BaseExceptionGroup``
+    rather than raising it bare — ``except*`` unwraps that regardless of
+    whether the underlying exception arrived grouped or not (PEP 654).
     """
     import httpcore
+    import httpx
     from mcp.shared.exceptions import McpError
 
     try:
         return await tool.ainvoke(kwargs)
-    except (httpcore.ConnectError, McpError) as exc:
+    except* (httpcore.ConnectError, httpx.ConnectError, httpx.ConnectTimeout, McpError) as eg:
+        detail = eg.exceptions[0] if eg.exceptions else eg
         raise _log(MCPToolError(
             CATEGORY_PROVIDER_UNAVAILABLE,
             "The satellite data layer is temporarily unavailable.",
             suggestion="Try again in a moment.",
-            raw_preview=str(exc)[:300],
-        )) from exc
+            raw_preview=str(detail)[:300],
+        )) from eg
