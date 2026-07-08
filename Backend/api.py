@@ -46,7 +46,13 @@ from services.chart_service import ChartService
 from services.export_service import ExportService
 from services.history_service import HistoryService
 from services.data_download_service import DataDownloadError, export_converted, iter_file_chunks
-from services.discovery_service import check_coverage, describe_dataset, preview_dataset, search_datasets
+from services.discovery_service import (
+    check_coverage,
+    describe_dataset,
+    inspect_granules,
+    preview_dataset,
+    search_datasets,
+)
 from services.jobs_service import cancel_job, list_jobs
 from services.methods_export_service import build_methods_markdown
 from services.provenance_service import get_citations, get_lineage
@@ -230,6 +236,12 @@ class DiscoveryPreviewRequest(BaseModel):
 class DiscoveryCoverageRequest(BaseModel):
     location: str = Field(min_length=1, max_length=200)
     time_range: str = Field(min_length=1, max_length=200)
+
+
+class DiscoveryGranulesRequest(BaseModel):
+    location: str = Field(min_length=1, max_length=200)
+    time_range: str = Field(min_length=1, max_length=200)
+    limit: Optional[int] = Field(default=None, ge=1)
 
 
 class TokenResponse(BaseModel):
@@ -522,6 +534,13 @@ async def discovery_coverage_endpoint(dataset_handle: DatasetHandle, req: Discov
     tools = _earthdata_tools(request)
     with user_id_context(request.state.current_user.id):
         return await check_coverage(dataset_handle, req.location, req.time_range, tools)
+
+
+@app.post("/discovery/dataset/{dataset_handle}/granules")
+async def discovery_granules_endpoint(dataset_handle: DatasetHandle, req: DiscoveryGranulesRequest, request: Request):
+    tools = _earthdata_tools(request)
+    with user_id_context(request.state.current_user.id):
+        return await inspect_granules(dataset_handle, req.location, req.time_range, req.limit, tools)
 
 
 def _safe_artifact_filename(value: str) -> str:
