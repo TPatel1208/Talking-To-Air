@@ -11,17 +11,28 @@ Yields:
 """
 
 import asyncio
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
+from config.workflow_stages import STAGE_WORKING
 from utils.message_utils import flatten_text_content
 
-_status_emitter: ContextVar[Optional[Callable[[str], None]]] = ContextVar(
+logger = logging.getLogger(__name__)
+
+# The heartbeat threshold is "order of ten seconds" per the PRD — a watchdog
+# alongside stream_response's queue consumer checks idle time on this cadence
+# and emits a "still working" status once idle crosses the threshold.
+HEARTBEAT_INTERVAL_SECONDS = 10.0
+HEARTBEAT_CHECK_SECONDS = 1.0
+
+_status_emitter: ContextVar[Optional[Callable[..., None]]] = ContextVar(
     "status_emitter",
     default=None,
 )
+_turn_started_at: ContextVar[Optional[float]] = ContextVar("turn_started_at", default=None)
 _job_progress_emitter: ContextVar[Optional[Callable[[dict], None]]] = ContextVar(
     "job_progress_emitter",
     default=None,
@@ -35,11 +46,32 @@ _current_user_id: ContextVar[Optional[str]] = ContextVar("current_user_id", defa
 _call_budget: ContextVar[Optional[dict]] = ContextVar("call_budget", default=None)
 
 
-def emit_status(message: str) -> None:
-    """Emit a user-visible progress message for the active SSE stream."""
+def emit_status(message: str, *, stage: str | None = None, detail: Any = None) -> None:
+    """Emit a user-visible progress message for the active SSE stream.
+
+    ``stage``/``detail`` (T19) are additive structured fields — a small
+    closed vocabulary (config.workflow_stages) driving the frontend's
+    workflow strip and the eval's stage-sequence assertions. Omitting them
+    keeps producing the bare ``{"message": ...}`` shape earlier callers and
+    tests already depend on. A stage emission is also logged (``stage_
+    reached``) with the current thread and this turn's elapsed time, so
+    per-stage latency is measurable from production traffic.
+    """
     emitter = _status_emitter.get()
     if emitter and message:
-        emitter(str(message))
+        emitter(str(message), stage=stage, detail=detail)
+    if stage:
+        started = _turn_started_at.get()
+        elapsed = None
+        if started is not None:
+            try:
+                elapsed = round(asyncio.get_running_loop().time() - started, 3)
+            except RuntimeError:
+                elapsed = None
+        logger.info(
+            "stage_reached",
+            extra={"_stage": stage, "_thread_id": current_thread_id(), "_elapsed_seconds": elapsed},
+        )
 
 
 def emit_job_progress(
@@ -148,24 +180,58 @@ async def stream_response(
     parent_emitter = _status_emitter.get()
     parent_job_progress_emitter = _job_progress_emitter.get()
     parent_chart_emitter = _chart_emitter.get()
+    # Last-activity clock the heartbeat watchdog polls (below) — touched by
+    # every real event this turn publishes, including a bubbled event from a
+    # nested stream_response call, so the heartbeat only ever fires during
+    # genuine silence, never while a nested sub-agent is itself narrating.
+    last_activity = {"t": loop.time()}
 
-    def publish_status(message: str) -> None:
+    def _touch() -> None:
+        last_activity["t"] = loop.time()
+
+    def publish_status(message: str, *, stage: str | None = None, detail: Any = None) -> None:
+        _touch()
         if parent_emitter:
-            parent_emitter(message)
-        loop.call_soon_threadsafe(queue.put_nowait, ("status", {"message": message}))
+            parent_emitter(message, stage=stage, detail=detail)
+        payload: dict[str, Any] = {"message": message}
+        if stage is not None:
+            payload["stage"] = stage
+        if detail is not None:
+            payload["detail"] = detail
+        loop.call_soon_threadsafe(queue.put_nowait, ("status", payload))
 
     def publish_job_progress(data: dict) -> None:
+        _touch()
         if parent_job_progress_emitter:
             parent_job_progress_emitter(data)
         loop.call_soon_threadsafe(queue.put_nowait, ("job_progress", data))
 
     def publish_chart_payload(data: dict) -> None:
+        _touch()
         if parent_chart_emitter:
             parent_chart_emitter(data)
         loop.call_soon_threadsafe(queue.put_nowait, ("chart_payload", data))
 
     async def publish(event_type: str, data) -> None:
+        _touch()
         await queue.put((event_type, data))
+
+    async def watchdog() -> None:
+        # Owned by the streaming layer, not the tools (Implementation
+        # Decisions): stalls a chat turn currently narrates nothing for
+        # minutes at a time (46-55s provider rate-limit sleeps, live-
+        # verified 2026-07-07) — this covers that silence with an honest,
+        # observation-only "still working" status once idle crosses the
+        # threshold, and stops as soon as _touch() sees a real event.
+        while True:
+            await asyncio.sleep(HEARTBEAT_CHECK_SECONDS)
+            idle = loop.time() - last_activity["t"]
+            if idle >= HEARTBEAT_INTERVAL_SECONDS:
+                publish_status(
+                    f"Still working — {int(idle)}s elapsed",
+                    stage=STAGE_WORKING,
+                    detail=int(idle),
+                )
 
     async def produce() -> None:
         # Track whether messages stream emitted any text this turn.
@@ -241,7 +307,15 @@ async def stream_response(
     call_budget_token = None
     if _call_budget.get() is None:
         call_budget_token = _call_budget.set({})
+    # Same "set once, outermost wins" pattern as call_budget above — a
+    # nested stream_response call (run_satellite's inner stream) reuses the
+    # outer turn's start time, so stage_reached's elapsed is measured
+    # against the whole request, not just the sub-agent's own slice of it.
+    turn_started_token = None
+    if _turn_started_at.get() is None:
+        turn_started_token = _turn_started_at.set(loop.time())
     producer = asyncio.create_task(produce())
+    watchdog_task = asyncio.create_task(watchdog())
     try:
         while True:
             item = await queue.get()
@@ -259,5 +333,9 @@ async def stream_response(
         _current_user_id.reset(user_token)
         if call_budget_token is not None:
             _call_budget.reset(call_budget_token)
+        if turn_started_token is not None:
+            _turn_started_at.reset(turn_started_token)
         if not producer.done():
             producer.cancel()
+        if not watchdog_task.done():
+            watchdog_task.cancel()
