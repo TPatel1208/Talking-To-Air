@@ -175,6 +175,15 @@ class E2ETaskStructureTests(unittest.TestCase):
         self.assertIsNotNone(by_category["e2e_ground"].date_check)
         self.assertIsNone(by_category["e2e_satellite"].date_check)
 
+    def test_only_the_satellite_task_carries_a_stage_sequence_check(self):
+        """T19: dead-chat as a command-detectable regression — only the
+        satellite e2e task exercises the composites/handle tools that
+        narrate stages; ground and cross-source don't need this check."""
+        by_category = {task.category: task for task in self._tasks()}
+
+        self.assertIsNotNone(by_category["e2e_satellite"].stage_check)
+        self.assertIsNone(by_category["e2e_ground"].stage_check)
+
 
 @unittest.skipIf(
     any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
@@ -206,6 +215,51 @@ class RelativeDateCheckTests(unittest.TestCase):
         from eval_harness import _dispatched_correct_relative_date
 
         self.assertFalse(_dispatched_correct_relative_date([]))
+
+
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
+    "eval harness test dependencies are not installed",
+)
+class StageSequenceCheckTests(unittest.TestCase):
+    """T19: pure logic over a captured/fabricated joined SSE string — no
+    live model needed to prove the scoring logic itself is correct; the
+    live enforcement only runs under -m eval (EvalSuiteTests below)."""
+
+    def test_extracts_stage_keys_from_status_events_in_order(self):
+        from eval_harness import _stage_sequence
+
+        joined = (
+            'event: status\ndata: {"message": "Searching...", "stage": "search"}\n\n'
+            'event: tool_call\ndata: {"name": "search_datasets", "args": {}}\n\n'
+            'event: status\ndata: {"message": "Resolving...", "stage": "aoi"}\n\n'
+        )
+
+        self.assertEqual(_stage_sequence(joined), ["search", "aoi"])
+
+    def test_covers_full_satellite_workflow_accepts_the_canonical_sequence_with_extra_stages(self):
+        from eval_harness import _covers_full_satellite_workflow
+
+        stage_sequence = [
+            "search", "aoi", "coverage", "coverage", "estimate", "submit",
+            "progress", "progress", "open", "render", "render",
+        ]
+
+        self.assertTrue(_covers_full_satellite_workflow(stage_sequence))
+
+    def test_covers_full_satellite_workflow_rejects_a_workflow_missing_a_stage(self):
+        from eval_harness import _covers_full_satellite_workflow
+
+        stage_sequence = ["search", "aoi", "estimate", "submit", "progress", "open", "render"]
+
+        self.assertFalse(_covers_full_satellite_workflow(stage_sequence))
+
+    def test_covers_full_satellite_workflow_rejects_out_of_order_stages(self):
+        from eval_harness import _covers_full_satellite_workflow
+
+        stage_sequence = ["aoi", "search", "coverage", "estimate", "submit", "progress", "open", "render"]
+
+        self.assertFalse(_covers_full_satellite_workflow(stage_sequence))
 
 
 @unittest.skipIf(

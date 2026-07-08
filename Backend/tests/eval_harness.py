@@ -84,6 +84,31 @@ def _always_valid(envelope, tool_calls: list[str]) -> bool:
     return envelope is not None
 
 
+_STAGE_KEY_PATTERN = re.compile(r'"stage":\s*"([^"]+)"')
+
+# The canonical satellite-workflow stage order (T19 Testing Decisions) —
+# extra/duplicate stages (e.g. two "coverage" emissions, one per await_
+# retrieval poll) are fine; contains_subsequence only requires these eight
+# to appear in order, not contiguously.
+_FULL_SATELLITE_WORKFLOW_STAGES = [
+    "search", "aoi", "coverage", "estimate", "submit", "progress", "open", "render",
+]
+
+
+def _stage_sequence(joined: str) -> list[str]:
+    """The ordered list of stage keys named in a joined SSE event stream's
+    status events (T19) — e.g. 'event: status\\ndata: {..., "stage": "search"}'."""
+    return _STAGE_KEY_PATTERN.findall(joined)
+
+
+def _covers_full_satellite_workflow(stage_sequence: list[str]) -> bool:
+    """True if ``stage_sequence`` contains the canonical satellite-workflow
+    stage order as a subsequence — makes a workflow that goes silent after
+    the pre-dispatch phase (2026-07-07 live test) a command-detectable
+    regression rather than a UX issue discovered in a demo."""
+    return contains_subsequence(stage_sequence, _FULL_SATELLITE_WORKFLOW_STAGES)
+
+
 def contains_subsequence(trace: list[str], expected: list[str]) -> bool:
     """True if ``expected`` appears in ``trace``, in order, not necessarily
     contiguously — e.g. ["search_datasets", "safe_retrieve"] matches a trace
@@ -118,6 +143,7 @@ class EvalTaskResult:
 
 
 DateCheck = Callable[[list[tuple[str, dict]]], bool]
+StageCheck = Callable[[list[str]], bool]
 
 
 @dataclass
@@ -128,7 +154,9 @@ class E2ETask:
     agent(s) ran (``expects_ground``/``expects_satellite``) plus a
     non-error terminal answer; ``date_check`` is an optional extra
     assertion over EPA AQS calls captured during the run (see
-    _dispatched_correct_relative_date)."""
+    _dispatched_correct_relative_date); ``stage_check`` (T19) is an
+    optional extra assertion over the ordered stage keys narrated during
+    the run (see _stage_sequence/_covers_full_satellite_workflow)."""
     name: str
     category: str
     prompt: str
@@ -137,6 +165,7 @@ class E2ETask:
     expects_satellite: bool = False
     aqs_get: AqsGetHandler | None = None
     date_check: DateCheck | None = None
+    stage_check: StageCheck | None = None
 
 
 def _standard_handlers(
@@ -542,6 +571,7 @@ def build_e2e_tasks(volume) -> list[E2ETask]:
                 **volume_lifecycle_handlers(),
             },
             expects_satellite=True,
+            stage_check=_covers_full_satellite_workflow,
         ),
         # ── Cross-source (supervisor path, both agents) ──────────────────
         E2ETask(
@@ -753,8 +783,9 @@ async def run_e2e_task(task: E2ETask, volume, *, model: str | None = None) -> Ev
         agents_ok = agents_ok and "SATELLITE" in consulted
 
     date_ok = task.date_check(aqs_calls) if task.date_check is not None else True
+    stage_ok = task.stage_check(_stage_sequence(joined)) if task.stage_check is not None else True
     within_budget = elapsed_seconds <= CATEGORY_BUDGETS[task.category]
-    passed = non_error_done and agents_ok and date_ok and within_budget
+    passed = non_error_done and agents_ok and date_ok and stage_ok and within_budget
 
     # expected_tool_calls is intentionally empty — e2e tasks are scored on
     # which agent(s) ran (agents_ok) and outcome, not an MCP tool-call
