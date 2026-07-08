@@ -183,5 +183,39 @@ class OpenHandleRecoveryExhaustedTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls["rematerialize"], 1)
 
 
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
+    "open_handle test dependencies are not installed",
+)
+class OpenHandleClassifiedErrorTests(unittest.IsolatedAsyncioTestCase):
+    """T18: a classified MCP outcome (e.g. a contract-shaped tool failure)
+    is a distinct thing from OpenHandleError's own eviction-recovery
+    failure — open_handle() must let it propagate as MCPToolError, not
+    swallow or relabel it, so a caller can tell "the handle couldn't be
+    recovered" apart from "the MCP call itself was malformed"."""
+
+    async def test_open_handle_lets_a_classified_mcp_error_propagate_distinct_from_open_handle_error(self):
+        from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
+        from earthdata_mcp.client import load_raw_mcp_tools
+        from earthdata_mcp.results import MCPToolError
+        from config.settings import Settings
+        from services.open_handle import OpenHandleError, open_handle
+
+        async def export_result(handle, workspace_id="default"):
+            raise ValueError("a shape the classifier has never seen before")
+
+        server = FakeEarthdataMCPServer(build_fake_mcp({"export_result": export_result}))
+        server.start()
+        self.addCleanup(server.stop)
+        settings = Settings(earthdata_mcp_url=server.url, earthdata_mcp_token=None)
+        tools = await load_raw_mcp_tools(settings)
+
+        with self.assertRaises(MCPToolError) as ctx:
+            await open_handle("obs_1", tools)
+
+        self.assertEqual(ctx.exception.category, "contract")
+        self.assertNotIsInstance(ctx.exception, OpenHandleError)
+
+
 if __name__ == "__main__":
     unittest.main()
