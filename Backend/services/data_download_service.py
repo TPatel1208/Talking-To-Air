@@ -24,9 +24,24 @@ class DataDownloadError(RuntimeError):
 
 
 async def export_converted(handle: str, target_format: str, tools: dict[str, BaseTool]) -> dict[str, Any]:
-    """Convert ``handle`` to ``target_format`` via the MCP; return its export descriptor."""
-    raw = await tools["convert_format"].ainvoke({"handle": handle, "target_format": target_format})
-    result = parse_tool_result(raw)
+    """Convert ``handle`` to ``target_format`` via the MCP, then resolve the
+    converted result's storage URI.
+
+    ``convert_format`` mints a new ``cube_`` handle for the converted result
+    (real contract: ``{handle, status, output_format, operation}``) but never
+    returns a ``storage_uri`` itself — that comes from ``export_result`` on
+    the new handle, same as any other materialized handle
+    (services/open_handle.py's pattern).
+    """
+    convert_raw = await tools["convert_format"].ainvoke({"source_handle": handle, "output_format": target_format})
+    convert_result = parse_tool_result(convert_raw)
+    if convert_result.get("status") != "ready":
+        raise DataDownloadError(
+            convert_result.get("message") or f"Could not convert handle '{handle}' to {target_format}."
+        )
+
+    export_raw = await tools["export_result"].ainvoke({"handle": convert_result["handle"]})
+    result = parse_tool_result(export_raw)
     if result.get("status") != "ready":
         raise DataDownloadError(
             result.get("message") or f"Could not convert handle '{handle}' to {target_format}."

@@ -207,8 +207,8 @@ def build_fake_mcp(handlers: dict[str, Handler] | None = None, exclude: tuple[st
         return await h("cancel_retrieval")(job_handle=job_handle, workspace_id=workspace_id)
 
     @mcp.tool(name="convert_format")
-    async def convert_format(handle: str, target_format: str, workspace_id: str = "default") -> dict:
-        return await h("convert_format")(handle=handle, target_format=target_format, workspace_id=workspace_id)
+    async def convert_format(source_handle: str, output_format: str, workspace_id: str = "default") -> dict:
+        return await h("convert_format")(source_handle=source_handle, output_format=output_format, workspace_id=workspace_id)
 
     @mcp.tool(name="list_workspace")
     async def list_workspace(workspace_id: str = "default") -> dict:

@@ -67,7 +67,15 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
             fixture.write(b"fake-netcdf-bytes")
         self.addCleanup(os.unlink, self.fixture_path)
 
-        async def convert_format(handle, target_format, workspace_id):
+        # Real contract (T17 live-verified): convert_format takes
+        # source_handle/output_format (not handle/target_format) and mints a
+        # new cube_ handle — it never returns storage_uri itself. Resolving
+        # bytes requires a follow-up export_result on that new handle, same
+        # as any other materialized handle (services/open_handle.py).
+        async def convert_format(source_handle, output_format, workspace_id):
+            return {"handle": "cube_1", "status": "ready", "output_format": output_format, "operation": "convert_format"}
+
+        async def export_result(handle, workspace_id):
             return {
                 "handle": handle,
                 "status": "ready",
@@ -79,6 +87,7 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
             "get_provenance": get_provenance,
             "cite_dataset": cite_dataset,
             "convert_format": convert_format,
+            "export_result": export_result,
         }))
         self.server.start()
         self.addCleanup(self.server.stop)
@@ -194,8 +203,8 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
         from config.settings import Settings
         from utils.streaming import current_user_id
 
-        async def unsupported_convert_format(handle, target_format, workspace_id):
-            return {"handle": handle, "status": "unsupported", "message": "NetCDF export is not available for this handle."}
+        async def unsupported_convert_format(source_handle, output_format, workspace_id):
+            return {"handle": source_handle, "status": "unsupported", "message": "NetCDF export is not available for this handle."}
 
         server = FakeEarthdataMCPServer(build_fake_mcp({"convert_format": unsupported_convert_format}))
         server.start()

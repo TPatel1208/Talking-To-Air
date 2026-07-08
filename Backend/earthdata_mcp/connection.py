@@ -20,6 +20,16 @@ incompatible  -- the MCP answered and every required tool is present, but at
                  this backend sends. A retry is still scheduled (a redeploy
                  may fix it), and the mismatch is logged at CRITICAL.
 
+The loop never stops watching once ready: it re-verifies on a heartbeat
+interval, so a mid-session MCP outage (not just a down-at-boot one) flips
+the state away from ready — otherwise ``/health`` would keep lying "ready"
+and every consumer gated on ``.state`` (discovery/jobs/provenance endpoints,
+run_satellite) would let a bare connection failure through instead of the
+structured unavailable answer. ``on_ready`` fires only on a genuine
+transition into ready (boot or recovery), never on a heartbeat that finds
+the MCP still healthy, so a steady-state loop doesn't rebuild the satellite
+agent every interval for nothing.
+
 Boot-time misconfiguration (a malformed URL, a missing required setting) is
 not this module's concern — that still fails loudly from
 config.settings.Settings.validate_startup before the manager ever starts.
@@ -91,6 +101,7 @@ class EarthdataMCPConnectionManager:
         sleep: Sleeper = asyncio.sleep,
         initial_backoff_seconds: float = 1.0,
         max_backoff_seconds: float = 60.0,
+        heartbeat_interval_seconds: float = 30.0,
     ):
         self._settings = settings
         self._user_id_getter = user_id_getter
@@ -99,6 +110,7 @@ class EarthdataMCPConnectionManager:
         self._sleep = sleep
         self._initial_backoff = initial_backoff_seconds
         self._max_backoff = max_backoff_seconds
+        self._heartbeat_interval = heartbeat_interval_seconds
         self._state = STATE_CONNECTING
         self._tools: dict[str, BaseTool] | None = None
         self._task: asyncio.Task | None = None
@@ -133,6 +145,10 @@ class EarthdataMCPConnectionManager:
         self._task = None
 
     async def _connect_loop(self) -> None:
+        """Runs for the manager's whole lifetime (until ``stop()`` cancels
+        it) — connect/reconnect with backoff while not ready, then heartbeat
+        on ``_heartbeat_interval`` while ready so a later outage is detected
+        too, not just a down-at-boot one."""
         backoff = self._initial_backoff
         while True:
             try:
@@ -153,12 +169,15 @@ class EarthdataMCPConnectionManager:
             tools = bind_workspace(raw, self._user_id_getter)
             # on_ready runs BEFORE the state flips to ready, so no caller can
             # ever observe state == ready with a stale/empty consumer (e.g.
-            # api.py's satellite agent) still in place.
-            if self._on_ready is not None:
+            # api.py's satellite agent) still in place. It fires only on a
+            # genuine transition into ready (boot or recovery) — not on a
+            # heartbeat that finds an already-ready MCP still healthy.
+            if self._state != STATE_READY and self._on_ready is not None:
                 await self._on_ready(tools)
             self._tools = tools
             self._transition(STATE_READY)
-            return
+            backoff = self._initial_backoff
+            await self._sleep(self._heartbeat_interval)
 
     def _transition(self, new_state: str, *, detail: Any = None) -> None:
         old_state = self._state

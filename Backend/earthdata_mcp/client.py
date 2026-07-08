@@ -87,7 +87,7 @@ REQUIRED_TOOL_PARAMS: dict[str, tuple[str, ...]] = {
     "list_workspace": ("workspace_id",),
     "cancel_retrieval": ("job_handle", "workspace_id"),
     "align": ("source_handles", "workspace_id"),
-    "convert_format": ("handle", "target_format", "workspace_id"),
+    "convert_format": ("source_handle", "output_format", "workspace_id"),
     "get_retrieval_status": ("job_handle", "workspace_id"),
     "retrieve_timeseries": ("workspace_id",),
     "cite_dataset": ("dataset_handle", "workspace_id"),

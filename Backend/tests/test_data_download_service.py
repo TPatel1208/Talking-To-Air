@@ -48,7 +48,17 @@ class IterConvertedChunksTests(unittest.IsolatedAsyncioTestCase):
             fixture_path = fixture.name
         self.addCleanup(os.unlink, fixture_path)
 
-        async def convert_format(handle, target_format, workspace_id):
+        # Real contract (T17 live-verified): convert_format takes
+        # source_handle/output_format (not handle/target_format) and mints a
+        # new cube_ handle — it never returns storage_uri itself. Resolving
+        # bytes requires a follow-up export_result on that new handle, same
+        # as any other materialized handle (services/open_handle.py's
+        # pattern).
+        async def convert_format(source_handle, output_format, workspace_id):
+            return {"handle": "cube_1", "status": "ready", "output_format": output_format, "operation": "convert_format"}
+
+        async def export_result(handle, workspace_id):
+            self.assertEqual(handle, "cube_1")
             return {
                 "handle": handle,
                 "status": "ready",
@@ -56,7 +66,7 @@ class IterConvertedChunksTests(unittest.IsolatedAsyncioTestCase):
                 "media_type": "netcdf",
             }
 
-        tools = await self._tools({"convert_format": convert_format})
+        tools = await self._tools({"convert_format": convert_format, "export_result": export_result})
 
         chunks = [chunk async for chunk in iter_converted_chunks("obs_1", "netcdf", tools)]
         content = b"".join(chunks)
@@ -66,12 +76,29 @@ class IterConvertedChunksTests(unittest.IsolatedAsyncioTestCase):
     async def test_raises_with_the_mcps_message_when_conversion_is_not_ready(self):
         from services.data_download_service import DataDownloadError, iter_converted_chunks
 
-        async def convert_format(handle, target_format, workspace_id):
-            return {"handle": handle, "status": "unsupported", "message": "NetCDF export is not available for this handle."}
+        async def convert_format(source_handle, output_format, workspace_id):
+            return {"handle": source_handle, "status": "unsupported", "message": "NetCDF export is not available for this handle."}
 
         tools = await self._tools({"convert_format": convert_format})
 
         with self.assertRaisesRegex(DataDownloadError, "NetCDF export is not available"):
+            async for _ in iter_converted_chunks("obs_1", "netcdf", tools):
+                pass
+
+    async def test_raises_with_the_mcps_message_when_the_converted_export_is_not_ready(self):
+        # convert_format itself can succeed (mint the cube_ handle) while the
+        # follow-up export_result still reports pending/expired.
+        from services.data_download_service import DataDownloadError, iter_converted_chunks
+
+        async def convert_format(source_handle, output_format, workspace_id):
+            return {"handle": "cube_1", "status": "ready", "output_format": output_format, "operation": "convert_format"}
+
+        async def export_result(handle, workspace_id):
+            return {"handle": handle, "status": "pending", "message": "Conversion is still processing."}
+
+        tools = await self._tools({"convert_format": convert_format, "export_result": export_result})
+
+        with self.assertRaisesRegex(DataDownloadError, "still processing"):
             async for _ in iter_converted_chunks("obs_1", "netcdf", tools):
                 pass
 

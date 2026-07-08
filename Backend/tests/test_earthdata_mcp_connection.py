@@ -16,13 +16,23 @@ import os
 import sys
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 REQUIRED_MODULES = ["langchain_core"]
+
+
+async def _yielding_sleep(_seconds) -> None:
+    """A fake ``sleep`` that ignores the requested duration but still hands
+    control back to the event loop (unlike a bare ``AsyncMock()``, whose
+    awaited call resolves without ever suspending). The connect loop now runs
+    for the manager's whole lifetime — heartbeating after reaching ready, not
+    just returning — so every test that starts it needs a sleep that
+    genuinely yields, or the loop live-locks the event loop and the test's
+    own poll task never gets a turn to observe a state change."""
+    await asyncio.sleep(0)
 
 
 def _fake_tool(name: str, params: tuple[str, ...]):
@@ -89,7 +99,7 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
             return tools
 
         manager = EarthdataMCPConnectionManager(
-            settings=object(), user_id_getter=lambda: "17", loader=loader, sleep=AsyncMock(),
+            settings=object(), user_id_getter=lambda: "17", loader=loader, sleep=_yielding_sleep,
         )
         self.assertEqual(manager.state, STATE_CONNECTING)
 
@@ -128,6 +138,7 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
 
         async def fake_sleep(seconds):
             sleeps.append(seconds)
+            await asyncio.sleep(0)
 
         manager = EarthdataMCPConnectionManager(
             settings=object(), user_id_getter=lambda: "1", loader=flaky_loader, sleep=fake_sleep,
@@ -136,8 +147,16 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
         manager.start()
         await asyncio.wait_for(_wait_for_state(manager, STATE_READY), timeout=1)
 
-        self.assertEqual(attempts["count"], 3)
-        self.assertEqual(len(sleeps), 2)  # two failed attempts before success
+        # At least the 3 attempts needed to reach ready — the loop keeps
+        # heartbeating (and thus keeps calling the loader) after that, and
+        # the fake sleep's immediate yield lets several such cycles race
+        # ahead before this test observes ready, so an exact count here
+        # would be asserting on that race rather than the retry behavior.
+        self.assertGreaterEqual(attempts["count"], 3)
+        # First two sleeps are the two failed attempts' backoff (1.0, then
+        # 2.0 after doubling) — this is what proves the retry/backoff
+        # behavior, regardless of how many heartbeat sleeps follow.
+        self.assertEqual(sleeps[:2], [1.0, 2.0])
         await manager.stop()
 
     async def test_a_schema_mismatch_lands_the_manager_in_incompatible(self):
@@ -184,7 +203,7 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(set(ready_tools.keys()), {"search_datasets"})
 
         manager = EarthdataMCPConnectionManager(
-            settings=object(), user_id_getter=lambda: "1", loader=loader, on_ready=on_ready, sleep=AsyncMock(),
+            settings=object(), user_id_getter=lambda: "1", loader=loader, on_ready=on_ready, sleep=_yielding_sleep,
         )
 
         manager.start()
@@ -192,6 +211,81 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
         await manager.stop()
 
         self.assertNotEqual(observed_state_at_callback[0], STATE_READY)
+
+    async def test_on_ready_does_not_re_fire_on_a_healthy_heartbeat(self):
+        # T17: a steady-state loop must not rebuild the satellite agent every
+        # heartbeat — only a genuine transition into ready calls on_ready.
+        from earthdata_mcp.connection import EarthdataMCPConnectionManager, STATE_READY
+
+        tools = {"search_datasets": _fake_tool("search_datasets", ("query", "filters", "workspace_id"))}
+        on_ready_calls = []
+
+        async def loader(settings):
+            return tools
+
+        async def on_ready(ready_tools):
+            on_ready_calls.append(ready_tools)
+
+        manager = EarthdataMCPConnectionManager(
+            settings=object(), user_id_getter=lambda: "1", loader=loader, on_ready=on_ready, sleep=_yielding_sleep,
+        )
+
+        manager.start()
+        await asyncio.wait_for(_wait_for_state(manager, STATE_READY), timeout=1)
+        # The fake sleep ignores the heartbeat interval and yields
+        # immediately, so several heartbeat cycles pass in these few ticks.
+        for _ in range(10):
+            await asyncio.sleep(0)
+        await manager.stop()
+
+        self.assertEqual(len(on_ready_calls), 1)
+
+    async def test_detects_a_later_outage_and_recovers_without_a_restart(self):
+        # T17 story #5/#6: the manager must keep watching after boot — a
+        # mid-session MCP outage (not just a down-at-boot one) has to flip
+        # /health away from "ready", or every consumer gated on manager.state
+        # would let a bare connection failure through during that window
+        # (the exact "/health lies" bug this PRD's Problem Statement names).
+        from earthdata_mcp.connection import (
+            EarthdataMCPConnectionManager,
+            STATE_READY,
+            STATE_UNAVAILABLE,
+        )
+        from earthdata_mcp.client import EarthdataMCPUnavailableError
+
+        tools = {"search_datasets": _fake_tool("search_datasets", ("query", "filters", "workspace_id"))}
+        mcp_up = {"value": True}
+        on_ready_calls = []
+
+        async def flaky_loader(settings):
+            if mcp_up["value"]:
+                return tools
+            raise EarthdataMCPUnavailableError("connection refused")
+
+        async def on_ready(ready_tools):
+            on_ready_calls.append(ready_tools)
+
+        manager = EarthdataMCPConnectionManager(
+            settings=object(), user_id_getter=lambda: "1", loader=flaky_loader, on_ready=on_ready,
+            sleep=_yielding_sleep,
+        )
+
+        manager.start()
+        await asyncio.wait_for(_wait_for_state(manager, STATE_READY), timeout=1)
+        self.assertEqual(len(on_ready_calls), 1)
+
+        mcp_up["value"] = False
+        await asyncio.wait_for(_wait_for_state(manager, STATE_UNAVAILABLE), timeout=1)
+        with self.assertRaises(Exception):
+            manager.tools  # gated consumers must stop seeing the stale tools
+
+        mcp_up["value"] = True
+        await asyncio.wait_for(_wait_for_state(manager, STATE_READY), timeout=1)
+        await manager.stop()
+
+        # Recovery re-runs on_ready — a fresh connection may hold new tool
+        # objects, so consumers (e.g. the satellite agent) must rebuild too.
+        self.assertEqual(len(on_ready_calls), 2)
 
 
 async def _wait_for_state(manager, target_state) -> None:

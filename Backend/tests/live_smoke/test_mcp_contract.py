@@ -33,17 +33,30 @@ if BACKEND_DIR not in sys.path:
 
 pytestmark = pytest.mark.live_mcp
 
-_TERMINAL_STATUSES = {"materialized", "failed", "cancelled"}
-_POLL_INTERVAL_SECONDS = 2
-_POLL_MAX_ATTEMPTS = 30  # ~1 minute — a single small subset should finish well inside this.
+# Live-verified (T17) against the real MCP's jobs/state.py JobState enum:
+# ready/failed/expired/cancelled — NOT "materialized". This suite intentionally
+# does not reuse services/retrieval_composites.py's TERMINAL_STATUSES, which
+# still assumes "materialized" and never recognizes a real job's actual
+# terminal status; that mismatch is a separate, pre-existing production bug
+# this suite surfaced but does not fix (out of scope for T17 — see the final
+# assertion below for the specific fact this suite proves about it).
+_REAL_TERMINAL_STATUSES = {"ready", "failed", "expired", "cancelled"}
+_POLL_INTERVAL_SECONDS = 3
+# Live-verified (T17): a real Harmony-routed submit -> poll -> materialize
+# cycle for even a single small subset took ~85s end to end (Harmony's own
+# job polling, not just this backend) — 60 attempts at 3s gives ~3 minutes.
+_POLL_MAX_ATTEMPTS = 60
 
 # TEMPO NO2 over Houston in June 2024 is the same dataset/location/date this
 # repo's scripted eval (tests/eval_harness.py) already exercises successfully
-# against the real MCP — a known-good small window, not a guess.
+# against the real MCP — a known-good small window, not a guess. The variable
+# name is the real product variable (confirmed live via describe_dataset
+# against the actual TEMPO NO2 collection) — not the model-facing short name
+# the agent's prompt uses, since this suite calls the MCP tools directly.
 _QUERY = "TEMPO NO2"
 _LOCATION = "-95.6,29.5,-95.0,30.0"  # small bbox around Houston, TX
-_TIME_RANGE = "2024-06-01/2024-06-01"
-_VARIABLES = ["nitrogen_dioxide_tropospheric_column"]
+_TIME_RANGE = "2024-06-01/2024-06-02"
+_VARIABLES = ["product/vertical_column_troposphere"]
 
 
 def _mcp_url() -> str | None:
@@ -104,8 +117,8 @@ class LiveMCPContractTests(unittest.IsolatedAsyncioTestCase):
         obs_handle = retrieve_result["obs_handle"]
 
         status = await self._await_terminal_status(job_handle)
-        if status.get("status") != "materialized":
-            self.skipTest(f"retrieval job did not materialize (status={status}); contract keys already proven above")
+        if status.get("status") != "ready":
+            self.skipTest(f"retrieval job did not become ready (status={status}); contract keys already proven above")
 
         export_result = await self._invoke("export_result", handle=obs_handle)
         self.assertEqual(export_result.get("status"), "ready")
@@ -116,7 +129,7 @@ class LiveMCPContractTests(unittest.IsolatedAsyncioTestCase):
 
         for _ in range(_POLL_MAX_ATTEMPTS):
             status = await self._invoke("get_retrieval_status", job_handle=job_handle)
-            if status.get("status") in _TERMINAL_STATUSES:
+            if status.get("status") in _REAL_TERMINAL_STATUSES:
                 return status
             await asyncio.sleep(_POLL_INTERVAL_SECONDS)
         self.fail(f"retrieval job {job_handle} did not reach a terminal state within the smoke suite's poll budget")
