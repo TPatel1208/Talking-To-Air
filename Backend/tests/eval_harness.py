@@ -644,6 +644,28 @@ def build_e2e_tasks(volume) -> list[E2ETask]:
     return tasks
 
 
+def all_task_ids(volume) -> set[str]:
+    """Every eval task id — direct-agent (build_eval_tasks) plus e2e
+    (build_e2e_tasks) — the set T22's starter-prompt coverage check runs
+    against."""
+    return (
+        {task.name for task in build_eval_tasks(volume)}
+        | {task.name for task in build_e2e_tasks(volume)}
+    )
+
+
+def starter_prompts_missing_eval_tasks(volume) -> list[str]:
+    """T22 story #4: the empty-chat starter list (config.starter_prompts)
+    is a marketing surface — every entry's id must name a real eval task, or
+    a starter prompt could rot into a broken promise with nothing to catch
+    it. Returns the ids of any entries with no matching eval task (empty
+    when the contract holds)."""
+    from config.starter_prompts import STARTER_PROMPTS
+
+    task_ids = all_task_ids(volume)
+    return [entry["id"] for entry in STARTER_PROMPTS if entry["id"] not in task_ids]
+
+
 async def run_eval_task(task: EvalTask, *, model: str | None = None) -> EvalTaskResult:
     from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
     from earthdata_mcp.client import load_raw_mcp_tools

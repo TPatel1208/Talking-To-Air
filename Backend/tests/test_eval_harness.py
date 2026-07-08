@@ -106,6 +106,42 @@ class EvalHarnessStructureTests(unittest.TestCase):
     any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
     "eval harness test dependencies are not installed",
 )
+class StarterPromptEvalCoverageTests(unittest.TestCase):
+    """T22: the empty-chat starter list is a marketing surface for what the
+    system provably does — every entry's id must name a real eval task (direct
+    or e2e), or a starter could rot into a broken promise with nothing to
+    catch it. Pure consistency check, no tokens spent."""
+
+    def _volume(self):
+        from fake_earthdata_mcp import HandleVolume
+
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        return HandleVolume(tmpdir.name)
+
+    def test_every_starter_prompt_has_a_matching_eval_task(self):
+        from eval_harness import starter_prompts_missing_eval_tasks
+
+        missing = starter_prompts_missing_eval_tasks(self._volume())
+
+        self.assertEqual(missing, [])
+
+    def test_starter_prompts_span_more_than_one_category(self):
+        """User story #2: the breadth of the app must be visible at a
+        glance — a starter list that collapsed to one workflow type would
+        pass the id-coverage check above while still failing the product
+        intent."""
+        from config.starter_prompts import STARTER_PROMPTS
+
+        categories = {entry["category"] for entry in STARTER_PROMPTS}
+
+        self.assertGreater(len(categories), 1)
+
+
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
+    "eval harness test dependencies are not installed",
+)
 class RobustnessTaskTests(unittest.IsolatedAsyncioTestCase):
     """T15: the malformed-envelope robustness task is scripted at the
     finalization seam (subagent_dispatch._finalize_sub_agent_result) rather

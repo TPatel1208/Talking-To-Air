@@ -20,6 +20,7 @@ from agents.earthdata_agent import LazySatelliteAgent, build_earthdata_agent
 from agents.ground_sensor_agent import build_ground_agent
 from agents.supervisor_agent import build_agent
 from config.settings import get_settings
+from config.starter_prompts import STARTER_PROMPTS
 from earthdata_mcp.connection import STATE_CONNECTING, STATE_READY, EarthdataMCPConnectionManager
 from earthdata_mcp.results import (
     CATEGORY_CONTRACT,
@@ -163,6 +164,7 @@ app.mount("/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
 PUBLIC_ENDPOINTS = {
     ("GET", "/health"),
     ("GET", "/metrics"),
+    ("GET", "/capabilities/starters"),
     ("POST", "/auth/login"),
     ("POST", "/auth/register"),
 }
@@ -314,6 +316,16 @@ async def health():
 @app.get("/metrics")
 def metrics():
     return Response(content=render_prometheus_metrics(), media_type=prometheus_content_type())
+
+
+@app.get("/capabilities/starters")
+def capabilities_starters():
+    """T22: the empty-chat's example questions — unauthenticated so a
+    first-time visitor sees them before signing in. The single backend-owned
+    constant (config.starter_prompts) is also what the eval harness's
+    task-coverage assertion checks, so nothing here can drift into a broken
+    promise (story #11)."""
+    return STARTER_PROMPTS
 
 
 # T18: one exception handler for every classified MCP tool outcome — pane
