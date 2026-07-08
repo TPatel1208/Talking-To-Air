@@ -41,9 +41,13 @@ class RateLimitDetected(RuntimeError):
 # Groq's client logs retries on the "groq" logger family (e.g. "Retrying
 # request to /v1/chat/completions in 5.2 seconds") rather than raising on
 # the caller's side; httpx logs the raw response line, which carries the
-# status code. Matching both loggers is cruder than instrumenting httpx
-# directly but has zero production footprint.
-_RATE_LIMIT_LOG_PATTERN = re.compile(r"retrying request|\b429\b|too many requests", re.I)
+# status code. Google's genai client (satellite/supervisor both default to
+# google now) logs its own retry backoff via tenacity's before_sleep_log on
+# the "google_genai._api_client" logger — the message embeds APIError's
+# "{code} {status}. {details}" string, so the same "429" match already
+# catches it once that logger is watched. Matching these loggers is cruder
+# than instrumenting httpx/genai directly but has zero production footprint.
+_RATE_LIMIT_LOG_PATTERN = re.compile(r"retrying request|\b429\b|too many requests|resource_exhausted", re.I)
 
 
 class _RateLimitLogHandler(logging.Handler):
@@ -59,12 +63,17 @@ class _RateLimitLogHandler(logging.Handler):
 
 @contextmanager
 def capture_rate_limit_evidence():
-    """Watch the groq/httpx loggers for retry/429 evidence for the duration
-    of the ``with`` block. Yields the handler; ``handler.matches`` lists any
-    matching log messages observed (single-user cleanliness is the bar —
-    any evidence at all means rate-limit pressure returned)."""
+    """Watch the groq/httpx/google_genai loggers for retry/429 evidence for
+    the duration of the ``with`` block. Yields the handler; ``handler.
+    matches`` lists any matching log messages observed (single-user
+    cleanliness is the bar — any evidence at all means rate-limit pressure
+    returned)."""
     handler = _RateLimitLogHandler()
-    watched_loggers = [logging.getLogger("groq"), logging.getLogger("httpx")]
+    watched_loggers = [
+        logging.getLogger("groq"),
+        logging.getLogger("httpx"),
+        logging.getLogger("google_genai"),
+    ]
     previous_levels = [logger.level for logger in watched_loggers]
     for logger in watched_loggers:
         # httpx logs its request-line summary (which carries the status

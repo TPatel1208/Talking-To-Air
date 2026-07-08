@@ -343,7 +343,10 @@ class RateLimitDetectionTests(unittest.TestCase):
     """T16 user story 3: single-user rate-limit pressure — the original
     outage mode — must never silently reappear. Groq's client only logs
     retries (no exception raised on the caller's side), so the harness
-    watches the groq/httpx loggers for the duration of a run."""
+    watches the groq/httpx loggers for the duration of a run. The satellite
+    agent (and supervisor) now default to google/gemini, whose client logs
+    its own retry backoff on "google_genai._api_client" via tenacity's
+    before_sleep_log — watched too, now that provider is load-bearing."""
 
     def test_captures_a_groq_retry_log_record(self):
         import logging
@@ -382,6 +385,23 @@ class RateLimitDetectionTests(unittest.TestCase):
             )
 
         self.assertEqual(handler.matches, [])
+
+    def test_captures_a_google_genai_retry_backoff_log_record(self):
+        """Mirrors tenacity's before_sleep_log wording for a 429 APIError:
+        'Retrying <fn> in 1.0 seconds as it raised APIError: 429
+        RESOURCE_EXHAUSTED. {...}'."""
+        import logging
+
+        from eval_harness import capture_rate_limit_evidence
+
+        with capture_rate_limit_evidence() as handler:
+            logging.getLogger("google_genai._api_client").info(
+                "Retrying google.genai.models.Models.generate_content in 1.0 seconds as it "
+                "raised APIError: 429 RESOURCE_EXHAUSTED. {'message': 'Resource exhausted'}."
+            )
+
+        self.assertEqual(len(handler.matches), 1)
+        self.assertIn("429", handler.matches[0])
 
 
 @unittest.skipIf(
@@ -481,17 +501,27 @@ def _real_groq_key_available() -> bool:
     return bool(key) and key not in ("test", "your_groq_key")
 
 
+def _real_google_key_available() -> bool:
+    from config.settings import get_settings
+
+    key = get_settings().google_api_key
+    return bool(key) and key not in ("test", "your_google_key")
+
+
 @unittest.skipIf(
     any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
     "eval harness test dependencies are not installed",
 )
 class EvalSuiteTests(unittest.IsolatedAsyncioTestCase):
     """The actual 13-task scripted eval. Opt-in (pytest -m eval) because it
-    calls a real model and spends real tokens; skipped without a real
-    GROQ_API_KEY even when explicitly selected."""
+    calls a real model and spends real tokens; skipped without both a real
+    GROQ_API_KEY (ground agent) and a real GOOGLE_API_KEY (satellite agent
+    and supervisor both default to google/gemini) even when explicitly
+    selected."""
 
     @pytest.mark.eval
     @unittest.skipUnless(_real_groq_key_available(), "requires a real GROQ_API_KEY")
+    @unittest.skipUnless(_real_google_key_available(), "requires a real GOOGLE_API_KEY")
     async def test_earthdata_agent_passes_at_least_eleven_of_thirteen_tasks(self):
         from eval_harness import CATEGORY_BUDGETS, PASS_THRESHOLD, TOTAL_TASKS, format_results_table, run_eval_suite
         from fake_earthdata_mcp import HandleVolume
