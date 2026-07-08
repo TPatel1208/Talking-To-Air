@@ -485,6 +485,9 @@ class ExportService:
         return rows
 
     async def _timeseries_rows_async(self, export: dict[str, Any], tools: dict[str, Any]):
+        if export.get("aggregation") == "point sample":
+            return await self._point_sample_timeseries_rows_async(export, tools)
+
         import numpy as np
         import pandas as pd
         from preprocessing.aggregation_service import AggregationService
@@ -512,6 +515,22 @@ class ExportService:
                 export.get("units", ""),
             ])
         return rows
+
+    async def _point_sample_timeseries_rows_async(self, export: dict[str, Any], tools: dict[str, Any]):
+        from services.open_handle import open_handle
+        from tools.satellite_tools.retrieval_tools import _series_from_table
+
+        source_handles = export.get("source_handles") or []
+        if not source_handles:
+            raise ValueError("This chart does not include a source handle for full-resolution export.")
+
+        variable = export.get("variable", "")
+        table = await open_handle(source_handles[0], tools)
+        times, values = _series_from_table(table, variable)
+
+        stat = export.get("aggregation", "")
+        units = export.get("units", "")
+        return [[variable, time, stat, value, units] for time, value in zip(times, values)]
 
     def _plot_heatmap_axis(self, ax, export: dict[str, Any], title: str):
         da = self._export_data_array(export, collapse_to_2d=True)
