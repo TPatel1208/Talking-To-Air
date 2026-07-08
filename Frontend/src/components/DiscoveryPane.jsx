@@ -44,6 +44,9 @@ function DatasetCard({ dataset, location, timeRange, preview, coverage, granules
         </div>
       )}
       <div style={{ fontSize: '11px', color: 'var(--text-hint)', display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+        {dataset.short_name && <span>{dataset.short_name}</span>}
+        {dataset.processing_level && <span>L{dataset.processing_level}</span>}
+        {dataset.version && <span>v{dataset.version}</span>}
         {dataset.temporal_extent && <span>{dataset.temporal_extent}</span>}
         {dataset.provider && <span>{dataset.provider}</span>}
       </div>
@@ -116,9 +119,9 @@ function DatasetCard({ dataset, location, timeRange, preview, coverage, granules
       {coverage?.error && (
         <div style={{ fontSize: '11px', color: 'var(--error)' }}>{coverage.error}</div>
       )}
-      {coverage && !coverage.loading && !coverage.error && coverage.has_data !== undefined && (
-        <div style={{ fontSize: '11px', color: coverage.has_data ? 'var(--teal-text)' : 'var(--error)' }}>
-          {coverage.has_data
+      {coverage && !coverage.loading && !coverage.error && coverage.covered !== undefined && (
+        <div style={{ fontSize: '11px', color: coverage.covered ? 'var(--teal-text)' : 'var(--error)' }}>
+          {coverage.covered
             ? `Data available${typeof coverage.granule_count === 'number' ? ` — ${coverage.granule_count} granules` : ''}`
             : 'No data for this area/window'}
         </div>

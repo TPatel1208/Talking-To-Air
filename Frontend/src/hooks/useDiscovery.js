@@ -1,4 +1,5 @@
 import { useCallback, useState } from 'react'
+import { normalizeSearchResults } from '../utils/discoveryResults'
 
 const API_BASE = '/api'
 
@@ -48,7 +49,10 @@ export function useDiscovery(accessToken) {
       })
       if (!res.ok) throw new Error(await readErrorMessage(res))
       const data = await res.json()
-      setResults(data.results || [])
+      // The MCP returns {datasets:[{handle, summary:{…}}]}; normalize to the
+      // flat shape the pane renders (tolerating the older results/dataset_handle
+      // fixture shape too). See utils/discoveryResults.js.
+      setResults(normalizeSearchResults(data))
     } catch (err) {
       setError(err.message || 'Search failed')
     } finally {
