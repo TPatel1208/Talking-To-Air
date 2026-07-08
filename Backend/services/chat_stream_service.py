@@ -69,6 +69,12 @@ class ChatStreamService:
         # of its own (Frontend/src/hooks/useChat.js), so this set is the
         # single point that keeps each chart_id rendered exactly once (T13).
         emitted_chart_ids: set[str] = set()
+        # T22 story #8: the last non-None suggested_followups seen from a
+        # sub-agent's own AgentResult envelope, whether it arrives batched in
+        # a tool_result (the supervisor path) or inline in a structured text
+        # event — a plain dict (not a bare variable) so the nested helper
+        # methods below can update it by reference.
+        suggestions_box: dict[str, list[str]] = {}
         started = time.monotonic()
         try:
             async for event_type, data in stream_response(agent, message, thread_id, user_id=user_id):
@@ -98,6 +104,7 @@ class ChatStreamService:
                         image_urls,
                         artifacts,
                         emitted_chart_ids,
+                        suggestions_box,
                     ):
                         yield event
                 elif event_type == "image":
@@ -106,20 +113,25 @@ class ChatStreamService:
                         image_urls.append(url)
                         yield self.sse("image", {"url": url})
                 elif event_type == "text":
-                    text, events = await self._text_events(data, thread_id, user_id, emitted_chart_ids)
+                    text, events = await self._text_events(
+                        data, thread_id, user_id, emitted_chart_ids, suggestions_box,
+                    )
                     response_text += text
                     if text:
                         yield self.sse("text", {"content": text})
                     for event in events:
                         yield event
 
-            yield self.sse("done", {
+            done_payload = {
                 "thread_id": thread_id,
                 "response": self._strip_supervisor_preamble(response_text),
                 "image_urls": image_urls,
                 "artifacts": artifacts,
                 "tool_calls": tool_calls,
-            })
+            }
+            if "value" in suggestions_box:
+                done_payload["suggested_followups"] = suggestions_box["value"]
+            yield self.sse("done", done_payload)
             self._log_request_complete(request_id, thread_id, started)
         except Exception as e:
             logger.exception("agent_failure", extra={"_request_id": request_id, "_thread_id": thread_id})
@@ -227,13 +239,20 @@ class ChatStreamService:
 
         await self._write_back_turn(supervisor_agent, thread_id, message, final_text)
 
-        yield self.sse("done", {
+        done_payload = {
             "thread_id": thread_id,
             "response": self._strip_supervisor_preamble(final_text),
             "image_urls": [],
             "artifacts": artifacts,
             "tool_calls": tool_calls,
-        })
+        }
+        # T22 story #9: emitted straight from the finalized envelope — the
+        # fast path never goes through _text_events/_tool_result_events, so
+        # it reads result.suggested_followups directly rather than sharing
+        # the supervisor path's suggestions_box.
+        if result.suggested_followups is not None:
+            done_payload["suggested_followups"] = result.suggested_followups
+        yield self.sse("done", done_payload)
         self._log_request_complete(request_id, thread_id, started)
 
     async def _write_back_turn(self, agent: Any, thread_id: str, user_message: str, final_answer: str) -> None:
@@ -270,6 +289,7 @@ class ChatStreamService:
         image_urls: list[str],
         artifacts: list[dict[str, Any]] | None = None,
         emitted_chart_ids: set[str] | None = None,
+        suggestions_box: dict[str, list[str]] | None = None,
     ) -> AsyncIterator[str]:
         if emitted_chart_ids is None:
             emitted_chart_ids = set()
@@ -288,6 +308,11 @@ class ChatStreamService:
                 event = await self._emit_chart_once(thread_id, chart, user_id, emitted_chart_ids)
                 if event is not None:
                     yield event
+            # T22 story #8: a sub-agent's suggestions arrive batched inside
+            # its final tool_result envelope on the supervisor path — carried
+            # through untouched (never synthesized here, story #12).
+            if suggestions_box is not None and agent_result.suggested_followups is not None:
+                suggestions_box["value"] = agent_result.suggested_followups
             return
 
         artifact_refs = self._artifact_refs(content)
@@ -353,7 +378,12 @@ class ChatStreamService:
         return claimed.model_dump(exclude_none=True)
 
     async def _text_events(
-        self, data: Any, thread_id: str, user_id: str, emitted_chart_ids: set[str] | None = None,
+        self,
+        data: Any,
+        thread_id: str,
+        user_id: str,
+        emitted_chart_ids: set[str] | None = None,
+        suggestions_box: dict[str, list[str]] | None = None,
     ) -> tuple[str, list[str]]:
         if emitted_chart_ids is None:
             emitted_chart_ids = set()
@@ -372,6 +402,8 @@ class ChatStreamService:
                     if payload is None:
                         continue
                     events.append(self.sse("artifact", payload))
+                if suggestions_box is not None and structured_result.suggested_followups is not None:
+                    suggestions_box["value"] = structured_result.suggested_followups
                 return structured_result.text or "", events
 
             text, charts = self.chart_service.parse_charts(data)
