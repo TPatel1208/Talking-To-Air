@@ -49,8 +49,8 @@ INTERNAL_TOOL_NAMES = (
     # model never polls status itself.
     "get_retrieval_status",
     # T11: bypasses the size-estimate gate, so it leaves the model surface;
-    # stays required because the point-timeseries composite (new-series
-    # PRD) adopts it as its engine (decision record 2026-07-06/07).
+    # stays required because the point-timeseries composite (T20) adopts it
+    # as its engine (decision record 2026-07-06/07).
     "retrieve_timeseries",
     # T11: model-facing citation/provenance duplicated T10's backend
     # endpoints, which call these directly by name — demoted, not removed.
@@ -65,12 +65,12 @@ REQUIRED_TOOL_NAMES = CURATED_TOOL_NAMES + INTERNAL_TOOL_NAMES
 # services/provenance_service.py, services/retrieval_composites.py,
 # services/data_download_service.py, tools/satellite_tools/comparison_tools.py
 # — plus workspace_id, which earthdata_mcp/workspace.py injects into every
-# call). A tool with no direct call site here (check_availability,
-# retrieve_timeseries — both model-facing/future, per T11) only requires
-# workspace_id: presence is already covered by REQUIRED_TOOL_NAMES, and this
-# backend has no fixed param set to assert beyond that. PRD T17's connect-time
-# schema check (earthdata_mcp/connection.py) verifies each name here appears
-# in the tool's advertised input schema.
+# call). A tool with no direct call site here (check_availability, per T11)
+# only requires workspace_id: presence is already covered by
+# REQUIRED_TOOL_NAMES, and this backend has no fixed param set to assert
+# beyond that. PRD T17's connect-time schema check (earthdata_mcp/
+# connection.py) verifies each name here appears in the tool's advertised
+# input schema.
 REQUIRED_TOOL_PARAMS: dict[str, tuple[str, ...]] = {
     "search_datasets": ("query", "filters", "workspace_id"),
     "describe_dataset": ("dataset_handle", "detail", "workspace_id"),
@@ -89,7 +89,11 @@ REQUIRED_TOOL_PARAMS: dict[str, tuple[str, ...]] = {
     "align": ("source_handles", "workspace_id"),
     "convert_format": ("source_handle", "output_format", "workspace_id"),
     "get_retrieval_status": ("job_handle", "workspace_id"),
-    "retrieve_timeseries": ("workspace_id",),
+    # T20: services/retrieval_composites.py::point_timeseries's direct call
+    # site — never output_format, this composite is always point-sampled.
+    "retrieve_timeseries": (
+        "dataset_handle", "aoi_handle", "time_range", "variables", "point_sample", "workspace_id",
+    ),
     "cite_dataset": ("dataset_handle", "workspace_id"),
     "get_provenance": ("handle", "workspace_id"),
 }
