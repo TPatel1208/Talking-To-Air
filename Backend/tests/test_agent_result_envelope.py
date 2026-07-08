@@ -51,6 +51,46 @@ class SubAgentEnvelopeTests(unittest.TestCase):
         self.assertIsNone(envelope)
 
 
+class SubAgentEnvelopeSuggestedFollowupsTests(unittest.TestCase):
+    """T22: an optional, additive field — offering none is always legitimate
+    (story #7); the field must never be required, and prose that exceeds the
+    two-suggestion cap is a malformed envelope (salvage territory), not a
+    silently truncated list."""
+
+    def test_suggested_followups_defaults_to_none_when_absent(self):
+        from models.agent_result import parse_sub_agent_envelope
+
+        envelope = parse_sub_agent_envelope('{"summary": "Found 3 monitors."}')
+
+        self.assertIsNotNone(envelope)
+        self.assertIsNone(envelope.suggested_followups)
+
+    def test_suggested_followups_parses_when_present(self):
+        from models.agent_result import parse_sub_agent_envelope
+
+        raw = (
+            '{"summary": "Found 3 monitors.", '
+            '"suggested_followups": ["What about last month?", "Any exceedances nearby?"]}'
+        )
+
+        envelope = parse_sub_agent_envelope(raw)
+
+        self.assertEqual(
+            envelope.suggested_followups,
+            ["What about last month?", "Any exceedances nearby?"],
+        )
+
+    def test_more_than_two_suggestions_is_an_invalid_envelope(self):
+        from models.agent_result import parse_sub_agent_envelope
+
+        raw = (
+            '{"summary": "Found 3 monitors.", '
+            '"suggested_followups": ["one?", "two?", "three?"]}'
+        )
+
+        self.assertIsNone(parse_sub_agent_envelope(raw))
+
+
 class AgentResultHandlesFieldTests(unittest.TestCase):
     def test_agent_result_defaults_handles_to_empty_list(self):
         from models.agent_result import AgentResult
@@ -67,6 +107,24 @@ class AgentResultHandlesFieldTests(unittest.TestCase):
         parsed = parse_agent_result(agent_result_to_json(result))
 
         self.assertEqual(parsed.handles, ["obs_1"])
+
+    def test_agent_result_without_suggestions_omits_the_field_from_json(self):
+        """T22: 'missing suggestions' means the key is absent from the wire
+        payload, not present-and-null."""
+        from models.agent_result import AgentResult, agent_result_to_json
+
+        raw = agent_result_to_json(AgentResult(text="ok"))
+
+        self.assertNotIn("suggested_followups", raw)
+
+    def test_agent_result_round_trips_suggestions_through_json(self):
+        from models.agent_result import AgentResult, agent_result_to_json, parse_agent_result
+
+        result = AgentResult(text="ok", suggested_followups=["What about last month?"])
+
+        parsed = parse_agent_result(agent_result_to_json(result))
+
+        self.assertEqual(parsed.suggested_followups, ["What about last month?"])
 
 
 if __name__ == "__main__":

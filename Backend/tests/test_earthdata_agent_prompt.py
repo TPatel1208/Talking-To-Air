@@ -74,5 +74,15 @@ class EarthdataAgentPromptT20Tests(unittest.TestCase):
         self.assertIn("conduct_temporal_statistic", prompt)
 
 
+class EarthdataAgentPromptT22Tests(unittest.TestCase):
+    def test_prompt_offers_the_optional_suggested_followups_envelope_key(self):
+        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+
+        prompt = get_earthdata_agent_prompt()
+
+        self.assertIn("suggested_followups", prompt)
+        self.assertIn("otherwise omit", prompt.lower())
+
+
 if __name__ == "__main__":
     unittest.main()
