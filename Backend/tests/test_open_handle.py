@@ -71,6 +71,35 @@ class OpenHandleZarrTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(table.column_names, ["lat", "lon", "no2"])
         self.assertEqual(table.num_rows, 2)
 
+    async def test_open_handle_emits_an_open_stage_status(self):
+        """T19: open_handle is the single seam every plot/statistics tool
+        passes through to reach an opened dataset — narrating "open" here
+        covers every caller (including stat_tools/comparison_tools/
+        validation_tools, which have no emit_status calls of their own)
+        without touching each tool individually."""
+        import xarray as xr
+
+        from services.open_handle import open_handle
+        import utils.streaming as streaming
+
+        def make_dataset():
+            return xr.Dataset({"no2": (("y", "x"), [[1.0, 2.0], [3.0, 4.0]])})
+
+        self.volume.add_zarr("obs_open_stage", make_dataset)
+
+        seen = []
+
+        def _capture(message, *, stage=None, detail=None):
+            seen.append({"message": message, "stage": stage, "detail": detail})
+
+        token = streaming._status_emitter.set(_capture)
+        try:
+            await open_handle("obs_open_stage", self.tools)
+        finally:
+            streaming._status_emitter.reset(token)
+
+        self.assertIn("open", [s["stage"] for s in seen])
+
     async def test_open_handle_recovers_from_eviction_via_rematerialize(self):
         import xarray as xr
 

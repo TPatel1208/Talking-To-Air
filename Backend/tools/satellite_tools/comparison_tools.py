@@ -23,6 +23,7 @@ import numpy as np
 from langchain.tools import tool
 from langchain_core.tools import BaseTool
 
+from config.workflow_stages import STAGE_RENDER
 from datasets.mask_info import override_for
 from earthdata_mcp.results import MCPToolError, parse_tool_result
 from preprocessing.aggregation_service import AggregationService
@@ -30,6 +31,7 @@ from services.open_handle import OpenHandleError, open_handle
 from tools.satellite_tools.plot_tools import _da_to_heatmap_payload, _percentile_bounds, _save_chart
 from utils.geo_utils import find_lat_coord, find_lon_coord
 from utils.plotting import _normalize_to_2d
+from utils.streaming import emit_status
 
 _aggregation_service = AggregationService()
 
@@ -285,6 +287,8 @@ def make_compare(mcp_tools: dict[str, BaseTool]):
 
         variable_name = da_a.name or ""
         units = da_a.attrs.get("units", "")
+
+        emit_status("Building comparison...", stage=STAGE_RENDER)
 
         if mode == "region":
             disjoint = _disjoint_periods_error(da_a, da_b)

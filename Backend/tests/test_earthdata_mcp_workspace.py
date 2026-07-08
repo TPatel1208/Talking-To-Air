@@ -58,6 +58,93 @@ class WorkspaceBindingTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("workspace_id", properties)
         self.assertIn("query", properties)
 
+    async def test_search_datasets_emits_a_search_stage_status(self):
+        """T19: one wrapper covers all curated discovery tools without
+        touching the MCP — search_datasets narrates the "search" stage."""
+        from earthdata_mcp.workspace import bind_workspace
+        import utils.streaming as streaming
+
+        bound = bind_workspace(self.tools, lambda: "17")
+
+        seen = []
+        token = streaming._status_emitter.set(
+            lambda message, *, stage=None, detail=None: seen.append({"stage": stage, "detail": detail})
+        )
+        try:
+            await bound["search_datasets"].ainvoke({"query": "no2"})
+        finally:
+            streaming._status_emitter.reset(token)
+
+        self.assertEqual([s["stage"] for s in seen], ["search"])
+
+
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
+    "MCP client test dependencies are not installed",
+)
+class WorkspaceBindingStageStatusTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
+
+        async def define_area_of_interest(location, workspace_id):
+            return {"aoi_handle": "aoi_1", "location": location}
+
+        async def check_coverage(dataset_handle, aoi_handle, time_range, workspace_id):
+            return {"granule_count": 14, "coverage_pct": 100}
+
+        self.server = FakeEarthdataMCPServer(build_fake_mcp({
+            "define_area_of_interest": define_area_of_interest,
+            "check_coverage": check_coverage,
+        }))
+        self.server.start()
+        self.addCleanup(self.server.stop)
+
+        from earthdata_mcp.client import load_raw_mcp_tools
+        from config.settings import Settings
+
+        self.tools = await load_raw_mcp_tools(Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None))
+
+    async def test_define_area_of_interest_emits_an_aoi_stage_status(self):
+        from earthdata_mcp.workspace import bind_workspace
+        import utils.streaming as streaming
+
+        bound = bind_workspace(self.tools, lambda: "17")
+
+        seen = []
+        token = streaming._status_emitter.set(
+            lambda message, *, stage=None, detail=None: seen.append({"stage": stage, "detail": detail})
+        )
+        try:
+            await bound["define_area_of_interest"].ainvoke({"location": "New Jersey"})
+        finally:
+            streaming._status_emitter.reset(token)
+
+        self.assertEqual([s["stage"] for s in seen], ["aoi"])
+
+    async def test_check_coverage_surfaces_the_granule_count_as_detail(self):
+        """T19 story #3: granule count surfaced when coverage is checked, so
+        a researcher understands why their request is small or large before
+        the wait — a second stage="coverage" status carrying the count once
+        the MCP's own response is known, alongside the pre-call one."""
+        from earthdata_mcp.workspace import bind_workspace
+        import utils.streaming as streaming
+
+        bound = bind_workspace(self.tools, lambda: "17")
+
+        seen = []
+        token = streaming._status_emitter.set(
+            lambda message, *, stage=None, detail=None: seen.append({"stage": stage, "detail": detail})
+        )
+        try:
+            await bound["check_coverage"].ainvoke({
+                "dataset_handle": "dataset_1", "aoi_handle": "aoi_1", "time_range": "2024-01-01/2024-01-02",
+            })
+        finally:
+            streaming._status_emitter.reset(token)
+
+        self.assertEqual([s["stage"] for s in seen], ["coverage", "coverage"])
+        self.assertEqual(seen[-1]["detail"], 14)
+
 
 @unittest.skipIf(
     any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),

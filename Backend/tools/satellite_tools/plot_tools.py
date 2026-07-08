@@ -58,6 +58,7 @@ from langchain_core.tools import BaseTool
 from typing import Annotated, List, Optional
 from pydantic import Field
 
+from config.workflow_stages import STAGE_RENDER
 from datasets.mask_info import override_for
 from earthdata_mcp.results import MCPToolError
 from services.artifact_registry import build_artifact_reference
@@ -431,24 +432,23 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
         Returns:
             JSON string — chart payload for the frontend to render interactively.
         """
-        emit_status("Opening retrieved data...")
         try:
             ds = await open_handle(handle, mcp_tools)
             da = _open_dataarray(ds)
         except MCPToolError as e:
-            emit_status("Visualization failed while opening data.")
+            emit_status("Visualization failed while opening data.", stage=STAGE_RENDER)
             return json.dumps({"error": e.to_dict()})
         except OpenHandleError as e:
-            emit_status("Visualization failed while opening data.")
+            emit_status("Visualization failed while opening data.", stage=STAGE_RENDER)
             return json.dumps({"error": f"Failed to open handle '{handle}': {e}"})
 
-        emit_status("Resolving requested location...")
+        emit_status("Resolving requested location...", stage=STAGE_RENDER)
         region = await _resolver.aresolve_location(location)
         if region is None:
-            emit_status("Location lookup failed.")
+            emit_status("Location lookup failed.", stage=STAGE_RENDER)
             return json.dumps({"error": f"Could not geocode location: '{location}'"})
 
-        emit_status("Generating visualization...")
+        emit_status("Generating visualization...", stage=STAGE_RENDER)
 
         def _mask_aggregate_payload():
             # CPU-bound mask -> aggregate -> payload chain (T16): run off the
@@ -509,13 +509,13 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
 
         stage, payload, resolved_title, error_message = await asyncio.to_thread(_mask_aggregate_payload)
         if stage == "mask":
-            emit_status("Visualization failed while processing map bounds.")
+            emit_status("Visualization failed while processing map bounds.", stage=STAGE_RENDER)
             return json.dumps({"error": error_message})
         if stage == "payload":
-            emit_status("Visualization failed while building chart data.")
+            emit_status("Visualization failed while building chart data.", stage=STAGE_RENDER)
             return json.dumps({"error": error_message})
 
-        emit_status("Preparing response...")
+        emit_status("Preparing response...", stage=STAGE_RENDER)
         return _save_chart(payload, resolved_title)
 
     return plot_singular
@@ -544,29 +544,28 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
         Returns:
             JSON string — multi-panel chart payload for the frontend to render.
         """
-        emit_status("Generating visualization...")
+        emit_status("Generating visualization...", stage=STAGE_RENDER)
         if len(handles) != len(locations):
-            emit_status("Visualization failed while matching locations to datasets.")
+            emit_status("Visualization failed while matching locations to datasets.", stage=STAGE_RENDER)
             return json.dumps({"error": f"len(handles)={len(handles)} != len(locations)={len(locations)}"})
 
         panels = []
         variable_name = ""
         for handle, location in zip(handles, locations):
-            emit_status("Processing retrieved data...")
             try:
                 ds = await open_handle(handle, mcp_tools)
                 da = _open_dataarray(ds)
             except MCPToolError as e:
-                emit_status("Visualization failed while opening data.")
+                emit_status("Visualization failed while opening data.", stage=STAGE_RENDER)
                 return json.dumps({"error": e.to_dict()})
             except OpenHandleError as e:
-                emit_status("Visualization failed while opening data.")
+                emit_status("Visualization failed while opening data.", stage=STAGE_RENDER)
                 return json.dumps({"error": f"Failed to open handle '{handle}' for '{location}': {e}"})
 
-            emit_status("Resolving requested location...")
+            emit_status("Resolving requested location...", stage=STAGE_RENDER)
             region = await _resolver.aresolve_location(location)
             if region is None:
-                emit_status("Location lookup failed.")
+                emit_status("Location lookup failed.", stage=STAGE_RENDER)
                 return json.dumps({"error": f"Could not geocode location: '{location}'"})
 
             def _mask_aggregate_panel(da=da, region=region, handle=handle, location=location, variable_name=variable_name):
@@ -621,10 +620,10 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
 
             stage, panel, resolved_variable_name, error_message = await asyncio.to_thread(_mask_aggregate_panel)
             if stage == "mask":
-                emit_status("Visualization failed while processing map bounds.")
+                emit_status("Visualization failed while processing map bounds.", stage=STAGE_RENDER)
                 return json.dumps({"error": error_message})
             if stage == "payload":
-                emit_status("Visualization failed while building chart data.")
+                emit_status("Visualization failed while building chart data.", stage=STAGE_RENDER)
                 return json.dumps({"error": error_message})
 
             variable_name = resolved_variable_name
@@ -653,7 +652,7 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
                 "source_handles": list(handles),
             }
             multi_payload["metadata"] = {"source_handles": list(handles)}
-        emit_status("Preparing response...")
+        emit_status("Preparing response...", stage=STAGE_RENDER)
         return _save_chart(multi_payload, title or f"{variable_name}_comparison")
 
     return plot_multiple
@@ -696,9 +695,12 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
         if "time" not in da.dims:
             return json.dumps({"error": f"No time dimension found. dims={list(da.dims)}"})
 
+        emit_status("Resolving requested location...", stage=STAGE_RENDER)
         region = await _resolver.aresolve_location(location)
         if region is None:
             return json.dumps({"error": f"Could not resolve location: '{location}'"})
+
+        emit_status("Computing time series...", stage=STAGE_RENDER)
 
         def _mask_aggregate_timeseries():
             # CPU-bound mask -> per-timestep aggregate -> payload chain
@@ -762,6 +764,7 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
         if status == "error":
             return json.dumps({"error": result})
         ts_payload, variable_name = result
+        emit_status("Preparing response...", stage=STAGE_RENDER)
         return _save_chart(ts_payload, f"{variable_name}_{stat}_{location}")
 
     return conduct_temporal_statistic

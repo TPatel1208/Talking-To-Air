@@ -80,6 +80,44 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["message"], "harmony: provider GES_DISC rejected request: invalid bbox")
 
+    async def test_await_retrieval_forwards_each_polls_progress_as_a_stage_status(self):
+        """T19 story #2: retrieval progress narrated as a percentage while
+        the job runs, forwarded from the same poll that already drives
+        emit_job_progress — one poll, two audiences (job panel + chat
+        strip), never two separate polling loops."""
+        from services.retrieval_composites import await_retrieval
+
+        responses = [
+            {"job_handle": "job_1", "status": "queued", "progress": 0, "phase": "submitting"},
+            {"job_handle": "job_1", "status": "processing", "progress": 40, "phase": "materializing"},
+            {"job_handle": "job_1", "status": "ready", "progress": 100, "phase": "done", "obs_handle": "obs_1"},
+        ]
+        calls = {"n": 0}
+
+        async def get_retrieval_status(job_handle, workspace_id):
+            data = responses[min(calls["n"], len(responses) - 1)]
+            calls["n"] += 1
+            return data
+
+        tools, settings = await self._tools({"get_retrieval_status": get_retrieval_status})
+        settings = self._fast_settings(settings)
+
+        seen = []
+        import utils.streaming as streaming
+
+        def _capture(message, *, stage=None, detail=None):
+            seen.append({"message": message, "stage": stage, "detail": detail})
+
+        token = streaming._status_emitter.set(_capture)
+        try:
+            await await_retrieval("job_1", tools, settings=settings)
+        finally:
+            streaming._status_emitter.reset(token)
+
+        stage_events = [s for s in seen if s["stage"] == "progress"]
+        self.assertEqual(len(stage_events), 3)
+        self.assertEqual([s["detail"] for s in stage_events], [0, 40, 100])
+
     async def test_await_retrieval_times_out_when_job_never_reaches_terminal_state(self):
         from services.retrieval_composites import RetrievalTimeoutError, await_retrieval
 
@@ -179,6 +217,44 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "submitted")
         self.assertEqual(calls["retrieve_subset"], 1)
+
+    async def test_safe_retrieve_emits_estimate_and_submit_stage_status(self):
+        from services.retrieval_composites import safe_retrieve
+
+        tools, settings, calls = await self._tools_and_settings(estimated_bytes=1000)
+
+        seen = []
+        import utils.streaming as streaming
+
+        def _capture(message, *, stage=None, detail=None):
+            seen.append({"message": message, "stage": stage, "detail": detail})
+
+        token = streaming._status_emitter.set(_capture)
+        try:
+            await safe_retrieve("dataset_1", "aoi_1", "2024-01-01/2024-01-02", ["no2"], tools, settings=settings)
+        finally:
+            streaming._status_emitter.reset(token)
+
+        self.assertEqual([s["stage"] for s in seen], ["estimate", "submit"])
+
+    async def test_safe_retrieve_does_not_emit_submit_when_it_pauses_for_confirmation(self):
+        from services.retrieval_composites import safe_retrieve
+
+        tools, settings, calls = await self._tools_and_settings(estimated_bytes=6000)
+
+        seen = []
+        import utils.streaming as streaming
+
+        def _capture(message, *, stage=None, detail=None):
+            seen.append({"message": message, "stage": stage, "detail": detail})
+
+        token = streaming._status_emitter.set(_capture)
+        try:
+            await safe_retrieve("dataset_1", "aoi_1", "2024-01-01/2024-01-02", ["no2"], tools, settings=settings)
+        finally:
+            streaming._status_emitter.reset(token)
+
+        self.assertEqual([s["stage"] for s in seen], ["estimate"])
 
     async def test_safe_retrieve_refuses_above_hard_cap_even_if_confirmed(self):
         from services.retrieval_composites import safe_retrieve

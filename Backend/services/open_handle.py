@@ -17,8 +17,10 @@ from urllib.request import url2pathname
 
 from langchain_core.tools import BaseTool
 
+from config.workflow_stages import STAGE_OPEN
 from earthdata_mcp.results import parse_tool_result
 from services.retrieval_composites import await_retrieval
+from utils.streaming import emit_status
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +36,7 @@ async def open_handle(handle: str, tools: dict[str, BaseTool]) -> Any:
     -> re-export cycle; a second failure raises with the MCP's own
     structured message verbatim.
     """
+    emit_status("Opening retrieved data...", stage=STAGE_OPEN)
     export = await _export(handle, tools)
     if export.get("status") != "ready":
         export = await _recover(handle, tools)
@@ -46,6 +49,7 @@ async def _export(handle: str, tools: dict[str, BaseTool]) -> dict:
 
 
 async def _recover(handle: str, tools: dict[str, BaseTool]) -> dict:
+    emit_status("Rematerializing expired data...", stage=STAGE_OPEN)
     remat_raw = await tools["rematerialize"].ainvoke({"handle": handle})
     remat = parse_tool_result(remat_raw)
     if remat.get("status") == "not_found":

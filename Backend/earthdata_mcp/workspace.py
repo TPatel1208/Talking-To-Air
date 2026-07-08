@@ -15,7 +15,21 @@ from typing import Any, Callable
 
 from langchain_core.tools import BaseTool, StructuredTool
 
+from config.workflow_stages import STAGE_AOI, STAGE_COVERAGE, STAGE_SEARCH
 from earthdata_mcp.results import MCPToolError, call_tool, parse_tool_result
+from utils.streaming import emit_status
+
+# T19: one wrapper covers every curated discovery tool without touching the
+# MCP — searching/resolving/checking are exactly the stages the model-facing
+# discovery tools correspond to (earthdata_mcp/client.py's CURATED_TOOL_NAMES).
+_STAGE_BY_TOOL_NAME: dict[str, tuple[str, str]] = {
+    "search_datasets": (STAGE_SEARCH, "Searching datasets..."),
+    "describe_dataset": (STAGE_SEARCH, "Inspecting dataset..."),
+    "preview_dataset": (STAGE_SEARCH, "Previewing dataset..."),
+    "define_area_of_interest": (STAGE_AOI, "Resolving area of interest..."),
+    "check_availability": (STAGE_COVERAGE, "Checking availability..."),
+    "check_coverage": (STAGE_COVERAGE, "Checking coverage..."),
+}
 
 
 def bind_workspace(tools: dict[str, BaseTool], user_id_getter: Callable[[], str]) -> dict[str, BaseTool]:
@@ -25,9 +39,12 @@ def bind_workspace(tools: dict[str, BaseTool], user_id_getter: Callable[[], str]
 
 def _bind_one(tool: BaseTool, user_id_getter: Callable[[], str]) -> BaseTool:
     schema = _schema_without_workspace_id(tool.args_schema)
+    stage_info = _STAGE_BY_TOOL_NAME.get(tool.name)
 
     async def _call(**kwargs):
         kwargs["workspace_id"] = f"user-{user_id_getter()}"
+        if stage_info is not None:
+            emit_status(stage_info[1], stage=stage_info[0])
         # T18: bind_workspace is the one place every model-facing MCP tool
         # call passes through — classify here (call_tool catches a raised
         # transport failure, parse_tool_result classifies the returned
@@ -38,9 +55,15 @@ def _bind_one(tool: BaseTool, user_id_getter: Callable[[], str]) -> BaseTool:
         # recognizes the envelope and re-raises the typed MCPToolError.
         try:
             raw = await call_tool(tool, kwargs)
-            parse_tool_result(raw)
+            result = parse_tool_result(raw)
         except MCPToolError as exc:
             return exc.to_tool_json()
+        # T19 story #3: surface the granule count once check_coverage's own
+        # response is known, so a researcher sees why their request is
+        # small or large before the (potentially long) retrieval wait.
+        if tool.name == "check_coverage" and isinstance(result, dict) and "granule_count" in result:
+            granule_count = result["granule_count"]
+            emit_status(f"Checking coverage — {granule_count} granules...", stage=STAGE_COVERAGE, detail=granule_count)
         return raw
 
     return StructuredTool.from_function(

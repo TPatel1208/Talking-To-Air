@@ -7,10 +7,12 @@ from langchain_core.tools import BaseTool
 from typing import Annotated
 from pydantic import Field
 
+from config.workflow_stages import STAGE_RENDER
 from datasets.mask_info import override_for
 from earthdata_mcp.results import MCPToolError
 from services.open_handle import OpenHandleError, open_handle
 from utils.plotting import _normalize_to_2d, mask_data_by_geometry, RegionResolver
+from utils.streaming import emit_status
 from preprocessing.aggregation_service import AggregationService
 
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "outputs")
@@ -62,6 +64,8 @@ def make_compute_statistic_tool(mcp_tools: dict[str, BaseTool]):
         region = _resolver.resolve_location(location)
         if region is None:
             return json.dumps({"error": f"Could not resolve location: '{location}'"})
+
+        emit_status("Computing statistics...", stage=STAGE_RENDER)
 
         def _mask_aggregate_stats():
             # CPU-bound mask -> aggregate -> stats chain (T16), run off the
@@ -143,6 +147,8 @@ def make_find_daily_peak(mcp_tools: dict[str, BaseTool]):
         region = _resolver.resolve_location(location)
         if region is None:
             return json.dumps({"error": f"Could not resolve location: '{location}'"})
+
+        emit_status("Finding peak value...", stage=STAGE_RENDER)
 
         def _mask_aggregate_peak():
             # CPU-bound mask -> aggregate -> peak search chain (T16), run

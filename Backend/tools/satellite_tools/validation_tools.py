@@ -23,6 +23,7 @@ import pandas as pd
 from langchain.tools import tool
 from langchain_core.tools import BaseTool
 
+from config.workflow_stages import STAGE_RENDER
 from datasets.mask_info import override_for
 from earthdata_mcp.results import MCPToolError
 from preprocessing.aggregation_service import AggregationService
@@ -31,6 +32,7 @@ from services.open_handle import OpenHandleError, open_handle
 from tools.ground_sensor_tools import epa_aqs_tools as aqs
 from utils.geo_utils import find_lat_coord, find_lon_coord
 from utils.plotting import RegionResolver
+from utils.streaming import emit_status
 
 _aggregation_service = AggregationService()
 _resolver = RegionResolver()
@@ -332,6 +334,7 @@ def make_validate_against_ground(mcp_tools: dict[str, BaseTool]):
 
             return monitor_results, artifact_refs, pooled_paired, monitor_ids
 
+        emit_status("Validating against ground monitors...", stage=STAGE_RENDER)
         monitor_results, artifact_refs, pooled_paired, monitor_ids = await asyncio.to_thread(
             _extract_and_pair_monitors
         )
@@ -500,6 +503,7 @@ def make_exceedance_overlay(mcp_tools: dict[str, BaseTool]):
 
             return monitor_results, artifact_refs
 
+        emit_status("Checking exceedance days against the satellite series...", stage=STAGE_RENDER)
         monitor_results, artifact_refs = await asyncio.to_thread(_extract_exceedance_monitors)
 
         if not monitor_results:

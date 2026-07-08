@@ -15,8 +15,9 @@ from typing import Any
 from langchain_core.tools import BaseTool
 
 from config.settings import Settings, get_settings
+from config.workflow_stages import STAGE_ESTIMATE, STAGE_PROGRESS, STAGE_SUBMIT
 from earthdata_mcp.results import parse_tool_result
-from utils.streaming import emit_job_progress
+from utils.streaming import emit_job_progress, emit_status
 
 logger = logging.getLogger(__name__)
 
@@ -61,13 +62,15 @@ async def await_retrieval(
         raw = await status_tool.ainvoke({"job_handle": job_handle})
         data = parse_tool_result(raw)
         status = data.get("status", "")
+        progress = data.get("progress")
         emit_job_progress(
             job_handle,
             status,
-            data.get("progress"),
+            progress,
             data.get("phase"),
             data.get("message"),
         )
+        emit_status(f"Retrieving data — {status}...", stage=STAGE_PROGRESS, detail=progress)
         if status in TERMINAL_STATUSES:
             return data
 
@@ -107,6 +110,7 @@ async def safe_retrieve(
     - above the hard cap: refused unconditionally, even if ``confirmed``.
     """
     settings = settings or get_settings()
+    emit_status("Estimating retrieval size...", stage=STAGE_ESTIMATE)
     estimate_raw = await tools["estimate_retrieval_size"].ainvoke({
         "dataset_handle": dataset_handle,
         "aoi_handle": aoi_handle,
@@ -137,6 +141,7 @@ async def safe_retrieve(
             ),
         }
 
+    emit_status("Submitting retrieval...", stage=STAGE_SUBMIT)
     subset_raw = await tools["retrieve_subset"].ainvoke({
         "dataset_handle": dataset_handle,
         "aoi_handle": aoi_handle,
