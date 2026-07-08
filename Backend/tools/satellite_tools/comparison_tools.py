@@ -24,7 +24,7 @@ from langchain.tools import tool
 from langchain_core.tools import BaseTool
 
 from datasets.mask_info import override_for
-from earthdata_mcp.results import parse_tool_result
+from earthdata_mcp.results import MCPToolError, parse_tool_result
 from preprocessing.aggregation_service import AggregationService
 from services.open_handle import OpenHandleError, open_handle
 from tools.satellite_tools.plot_tools import _da_to_heatmap_payload, _percentile_bounds, _save_chart
@@ -260,11 +260,15 @@ def make_compare(mcp_tools: dict[str, BaseTool]):
         try:
             ds_a = await open_handle(handle_a, mcp_tools)
             da_a = _aggregation_service.to_dataarray(ds_a)
+        except MCPToolError as e:
+            return json.dumps({"error": e.to_dict()})
         except OpenHandleError as e:
             return json.dumps({"error": f"Failed to open handle '{handle_a}' (A): {e}"})
         try:
             ds_b = await open_handle(handle_b, mcp_tools)
             da_b = _aggregation_service.to_dataarray(ds_b)
+        except MCPToolError as e:
+            return json.dumps({"error": e.to_dict()})
         except OpenHandleError as e:
             return json.dumps({"error": f"Failed to open handle '{handle_b}' (B): {e}"})
 
@@ -292,8 +296,11 @@ def make_compare(mcp_tools: dict[str, BaseTool]):
                 _build_region_comparison, handle_a, handle_b, da_a, da_b, label_a, label_b, variable_name, units,
             )
 
-        align_raw = await mcp_tools["align"].ainvoke({"source_handles": [handle_a, handle_b]})
-        align_result = parse_tool_result(align_raw)
+        try:
+            align_raw = await mcp_tools["align"].ainvoke({"source_handles": [handle_a, handle_b]})
+            align_result = parse_tool_result(align_raw)
+        except MCPToolError as e:
+            return json.dumps({"error": e.to_dict()})
         aligned_handle = align_result.get("handle")
         if align_result.get("status") == "error" or not aligned_handle:
             return json.dumps({
@@ -304,6 +311,8 @@ def make_compare(mcp_tools: dict[str, BaseTool]):
         try:
             aligned_ds = await open_handle(aligned_handle, mcp_tools)
             aligned_da = _aggregation_service.to_dataarray(aligned_ds)
+        except MCPToolError as e:
+            return json.dumps({"error": e.to_dict()})
         except OpenHandleError as e:
             return json.dumps({"error": f"Failed to open the aligned result '{aligned_handle}': {e}"})
 

@@ -15,6 +15,7 @@ from typing import Optional
 from langchain.tools import tool
 from langchain_core.tools import BaseTool
 
+from earthdata_mcp.results import MCPToolError
 from services.retrieval_composites import RetrievalTimeoutError
 from services.retrieval_composites import await_retrieval as _await_retrieval
 from services.retrieval_composites import safe_retrieve as _safe_retrieve
@@ -51,15 +52,18 @@ def make_safe_retrieve(mcp_tools: dict[str, BaseTool]):
             confirmed      : set True only after the researcher has approved
                               a prior "needs_confirmation" response.
         """
-        result = await _safe_retrieve(
-            dataset_handle,
-            aoi_handle,
-            time_range,
-            variables,
-            mcp_tools,
-            output_format=output_format,
-            confirmed=confirmed,
-        )
+        try:
+            result = await _safe_retrieve(
+                dataset_handle,
+                aoi_handle,
+                time_range,
+                variables,
+                mcp_tools,
+                output_format=output_format,
+                confirmed=confirmed,
+            )
+        except MCPToolError as exc:
+            return json.dumps({"error": exc.to_dict()})
         return json.dumps(result)
 
     return safe_retrieve
@@ -82,6 +86,8 @@ def make_await_retrieval(mcp_tools: dict[str, BaseTool]):
             result = await _await_retrieval(job_handle, mcp_tools)
         except RetrievalTimeoutError as exc:
             return json.dumps({"status": "timeout", "message": str(exc), "job_handle": job_handle})
+        except MCPToolError as exc:
+            return json.dumps({"error": exc.to_dict()})
         return json.dumps(result)
 
     return await_retrieval

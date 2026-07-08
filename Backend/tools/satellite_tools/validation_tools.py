@@ -24,6 +24,7 @@ from langchain.tools import tool
 from langchain_core.tools import BaseTool
 
 from datasets.mask_info import override_for
+from earthdata_mcp.results import MCPToolError
 from preprocessing.aggregation_service import AggregationService
 from services.artifact_registry import build_artifact_reference
 from services.open_handle import OpenHandleError, open_handle
@@ -220,6 +221,8 @@ def make_validate_against_ground(mcp_tools: dict[str, BaseTool]):
         try:
             ds = await open_handle(handle, mcp_tools)
             da = _aggregation_service.to_dataarray(ds)
+        except MCPToolError as e:
+            return json.dumps({"error": e.to_dict()})
         except OpenHandleError as e:
             return json.dumps({"error": f"Failed to open handle '{handle}': {e}"})
 
@@ -396,6 +399,8 @@ def make_exceedance_overlay(mcp_tools: dict[str, BaseTool]):
         try:
             ds = await open_handle(handle, mcp_tools)
             da = _aggregation_service.to_dataarray(ds)
+        except MCPToolError as e:
+            return json.dumps({"error": e.to_dict()})
         except OpenHandleError as e:
             return json.dumps({"error": f"Failed to open handle '{handle}': {e}"})
 

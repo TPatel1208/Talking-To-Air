@@ -47,14 +47,20 @@ class MCPToolError(Exception):
         self.suggestion = suggestion
         self.raw_preview = raw_preview
 
+    def to_dict(self) -> dict:
+        """``{"category", "message", "suggestion"}`` — the nested shape
+        every ``{"error": ...}`` envelope (tool JSON, pane 4xx/5xx bodies)
+        builds from, dropping ``suggestion`` when there isn't one."""
+        body: dict[str, Any] = {"category": self.category, "message": self.message}
+        if self.suggestion:
+            body["suggestion"] = self.suggestion
+        return body
+
     def to_tool_json(self) -> str:
         """Structured JSON tool result shape (T18): what a model-facing tool
         call returns instead of raising, and what a backend composite's own
         ``parse_tool_result(raw)`` call recognizes and re-raises from."""
-        body: dict[str, Any] = {"category": self.category, "message": self.message}
-        if self.suggestion:
-            body["suggestion"] = self.suggestion
-        return json.dumps({"error": body})
+        return json.dumps({"error": self.to_dict()})
 
 
 _VALIDATION_ERROR_RE = re.compile(r"^\s*\d+\s+validation error(s)?\s+for\b", re.IGNORECASE)

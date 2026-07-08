@@ -8,6 +8,7 @@ from typing import Annotated
 from pydantic import Field
 
 from datasets.mask_info import override_for
+from earthdata_mcp.results import MCPToolError
 from services.open_handle import OpenHandleError, open_handle
 from utils.plotting import _normalize_to_2d, mask_data_by_geometry, RegionResolver
 from preprocessing.aggregation_service import AggregationService
@@ -53,6 +54,8 @@ def make_compute_statistic_tool(mcp_tools: dict[str, BaseTool]):
         try:
             ds = await open_handle(handle, mcp_tools)
             da = _aggregation_service.to_dataarray(ds)
+        except MCPToolError as e:
+            return json.dumps({"error": e.to_dict()})
         except OpenHandleError as e:
             return json.dumps({"error": f"Failed to open handle '{handle}': {e}"})
 
@@ -132,6 +135,8 @@ def make_find_daily_peak(mcp_tools: dict[str, BaseTool]):
         try:
             ds = await open_handle(handle, mcp_tools)
             da = _aggregation_service.to_dataarray(ds)
+        except MCPToolError as e:
+            return json.dumps({"error": e.to_dict()})
         except OpenHandleError as e:
             return json.dumps({"error": f"Failed to open handle '{handle}': {e}"})
 

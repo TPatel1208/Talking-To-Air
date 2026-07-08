@@ -59,6 +59,7 @@ from typing import Annotated, List, Optional
 from pydantic import Field
 
 from datasets.mask_info import override_for
+from earthdata_mcp.results import MCPToolError
 from services.artifact_registry import build_artifact_reference
 from services.open_handle import OpenHandleError, open_handle
 from utils.geo_utils import find_lat_coord, find_lon_coord
@@ -434,6 +435,9 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
         try:
             ds = await open_handle(handle, mcp_tools)
             da = _open_dataarray(ds)
+        except MCPToolError as e:
+            emit_status("Visualization failed while opening data.")
+            return json.dumps({"error": e.to_dict()})
         except OpenHandleError as e:
             emit_status("Visualization failed while opening data.")
             return json.dumps({"error": f"Failed to open handle '{handle}': {e}"})
@@ -552,6 +556,9 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
             try:
                 ds = await open_handle(handle, mcp_tools)
                 da = _open_dataarray(ds)
+            except MCPToolError as e:
+                emit_status("Visualization failed while opening data.")
+                return json.dumps({"error": e.to_dict()})
             except OpenHandleError as e:
                 emit_status("Visualization failed while opening data.")
                 return json.dumps({"error": f"Failed to open handle '{handle}' for '{location}': {e}"})
@@ -681,6 +688,8 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
         try:
             ds = await open_handle(handle, mcp_tools)
             da = _open_dataarray(ds)
+        except MCPToolError as e:
+            return json.dumps({"error": e.to_dict()})
         except OpenHandleError as e:
             return json.dumps({"error": f"Failed to open handle '{handle}': {e}"})
 

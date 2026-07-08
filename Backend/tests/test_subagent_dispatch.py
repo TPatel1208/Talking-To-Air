@@ -139,6 +139,14 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(finalized.metadata.get("error"), "invalid_envelope")
         self.assertFalse(finalized.metadata.get("salvaged"))
         self.assertIn("earthdata", finalized.text.lower())
+        # T18: this is a rendered contract-category template, not free text —
+        # matches config.error_templates.render_error_answer's fixed wording.
+        from config.error_templates import render_error_answer
+
+        self.assertEqual(
+            finalized.text,
+            render_error_answer("contract", "earthdata agent", "Its final message did not parse and contained no text."),
+        )
 
     def test_finalize_sub_agent_result_parses_an_envelope_longer_than_the_display_limit(self):
         from services.subagent_dispatch import _finalize_sub_agent_result
@@ -472,6 +480,17 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("satellite data layer is temporarily unavailable", result.text)
         self.assertEqual(result.metadata.get("data_layer"), STATE_UNAVAILABLE)
+        # T18: rendered from the shared provider_unavailable template — the
+        # same code path the supervisor's ask_earthdata_agent tool wrapper
+        # dispatches through, so both paths fail identically (story #12).
+        from config.error_templates import render_error_answer
+
+        self.assertEqual(
+            result.text,
+            render_error_answer(
+                "provider_unavailable", "satellite data layer", "Ground/EPA air-quality questions still work.",
+            ),
+        )
 
     async def test_run_satellite_dispatches_normally_once_the_mcp_is_ready(self):
         from services import subagent_dispatch

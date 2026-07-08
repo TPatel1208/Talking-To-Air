@@ -19,6 +19,21 @@ export function useDiscovery(accessToken) {
     ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
   }), [accessToken])
 
+  // T18: every discovery endpoint failure now arrives as
+  // {"error": {"category", "message", "suggestion"}} (api.py's
+  // MCPToolError handler) instead of a bare status code — show the human
+  // message (and suggestion, when present) instead of "HTTP 422".
+  const readErrorMessage = async (res) => {
+    try {
+      const body = await res.json()
+      const message = body?.error?.message
+      if (message) return body.error.suggestion ? `${message} ${body.error.suggestion}` : message
+    } catch {
+      // Body wasn't JSON (or had no error envelope) — fall through.
+    }
+    return `HTTP ${res.status}`
+  }
+
   const search = useCallback(async () => {
     const trimmed = query.trim()
     if (!trimmed) return
@@ -30,7 +45,7 @@ export function useDiscovery(accessToken) {
         headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ query: trimmed }),
       })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      if (!res.ok) throw new Error(await readErrorMessage(res))
       const data = await res.json()
       setResults(data.results || [])
     } catch (err) {
@@ -52,7 +67,7 @@ export function useDiscovery(accessToken) {
           layer: layer || undefined,
         }),
       })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      if (!res.ok) throw new Error(await readErrorMessage(res))
       const data = await res.json()
       setPreviews(prev => ({ ...prev, [datasetHandle]: { loading: false, error: null, ...data } }))
     } catch (err) {
@@ -75,7 +90,7 @@ export function useDiscovery(accessToken) {
         headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ location: location.trim(), time_range: timeRange.trim() }),
       })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      if (!res.ok) throw new Error(await readErrorMessage(res))
       const data = await res.json()
       setCoverages(prev => ({ ...prev, [datasetHandle]: { loading: false, error: null, ...data } }))
     } catch (err) {

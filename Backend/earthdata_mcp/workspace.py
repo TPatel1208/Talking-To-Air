@@ -15,7 +15,7 @@ from typing import Any, Callable
 
 from langchain_core.tools import BaseTool, StructuredTool
 
-from earthdata_mcp.results import parse_tool_result
+from earthdata_mcp.results import MCPToolError, call_tool, parse_tool_result
 
 
 def bind_workspace(tools: dict[str, BaseTool], user_id_getter: Callable[[], str]) -> dict[str, BaseTool]:
@@ -28,7 +28,20 @@ def _bind_one(tool: BaseTool, user_id_getter: Callable[[], str]) -> BaseTool:
 
     async def _call(**kwargs):
         kwargs["workspace_id"] = f"user-{user_id_getter()}"
-        return await tool.ainvoke(kwargs)
+        # T18: bind_workspace is the one place every model-facing MCP tool
+        # call passes through — classify here (call_tool catches a raised
+        # transport failure, parse_tool_result classifies the returned
+        # content) and hand back the structured error envelope instead of a
+        # raw exception. On success ``raw`` is returned unchanged, so a
+        # backend composite's own parse_tool_result(raw) call downstream
+        # behaves exactly as before; on error, that same downstream call
+        # recognizes the envelope and re-raises the typed MCPToolError.
+        try:
+            raw = await call_tool(tool, kwargs)
+            parse_tool_result(raw)
+        except MCPToolError as exc:
+            return exc.to_tool_json()
+        return raw
 
     return StructuredTool.from_function(
         coroutine=_call,
@@ -61,7 +74,14 @@ def model_view_describe_dataset(tool: BaseTool) -> BaseTool:
 
     async def _call(**kwargs):
         raw = await tool.ainvoke(kwargs)
-        result = parse_tool_result(raw)
+        try:
+            result = parse_tool_result(raw)
+        except MCPToolError as exc:
+            # ``tool`` is already bind_workspace-wrapped, so ``raw`` here is
+            # either real content or bind_workspace's own error envelope
+            # (T18) — re-raised by parse_tool_result and passed straight
+            # through unchanged rather than re-wrapped.
+            return exc.to_tool_json()
         return json.dumps(_compact_describe_dataset_result(result))
 
     return StructuredTool.from_function(

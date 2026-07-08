@@ -20,8 +20,10 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any
 
+from config.error_templates import render_error_answer
 from config.model_factory import structured_output
 from earthdata_mcp.connection import STATE_READY
+from earthdata_mcp.results import CATEGORY_CONTRACT, CATEGORY_PROVIDER_UNAVAILABLE
 from models import AgentResult, SubAgentEnvelope, parse_agent_result, parse_chart_payload, parse_sub_agent_envelope
 from models.artifact import ArtifactReference
 from repositories.session_metadata_repository import get_ground_monitor_context, save_ground_monitor_context
@@ -34,15 +36,6 @@ from utils.streaming import get_call_budget, stream_response
 logger = logging.getLogger(__name__)
 
 OnEvent = Callable[[str, Any], Awaitable[None]]
-
-# Deterministic — produced without any model call (T17 Implementation
-# Decisions): a researcher asking a satellite question during an MCP outage
-# or incompatible-schema window gets an honest, instant answer instead of
-# burning a model call to discover the same thing.
-SATELLITE_DATA_LAYER_UNAVAILABLE_MESSAGE = (
-    "The satellite data layer is temporarily unavailable, so I can't answer "
-    "satellite questions right now. Ground/EPA air-quality questions still work."
-)
 
 
 async def run_ground(
@@ -169,7 +162,11 @@ async def run_satellite(
             },
         )
         return AgentResult(
-            text=SATELLITE_DATA_LAYER_UNAVAILABLE_MESSAGE,
+            text=render_error_answer(
+                CATEGORY_PROVIDER_UNAVAILABLE,
+                "satellite data layer",
+                "Ground/EPA air-quality questions still work.",
+            ),
             metadata={"data_layer": mcp_manager.state},
         )
 
@@ -337,7 +334,11 @@ def _salvage_sub_agent_result(result: AgentResult, agent_label: str) -> AgentRes
     prose = (result.text or "").strip()
     if not prose:
         return AgentResult(
-            text=f"The {agent_label} agent's final message did not parse and contained no text.",
+            text=render_error_answer(
+                CATEGORY_CONTRACT,
+                f"{agent_label} agent",
+                "Its final message did not parse and contained no text.",
+            ),
             charts=result.charts,
             metadata={"error": "invalid_envelope"},
         )

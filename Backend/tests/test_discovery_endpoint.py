@@ -68,6 +68,8 @@ class DiscoveryEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         async def define_area_of_interest(location, workspace_id):
             self.aoi_calls.append((location, workspace_id))
+            if location == "zzzzqqqq nowhere":
+                raise ValueError(f"Nominatim found no results for location {location!r}")
             return {"handle": f"aoi_{location.lower().replace(' ', '_')}"}
 
         async def preview_dataset(dataset_handle, aoi_handle, time_range, layer, workspace_id):
@@ -232,6 +234,26 @@ class DiscoveryEndpointTests(unittest.IsolatedAsyncioTestCase):
             self.preview_calls,
             [("dataset_smap_l3", None, None, None, "user-user-1")],
         )
+
+    async def test_coverage_reports_an_unresolvable_location_structurally_not_as_a_bare_500(self):
+        # T18 story #1/#2, live failure F6 (docs/live-test-2026-07-07.md):
+        # an unresolvable place name used to reach the researcher as a bare
+        # 500. It now answers 422 with a human message and a suggestion.
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        auth_patches = self._auth_patch()
+        with auth_patches[0], auth_patches[1]:
+            async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                response = await client.post(
+                    "/discovery/dataset/dataset_smap_l3/coverage",
+                    json={"location": "zzzzqqqq nowhere", "time_range": "2026-06-01/2026-06-30"},
+                    headers=self.auth_headers1,
+                )
+
+        self.assertEqual(response.status_code, 422)
+        body = response.json()
+        self.assertEqual(body["error"]["category"], "user_input")
+        self.assertIn("zzzzqqqq nowhere", body["error"]["message"])
+        self.assertIn("suggestion", body["error"])
 
     async def test_discovery_search_fails_honestly_when_the_mcp_is_not_ready(self):
         # T17 story #3: a bare 500 becomes a clear, structured "data layer

@@ -59,5 +59,59 @@ class WorkspaceBindingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("query", properties)
 
 
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
+    "MCP client test dependencies are not installed",
+)
+class WorkspaceBindingClassifiedErrorTests(unittest.IsolatedAsyncioTestCase):
+    """T18: bind_workspace is the single place every model-facing MCP tool
+    passes through — a classified MCPToolError (raised by a tool through the
+    MCP, or by a transport failure) never leaks out as a raw exception; the
+    model (and any direct backend caller) always gets back a string, either
+    the tool's normal content or the structured error envelope."""
+
+    async def asyncSetUp(self):
+        from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
+
+        async def define_area_of_interest(location, workspace_id):
+            raise ValueError(f"Nominatim found no results for location {location!r}")
+
+        self.server = FakeEarthdataMCPServer(build_fake_mcp({"define_area_of_interest": define_area_of_interest}))
+        self.server.start()
+        self.addCleanup(self.server.stop)
+
+        from earthdata_mcp.client import load_raw_mcp_tools
+        from config.settings import Settings
+
+        self.tools = await load_raw_mcp_tools(Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None))
+
+    async def test_a_classified_tool_error_comes_back_as_the_structured_json_envelope(self):
+        import json
+
+        from earthdata_mcp.workspace import bind_workspace
+
+        bound = bind_workspace(self.tools, lambda: "17")
+
+        raw = await bound["define_area_of_interest"].ainvoke({"location": "zzzzqqqq nowhere"})
+
+        payload = json.loads(raw)
+        self.assertEqual(payload["error"]["category"], "user_input")
+        self.assertIn("zzzzqqqq nowhere", payload["error"]["message"])
+        self.assertIn("suggestion", payload["error"])
+
+    async def test_a_backend_composite_calling_parse_tool_result_on_that_same_output_recovers_the_typed_error(self):
+        from earthdata_mcp.results import MCPToolError, parse_tool_result
+        from earthdata_mcp.workspace import bind_workspace
+
+        bound = bind_workspace(self.tools, lambda: "17")
+
+        raw = await bound["define_area_of_interest"].ainvoke({"location": "zzzzqqqq nowhere"})
+
+        with self.assertRaises(MCPToolError) as ctx:
+            parse_tool_result(raw)
+
+        self.assertEqual(ctx.exception.category, "user_input")
+
+
 if __name__ == "__main__":
     unittest.main()

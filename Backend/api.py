@@ -21,6 +21,15 @@ from agents.ground_sensor_agent import build_ground_agent
 from agents.supervisor_agent import build_agent
 from config.settings import get_settings
 from earthdata_mcp.connection import STATE_CONNECTING, STATE_READY, EarthdataMCPConnectionManager
+from earthdata_mcp.results import (
+    CATEGORY_CONTRACT,
+    CATEGORY_NOT_FOUND,
+    CATEGORY_NO_DATA,
+    CATEGORY_PROVIDER_UNAVAILABLE,
+    CATEGORY_TOO_LARGE,
+    CATEGORY_USER_INPUT,
+    MCPToolError,
+)
 from repositories.session_metadata_repository import (
     ensure_session_metadata_table,
     get_session_metadata,
@@ -295,31 +304,29 @@ def metrics():
     return Response(content=render_prometheus_metrics(), media_type=prometheus_content_type())
 
 
-class EarthdataMCPUnavailable(Exception):
-    """Raised by ``_earthdata_tools`` when earthdata_mcp_manager isn't ready.
-    Discovery/jobs/provenance endpoints (T17) hand this to FastAPI instead of
-    building the 503 body inline, so every one of them answers with the same
-    structured shape (vocabulary shared with T18's error taxonomy)."""
+# T18: one exception handler for every classified MCP tool outcome — pane
+# endpoints, agent tools, and chat answers all trace back to the same
+# taxonomy (story #11: one JSON error shape across every endpoint). T17's
+# unavailable/incompatible states render through this same handler (story
+# #13) via _earthdata_tools raising MCPToolError below, rather than a
+# second, differently-shaped 503.
+_CATEGORY_STATUS_CODES = {
+    CATEGORY_USER_INPUT: status.HTTP_422_UNPROCESSABLE_CONTENT,
+    CATEGORY_TOO_LARGE: status.HTTP_422_UNPROCESSABLE_CONTENT,
+    CATEGORY_NO_DATA: status.HTTP_200_OK,
+    CATEGORY_NOT_FOUND: status.HTTP_404_NOT_FOUND,
+    CATEGORY_PROVIDER_UNAVAILABLE: status.HTTP_503_SERVICE_UNAVAILABLE,
+    CATEGORY_CONTRACT: status.HTTP_500_INTERNAL_SERVER_ERROR,
+}
 
-    def __init__(self, state: str):
-        self.state = state
-        super().__init__(f"earthdata-retrieval MCP is not ready (state={state})")
 
-
-@app.exception_handler(EarthdataMCPUnavailable)
-async def _handle_earthdata_mcp_unavailable(request: Request, exc: EarthdataMCPUnavailable) -> JSONResponse:
-    return JSONResponse(
-        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        content={
-            "error": {
-                "category": "provider_unavailable",
-                "message": (
-                    "The satellite data layer is temporarily unavailable "
-                    f"(earthdata_mcp: {exc.state}). Ground/EPA endpoints are unaffected."
-                ),
-            }
-        },
-    )
+@app.exception_handler(MCPToolError)
+async def _handle_mcp_tool_error(request: Request, exc: MCPToolError) -> JSONResponse:
+    status_code = _CATEGORY_STATUS_CODES.get(exc.category, status.HTTP_500_INTERNAL_SERVER_ERROR)
+    body: dict = {"category": exc.category, "message": exc.message}
+    if exc.suggestion:
+        body["suggestion"] = exc.suggestion
+    return JSONResponse(status_code=status_code, content={"error": body})
 
 
 def _earthdata_tools(request: Request) -> dict:
@@ -328,8 +335,13 @@ def _earthdata_tools(request: Request) -> dict:
     directly, so a not-ready connection answers with the shared structured
     503 instead of proxying a bare 500 from an empty/absent tool dict."""
     manager = getattr(request.app.state, "earthdata_mcp_manager", None)
-    if manager is None or manager.state != STATE_READY:
-        raise EarthdataMCPUnavailable(manager.state if manager is not None else STATE_CONNECTING)
+    state = manager.state if manager is not None else STATE_CONNECTING
+    if manager is None or state != STATE_READY:
+        raise MCPToolError(
+            CATEGORY_PROVIDER_UNAVAILABLE,
+            f"The satellite data layer is temporarily unavailable (earthdata_mcp: {state}).",
+            suggestion="Ground/EPA endpoints are unaffected. Try again in a moment.",
+        )
     return manager.tools
 
 
