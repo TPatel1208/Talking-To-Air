@@ -160,47 +160,39 @@ export default function DiscoveryPane({
 }) {
   return (
     <div style={{
-      width:         '300px',
-      flexShrink:    0,
-      background:    'var(--bg-secondary)',
-      borderLeft:    '1px solid var(--border)',
+      flex:          1,
+      minHeight:     0,
       display:       'flex',
       flexDirection: 'column',
       overflow:      'hidden',
     }}>
-      <div style={{
-        padding:      '20px 14px 12px',
-        borderBottom: '1px solid var(--border)',
-      }}>
-        <span style={{
-          fontSize:      '10px',
-          fontWeight:    '500',
-          color:         'var(--text-muted)',
-          textTransform: 'uppercase',
-          letterSpacing: '0.09em',
-        }}>
-          Discover
-        </span>
+      <div style={{ padding: '0 0 12px' }}>
+        <div style={{ fontSize: '15px', fontWeight: 800, color: 'var(--text-primary)', marginBottom: '2px' }}>
+          Discover datasets
+        </div>
+        <div style={{ fontSize: '11.5px', color: 'var(--text-muted)' }}>
+          Find the right data for your analysis.
+        </div>
 
         <form
           onSubmit={event => { event.preventDefault(); onSearch() }}
-          style={{ display: 'flex', gap: '6px', marginTop: '10px' }}
+          style={{ display: 'flex', gap: '6px', marginTop: '12px' }}
         >
           <input
             value={query}
             onChange={event => setQuery(event.target.value)}
             placeholder="soil moisture, formaldehyde…"
             style={{
-              flex: 1, height: '30px', fontSize: '12px', padding: '0 8px',
-              border: '1px solid var(--border)', borderRadius: '6px',
-              background: 'var(--bg-primary)', color: 'var(--text-primary)',
+              flex: 1, height: '32px', fontSize: '12px', padding: '0 10px',
+              border: '1px solid var(--border)', borderRadius: '9px',
+              background: 'var(--bg-secondary)', color: 'var(--text-primary)',
             }}
           />
           <button
             type="submit"
             style={{
-              height: '30px', padding: '0 10px', fontSize: '12px',
-              border: 'none', borderRadius: '6px', background: 'var(--teal)',
+              height: '32px', padding: '0 14px', fontSize: '12px', fontWeight: 700,
+              border: 'none', borderRadius: '9px', background: 'var(--teal)',
               color: 'white', cursor: 'pointer',
             }}
           >
@@ -215,8 +207,8 @@ export default function DiscoveryPane({
             placeholder="Area (e.g. Raritan basin)"
             style={{
               flex: 1, height: '28px', fontSize: '11px', padding: '0 8px',
-              border: '1px solid var(--border)', borderRadius: '6px',
-              background: 'var(--bg-primary)', color: 'var(--text-primary)',
+              border: '1px solid var(--border)', borderRadius: '7px',
+              background: 'var(--bg-secondary)', color: 'var(--text-primary)',
             }}
           />
           <input
@@ -225,8 +217,8 @@ export default function DiscoveryPane({
             placeholder="Window (e.g. 2026-06-01/2026-06-30)"
             style={{
               flex: 1, height: '28px', fontSize: '11px', padding: '0 8px',
-              border: '1px solid var(--border)', borderRadius: '6px',
-              background: 'var(--bg-primary)', color: 'var(--text-primary)',
+              border: '1px solid var(--border)', borderRadius: '7px',
+              background: 'var(--bg-secondary)', color: 'var(--text-primary)',
             }}
           />
         </div>
@@ -235,7 +227,7 @@ export default function DiscoveryPane({
         </div>
       </div>
 
-      <div style={{ flex: 1, overflowY: 'auto', padding: '10px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '2px 0 10px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
         {loading && (
           <div style={{ padding: '4px 2px', color: 'var(--text-hint)', fontSize: '12px' }}>Searching…</div>
         )}

@@ -6,7 +6,8 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
       "cwd": "Frontend",
-      "port": 5173
+      "port": 5173,
+      "autoPort": true
     },
     {
       "name": "frontend-preview",

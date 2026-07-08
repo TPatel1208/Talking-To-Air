@@ -3,6 +3,17 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
+  server: {
+    // Dev server has no nginx in front of it, so proxy /api straight to the
+    // backend container (see docker-compose.yml) the way nginx.conf does in prod.
+    proxy: {
+      '/api': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, ''),
+      },
+    },
+  },
   resolve: {
     alias: {
       // Redirect any import of the full plotly bundle to the lightweight build.

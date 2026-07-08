@@ -74,46 +74,27 @@ function JobRow({ job, onCancel }) {
 export default function JobsPanel({ jobs, error, onCancel, onRefresh }) {
   return (
     <div style={{
-      width:         '260px',
-      flexShrink:    0,
-      background:    'var(--bg-secondary)',
-      borderLeft:    '1px solid var(--border)',
+      flex:          1,
+      minHeight:     0,
       display:       'flex',
       flexDirection: 'column',
       overflow:      'hidden',
     }}>
-      <div style={{
-        padding:        '20px 14px 12px',
-        borderBottom:   '1px solid var(--border)',
-        display:        'flex',
-        alignItems:     'center',
-        justifyContent: 'space-between',
-      }}>
-        <span style={{
-          fontSize:      '10px',
-          fontWeight:    '500',
-          color:         'var(--text-muted)',
-          textTransform: 'uppercase',
-          letterSpacing: '0.09em',
-        }}>
-          Jobs
-        </span>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
+        <span style={{ fontSize: '15px', fontWeight: 800, color: 'var(--text-primary)' }}>Jobs</span>
         <button
           onClick={onRefresh}
           title="Refresh"
           style={{
-            background: 'transparent',
-            border:     'none',
-            color:      'var(--text-hint)',
-            cursor:     'pointer',
-            fontSize:   '12px',
+            background: 'transparent', border: 'none', color: 'var(--teal-text)',
+            cursor: 'pointer', fontSize: '11.5px', fontWeight: 700,
           }}
         >
-          ↻
+          Refresh
         </button>
       </div>
 
-      <div style={{ flex: 1, overflowY: 'auto', padding: '10px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+      <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '10px' }}>
         {error && (
           <div style={{ color: 'var(--error)', fontSize: '12px', padding: '4px 2px' }}>{error}</div>
         )}

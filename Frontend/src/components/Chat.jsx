@@ -1,12 +1,31 @@
 import { useState, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
-import ArtifactMessage from './ArtifactMessage'
-import ChartMessage from './ChartMessage'
 import WorkflowStrip from './WorkflowStrip'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import { starterMessage } from '../utils/starterPrompts'
+
+const TYPE_LABEL = { map: 'Map', comparison: 'Comparison', timeseries: 'Time series', table: 'Table' }
+
+function compactDate(value) {
+  if (!value) return ''
+  return String(value).replace('T00:00:00', '').replace('T23:59:59', '').replace(/Z$/, '')
+}
+
+function outputLabel(item) {
+  if (item.kind === 'chart') {
+    const chart = item.data
+    const p = chart.provenance || {}
+    const dateRange = [compactDate(p.start_date), compactDate(p.end_date)].filter(Boolean).join(' – ')
+    return {
+      title: chart.title || p.variable || chart.variable || 'Output',
+      subtitle: [p.region_name, dateRange].filter(Boolean).join(' · '),
+    }
+  }
+  const artifact = item.data
+  return { title: artifact.title || 'Output', subtitle: TYPE_LABEL[artifact.type] || artifact.type }
+}
 
 const API_BASE = '/api'
 
@@ -17,53 +36,105 @@ function toImageUrl(path) {
   return path
 }
 
-/* ── Tool call badge (inline, in chat bubble) ── */
-function InlineToolBadge({ name, args }) {
-  const [expanded, setExpanded] = useState(false)
-  const argStr  = args ? JSON.stringify(args, null, 2) : ''
+/* ── One step inside the collapsed tool-call card ── */
+function ToolStep({ tc }) {
+  const [showArgs, setShowArgs] = useState(false)
+  const argStr  = tc.args ? JSON.stringify(tc.args, null, 2) : ''
   const hasArgs = argStr && argStr !== '{}'
 
   return (
-    <div style={{
-      display:    'flex',
-      alignItems: 'flex-start',
-      gap:        '6px',
-      fontSize:   '11px',
-      color:      'var(--text-muted)',
-      padding:    '2px 0',
-    }}>
-      <span style={{
-        width: '5px', height: '5px', borderRadius: '50%',
-        background: 'var(--teal)', flexShrink: 0, marginTop: '4px',
-      }}/>
-      <div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '7px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+        <span style={{ color: 'var(--teal)', fontWeight: 700, flexShrink: 0 }}>✓</span>
         <span
-          onClick={() => hasArgs && setExpanded(e => !e)}
-          style={{
-            fontFamily: 'var(--font-mono, monospace)',
-            color:      'var(--teal-text)',
-            cursor:     hasArgs ? 'pointer' : 'default',
-            userSelect: 'none',
-            fontSize:   '11px',
-          }}
+          onClick={() => hasArgs && setShowArgs(v => !v)}
+          style={{ fontFamily: 'var(--font-mono)', cursor: hasArgs ? 'pointer' : 'default', userSelect: 'none' }}
         >
-          {name}()
+          {tc.name}()
         </span>
-        {hasArgs && (
-          <span style={{ marginLeft: '4px', opacity: 0.5, fontSize: '10px' }}>
-            {expanded ? '▲' : '▼'}
-          </span>
+      </div>
+      {showArgs && (
+        <pre style={{
+          margin: '0 0 0 20px', padding: '6px 8px',
+          background: 'var(--bg-card)', borderRadius: '6px',
+          fontSize: '10px', overflowX: 'auto',
+          color: 'var(--text-secondary)', border: '1px solid var(--border)',
+        }}>
+          {argStr}
+        </pre>
+      )}
+    </div>
+  )
+}
+
+/* ── Collapsible "ask_earthdata_agent() · N steps" card ── */
+function ToolStepsCard({ toolCalls, error }) {
+  const [expanded, setExpanded] = useState(false)
+  if (!toolCalls?.length) return null
+
+  return (
+    <div style={{
+      border: '1px solid var(--border)', borderRadius: '10px',
+      background: 'var(--bg-secondary)', overflow: 'hidden',
+    }}>
+      <div
+        onClick={() => setExpanded(v => !v)}
+        style={{ display: 'flex', alignItems: 'center', gap: '7px', padding: '9px 12px', cursor: 'pointer' }}
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--teal)" strokeWidth="2" style={{ flexShrink: 0 }}>
+          <path d="M14.5 3.5a4 4 0 0 0-5.4 4.7L3 14.3v3.2h3.2l6.1-6.1a4 4 0 0 0 4.7-5.4l-2.9 2.9-2-2z" strokeLinejoin="round" />
+        </svg>
+        <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-secondary)', flex: 1 }}>
+          ask_earthdata_agent() · {error ? 'error' : `${toolCalls.length} step${toolCalls.length === 1 ? '' : 's'}`}
+        </span>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+          style={{ color: 'var(--text-muted)', transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform .15s' }}>
+          <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </div>
+      {expanded && (
+        <div style={{ padding: '0 12px 11px 34px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          {toolCalls.map((tc, i) => <ToolStep key={i} tc={tc} />)}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ── Compact output card — click opens the full view in the central OutputPanel ── */
+function OutputCard({ item, active, onClick }) {
+  const { title, subtitle } = outputLabel(item)
+  return (
+    <div
+      onClick={onClick}
+      style={{
+        display: 'flex', gap: '11px', alignItems: 'center',
+        border: `1px solid ${active ? 'var(--teal)' : 'var(--border)'}`,
+        borderRadius: '10px', padding: '10px', background: 'var(--bg-card)', cursor: 'pointer',
+        transition: 'border-color 0.15s',
+      }}
+    >
+      <div style={{
+        width: '44px', height: '44px', borderRadius: '7px', flexShrink: 0,
+        background: 'linear-gradient(135deg, oklch(0.55 0.15 240), oklch(0.75 0.18 80), oklch(0.6 0.2 30))',
+      }} />
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div style={{
+          fontSize: '12.5px', fontWeight: 700, color: 'var(--text-primary)',
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}>
+          {title}
+        </div>
+        {subtitle && (
+          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '1px' }}>{subtitle}</div>
         )}
-        {expanded && (
-          <pre style={{
-            margin: '4px 0 0', padding: '6px 8px',
-            background: 'var(--bg-secondary)', borderRadius: '6px',
-            fontSize: '10px', overflowX: 'auto',
-            color: 'var(--text-secondary)', border: '1px solid var(--border)',
-          }}>
-            {argStr}
-          </pre>
-        )}
+        <div style={{
+          display: 'inline-block', fontSize: '10.5px', fontWeight: 700,
+          color: 'var(--teal-text)', background: 'var(--teal-light)',
+          borderRadius: '5px', padding: '2px 7px', marginTop: '5px',
+        }}>
+          ✓ Completed
+        </div>
       </div>
     </div>
   )
@@ -94,7 +165,7 @@ function LoadingMessage({ toolCalls, statusMessage, workflowStage, startedAt }) 
         {toolCalls?.length > 0 ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
             {toolCalls.map((tc, i) => (
-              <InlineToolBadge key={i} name={tc.name} args={tc.args} />
+              <ToolStep key={i} tc={tc} />
             ))}
             {hasWorkflowStrip ? (
               <div style={{ marginTop: '5px', paddingLeft: '3px' }}>
@@ -249,7 +320,7 @@ function FollowupChips({ suggestions, onSend }) {
 }
 
 /* ── Message bubble ── */
-function MessageBubble({ msg, accessToken, onFollowupClick }) {
+function MessageBubble({ msg, accessToken, onFollowupClick, focusedOutput, onFocusOutput }) {
   const isUser = msg.role === 'user'
 
   return (
@@ -279,11 +350,7 @@ function MessageBubble({ msg, accessToken, onFollowupClick }) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', maxWidth: '78%', minWidth: 0 }}>
         {/* Tool calls above bubble */}
         {!isUser && msg.toolCalls?.length > 0 && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', padding: '0 2px' }}>
-            {msg.toolCalls.map((tc, i) => (
-              <InlineToolBadge key={i} name={tc.name} args={tc.args} />
-            ))}
-          </div>
+          <ToolStepsCard toolCalls={msg.toolCalls} error={msg.isError} />
         )}
 
         {(msg.content || msg.imageUrls?.length > 0 || isUser) && (
@@ -294,13 +361,13 @@ function MessageBubble({ msg, accessToken, onFollowupClick }) {
               borderRadius: isUser ? '14px 14px 4px 14px' : '14px 14px 14px 4px',
               background:   isUser
                 ? 'var(--accent)'
-                : msg.isError ? '#fff0f0' : 'var(--bg-card)',
+                : msg.isError ? 'var(--error-bg)' : 'var(--bg-card)',
               color:        isUser
                 ? 'var(--accent-text)'
                 : msg.isError ? 'var(--error)' : 'var(--text-primary)',
               border:       isUser
                 ? 'none'
-                : msg.isError ? '1px solid #f5c6c6' : '1px solid var(--border)',
+                : msg.isError ? '1px solid var(--error-border)' : '1px solid var(--border)',
               fontSize:     '13.5px',
               lineHeight:   '1.65',
               wordBreak:    'break-word',
@@ -320,7 +387,7 @@ function MessageBubble({ msg, accessToken, onFollowupClick }) {
                     rehypePlugins={[rehypeKatex]}
                     components={{
                       p:      ({ children }) => <p style={{ margin: '0 0 8px' }}>{children}</p>,
-                      h1:     ({ children }) => <p style={{ margin: '0 0 6px', fontWeight: 500, fontSize: '16px', fontFamily: 'var(--font-serif)' }}>{children}</p>,
+                      h1:     ({ children }) => <p style={{ margin: '0 0 6px', fontWeight: 700, fontSize: '16px' }}>{children}</p>,
                       h2:     ({ children }) => <p style={{ margin: '0 0 6px', fontWeight: 500, fontSize: '14px' }}>{children}</p>,
                       h3:     ({ children }) => <p style={{ margin: '0 0 4px', fontWeight: 500 }}>{children}</p>,
                       ul:     ({ children }) => <ul style={{ margin: '0 0 8px', paddingLeft: '18px' }}>{children}</ul>,
@@ -385,18 +452,33 @@ function MessageBubble({ msg, accessToken, onFollowupClick }) {
                 {msg.imageUrls?.filter(Boolean).map((url, i) => (
                   <InlineImage key={i} url={url} accessToken={accessToken} />
                 ))}
-                {msg.charts?.map((chart, i) => (
-                  <ChartMessage key={i} chart={chart} accessToken={accessToken} />
-                ))}
-                {/* Chart-backed artifact types (map/comparison/timeseries) already
-                    render above via ChartMessage — only 'table' needs its own
-                    inline card here. The full gallery (all types) lives in the
-                    Dashboard pane. */}
-                {msg.artifacts?.filter(a => a.type === 'table').map((artifact, i) => (
-                  <ArtifactMessage key={artifact.id || i} artifact={artifact} accessToken={accessToken} />
-                ))}
               </>
             )}
+          </div>
+        )}
+
+        {/* Output cards — click opens the full map/chart/table in the central
+            OutputPanel. Chart-backed artifact types (map/comparison/timeseries)
+            duplicate what msg.charts already covers, so only 'table' artifacts
+            get their own card here. */}
+        {!isUser && (msg.charts?.length > 0 || msg.artifacts?.some(a => a.type === 'table')) && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
+            {msg.charts?.map((chart, i) => (
+              <OutputCard
+                key={`chart-${i}`}
+                item={{ kind: 'chart', data: chart }}
+                active={focusedOutput?.kind === 'chart' && focusedOutput.data === chart}
+                onClick={() => onFocusOutput({ kind: 'chart', data: chart })}
+              />
+            ))}
+            {msg.artifacts?.filter(a => a.type === 'table').map((artifact, i) => (
+              <OutputCard
+                key={artifact.id || `artifact-${i}`}
+                item={{ kind: 'artifact', data: artifact }}
+                active={focusedOutput?.kind === 'artifact' && focusedOutput.data === artifact}
+                onClick={() => onFocusOutput({ kind: 'artifact', data: artifact })}
+              />
+            ))}
           </div>
         )}
 
@@ -445,9 +527,8 @@ function EmptyState({ onChipClick }) {
       </div>
 
       <h1 style={{
-        fontFamily: 'var(--font-serif)', fontWeight: '400',
-        fontSize: '22px', color: 'var(--text-primary)',
-        marginBottom: '8px', letterSpacing: '0.01em',
+        fontWeight: '800', fontSize: '20px', color: 'var(--text-primary)',
+        marginBottom: '8px', letterSpacing: '-0.01em',
       }}>
         Talking to Air
       </h1>
@@ -493,7 +574,7 @@ function EmptyState({ onChipClick }) {
 }
 
 /* ── Main Chat component ── */
-export default function Chat({ messages, loading, error, accessToken, onSend, onAbort, onClear, onClearError }) {
+export default function Chat({ messages, loading, error, accessToken, chatTitle, onSend, onAbort, onClearError, focusedOutput, onFocusOutput }) {
   const [input, setInput] = useState('')
   const scrollContainerRef = useRef(null)
   const textareaRef = useRef(null)
@@ -538,33 +619,12 @@ export default function Chat({ messages, loading, error, accessToken, onSend, on
 
       {/* Top bar */}
       <div style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '12px 20px', borderBottom: '1px solid var(--border)',
-        background: 'var(--bg-primary)', flexShrink: 0,
+        padding: '16px 20px 14px', borderBottom: '1px solid var(--border)',
+        background: 'var(--bg-card)', flexShrink: 0,
       }}>
-        <span style={{
-          fontFamily: 'var(--font-serif)', fontSize: '17px',
-          fontWeight: '400', color: 'var(--text-primary)', letterSpacing: '0.01em',
-        }}>
-          Talking to Air
+        <span style={{ fontSize: '15px', fontWeight: '800', color: 'var(--text-primary)' }}>
+          {chatTitle || 'New analysis'}
         </span>
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-          {!isEmpty && (
-            <button
-              onClick={onClear}
-              style={{
-                background: 'transparent', border: '1px solid var(--border)',
-                borderRadius: '8px', color: 'var(--text-muted)',
-                padding: '4px 12px', cursor: 'pointer', fontSize: '12px',
-                fontFamily: 'var(--font)', transition: 'border-color 0.15s, color 0.15s',
-              }}
-              onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--border-hover)'; e.currentTarget.style.color = 'var(--text-secondary)' }}
-              onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-muted)' }}
-            >
-              New chat
-            </button>
-          )}
-        </div>
       </div>
 
       {/* Message area */}
@@ -579,9 +639,9 @@ export default function Chat({ messages, loading, error, accessToken, onSend, on
           <div style={{
             margin: '14px 20px 0',
             padding: '10px 12px',
-            border: '1px solid #f0b8b8',
+            border: '1px solid var(--error-border)',
             borderRadius: '8px',
-            background: '#fff0f0',
+            background: 'var(--error-bg)',
             color: 'var(--error)',
             display: 'flex',
             alignItems: 'flex-start',
@@ -622,7 +682,14 @@ export default function Chat({ messages, loading, error, accessToken, onSend, on
                   startedAt={msg.startedAt}
                 />
               ) : (
-                <MessageBubble key={i} msg={msg} accessToken={accessToken} onFollowupClick={handleSend} />
+                <MessageBubble
+                  key={i}
+                  msg={msg}
+                  accessToken={accessToken}
+                  onFollowupClick={handleSend}
+                  focusedOutput={focusedOutput}
+                  onFocusOutput={onFocusOutput}
+                />
               )
             )}
             <div style={{ height: '8px' }} />
