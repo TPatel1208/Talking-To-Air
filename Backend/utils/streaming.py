@@ -280,15 +280,16 @@ async def stream_response(
                             # duplicate). Once logs confirm it's safe, remove this.
                             if not emitted_message_tokens:
                                 import logging
+                                text = flatten_text_content(msg.content)
                                 logging.getLogger(__name__).warning(
                                     "updates_aiMessage_fallback",
                                     extra={
                                         "_node": _node,
-                                        "_content_preview": flatten_text_content(msg.content)[:100],
+                                        "_content_preview": text[:100],
                                         "_thread_id": thread_id,
                                     },
                                 )
-                                await publish("text", msg.content)
+                                await publish("text", text)
         except Exception as exc:
             await queue.put(("__error__", exc))
         finally:
