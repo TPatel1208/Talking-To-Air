@@ -277,9 +277,11 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
         error={discovery.error}
         previews={discovery.previews}
         coverages={discovery.coverages}
+        granules={discovery.granules}
         onSearch={discovery.search}
         onPreview={discovery.preview}
         onCoverage={discovery.checkCoverage}
+        onGranules={discovery.inspectGranules}
         onRetrieve={handleRetrieve}
       />
     </div>

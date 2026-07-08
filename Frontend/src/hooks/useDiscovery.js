@@ -13,6 +13,7 @@ export function useDiscovery(accessToken) {
   // hold their own state at once without clobbering each other.
   const [previews, setPreviews] = useState({})
   const [coverages, setCoverages] = useState({})
+  const [granules, setGranules] = useState({})
 
   const authHeaders = useCallback((extra = {}) => ({
     ...extra,
@@ -98,12 +99,35 @@ export function useDiscovery(accessToken) {
     }
   }, [location, timeRange, authHeaders])
 
+  const inspectGranules = useCallback(async (datasetHandle) => {
+    if (!location.trim() || !timeRange.trim()) {
+      setGranules(prev => ({
+        ...prev,
+        [datasetHandle]: { loading: false, error: 'Set an area and time window above first.' },
+      }))
+      return
+    }
+    setGranules(prev => ({ ...prev, [datasetHandle]: { loading: true, error: null } }))
+    try {
+      const res = await fetch(`${API_BASE}/discovery/dataset/${datasetHandle}/granules`, {
+        method: 'POST',
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ location: location.trim(), time_range: timeRange.trim() }),
+      })
+      if (!res.ok) throw new Error(await readErrorMessage(res))
+      const data = await res.json()
+      setGranules(prev => ({ ...prev, [datasetHandle]: { loading: false, error: null, ...data } }))
+    } catch (err) {
+      setGranules(prev => ({ ...prev, [datasetHandle]: { loading: false, error: err.message || 'Granule listing failed' } }))
+    }
+  }, [location, timeRange, authHeaders])
+
   return {
     query, setQuery,
     location, setLocation,
     timeRange, setTimeRange,
     results, loading, error,
-    previews, coverages,
-    search, preview, checkCoverage,
+    previews, coverages, granules,
+    search, preview, checkCoverage, inspectGranules,
   }
 }

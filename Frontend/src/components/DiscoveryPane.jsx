@@ -1,4 +1,27 @@
-function DatasetCard({ dataset, location, timeRange, preview, coverage, onPreview, onCoverage, onRetrieve }) {
+function GranulesTable({ granules }) {
+  return (
+    <table style={{ width: '100%', fontSize: '11px', borderCollapse: 'collapse', color: 'var(--text-secondary)' }}>
+      <thead>
+        <tr style={{ textAlign: 'left', color: 'var(--text-hint)' }}>
+          <th style={{ fontWeight: 500, paddingBottom: '2px' }}>Timestamp</th>
+          <th style={{ fontWeight: 500, paddingBottom: '2px' }}>Size</th>
+        </tr>
+      </thead>
+      <tbody>
+        {granules.map((granule, index) => (
+          <tr key={granule.granule_ur || index}>
+            <td style={{ padding: '2px 6px 2px 0' }}>{granule.time_start || '—'}</td>
+            <td style={{ padding: '2px 0' }}>
+              {typeof granule.size_mb === 'number' ? `${granule.size_mb.toFixed(1)} MB` : '—'}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
+
+function DatasetCard({ dataset, location, timeRange, preview, coverage, granules, onPreview, onCoverage, onGranules, onRetrieve }) {
   const handle = dataset.dataset_handle
 
   return (
@@ -47,6 +70,16 @@ function DatasetCard({ dataset, location, timeRange, preview, coverage, onPrevie
           Check coverage
         </button>
         <button
+          onClick={() => onGranules(handle)}
+          style={{
+            fontSize: '11px', padding: '4px 10px', borderRadius: '6px',
+            border: '1px solid var(--border)', background: 'transparent',
+            color: 'var(--text-secondary)', cursor: 'pointer',
+          }}
+        >
+          Granules
+        </button>
+        <button
           onClick={() => onRetrieve(dataset, location, timeRange)}
           style={{
             fontSize: '11px', padding: '4px 10px', borderRadius: '6px',
@@ -90,6 +123,26 @@ function DatasetCard({ dataset, location, timeRange, preview, coverage, onPrevie
             : 'No data for this area/window'}
         </div>
       )}
+
+      {granules?.loading && (
+        <div style={{ fontSize: '11px', color: 'var(--text-hint)' }}>Listing granules…</div>
+      )}
+      {granules?.error && (
+        <div style={{ fontSize: '11px', color: 'var(--error)' }}>{granules.error}</div>
+      )}
+      {granules && !granules.loading && !granules.error && granules.note && (
+        <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+          {granules.note.message}
+        </div>
+      )}
+      {granules && !granules.loading && !granules.error && Array.isArray(granules.granules) && granules.granules.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+            First {granules.limit_applied} — {granules.count} granule{granules.count === 1 ? '' : 's'}, {granules.total_size_mb.toFixed(1)} MB total
+          </div>
+          <GranulesTable granules={granules.granules} />
+        </div>
+      )}
     </div>
   )
 }
@@ -99,8 +152,8 @@ export default function DiscoveryPane({
   location, setLocation,
   timeRange, setTimeRange,
   results, loading, error,
-  previews, coverages,
-  onSearch, onPreview, onCoverage, onRetrieve,
+  previews, coverages, granules,
+  onSearch, onPreview, onCoverage, onGranules, onRetrieve,
 }) {
   return (
     <div style={{
@@ -199,8 +252,10 @@ export default function DiscoveryPane({
             timeRange={timeRange}
             preview={previews[dataset.dataset_handle]}
             coverage={coverages[dataset.dataset_handle]}
+            granules={granules[dataset.dataset_handle]}
             onPreview={onPreview}
             onCoverage={onCoverage}
+            onGranules={onGranules}
             onRetrieve={onRetrieve}
           />
         ))}
