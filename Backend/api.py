@@ -165,6 +165,7 @@ PUBLIC_ENDPOINTS = {
     ("GET", "/health"),
     ("GET", "/metrics"),
     ("GET", "/capabilities/starters"),
+    ("GET", "/config/map-tiles"),
     ("POST", "/auth/login"),
     ("POST", "/auth/register"),
 }
@@ -318,6 +319,21 @@ def metrics():
     return Response(content=render_prometheus_metrics(), media_type=prometheus_content_type())
 
 
+@app.get("/config/map-tiles")
+def config_map_tiles():
+    """T23: basemap/terrain tile sources as configuration, not code, so a
+    keyed or self-hosted provider can be swapped in without a redeploy.
+    Unauthenticated -- these are non-sensitive, static URLs the map needs
+    before the chart underneath it can even render."""
+    return {
+        "basemap_light_url": settings.map_basemap_light_url,
+        "basemap_dark_url": settings.map_basemap_dark_url,
+        "terrain_dem_url": settings.map_terrain_dem_url,
+        "basemap_attribution": settings.map_basemap_attribution,
+        "terrain_attribution": settings.map_terrain_attribution,
+    }
+
+
 @app.get("/capabilities/starters")
 def capabilities_starters():
     """T22: the empty-chat's example questions — unauthenticated so a
@@ -401,6 +417,30 @@ async def export_chart_png(chart_id: str, request: Request):
         media_type="image/png",
         headers={"Content-Disposition": f'attachment; filename="{export_service.safe_export_name(payload, "png")}"'},
     )
+
+
+def _chart_overlay_path(payload: dict, panel: int | None) -> str | None:
+    """Resolve the stored overlay PNG path for a chart, or its Nth panel /
+    difference panel for a heatmap_multi comparison (T23)."""
+    if payload.get("type") == "heatmap_multi":
+        if panel is not None:
+            panels = payload.get("panels") or []
+            if 0 <= panel < len(panels):
+                return (panels[panel].get("overlay") or {}).get("_path")
+            return None
+        return (payload.get("difference") or {}).get("overlay", {}).get("_path")
+    return (payload.get("overlay") or {}).get("_path")
+
+
+@app.get("/chart/{chart_id}/overlay.png")
+async def chart_overlay_png(chart_id: str, request: Request, panel: int | None = None):
+    payload = await _get_owned_chart(chart_id, request.state.current_user.id)
+    overlay_path = _chart_overlay_path(payload, panel)
+    if not overlay_path or not os.path.isfile(overlay_path):
+        raise HTTPException(status_code=404, detail="This chart has no rendered overlay.")
+    with open(overlay_path, "rb") as f:
+        content = f.read()
+    return Response(content=content, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/chart/{chart_id}/provenance")

@@ -5,6 +5,8 @@ import io
 import re
 from typing import Any, AsyncIterator, Iterable
 
+from utils.colormaps import resolve as resolve_colormap
+
 
 class ExportService:
     def __init__(self, csv_export_max_granules: int = 50):
@@ -100,7 +102,7 @@ class ExportService:
                 title=payload.get("title") or export.get("region_name") or "Chart",
                 extent=region["bounds"] if region else export.get("fetch_params", {}).get("bbox"),
                 mask_geometry=region["geometry"] if region else None,
-                cmap=payload.get("cmap") or export.get("chart_parameters", {}).get("cmap") or "Spectral_r",
+                cmap=payload.get("colormap", {}).get("name") or resolve_colormap(export.get("variable")).name,
             )
 
         fig.tight_layout()
@@ -158,7 +160,7 @@ class ExportService:
                 title=payload.get("title") or export.get("region_name") or "Chart",
                 extent=region["bounds"] if region else None,
                 mask_geometry=region["geometry"] if region else None,
-                cmap=payload.get("cmap") or export.get("chart_parameters", {}).get("cmap") or "Spectral_r",
+                cmap=payload.get("colormap", {}).get("name") or resolve_colormap(export.get("variable")).name,
             )
 
         fig.tight_layout()
@@ -540,7 +542,7 @@ class ExportService:
             da[lat_coord].values,
             da.values.astype(float),
             shading="auto",
-            cmap="Spectral_r",
+            cmap=resolve_colormap(export.get("variable")).name,
         )
         ax.set_title(title, fontsize=10)
         ax.set_xlabel("Longitude")
@@ -555,7 +557,7 @@ class ExportService:
             da[lat_coord].values,
             da.values.astype(float),
             shading="auto",
-            cmap="Spectral_r",
+            cmap=resolve_colormap(export.get("variable")).name,
         )
         ax.set_title(title, fontsize=10)
         ax.set_xlabel("Longitude")

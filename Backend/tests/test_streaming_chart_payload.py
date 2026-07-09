@@ -27,6 +27,32 @@ class ChartPayloadStreamingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chart_events[0]["chart_id"], "map_1")
         self.assertEqual(chart_events[0]["values"], [[1.0]])
 
+    async def test_stream_response_forwards_the_overlay_and_colormap_fields(self):
+        """T23: the overlay (url/bounds) and colormap (name/lut) fields added
+        to the heatmap payload must survive the emit_chart -> chart_payload
+        SSE round trip unchanged, same as any other payload key."""
+        from utils.streaming import emit_chart, stream_response
+
+        overlay = {"url": "/chart/map_1/overlay.png", "bounds": [-100.0, 10.0, -90.0, 20.0]}
+        colormap = {"name": "no2_omi", "lut": [[68, 1, 84, 255], [253, 231, 37, 255]]}
+
+        class FakeAgent:
+            async def astream(self, input_, config, stream_mode):
+                emit_chart({
+                    "type": "heatmap", "chart_id": "map_1", "values": [[1.0]],
+                    "overlay": overlay, "colormap": colormap,
+                })
+                await asyncio.sleep(0)
+                yield "messages", (SimpleNamespace(content="done", type="ai", tool_calls=None), {})
+
+        events = [event async for event in stream_response(FakeAgent(), "do it", "thread-1")]
+
+        chart_events = [data for event_type, data in events if event_type == "chart_payload"]
+
+        self.assertEqual(len(chart_events), 1)
+        self.assertEqual(chart_events[0]["overlay"], overlay)
+        self.assertEqual(chart_events[0]["colormap"], colormap)
+
     async def test_emit_chart_is_a_no_op_outside_a_stream_response_context(self):
         from utils.streaming import emit_chart
 

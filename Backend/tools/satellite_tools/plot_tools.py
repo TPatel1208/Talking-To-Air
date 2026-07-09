@@ -64,6 +64,8 @@ from earthdata_mcp.results import MCPToolError
 from services.artifact_registry import build_artifact_reference
 from services.open_handle import OpenHandleError, open_handle
 from utils.geo_utils import find_lat_coord, find_lon_coord
+from utils.colormaps import resolve as resolve_colormap
+from utils.overlay_render import render_overlay_png
 from utils.plotting import _normalize_to_2d, mask_data_by_geometry, RegionResolver
 from utils.streaming import emit_chart, emit_status
 from preprocessing.aggregation_service import AggregationService
@@ -105,6 +107,12 @@ def _sel_bounds(da, lat_coord, lon_coord, bounds):
 
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "outputs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# Overlay PNGs live outside OUTPUT_DIR on purpose: OUTPUT_DIR is mounted
+# unauthenticated at /outputs (api.py), and overlays must only be reachable
+# through the authenticated /chart/{id}/overlay.png route (T23).
+OVERLAY_STORE_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "overlay_store", "overlays")
+os.makedirs(OVERLAY_STORE_DIR, exist_ok=True)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -178,7 +186,26 @@ def _points_from_grid(lats: np.ndarray, lons: np.ndarray, arr: np.ndarray):
     }
 
 
-def _da_to_heatmap_payload(da, title: str, variable: str, units: str) -> dict:
+def _render_and_store_overlay(lats: np.ndarray, lons: np.ndarray, arr: np.ndarray, lut: list, vmin: float, vmax: float) -> str | None:
+    """Render the full-native-resolution overlay PNG and persist it to
+    OVERLAY_STORE_DIR. Returns the stored path, or None on failure -- a
+    failed render must degrade the chart (no overlay.url; the frontend
+    falls back to canvas-from-arrays), never fail the whole tool call."""
+    try:
+        png_bytes = render_overlay_png(lats, lons, arr, lut, vmin, vmax)
+        path = os.path.join(OVERLAY_STORE_DIR, f"{uuid.uuid4().hex}.png")
+        with open(path, "wb") as f:
+            f.write(png_bytes)
+        return path
+    except Exception:
+        logger.warning("overlay_render_failed", exc_info=True)
+        return None
+
+
+def _da_to_heatmap_payload(
+    da, title: str, variable: str, units: str, *,
+    diverging: bool = False, render_overlay: bool = False, value_range: tuple[float, float] | None = None,
+) -> dict:
     lat_coord = find_lat_coord(da)
     lon_coord = find_lon_coord(da)
     if lat_coord is None or lon_coord is None:
@@ -191,11 +218,35 @@ def _da_to_heatmap_payload(da, title: str, variable: str, units: str) -> dict:
 
     arr = da.values.astype(float)
     arr = np.where(np.isfinite(arr), arr, np.nan)
-    vmin, vmax = _percentile_bounds(arr)
+    # A caller may impose a shared/diverging scale across multiple panels
+    # (comparison_tools) -- the overlay below must colorize against that
+    # same range, or the rendered map and its legend would disagree about
+    # what a color means (T23's anti-drift guarantee).
+    vmin, vmax = value_range if value_range is not None else _percentile_bounds(arr)
 
     lats_out = da[lat_coord].values
     lons_out = da[lon_coord].values
     points = _points_from_grid(lats_out, lons_out, arr)
+
+    # Full-native-resolution extent, captured before downsampling, for the
+    # server-rendered overlay PNG (T23) — visual fidelity and interaction
+    # resolution are deliberately decoupled.
+    overlay_bounds = [
+        float(np.nanmin(lons_out)), float(np.nanmin(lats_out)),
+        float(np.nanmax(lons_out)), float(np.nanmax(lats_out)),
+    ]
+
+    colormap = resolve_colormap(variable, diverging=diverging)
+
+    overlay = {"bounds": overlay_bounds}
+    if render_overlay:
+        # Must run on the full-native-resolution grid, before _downsample_grid
+        # below thins lats_out/lons_out/arr for the JSON payload -- visual
+        # fidelity (PNG) is deliberately decoupled from interaction resolution
+        # (arrays).
+        overlay_path = _render_and_store_overlay(lats_out, lons_out, arr, colormap.lut, vmin, vmax)
+        if overlay_path is not None:
+            overlay["_path"] = overlay_path
 
     lats_out, lons_out, arr = _downsample_grid(lats_out, lons_out, arr)
 
@@ -215,6 +266,8 @@ def _da_to_heatmap_payload(da, title: str, variable: str, units: str) -> dict:
         "points":   points,
         "vmin": float(f"{vmin:.6e}"),
         "vmax": float(f"{vmax:.6e}"),
+        "colormap": {"name": colormap.name, "lut": colormap.lut},
+        "overlay": overlay,
     }
 
 def _heatmap_dims(payload: dict | None) -> list[int] | None:
@@ -280,6 +333,31 @@ def _chart_model_summary(payload: dict) -> dict:
     return summary
 
 
+def _wire_overlay_url(overlay: dict | None, url: str) -> None:
+    if isinstance(overlay, dict) and overlay.get("_path"):
+        overlay["url"] = url
+
+
+def _wire_overlay_urls(payload: dict) -> None:
+    """Turn each rendered overlay's internal `_path` into a servable `url`,
+    now that `_save_chart` has minted `chart_id` -- the render happens
+    earlier (asyncio.to_thread, before chart_id exists) with a `_path` that
+    only this process can read, never handed to the frontend directly."""
+    chart_id = payload.get("chart_id")
+    if not chart_id:
+        return
+
+    if payload.get("type") == "heatmap_multi":
+        for i, panel in enumerate(payload.get("panels") or []):
+            if isinstance(panel, dict):
+                _wire_overlay_url(panel.get("overlay"), f"/chart/{chart_id}/overlay.png?panel={i}")
+        difference = payload.get("difference")
+        if isinstance(difference, dict):
+            _wire_overlay_url(difference.get("overlay"), f"/chart/{chart_id}/overlay.png")
+    else:
+        _wire_overlay_url(payload.get("overlay"), f"/chart/{chart_id}/overlay.png")
+
+
 def _save_chart(payload: dict, name: str) -> str:
     """Emit the full chart payload out-of-band (frontend chart/artifact
     pipeline) and return a compact model-facing summary (T13).
@@ -306,6 +384,8 @@ def _save_chart(payload: dict, name: str) -> str:
             ref = None
         if ref is not None:
             payload["_artifact_refs"] = [ref.model_dump(exclude_none=True)]
+
+    _wire_overlay_urls(payload)
 
     emit_chart(payload)
     return json.dumps(_chart_model_summary(payload))
@@ -487,7 +567,7 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
                 resolved_title = f"{variable_name} over {region['name']}"
 
             try:
-                payload = _da_to_heatmap_payload(reduced, resolved_title, variable_name, units)
+                payload = _da_to_heatmap_payload(reduced, resolved_title, variable_name, units, render_overlay=True)
                 payload["cmap"]   = cmap or "Spectral_r"
                 payload["bounds"] = list(region["bounds"])  # (minx, miny, maxx, maxy)
                 payload["aggregation_meta"] = agg_meta
@@ -598,7 +678,7 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
                     reduced = next(iter(aggregation.ds.data_vars.values()))
                     reduced = _normalize_to_2d(reduced)
                     agg_meta = aggregation.meta
-                    panel = _da_to_heatmap_payload(reduced, region["name"], resolved_variable_name, units)
+                    panel = _da_to_heatmap_payload(reduced, region["name"], resolved_variable_name, units, render_overlay=True)
                     panel["cmap"]   = cmap or "Spectral_r"
                     panel["bounds"] = list(region["bounds"])
                     panel["aggregation_meta"] = agg_meta

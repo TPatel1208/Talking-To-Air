@@ -208,8 +208,9 @@ def _diverging_bounds(diff_da) -> tuple[float, float]:
 
 
 def _region_panel(da, handle: str, title: str, variable_name: str, units: str, vmin: float, vmax: float) -> dict:
-    panel = _da_to_heatmap_payload(da, title, variable_name, units)
-    panel["vmin"], panel["vmax"] = vmin, vmax
+    panel = _da_to_heatmap_payload(
+        da, title, variable_name, units, render_overlay=True, value_range=(vmin, vmax),
+    )
     panel["bounds"] = _bbox_from_da(da)
     panel["metadata"] = {"source_handles": [handle]}
     return panel
@@ -367,8 +368,10 @@ def _build_period_comparison(
     stats = _anomaly_stats(da_a_2d, da_b_2d, diff, threshold)
 
     vmin, vmax = _diverging_bounds(diff)
-    diff_payload = _da_to_heatmap_payload(diff, f"{variable_name}: {label_b} - {label_a}", variable_name, units)
-    diff_payload["vmin"], diff_payload["vmax"] = vmin, vmax
+    diff_payload = _da_to_heatmap_payload(
+        diff, f"{variable_name}: {label_b} - {label_a}", variable_name, units, diverging=True,
+        render_overlay=True, value_range=(vmin, vmax),
+    )
     diff_payload["bounds"] = _bbox_from_da(diff)
 
     payload = {
