@@ -255,7 +255,7 @@ class HandleVolume:
 
     def _path(self, handle: str) -> pathlib.Path:
         media_type, _ = self._factories[handle]
-        ext = {"zarr": ".zarr", "parquet": ".parquet"}[media_type]
+        ext = {"zarr": ".zarr", "parquet": ".parquet", "netcdf": ".nc"}[media_type]
         return self.root / f"{handle}{ext}"
 
     def _write(self, handle: str) -> None:
@@ -263,6 +263,14 @@ class HandleVolume:
         path = self._path(handle)
         if media_type == "zarr":
             factory().to_zarr(path, mode="w")
+        elif media_type == "netcdf":
+            # factory is a dict of group name (None for root) -> Dataset
+            # factory, all written into one file -- models grouped
+            # providers like TEMPO (root empty, variables under /product).
+            first = True
+            for group_name, make_dataset in factory.items():
+                make_dataset().to_netcdf(path, group=group_name, mode="w" if first else "a")
+                first = False
         else:
             import pyarrow.parquet as pq
 
@@ -274,6 +282,12 @@ class HandleVolume:
 
     def add_parquet(self, handle: str, make_table: Callable[[], Any]) -> None:
         self._factories[handle] = ("parquet", make_table)
+        self._write(handle)
+
+    def add_netcdf(self, handle: str, groups: dict[str | None, Callable[[], Any]]) -> None:
+        """Register a NetCDF4 handle from one Dataset factory per HDF5
+        group (key ``None`` for the root group)."""
+        self._factories[handle] = ("netcdf", groups)
         self._write(handle)
 
     def evict(self, handle: str) -> None:

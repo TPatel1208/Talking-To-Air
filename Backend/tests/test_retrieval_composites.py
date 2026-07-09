@@ -256,6 +256,71 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([s["stage"] for s in seen], ["estimate"])
 
+    async def test_safe_retrieve_omits_variables_for_a_collection_that_does_not_support_subsetting(self):
+        """TROPOMI_NO2 (datasets/collections.yaml) is registered with
+        supports_variable_subsetting: false -- without this gate,
+        safe_retrieve forwards the model's requested variables to
+        retrieve_subset unconditionally, and the MCP attempts a doomed
+        variable subset before falling back to a full-file retrieval on
+        every single call."""
+        from services.retrieval_composites import safe_retrieve
+
+        seen_variables = []
+
+        async def retrieve_subset(dataset_handle, aoi_handle, time_range, variables, output_format, workspace_id):
+            seen_variables.append(variables)
+            return {"job_handle": "job_new", "obs_handle": "obs_new"}
+
+        tools, settings, calls = await self._tools_and_settings(estimated_bytes=1000, retrieve_subset=retrieve_subset)
+
+        result = await safe_retrieve(
+            "dataset_tropomi", "aoi_1", "2024-01-01/2024-01-02", ["Tropospheric_NO2"], tools, settings=settings
+        )
+
+        self.assertEqual(result["status"], "submitted")
+        self.assertEqual(seen_variables, [[]])
+
+    async def test_safe_retrieve_still_forwards_variables_for_a_collection_that_supports_subsetting(self):
+        """TEMPO_NO2 is registered with supports_variable_subsetting: true --
+        the gate must not suppress variables for collections that actually
+        support it."""
+        from services.retrieval_composites import safe_retrieve
+
+        seen_variables = []
+
+        async def retrieve_subset(dataset_handle, aoi_handle, time_range, variables, output_format, workspace_id):
+            seen_variables.append(variables)
+            return {"job_handle": "job_new", "obs_handle": "obs_new"}
+
+        tools, settings, calls = await self._tools_and_settings(estimated_bytes=1000, retrieve_subset=retrieve_subset)
+
+        await safe_retrieve(
+            "dataset_tempo", "aoi_1", "2024-01-01/2024-01-02", ["vertical_column_troposphere"], tools,
+            settings=settings,
+        )
+
+        self.assertEqual(seen_variables, [["vertical_column_troposphere"]])
+
+    async def test_safe_retrieve_forwards_variables_unknown_to_the_registry_unchanged(self):
+        """A variable name the registry has never heard of must not be
+        silently dropped -- default to today's send-it-and-see behavior."""
+        from services.retrieval_composites import safe_retrieve
+
+        seen_variables = []
+
+        async def retrieve_subset(dataset_handle, aoi_handle, time_range, variables, output_format, workspace_id):
+            seen_variables.append(variables)
+            return {"job_handle": "job_new", "obs_handle": "obs_new"}
+
+        tools, settings, calls = await self._tools_and_settings(estimated_bytes=1000, retrieve_subset=retrieve_subset)
+
+        await safe_retrieve(
+            "dataset_unknown", "aoi_1", "2024-01-01/2024-01-02", ["some_unregistered_variable"], tools,
+            settings=settings,
+        )
+
+        self.assertEqual(seen_variables, [["some_unregistered_variable"]])
+
     async def test_safe_retrieve_refuses_above_hard_cap_even_if_confirmed(self):
         from services.retrieval_composites import safe_retrieve
 

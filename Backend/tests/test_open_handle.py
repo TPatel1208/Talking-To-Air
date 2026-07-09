@@ -246,5 +246,100 @@ class OpenHandleClassifiedErrorTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIsInstance(ctx.exception, OpenHandleError)
 
 
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES)
+    or (importlib.util.find_spec("netCDF4") is None and importlib.util.find_spec("h5netcdf") is None),
+    "open_handle grouped-netcdf test dependencies are not installed",
+)
+class OpenHandleGroupedNetcdfTests(unittest.IsolatedAsyncioTestCase):
+    """Some providers (e.g. TEMPO L3) nest their science variables under an
+    HDF5 subgroup such as /product and leave the root group's data_vars
+    empty. Before the fix, xr.open_dataset(path) alone returned that empty
+    root dataset and every downstream plot/statistics tool failed with
+    "Dataset has no data variables." even though the granule had real data."""
+
+    async def asyncSetUp(self):
+        from fake_earthdata_mcp import HandleVolume, build_fake_mcp, FakeEarthdataMCPServer
+        from earthdata_mcp.client import load_raw_mcp_tools
+        from config.settings import Settings
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.volume = HandleVolume(self._tmpdir.name)
+
+        server = FakeEarthdataMCPServer(build_fake_mcp({
+            "export_result": self.volume.export_result,
+            "rematerialize": self.volume.rematerialize,
+            "get_retrieval_status": self.volume.get_retrieval_status,
+        }))
+        server.start()
+        self.addCleanup(server.stop)
+        settings = Settings(earthdata_mcp_url=server.url, earthdata_mcp_token=None)
+        self.tools = await load_raw_mcp_tools(settings)
+
+    async def test_open_handle_descends_into_a_subgroup_when_root_has_no_data_vars(self):
+        import xarray as xr
+
+        from services.open_handle import open_handle
+
+        def make_root():
+            return xr.Dataset()
+
+        def make_product_group():
+            return xr.Dataset({
+                "vertical_column_troposphere": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]]),
+            })
+
+        self.volume.add_netcdf("obs_tempo", {None: make_root, "product": make_product_group})
+
+        ds = await open_handle("obs_tempo", self.tools)
+
+        self.assertIsInstance(ds, xr.Dataset)
+        self.assertIn("vertical_column_troposphere", ds.data_vars)
+
+    async def test_open_handle_merges_multiple_non_empty_subgroups(self):
+        import xarray as xr
+
+        from services.open_handle import open_handle
+
+        def make_root():
+            return xr.Dataset()
+
+        def make_product_group():
+            return xr.Dataset({
+                "vertical_column_troposphere": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]]),
+            })
+
+        def make_qa_group():
+            return xr.Dataset({
+                "qa_value": (("lat", "lon"), [[0.0, 0.0], [0.0, 0.0]]),
+            })
+
+        self.volume.add_netcdf("obs_tempo_multi", {
+            None: make_root,
+            "product": make_product_group,
+            "qa_statistics": make_qa_group,
+        })
+
+        ds = await open_handle("obs_tempo_multi", self.tools)
+
+        self.assertIn("vertical_column_troposphere", ds.data_vars)
+        self.assertIn("qa_value", ds.data_vars)
+
+    async def test_open_handle_leaves_a_genuinely_flat_netcdf_dataset_untouched(self):
+        import xarray as xr
+
+        from services.open_handle import open_handle
+
+        def make_flat():
+            return xr.Dataset({"no2": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]])})
+
+        self.volume.add_netcdf("obs_flat", {None: make_flat})
+
+        ds = await open_handle("obs_flat", self.tools)
+
+        self.assertIn("no2", ds.data_vars)
+
+
 if __name__ == "__main__":
     unittest.main()

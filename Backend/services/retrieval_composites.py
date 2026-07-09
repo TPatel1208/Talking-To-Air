@@ -17,12 +17,37 @@ from langchain_core.tools import BaseTool
 
 from config.settings import Settings, get_settings
 from config.workflow_stages import STAGE_ESTIMATE, STAGE_PROGRESS, STAGE_SUBMIT
+from datasets.registry import load_registry
 from earthdata_mcp.results import CATEGORY_TOO_LARGE, MCPToolError, parse_tool_result
 from utils.streaming import emit_job_progress, emit_status
 
 logger = logging.getLogger(__name__)
 
 TERMINAL_STATUSES = {"ready", "failed", "expired", "cancelled"}
+
+
+def _supports_variable_subsetting(variables: list[str]) -> bool:
+    """Best-effort registry check: False only when every requested variable
+    resolves to a collection explicitly marked ``supports_variable_subsetting:
+    false`` (a Harmony capability flag captured by
+    scripts/generate_collection.py). ``safe_retrieve`` only ever sees an
+    opaque ``dataset_handle``, not a collection id, so this matches by
+    variable short name instead -- a name that collides across registry
+    entries always agrees on this flag in practice, and an unregistered
+    name defaults to True (today's send-it-and-see behavior) rather than
+    guessing.
+    """
+    index: dict[str, bool] = {}
+    for cfg in load_registry().values():
+        names = {cfg.primary_var}
+        if cfg.quality_flag_var:
+            names.add(cfg.quality_flag_var)
+        names.update(v.rsplit("/", 1)[-1] for v in cfg.variables)
+        for name in names:
+            index[name] = cfg.supports_variable_subsetting or index.get(name, False)
+
+    resolved = [index[v] for v in variables if v in index]
+    return all(resolved) if resolved else True
 
 
 class RetrievalError(RuntimeError):
@@ -143,11 +168,15 @@ async def safe_retrieve(
         }
 
     emit_status("Submitting retrieval...", stage=STAGE_SUBMIT)
+    # Skip the doomed subset attempt entirely for collections the registry
+    # already knows don't support it (e.g. TROPOMI, MODIS AOD) -- avoids a
+    # wasted failed-subset-then-full-retrieval round trip on every call.
+    subset_variables = variables if _supports_variable_subsetting(variables) else []
     subset_raw = await tools["retrieve_subset"].ainvoke({
         "dataset_handle": dataset_handle,
         "aoi_handle": aoi_handle,
         "time_range": time_range,
-        "variables": variables,
+        "variables": subset_variables,
         "output_format": output_format,
     })
     subset = parse_tool_result(subset_raw)

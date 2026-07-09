@@ -87,7 +87,66 @@ def _open(storage_uri: str, media_type: str) -> Any:
 
         return pq.read_table(path)
     if "netcdf" in mt:
-        import xarray as xr
-
-        return xr.open_dataset(path)
+        return _open_netcdf(path)
     raise OpenHandleError(f"Unsupported media_type '{media_type}' for exported handle.")
+
+
+def _open_netcdf(path: str) -> Any:
+    """Open a NetCDF4 file, descending into HDF5 subgroups when the root
+    group carries no data variables.
+
+    Some providers (e.g. TEMPO L3) nest their science variables under a
+    subgroup such as /product and leave the root group empty --
+    xr.open_dataset(path) alone silently returns a dataset with no
+    data_vars, which AggregationService then reports as "Dataset has no
+    data variables." rather than any group-specific error. Detected
+    dynamically off the file itself (not the dataset registry) so it also
+    covers datasets collections.yaml hasn't been told about yet.
+    """
+    import xarray as xr
+
+    ds = xr.open_dataset(path)
+    if ds.data_vars:
+        return ds
+
+    group_datasets = []
+    for group_name in _list_subgroups(path):
+        try:
+            group_ds = xr.open_dataset(path, group=group_name)
+        except (OSError, ValueError):
+            continue
+        if group_ds.data_vars:
+            group_datasets.append(group_ds)
+
+    if not group_datasets:
+        return ds  # genuinely empty; caller surfaces the no-data-variables error
+    if len(group_datasets) == 1:
+        return group_datasets[0]
+
+    try:
+        return xr.merge(group_datasets, compat="override", join="override")
+    except (ValueError, xr.MergeError):
+        return group_datasets[0]
+
+
+def _list_subgroups(path: str) -> list[str]:
+    """Group names one level below the root. Tries netCDF4 first (the
+    declared production dependency) then h5netcdf (an xarray-supported
+    alternative some environments have instead) -- either backend's absence
+    or a file it can't open just means "no subgroups found", never a crash.
+    """
+    try:
+        import netCDF4
+
+        with netCDF4.Dataset(path, "r") as f:
+            return list(f.groups.keys())
+    except (ImportError, OSError):
+        pass
+
+    try:
+        import h5netcdf
+
+        with h5netcdf.File(path, "r") as f:
+            return list(f.groups.keys())
+    except (ImportError, OSError):
+        return []
