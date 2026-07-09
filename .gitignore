@@ -64,6 +64,9 @@ Thumbs.db
 # Test cache
 .pytest_cache/
 
+# Claude Code local config
+.claude/
+
 # Logs
 logs
 *.log
