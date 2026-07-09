@@ -345,6 +345,13 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(full["stats"]["Philly"]["mean"], 25.0)
         self.assertNotIn("difference", full)
 
+        # T23: each panel gets its own rendered overlay, colorized against
+        # the *shared* vmin/vmax (not each panel's own percentile bounds) --
+        # the anti-drift guarantee between the map and its legend.
+        chart_id = result["chart_id"]
+        self.assertEqual(full["panels"][0]["overlay"]["url"], f"/chart/{chart_id}/overlay.png?panel=0")
+        self.assertEqual(full["panels"][1]["overlay"]["url"], f"/chart/{chart_id}/overlay.png?panel=1")
+
         # (b) the model-facing result is the compact summary.
         self.assertEqual(result["render_type"], "heatmap_multi")
         for bulky_key in ("panels", "stats", "mode"):
@@ -416,6 +423,9 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(full["stats"]["percent_change"], 100.0)
         # Diverging, zero-centered scale.
         self.assertAlmostEqual(full["difference"]["vmin"], -full["difference"]["vmax"])
+
+        # T23: the difference panel gets a rendered overlay too.
+        self.assertEqual(full["difference"]["overlay"]["url"], f"/chart/{result['chart_id']}/overlay.png")
 
         # (b) the model-facing result is the compact summary, using the
         # difference grid's own dimensions/value range (T13).

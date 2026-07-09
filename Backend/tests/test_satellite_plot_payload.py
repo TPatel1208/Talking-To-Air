@@ -75,6 +75,108 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         self.assertLess(payload["vmin"], 4.0)
         self.assertGreater(payload["vmax"], 4.0)
 
+    def test_payload_attaches_the_resolved_colormap(self):
+        import numpy as np
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import _da_to_heatmap_payload
+        from utils.colormaps import resolve
+
+        da = xr.DataArray(
+            np.array([[1.0, 2.0], [3.0, 4.0]]),
+            dims=("lat", "lon"),
+            coords={"lat": [40.0, 41.0], "lon": [-75.0, -74.0]},
+        )
+
+        payload = _da_to_heatmap_payload(da, "TEMPO over NJ", "NO2", "mol/m^2")
+
+        expected = resolve("NO2")
+        self.assertEqual(payload["colormap"]["name"], expected.name)
+        self.assertEqual(payload["colormap"]["lut"], expected.lut)
+
+    def test_diverging_payload_attaches_the_diverging_colormap(self):
+        import numpy as np
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import _da_to_heatmap_payload
+        from utils.colormaps import resolve
+
+        da = xr.DataArray(
+            np.array([[-1.0, 2.0], [3.0, -4.0]]),
+            dims=("lat", "lon"),
+            coords={"lat": [40.0, 41.0], "lon": [-75.0, -74.0]},
+        )
+
+        payload = _da_to_heatmap_payload(da, "Diff", "NO2", "mol/m^2", diverging=True)
+
+        self.assertEqual(payload["colormap"]["name"], resolve("NO2", diverging=True).name)
+        self.assertEqual(payload["colormap"]["name"], "RdBu_r")
+
+    def test_payload_attaches_overlay_bounds_from_the_full_resolution_extent(self):
+        import numpy as np
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import _da_to_heatmap_payload
+
+        da = xr.DataArray(
+            np.ones((3, 4)),
+            dims=("lat", "lon"),
+            coords={"lat": np.linspace(10, 20, 3), "lon": np.linspace(-100, -90, 4)},
+        )
+
+        payload = _da_to_heatmap_payload(da, "Extent", "NO2", "mol/m^2")
+
+        self.assertEqual(payload["overlay"]["bounds"], [-100.0, 10.0, -90.0, 20.0])
+        self.assertNotIn("_path", payload["overlay"])
+
+    def test_value_range_override_drives_both_reported_bounds_and_overlay_colorization(self):
+        import io
+        import numpy as np
+        import matplotlib.image as mpimg
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import _da_to_heatmap_payload
+        from utils.colormaps import resolve
+
+        da = xr.DataArray(
+            np.full((6, 8), 5.0),
+            dims=("lat", "lon"),
+            coords={"lat": np.linspace(10, 20, 6), "lon": np.linspace(-100, -90, 8)},
+        )
+
+        # A caller (comparison_tools) overriding the natural percentile bounds
+        # with a shared/diverging scale -- the overlay must colorize against
+        # *this* range, not the value's own percentile bounds, or the map and
+        # its legend would disagree about what the color means.
+        payload = _da_to_heatmap_payload(
+            da, "Shared scale", "NO2", "mol/m^2", render_overlay=True, value_range=(0.0, 10.0),
+        )
+
+        self.assertEqual(payload["vmin"], 0.0)
+        self.assertEqual(payload["vmax"], 10.0)
+
+        with open(payload["overlay"]["_path"], "rb") as f:
+            decoded = mpimg.imread(io.BytesIO(f.read()), format="png")
+        center = np.array(decoded.shape[:2]) // 2
+        pixel = tuple((decoded[center[0], center[1]] * 255).round().astype(int))
+        expected = tuple(resolve("NO2").lut[128])  # 5.0 is the midpoint of [0, 10]
+        self.assertEqual(pixel, expected)
+
+    def test_render_overlay_true_persists_a_png_and_records_its_path(self):
+        import os
+        import numpy as np
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import _da_to_heatmap_payload
+
+        da = xr.DataArray(
+            np.linspace(0.0, 1.0, 12).reshape(3, 4),
+            dims=("lat", "lon"),
+            coords={"lat": np.linspace(10, 20, 3), "lon": np.linspace(-100, -90, 4)},
+        )
+
+        payload = _da_to_heatmap_payload(da, "Extent", "NO2", "mol/m^2", render_overlay=True)
+
+        path = payload["overlay"]["_path"]
+        self.assertTrue(os.path.isfile(path))
+        with open(path, "rb") as f:
+            self.assertTrue(f.read().startswith(b"\x89PNG\r\n\x1a\n"))
+
     def test_reproducibility_metadata_uses_source_handles(self):
         import xarray as xr
         from tools.satellite_tools.plot_tools import _attach_reproducibility
@@ -229,6 +331,63 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         self.assertEqual(ref["metadata"]["panels"][0]["handle"], "obs_1")
         self.assertEqual(ref["metadata"]["panels"][1]["handle"], "obs_2")
         self.assertEqual(ref["metadata"]["source_handles"], ["obs_1", "obs_2"])
+
+    def test_save_chart_wires_the_overlay_url_from_the_minted_chart_id(self):
+        import json
+        from tools.satellite_tools.plot_tools import _save_chart
+
+        payload = {"type": "heatmap", "title": "Has overlay", "overlay": {"bounds": [0, 0, 1, 1], "_path": "/tmp/x.png"}}
+
+        result = json.loads(_save_chart(payload, "n/a"))
+
+        self.assertEqual(payload["overlay"]["url"], f"/chart/{payload['chart_id']}/overlay.png")
+        # The internal filesystem path never reaches the model-facing summary.
+        self.assertNotIn("overlay", result)
+
+    def test_save_chart_leaves_overlay_url_unset_when_render_failed(self):
+        import json
+        from tools.satellite_tools.plot_tools import _save_chart
+
+        payload = {"type": "heatmap", "title": "No overlay", "overlay": {"bounds": [0, 0, 1, 1]}}
+
+        _save_chart(payload, "n/a")
+
+        self.assertNotIn("url", payload["overlay"])
+
+    def test_save_chart_wires_a_per_panel_overlay_url_for_heatmap_multi(self):
+        import json
+        from tools.satellite_tools.plot_tools import _save_chart
+
+        payload = {
+            "type": "heatmap_multi",
+            "title": "Comparison",
+            "panels": [
+                {"title": "A", "overlay": {"bounds": [0, 0, 1, 1], "_path": "/tmp/a.png"}},
+                {"title": "B", "overlay": {"bounds": [0, 0, 1, 1]}},  # render failed for B
+            ],
+        }
+
+        _save_chart(payload, "n/a")
+
+        chart_id = payload["chart_id"]
+        self.assertEqual(payload["panels"][0]["overlay"]["url"], f"/chart/{chart_id}/overlay.png?panel=0")
+        self.assertNotIn("url", payload["panels"][1]["overlay"])
+
+    def test_save_chart_wires_the_difference_overlay_url_for_heatmap_multi(self):
+        from tools.satellite_tools.plot_tools import _save_chart
+
+        payload = {
+            "type": "heatmap_multi",
+            "mode": "difference",
+            "title": "Diff",
+            "panels": [{"title": "A"}, {"title": "B"}],
+            "difference": {"overlay": {"bounds": [0, 0, 1, 1], "_path": "/tmp/diff.png"}},
+        }
+
+        _save_chart(payload, "n/a")
+
+        chart_id = payload["chart_id"]
+        self.assertEqual(payload["difference"]["overlay"]["url"], f"/chart/{chart_id}/overlay.png")
 
     def test_save_chart_omits_artifact_refs_for_an_unmapped_render_type(self):
         import json

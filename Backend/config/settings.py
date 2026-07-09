@@ -116,6 +116,32 @@ class Settings:
     jwt_algorithm: str = field(default_factory=lambda: os.getenv("JWT_ALGORITHM", "HS256"))
     jwt_expiration_minutes: int = field(default_factory=lambda: max(1, _int_env("JWT_EXPIRATION_MINUTES", 60)))
 
+    # T23 MapLibre basemap/terrain sources -- free-tier defaults, no API key.
+    # Configuration (not code) so a keyed/self-hosted provider can be swapped
+    # in without a redeploy as traffic grows; see the T23 PRD's "Further
+    # Notes" on these providers' lack of an SLA.
+    map_basemap_light_url: str = field(
+        default_factory=lambda: os.getenv(
+            "MAP_BASEMAP_LIGHT_URL", "https://basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png"
+        )
+    )
+    map_basemap_dark_url: str = field(
+        default_factory=lambda: os.getenv(
+            "MAP_BASEMAP_DARK_URL", "https://basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png"
+        )
+    )
+    map_terrain_dem_url: str = field(
+        default_factory=lambda: os.getenv(
+            "MAP_TERRAIN_DEM_URL", "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
+        )
+    )
+    map_basemap_attribution: str = field(
+        default_factory=lambda: os.getenv("MAP_BASEMAP_ATTRIBUTION", "© CARTO © OpenStreetMap contributors")
+    )
+    map_terrain_attribution: str = field(
+        default_factory=lambda: os.getenv("MAP_TERRAIN_ATTRIBUTION", "Terrain tiles: AWS Terrain Tiles")
+    )
+
     def __post_init__(self) -> None:
         if self.data_fetch_mode not in _VALID_FETCH_MODES:
             object.__setattr__(self, "data_fetch_mode", "auto")

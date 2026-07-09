@@ -1,5 +1,7 @@
 import { useMemo, useState, useEffect, useRef } from 'react'
-import { HeatmapPanel, HeatmapMultiPanel, TimeSeriesPanel, ChartToolbar, ProvenanceBlock } from './ChartMessage'
+import { TimeSeriesPanel, ChartToolbar, ProvenanceBlock } from './ChartMessage'
+import MapLibreHeatmapPanel from './MapLibreHeatmapPanel.jsx'
+import HeatmapMultiPanel from './HeatmapMultiPanel.jsx'
 import ArtifactMessage, { TableArtifactMessage } from './ArtifactMessage'
 import { computeChartStats, computeHistogram } from '../utils/chartStats'
 
@@ -207,8 +209,8 @@ export default function OutputPanel({ focusedOutput, accessToken }) {
       </div>
 
       <div ref={plotRootRef} style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '18px 22px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-        {activeTab === 'map' && chart.type === 'heatmap' && <HeatmapPanel payload={chart} height={480} />}
-        {activeTab === 'map' && chart.type === 'heatmap_multi' && <HeatmapMultiPanel payload={chart} />}
+        {activeTab === 'map' && chart.type === 'heatmap' && <MapLibreHeatmapPanel payload={chart} height={480} accessToken={accessToken} />}
+        {activeTab === 'map' && chart.type === 'heatmap_multi' && <HeatmapMultiPanel payload={chart} accessToken={accessToken} />}
         {activeTab === 'chart' && chart.type === 'timeseries' && <TimeSeriesPanel payload={chart} />}
         {activeTab === 'statistics' && <StatisticsTab chart={chart} />}
         {activeTab === 'histogram' && <HistogramTab chart={chart} />}

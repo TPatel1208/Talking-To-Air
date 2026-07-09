@@ -1,4 +1,4 @@
-import { flattenPayload } from '../components/ChartMessage'
+import { flattenPayload } from './flattenPayload.js'
 
 // Real summary stats derived from a chart payload's own values — never invented.
 export function computeChartStats(chart) {
