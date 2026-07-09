@@ -340,6 +340,53 @@ class OpenHandleGroupedNetcdfTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("no2", ds.data_vars)
 
+    async def test_open_handle_promotes_lat_lon_from_a_sibling_group_to_coordinates(self):
+        """TEMPO L3 (and similar grouped products like OMI L3) split their
+        science variable and its lon/lat into separate sibling subgroups
+        (/product and /geolocation) rather than nesting lon/lat under the
+        science group. Before the fix, both groups' variables merged in as
+        plain data_vars -- so find_lat_coord/find_lon_coord (which only
+        look at .coords) came up empty, and AggregationService.to_dataarray
+        could even pick "longitude" as the primary variable by accident
+        (dict iteration order put it before the real science variable)."""
+        import xarray as xr
+
+        from services.open_handle import open_handle
+        from preprocessing.aggregation_service import AggregationService
+        from utils.geo_utils import find_lat_coord, find_lon_coord
+
+        def make_root():
+            return xr.Dataset()
+
+        def make_geolocation_group():
+            return xr.Dataset({
+                "longitude": (("mirror_step", "xtrack"), [[-100.0, -99.0], [-100.0, -99.0]]),
+                "latitude": (("mirror_step", "xtrack"), [[30.0, 30.0], [31.0, 31.0]]),
+            })
+
+        def make_product_group():
+            return xr.Dataset({
+                "vertical_column_troposphere": (("mirror_step", "xtrack"), [[1.0, 2.0], [3.0, 4.0]]),
+            })
+
+        self.volume.add_netcdf("obs_tempo_geo", {
+            None: make_root,
+            "geolocation": make_geolocation_group,
+            "product": make_product_group,
+        })
+
+        ds = await open_handle("obs_tempo_geo", self.tools)
+
+        self.assertIn("vertical_column_troposphere", ds.data_vars)
+        self.assertNotIn("longitude", ds.data_vars)
+        self.assertIn("latitude", ds.coords)
+        self.assertIn("longitude", ds.coords)
+
+        da = AggregationService().to_dataarray(ds)
+        self.assertEqual(da.name, "vertical_column_troposphere")
+        self.assertEqual(find_lat_coord(da), "latitude")
+        self.assertEqual(find_lon_coord(da), "longitude")
+
 
 if __name__ == "__main__":
     unittest.main()
