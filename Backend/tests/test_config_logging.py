@@ -121,7 +121,7 @@ class ConfigLoggingTests(unittest.TestCase):
 
         with patch.dict(os.environ, {}, clear=True):
             loaded = Settings()
-        self.assertEqual(loaded.earthdata_agent_model, "openai/gpt-oss-120b")
+        self.assertEqual(loaded.earthdata_agent_model, "gemini-3.1-flash-lite")
 
         with patch.dict(os.environ, {"EARTHDATA_AGENT_MODEL": "some/other-model"}, clear=True):
             loaded = Settings()
@@ -142,7 +142,7 @@ class ConfigLoggingTests(unittest.TestCase):
             loaded = Settings()
 
         self.assertEqual(loaded.supervisor_model_provider, "google")
-        self.assertEqual(loaded.earthdata_agent_provider, "groq")
+        self.assertEqual(loaded.earthdata_agent_provider, "google")
         self.assertEqual(loaded.ground_agent_provider, "groq")
 
     def test_settings_loads_agent_provider_overrides(self):
@@ -166,7 +166,7 @@ class ConfigLoggingTests(unittest.TestCase):
     def test_validate_startup_requires_google_key_only_when_a_google_agent_is_configured(self):
         from config.settings import Settings
 
-        # Default posture: supervisor on google, both subagents on groq.
+        # Default posture: supervisor and earthdata agent on google, ground agent on groq.
         loaded = Settings(db_password="x", jwt_secret_key="x", google_api_key=None, groq_api_key="x")
         with self.assertRaisesRegex(RuntimeError, "GOOGLE_API_KEY"):
             loaded.validate_startup()
@@ -178,6 +178,7 @@ class ConfigLoggingTests(unittest.TestCase):
             google_api_key=None,
             groq_api_key="x",
             supervisor_model_provider="groq",
+            earthdata_agent_provider="groq",
         )
         loaded.validate_startup()
 
