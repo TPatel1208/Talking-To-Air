@@ -104,5 +104,65 @@ class EarthdataAgentPromptT22Tests(unittest.TestCase):
         self.assertIn("otherwise omit", prompt.lower())
 
 
+class EarthdataAgentPromptT25Phase4Tests(unittest.TestCase):
+    """T25 Phase 4: the prompt states the satellite arm is universal over
+    gridded Earthdata collections, that ground/cross-source confirmation is
+    an air-quality-only capability the agent must never promise elsewhere,
+    and instructs the agent to consume describe_dataset's variable metadata
+    and treat structured choice-errors as questions, not failures."""
+
+    def test_prompt_states_satellite_handles_any_gridded_collection(self):
+        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+
+        prompt = get_earthdata_agent_prompt().lower()
+
+        self.assertIn("any regularly-gridded", prompt)
+        self.assertIn("not in the preset table", prompt)
+
+    def test_prompt_names_the_out_of_scope_grid_refusals(self):
+        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+
+        prompt = get_earthdata_agent_prompt().lower()
+
+        self.assertIn("curvilinear", prompt)
+        self.assertIn("sinusoidal", prompt)
+
+    def test_prompt_never_promises_ground_confirmation_outside_air_quality(self):
+        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+
+        # Collapse whitespace so line wrapping in the prompt can't hide a phrase.
+        prompt = " ".join(get_earthdata_agent_prompt().lower().split())
+
+        self.assertIn("air-quality-only", prompt)
+        self.assertIn("no ground-truth confirmation step", prompt)
+        self.assertIn("never offer, promise, or imply", prompt)
+
+    def test_prompt_names_non_aq_domains_the_asymmetry_covers(self):
+        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+
+        prompt = get_earthdata_agent_prompt().lower()
+
+        self.assertIn("soil moisture", prompt)
+        self.assertIn("land surface temperature", prompt)
+
+    def test_prompt_instructs_using_describe_dataset_variable_metadata_to_choose(self):
+        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+
+        prompt = get_earthdata_agent_prompt()
+
+        self.assertIn("describe_dataset", prompt)
+        self.assertIn("long_name", prompt)
+        self.assertIn("advisory_notes", prompt)
+
+    def test_prompt_instructs_relaying_choice_errors_as_questions_not_failures(self):
+        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+
+        prompt = get_earthdata_agent_prompt()
+
+        self.assertIn("variable_choice_required", prompt)
+        self.assertIn("dimension_choice_required", prompt)
+        self.assertIn("not a failure", prompt.lower())
+
+
 if __name__ == "__main__":
     unittest.main()
