@@ -8,6 +8,7 @@ import pandas as pd
 import xarray as xr
 
 from datasets.mask_info import match_umm_var_variable, resolve_mask_info
+from datasets.qa_flags import resolve_qa_info
 from datasets.registry import load_registry
 from earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED, MCPToolError
 from services import variable_choice_registry
@@ -42,6 +43,7 @@ class AggregationService:
         umm_var_facts: Any = None,
         keep_time: bool = False,
         handle: str | None = None,
+        qa_good_tokens: list[str] | None = None,
     ) -> AggregatedResult:
         if stat not in self._STAT_FUNCS:
             raise ValueError(f"Unsupported aggregation stat '{stat}'. Valid: {sorted(self._STAT_FUNCS)}")
@@ -53,6 +55,25 @@ class AggregationService:
         resolved_col_info, masking_provenance = resolve_mask_info(
             yaml_info=yaml_info, umm_var_variable=umm_var_variable, cf_attrs=da.attrs,
         )
+
+        # T25 Phase 3: three-tier QA masking (datasets/qa_flags.py) -- a
+        # pinned collections.yaml rule, else the sibling flag variable's own
+        # CF flag_values/flag_meanings parsed deterministically (falling
+        # back to the agent's proposal for ambiguous tokens), else no mask.
+        # Always merged into the same masking-provenance disclosure so a
+        # caller never has to guess whether QA masking ran silently either.
+        qf_var, flag_attrs = self._resolve_qa_flag_var(data, da, yaml_info)
+        qa_col_info, qa_provenance = resolve_qa_info(
+            yaml_info=yaml_info,
+            flag_attrs=flag_attrs,
+            proposed_good_tokens=qa_good_tokens,
+            short_name=yaml_info.get("short_name"),
+        )
+        if qf_var:
+            resolved_col_info["quality_flag_var"] = qf_var
+        resolved_col_info.update(qa_col_info)
+        masking_provenance.update(qa_provenance)
+
         da = self.apply_quality_mask(
             da,
             data if isinstance(data, xr.Dataset) else None,
@@ -180,9 +201,50 @@ class AggregationService:
         qf_var = col_info.get("quality_flag_var")
         if apply_quality_flag and ds is not None and qf_var and qf_var in ds.data_vars:
             qf = ds[qf_var]
-            bad_mask = (qf == 2) if variable == "OMI_HCHO" else (qf != 0)
-            da = da.where(~bad_mask)
+            good_values = col_info.get("qa_good_values")
+            bad_values = col_info.get("qa_bad_values")
+            if good_values is not None:
+                da = da.where(qf.isin(good_values))
+            elif bad_values is not None:
+                da = da.where(~qf.isin(bad_values))
         return da
+
+    def _resolve_qa_flag_var(
+        self, data: xr.Dataset | xr.DataArray, da: xr.DataArray, yaml_info: dict[str, Any],
+    ) -> tuple[str | None, dict[str, Any]]:
+        """Locate the sibling QA-flag variable and its CF attrs, never
+        guessing between ambiguous candidates (T25 doctrine): a pinned
+        collections.yaml name -> the CF ``ancillary_variables`` attribute on
+        the science variable (the real CF convention for exactly this) ->
+        the single sibling data var carrying both ``flag_values`` and
+        ``flag_meanings``, if there is exactly one. Anything else (no
+        candidate, or more than one with no way to choose) resolves to no
+        flag var at all -- Tier 3, not a guess.
+        """
+        ds = data if isinstance(data, xr.Dataset) else None
+
+        qf_var = yaml_info.get("quality_flag_var")
+        if qf_var:
+            if ds is not None and qf_var in ds.data_vars:
+                return qf_var, dict(ds[qf_var].attrs)
+            return qf_var, {}
+
+        if ds is None:
+            return None, {}
+
+        ancillary = da.attrs.get("ancillary_variables")
+        if ancillary:
+            for candidate in str(ancillary).split():
+                if candidate in ds.data_vars:
+                    return candidate, dict(ds[candidate].attrs)
+
+        candidates = [
+            name for name, var in ds.data_vars.items()
+            if name != da.name and "flag_values" in var.attrs and "flag_meanings" in var.attrs
+        ]
+        if len(candidates) == 1:
+            return candidates[0], dict(ds[candidates[0]].attrs)
+        return None, {}
 
     def compute_values_stat(self, values: np.ndarray, stat: str) -> float:
         if stat not in self._STAT_FUNCS:

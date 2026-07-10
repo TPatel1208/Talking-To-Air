@@ -41,6 +41,12 @@ is already correct, proved by work this PRD explicitly depends on:
     a multi-variable file / an unselected vertical level now raise
     CATEGORY_VARIABLE_CHOICE_REQUIRED / CATEGORY_DIMENSION_CHOICE_REQUIRED
     instead of guessing.
+  - The Category C QA-tier rows graduated in Phase 3 (three-tier QA
+    masking): datasets/qa_flags.py parses a variable's CF flag_values/
+    flag_meanings deterministically, and AggregationService.aggregate()
+    always stamps result.meta["masking"]["qa_status"] (verified/
+    cf-deterministic/inferred, not verified/not applied) instead of leaving
+    QA masking unstated.
 
 Row-count note: the PRD's Acceptance Matrix paragraph is a summary of roles
 ("TEMPO SO2/Aerosol, OMAERUVd, OMAEROe, OMSO2e -> unregistered tier-1 rows",
@@ -278,7 +284,7 @@ async def test_unselected_vertical_dimension_raises_a_candidate_listing_error(in
     )
 
 
-# ── Category C: QA-tier rows (Phase 3) ──────────────────────────────────────
+# ── Category C: QA-tier rows (Phase 3, graduated) ───────────────────────────
 #
 # Phase 0 picks (per this task's instruction, recorded here): OMSO2e is the
 # flag_meanings row — OMI SO2's published QA is a CF flag_values/flag_meanings
@@ -287,35 +293,34 @@ async def test_unselected_vertical_dimension_raises_a_candidate_listing_error(in
 # atmosphere QA is documented as bit-packed integers described in ATBD prose,
 # not a CF flag_meanings array, the shape Tier 2 must degrade from (no mask,
 # or an explicitly "inferred, not verified" model-proposed one).
+#
+# Both rows graduated in Phase 3: datasets/qa_flags.py parses a variable's CF
+# flag_values/flag_meanings deterministically (AggregationService.aggregate
+# locates the sibling flag variable via the CF `ancillary_variables` pointer,
+# or the sole sibling carrying both attrs) and always stamps
+# result.meta["masking"]["qa_status"] -- verified/cf-deterministic/inferred,
+# not verified/not applied, never silent.
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason=(
-        "T25 Phase 3 (QA tiers): CF flag_values/flag_meanings are not yet parsed into a "
-        "deterministic mask, and no 'cf-deterministic' provenance tag is recorded anywhere."
-    ),
-    strict=False,
-)
 async def test_flag_meanings_dataset_gets_a_deterministic_cf_mask(invoke):
     from preprocessing.aggregation_service import AggregationService
 
     row = _Row("omso2e_flag_meanings_qa", "OMSO2e")
-    ds = await _open_after_retrieval(invoke, row)
-    result = AggregationService().aggregate(ds)
+    # Explicit science variable + its QA sibling (PRD resolution order:
+    # explicit param wins) so this row exercises QA disclosure without
+    # depending on Phase 2's variable-choice error landing first -- same
+    # safety net as the prose-only-QA row below. Illustrative names, not
+    # concept-ID-pinned by the PRD -- a wrong spelling still skips cleanly
+    # via retrieve_subset.
+    variable = "ColumnAmountSO2_PBL"
+    qa_variable = "QualityFlags_PBL"
+    ds = await _open_after_retrieval(invoke, row, variables=[variable, qa_variable])
+    result = AggregationService().aggregate(ds, variable=variable)
     masking = result.meta.get("masking", {})
     assert masking.get("qa_status") == "cf-deterministic", f"{row.id}: expected a deterministic CF flag_meanings mask, got masking={masking}"
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason=(
-        "T25 Phase 3 (QA tiers) / Phase 1 (masking disclosure): a prose-only-QA product should "
-        "either skip masking with 'quality flags: not applied — semantics unknown' in meta, or "
-        "carry an explicit 'inferred, not verified' tag — today aggregation meta says nothing "
-        "about QA at all."
-    ),
-    strict=False,
-)
 async def test_prose_only_qa_dataset_discloses_no_mask_or_an_inferred_tag(invoke):
     from preprocessing.aggregation_service import AggregationService
 
