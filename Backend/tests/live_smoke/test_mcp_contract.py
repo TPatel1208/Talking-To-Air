@@ -124,6 +124,21 @@ class LiveMCPContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(export_result.get("status"), "ready")
         self.assertIn("storage_uri", export_result, f"export_result missing 'storage_uri': {export_result}")
 
+        # T24 anti-lying-mirror: open the real exported granule and assert the
+        # canonical identifier finds its lat/lon. The synthetic test matrix
+        # enumerates the structural shapes of Earthdata files; this pins one
+        # real Harmony round-trip to those shapes, so a divergence between
+        # what we synthesize and what the MCP actually exports (the gap that
+        # let the original empty-coords crash ship) fails loudly here.
+        from services.open_handle import _open
+        from preprocessing.aggregation_service import AggregationService
+        from utils.geo_utils import find_lat_coord, find_lon_coord
+
+        ds = _open(export_result["storage_uri"], export_result.get("media_type", "netcdf"))
+        da = AggregationService().to_dataarray(ds)
+        self.assertIsNotNone(find_lat_coord(da), f"no latitude coord found on exported granule; coords={list(da.coords)}")
+        self.assertIsNotNone(find_lon_coord(da), f"no longitude coord found on exported granule; coords={list(da.coords)}")
+
     async def test_inspect_granules_uses_the_real_contract_keys(self):
         # T21: the discovery pane's granule-inspection endpoint calls this
         # tool directly (services/discovery_service.py) — proves the real

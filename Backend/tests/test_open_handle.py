@@ -387,6 +387,98 @@ class OpenHandleGroupedNetcdfTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(find_lat_coord(da), "latitude")
         self.assertEqual(find_lon_coord(da), "longitude")
 
+    async def test_open_handle_promotes_cf_identified_latlon_with_unusual_names(self):
+        """T24: the promotion site keys on CF metadata, not a name allowlist,
+        so a grouped product whose lat/lon are named 'y'/'x' (a spelling the
+        allowlist would never guess) but carry standard_name latitude/
+        longitude is still attached and resolvable -- covering datasets not
+        on disk by the contract they publish against."""
+        import xarray as xr
+
+        from services.open_handle import open_handle
+        from preprocessing.aggregation_service import AggregationService
+        from utils.geo_utils import find_lat_coord, find_lon_coord
+
+        def make_root():
+            return xr.Dataset()
+
+        def make_geolocation_group():
+            return xr.Dataset({
+                "x": (("mirror_step", "xtrack"), [[-100.0, -99.0], [-100.0, -99.0]], {"standard_name": "longitude"}),
+                "y": (("mirror_step", "xtrack"), [[30.0, 30.0], [31.0, 31.0]], {"standard_name": "latitude"}),
+            })
+
+        def make_product_group():
+            return xr.Dataset({
+                "vertical_column_troposphere": (("mirror_step", "xtrack"), [[1.0, 2.0], [3.0, 4.0]]),
+            })
+
+        self.volume.add_netcdf("obs_cf_named", {
+            None: make_root,
+            "geolocation": make_geolocation_group,
+            "product": make_product_group,
+        })
+
+        ds = await open_handle("obs_cf_named", self.tools)
+
+        self.assertIn("vertical_column_troposphere", ds.data_vars)
+        self.assertIn("y", ds.coords)
+        self.assertIn("x", ds.coords)
+        self.assertNotIn("y", ds.data_vars)
+
+        da = AggregationService().to_dataarray(ds)
+        self.assertEqual(da.name, "vertical_column_troposphere")
+        self.assertEqual(find_lat_coord(da), "y")
+        self.assertEqual(find_lon_coord(da), "x")
+
+    async def test_open_handle_keeps_root_group_coordinates_when_science_var_is_in_a_subgroup(self):
+        """TEMPO L3, subset to a single variable, splits its science
+        variable into /product but leaves latitude/longitude/time as
+        coordinate variables in the *root* group (no data_vars there).
+        Before the fix, _open_netcdf popped that coord-only root group and
+        returned /product alone -- so the DataArray arrived with zero
+        coordinates and every plot/statistics tool failed with "Could not
+        find lat/lon coordinates. Available coords: []" even though the
+        grid was in the file. Reproduced against the real
+        252241949_TEMPO_NO2_L3_V04_...subsetted.nc4 granule."""
+        import xarray as xr
+
+        from services.open_handle import open_handle
+        from preprocessing.aggregation_service import AggregationService
+        from utils.geo_utils import find_lat_coord, find_lon_coord
+
+        def make_root():
+            # coord-only root: lat/lon/time as coordinate variables, no data_vars
+            return xr.Dataset(coords={
+                "longitude": ("longitude", [-75.0, -74.0]),
+                "latitude": ("latitude", [40.0, 41.0]),
+                "time": ("time", [0]),
+            })
+
+        def make_product_group():
+            return xr.Dataset({
+                "vertical_column_troposphere": (
+                    ("time", "latitude", "longitude"),
+                    [[[1.0, 2.0], [3.0, 4.0]]],
+                ),
+            })
+
+        self.volume.add_netcdf("obs_tempo_l3_rootcoords", {
+            None: make_root,
+            "product": make_product_group,
+        })
+
+        ds = await open_handle("obs_tempo_l3_rootcoords", self.tools)
+
+        self.assertIn("vertical_column_troposphere", ds.data_vars)
+        self.assertIn("latitude", ds.coords)
+        self.assertIn("longitude", ds.coords)
+
+        da = AggregationService().to_dataarray(ds)
+        self.assertEqual(da.name, "vertical_column_troposphere")
+        self.assertEqual(find_lat_coord(da), "latitude")
+        self.assertEqual(find_lon_coord(da), "longitude")
+
 
 if __name__ == "__main__":
     unittest.main()

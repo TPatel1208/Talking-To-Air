@@ -219,6 +219,32 @@ class SatelliteToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["peak_lon"], 40.0)
         self.assertEqual(payload["source_handles"], ["obs_peak"])
 
+    async def test_find_daily_peak_resolves_cf_identified_axes_with_unusual_names(self):
+        """T24: the peak search identifies lat/lon by CF metadata, so a grid
+        whose axes are named 'row'/'col' (unknown to any name allowlist) but
+        carry standard_name latitude/longitude still yields a peak."""
+        import xarray as xr
+
+        def make_dataset():
+            return xr.Dataset(
+                {"no2": (("row", "col"), [[1.0, 2.0], [3.0, 9.0]], {"units": "mol/m^2"})},
+                coords={
+                    "row": ("row", [10.0, 20.0], {"standard_name": "latitude"}),
+                    "col": ("col", [30.0, 40.0], {"standard_name": "longitude"}),
+                },
+            )
+
+        self.volume.add_zarr("obs_peak_cf", make_dataset)
+
+        find_daily_peak = self._tool("find_daily_peak")
+        result = await find_daily_peak.ainvoke({"handle": "obs_peak_cf", "location": "global"})
+        payload = json.loads(result)
+
+        self.assertNotIn("error", payload)
+        self.assertEqual(payload["peak_value"], 9.0)
+        self.assertEqual(payload["peak_lat"], 20.0)
+        self.assertEqual(payload["peak_lon"], 40.0)
+
     async def test_factory_registers_the_t07_validation_tools(self):
         self.assertIsNotNone(self._tool("validate_against_ground"))
         self.assertIsNotNone(self._tool("exceedance_overlay"))

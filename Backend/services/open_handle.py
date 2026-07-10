@@ -126,11 +126,18 @@ def _open_netcdf(path: str) -> Any:
     group_datasets = [g for g in groups.values() if g.data_vars]
     if not group_datasets:
         return root if root is not None else xr.Dataset()
-    if len(group_datasets) == 1:
-        return _promote_lat_lon_coords(group_datasets[0])
 
+    # The root group can carry the shared grid coordinates (lat/lon/time)
+    # with no data_vars of its own -- a TEMPO L3 single-variable subset
+    # splits the science variable into /product but leaves latitude,
+    # longitude and time as coordinate variables in the root. Merge the
+    # root back in so those coordinates ride along with the science
+    # variable; drop it and find_lat_coord sees an empty coord set and
+    # every plot/statistics tool fails with "Could not find lat/lon
+    # coordinates." even though the granule's grid was right there.
+    to_merge = group_datasets if root is None else [root, *group_datasets]
     try:
-        merged = xr.merge(group_datasets, compat="override", join="override")
+        merged = xr.merge(to_merge, compat="override", join="override")
     except (ValueError, xr.MergeError):
         merged = group_datasets[0]
     return _promote_lat_lon_coords(merged)
@@ -159,9 +166,13 @@ def _promote_lat_lon_coords(ds: Any) -> Any:
     data variables, so they survive variable selection (e.g.
     AggregationService.to_dataarray) instead of being dropped -- or, worse,
     mistaken for the science variable -- when a grouped product splits its
-    lon/lat into a sibling subgroup from its science data."""
-    from utils.geo_utils import LAT_COORD_CANDIDATES, LON_COORD_CANDIDATES
+    lon/lat into a sibling subgroup from its science data.
 
-    candidates = set(LAT_COORD_CANDIDATES) | set(LON_COORD_CANDIDATES)
-    to_promote = [name for name in ds.data_vars if name in candidates]
+    Identification is the canonical CF-metadata-primary one (T24), so a
+    product whose lat/lon carry standard_name/units under a spelling no
+    name allowlist would guess is still promoted."""
+    from utils.geo_utils import identify_lat, identify_lon
+
+    identified = [identify_lat(ds), identify_lon(ds)]
+    to_promote = [name for name in identified if name in ds.data_vars]
     return ds.set_coords(to_promote) if to_promote else ds
