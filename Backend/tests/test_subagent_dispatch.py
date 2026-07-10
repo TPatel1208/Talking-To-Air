@@ -56,6 +56,52 @@ class HelperTests(unittest.TestCase):
         enriched = _inject_ground_context("Give daily NO2 summary for NJ in Jan 2024.", context)
         self.assertNotIn("pollutant=", enriched)
 
+    def test_satellite_context_captures_dataset_aoi_and_handles_from_tool_calls(self):
+        from services.subagent_dispatch import _capture_satellite_context
+
+        captured: dict[str, str] = {}
+        _capture_satellite_context("search_datasets", {"query": "TEMPO_NO2"}, captured)
+        _capture_satellite_context("define_area_of_interest", {"location": "New Jersey"}, captured)
+        _capture_satellite_context(
+            "check_coverage",
+            {"dataset_handle": "dataset_ab12", "aoi_handle": "aoi_cd34", "time_range": "2024-06-01/2024-06-07"},
+            captured,
+        )
+
+        self.assertEqual(captured["dataset_query"], "TEMPO_NO2")
+        self.assertEqual(captured["location"], "New Jersey")
+        self.assertEqual(captured["dataset_handle"], "dataset_ab12")
+        self.assertEqual(captured["aoi_handle"], "aoi_cd34")
+        self.assertEqual(captured["last_time_range"], "2024-06-01/2024-06-07")
+
+    def test_satellite_context_capture_ignores_non_dict_args(self):
+        from services.subagent_dispatch import _capture_satellite_context
+
+        captured: dict[str, str] = {}
+        _capture_satellite_context("plot_singular", None, captured)
+        self.assertEqual(captured, {})
+
+    def test_satellite_context_injection_frames_handles_as_unverified_and_demands_recheck(self):
+        from services.subagent_dispatch import _inject_satellite_context
+
+        enriched = _inject_satellite_context(
+            "Pick an available date.",
+            {"dataset_query": "TEMPO_NO2", "location": "New Jersey", "dataset_handle": "dataset_ab12"},
+        )
+
+        self.assertIn("dataset=TEMPO_NO2", enriched)
+        self.assertIn("dataset_handle=dataset_ab12", enriched)
+        self.assertIn("location=New Jersey", enriched)
+        # The continuation must not be handed a stale availability verdict.
+        self.assertIn("UNVERIFIED", enriched)
+        self.assertIn("re-run check_coverage/check_availability", enriched)
+        self.assertTrue(enriched.endswith("Pick an available date."))
+
+    def test_satellite_context_injection_is_a_noop_without_context(self):
+        from services.subagent_dispatch import _inject_satellite_context
+
+        self.assertEqual(_inject_satellite_context("task", {}), "task")
+
     def test_finalize_sub_agent_result_resolves_matching_artifact_ids_and_handles(self):
         from services.subagent_dispatch import _finalize_sub_agent_result
         from models import AgentResult
@@ -482,6 +528,75 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.text, "Plotted NO2 over NJ.")
         forwarded_types = [event_type for event_type, _ in forwarded]
         self.assertIn("tool_call", forwarded_types)
+
+    async def test_run_satellite_reads_and_injects_persisted_retrieval_context(self):
+        from services import subagent_dispatch
+
+        envelope = json.dumps({"summary": "Plotted NO2 over NJ.", "artifact_ids": [], "handles": []})
+
+        class FakeSatelliteAgent:
+            def __init__(self):
+                self.invoked_with = None
+
+            async def astream(self, input_, config, stream_mode):
+                self.invoked_with = input_["messages"][0]["content"]
+                yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
+
+        satellite_agent = FakeSatelliteAgent()
+        subagent_dispatch.get_call_budget().clear()
+
+        with patch.object(
+            subagent_dispatch,
+            "get_satellite_context",
+            AsyncMock(return_value={"dataset_query": "TEMPO_NO2", "location": "New Jersey"}),
+        ), patch.object(subagent_dispatch, "save_satellite_context", AsyncMock()) as save_mock:
+            result = await subagent_dispatch.run_satellite(
+                satellite_agent, "pick a date in that range", "thread-1",
+            )
+
+        self.assertIn("dataset=TEMPO_NO2", satellite_agent.invoked_with)
+        self.assertIn("location=New Jersey", satellite_agent.invoked_with)
+        self.assertIn("UNVERIFIED", satellite_agent.invoked_with)
+        self.assertEqual(result.text, "Plotted NO2 over NJ.")
+        save_mock.assert_not_called()  # this turn issued no capturable tool calls
+
+    async def test_run_satellite_persists_captured_retrieval_context(self):
+        from services import subagent_dispatch
+
+        envelope = json.dumps({"summary": "No data for June 5.", "artifact_ids": [], "handles": []})
+
+        class FakeSatelliteAgent:
+            async def astream(self, input_, config, stream_mode):
+                yield "updates", {
+                    "agent": {"messages": [SimpleNamespace(
+                        tool_calls=[{
+                            "id": "tc1",
+                            "name": "check_coverage",
+                            "args": {
+                                "dataset_handle": "dataset_ab12",
+                                "aoi_handle": "aoi_cd34",
+                                "time_range": "2024-06-05/2024-06-05",
+                            },
+                        }],
+                        content="",
+                    )]},
+                }
+                await asyncio.sleep(0)
+                yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
+
+        subagent_dispatch.get_call_budget().clear()
+
+        with patch.object(subagent_dispatch, "get_satellite_context", AsyncMock(return_value={"location": "New Jersey"})), \
+             patch.object(subagent_dispatch, "save_satellite_context", AsyncMock()) as save_mock:
+            await subagent_dispatch.run_satellite(FakeSatelliteAgent(), "check June 5", "thread-1")
+
+        save_mock.assert_awaited_once()
+        saved_thread_id, saved_context = save_mock.await_args.args
+        self.assertEqual(saved_thread_id, "thread-1")
+        # Merged over the prior context, not replacing it.
+        self.assertEqual(saved_context["location"], "New Jersey")
+        self.assertEqual(saved_context["dataset_handle"], "dataset_ab12")
+        self.assertEqual(saved_context["last_time_range"], "2024-06-05/2024-06-05")
 
     async def test_run_satellite_second_call_in_the_same_task_is_budget_blocked(self):
         from services import subagent_dispatch
