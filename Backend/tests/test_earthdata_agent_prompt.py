@@ -74,6 +74,26 @@ class EarthdataAgentPromptT20Tests(unittest.TestCase):
         self.assertIn("conduct_temporal_statistic", prompt)
 
 
+class EarthdataAgentPromptAvailabilityGroundingTests(unittest.TestCase):
+    """Talking-to-air fix B: the agent must never assert availability from a
+    prior claim quoted back in the task — only from a this-turn coverage check."""
+
+    def test_prompt_forbids_stating_availability_without_a_this_turn_check(self):
+        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+
+        # Collapse whitespace so line wrapping in the prompt can't hide a phrase.
+        prompt = " ".join(get_earthdata_agent_prompt().lower().split())
+
+        self.assertIn("this turn", prompt)
+        self.assertIn("not evidence", prompt)
+        # Availability guidance appears before the No-Data Protocol acts on it.
+        full = get_earthdata_agent_prompt()
+        self.assertLess(
+            full.index("Availability must be tool-grounded"),
+            full.index("## No-Data Protocol"),
+        )
+
+
 class EarthdataAgentPromptT22Tests(unittest.TestCase):
     def test_prompt_offers_the_optional_suggested_followups_envelope_key(self):
         from config.earthdata_agent_prompt import get_earthdata_agent_prompt

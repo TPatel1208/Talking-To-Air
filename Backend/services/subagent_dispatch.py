@@ -26,7 +26,12 @@ from earthdata_mcp.connection import STATE_READY
 from earthdata_mcp.results import CATEGORY_CONTRACT, CATEGORY_PROVIDER_UNAVAILABLE
 from models import AgentResult, SubAgentEnvelope, parse_agent_result, parse_chart_payload, parse_sub_agent_envelope
 from models.artifact import ArtifactReference
-from repositories.session_metadata_repository import get_ground_monitor_context, save_ground_monitor_context
+from repositories.session_metadata_repository import (
+    get_ground_monitor_context,
+    get_satellite_context,
+    save_ground_monitor_context,
+    save_satellite_context,
+)
 from tools import GROUND_TOOLS
 from tools.satellite_tools.factory import sanctioned_tool_names
 from utils.message_utils import extract_last_text, truncate_text
@@ -190,7 +195,17 @@ async def run_satellite(
     budget["satellite"] = count + 1
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    enriched_task = f"[Current UTC time: {now}]\n\n{task}"
+    # Cross-turn retrieval context (dataset/AOI/handles the last satellite turn
+    # on this thread worked with). The fast path writes only the prose answer
+    # back into the supervisor's thread, so a follow-up that drops to the
+    # supervisor ("pick a date in that range") otherwise arrives with no
+    # concrete dataset/AOI/handles to continue from — the earthdata agent then
+    # re-derives from the paraphrased answer and can confabulate. Injected here
+    # as UNVERIFIED context (never an availability verdict) so the agent reuses
+    # the handles but still re-checks coverage.
+    satellite_context = await _load_satellite_context(conversation_thread_id)
+    enriched_task = _inject_satellite_context(f"[Current UTC time: {now}]\n\n{task}", satellite_context)
+    captured_context: dict[str, str] = {}
 
     async def _invoke(task_text: str) -> AgentResult:
         charts = []
@@ -205,6 +220,9 @@ async def run_satellite(
             ):
                 if on_event is not None:
                     await on_event(event_type, data)
+                if event_type == "tool_call":
+                    _capture_satellite_context(data.get("name"), data.get("args"), captured_context)
+                    continue
                 if event_type == "chart_payload":
                     # T13: plot/statistics tools emit the full render
                     # payload out-of-band via emit_chart and return the
@@ -266,7 +284,12 @@ async def run_satellite(
         )
         result = await _reprompt_final_envelope(satellite_agent, _satellite_retry_task(enriched_task), "satellite")
 
-    return _finalize_sub_agent_result(result, "earthdata")
+    finalized = _finalize_sub_agent_result(result, "earthdata")
+    if captured_context and conversation_thread_id:
+        await _persist_satellite_context(
+            conversation_thread_id, {**satellite_context, **captured_context}
+        )
+    return finalized
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -474,6 +497,89 @@ def _extract_ground_monitor_context(text: str) -> dict[str, str]:
         context["latitude"] = coord_match.group(1)
         context["longitude"] = coord_match.group(2)
     return context
+
+
+async def _load_satellite_context(conversation_thread_id: str | None) -> dict[str, str]:
+    """Best-effort read of this thread's satellite retrieval context. Memory
+    degradation (no thread id, or a transient DB failure) is acceptable — the
+    turn still answers, just without the continuation shortcut — but it is
+    logged, never silent (same policy as the fast-path write-back)."""
+    if not conversation_thread_id:
+        return {}
+    try:
+        return await get_satellite_context(conversation_thread_id)
+    except Exception:
+        logger.warning(
+            "satellite_context_load_failed",
+            exc_info=True,
+            extra={"_thread_id": conversation_thread_id},
+        )
+        return {}
+
+
+async def _persist_satellite_context(conversation_thread_id: str, context: dict[str, str]) -> None:
+    try:
+        await save_satellite_context(conversation_thread_id, context)
+    except Exception:
+        logger.warning(
+            "satellite_context_save_failed",
+            exc_info=True,
+            extra={"_thread_id": conversation_thread_id},
+        )
+
+
+def _capture_satellite_context(name: Any, args: Any, captured: dict[str, str]) -> None:
+    """Record the dataset/AOI/handles a satellite turn worked with, read from
+    the tool-call arguments the agent already emits (never from parsed tool
+    results — the call args are structured and stable). ``search_datasets``'
+    query and ``define_area_of_interest``'s location name the dataset/place in
+    the researcher's own terms; the ``dataset_handle``/``aoi_handle``/
+    ``time_range`` that later coverage/preview/retrieve calls carry are the
+    workspace handles a follow-up can reuse to skip re-searching."""
+    if not isinstance(args, dict):
+        return
+    if name == "search_datasets" and args.get("query"):
+        captured["dataset_query"] = str(args["query"])
+    elif name == "define_area_of_interest" and args.get("location"):
+        captured["location"] = str(args["location"])
+    if args.get("dataset_handle"):
+        captured["dataset_handle"] = str(args["dataset_handle"])
+    if args.get("aoi_handle"):
+        captured["aoi_handle"] = str(args["aoi_handle"])
+    if args.get("time_range"):
+        captured["last_time_range"] = str(args["time_range"])
+
+
+def _inject_satellite_context(task: str, context: dict[str, str]) -> str:
+    """Prepend prior retrieval context to a satellite task, framed as
+    UNVERIFIED — the handles likely still exist in the researcher's workspace
+    (they persist per-user across threads), so reusing them skips re-searching,
+    but availability is never carried as a verdict: the agent must re-run
+    check_coverage/check_availability for the current request (its prompt's
+    Availability-must-be-tool-grounded rule). Without this framing a follow-up
+    that dropped to the supervisor path would re-derive everything from the
+    paraphrased prior answer and drift."""
+    bits = []
+    if context.get("dataset_query"):
+        bits.append(f"dataset={context['dataset_query']}")
+    if context.get("dataset_handle"):
+        bits.append(f"dataset_handle={context['dataset_handle']}")
+    if context.get("location"):
+        bits.append(f"location={context['location']}")
+    if context.get("aoi_handle"):
+        bits.append(f"aoi_handle={context['aoi_handle']}")
+    if context.get("last_time_range"):
+        bits.append(f"previously_checked_range={context['last_time_range']}")
+    if not bits:
+        return task
+    preamble = (
+        "Prior retrieval context from earlier in this conversation (UNVERIFIED — "
+        "these handles likely already exist in your workspace, so reuse them to "
+        "skip re-searching, but you MUST re-run check_coverage/check_availability "
+        "for the current request before stating any availability): "
+        + "; ".join(bits) + ".\n\n"
+    )
+    return preamble + task
 
 
 def _task_summary(task: str, max_chars: int = 200) -> str:
