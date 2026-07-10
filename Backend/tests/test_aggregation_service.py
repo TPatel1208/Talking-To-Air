@@ -92,6 +92,74 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertEqual(values[0, 1], 10.0)
         self.assertEqual(values[1, 1], 20.0)
 
+    def test_aggregate_meta_discloses_cf_attrs_masking_when_no_registry_or_umm_var_info(self):
+        """T25 Phase 1: an unregistered collection with no UMM-Var facts still
+        gets a masking-provenance disclosure — the CF-attrs tier — instead of
+        aggregate() staying silent about where fill/valid came from."""
+        from preprocessing.aggregation_service import AggregationService
+
+        da = self.xr.DataArray(
+            self.np.array([[-999.0, 10.0], [600.0, 20.0]]),
+            dims=("lat", "lon"),
+            name="unregistered_var",
+            attrs={"_FillValue": -999.0, "valid_min": 0.0, "valid_max": 500.0},
+        )
+
+        result = AggregationService().aggregate(da, variable="unregistered_var")
+
+        self.assertIn("masking", result.meta)
+        self.assertEqual(result.meta["masking"]["fill_value_source"], "cf_attrs")
+        self.assertEqual(result.meta["masking"]["valid_range_source"], "cf_attrs")
+        self.assertTrue(result.meta["masking"]["applied"])
+
+    def test_aggregate_uses_umm_var_facts_when_no_yaml_col_info_supplied(self):
+        """describe_dataset's per-variable UMM-Var facts mask an unregistered
+        collection correctly even though the file's own CF attrs are wrong."""
+        from preprocessing.aggregation_service import AggregationService
+
+        da = self.xr.DataArray(
+            self.np.array([[-9999.0, 10.0], [600.0, 20.0]]),
+            dims=("lat", "lon"),
+            name="tempo_so2",
+            attrs={"_FillValue": -1.0, "valid_min": -1e6, "valid_max": 1e6},  # wrong per-file attrs
+        )
+        umm_var_facts = [
+            {
+                "name": "tempo_so2",
+                "fill_values": [{"value": -9999.0}],
+                "valid_ranges": [{"min": 0.0, "max": 500.0}],
+                "units": "molecules/cm^2",
+            }
+        ]
+
+        result = AggregationService().aggregate(da, variable="tempo_so2", umm_var_facts=umm_var_facts)
+
+        values = result.ds["tempo_so2"].values
+        self.assertTrue(self.np.isnan(values[0, 0]))  # masked by UMM-Var fill, not the wrong CF fill
+        self.assertTrue(self.np.isnan(values[1, 0]))  # 600 > UMM-Var valid_max of 500
+        self.assertEqual(values[0, 1], 10.0)
+        self.assertEqual(result.meta["masking"]["fill_value_source"], "umm_var")
+        self.assertEqual(result.meta["masking"]["valid_range_source"], "umm_var")
+
+    def test_aggregate_col_info_override_still_wins_over_umm_var_facts(self):
+        """Registry/quirk-ledger col_info stays the top precedence tier even
+        when UMM-Var facts are also supplied."""
+        from preprocessing.aggregation_service import AggregationService
+
+        da = self.xr.DataArray(
+            self.np.array([[-1.0, 10.0], [600.0, 20.0]]),
+            dims=("lat", "lon"),
+            name="no2",
+        )
+        umm_var_facts = [{"name": "no2", "fill_values": [{"value": -9999.0}], "valid_ranges": [{"min": 0.0, "max": 5000.0}]}]
+
+        result = AggregationService().aggregate(
+            da, variable="no2", col_info=self.col_info, umm_var_facts=umm_var_facts,
+        )
+
+        self.assertEqual(result.meta["masking"]["fill_value_source"], "collections_yaml")
+        self.assertEqual(result.meta["masking"]["valid_range_source"], "collections_yaml")
+
     def test_apply_quality_mask_col_info_override_wins_over_dataset_attrs(self):
         from preprocessing.aggregation_service import AggregationService
 

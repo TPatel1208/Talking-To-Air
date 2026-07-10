@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from datasets.mask_info import match_umm_var_variable, resolve_mask_info
 from datasets.registry import load_registry
 
 
@@ -35,16 +36,23 @@ class AggregationService:
         *,
         variable: str | None = None,
         col_info: dict[str, Any] | None = None,
+        umm_var_facts: Any = None,
         keep_time: bool = False,
     ) -> AggregatedResult:
         if stat not in self._STAT_FUNCS:
             raise ValueError(f"Unsupported aggregation stat '{stat}'. Valid: {sorted(self._STAT_FUNCS)}")
 
         da = self.to_dataarray(data, collection_id=collection_id, variable=variable, col_info=col_info)
+
+        yaml_info = col_info or self._collection_info(collection_id, variable)
+        umm_var_variable = match_umm_var_variable(umm_var_facts, variable or da.name)
+        resolved_col_info, masking_provenance = resolve_mask_info(
+            yaml_info=yaml_info, umm_var_variable=umm_var_variable, cf_attrs=da.attrs,
+        )
         da = self.apply_quality_mask(
             da,
             data if isinstance(data, xr.Dataset) else None,
-            col_info or self._collection_info(collection_id, variable),
+            resolved_col_info,
             variable=variable,
         )
 
@@ -67,10 +75,10 @@ class AggregationService:
         result_ds.attrs["n_granules"] = len(valid_indices)
         result_ds.attrs["cadence"] = self._cadence(data, collection_id, variable, col_info)
 
-        return AggregatedResult(
-            ds=result_ds,
-            meta=self._build_meta(data, len(valid_indices), self._cadence(data, collection_id, variable, col_info), stat, valid_indices),
-        )
+        meta = self._build_meta(data, len(valid_indices), self._cadence(data, collection_id, variable, col_info), stat, valid_indices)
+        meta["masking"] = masking_provenance
+
+        return AggregatedResult(ds=result_ds, meta=meta)
 
     def to_dataarray(
         self,
@@ -104,8 +112,12 @@ class AggregationService:
         *,
         apply_quality_flag: bool = True,
         variable: str | None = None,
+        umm_var_facts: Any = None,
     ) -> xr.DataArray:
         col_info = col_info or {}
+        if umm_var_facts is not None:
+            umm_var_variable = match_umm_var_variable(umm_var_facts, variable or da.name)
+            col_info, _ = resolve_mask_info(yaml_info=col_info, umm_var_variable=umm_var_variable, cf_attrs=da.attrs)
         actual_fill = col_info.get("fill_value", da.attrs.get("_FillValue"))
         valid_min = col_info.get("valid_min", da.attrs.get("valid_min"))
         valid_max = col_info.get("valid_max", da.attrs.get("valid_max"))

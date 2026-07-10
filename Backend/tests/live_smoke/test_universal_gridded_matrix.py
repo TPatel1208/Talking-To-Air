@@ -15,8 +15,8 @@ most rows here are `xfail(strict=False)`: if a row unexpectedly starts
 passing, pytest reports XPASS instead of failing the run, which is exactly
 the "graduate this row" signal a later phase should notice and act on.
 
-Four row shapes are real (non-xfail) assertions because today's behavior is
-already correct, proved by work this PRD explicitly depends on:
+Several row shapes are real (non-xfail) assertions because today's behavior
+is already correct, proved by work this PRD explicitly depends on:
   - MCD19A2 / VNP09 / VJ1 swath rows: T24 already raises a typed
     unsupported_grid MCPToolError for projected/curvilinear grids
     (utils/geo_utils.py::ensure_supported_grid). These are real
@@ -28,6 +28,12 @@ already correct, proved by work this PRD explicitly depends on:
     returns zero granules today, and OCO2's reachability needs no new
     product code either (T18's no_data category already treats a real zero
     as a fact, not a failure).
+  - The Category A tier-1 masking-disclosure row graduated in Phase 1
+    (metadata plumbing): AggregationService.aggregate() now always stamps
+    result.meta["masking"] with the fill/valid-range provenance
+    (collections_yaml/umm_var/cf_attrs/none) and whether masking actually
+    ran (datasets/mask_info.py::resolve_mask_info), so this row no longer
+    depends on a dataset actually being in collections.yaml.
 
 Row-count note: the PRD's Acceptance Matrix paragraph is a summary of roles
 ("TEMPO SO2/Aerosol, OMAERUVd, OMAEROe, OMSO2e -> unregistered tier-1 rows",
@@ -183,22 +189,26 @@ _TIER1_ROWS = [
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason=(
-        "T25 Phase 1 (metadata plumbing): describe_dataset's UMM-Var fill/valid facts are not yet "
-        "consumed for unregistered collections (AggregationService._collection_info only reads "
-        "collections.yaml), and aggregation meta never stamps which masking source ran — today's "
-        "AggregatedResult.meta has no masking-provenance key at all."
-    ),
-    strict=False,
-)
 @pytest.mark.parametrize("row", _TIER1_ROWS, ids=[r.id for r in _TIER1_ROWS])
 async def test_unregistered_tier1_dataset_discloses_masking_source(invoke, row):
+    """T25 Phase 1 graduated this row: aggregate() always stamps
+    result.meta["masking"] (fill_value_source/valid_range_source/applied)
+    via datasets/mask_info.py::resolve_mask_info's collections.yaml ->
+    UMM-Var -> CF-attrs -> none precedence ladder, so an unregistered
+    collection never leaves masking provenance unstated."""
     from preprocessing.aggregation_service import AggregationService
 
     ds = await _open_after_retrieval(invoke, row)
     result = AggregationService().aggregate(ds)
     assert "masking" in result.meta, f"{row.id}: aggregation meta has no masking-provenance disclosure: {result.meta}"
+    masking = result.meta["masking"]
+    assert masking.get("fill_value_source") in ("collections_yaml", "umm_var", "cf_attrs", "none"), (
+        f"{row.id}: unexpected fill_value_source: {masking}"
+    )
+    assert masking.get("valid_range_source") in ("collections_yaml", "umm_var", "cf_attrs", "none"), (
+        f"{row.id}: unexpected valid_range_source: {masking}"
+    )
+    assert "applied" in masking, f"{row.id}: masking provenance must state whether masking ran: {masking}"
 
 
 # ── Category B: fallback-killer rows (explicit choice, Phase 2) ────────────
