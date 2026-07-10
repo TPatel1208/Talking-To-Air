@@ -27,6 +27,10 @@ CATEGORY_NOT_FOUND = "not_found"
 CATEGORY_TOO_LARGE = "too_large"
 CATEGORY_PROVIDER_UNAVAILABLE = "provider_unavailable"
 CATEGORY_CONTRACT = "contract"
+# T24: a granule whose horizontal grid isn't a 1-D rectilinear lat/lon grid
+# (2-D curvilinear swath, or projected x/y+CRS) — a known, honest limitation
+# rather than a crash or a silently mis-masked result.
+CATEGORY_UNSUPPORTED_GRID = "unsupported_grid"
 
 # The MCP's own structured answers (T18 story #9) — first-class results, not
 # errors; passed through as plain dicts for each composite's existing

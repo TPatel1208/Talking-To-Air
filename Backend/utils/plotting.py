@@ -19,7 +19,13 @@ from affine import Affine
 from typing import Optional, Tuple, Union, List
 
 from config.settings import get_settings
-from utils.geo_utils import LAT_COORD_CANDIDATES, LON_COORD_CANDIDATES, find_lat_coord, find_lon_coord
+from utils.geo_utils import (
+    LAT_COORD_CANDIDATES,
+    LON_COORD_CANDIDATES,
+    ensure_supported_grid,
+    find_lat_coord,
+    find_lon_coord,
+)
 
 logger = logging.getLogger(__name__)
 _geocoding_service = None
@@ -261,6 +267,9 @@ def _normalize_to_2d(data_array: xr.DataArray) -> xr.DataArray:
       2. Averaging over any remaining non-spatial dimensions (handles 4D layer dim)
     """
     SPATIAL = set(LAT_COORD_CANDIDATES + LON_COORD_CANDIDATES)
+    # Keep CF-identified axes too (T24), so a spatial dim named 'row'/'y' is
+    # preserved rather than averaged away as if it were an extra dimension.
+    SPATIAL |= {name for name in (find_lat_coord(data_array), find_lon_coord(data_array)) if name}
 
     # squeeze out all size-1 dims
     dims_to_squeeze = [d for d in data_array.dims if data_array.sizes[d] == 1]
@@ -297,6 +306,11 @@ def mask_data_by_geometry(
         Masked data array (copy, original unchanged)
     """
 
+    # The affine transform below assumes a 1-D rectilinear lat/lon grid. A
+    # 2-D curvilinear swath or a projected x/y grid would be silently
+    # mis-masked here -- refuse with a specific, typed error instead (T24).
+    ensure_supported_grid(data_array)
+
     # Find lat/lon coordinates (handle different naming conventions)
     lat_coord = find_lat_coord(data_array)
     lon_coord = find_lon_coord(data_array)
@@ -304,7 +318,8 @@ def mask_data_by_geometry(
     if lat_coord is None or lon_coord is None:
         raise ValueError(
             f"Could not find lat/lon coordinates. "
-            f"Available coords: {list(data_array.coords.keys())}"
+            f"Dims present: {list(data_array.dims)}; "
+            f"coords: {list(data_array.coords.keys())}"
         )
 
     # Get coordinate arrays

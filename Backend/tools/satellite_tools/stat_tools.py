@@ -11,6 +11,7 @@ from config.workflow_stages import STAGE_RENDER
 from datasets.mask_info import override_for
 from earthdata_mcp.results import MCPToolError
 from services.open_handle import OpenHandleError, open_handle
+from utils.geo_utils import find_lat_coord, find_lon_coord
 from utils.plotting import _normalize_to_2d, mask_data_by_geometry, RegionResolver
 from utils.streaming import emit_status
 from preprocessing.aggregation_service import AggregationService
@@ -168,9 +169,14 @@ def make_find_daily_peak(mcp_tools: dict[str, BaseTool]):
             reduced = next(iter(aggregation.ds.data_vars.values()))
             reduced = _normalize_to_2d(reduced)
 
-            # Resolve dim names and positions early
-            lat_dim = next((d for d in reduced.dims if d.lower() in ['lat', 'latitude']), None)
-            lon_dim = next((d for d in reduced.dims if d.lower() in ['lon', 'longitude']), None)
+            # Resolve dim names via the canonical CF-metadata identifier
+            # (T24), so an axis named 'row'/'y' is found by its metadata, not
+            # a hardcoded name list. On a rectilinear grid the lat/lon coord
+            # names are also dimension names.
+            lat_name = find_lat_coord(reduced)
+            lon_name = find_lon_coord(reduced)
+            lat_dim = lat_name if lat_name in reduced.dims else None
+            lon_dim = lon_name if lon_name in reduced.dims else None
 
             if lat_dim is None or lon_dim is None:
                 return "error", f"Could not find lat/lon dimensions. Available dims: {list(reduced.dims)}"
