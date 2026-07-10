@@ -42,6 +42,12 @@ class CollectionConfig(BaseModel):
     # ── Variable selection ────────────────────────────────────────────────
     primary_var:                 str
     quality_flag_var:            Optional[str] = None
+    # T25 Phase 3: the Tier-1 pinned QA rule for quality_flag_var -- which
+    # flag values count as good (or, equivalently, bad). At most one is
+    # normally set; qa_good_values takes precedence if both are (datasets/
+    # qa_flags.py::resolve_qa_info).
+    qa_good_values:               Optional[list[int]] = None
+    qa_bad_values:                Optional[list[int]] = None
     variables:                   list[str]     = []
     supports_variable_subsetting: bool         = False
     groups:                      list[str]     = []

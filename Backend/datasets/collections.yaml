@@ -15,6 +15,8 @@
 #   variables: []                  # subset passed to Harmony; empty = all
 #   groups: []                     # HDF groups to merge (OMI HCHO pattern)
 #   quality_flag_var: null         # variable to use for QA masking
+#   qa_good_values: null           # T25 Tier 1: flag values that pass (pinned, "verified")
+#   qa_bad_values: null            # ...or the values that fail, if easier to state
 #   supports_variable_subsetting: false
 #   description: ""
 # ---------------------------------------------------------------------------
@@ -67,6 +69,7 @@ TEMPO_NO2:
   cadence: hourly
   primary_var: vertical_column_troposphere
   quality_flag_var: main_data_quality_flag
+  qa_good_values: [0]
   variables:
     - product/vertical_column_troposphere
     - product/main_data_quality_flag
@@ -129,6 +132,7 @@ TEMPO_HCHO:
   cadence: hourly
   primary_var: vertical_column
   quality_flag_var: main_data_quality_flag
+  qa_good_values: [0]
   variables:
     - product/vertical_column
     - product/vertical_column_uncertainty
@@ -149,6 +153,7 @@ TEMPO_HCHO_V03:
   cadence: hourly
   primary_var: vertical_column
   quality_flag_var: main_data_quality_flag
+  qa_good_values: [0]
   variables:
     - product/vertical_column
     - product/vertical_column_uncertainty
@@ -169,6 +174,7 @@ OMI_HCHO:
   cadence: daily
   primary_var: column_amount
   quality_flag_var: data_quality_flag
+  qa_bad_values: [2]
   variables: []
   supports_variable_subsetting: false
   units: molecules/cm^2

@@ -463,6 +463,12 @@ def _provenance(handles: list[str], da, region_name: str, aggregation: str, agg_
         provenance["n_granules"] = agg_meta["n_granules"]
         provenance["cadence"] = agg_meta["cadence"]
         provenance["granule_dates"] = agg_meta["granule_dates"]
+        if agg_meta.get("masking"):
+            # T25 Phase 3: qa_status (verified/cf-deterministic/inferred, not
+            # verified/not applied) travels into the answer the agent sees,
+            # not just internal meta -- an inferred QA mask must be a
+            # disclosed fact, never a silent guess.
+            provenance["masking"] = agg_meta["masking"]
     return provenance
 
 
