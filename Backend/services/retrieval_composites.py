@@ -19,6 +19,7 @@ from config.settings import Settings, get_settings
 from config.workflow_stages import STAGE_ESTIMATE, STAGE_PROGRESS, STAGE_SUBMIT
 from datasets.registry import load_registry
 from earthdata_mcp.results import CATEGORY_TOO_LARGE, MCPToolError, parse_tool_result
+from services import variable_choice_registry
 from utils.streaming import emit_job_progress, emit_status
 
 logger = logging.getLogger(__name__)
@@ -98,6 +99,13 @@ async def await_retrieval(
         )
         emit_status(f"Retrieving data — {status}...", stage=STAGE_PROGRESS, detail=progress)
         if status in TERMINAL_STATUSES:
+            if status == "ready":
+                # T25: promote this job's recorded variable choice (if any)
+                # onto the handle it resolved to, so a later plot/stat/
+                # compare call inherits it instead of AggregationService.
+                # to_dataarray refusing a multi-variable file all over again.
+                handle = data.get("obs_handle") or data.get("cube_handle")
+                variable_choice_registry.finalize(job_handle, handle)
             return data
 
         if loop.time() >= deadline:
@@ -180,6 +188,14 @@ async def safe_retrieve(
         "output_format": output_format,
     })
     subset = parse_tool_result(subset_raw)
+
+    # T25: record the model's chosen science variable, keyed by the job this
+    # retrieval submits as -- a single unambiguous variable only; 0 or >1
+    # requested variables leave nothing to record (an already-multi-variable
+    # subset request means the file needs its own choice made downstream).
+    if len(variables) == 1:
+        variable_choice_registry.record_pending(subset.get("job_handle"), variables[0])
+
     return {"status": "submitted", "estimated_bytes": estimated_bytes, **subset}
 
 

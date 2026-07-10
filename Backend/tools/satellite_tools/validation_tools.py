@@ -222,7 +222,7 @@ def make_validate_against_ground(mcp_tools: dict[str, BaseTool]):
         """
         try:
             ds = await open_handle(handle, mcp_tools)
-            da = _aggregation_service.to_dataarray(ds)
+            da = _aggregation_service.to_dataarray(ds, handle=handle)
         except MCPToolError as e:
             return json.dumps({"error": e.to_dict()})
         except OpenHandleError as e:
@@ -401,7 +401,7 @@ def make_exceedance_overlay(mcp_tools: dict[str, BaseTool]):
         """
         try:
             ds = await open_handle(handle, mcp_tools)
-            da = _aggregation_service.to_dataarray(ds)
+            da = _aggregation_service.to_dataarray(ds, handle=handle)
         except MCPToolError as e:
             return json.dumps({"error": e.to_dict()})
         except OpenHandleError as e:

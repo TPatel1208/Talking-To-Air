@@ -19,12 +19,14 @@ from affine import Affine
 from typing import Optional, Tuple, Union, List
 
 from config.settings import get_settings
+from earthdata_mcp.results import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
 from utils.geo_utils import (
     LAT_COORD_CANDIDATES,
     LON_COORD_CANDIDATES,
     ensure_supported_grid,
     find_lat_coord,
     find_lon_coord,
+    identify_time,
 )
 
 logger = logging.getLogger(__name__)
@@ -260,27 +262,71 @@ def plot_map(
 
     return fig, ax
 
-def _normalize_to_2d(data_array: xr.DataArray) -> xr.DataArray:
-    """
-    Squeeze a DataArray down to 2D (lat, lon) by:
-      1. Dropping all size-1 dimensions (handles Time=1 cleanly)
-      2. Averaging over any remaining non-spatial dimensions (handles 4D layer dim)
-    """
-    SPATIAL = set(LAT_COORD_CANDIDATES + LON_COORD_CANDIDATES)
-    # Keep CF-identified axes too (T24), so a spatial dim named 'row'/'y' is
-    # preserved rather than averaged away as if it were an extra dimension.
-    SPATIAL |= {name for name in (find_lat_coord(data_array), find_lon_coord(data_array)) if name}
+def _non_selectable_dims(data_array: xr.DataArray) -> set:
+    """Dims that never require an explicit selection: spatial (lat/lon, by
+    CF identification -- T24) and time (by CF identification -- T25, the one
+    transparent auto-reduction)."""
+    non_selectable = set(LAT_COORD_CANDIDATES + LON_COORD_CANDIDATES)
+    non_selectable |= {name for name in (find_lat_coord(data_array), find_lon_coord(data_array)) if name}
+    time_name = identify_time(data_array)
+    if time_name:
+        non_selectable.add(time_name)
+    return non_selectable
 
-    # squeeze out all size-1 dims
+
+def _squeeze_size_one_dims(data_array: xr.DataArray) -> xr.DataArray:
     dims_to_squeeze = [d for d in data_array.dims if data_array.sizes[d] == 1]
-    if dims_to_squeeze:
-        data_array = data_array.squeeze(dims_to_squeeze)
+    return data_array.squeeze(dims_to_squeeze) if dims_to_squeeze else data_array
 
-    # average over any remaining non-spatial dims
-    extra_dims = [d for d in data_array.dims if d not in SPATIAL]
+
+def _dimension_choice_error(data_array: xr.DataArray, dim: str) -> MCPToolError:
+    if dim in data_array.coords:
+        coord = data_array[dim]
+        values = [v.item() if hasattr(v, "item") else v for v in coord.values.tolist()] if coord.ndim == 1 else coord.values.tolist()
+        units = coord.attrs.get("units", "")
+    else:
+        values = list(range(data_array.sizes[dim]))
+        units = ""
+    values_str = ", ".join(str(v) for v in values)
+    units_note = f", units {units}" if units else ""
+    name = data_array.name or "this variable"
+    return MCPToolError(
+        CATEGORY_DIMENSION_CHOICE_REQUIRED,
+        f"'{name}' has an additional dimension '{dim}' ({len(values)} values{units_note}) "
+        f"with no selection made: {values_str}.",
+        suggestion=f"Pass a dimension selector for '{dim}' with one of the values above.",
+    )
+
+
+def _normalize_to_2d(data_array: xr.DataArray, dim_selector: dict | None = None) -> xr.DataArray:
+    """
+    Squeeze a DataArray down to 2D (lat, lon):
+      1. Drop all size-1 dimensions (handles Time=1 cleanly).
+      2. Apply any explicit ``dim_selector`` ({dim_name: coordinate value}).
+      3. A surviving time dim (T25) still auto-reduces (mean) -- it's the
+         one transparent reduction, already disclosed via aggregate()'s own
+         cadence/n_granules meta; this is a defense-in-depth squeeze for a
+         caller that reaches _normalize_to_2d before aggregate() reduces it.
+      4. Any other dimension that still survives and isn't spatial is
+         refused with a structured, candidate-listing error naming the
+         dimension and its coordinate values -- never silently averaged.
+    """
+    non_selectable = _non_selectable_dims(data_array)
+    time_name = identify_time(data_array)
+    data_array = _squeeze_size_one_dims(data_array)
+
+    if dim_selector:
+        for dim_name, value in dim_selector.items():
+            if dim_name in data_array.dims:
+                data_array = data_array.sel({dim_name: value}, method="nearest")
+        data_array = _squeeze_size_one_dims(data_array)
+
+    if time_name and time_name in data_array.dims:
+        data_array = data_array.mean(dim=time_name, skipna=True)
+
+    extra_dims = [d for d in data_array.dims if d not in non_selectable]
     if extra_dims:
-        logger.info("_normalize_to_2d: averaging over %s", extra_dims)
-        data_array = data_array.mean(dim=extra_dims)
+        raise _dimension_choice_error(data_array, extra_dims[0])
 
     return data_array
 

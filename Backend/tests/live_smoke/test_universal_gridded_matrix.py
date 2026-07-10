@@ -34,6 +34,13 @@ is already correct, proved by work this PRD explicitly depends on:
     (collections_yaml/umm_var/cf_attrs/none) and whether masking actually
     ran (datasets/mask_info.py::resolve_mask_info), so this row no longer
     depends on a dataset actually being in collections.yaml.
+  - The Category B fallback-killer rows graduated in Phase 2 (explicit
+    variable + dimension choice): AggregationService.to_dataarray's
+    next(iter(data.data_vars)) fallback and utils/plotting.py::
+    _normalize_to_2d's silent .mean() over extra dims are both deleted, so
+    a multi-variable file / an unselected vertical level now raise
+    CATEGORY_VARIABLE_CHOICE_REQUIRED / CATEGORY_DIMENSION_CHOICE_REQUIRED
+    instead of guessing.
 
 Row-count note: the PRD's Acceptance Matrix paragraph is a summary of roles
 ("TEMPO SO2/Aerosol, OMAERUVd, OMAEROe, OMSO2e -> unregistered tier-1 rows",
@@ -220,23 +227,22 @@ _MULTI_VARIABLE_ROWS = [
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason=(
-        "T25 Phase 2 (explicit variable choice): AggregationService.to_dataarray still falls back "
-        "to next(iter(data.data_vars)) for an unregistered multi-variable file "
-        "(aggregation_service.py:90) instead of raising a candidate-listing MCPToolError."
-    ),
-    strict=False,
-)
 @pytest.mark.parametrize("row", _MULTI_VARIABLE_ROWS, ids=[r.id for r in _MULTI_VARIABLE_ROWS])
 async def test_multi_variable_file_with_no_choice_raises_a_candidate_listing_error(invoke, row):
-    from earthdata_mcp.results import MCPToolError
+    """T25 Phase 2 graduated this row: AggregationService.to_dataarray's
+    next(iter(data.data_vars)) fallback is deleted -- an unregistered
+    multi-variable file with no explicit variable and no retrieval-recorded
+    choice now raises CATEGORY_VARIABLE_CHOICE_REQUIRED listing candidates."""
+    from earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED, MCPToolError
     from preprocessing.aggregation_service import AggregationService
 
     ds = await _open_after_retrieval(invoke, row)
     assert len(ds.data_vars) > 1, f"{row.id}: expected a multi-variable file to exercise the no-choice case, got {list(ds.data_vars)}"
-    with pytest.raises(MCPToolError):
+    with pytest.raises(MCPToolError) as excinfo:
         AggregationService().to_dataarray(ds)
+    assert excinfo.value.category == CATEGORY_VARIABLE_CHOICE_REQUIRED, (
+        f"{row.id}: expected a variable_choice_required refusal, got category={excinfo.value.category}"
+    )
 
 
 _VERTICAL_LEVEL_ROWS = [
@@ -246,27 +252,30 @@ _VERTICAL_LEVEL_ROWS = [
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason=(
-        "T25 Phase 2 (explicit dimension choice): utils/plotting.py::_normalize_to_2d still "
-        "silently .mean()s over every surviving non-spatial dimension (e.g. MERRA-2's vertical "
-        "level) instead of raising a candidate-listing error naming the coordinate values. Time "
-        "still auto-reduces (unaffected by this row)."
-    ),
-    strict=False,
-)
 @pytest.mark.parametrize("row", _VERTICAL_LEVEL_ROWS, ids=[r.id for r in _VERTICAL_LEVEL_ROWS])
 async def test_unselected_vertical_dimension_raises_a_candidate_listing_error(invoke, row):
-    from earthdata_mcp.results import MCPToolError
+    """T25 Phase 2 graduated this row: utils/plotting.py::_normalize_to_2d's
+    silent .mean() over every surviving non-spatial dimension is deleted --
+    a MERRA-2-style vertical level dim with no selection now raises
+    CATEGORY_DIMENSION_CHOICE_REQUIRED naming the dimension and its
+    coordinate values. Time still auto-reduces (unaffected by this row) via
+    the CF-identified time dim (T25's identify_time), not the literal name
+    "time"."""
+    from earthdata_mcp.results import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
     from preprocessing.aggregation_service import AggregationService
+    from utils.geo_utils import identify_lat, identify_lon, identify_time
     from utils.plotting import _normalize_to_2d
 
     ds = await _open_after_retrieval(invoke, row)
     da = AggregationService().to_dataarray(ds)
-    extra_dims = [d for d in da.dims if d not in ("lat", "lon", "latitude", "longitude", "time")]
+    non_selectable = {n for n in (identify_lat(da), identify_lon(da), identify_time(da)) if n}
+    extra_dims = [d for d in da.dims if d not in non_selectable and da.sizes[d] > 1]
     assert extra_dims, f"{row.id}: expected a surviving vertical/level dim to exercise the no-choice case, dims={da.dims}"
-    with pytest.raises(MCPToolError):
+    with pytest.raises(MCPToolError) as excinfo:
         _normalize_to_2d(da)
+    assert excinfo.value.category == CATEGORY_DIMENSION_CHOICE_REQUIRED, (
+        f"{row.id}: expected a dimension_choice_required refusal, got category={excinfo.value.category}"
+    )
 
 
 # ── Category C: QA-tier rows (Phase 3) ──────────────────────────────────────

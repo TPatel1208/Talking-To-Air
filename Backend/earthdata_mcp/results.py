@@ -31,6 +31,17 @@ CATEGORY_CONTRACT = "contract"
 # (2-D curvilinear swath, or projected x/y+CRS) — a known, honest limitation
 # rather than a crash or a silently mis-masked result.
 CATEGORY_UNSUPPORTED_GRID = "unsupported_grid"
+# T25: the backend refuses to invent a scientific choice it was never given.
+# CATEGORY_VARIABLE_CHOICE_REQUIRED — a multi-variable file with no explicit
+# variable, no retrieval-recorded choice, raised where AggregationService.
+# to_dataarray used to silently pick next(iter(data.data_vars)).
+# CATEGORY_DIMENSION_CHOICE_REQUIRED — a surviving non-spatial, non-time
+# dimension (e.g. a MERRA-2 vertical level) with no selection, raised where
+# _normalize_to_2d used to silently .mean() over it. Both name their
+# candidates in the message so a researcher (or the model) can pick
+# deliberately instead of receiving whichever value happened to be first.
+CATEGORY_VARIABLE_CHOICE_REQUIRED = "variable_choice_required"
+CATEGORY_DIMENSION_CHOICE_REQUIRED = "dimension_choice_required"
 
 # The MCP's own structured answers (T18 story #9) — first-class results, not
 # errors; passed through as plain dicts for each composite's existing

@@ -225,6 +225,7 @@ def make_compare(mcp_tools: dict[str, BaseTool]):
         label_a: str = "A",
         label_b: str = "B",
         threshold: Optional[float] = None,
+        variable: Optional[str] = None,
     ) -> str:
         """
         Compare two retrievals of the same variable — either two regions
@@ -252,6 +253,8 @@ def make_compare(mcp_tools: dict[str, BaseTool]):
             label_b: panel/legend label for handle_b.
             threshold: period mode only — absolute change magnitude defining
                 a "significant" change, for the area-exceeding-threshold stat.
+            variable: Science variable to use for both handles, for a
+                multi-variable file with no variable chosen at retrieval time.
 
         Returns:
             JSON string — comparison chart payload (frontend-renderable) with
@@ -262,14 +265,14 @@ def make_compare(mcp_tools: dict[str, BaseTool]):
 
         try:
             ds_a = await open_handle(handle_a, mcp_tools)
-            da_a = _aggregation_service.to_dataarray(ds_a)
+            da_a = _aggregation_service.to_dataarray(ds_a, handle=handle_a, variable=variable)
         except MCPToolError as e:
             return json.dumps({"error": e.to_dict()})
         except OpenHandleError as e:
             return json.dumps({"error": f"Failed to open handle '{handle_a}' (A): {e}"})
         try:
             ds_b = await open_handle(handle_b, mcp_tools)
-            da_b = _aggregation_service.to_dataarray(ds_b)
+            da_b = _aggregation_service.to_dataarray(ds_b, handle=handle_b, variable=variable)
         except MCPToolError as e:
             return json.dumps({"error": e.to_dict()})
         except OpenHandleError as e:
@@ -315,7 +318,10 @@ def make_compare(mcp_tools: dict[str, BaseTool]):
 
         try:
             aligned_ds = await open_handle(aligned_handle, mcp_tools)
-            aligned_da = _aggregation_service.to_dataarray(aligned_ds)
+            # variable_name is already resolved from A/B above -- pass it
+            # explicitly so the aligned (multi-source) dataset doesn't hit
+            # its own ambiguous-variable error for a choice already made.
+            aligned_da = _aggregation_service.to_dataarray(aligned_ds, handle=aligned_handle, variable=variable_name)
         except MCPToolError as e:
             return json.dumps({"error": e.to_dict()})
         except OpenHandleError as e:
