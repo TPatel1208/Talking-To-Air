@@ -160,6 +160,103 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertEqual(result.meta["masking"]["fill_value_source"], "collections_yaml")
         self.assertEqual(result.meta["masking"]["valid_range_source"], "collections_yaml")
 
+    def test_to_dataarray_returns_the_single_data_var_with_no_choice_needed(self):
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset({"no2": (("lat", "lon"), [[1.0]])})
+
+        da = AggregationService().to_dataarray(ds)
+
+        self.assertEqual(da.name, "no2")
+
+    def test_to_dataarray_raises_a_candidate_listing_error_for_a_multi_var_file_with_no_choice(self):
+        """T25: the next(iter(data.data_vars)) silent-first-var fallback is
+        deleted -- MOD08_D3-style multi-variable files with no explicit
+        variable, and no retrieval-recorded choice, must refuse with a
+        structured error naming the candidates rather than guess."""
+        from earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED, MCPToolError
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset({
+            "Cloud_Fraction": (("lat", "lon"), [[1.0]]),
+            "Aerosol_Optical_Depth": (("lat", "lon"), [[2.0]]),
+        })
+
+        with self.assertRaises(MCPToolError) as ctx:
+            AggregationService().to_dataarray(ds)
+
+        self.assertEqual(ctx.exception.category, CATEGORY_VARIABLE_CHOICE_REQUIRED)
+        self.assertIn("Cloud_Fraction", ctx.exception.message)
+        self.assertIn("Aerosol_Optical_Depth", ctx.exception.message)
+
+    def test_to_dataarray_explicit_variable_param_wins_on_a_multi_var_file(self):
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset({
+            "Cloud_Fraction": (("lat", "lon"), [[1.0]]),
+            "Aerosol_Optical_Depth": (("lat", "lon"), [[2.0]]),
+        })
+
+        da = AggregationService().to_dataarray(ds, variable="Aerosol_Optical_Depth")
+
+        self.assertEqual(da.name, "Aerosol_Optical_Depth")
+        self.assertEqual(float(da.values[0, 0]), 2.0)
+
+    def test_to_dataarray_inherits_the_retrieval_recorded_choice_via_handle(self):
+        from preprocessing.aggregation_service import AggregationService
+        from services import variable_choice_registry
+
+        variable_choice_registry._choices.clear()
+        variable_choice_registry._choices["obs_1"] = ("Cloud_Fraction", float("inf"))
+        self.addCleanup(variable_choice_registry._choices.clear)
+
+        ds = self.xr.Dataset({
+            "Cloud_Fraction": (("lat", "lon"), [[1.0]]),
+            "Aerosol_Optical_Depth": (("lat", "lon"), [[2.0]]),
+        })
+
+        da = AggregationService().to_dataarray(ds, handle="obs_1")
+
+        self.assertEqual(da.name, "Cloud_Fraction")
+
+    def test_to_dataarray_explicit_variable_wins_over_a_recorded_choice(self):
+        from preprocessing.aggregation_service import AggregationService
+        from services import variable_choice_registry
+
+        variable_choice_registry._choices.clear()
+        variable_choice_registry._choices["obs_1"] = ("Cloud_Fraction", float("inf"))
+        self.addCleanup(variable_choice_registry._choices.clear)
+
+        ds = self.xr.Dataset({
+            "Cloud_Fraction": (("lat", "lon"), [[1.0]]),
+            "Aerosol_Optical_Depth": (("lat", "lon"), [[2.0]]),
+        })
+
+        da = AggregationService().to_dataarray(ds, handle="obs_1", variable="Aerosol_Optical_Depth")
+
+        self.assertEqual(da.name, "Aerosol_Optical_Depth")
+
+    def test_aggregate_recognizes_a_valid_time_dim_as_time(self):
+        """T25: a MERRA-2-style `valid_time` dim (no CF standard_name, just
+        the bare name) must still auto-reduce like a literal 'time' dim,
+        rather than surviving into _normalize_to_2d as an unrecognized extra
+        dimension that used to be silently averaged."""
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset(
+            {"no2": (("valid_time", "lat", "lon"), [[[1.0, 2.0]], [[3.0, 4.0]]])},
+            coords={
+                "valid_time": ("valid_time", ["2024-01-01", "2024-01-02"], {"standard_name": "time"}),
+                "lat": [40.0],
+                "lon": [-75.0, -74.0],
+            },
+        )
+
+        result = AggregationService().aggregate(ds, stat="mean", variable="no2")
+
+        self.assertNotIn("valid_time", result.ds["no2"].dims)
+        self.assertEqual(result.meta["n_granules"], 2)
+
     def test_apply_quality_mask_col_info_override_wins_over_dataset_attrs(self):
         from preprocessing.aggregation_service import AggregationService
 

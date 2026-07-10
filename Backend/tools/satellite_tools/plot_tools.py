@@ -393,9 +393,23 @@ def _save_chart(payload: dict, name: str) -> str:
 # ── Handle / masking helpers ───────────────────────────────────────────────────
 
 
-def _open_dataarray(ds, tools=None):
-    """Pick the primary data variable off an opened Dataset, unmasked."""
-    return _aggregation_service.to_dataarray(ds)
+def _open_dataarray(ds, handle: str | None = None, variable: str | None = None):
+    """Pick the science variable off an opened Dataset, unmasked.
+
+    Resolution (T25): explicit ``variable`` -> the choice recorded for
+    ``handle`` at retrieval time -> the file's only data variable -> a
+    structured candidate-listing error (AggregationService.to_dataarray).
+    """
+    return _aggregation_service.to_dataarray(ds, handle=handle, variable=variable)
+
+
+def _build_dim_selector(dimension: str | None, dimension_value: float | None) -> dict | None:
+    """A single-entry {dim_name: value} selector from a tool's optional
+    ``dimension``/``dimension_value`` params, or None when no dimension was
+    named -- the shape utils.plotting._normalize_to_2d's dim_selector expects."""
+    if dimension is None or dimension_value is None:
+        return None
+    return {dimension: dimension_value}
 
 
 def _mask_col_info(da) -> dict:
@@ -495,6 +509,9 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
         location: str,
         title: str = "",
         cmap: Optional[str] = "Spectral_r",
+        variable: Optional[str] = None,
+        dimension: Optional[str] = None,
+        dimension_value: Optional[float] = None,
     ) -> str:
         """
         Plot a spatial heatmap of a variable over a single location at one point in time.
@@ -508,13 +525,23 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
             location : Place name e.g. 'New York City', 'California'.
             title    : Plot title. Auto-generated from variable + location if omitted.
             cmap     : Colormap hint for the frontend (default 'Spectral_r').
+            variable : Science variable to plot, for a multi-variable file with
+                       no variable chosen at retrieval time. See describe_dataset's
+                       variable metadata to pick one — required if the tool
+                       returns a "variable_choice_required" error listing candidates.
+            dimension       : Name of an extra non-spatial, non-time dimension
+                               to select a single value from (e.g. a vertical
+                               level) — required if the tool returns a
+                               "dimension_choice_required" error naming one.
+            dimension_value : Coordinate value to select from ``dimension``
+                               (nearest match), e.g. a pressure level in hPa.
 
         Returns:
             JSON string — chart payload for the frontend to render interactively.
         """
         try:
             ds = await open_handle(handle, mcp_tools)
-            da = _open_dataarray(ds)
+            da = _open_dataarray(ds, handle=handle, variable=variable)
         except MCPToolError as e:
             emit_status("Visualization failed while opening data.", stage=STAGE_RENDER)
             return json.dumps({"error": e.to_dict()})
@@ -549,14 +576,17 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
             units = masked.attrs.get("units", "")
             variable_name = masked.name or ""
             col_info = _mask_col_info(masked)
-            aggregation = _aggregation_service.aggregate(
-                masked,
-                variable=variable_name,
-                stat="mean",
-                col_info=col_info,
-            )
-            reduced = next(iter(aggregation.ds.data_vars.values()))
-            reduced = _normalize_to_2d(reduced)
+            try:
+                aggregation = _aggregation_service.aggregate(
+                    masked,
+                    variable=variable_name,
+                    stat="mean",
+                    col_info=col_info,
+                )
+                reduced = next(iter(aggregation.ds.data_vars.values()))
+                reduced = _normalize_to_2d(reduced, dim_selector=_build_dim_selector(dimension, dimension_value))
+            except MCPToolError as e:
+                return "resolve", None, None, e.to_dict()
             agg_meta = aggregation.meta
             is_aggregated = agg_meta["n_granules"] > 1
             if title:
@@ -591,6 +621,9 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
         if stage == "mask":
             emit_status("Visualization failed while processing map bounds.", stage=STAGE_RENDER)
             return json.dumps({"error": error_message})
+        if stage == "resolve":
+            emit_status("Visualization needs a variable or dimension choice.", stage=STAGE_RENDER)
+            return json.dumps({"error": error_message})
         if stage == "payload":
             emit_status("Visualization failed while building chart data.", stage=STAGE_RENDER)
             return json.dumps({"error": error_message})
@@ -608,6 +641,9 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
         locations: List[str],
         title: str = "",
         cmap: Optional[str] = "Spectral_r",
+        variable: Optional[str] = None,
+        dimension: Optional[str] = None,
+        dimension_value: Optional[float] = None,
     ) -> str:
         """
         Plot the same environmental variable across multiple locations side by side.
@@ -620,6 +656,11 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
             locations : List of place names matching handles order.
             title     : Overall title (optional).
             cmap      : Colormap hint for the frontend (default 'Spectral_r').
+            variable  : Science variable to plot, for a multi-variable file with
+                        no variable chosen at retrieval time (applies to every handle).
+            dimension       : Name of an extra non-spatial, non-time dimension to
+                               select a single value from (e.g. a vertical level).
+            dimension_value : Coordinate value to select from ``dimension`` (nearest match).
 
         Returns:
             JSON string — multi-panel chart payload for the frontend to render.
@@ -634,7 +675,7 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
         for handle, location in zip(handles, locations):
             try:
                 ds = await open_handle(handle, mcp_tools)
-                da = _open_dataarray(ds)
+                da = _open_dataarray(ds, handle=handle, variable=variable)
             except MCPToolError as e:
                 emit_status("Visualization failed while opening data.", stage=STAGE_RENDER)
                 return json.dumps({"error": e.to_dict()})
@@ -676,7 +717,11 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
                         col_info=col_info,
                     )
                     reduced = next(iter(aggregation.ds.data_vars.values()))
-                    reduced = _normalize_to_2d(reduced)
+                    reduced = _normalize_to_2d(reduced, dim_selector=_build_dim_selector(dimension, dimension_value))
+                except MCPToolError as e:
+                    return "resolve", None, None, e.to_dict()
+
+                try:
                     agg_meta = aggregation.meta
                     panel = _da_to_heatmap_payload(reduced, region["name"], resolved_variable_name, units, render_overlay=True)
                     panel["cmap"]   = cmap or "Spectral_r"
@@ -701,6 +746,9 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
             stage, panel, resolved_variable_name, error_message = await asyncio.to_thread(_mask_aggregate_panel)
             if stage == "mask":
                 emit_status("Visualization failed while processing map bounds.", stage=STAGE_RENDER)
+                return json.dumps({"error": error_message})
+            if stage == "resolve":
+                emit_status("Visualization needs a variable or dimension choice.", stage=STAGE_RENDER)
                 return json.dumps({"error": error_message})
             if stage == "payload":
                 emit_status("Visualization failed while building chart data.", stage=STAGE_RENDER)
@@ -744,6 +792,9 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
         handle: Annotated[str, Field(description="An obs_/cube_ handle from a retrieval or transform tool.")],
         location: str,
         stat: str = "mean",
+        variable: Optional[str] = None,
+        dimension: Optional[str] = None,
+        dimension_value: Optional[float] = None,
     ) -> str:
         """
         Produce a time-series line chart showing how a variable changes over time.
@@ -758,21 +809,28 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
             location: place name to spatially mask before computing e.g. 'New Jersey'
             stat:     statistic to compute at each time step.
                       One of: 'mean', 'median', 'max', 'min', 'std'  (default: 'mean')
+            variable  : Science variable to use, for a multi-variable file with no
+                        variable chosen at retrieval time.
+            dimension       : Name of an extra non-spatial, non-time dimension to
+                               select a single value from (e.g. a vertical level).
+            dimension_value : Coordinate value to select from ``dimension`` (nearest match).
 
         Returns:
             JSON string — time-series chart payload for the frontend to render interactively.
         """
         import pandas as pd
+        from utils.geo_utils import identify_time
 
         try:
             ds = await open_handle(handle, mcp_tools)
-            da = _open_dataarray(ds)
+            da = _open_dataarray(ds, handle=handle, variable=variable)
         except MCPToolError as e:
             return json.dumps({"error": e.to_dict()})
         except OpenHandleError as e:
             return json.dumps({"error": f"Failed to open handle '{handle}': {e}"})
 
-        if "time" not in da.dims:
+        time_dim = identify_time(da)
+        if time_dim is None or time_dim not in da.dims:
             return json.dumps({"error": f"No time dimension found. dims={list(da.dims)}"})
 
         emit_status("Resolving requested location...", stage=STAGE_RENDER)
@@ -798,17 +856,28 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
             if stat not in AggregationService._STAT_FUNCS:
                 return "error", f"Unknown stat '{stat}'. Use: mean, median, max, min, std"
 
+            dim_selector = _build_dim_selector(dimension, dimension_value)
+            if dim_selector:
+                for dim_name, value in dim_selector.items():
+                    if dim_name in masked.dims:
+                        masked = masked.sel({dim_name: value}, method="nearest")
+            extra_dims = [d for d in masked.dims if d not in (lat_coord, lon_coord, time_dim)]
+            if extra_dims:
+                from utils.plotting import _dimension_choice_error
+
+                return "dimension_choice_required", _dimension_choice_error(masked, extra_dims[0]).to_dict()
+
             col_info = _mask_col_info(masked)
             masked = _aggregation_service.apply_quality_mask(masked, col_info=col_info)
 
             times, values = [], []
-            for i in range(masked.sizes["time"]):
-                slice_2d = masked.isel(time=i).values
+            for i in range(masked.sizes[time_dim]):
+                slice_2d = masked.isel({time_dim: i}).values
                 try:
                     value = _aggregation_service.compute_values_stat(slice_2d, stat)
                 except ValueError:
                     continue
-                raw_time = masked["time"].values[i]
+                raw_time = masked[time_dim].values[i]
                 timestamp = pd.Timestamp(raw_time).isoformat()
                 times.append(timestamp)
                 values.append(round(float(value), 6))
@@ -841,7 +910,7 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
             return None, (ts_payload, variable_name)
 
         status, result = await asyncio.to_thread(_mask_aggregate_timeseries)
-        if status == "error":
+        if status in ("error", "dimension_choice_required"):
             return json.dumps({"error": result})
         ts_payload, variable_name = result
         emit_status("Preparing response...", stage=STAGE_RENDER)

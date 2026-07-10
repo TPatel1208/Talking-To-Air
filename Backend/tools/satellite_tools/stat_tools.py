@@ -4,7 +4,7 @@ import os
 import numpy as np
 from langchain.tools import tool
 from langchain_core.tools import BaseTool
-from typing import Annotated
+from typing import Annotated, Optional
 from pydantic import Field
 
 from config.workflow_stages import STAGE_RENDER
@@ -29,12 +29,21 @@ def _mask_col_info(da) -> dict:
     return override_for(str(short_name).upper())
 
 
+def _build_dim_selector(dimension: str | None, dimension_value: float | None) -> dict | None:
+    if dimension is None or dimension_value is None:
+        return None
+    return {dimension: dimension_value}
+
+
 def make_compute_statistic_tool(mcp_tools: dict[str, BaseTool]):
     @tool
     async def compute_statistic_tool(
         handle: Annotated[str, Field(description="An obs_/cube_ handle from a retrieval or transform tool.")],
         location: str,
         stats: list[str] = ["mean", "median", "max", "min"],
+        variable: Optional[str] = None,
+        dimension: Optional[str] = None,
+        dimension_value: Optional[float] = None,
     ) -> str:
         """
         Compute basic statistics (mean, median, max, min, std) over a region
@@ -50,13 +59,18 @@ def make_compute_statistic_tool(mcp_tools: dict[str, BaseTool]):
             location: place name to spatially mask before computing e.g. 'Texas'
             stats:    list of statistics to compute.
                       Any of: 'mean', 'median', 'max', 'min', 'std'
+            variable  : Science variable to use, for a multi-variable file with no
+                        variable chosen at retrieval time.
+            dimension       : Name of an extra non-spatial, non-time dimension to
+                               select a single value from (e.g. a vertical level).
+            dimension_value : Coordinate value to select from ``dimension`` (nearest match).
 
         Returns:
             JSON string with each requested statistic and its value.
         """
         try:
             ds = await open_handle(handle, mcp_tools)
-            da = _aggregation_service.to_dataarray(ds)
+            da = _aggregation_service.to_dataarray(ds, handle=handle, variable=variable)
         except MCPToolError as e:
             return json.dumps({"error": e.to_dict()})
         except OpenHandleError as e:
@@ -81,10 +95,12 @@ def make_compute_statistic_tool(mcp_tools: dict[str, BaseTool]):
                     stat="mean",
                     col_info=col_info,
                 )
+                reduced = next(iter(aggregation.ds.data_vars.values()))
+                reduced = _normalize_to_2d(reduced, dim_selector=_build_dim_selector(dimension, dimension_value))
             except ValueError as e:
                 return "error", str(e)
-            reduced = next(iter(aggregation.ds.data_vars.values()))
-            reduced = _normalize_to_2d(reduced)
+            except MCPToolError as e:
+                return "error", e.to_dict()
 
             values = reduced.values
             valid = values[np.isfinite(values)]
@@ -121,6 +137,9 @@ def make_find_daily_peak(mcp_tools: dict[str, BaseTool]):
     async def find_daily_peak(
         handle: Annotated[str, Field(description="An obs_/cube_ handle from a retrieval or transform tool.")],
         location: str,
+        variable: Optional[str] = None,
+        dimension: Optional[str] = None,
+        dimension_value: Optional[float] = None,
     ) -> str:
         """
         Find the peak (maximum) value and its lat/lon location within a region.
@@ -133,13 +152,18 @@ def make_find_daily_peak(mcp_tools: dict[str, BaseTool]):
         Args:
             handle:   obs_/cube_ handle from a retrieval or transform tool
             location: place name to spatially mask before searching e.g. 'Texas'
+            variable  : Science variable to use, for a multi-variable file with no
+                        variable chosen at retrieval time.
+            dimension       : Name of an extra non-spatial, non-time dimension to
+                               select a single value from (e.g. a vertical level).
+            dimension_value : Coordinate value to select from ``dimension`` (nearest match).
 
         Returns:
             JSON string with peak value, lat, lon, and metadata.
         """
         try:
             ds = await open_handle(handle, mcp_tools)
-            da = _aggregation_service.to_dataarray(ds)
+            da = _aggregation_service.to_dataarray(ds, handle=handle, variable=variable)
         except MCPToolError as e:
             return json.dumps({"error": e.to_dict()})
         except OpenHandleError as e:
@@ -164,10 +188,12 @@ def make_find_daily_peak(mcp_tools: dict[str, BaseTool]):
                     stat="mean",
                     col_info=col_info,
                 )
+                reduced = next(iter(aggregation.ds.data_vars.values()))
+                reduced = _normalize_to_2d(reduced, dim_selector=_build_dim_selector(dimension, dimension_value))
             except ValueError as e:
                 return "error", str(e)
-            reduced = next(iter(aggregation.ds.data_vars.values()))
-            reduced = _normalize_to_2d(reduced)
+            except MCPToolError as e:
+                return "error", e.to_dict()
 
             # Resolve dim names via the canonical CF-metadata identifier
             # (T24), so an axis named 'row'/'y' is found by its metadata, not

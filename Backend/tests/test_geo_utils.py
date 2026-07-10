@@ -9,7 +9,7 @@ if BACKEND_DIR not in sys.path:
 import xarray as xr  # noqa: E402
 
 from utils.geo_utils import find_lat_coord, find_lon_coord  # noqa: E402
-from utils.geo_utils import identify_lat, identify_lon  # noqa: E402
+from utils.geo_utils import identify_lat, identify_lon, identify_time  # noqa: E402
 
 
 class IdentifyLatLonTests(unittest.TestCase):
@@ -111,6 +111,52 @@ class IdentifyLatLonTests(unittest.TestCase):
 
         self.assertEqual(identify_lat(da), "latitude")
         self.assertEqual(identify_lon(da), "longitude")
+
+
+class IdentifyTimeTests(unittest.TestCase):
+    """T25: time identification gets the same CF-metadata-primary treatment
+    as lat/lon (T24), so a MERRA-2-style `valid_time` dim is recognized as
+    time instead of falling into the dimension-choice-required error path."""
+
+    def test_cf_standard_name_identifies_time_regardless_of_dim_name(self):
+        ds = xr.Dataset(
+            {"no2": (("valid_time", "lat", "lon"), [[[1.0]]])},
+            coords={
+                "valid_time": ("valid_time", [0], {"standard_name": "time"}),
+                "lat": [40.0],
+                "lon": [-75.0],
+            },
+        )
+
+        self.assertEqual(identify_time(ds), "valid_time")
+
+    def test_cf_axis_t_identifies_time_when_standard_name_is_absent(self):
+        ds = xr.Dataset(
+            {"no2": (("valid_time", "lat", "lon"), [[[1.0]]])},
+            coords={"valid_time": ("valid_time", [0], {"axis": "T"})},
+        )
+
+        self.assertEqual(identify_time(ds), "valid_time")
+
+    def test_datetime64_dtype_identifies_time_with_no_cf_metadata_at_all(self):
+        import numpy as np
+
+        ds = xr.Dataset(
+            {"no2": (("valid_time",), [1.0])},
+            coords={"valid_time": np.array(["2024-01-01"], dtype="datetime64[ns]")},
+        )
+
+        self.assertEqual(identify_time(ds), "valid_time")
+
+    def test_name_allowlist_is_the_fallback_for_non_cf_files(self):
+        ds = xr.Dataset({"no2": (("time",), [1.0])}, coords={"time": ["2024-01-01"]})
+
+        self.assertEqual(identify_time(ds), "time")
+
+    def test_returns_none_when_no_time_axis_is_present(self):
+        ds = xr.Dataset({"no2": (("lat", "lon"), [[1.0]])}, coords={"lat": [40.0], "lon": [-75.0]})
+
+        self.assertIsNone(identify_time(ds))
 
 
 class FindLatLonCoordTests(unittest.TestCase):

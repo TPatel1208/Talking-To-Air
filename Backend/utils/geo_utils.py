@@ -97,6 +97,39 @@ def identify_lon(obj: Any) -> str | None:
     return _identify(obj, "longitude", LON_UNITS, LON_COORD_CANDIDATES)
 
 
+TIME_NAME_CANDIDATES = ("time", "Time", "TIME", "t")
+
+
+def _is_time_meta_match(var: Any) -> bool:
+    if str(var.attrs.get("standard_name", "")).strip() == "time":
+        return True
+    if str(var.attrs.get("axis", "")).strip().upper() == "T":
+        return True
+    dtype = getattr(var, "dtype", None)
+    return dtype is not None and _is_datetime_dtype(dtype)
+
+
+def _is_datetime_dtype(dtype: Any) -> bool:
+    import numpy as np
+
+    return np.issubdtype(dtype, np.datetime64)
+
+
+def identify_time(obj: Any) -> str | None:
+    """Return the name of the time variable on a Dataset or DataArray,
+    identified by CF metadata (``standard_name: time`` / ``axis: T`` /
+    datetime64 dtype) rather than the literal name "time" -- so a
+    MERRA-2-style ``valid_time`` dimension is still recognized as time (T25),
+    the same CF-metadata-primary treatment T24 gave lat/lon. The bare-name
+    allowlist remains the fallback for files with no CF hints at all."""
+    cands = _candidate_vars(obj)
+    dims = set(obj.dims)
+    meta_matches = [n for n, v in cands.items() if _is_time_meta_match(v)]
+    if meta_matches:
+        return min(meta_matches, key=lambda n: (0 if n in dims else 1, list(cands).index(n)))
+    return next((n for n in TIME_NAME_CANDIDATES if n in cands), None)
+
+
 def normalise_bbox(bbox) -> Tuple[float, float, float, float]:
     """Return bbox as (min_lon, min_lat, max_lon, max_lat)."""
     while isinstance(bbox, (list, tuple)) and len(bbox) == 1:

@@ -90,6 +90,146 @@ class SatelliteToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ref["type"], "map")
         self.assertEqual(ref["metadata"]["source_handles"], ["obs_1"])
 
+    async def test_plot_singular_refuses_a_multi_variable_file_with_no_choice(self):
+        """T25: the next(iter(data.data_vars)) fallback is deleted -- a
+        multi-variable file with no variable param, and no retrieval-
+        recorded choice, must refuse with a structured, candidate-listing
+        error instead of silently plotting whichever variable came first."""
+        import xarray as xr
+
+        def make_dataset():
+            return xr.Dataset(
+                {
+                    "Cloud_Fraction": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]]),
+                    "Aerosol_Optical_Depth": (("lat", "lon"), [[5.0, 6.0], [7.0, 8.0]]),
+                },
+                coords={"lat": [10.0, 20.0], "lon": [30.0, 40.0]},
+            )
+
+        self.volume.add_zarr("obs_multivar", make_dataset)
+
+        plot_singular = self._tool("plot_singular")
+        result = await plot_singular.ainvoke({"handle": "obs_multivar", "location": "global"})
+        payload = json.loads(result)
+
+        self.assertEqual(payload["error"]["category"], "variable_choice_required")
+        self.assertIn("Cloud_Fraction", payload["error"]["message"])
+        self.assertIn("Aerosol_Optical_Depth", payload["error"]["message"])
+
+    async def test_plot_singular_explicit_variable_param_resolves_a_multi_variable_file(self):
+        import xarray as xr
+
+        def make_dataset():
+            return xr.Dataset(
+                {
+                    "Cloud_Fraction": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]], {"units": "1"}),
+                    "Aerosol_Optical_Depth": (("lat", "lon"), [[5.0, 6.0], [7.0, 8.0]], {"units": "1"}),
+                },
+                coords={"lat": [10.0, 20.0], "lon": [30.0, 40.0]},
+            )
+
+        self.volume.add_zarr("obs_multivar_pick", make_dataset)
+
+        plot_singular = self._tool("plot_singular")
+        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda payload: None):
+            result = await plot_singular.ainvoke({
+                "handle": "obs_multivar_pick", "location": "global", "variable": "Aerosol_Optical_Depth",
+            })
+        payload = json.loads(result)
+
+        self.assertNotIn("error", payload)
+        self.assertEqual(payload["variable"], "Aerosol_Optical_Depth")
+
+    async def test_plot_singular_inherits_a_retrieval_recorded_variable_choice(self):
+        """T25: safe_retrieve/await_retrieval record the model's chosen
+        variable keyed by handle -- a later plot_singular call on that same
+        handle must inherit it without a variable param."""
+        import xarray as xr
+
+        from services import variable_choice_registry
+
+        def make_dataset():
+            return xr.Dataset(
+                {
+                    "Cloud_Fraction": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]], {"units": "1"}),
+                    "Aerosol_Optical_Depth": (("lat", "lon"), [[5.0, 6.0], [7.0, 8.0]], {"units": "1"}),
+                },
+                coords={"lat": [10.0, 20.0], "lon": [30.0, 40.0]},
+            )
+
+        self.volume.add_zarr("obs_recorded", make_dataset)
+        variable_choice_registry._choices.clear()
+        variable_choice_registry._choices["obs_recorded"] = ("Cloud_Fraction", float("inf"))
+        self.addCleanup(variable_choice_registry._choices.clear)
+
+        plot_singular = self._tool("plot_singular")
+        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda payload: None):
+            result = await plot_singular.ainvoke({"handle": "obs_recorded", "location": "global"})
+        payload = json.loads(result)
+
+        self.assertNotIn("error", payload)
+        self.assertEqual(payload["variable"], "Cloud_Fraction")
+
+    async def test_plot_singular_refuses_an_unselected_vertical_level_dim(self):
+        import xarray as xr
+
+        def make_dataset():
+            return xr.Dataset(
+                {
+                    "no2": (
+                        ("lev", "lat", "lon"),
+                        [[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]],
+                        {"units": "mol/m^2"},
+                    )
+                },
+                coords={
+                    "lev": ("lev", [1000.0, 500.0], {"units": "hPa"}),
+                    "lat": [10.0, 20.0],
+                    "lon": [30.0, 40.0],
+                },
+            )
+
+        self.volume.add_zarr("obs_level", make_dataset)
+
+        plot_singular = self._tool("plot_singular")
+        result = await plot_singular.ainvoke({"handle": "obs_level", "location": "global"})
+        payload = json.loads(result)
+
+        self.assertEqual(payload["error"]["category"], "dimension_choice_required")
+        self.assertIn("lev", payload["error"]["message"])
+        self.assertIn("1000.0", payload["error"]["message"])
+        self.assertIn("500.0", payload["error"]["message"])
+
+    async def test_plot_singular_dimension_selector_resolves_the_level_dim(self):
+        import xarray as xr
+
+        def make_dataset():
+            return xr.Dataset(
+                {
+                    "no2": (
+                        ("lev", "lat", "lon"),
+                        [[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]],
+                        {"units": "mol/m^2"},
+                    )
+                },
+                coords={
+                    "lev": ("lev", [1000.0, 500.0], {"units": "hPa"}),
+                    "lat": [10.0, 20.0],
+                    "lon": [30.0, 40.0],
+                },
+            )
+
+        self.volume.add_zarr("obs_level_pick", make_dataset)
+
+        plot_singular = self._tool("plot_singular")
+        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda payload: None):
+            result = await plot_singular.ainvoke({
+                "handle": "obs_level_pick", "location": "global", "dimension": "lev", "dimension_value": 500.0,
+            })
+        payload = json.loads(result)
+
+        self.assertNotIn("error", payload)
+
     async def test_plot_multiple_produces_a_multi_panel_artifact_from_handles(self):
         import xarray as xr
 

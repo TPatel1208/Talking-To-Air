@@ -31,6 +31,50 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
         tools = await load_raw_mcp_tools(settings)
         return tools, settings
 
+    async def test_await_retrieval_finalizes_a_pending_variable_choice_into_the_ready_handle(self):
+        """T25: the retrieval composite records the model's chosen science
+        variable, keyed by the handle the job resolves to, so a later plot/
+        stat/compare call inherits it instead of AggregationService.
+        to_dataarray refusing a multi-variable file all over again."""
+        from services import variable_choice_registry
+        from services.retrieval_composites import await_retrieval
+
+        variable_choice_registry._pending.clear()
+        variable_choice_registry._choices.clear()
+        self.addCleanup(variable_choice_registry._pending.clear)
+        self.addCleanup(variable_choice_registry._choices.clear)
+        variable_choice_registry.record_pending("job_choice", "Cloud_Fraction")
+
+        async def get_retrieval_status(job_handle, workspace_id):
+            return {"job_handle": "job_choice", "status": "ready", "obs_handle": "obs_choice"}
+
+        tools, settings = await self._tools({"get_retrieval_status": get_retrieval_status})
+        settings = self._fast_settings(settings)
+
+        await await_retrieval("job_choice", tools, settings=settings)
+
+        self.assertEqual(variable_choice_registry.get("obs_choice"), "Cloud_Fraction")
+
+    async def test_await_retrieval_does_not_record_a_choice_for_a_failed_job(self):
+        from services import variable_choice_registry
+        from services.retrieval_composites import await_retrieval
+
+        variable_choice_registry._pending.clear()
+        variable_choice_registry._choices.clear()
+        self.addCleanup(variable_choice_registry._pending.clear)
+        self.addCleanup(variable_choice_registry._choices.clear)
+        variable_choice_registry.record_pending("job_failed", "Cloud_Fraction")
+
+        async def get_retrieval_status(job_handle, workspace_id):
+            return {"job_handle": "job_failed", "status": "failed", "message": "boom"}
+
+        tools, settings = await self._tools({"get_retrieval_status": get_retrieval_status})
+        settings = self._fast_settings(settings)
+
+        await await_retrieval("job_failed", tools, settings=settings)
+
+        self.assertIsNone(variable_choice_registry.get("obs_never_ready"))
+
     async def test_await_retrieval_polls_until_ready_and_emits_progress_in_order(self):
         from services.retrieval_composites import await_retrieval
 
@@ -320,6 +364,40 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(seen_variables, [["some_unregistered_variable"]])
+
+    async def test_safe_retrieve_records_a_pending_choice_for_a_single_requested_variable(self):
+        from services import variable_choice_registry
+        from services.retrieval_composites import safe_retrieve
+
+        variable_choice_registry._pending.clear()
+        self.addCleanup(variable_choice_registry._pending.clear)
+
+        tools, settings, calls = await self._tools_and_settings(estimated_bytes=1000)
+
+        result = await safe_retrieve(
+            "dataset_1", "aoi_1", "2024-01-01/2024-01-02", ["Cloud_Fraction"], tools, settings=settings,
+        )
+
+        self.assertEqual(variable_choice_registry._pending[result["job_handle"]][0], "Cloud_Fraction")
+
+    async def test_safe_retrieve_records_no_pending_choice_for_multiple_requested_variables(self):
+        """More than one requested variable is not an unambiguous choice --
+        must not poison the registry with a guess when the file later opens
+        multi-variable."""
+        from services import variable_choice_registry
+        from services.retrieval_composites import safe_retrieve
+
+        variable_choice_registry._pending.clear()
+        self.addCleanup(variable_choice_registry._pending.clear)
+
+        tools, settings, calls = await self._tools_and_settings(estimated_bytes=1000)
+
+        result = await safe_retrieve(
+            "dataset_1", "aoi_1", "2024-01-01/2024-01-02", ["Cloud_Fraction", "Aerosol_Optical_Depth"], tools,
+            settings=settings,
+        )
+
+        self.assertNotIn(result["job_handle"], variable_choice_registry._pending)
 
     async def test_safe_retrieve_refuses_above_hard_cap_even_if_confirmed(self):
         from services.retrieval_composites import safe_retrieve

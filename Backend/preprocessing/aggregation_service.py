@@ -9,6 +9,9 @@ import xarray as xr
 
 from datasets.mask_info import match_umm_var_variable, resolve_mask_info
 from datasets.registry import load_registry
+from earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED, MCPToolError
+from services import variable_choice_registry
+from utils.geo_utils import identify_time
 
 
 @dataclass(frozen=True)
@@ -38,11 +41,12 @@ class AggregationService:
         col_info: dict[str, Any] | None = None,
         umm_var_facts: Any = None,
         keep_time: bool = False,
+        handle: str | None = None,
     ) -> AggregatedResult:
         if stat not in self._STAT_FUNCS:
             raise ValueError(f"Unsupported aggregation stat '{stat}'. Valid: {sorted(self._STAT_FUNCS)}")
 
-        da = self.to_dataarray(data, collection_id=collection_id, variable=variable, col_info=col_info)
+        da = self.to_dataarray(data, variable=variable, handle=handle)
 
         yaml_info = col_info or self._collection_info(collection_id, variable)
         umm_var_variable = match_umm_var_variable(umm_var_facts, variable or da.name)
@@ -56,26 +60,33 @@ class AggregationService:
             variable=variable,
         )
 
-        if "time" not in da.dims:
+        # T25: identified by CF metadata (standard_name/axis/datetime dtype),
+        # not the literal name "time" -- so a MERRA-2-style `valid_time` dim
+        # is still the one transparent auto-reduction, instead of surviving
+        # into _normalize_to_2d as an unrecognized extra dimension.
+        time_dim = identify_time(da)
+        if time_dim is None or time_dim not in da.dims:
             reduced = da
             valid_indices = [0]
         else:
-            valid_indices = self._valid_time_indices(da)
+            valid_indices = self._valid_time_indices(da, time_dim)
             if not valid_indices:
-                reduced = da.isel(time=slice(0, 0)).mean(dim="time", skipna=True)
+                reduced = da.isel({time_dim: slice(0, 0)}).mean(dim=time_dim, skipna=True)
             else:
-                valid_da = da.isel(time=valid_indices)
-                if keep_time and valid_da.sizes.get("time", 0) == 1:
+                valid_da = da.isel({time_dim: valid_indices})
+                if keep_time and valid_da.sizes.get(time_dim, 0) == 1:
                     reduced = valid_da
                 else:
-                    reduced = valid_da.reduce(self._STAT_FUNCS[stat], dim="time")
+                    reduced = valid_da.reduce(self._STAT_FUNCS[stat], dim=time_dim)
 
         result_ds = reduced.to_dataset(name=da.name or variable or "value")
         result_ds.attrs.update(getattr(data, "attrs", {}))
         result_ds.attrs["n_granules"] = len(valid_indices)
         result_ds.attrs["cadence"] = self._cadence(data, collection_id, variable, col_info)
 
-        meta = self._build_meta(data, len(valid_indices), self._cadence(data, collection_id, variable, col_info), stat, valid_indices)
+        meta = self._build_meta(
+            data, len(valid_indices), self._cadence(data, collection_id, variable, col_info), stat, valid_indices, time_dim,
+        )
         meta["masking"] = masking_provenance
 
         return AggregatedResult(ds=result_ds, meta=meta)
@@ -84,25 +95,62 @@ class AggregationService:
         self,
         data: xr.Dataset | xr.DataArray,
         *,
-        collection_id: str | None = None,
         variable: str | None = None,
+        handle: str | None = None,
+        collection_id: str | None = None,
         col_info: dict[str, Any] | None = None,
     ) -> xr.DataArray:
+        """Resolve ``data`` to a single science-variable DataArray.
+
+        Resolution never invents a scientific choice (T25): explicit
+        ``variable`` -> the choice recorded for ``handle`` at retrieval time
+        (services.variable_choice_registry) -> the file's only data
+        variable -> a structured, candidate-listing error. The previous
+        ``next(iter(data.data_vars))`` silent-first-variable fallback is
+        deleted, not softened -- a multi-variable file with no choice made
+        anywhere in that chain must refuse, not guess.
+
+        ``collection_id``/``col_info`` are accepted for call-site
+        compatibility (aggregate() forwards its own kwargs) but no longer
+        participate in variable-name resolution; they remain masking-only
+        concerns handled by ``resolve_mask_info``.
+        """
         if isinstance(data, xr.DataArray):
             return data
         if not data.data_vars:
             raise RuntimeError("Dataset has no data variables.")
 
-        info = col_info or self._collection_info(collection_id, variable)
-        primary_var = info.get("primary_var")
-        name = next(
-            (v for v in data.data_vars if v == primary_var),
-            next((v for v in data.data_vars if variable and variable.lower() in v.lower()), next(iter(data.data_vars))),
-        )
+        data_vars = list(data.data_vars)
+        name = None
+        if variable and variable in data_vars:
+            name = variable
+        else:
+            recorded = variable_choice_registry.get(handle) if handle else None
+            if recorded and recorded in data_vars:
+                name = recorded
+            elif len(data_vars) == 1:
+                name = data_vars[0]
+
+        if name is None:
+            raise self._ambiguous_variable_error(data, data_vars)
+
         da = data[name]
         if variable:
             da.name = variable
         return da
+
+    def _ambiguous_variable_error(self, data: xr.Dataset, data_vars: list[str]) -> MCPToolError:
+        candidates = []
+        for name in data_vars:
+            attrs = data[name].attrs
+            label = attrs.get("long_name") or attrs.get("standard_name")
+            candidates.append(f"{name} ({label})" if label else name)
+        return MCPToolError(
+            CATEGORY_VARIABLE_CHOICE_REQUIRED,
+            f"This file has {len(data_vars)} science variables and no variable was chosen: "
+            f"{', '.join(candidates)}. Specify which one to analyze.",
+            suggestion=f"Pass variable=<name> from: {', '.join(data_vars)}.",
+        )
 
     def apply_quality_mask(
         self,
@@ -144,10 +192,10 @@ class AggregationService:
             raise ValueError("No finite values available for statistic.")
         return float(self._STAT_FUNCS[stat](valid))
 
-    def _valid_time_indices(self, da: xr.DataArray) -> list[int]:
+    def _valid_time_indices(self, da: xr.DataArray, time_dim: str) -> list[int]:
         indices = []
-        for i in range(da.sizes["time"]):
-            if bool(np.isfinite(da.isel(time=i).values).any()):
+        for i in range(da.sizes[time_dim]):
+            if bool(np.isfinite(da.isel({time_dim: i}).values).any()):
                 indices.append(i)
         return indices
 
@@ -175,10 +223,12 @@ class AggregationService:
         cadence: str,
         stat: str,
         valid_indices: list[int],
+        time_dim: str | None = None,
     ) -> dict[str, Any]:
+        time_dim = time_dim or identify_time(data)
         times = []
-        if "time" in getattr(data, "coords", {}):
-            all_times = [str(t) for t in data["time"].values]
+        if time_dim and time_dim in getattr(data, "coords", {}):
+            all_times = [str(t) for t in data[time_dim].values]
             times = [all_times[i] for i in valid_indices if i < len(all_times)]
 
         start = self._date_only(times[0]) if times else ""
