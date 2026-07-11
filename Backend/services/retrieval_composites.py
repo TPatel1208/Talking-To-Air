@@ -17,7 +17,7 @@ from langchain_core.tools import BaseTool
 
 from config.settings import Settings, get_settings
 from config.workflow_stages import STAGE_ESTIMATE, STAGE_PROGRESS, STAGE_SUBMIT
-from datasets.registry import load_registry
+from datasets.registry import known_quality_flag_vars, load_registry
 from earthdata_mcp.results import CATEGORY_TOO_LARGE, MCPToolError, parse_tool_result
 from services import variable_choice_registry
 from utils.streaming import emit_job_progress, emit_status
@@ -190,11 +190,18 @@ async def safe_retrieve(
     subset = parse_tool_result(subset_raw)
 
     # T25: record the model's chosen science variable, keyed by the job this
-    # retrieval submits as -- a single unambiguous variable only; 0 or >1
-    # requested variables leave nothing to record (an already-multi-variable
-    # subset request means the file needs its own choice made downstream).
-    if len(variables) == 1:
-        variable_choice_registry.record_pending(subset.get("job_handle"), variables[0])
+    # retrieval submits as. A QA flag riding along is not a science choice --
+    # a standard TEMPO retrieval always requests the science variable *and*
+    # main_data_quality_flag together, so counting raw ``variables`` would see
+    # 2 and record nothing, leaving the opened 2-var file to refuse downstream.
+    # Exclude known flag vars (matched by bare leaf name, since ``variables``
+    # is group-qualified) first: a single remaining science variable is still
+    # an unambiguous choice worth recording; 0 or >1 leave the file's own
+    # choice to be made downstream.
+    flag_vars = known_quality_flag_vars()
+    science_variables = [v for v in variables if v.rsplit("/", 1)[-1] not in flag_vars]
+    if len(science_variables) == 1:
+        variable_choice_registry.record_pending(subset.get("job_handle"), science_variables[0])
 
     return {"status": "submitted", "estimated_bytes": estimated_bytes, **subset}
 

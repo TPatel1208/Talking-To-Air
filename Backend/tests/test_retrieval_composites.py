@@ -399,6 +399,32 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertNotIn(result["job_handle"], variable_choice_registry._pending)
 
+    async def test_safe_retrieve_records_the_science_variable_when_a_qa_flag_rides_along(self):
+        """T25 review #2: a standard TEMPO retrieval requests the science
+        variable *and* main_data_quality_flag together (both group-qualified).
+        Counting raw ``variables`` would see 2 and record nothing, so the
+        opened 2-var file later refuses. The QA flag isn't a science choice --
+        excluding it (by bare leaf) leaves a single science variable still
+        worth recording."""
+        from services import variable_choice_registry
+        from services.retrieval_composites import safe_retrieve
+
+        variable_choice_registry._pending.clear()
+        self.addCleanup(variable_choice_registry._pending.clear)
+
+        tools, settings, calls = await self._tools_and_settings(estimated_bytes=1000)
+
+        result = await safe_retrieve(
+            "dataset_1", "aoi_1", "2024-01-01/2024-01-02",
+            ["product/vertical_column_troposphere", "product/main_data_quality_flag"],
+            tools, settings=settings,
+        )
+
+        self.assertEqual(
+            variable_choice_registry._pending[result["job_handle"]][0],
+            "product/vertical_column_troposphere",
+        )
+
     async def test_safe_retrieve_refuses_above_hard_cap_even_if_confirmed(self):
         from services.retrieval_composites import safe_retrieve
 

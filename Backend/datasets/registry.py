@@ -125,6 +125,23 @@ def load_registry(path: str | None = None) -> dict[str, CollectionConfig]:
     return registry
 
 
+def known_quality_flag_vars() -> frozenset[str]:
+    """Leaf names of every ``quality_flag_var`` pinned in the registry.
+
+    Used to exclude QA-flag variables from science-variable choice (T25): a
+    flag riding along in a retrieval request or an opened multi-variable file
+    is never a science-variable candidate. Registry ``variables`` lists are
+    HDF group-qualified (e.g. ``product/main_data_quality_flag``) while
+    open_handle merges those groups down to bare leaf names, so the leaf is
+    the only stable key both sides agree on. Reads through ``load_registry``'s
+    cache, so it stays consistent with ``reload_registry``."""
+    return frozenset(
+        cfg.quality_flag_var.rsplit("/", 1)[-1]
+        for cfg in load_registry().values()
+        if cfg.quality_flag_var
+    )
+
+
 def reload_registry() -> dict[str, CollectionConfig]:
     """
     Clear the cache and reload from disk.
