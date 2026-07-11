@@ -236,6 +236,95 @@ class AggregationServiceTests(unittest.TestCase):
 
         self.assertEqual(da.name, "Aerosol_Optical_Depth")
 
+    def test_to_dataarray_resolves_a_group_qualified_recorded_choice_against_merged_leaf_names(self):
+        """T25 review #1: retrieval records the model's choice group-qualified
+        (``product/vertical_column_troposphere``), but open_handle merges HDF
+        groups down to bare leaf names -- so resolution has to match on the
+        leaf, or a registered TEMPO retrieval refuses its own recorded choice."""
+        from preprocessing.aggregation_service import AggregationService
+        from services import variable_choice_registry
+
+        variable_choice_registry._choices.clear()
+        variable_choice_registry._choices["obs_1"] = ("product/vertical_column_troposphere", float("inf"))
+        self.addCleanup(variable_choice_registry._choices.clear)
+
+        ds = self.xr.Dataset({
+            "vertical_column_troposphere": (("lat", "lon"), [[1.0]]),
+            "weight": (("lat", "lon"), [[2.0]]),
+        })
+
+        da = AggregationService().to_dataarray(ds, handle="obs_1")
+
+        self.assertEqual(da.name, "vertical_column_troposphere")
+
+    def test_to_dataarray_resolves_a_group_qualified_explicit_variable_against_merged_leaf_names(self):
+        """An explicit ``variable`` may arrive group-qualified too (the
+        registry's own variable list is): it must match the merged bare leaf."""
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset({
+            "vertical_column_troposphere": (("lat", "lon"), [[1.0]]),
+            "weight": (("lat", "lon"), [[2.0]]),
+        })
+
+        da = AggregationService().to_dataarray(ds, variable="product/vertical_column_troposphere")
+
+        self.assertEqual(float(da.values[0, 0]), 1.0)
+
+    def test_to_dataarray_resolves_a_science_plus_flag_pair_to_the_science_var_without_refusal(self):
+        """T25 review #2: a standard TEMPO retrieval opens science +
+        main_data_quality_flag (2 data_vars). The QA flag is not a science-
+        variable candidate, so resolution picks the sole science var rather
+        than raising CATEGORY_VARIABLE_CHOICE_REQUIRED and offering the flag."""
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset({
+            "vertical_column_troposphere": (("lat", "lon"), [[1.0]]),
+            "main_data_quality_flag": (("lat", "lon"), [[0]]),
+        })
+
+        da = AggregationService().to_dataarray(ds)
+
+        self.assertEqual(da.name, "vertical_column_troposphere")
+
+    def test_to_dataarray_excludes_a_cf_flag_var_identified_by_flag_attrs(self):
+        """A sibling flag var need not be registry-pinned: CF ``flag_values``
+        + ``flag_meanings`` mark it as a flag, so a science + CF-flag pair
+        still resolves to the science var."""
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset({
+            "aerosol_optical_depth": (("lat", "lon"), [[1.0]]),
+            "qa": (("lat", "lon"), [[0]]),
+        })
+        ds["qa"].attrs["flag_values"] = [0, 1]
+        ds["qa"].attrs["flag_meanings"] = "good bad"
+
+        da = AggregationService().to_dataarray(ds)
+
+        self.assertEqual(da.name, "aerosol_optical_depth")
+
+    def test_to_dataarray_never_offers_a_qa_flag_as_a_candidate_in_the_choice_error(self):
+        """Even when a real choice is still required (2+ science vars), the QA
+        flag riding along is excluded from the candidate list -- offering
+        main_data_quality_flag as a 'science variable' to pick would be wrong."""
+        from earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED, MCPToolError
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset({
+            "vertical_column_troposphere": (("lat", "lon"), [[1.0]]),
+            "vertical_column_stratosphere": (("lat", "lon"), [[2.0]]),
+            "main_data_quality_flag": (("lat", "lon"), [[0]]),
+        })
+
+        with self.assertRaises(MCPToolError) as ctx:
+            AggregationService().to_dataarray(ds)
+
+        self.assertEqual(ctx.exception.category, CATEGORY_VARIABLE_CHOICE_REQUIRED)
+        self.assertIn("vertical_column_troposphere", ctx.exception.message)
+        self.assertIn("vertical_column_stratosphere", ctx.exception.message)
+        self.assertNotIn("main_data_quality_flag", ctx.exception.message)
+
     def test_aggregate_recognizes_a_valid_time_dim_as_time(self):
         """T25: a MERRA-2-style `valid_time` dim (no CF standard_name, just
         the bare name) must still auto-reduce like a literal 'time' dim,

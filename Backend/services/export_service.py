@@ -245,11 +245,26 @@ class ExportService:
         from services.open_handle import open_handle
         from utils.plotting import RegionResolver, mask_data_by_geometry
 
+        from earthdata_mcp.results import MCPToolError
+
         source_handles = export.get("source_handles") or []
         if not source_handles:
             raise ValueError("This chart does not include a source handle for full-resolution export.")
         ds = await open_handle(source_handles[0], tools)
-        da = AggregationService().to_dataarray(ds, variable=export.get("variable"))
+        # Pass the source handle so a stored payload whose ``variable`` wasn't
+        # persisted (or was persisted as None) still inherits the science
+        # variable recorded for this handle at retrieval time (T25). If it
+        # can't be resolved -- a genuinely multi-science-variable file with no
+        # recorded choice -- surface it as the export path's own ValueError
+        # (a clean 422) instead of letting the structured MCPToolError escape
+        # mid-stream on the CSV path, where the response has already started
+        # and no handler can turn it into a proper error response.
+        try:
+            da = AggregationService().to_dataarray(
+                ds, variable=export.get("variable"), handle=source_handles[0],
+            )
+        except MCPToolError as exc:
+            raise ValueError(exc.message) from exc
         lat_coord, lon_coord = self._export_lat_lon_names(da)
         da = _normalize_longitudes(da, lon_coord)
 

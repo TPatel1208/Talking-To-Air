@@ -131,5 +131,115 @@ class PointSampleTimeseriesExportTests(unittest.IsolatedAsyncioTestCase):
             await service._timeseries_rows_async(export, self.tools)
 
 
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES)
+    or importlib.util.find_spec("xarray") is None
+    or (importlib.util.find_spec("netCDF4") is None and importlib.util.find_spec("h5netcdf") is None),
+    "export_service multi-variable NetCDF test dependencies are not installed",
+)
+class MultiVariableExportResolutionTests(unittest.IsolatedAsyncioTestCase):
+    """T25 review #3: the export path calls to_dataarray with the payload's
+    stored ``variable`` and no handle. With the silent-first-variable fallback
+    deleted, a stored payload whose ``variable`` is None/empty over a multi-
+    variable file used to raise a structured MCPToolError -- uncaught on the
+    CSV export path, where the streaming response has already started. The
+    export path now threads the source handle (so a recorded choice or a
+    lone science-vs-flag pair resolves) and, failing that, surfaces a clean
+    ValueError instead of letting the MCPToolError escape mid-stream."""
+
+    async def asyncSetUp(self):
+        from fake_earthdata_mcp import HandleVolume, build_fake_mcp, FakeEarthdataMCPServer
+        from earthdata_mcp.client import load_raw_mcp_tools
+        from config.settings import Settings
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.volume = HandleVolume(self._tmpdir.name)
+
+        server = FakeEarthdataMCPServer(build_fake_mcp({
+            "export_result": self.volume.export_result,
+            "rematerialize": self.volume.rematerialize,
+            "get_retrieval_status": self.volume.get_retrieval_status,
+        }))
+        server.start()
+        self.addCleanup(server.stop)
+        settings = Settings(earthdata_mcp_url=server.url, earthdata_mcp_token=None)
+        self.tools = await load_raw_mcp_tools(settings)
+
+    def _add_science_plus_flag_handle(self, handle):
+        import xarray as xr
+
+        def make_root():
+            return xr.Dataset()
+
+        def make_product_group():
+            ds = xr.Dataset(
+                {
+                    "vertical_column_troposphere": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]]),
+                    "main_data_quality_flag": (("lat", "lon"), [[0, 0], [0, 0]]),
+                },
+                coords={"lat": [10.0, 20.0], "lon": [30.0, 40.0]},
+            )
+            return ds
+
+        self.volume.add_netcdf(handle, {None: make_root, "product": make_product_group})
+
+    def _add_two_science_var_handle(self, handle):
+        import xarray as xr
+
+        def make_root():
+            return xr.Dataset()
+
+        def make_product_group():
+            return xr.Dataset(
+                {
+                    "no2": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]]),
+                    "hcho": (("lat", "lon"), [[5.0, 6.0], [7.0, 8.0]]),
+                },
+                coords={"lat": [10.0, 20.0], "lon": [30.0, 40.0]},
+            )
+
+        self.volume.add_netcdf(handle, {None: make_root, "product": make_product_group})
+
+    async def test_export_with_variable_none_resolves_the_science_var_over_a_science_plus_flag_file(self):
+        from services.export_service import ExportService
+
+        self._add_science_plus_flag_handle("obs_multi")
+        export = {"variable": None, "units": "mol/m^2", "source_handles": ["obs_multi"]}
+
+        da = await ExportService()._export_data_array_async(export, self.tools, collapse_to_2d=False)
+
+        self.assertEqual(da.name, "vertical_column_troposphere")
+
+    async def test_export_with_variable_none_fails_cleanly_over_a_multi_science_var_file(self):
+        """No recorded choice and two genuine science variables: it can't be
+        resolved, but it must surface as the export path's own ValueError
+        (a clean 422) rather than an MCPToolError escaping mid-stream."""
+        from services.export_service import ExportService
+
+        self._add_two_science_var_handle("obs_ambiguous")
+        export = {"variable": None, "units": "mol/m^2", "source_handles": ["obs_ambiguous"]}
+
+        with self.assertRaises(ValueError):
+            await ExportService()._export_data_array_async(export, self.tools, collapse_to_2d=False)
+
+    async def test_export_inherits_a_recorded_choice_via_the_source_handle(self):
+        """The handle is threaded through, so a choice recorded at retrieval
+        time resolves the export even when the payload's ``variable`` is None."""
+        from services import variable_choice_registry
+        from services.export_service import ExportService
+
+        self._add_two_science_var_handle("obs_recorded")
+        variable_choice_registry._choices.clear()
+        variable_choice_registry._choices["obs_recorded"] = ("hcho", float("inf"))
+        self.addCleanup(variable_choice_registry._choices.clear)
+
+        export = {"variable": None, "units": "mol/m^2", "source_handles": ["obs_recorded"]}
+
+        da = await ExportService()._export_data_array_async(export, self.tools, collapse_to_2d=False)
+
+        self.assertEqual(da.name, "hcho")
+
+
 if __name__ == "__main__":
     unittest.main()

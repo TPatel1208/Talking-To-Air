@@ -15,7 +15,7 @@ from datasets.qa_flags import (
     QA_VERIFIED,
     resolve_qa_info,
 )
-from datasets.registry import load_registry
+from datasets.registry import known_quality_flag_vars, load_registry
 from earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED, MCPToolError
 from services import variable_choice_registry
 from utils.geo_utils import identify_time
@@ -159,10 +159,18 @@ class AggregationService:
         Resolution never invents a scientific choice (T25): explicit
         ``variable`` -> the choice recorded for ``handle`` at retrieval time
         (services.variable_choice_registry) -> the file's only data
-        variable -> a structured, candidate-listing error. The previous
+        variable -> its only *science* variable once QA-flag vars are set
+        aside -> a structured, candidate-listing error. The previous
         ``next(iter(data.data_vars))`` silent-first-variable fallback is
-        deleted, not softened -- a multi-variable file with no choice made
-        anywhere in that chain must refuse, not guess.
+        deleted, not softened -- a multi-science-variable file with no choice
+        made anywhere in that chain must refuse, not guess.
+
+        ``variable`` and the recorded choice are matched by exact name or by
+        bare leaf name: registry variable lists and recorded choices are HDF
+        group-qualified (``product/vertical_column_troposphere``), while
+        open_handle merges those groups down to the bare leaf
+        (``vertical_column_troposphere``) that actually appears in
+        ``data_vars``.
 
         ``collection_id``/``col_info`` are accepted for call-site
         compatibility (aggregate() forwards its own kwargs) but no longer
@@ -175,23 +183,55 @@ class AggregationService:
             raise RuntimeError("Dataset has no data variables.")
 
         data_vars = list(data.data_vars)
-        name = None
-        if variable and variable in data_vars:
-            name = variable
-        else:
-            recorded = variable_choice_registry.get(handle) if handle else None
-            if recorded and recorded in data_vars:
-                name = recorded
-            elif len(data_vars) == 1:
-                name = data_vars[0]
-
+        name = self._match_var(variable, data_vars)
+        if name is None and handle:
+            name = self._match_var(variable_choice_registry.get(handle), data_vars)
         if name is None:
-            raise self._ambiguous_variable_error(data, data_vars)
+            if len(data_vars) == 1:
+                name = data_vars[0]
+            else:
+                # A QA flag is never a science-variable candidate (T25): a
+                # TEMPO science+main_data_quality_flag pair still resolves to
+                # the single science variable without a spurious refusal.
+                science_vars = self._science_vars(data, data_vars)
+                if len(science_vars) == 1:
+                    name = science_vars[0]
+                else:
+                    raise self._ambiguous_variable_error(data, science_vars or data_vars)
 
         da = data[name]
         if variable:
             da.name = variable
         return da
+
+    @staticmethod
+    def _match_var(requested: str | None, data_vars: list[str]) -> str | None:
+        """The ``data_vars`` entry matching ``requested`` by exact name or by
+        bare leaf name (so a group-qualified ``product/foo`` choice resolves
+        to the merged ``foo``), or None when ``requested`` is falsy/absent."""
+        if not requested:
+            return None
+        if requested in data_vars:
+            return requested
+        leaf = requested.rsplit("/", 1)[-1]
+        return leaf if leaf in data_vars else None
+
+    @staticmethod
+    def _science_vars(data: xr.Dataset, data_vars: list[str]) -> list[str]:
+        """``data_vars`` with QA-flag variables removed. A var is a flag if
+        its bare leaf name is a pinned ``quality_flag_var`` in the registry,
+        or it carries CF ``flag_values`` and ``flag_meanings`` attrs -- the
+        same signal ``_resolve_qa_flag_var`` uses to find the sibling flag."""
+        flag_names = known_quality_flag_vars()
+        science = []
+        for name in data_vars:
+            attrs = data[name].attrs
+            is_flag = name.rsplit("/", 1)[-1] in flag_names or (
+                "flag_values" in attrs and "flag_meanings" in attrs
+            )
+            if not is_flag:
+                science.append(name)
+        return science
 
     def _ambiguous_variable_error(self, data: xr.Dataset, data_vars: list[str]) -> MCPToolError:
         candidates = []
