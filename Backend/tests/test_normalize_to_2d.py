@@ -82,6 +82,56 @@ class NormalizeTo2dTests(unittest.TestCase):
         self.assertEqual(result.dims, ("lat", "lon"))
         self.assertEqual(result.values.tolist(), [[5.0, 6.0], [7.0, 8.0]])
 
+    def test_dim_selector_out_of_range_value_is_rejected_not_snapped(self):
+        """Follow-up review #4: a selection outside the coordinate's own
+        min--max range (e.g. a bare hPa value against a Pa-unit ``lev`` coord)
+        is refused with a structured error, not silently nearest-snapped to a
+        plausible-but-wrong edge level."""
+        from earthdata_mcp.results import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
+        from utils.plotting import _normalize_to_2d
+
+        da = self.xr.DataArray(
+            self.np.arange(3 * 2 * 2, dtype=float).reshape(3, 2, 2),
+            dims=("lev", "lat", "lon"),
+            coords={
+                "lev": ("lev", [100000.0, 85000.0, 50000.0], {"units": "Pa"}),
+                "lat": [40.0, 41.0],
+                "lon": [-75.0, -74.0],
+            },
+            name="no2",
+        )
+
+        # 500 hPa really means 50000 Pa; passed as a bare 500 it is far below
+        # the Pa-unit coordinate's minimum and must be refused, not snapped.
+        with self.assertRaises(MCPToolError) as ctx:
+            _normalize_to_2d(da, dim_selector={"lev": 500.0})
+
+        self.assertEqual(ctx.exception.category, CATEGORY_DIMENSION_CHOICE_REQUIRED)
+        self.assertIn("lev", ctx.exception.message)
+        self.assertIn("Pa", ctx.exception.message)
+
+    def test_dim_selector_in_range_value_still_nearest_selects(self):
+        """An in-range selection nearest-matches normally -- the range guard
+        only rejects values outside the coordinate, not legitimate ones."""
+        from utils.plotting import _normalize_to_2d
+
+        da = self.xr.DataArray(
+            self.np.array([[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]]),
+            dims=("lev", "lat", "lon"),
+            coords={
+                "lev": ("lev", [100000.0, 50000.0], {"units": "Pa"}),
+                "lat": [40.0, 41.0],
+                "lon": [-75.0, -74.0],
+            },
+            name="no2",
+        )
+
+        # 52000 Pa is within [50000, 100000] and nearest-matches 50000.
+        result = _normalize_to_2d(da, dim_selector={"lev": 52000.0})
+
+        self.assertEqual(result.dims, ("lat", "lon"))
+        self.assertEqual(result.values.tolist(), [[5.0, 6.0], [7.0, 8.0]])
+
     def test_time_like_dim_still_auto_reduces_without_a_selector(self):
         """Time is the one transparent auto-reduction (PRD T25) -- a
         surviving time-identified dim must not raise, even without a

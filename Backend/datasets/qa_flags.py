@@ -153,6 +153,15 @@ def resolve_qa_info(
 
     pinned_good = yaml_info.get("qa_good_values")
     pinned_bad = yaml_info.get("qa_bad_values")
+    # An explicitly empty good-set would key a keep-mask on ``isin([])`` --
+    # an all-False mask wiping the whole variable to NaN; an empty bad-set
+    # masks nothing yet would still report "verified". Neither is a usable
+    # rule, so drop it and fall through rather than mask everything (or
+    # nothing) while claiming a pinned rule ran.
+    if pinned_good is not None and len(list(pinned_good)) == 0:
+        pinned_good = None
+    if pinned_bad is not None and len(list(pinned_bad)) == 0:
+        pinned_bad = None
     if pinned_good is not None or pinned_bad is not None:
         qa_col_info: dict[str, Any] = {}
         if pinned_good is not None:
@@ -166,6 +175,25 @@ def resolve_qa_info(
         return {}, {"qa_status": QA_NOT_APPLIED, "qa_source": "none"}
 
     if parsed.unambiguous:
+        if not parsed.good_values:
+            # Every token classified as bad-quality (e.g. "missing cloudy"):
+            # there is no positive good class to key a keep-mask on, and
+            # ``isin([])`` would wipe the whole variable to NaN. This is not a
+            # usable classification -- go ambiguous (apply no mask) rather than
+            # mask everything while reporting "cf-deterministic".
+            return (
+                {},
+                {
+                    "qa_status": QA_AMBIGUOUS_PENDING,
+                    "qa_source": "cf_flag_meanings",
+                    "qa_ambiguous_tokens": [],
+                    "qa_bad_values": parsed.bad_values,
+                    "qa_note": (
+                        "every flag_meanings token classifies as bad-quality; "
+                        "no good class to key a mask on -- no mask applied"
+                    ),
+                },
+            )
         return (
             {"qa_good_values": parsed.good_values},
             {
