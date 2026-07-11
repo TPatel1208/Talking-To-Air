@@ -117,6 +117,33 @@ class OpenHandleZarrTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("no2", ds.data_vars)
         self.assertEqual(self.volume.rematerialize_calls["obs_2"], 1)
 
+    async def test_open_handle_self_heals_a_ready_but_unreadable_export_via_rematerialize(self):
+        """The observed intermittent plot failure: export_result reports
+        "ready" but the file on disk isn't a readable NetCDF/HDF5 (an error-
+        response body or an incomplete/empty file saved in place of the
+        granule). A manual retry works because a fresh retrieval writes real
+        data -- so open_handle re-materializes once and re-opens itself,
+        rather than surfacing the failure and making the user retry by hand."""
+        import xarray as xr
+
+        from services.open_handle import open_handle
+
+        def make_root():
+            return xr.Dataset()
+
+        def make_product_group():
+            return xr.Dataset({
+                "vertical_column_troposphere": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]]),
+            })
+
+        self.volume.add_netcdf("obs_corrupt", {None: make_root, "product": make_product_group})
+        self.volume.corrupt("obs_corrupt")  # ready, but body is an HTML error page
+
+        ds = await open_handle("obs_corrupt", self.tools)
+
+        self.assertIn("vertical_column_troposphere", ds.data_vars)
+        self.assertEqual(self.volume.rematerialize_calls["obs_corrupt"], 1)
+
 
 @unittest.skipIf(
     any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
@@ -478,6 +505,41 @@ class OpenHandleGroupedNetcdfTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(da.name, "vertical_column_troposphere")
         self.assertEqual(find_lat_coord(da), "latitude")
         self.assertEqual(find_lon_coord(da), "longitude")
+
+
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES)
+    or (importlib.util.find_spec("netCDF4") is None and importlib.util.find_spec("h5netcdf") is None),
+    "open_handle grouped-netcdf test dependencies are not installed",
+)
+class OpenNetcdfUnreadableFileTests(unittest.TestCase):
+    """A 'ready' export whose file has no valid NetCDF/HDF5 magic (a zero-
+    byte file or an error-response body saved as .nc4) must surface an
+    actionable error -- not xarray's misleading "did not find a match in any
+    of xarray's currently installed IO backends" message, which sends users
+    to install packages that are already installed."""
+
+    def _open_bytes(self, contents: bytes):
+        from services.open_handle import _open_netcdf
+
+        with tempfile.NamedTemporaryFile(suffix=".nc4", delete=False) as fh:
+            fh.write(contents)
+            path = fh.name
+        try:
+            return _open_netcdf(path)
+        finally:
+            os.unlink(path)
+
+    def test_open_netcdf_raises_actionable_error_on_a_non_netcdf_file(self):
+        from services.open_handle import UnreadableExportError
+
+        for contents in (b"", b"<html><body>503</body></html>", os.urandom(4096)):
+            with self.subTest(contents=contents[:16]):
+                with self.assertRaises(UnreadableExportError) as ctx:
+                    self._open_bytes(contents)
+                msg = str(ctx.exception)
+                self.assertIn("incomplete or failed retrieval", msg)
+                self.assertNotIn("did not find a match in any of xarray", msg)
 
 
 if __name__ == "__main__":

@@ -299,6 +299,22 @@ class HandleVolume:
         else:
             path.unlink()
 
+    def corrupt(self, handle: str, contents: bytes = b"<html><body>503 Service Unavailable</body></html>") -> None:
+        """Overwrite an exported file in place with a non-NetCDF body, while
+        leaving it present on disk so export_result still reports "ready".
+
+        Models the observed failure where the MCP hands back an error-
+        response body (or an incomplete/empty file) saved where the granule
+        should be: export_result sees a file and says "ready", but xarray
+        can't open it. rematerialize() regenerates good data from the
+        original factory, so a re-open after recovery succeeds."""
+        import shutil
+
+        path = self._path(handle)
+        if path.is_dir():
+            shutil.rmtree(path)
+        path.write_bytes(contents)
+
     async def export_result(self, handle: str, workspace_id: str = "default") -> dict:
         if handle not in self._factories:
             return {"handle": handle, "status": "not_found", "message": f"Unknown handle '{handle}'."}
