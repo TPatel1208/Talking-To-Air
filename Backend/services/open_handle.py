@@ -29,6 +29,14 @@ class OpenHandleError(RuntimeError):
     """Raised when a handle cannot be opened, even after one rematerialize attempt."""
 
 
+class UnreadableExportError(OpenHandleError):
+    """Raised when an export reported "ready" but the file on disk isn't a
+    readable NetCDF/HDF5 dataset — an error-response body or an incomplete/
+    empty file saved in place of the granule. Distinct from OpenHandleError
+    so open_handle can recognize this transient-looking failure and re-
+    materialize once (the same self-heal used for evictions) before giving up."""
+
+
 async def open_handle(handle: str, tools: dict[str, BaseTool]) -> Any:
     """Resolve ``handle`` to an opened xarray Dataset (Zarr/NetCDF) or Arrow table (Parquet).
 
@@ -38,9 +46,26 @@ async def open_handle(handle: str, tools: dict[str, BaseTool]) -> Any:
     """
     emit_status("Opening retrieved data...", stage=STAGE_OPEN)
     export = await _export(handle, tools)
+    recovered = False
     if export.get("status") != "ready":
         export = await _recover(handle, tools)
-    return await asyncio.to_thread(_open, export["storage_uri"], export["media_type"])
+        recovered = True
+    try:
+        return await asyncio.to_thread(_open, export["storage_uri"], export["media_type"])
+    except UnreadableExportError:
+        # A "ready" export whose file won't open is almost always a transient
+        # bad retrieval (an error-response body or an incomplete/empty file
+        # saved in place of the granule) — the same class of failure eviction
+        # recovery already heals, and the reason a manual retry "just works".
+        # Re-materialize once and re-open; only a freshly retrieved file that
+        # is *also* unreadable is a real failure, and it propagates with the
+        # actionable UnreadableExportError message rather than being retried
+        # forever. If we already re-materialized (eviction path), don't loop.
+        if recovered:
+            raise
+        emit_status("Retrieved file was unreadable; re-materializing...", stage=STAGE_OPEN)
+        export = await _recover(handle, tools)
+        return await asyncio.to_thread(_open, export["storage_uri"], export["media_type"])
 
 
 async def _export(handle: str, tools: dict[str, BaseTool]) -> dict:
@@ -147,18 +172,40 @@ def _open_all_groups(path: str) -> dict[str, Any]:
     """Open every HDF5 group in the file, keyed by group path ("/" for the
     root). Tries h5netcdf first -- pure-Python via h5py (already a
     dependency), so no compiled netCDF-C library needed -- then falls back
-    to netCDF4 for classic-format files h5netcdf can't read. Either
-    backend's absence, or a file neither can open as grouped, degrades to
-    "just the root dataset" rather than a crash.
+    to netCDF4 for classic-format files h5netcdf can't read. These two
+    engines between them cover every NetCDF variant (classic-3 via netCDF4,
+    NetCDF-4/HDF5 via h5netcdf), so if *both* fail to open the file it isn't
+    readable data at all.
+
+    In that case, raise UnreadableExportError with the readers' own errors
+    rather than falling back to a bare ``xr.open_dataset(path)`` (no
+    ``engine=``). That naked call only re-runs xarray's backend guessing,
+    which — on a file with no recognizable NetCDF/HDF5 magic (a zero-byte
+    file or an error-response body saved as .nc4) — raises the notoriously
+    misleading "did not find a match in any of xarray's currently installed
+    IO backends" message, sending users to install packages that are already
+    installed. The real cause is an incomplete/failed retrieval, and
+    open_handle re-materializes once to heal it.
     """
     import xarray as xr
 
+    errors: list[str] = []
     for engine in ("h5netcdf", "netcdf4"):
         try:
             return dict(xr.open_groups(path, engine=engine))
-        except (ImportError, OSError, ValueError):
+        except ImportError:
+            continue  # engine not installed — try the other
+        except (OSError, ValueError) as exc:
+            errors.append(f"{engine}: {exc}")
             continue
-    return {"/": xr.open_dataset(path)}
+    raise UnreadableExportError(
+        f"Retrieved file at '{path}' is not a readable NetCDF/HDF5 dataset — "
+        "this is usually an incomplete or failed retrieval (e.g. an error "
+        "response saved in place of the granule); retrying the retrieval "
+        "typically resolves it. Underlying reader errors: "
+        + ("; ".join(errors) if errors else "no NetCDF engine (h5netcdf/netCDF4) is installed")
+        + "."
+    )
 
 
 def _promote_lat_lon_coords(ds: Any) -> Any:
