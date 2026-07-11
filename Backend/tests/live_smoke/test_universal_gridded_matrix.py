@@ -161,9 +161,13 @@ async def _open_after_retrieval(invoke, row: _Row, variables: list[str] | None =
     if not coverage.get("granule_count", 0):
         pytest.skip(f"{row.id}: no granules covering {location!r}/{time_range!r} right now")
 
+    # retrieve_subset's `variables` is a required list on the live MCP (no
+    # implicit "all variables" via None, unlike this helper's own default) --
+    # same "[] means no explicit subset" convention safe_retrieve already
+    # uses (services/retrieval_composites.py::subset_variables).
     retrieve_result = await invoke(
         "retrieve_subset", dataset_handle=dataset_handle, aoi_handle=aoi_handle,
-        time_range=time_range, variables=variables, output_format=None,
+        time_range=time_range, variables=variables if variables is not None else [], output_format=None,
     )
     job_handle = retrieve_result["job_handle"]
     obs_handle = retrieve_result["obs_handle"]
