@@ -8,7 +8,13 @@ import pandas as pd
 import xarray as xr
 
 from datasets.mask_info import match_umm_var_variable, resolve_mask_info
-from datasets.qa_flags import resolve_qa_info
+from datasets.qa_flags import (
+    QA_CF_DETERMINISTIC,
+    QA_INFERRED,
+    QA_NOT_APPLIED,
+    QA_VERIFIED,
+    resolve_qa_info,
+)
 from datasets.registry import load_registry
 from earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED, MCPToolError
 from services import variable_choice_registry
@@ -62,6 +68,7 @@ class AggregationService:
         # back to the agent's proposal for ambiguous tokens), else no mask.
         # Always merged into the same masking-provenance disclosure so a
         # caller never has to guess whether QA masking ran silently either.
+        qf_source = data if isinstance(data, xr.Dataset) else None
         qf_var, flag_attrs = self._resolve_qa_flag_var(data, da, yaml_info)
         qa_col_info, qa_provenance = resolve_qa_info(
             yaml_info=yaml_info,
@@ -72,11 +79,37 @@ class AggregationService:
         if qf_var:
             resolved_col_info["quality_flag_var"] = qf_var
         resolved_col_info.update(qa_col_info)
+
+        # Honesty guard (review #1): resolve_qa_info decides *which* flag values
+        # count as good, but apply_quality_mask only actually runs the mask when
+        # the flag variable's data is reachable -- i.e. a Dataset carrying
+        # ``qf_var`` was passed as ``data``. Every current tool path passes an
+        # already-extracted DataArray, so ``qf_source`` is None and no QA mask is
+        # applied; stamping "verified"/"cf-deterministic"/"inferred" then would
+        # disclose a mask that never ran. Downgrade to an explicit not-applied
+        # status so the provenance never claims more than happened. (Restoring
+        # the mask on the tool paths is tracked separately -- it needs the
+        # opened Dataset threaded through, not just the science DataArray.)
+        qa_will_apply = (
+            qf_source is not None
+            and resolved_col_info.get("quality_flag_var") in getattr(qf_source, "data_vars", {})
+            and ("qa_good_values" in resolved_col_info or "qa_bad_values" in resolved_col_info)
+        )
+        if not qa_will_apply and qa_provenance.get("qa_status") in (
+            QA_VERIFIED,
+            QA_CF_DETERMINISTIC,
+            QA_INFERRED,
+        ):
+            qa_provenance = {
+                "qa_status": QA_NOT_APPLIED,
+                "qa_source": qa_provenance.get("qa_source", "none"),
+                "qa_note": "quality-flag data not present in the opened view; mask not applied",
+            }
         masking_provenance.update(qa_provenance)
 
         da = self.apply_quality_mask(
             da,
-            data if isinstance(data, xr.Dataset) else None,
+            qf_source,
             resolved_col_info,
             variable=variable,
         )

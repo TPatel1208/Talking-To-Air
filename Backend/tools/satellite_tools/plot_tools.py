@@ -904,6 +904,22 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
                 "times":    list(sorted_times),
                 "values":   list(sorted_values),
             }
+            # Review #3: the time-series path masks via apply_quality_mask with
+            # col_info only (CF _FillValue/valid_min/valid_max off the opened
+            # array) -- it does not run aggregate()'s UMM-Var layering or the
+            # three-tier QA-flag doctrine. Disclose that honestly rather than
+            # letting the trend chart imply the same masking a plot/stat gets.
+            # (Routing this path through the shared masking seam is tracked
+            # separately.)
+            ts_payload["masking"] = {
+                "fill_value_source": "cf_attrs" if masked.attrs.get("_FillValue") is not None else "none",
+                "valid_range_source": (
+                    "cf_attrs"
+                    if (masked.attrs.get("valid_min") is not None or masked.attrs.get("valid_max") is not None)
+                    else "none"
+                ),
+                "qa_status": "not applied — the time-series path does not evaluate quality flags",
+            }
             _attach_reproducibility(
                 ts_payload,
                 [handle],
