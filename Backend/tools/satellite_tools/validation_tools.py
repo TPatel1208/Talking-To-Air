@@ -24,7 +24,7 @@ from langchain.tools import tool
 from langchain_core.tools import BaseTool
 
 from config.workflow_stages import STAGE_RENDER
-from datasets.mask_info import override_for
+from datasets.mask_info import col_info_for_short_name
 from earthdata_mcp.results import MCPToolError
 from preprocessing.aggregation_service import AggregationService
 from services.artifact_registry import build_artifact_reference
@@ -133,7 +133,7 @@ def _correlation_stats(paired: list[dict], total_ground_days: int | None = None)
 
 def _mask_col_info(da) -> dict:
     short_name = da.attrs.get("short_name") or da.name or ""
-    return override_for(str(short_name).upper())
+    return col_info_for_short_name(str(short_name).upper())
 
 
 def _time_range(da) -> tuple[str, str]:

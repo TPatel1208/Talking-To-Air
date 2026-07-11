@@ -22,6 +22,48 @@ class OverrideForTests(unittest.TestCase):
         self.assertEqual(info, {"fill_value": -1e30, "valid_min": 0.0, "valid_max": 1e16})
 
 
+class ColInfoForShortNameTests(unittest.TestCase):
+    """T25 masking-execution fix: col_info_for_short_name is the seam that
+    lets a tool's identity marker (an opened file's short_name attribute)
+    actually reach collections.yaml's pinned qa_good_values/quality_flag_var
+    -- the tool layer never has a collection_id, and the science variable
+    name is not a registry key, so this short_name match is what makes a
+    pinned Tier-1 QA rule reachable at all."""
+
+    def test_returns_empty_dict_for_no_short_name(self):
+        from datasets.mask_info import col_info_for_short_name
+
+        self.assertEqual(col_info_for_short_name(None), {})
+        self.assertEqual(col_info_for_short_name(""), {})
+
+    def test_matches_a_registered_collection_by_short_name_case_insensitively(self):
+        from datasets.mask_info import col_info_for_short_name
+
+        info = col_info_for_short_name("tempo_no2_l3")
+
+        self.assertEqual(info["quality_flag_var"], "main_data_quality_flag")
+        self.assertEqual(info["qa_good_values"], [0])
+        self.assertEqual(info["collection_id"], "C3685896708-LARC_CLOUD")
+
+    def test_returns_empty_dict_for_an_unregistered_short_name(self):
+        from datasets.mask_info import col_info_for_short_name
+
+        self.assertEqual(col_info_for_short_name("SOME_UNKNOWN_COLLECTION"), {})
+
+    def test_mask_overrides_take_precedence_over_the_registry_match(self):
+        import datasets.mask_info as mask_info_module
+
+        original = dict(mask_info_module.MASK_OVERRIDES)
+        mask_info_module.MASK_OVERRIDES["TEMPO_NO2_L3"] = {"fill_value": -42.0}
+        self.addCleanup(lambda: mask_info_module.MASK_OVERRIDES.clear() or mask_info_module.MASK_OVERRIDES.update(original))
+
+        info = mask_info_module.col_info_for_short_name("TEMPO_NO2_L3")
+
+        self.assertEqual(info["fill_value"], -42.0)
+        # The registry's own fields (not overridden) still come through.
+        self.assertEqual(info["qa_good_values"], [0])
+
+
 class ResolveMaskInfoPrecedenceTests(unittest.TestCase):
     """T25 Phase 1: collections.yaml override -> UMM-Var facts -> CF file
     attrs -> mask nothing, with every tier's win recorded in provenance."""

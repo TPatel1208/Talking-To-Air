@@ -24,11 +24,16 @@ from langchain.tools import tool
 from langchain_core.tools import BaseTool
 
 from config.workflow_stages import STAGE_RENDER
-from datasets.mask_info import override_for
+from datasets.mask_info import col_info_for_short_name
 from earthdata_mcp.results import MCPToolError, parse_tool_result
 from preprocessing.aggregation_service import AggregationService
 from services.open_handle import OpenHandleError, open_handle
-from tools.satellite_tools.plot_tools import _da_to_heatmap_payload, _percentile_bounds, _save_chart
+from tools.satellite_tools.plot_tools import (
+    _da_to_heatmap_payload,
+    _normalize_longitudes,
+    _percentile_bounds,
+    _save_chart,
+)
 from utils.geo_utils import find_lat_coord, find_lon_coord
 from utils.plotting import _normalize_to_2d
 from utils.streaming import emit_status
@@ -164,17 +169,27 @@ def _variable_mismatch_error(da_a, da_b) -> str | None:
     return None
 
 
-def _mask_col_info(da) -> dict:
-    short_name = da.attrs.get("short_name") or da.name or ""
-    return override_for(str(short_name).upper())
+def _mask_col_info(da, ds=None) -> dict:
+    """See plot_tools._mask_col_info: collection identity is dataset-level,
+    so ``ds.attrs`` is checked before the per-variable ``da.attrs`` (T25
+    masking-execution fix)."""
+    short_name = (
+        (ds.attrs.get("short_name") if ds is not None else None)
+        or da.attrs.get("short_name")
+        or da.name
+        or ""
+    )
+    return col_info_for_short_name(str(short_name).upper())
 
 
-def _prepare_2d(da, variable_name: str):
+def _prepare_2d(da, variable_name: str, source_ds=None):
     """Apply quality masking and collapse to a single 2-D (lat, lon) snapshot
     (time-mean, matching plot_singular's default) so every side of a
     comparison renders as one map."""
-    col_info = _mask_col_info(da)
-    aggregation = _aggregation_service.aggregate(da, variable=variable_name, stat="mean", col_info=col_info)
+    col_info = _mask_col_info(da, source_ds)
+    aggregation = _aggregation_service.aggregate(
+        da, variable=variable_name, stat="mean", col_info=col_info, source_ds=source_ds,
+    )
     reduced = next(iter(aggregation.ds.data_vars.values()))
     return _normalize_to_2d(reduced)
 
@@ -265,6 +280,13 @@ def make_compare(mcp_tools: dict[str, BaseTool]):
 
         try:
             ds_a = await open_handle(handle_a, mcp_tools)
+            # Normalize longitude on the whole opened Dataset before
+            # extraction, so the science DataArray and its sibling QA-flag
+            # variable (still reachable through ds_a) share one coordinate
+            # convention (T25 masking-execution fix; see plot_tools).
+            lon_coord_a = find_lon_coord(ds_a)
+            if lon_coord_a:
+                ds_a = _normalize_longitudes(ds_a, lon_coord_a)
             da_a = _aggregation_service.to_dataarray(ds_a, handle=handle_a, variable=variable)
         except MCPToolError as e:
             return json.dumps({"error": e.to_dict()})
@@ -272,6 +294,9 @@ def make_compare(mcp_tools: dict[str, BaseTool]):
             return json.dumps({"error": f"Failed to open handle '{handle_a}' (A): {e}"})
         try:
             ds_b = await open_handle(handle_b, mcp_tools)
+            lon_coord_b = find_lon_coord(ds_b)
+            if lon_coord_b:
+                ds_b = _normalize_longitudes(ds_b, lon_coord_b)
             da_b = _aggregation_service.to_dataarray(ds_b, handle=handle_b, variable=variable)
         except MCPToolError as e:
             return json.dumps({"error": e.to_dict()})
@@ -302,6 +327,7 @@ def make_compare(mcp_tools: dict[str, BaseTool]):
             # the event loop.
             return await asyncio.to_thread(
                 _build_region_comparison, handle_a, handle_b, da_a, da_b, label_a, label_b, variable_name, units,
+                ds_a, ds_b,
             )
 
         try:
@@ -318,6 +344,9 @@ def make_compare(mcp_tools: dict[str, BaseTool]):
 
         try:
             aligned_ds = await open_handle(aligned_handle, mcp_tools)
+            aligned_lon_coord = find_lon_coord(aligned_ds)
+            if aligned_lon_coord:
+                aligned_ds = _normalize_longitudes(aligned_ds, aligned_lon_coord)
             # variable_name is already resolved from A/B above -- pass it
             # explicitly so the aligned (multi-source) dataset doesn't hit
             # its own ambiguous-variable error for a choice already made.
@@ -332,19 +361,30 @@ def make_compare(mcp_tools: dict[str, BaseTool]):
         except ValueError as e:
             return json.dumps({"error": f"Grid alignment produced an unusable result: {e}"})
 
+        # Split the whole aligned Dataset per-source too (mirroring
+        # _split_aligned's own isel), so each side's QA-flag sibling -- if
+        # `align` preserved one -- stays reachable through the matching
+        # source_ds instead of one carrying an extra 'source' dim the
+        # already-sliced science DataArray doesn't have (T25 masking-
+        # execution fix).
+        if "source" in aligned_ds.dims:
+            aligned_ds_a, aligned_ds_b = aligned_ds.isel(source=0), aligned_ds.isel(source=1)
+        else:
+            aligned_ds_a = aligned_ds_b = aligned_ds
+
         # CPU-bound mask -> aggregate -> payload chain (T16), run off the
         # event loop.
         return await asyncio.to_thread(
             _build_period_comparison, handle_a, handle_b, aligned_handle, aligned_a, aligned_b,
-            label_a, label_b, variable_name, units, threshold,
+            label_a, label_b, variable_name, units, threshold, aligned_ds_a, aligned_ds_b,
         )
 
     return compare
 
 
-def _build_region_comparison(handle_a, handle_b, da_a, da_b, label_a, label_b, variable_name, units) -> str:
-    da_a_2d = _prepare_2d(da_a, variable_name)
-    da_b_2d = _prepare_2d(da_b, variable_name)
+def _build_region_comparison(handle_a, handle_b, da_a, da_b, label_a, label_b, variable_name, units, ds_a=None, ds_b=None) -> str:
+    da_a_2d = _prepare_2d(da_a, variable_name, source_ds=ds_a)
+    da_b_2d = _prepare_2d(da_b, variable_name, source_ds=ds_b)
     vmin, vmax = _shared_bounds(da_a_2d, da_b_2d)
 
     panel_a = _region_panel(da_a_2d, handle_a, label_a, variable_name, units, vmin, vmax)
@@ -367,9 +407,10 @@ def _build_region_comparison(handle_a, handle_b, da_a, da_b, label_a, label_b, v
 
 def _build_period_comparison(
     handle_a, handle_b, aligned_handle, aligned_a, aligned_b, label_a, label_b, variable_name, units, threshold,
+    aligned_ds_a=None, aligned_ds_b=None,
 ) -> str:
-    da_a_2d = _prepare_2d(aligned_a, variable_name)
-    da_b_2d = _prepare_2d(aligned_b, variable_name)
+    da_a_2d = _prepare_2d(aligned_a, variable_name, source_ds=aligned_ds_a)
+    da_b_2d = _prepare_2d(aligned_b, variable_name, source_ds=aligned_ds_b)
     diff = _difference(da_a_2d, da_b_2d)
     stats = _anomaly_stats(da_a_2d, da_b_2d, diff, threshold)
 

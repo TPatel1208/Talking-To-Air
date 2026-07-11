@@ -59,7 +59,7 @@ from typing import Annotated, List, Optional
 from pydantic import Field
 
 from config.workflow_stages import STAGE_RENDER
-from datasets.mask_info import override_for
+from datasets.mask_info import col_info_for_short_name
 from earthdata_mcp.results import MCPToolError
 from services.artifact_registry import build_artifact_reference
 from services.open_handle import OpenHandleError, open_handle
@@ -412,16 +412,21 @@ def _build_dim_selector(dimension: str | None, dimension_value: float | None) ->
     return {dimension: dimension_value}
 
 
-def _mask_col_info(da) -> dict:
-    """Override-table lookup for a variable's masking metadata.
-
-    Masking itself reads fill_value/valid_min/valid_max straight off da.attrs
-    (AggregationService.apply_quality_mask already prefers attrs); this only
-    supplies a correction when the dataset's own attrs are a known-wrong
-    UMM-Var/CF record.
+def _mask_col_info(da, ds=None) -> dict:
+    """The collections.yaml/registry masking metadata for a variable,
+    resolved by the collection's ``short_name`` global attribute (T25
+    masking-execution fix) -- collection identity is a dataset-level fact,
+    so ``ds.attrs`` (the opened Dataset) is checked before the per-variable
+    ``da.attrs``. Falls back to the variable's own name when neither carries
+    an identity marker, so a MASK_OVERRIDES quirk keyed on it still applies.
     """
-    short_name = da.attrs.get("short_name") or da.name or ""
-    return override_for(str(short_name).upper())
+    short_name = (
+        (ds.attrs.get("short_name") if ds is not None else None)
+        or da.attrs.get("short_name")
+        or da.name
+        or ""
+    )
+    return col_info_for_short_name(str(short_name).upper())
 
 
 def _time_range(da) -> tuple[str, str]:
@@ -547,6 +552,16 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
         """
         try:
             ds = await open_handle(handle, mcp_tools)
+            # Normalize longitude on the whole opened Dataset, before
+            # extracting the science DataArray -- so it and its sibling
+            # QA-flag variable (still reachable through ds, T25 masking-
+            # execution fix) share one coordinate convention. Doing this
+            # only on the extracted DataArray would leave ds's flag variable
+            # on the original 0..360 convention, and da.where(qf.isin(...))
+            # would align on an empty intersection instead of masking.
+            ds_lon_coord = find_lon_coord(ds)
+            if ds_lon_coord:
+                ds = _normalize_longitudes(ds, ds_lon_coord)
             da = _open_dataarray(ds, handle=handle, variable=variable)
         except MCPToolError as e:
             emit_status("Visualization failed while opening data.", stage=STAGE_RENDER)
@@ -581,13 +596,14 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
 
             units = masked.attrs.get("units", "")
             variable_name = masked.name or ""
-            col_info = _mask_col_info(masked)
+            col_info = _mask_col_info(masked, ds)
             try:
                 aggregation = _aggregation_service.aggregate(
                     masked,
                     variable=variable_name,
                     stat="mean",
                     col_info=col_info,
+                    source_ds=ds,
                 )
                 reduced = next(iter(aggregation.ds.data_vars.values()))
                 reduced = _normalize_to_2d(reduced, dim_selector=_build_dim_selector(dimension, dimension_value))
@@ -681,6 +697,13 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
         for handle, location in zip(handles, locations):
             try:
                 ds = await open_handle(handle, mcp_tools)
+                # See plot_singular: normalize the whole Dataset's longitude
+                # before extraction, so da and its sibling QA-flag variable
+                # (still reachable through ds) share one coordinate
+                # convention (T25 masking-execution fix).
+                ds_lon_coord = find_lon_coord(ds)
+                if ds_lon_coord:
+                    ds = _normalize_longitudes(ds, ds_lon_coord)
                 da = _open_dataarray(ds, handle=handle, variable=variable)
             except MCPToolError as e:
                 emit_status("Visualization failed while opening data.", stage=STAGE_RENDER)
@@ -695,7 +718,7 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
                 emit_status("Location lookup failed.", stage=STAGE_RENDER)
                 return json.dumps({"error": f"Could not geocode location: '{location}'"})
 
-            def _mask_aggregate_panel(da=da, region=region, handle=handle, location=location, variable_name=variable_name):
+            def _mask_aggregate_panel(da=da, ds=ds, region=region, handle=handle, location=location, variable_name=variable_name):
                 # CPU-bound mask -> aggregate -> payload chain (T16), run off
                 # the event loop via asyncio.to_thread below.
                 try:
@@ -713,7 +736,7 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
 
                 resolved_variable_name = masked.name or variable_name
                 units = masked.attrs.get("units", "")
-                col_info = _mask_col_info(masked)
+                col_info = _mask_col_info(masked, ds)
 
                 try:
                     aggregation = _aggregation_service.aggregate(
@@ -721,6 +744,7 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
                         variable=resolved_variable_name,
                         stat="mean",
                         col_info=col_info,
+                        source_ds=ds,
                     )
                     reduced = next(iter(aggregation.ds.data_vars.values()))
                     reduced = _normalize_to_2d(reduced, dim_selector=_build_dim_selector(dimension, dimension_value))
@@ -873,8 +897,18 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
 
                 return "dimension_choice_required", _dimension_choice_error(masked, extra_dims[0]).to_dict()
 
-            col_info = _mask_col_info(masked)
-            masked = _aggregation_service.apply_quality_mask(masked, col_info=col_info)
+            # T25 masking-execution fix: route through the same shared
+            # masking-resolution path aggregate() uses (collections.yaml ->
+            # UMM-Var -> CF-attrs precedence, plus the three-tier QA-flag
+            # doctrine) instead of a hand-rolled apply_quality_mask(ds=None)
+            # call -- this path now actually applies QA-flag masking (via
+            # source_ds=ds) and discloses it honestly, the same as
+            # plot/stat, rather than a parallel copy that always claimed
+            # "not applied".
+            col_info = _mask_col_info(masked, ds)
+            masked, masking_provenance = _aggregation_service.resolve_and_mask(
+                masked, variable=variable_name, col_info=col_info, source_ds=ds,
+            )
 
             times, values = [], []
             for i in range(masked.sizes[time_dim]):
@@ -904,22 +938,7 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
                 "times":    list(sorted_times),
                 "values":   list(sorted_values),
             }
-            # Review #3: the time-series path masks via apply_quality_mask with
-            # col_info only (CF _FillValue/valid_min/valid_max off the opened
-            # array) -- it does not run aggregate()'s UMM-Var layering or the
-            # three-tier QA-flag doctrine. Disclose that honestly rather than
-            # letting the trend chart imply the same masking a plot/stat gets.
-            # (Routing this path through the shared masking seam is tracked
-            # separately.)
-            ts_payload["masking"] = {
-                "fill_value_source": "cf_attrs" if masked.attrs.get("_FillValue") is not None else "none",
-                "valid_range_source": (
-                    "cf_attrs"
-                    if (masked.attrs.get("valid_min") is not None or masked.attrs.get("valid_max") is not None)
-                    else "none"
-                ),
-                "qa_status": "not applied — the time-series path does not evaluate quality flags",
-            }
+            ts_payload["masking"] = masking_provenance
             _attach_reproducibility(
                 ts_payload,
                 [handle],

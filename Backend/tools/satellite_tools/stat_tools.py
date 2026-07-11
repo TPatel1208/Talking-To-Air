@@ -8,7 +8,7 @@ from typing import Annotated, Optional
 from pydantic import Field
 
 from config.workflow_stages import STAGE_RENDER
-from datasets.mask_info import override_for
+from datasets.mask_info import col_info_for_short_name
 from earthdata_mcp.results import MCPToolError
 from services.open_handle import OpenHandleError, open_handle
 from utils.geo_utils import find_lat_coord, find_lon_coord
@@ -24,9 +24,17 @@ _aggregation_service = AggregationService()
 VALID_STATS = {"mean", "median", "max", "min", "std"}
 
 
-def _mask_col_info(da) -> dict:
-    short_name = da.attrs.get("short_name") or da.name or ""
-    return override_for(str(short_name).upper())
+def _mask_col_info(da, ds=None) -> dict:
+    """See plot_tools._mask_col_info: collection identity is dataset-level,
+    so ``ds.attrs`` is checked before the per-variable ``da.attrs`` (T25
+    masking-execution fix)."""
+    short_name = (
+        (ds.attrs.get("short_name") if ds is not None else None)
+        or da.attrs.get("short_name")
+        or da.name
+        or ""
+    )
+    return col_info_for_short_name(str(short_name).upper())
 
 
 def _build_dim_selector(dimension: str | None, dimension_value: float | None) -> dict | None:
@@ -87,13 +95,14 @@ def make_compute_statistic_tool(mcp_tools: dict[str, BaseTool]):
             # event loop via asyncio.to_thread below.
             masked = mask_data_by_geometry(da, region['geometry'])
 
-            col_info = _mask_col_info(masked)
+            col_info = _mask_col_info(masked, ds)
             try:
                 aggregation = _aggregation_service.aggregate(
                     masked,
                     variable=masked.name,
                     stat="mean",
                     col_info=col_info,
+                    source_ds=ds,
                 )
                 reduced = next(iter(aggregation.ds.data_vars.values()))
                 reduced = _normalize_to_2d(reduced, dim_selector=_build_dim_selector(dimension, dimension_value))
@@ -180,13 +189,14 @@ def make_find_daily_peak(mcp_tools: dict[str, BaseTool]):
             # off the event loop via asyncio.to_thread below.
             masked = mask_data_by_geometry(da, region['geometry'])
 
-            col_info = _mask_col_info(masked)
+            col_info = _mask_col_info(masked, ds)
             try:
                 aggregation = _aggregation_service.aggregate(
                     masked,
                     variable=masked.name,
                     stat="mean",
                     col_info=col_info,
+                    source_ds=ds,
                 )
                 reduced = next(iter(aggregation.ds.data_vars.values()))
                 reduced = _normalize_to_2d(reduced, dim_selector=_build_dim_selector(dimension, dimension_value))

@@ -34,6 +34,33 @@ def override_for(short_name: str | None, overrides: dict[str, dict[str, float]] 
     return dict(overrides.get(short_name, {}))
 
 
+def col_info_for_short_name(short_name: str | None) -> dict[str, Any]:
+    """The pinned collections.yaml registry entry for ``short_name`` -- the
+    identity marker a real opened NASA granule carries as a dataset-level
+    global attribute, not a registry dict key -- merged with MASK_OVERRIDES
+    on top (T25 masking-execution fix).
+
+    Before this, a tool's col_info was built from MASK_OVERRIDES alone
+    (always {} today, since it only holds hand-verified quirk corrections),
+    so collections.yaml's pinned qa_good_values/quality_flag_var for
+    TEMPO_NO2 etc. never reached apply_quality_mask: the tool layer had no
+    collection_id, and the science variable name (e.g.
+    ``vertical_column_troposphere``) is not a registry key. Matching is
+    case-insensitive against ``CollectionConfig.short_name``.
+    """
+    if not short_name:
+        return {}
+    from datasets.registry import load_registry  # local import: registry.py never imports this module back
+
+    normalized = short_name.upper()
+    registry_info: dict[str, Any] = {}
+    for cfg in load_registry().values():
+        if cfg.short_name and cfg.short_name.upper() == normalized:
+            registry_info = cfg.model_dump()
+            break
+    return {**registry_info, **override_for(normalized)}
+
+
 def resolve_mask_info(
     yaml_info: dict[str, Any] | None = None,
     umm_var_variable: dict[str, Any] | None = None,

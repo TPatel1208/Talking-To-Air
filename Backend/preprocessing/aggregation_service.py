@@ -50,68 +50,27 @@ class AggregationService:
         keep_time: bool = False,
         handle: str | None = None,
         qa_good_tokens: list[str] | None = None,
+        source_ds: xr.Dataset | None = None,
     ) -> AggregatedResult:
         if stat not in self._STAT_FUNCS:
             raise ValueError(f"Unsupported aggregation stat '{stat}'. Valid: {sorted(self._STAT_FUNCS)}")
 
         da = self.to_dataarray(data, variable=variable, handle=handle)
 
-        yaml_info = col_info or self._collection_info(collection_id, variable)
-        umm_var_variable = match_umm_var_variable(umm_var_facts, variable or da.name)
-        resolved_col_info, masking_provenance = resolve_mask_info(
-            yaml_info=yaml_info, umm_var_variable=umm_var_variable, cf_attrs=da.attrs,
-        )
-
-        # T25 Phase 3: three-tier QA masking (datasets/qa_flags.py) -- a
-        # pinned collections.yaml rule, else the sibling flag variable's own
-        # CF flag_values/flag_meanings parsed deterministically (falling
-        # back to the agent's proposal for ambiguous tokens), else no mask.
-        # Always merged into the same masking-provenance disclosure so a
-        # caller never has to guess whether QA masking ran silently either.
-        qf_source = data if isinstance(data, xr.Dataset) else None
-        qf_var, flag_attrs = self._resolve_qa_flag_var(data, da, yaml_info)
-        qa_col_info, qa_provenance = resolve_qa_info(
-            yaml_info=yaml_info,
-            flag_attrs=flag_attrs,
-            proposed_good_tokens=qa_good_tokens,
-            short_name=yaml_info.get("short_name"),
-        )
-        if qf_var:
-            resolved_col_info["quality_flag_var"] = qf_var
-        resolved_col_info.update(qa_col_info)
-
-        # Honesty guard (review #1): resolve_qa_info decides *which* flag values
-        # count as good, but apply_quality_mask only actually runs the mask when
-        # the flag variable's data is reachable -- i.e. a Dataset carrying
-        # ``qf_var`` was passed as ``data``. Every current tool path passes an
-        # already-extracted DataArray, so ``qf_source`` is None and no QA mask is
-        # applied; stamping "verified"/"cf-deterministic"/"inferred" then would
-        # disclose a mask that never ran. Downgrade to an explicit not-applied
-        # status so the provenance never claims more than happened. (Restoring
-        # the mask on the tool paths is tracked separately -- it needs the
-        # opened Dataset threaded through, not just the science DataArray.)
-        qa_will_apply = (
-            qf_source is not None
-            and resolved_col_info.get("quality_flag_var") in getattr(qf_source, "data_vars", {})
-            and ("qa_good_values" in resolved_col_info or "qa_bad_values" in resolved_col_info)
-        )
-        if not qa_will_apply and qa_provenance.get("qa_status") in (
-            QA_VERIFIED,
-            QA_CF_DETERMINISTIC,
-            QA_INFERRED,
-        ):
-            qa_provenance = {
-                "qa_status": QA_NOT_APPLIED,
-                "qa_source": qa_provenance.get("qa_source", "none"),
-                "qa_note": "quality-flag data not present in the opened view; mask not applied",
-            }
-        masking_provenance.update(qa_provenance)
-
-        da = self.apply_quality_mask(
+        # ``data`` itself carries the sibling QA-flag variable when a caller
+        # still passes a full Dataset (every existing unit test); otherwise
+        # ``source_ds`` is the tool layer's separately-threaded opened
+        # Dataset for an already-extracted/cropped ``data`` DataArray (T25
+        # masking-execution fix -- every real tool path takes this branch).
+        qf_source = data if isinstance(data, xr.Dataset) else source_ds
+        da, masking_provenance = self.resolve_and_mask(
             da,
-            qf_source,
-            resolved_col_info,
             variable=variable,
+            col_info=col_info,
+            collection_id=collection_id,
+            umm_var_facts=umm_var_facts,
+            qa_good_tokens=qa_good_tokens,
+            source_ds=qf_source,
         )
 
         # T25: identified by CF metadata (standard_name/axis/datetime dtype),
@@ -144,6 +103,92 @@ class AggregationService:
         meta["masking"] = masking_provenance
 
         return AggregatedResult(ds=result_ds, meta=meta)
+
+    def resolve_and_mask(
+        self,
+        da: xr.DataArray,
+        *,
+        variable: str | None = None,
+        col_info: dict[str, Any] | None = None,
+        collection_id: str | None = None,
+        umm_var_facts: Any = None,
+        qa_good_tokens: list[str] | None = None,
+        source_ds: xr.Dataset | None = None,
+    ) -> tuple[xr.DataArray, dict[str, Any]]:
+        """Resolve fill/valid-range/QA masking facts (T25's collections.yaml
+        -> UMM-Var -> CF-attrs precedence, plus the three-tier QA-flag
+        doctrine) and apply them to ``da``, honestly. Shared by aggregate()
+        (which reduces the result over time afterwards) and
+        conduct_temporal_statistic (which masks every time step the same way
+        but keeps them all, never reducing) -- one masking-resolution path,
+        not a hand-rolled second copy.
+
+        ``source_ds`` is the Dataset carrying ``da``'s sibling QA-flag
+        variable -- either the full Dataset a caller passed as ``data``
+        (existing unit tests), or the tool layer's separately opened Dataset
+        when ``da`` is already an extracted/cropped DataArray (T25 masking-
+        execution fix). ``da`` and ``source_ds``'s coordinates only need to
+        share the same labeling convention (e.g. both longitude-normalized
+        the same way) -- xarray aligns a cropped ``da`` against a
+        full-grid ``source_ds`` via its default inner join, no explicit
+        cropping of ``source_ds`` required.
+
+        Returns ``(masked_da, masking_provenance)``.
+        """
+        yaml_info = col_info or self._collection_info(collection_id, variable)
+        umm_var_variable = match_umm_var_variable(umm_var_facts, variable or da.name)
+        resolved_col_info, masking_provenance = resolve_mask_info(
+            yaml_info=yaml_info, umm_var_variable=umm_var_variable, cf_attrs=da.attrs,
+        )
+
+        # T25 Phase 3: three-tier QA masking (datasets/qa_flags.py) -- a
+        # pinned collections.yaml rule, else the sibling flag variable's own
+        # CF flag_values/flag_meanings parsed deterministically (falling
+        # back to the agent's proposal for ambiguous tokens), else no mask.
+        # Always merged into the same masking-provenance disclosure so a
+        # caller never has to guess whether QA masking ran silently either.
+        qf_var, flag_attrs = self._resolve_qa_flag_var(source_ds, da, yaml_info)
+        qa_col_info, qa_provenance = resolve_qa_info(
+            yaml_info=yaml_info,
+            flag_attrs=flag_attrs,
+            proposed_good_tokens=qa_good_tokens,
+            short_name=yaml_info.get("short_name"),
+        )
+        if qf_var:
+            resolved_col_info["quality_flag_var"] = qf_var
+        resolved_col_info.update(qa_col_info)
+
+        # Honesty guard (review #1): resolve_qa_info decides *which* flag values
+        # count as good, but apply_quality_mask only actually runs the mask when
+        # the flag variable's data is reachable -- i.e. a Dataset carrying
+        # ``qf_var`` was supplied as ``source_ds``. Stamping "verified"/
+        # "cf-deterministic"/"inferred" when it isn't would disclose a mask
+        # that never ran. Downgrade to an explicit not-applied status so the
+        # provenance never claims more than happened.
+        qa_will_apply = (
+            source_ds is not None
+            and resolved_col_info.get("quality_flag_var") in getattr(source_ds, "data_vars", {})
+            and ("qa_good_values" in resolved_col_info or "qa_bad_values" in resolved_col_info)
+        )
+        if not qa_will_apply and qa_provenance.get("qa_status") in (
+            QA_VERIFIED,
+            QA_CF_DETERMINISTIC,
+            QA_INFERRED,
+        ):
+            qa_provenance = {
+                "qa_status": QA_NOT_APPLIED,
+                "qa_source": qa_provenance.get("qa_source", "none"),
+                "qa_note": "quality-flag data not present in the opened view; mask not applied",
+            }
+        masking_provenance.update(qa_provenance)
+
+        da = self.apply_quality_mask(
+            da,
+            source_ds,
+            resolved_col_info,
+            variable=variable,
+        )
+        return da, masking_provenance
 
     def to_dataarray(
         self,
@@ -283,7 +328,7 @@ class AggregationService:
         return da
 
     def _resolve_qa_flag_var(
-        self, data: xr.Dataset | xr.DataArray, da: xr.DataArray, yaml_info: dict[str, Any],
+        self, ds: xr.Dataset | None, da: xr.DataArray, yaml_info: dict[str, Any],
     ) -> tuple[str | None, dict[str, Any]]:
         """Locate the sibling QA-flag variable and its CF attrs, never
         guessing between ambiguous candidates (T25 doctrine): a pinned
@@ -293,9 +338,11 @@ class AggregationService:
         ``flag_meanings``, if there is exactly one. Anything else (no
         candidate, or more than one with no way to choose) resolves to no
         flag var at all -- Tier 3, not a guess.
-        """
-        ds = data if isinstance(data, xr.Dataset) else None
 
+        ``ds`` is whatever Dataset the caller has the flag variable's data
+        reachable through (see ``resolve_and_mask``'s ``source_ds``) -- None
+        when no Dataset is available at all.
+        """
         qf_var = yaml_info.get("quality_flag_var")
         if qf_var:
             if ds is not None and qf_var in ds.data_vars:
