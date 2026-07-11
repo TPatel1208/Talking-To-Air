@@ -298,6 +298,42 @@ def _dimension_choice_error(data_array: xr.DataArray, dim: str) -> MCPToolError:
     )
 
 
+def _select_dim_nearest(data_array: xr.DataArray, dim_name: str, value) -> xr.DataArray:
+    """Select ``value`` along ``dim_name`` by nearest match, but refuse a
+    request that falls outside the coordinate's own min--max range instead of
+    silently snapping to an edge level. ``method="nearest"`` alone turns a
+    units mismatch (a MERRA-2 ``lev`` coordinate in Pa with the model passing
+    hPa, say) into a plausible-looking selection of the wrong level, with no
+    signal that anything went wrong."""
+    coord = data_array[dim_name] if dim_name in data_array.coords else None
+    if coord is not None and coord.ndim == 1 and coord.size > 0:
+        try:
+            requested = float(value)
+        except (TypeError, ValueError):
+            requested = None
+        if requested is not None:
+            cmin = float(coord.min())
+            cmax = float(coord.max())
+            if not (cmin <= requested <= cmax):
+                raise _dimension_out_of_range_error(coord, dim_name, requested, cmin, cmax)
+    return data_array.sel({dim_name: value}, method="nearest")
+
+
+def _dimension_out_of_range_error(
+    coord: xr.DataArray, dim: str, value: float, cmin: float, cmax: float,
+) -> MCPToolError:
+    units = coord.attrs.get("units", "")
+    units_note = f" {units}" if units else ""
+    return MCPToolError(
+        CATEGORY_DIMENSION_CHOICE_REQUIRED,
+        f"Selection {value}{units_note} for dimension '{dim}' is outside its "
+        f"coordinate range [{cmin}, {cmax}]{units_note} -- refusing to snap to "
+        f"the nearest edge level, which is a likely units mismatch (e.g. hPa "
+        f"vs Pa).",
+        suggestion=f"Pass a '{dim}' value within [{cmin}, {cmax}]{units_note}.",
+    )
+
+
 def _normalize_to_2d(data_array: xr.DataArray, dim_selector: dict | None = None) -> xr.DataArray:
     """
     Squeeze a DataArray down to 2D (lat, lon):
@@ -318,7 +354,7 @@ def _normalize_to_2d(data_array: xr.DataArray, dim_selector: dict | None = None)
     if dim_selector:
         for dim_name, value in dim_selector.items():
             if dim_name in data_array.dims:
-                data_array = data_array.sel({dim_name: value}, method="nearest")
+                data_array = _select_dim_nearest(data_array, dim_name, value)
         data_array = _squeeze_size_one_dims(data_array)
 
     if time_name and time_name in data_array.dims:

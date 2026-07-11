@@ -123,5 +123,65 @@ class ResolveQaInfoTierTests(unittest.TestCase):
         self.assertEqual(provenance["qa_source"], "none")
 
 
+class EmptyGoodSetTests(unittest.TestCase):
+    """Follow-up review #1: an empty good-set must never become a keep-mask on
+    ``isin([])`` -- an all-False mask that wipes the whole variable to NaN.
+    Treat it as no usable good classification (go ambiguous / do not mask),
+    never as "mask everything"."""
+
+    def test_parse_all_bad_tokens_is_unambiguous_but_yields_empty_good(self):
+        from datasets.qa_flags import parse_flag_meanings
+
+        parsed = parse_flag_meanings([1, 2], ["missing", "cloudy"])
+
+        self.assertTrue(parsed.available)
+        self.assertTrue(parsed.unambiguous)  # nothing ambiguous...
+        self.assertEqual(parsed.good_values, [])  # ...but no good class either
+        self.assertEqual(parsed.bad_values, [1, 2])
+
+    def test_cf_all_bad_tokens_go_ambiguous_instead_of_masking_everything(self):
+        from datasets.qa_flags import QA_AMBIGUOUS_PENDING, resolve_qa_info
+
+        qa_col_info, provenance = resolve_qa_info(
+            yaml_info={},
+            flag_attrs={"flag_values": [1, 2], "flag_meanings": "missing cloudy"},
+        )
+
+        # No qa_good_values emitted -> apply_quality_mask keys no isin([]) mask.
+        self.assertEqual(qa_col_info, {})
+        self.assertNotIn("qa_good_values", qa_col_info)
+        self.assertEqual(provenance["qa_status"], QA_AMBIGUOUS_PENDING)
+        self.assertEqual(provenance["qa_bad_values"], [1, 2])
+
+    def test_pinned_empty_good_values_does_not_verify_a_wipeout(self):
+        from datasets.qa_flags import QA_NOT_APPLIED, resolve_qa_info
+
+        qa_col_info, provenance = resolve_qa_info(yaml_info={"qa_good_values": []}, flag_attrs={})
+
+        self.assertEqual(qa_col_info, {})
+        self.assertEqual(provenance["qa_status"], QA_NOT_APPLIED)
+
+    def test_pinned_empty_good_falls_through_to_cf_flag_meanings(self):
+        from datasets.qa_flags import QA_CF_DETERMINISTIC, resolve_qa_info
+
+        qa_col_info, provenance = resolve_qa_info(
+            yaml_info={"qa_good_values": []},
+            flag_attrs={"flag_values": [0, 1], "flag_meanings": "good_quality bad_quality"},
+        )
+
+        self.assertEqual(qa_col_info, {"qa_good_values": [0]})
+        self.assertEqual(provenance["qa_status"], QA_CF_DETERMINISTIC)
+
+    def test_pinned_empty_bad_falls_back_to_good_rule_rather_than_noop_verified(self):
+        from datasets.qa_flags import QA_VERIFIED, resolve_qa_info
+
+        qa_col_info, provenance = resolve_qa_info(
+            yaml_info={"qa_good_values": [0], "qa_bad_values": []}, flag_attrs={},
+        )
+
+        self.assertEqual(qa_col_info, {"qa_good_values": [0]})
+        self.assertEqual(provenance["qa_status"], QA_VERIFIED)
+
+
 if __name__ == "__main__":
     unittest.main()

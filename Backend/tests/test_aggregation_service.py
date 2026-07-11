@@ -581,6 +581,94 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertEqual(values[0, 1], 10.0)
         self.assertEqual(values[1, 1], 20.0)
 
+    def test_aggregate_all_bad_cf_flags_do_not_wipe_the_whole_variable(self):
+        """Follow-up review #1: a flag var whose flag_meanings are all
+        bad-quality tokens yields good_values=[]. Now that masking actually
+        runs (source_ds threaded), keying ``qf.isin([])`` would NaN every
+        pixel. The empty good-set must instead disable masking (go ambiguous),
+        never wipe the variable."""
+        from datasets.qa_flags import QA_AMBIGUOUS_PENDING
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset({
+            "aod": (("lat", "lon"), self.np.array([[1.0, 2.0]])),
+            "qa": (
+                ("lat", "lon"),
+                self.np.array([[1, 2]], dtype="int64"),
+                {"flag_values": [1, 2], "flag_meanings": "missing cloudy"},
+            ),
+        })
+
+        result = AggregationService().aggregate(ds, variable="aod")
+
+        self.assertEqual(result.meta["masking"]["qa_status"], QA_AMBIGUOUS_PENDING)
+        values = result.ds["aod"].values
+        self.assertEqual(list(values[0]), [1.0, 2.0])  # nothing wiped
+
+    def test_apply_quality_mask_zero_fill_masks_only_exact_fill_not_near_zero(self):
+        """Follow-up review #2: a 0 fill (now reachable via the widened
+        UMM-Var fill tier) must mask only exact-fill cells. The old
+        magnitude-scaled tolerance collapsed to atol=0 here; the exact-match
+        contract keeps legitimate near-zero measurements alive."""
+        from preprocessing.aggregation_service import AggregationService
+
+        da = self.xr.DataArray(
+            [[0.0, 0.4], [1.0, 2.0]],
+            dims=("y", "x"),
+            name="conc",
+        )
+
+        masked = AggregationService().apply_quality_mask(da, col_info={"fill_value": 0.0})
+
+        values = masked.values
+        self.assertTrue(self.np.isnan(values[0, 0]))  # exact 0 fill masked
+        self.assertEqual(values[0, 1], 0.4)  # legit near-zero measurement kept
+        self.assertEqual(values[1, 0], 1.0)
+        self.assertEqual(values[1, 1], 2.0)
+
+    def test_apply_quality_mask_uses_exact_fill_match_not_a_magnitude_band(self):
+        """Follow-up review #2: the old ``atol=abs(fill)*1e-3`` band wrongly
+        masked legitimate values *near* a small integer fill (49.99 and 50.05
+        against a 50.0 fill fall inside the old 0.05 band). Exact matching
+        masks only the true fill."""
+        from preprocessing.aggregation_service import AggregationService
+
+        da = self.xr.DataArray(
+            [[50.0, 49.99], [50.05, 10.0]],
+            dims=("y", "x"),
+            name="v",
+        )
+
+        masked = AggregationService().apply_quality_mask(da, col_info={"fill_value": 50.0})
+
+        values = masked.values
+        self.assertTrue(self.np.isnan(values[0, 0]))  # exact fill masked
+        self.assertEqual(values[0, 1], 49.99)  # inside old band -> now kept
+        self.assertEqual(values[1, 0], 50.05)  # inside old band -> now kept
+        self.assertEqual(values[1, 1], 10.0)
+
+    def test_apply_quality_mask_bad_values_drops_unknown_quality_flag_pixels(self):
+        """Follow-up review #3: the bad_values path must drop pixels whose
+        flag is NaN/unknown (uncomputed quality), symmetric with the
+        good_values path -- not silently count them as good. Before, ``~isin``
+        alone kept every unknown-flag pixel."""
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset({
+            "aod": (("lat", "lon"), self.np.array([[1.0, 2.0, 3.0]])),
+            # flag 0 = good/known, 2 = bad, NaN = quality not computed
+            "qa": (("lat", "lon"), self.np.array([[0.0, 2.0, self.np.nan]])),
+        })
+
+        masked = AggregationService().apply_quality_mask(
+            ds["aod"], ds=ds, col_info={"quality_flag_var": "qa", "qa_bad_values": [2]},
+        )
+
+        values = masked.values
+        self.assertEqual(values[0, 0], 1.0)  # flag 0 -> known, not bad -> kept
+        self.assertTrue(self.np.isnan(values[0, 1]))  # flag 2 -> bad -> masked
+        self.assertTrue(self.np.isnan(values[0, 2]))  # flag NaN -> unknown -> masked
+
 
 if __name__ == "__main__":
     unittest.main()
