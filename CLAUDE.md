@@ -12,15 +12,25 @@ image installs the native geospatial stack (PROJ, GEOS, GDAL) and every Python
 dependency at the versions CI uses, so results match CI exactly:
 
 ```bash
-docker compose --profile test run --rm backend-test   # backend: pytest + coverage
-docker compose --profile test run --rm frontend-test  # frontend: vitest
+docker compose --profile test run --build --rm backend-test   # backend: pytest + coverage
+docker compose --profile test run --build --rm frontend-test  # frontend: vitest
 ```
 
 To run a subset while iterating:
 
 ```bash
-docker compose --profile test run --rm backend-test sh -c "pytest tests/test_subagent_dispatch.py -q"
+docker compose --profile test run --build --rm backend-test sh -c "pytest tests/test_subagent_dispatch.py -q"
 ```
+
+**Always pass `--build`.** The test services bake the source into the image at
+build time (`build: context: ./Backend`) — they do *not* bind-mount your working
+tree, on purpose, so the run is hermetic and matches CI. But `docker compose run`
+reuses the last-built image unless told to rebuild, so **without `--build` you
+silently test stale code** — a green run that never saw your edits. The rebuild
+is cheap: deps install before the source `COPY`, so a code-only change only
+re-runs the final layer (~seconds). Do not add a source bind-mount to make runs
+faster — that reintroduces the host/image divergence (see the PROJ and
+optional-deps traps below) that this hermetic build exists to avoid.
 
 ### Why not host `python -m pytest`
 
