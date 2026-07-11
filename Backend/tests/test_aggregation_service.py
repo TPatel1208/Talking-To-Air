@@ -367,6 +367,76 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertEqual(values[0, 0], 1.0)  # flag 0 (good) kept
         self.assertTrue(self.np.isnan(values[0, 1]))  # flag 1 (not in qa_good_values) masked
 
+    def test_aggregate_applies_tier1_qa_rule_via_source_ds_when_data_is_an_already_extracted_dataarray(self):
+        """T25 masking-execution fix: production never passes aggregate() a
+        Dataset -- every tool extracts the science DataArray first (crops it
+        to a region, normalizes longitude, etc.) and only the *opened*
+        Dataset still carries the sibling QA-flag variable. Before
+        source_ds, aggregate(cropped_da, ...) always saw qf_source=None and
+        the honesty guard downgraded to "not applied" no matter what
+        collections.yaml pinned. This proves source_ds restores real masking
+        for that exact shape."""
+        from datasets.qa_flags import QA_VERIFIED
+        from preprocessing.aggregation_service import AggregationService
+
+        source_ds = self.xr.Dataset({
+            "no2": (("lat", "lon"), self.np.array([[1.0, 2.0], [3.0, 4.0]])),
+            "main_data_quality_flag": (("lat", "lon"), self.np.array([[0, 1], [0, 1]], dtype="int64")),
+        })
+        # Mirrors the real tool shape: `da` is an already-extracted, standalone
+        # DataArray -- not the Dataset carrying the flag variable.
+        da = source_ds["no2"]
+
+        col_info = {**self.col_info, "quality_flag_var": "main_data_quality_flag", "qa_good_values": [0]}
+        result = AggregationService().aggregate(da, variable="no2", col_info=col_info, source_ds=source_ds)
+
+        self.assertEqual(result.meta["masking"]["qa_status"], QA_VERIFIED)
+        values = result.ds["no2"].values
+        self.assertEqual(values[0, 0], 1.0)  # flag 0 (good) kept
+        self.assertTrue(self.np.isnan(values[0, 1]))  # flag 1 (bad) masked
+
+    def test_aggregate_still_downgrades_to_not_applied_when_source_ds_is_omitted(self):
+        """The honesty guard still fires when a caller genuinely has no
+        Dataset available at all -- source_ds is opt-in, not a silent
+        always-on assumption."""
+        from datasets.qa_flags import QA_NOT_APPLIED
+        from preprocessing.aggregation_service import AggregationService
+
+        da = self.xr.DataArray(
+            self.np.array([[1.0, 2.0], [3.0, 4.0]]), dims=("lat", "lon"), name="no2",
+        )
+        col_info = {**self.col_info, "quality_flag_var": "main_data_quality_flag", "qa_good_values": [0]}
+
+        result = AggregationService().aggregate(da, variable="no2", col_info=col_info)
+
+        self.assertEqual(result.meta["masking"]["qa_status"], QA_NOT_APPLIED)
+
+    def test_resolve_and_mask_is_the_shared_seam_aggregate_and_conduct_temporal_statistic_both_use(self):
+        """conduct_temporal_statistic (plot_tools.py) calls resolve_and_mask
+        directly instead of hand-rolling apply_quality_mask -- this pins its
+        contract: masked data + honest provenance, same shape aggregate()
+        gets internally."""
+        from datasets.qa_flags import QA_VERIFIED
+        from preprocessing.aggregation_service import AggregationService
+
+        source_ds = self.xr.Dataset({
+            "no2": (("time", "lat", "lon"), self.np.array([[[1.0, 2.0]], [[3.0, 4.0]]])),
+            "main_data_quality_flag": (("time", "lat", "lon"), self.np.array([[[0, 1]], [[0, 1]]], dtype="int64")),
+        })
+        da = source_ds["no2"]
+        col_info = {**self.col_info, "quality_flag_var": "main_data_quality_flag", "qa_good_values": [0]}
+
+        masked, provenance = AggregationService().resolve_and_mask(
+            da, variable="no2", col_info=col_info, source_ds=source_ds,
+        )
+
+        self.assertEqual(provenance["qa_status"], QA_VERIFIED)
+        # Shape preserved (no time reduction) -- unlike aggregate(), which reduces.
+        self.assertEqual(masked.dims, da.dims)
+        values = masked.values
+        self.assertEqual(values[0, 0, 0], 1.0)
+        self.assertTrue(self.np.isnan(values[0, 0, 1]))
+
     def test_aggregate_discovers_qa_flag_var_via_ancillary_variables_attr(self):
         """T25 Phase 3: for an unregistered collection with no pinned
         quality_flag_var, the CF `ancillary_variables` attribute on the

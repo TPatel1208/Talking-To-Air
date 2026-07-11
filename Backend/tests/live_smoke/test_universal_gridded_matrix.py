@@ -304,6 +304,15 @@ async def test_unselected_vertical_dimension_raises_a_candidate_listing_error(in
 # or the sole sibling carrying both attrs) and always stamps
 # result.meta["masking"]["qa_status"] -- verified/cf-deterministic/inferred,
 # not verified/not applied, never silent.
+#
+# T25 masking-execution fix: these two rows used to call
+# AggregationService().aggregate(ds, variable=...) directly on the opened
+# Dataset -- a shape no real tool ever takes (every plot/stat/compare tool
+# extracts the science DataArray first, so aggregate() only sees the
+# already-extracted DataArray). That shape trivially kept qf_source == the
+# passed-in Dataset and never exercised the honesty-guard gap the unit
+# tests also hid. Both rows now extract via to_dataarray() and pass the
+# opened Dataset separately as source_ds, mirroring the real tool path.
 
 @pytest.mark.asyncio
 async def test_flag_meanings_dataset_gets_a_deterministic_cf_mask(invoke):
@@ -319,7 +328,9 @@ async def test_flag_meanings_dataset_gets_a_deterministic_cf_mask(invoke):
     variable = "ColumnAmountSO2_PBL"
     qa_variable = "QualityFlags_PBL"
     ds = await _open_after_retrieval(invoke, row, variables=[variable, qa_variable])
-    result = AggregationService().aggregate(ds, variable=variable)
+    service = AggregationService()
+    da = service.to_dataarray(ds, variable=variable)
+    result = service.aggregate(da, variable=variable, source_ds=ds)
     masking = result.meta.get("masking", {})
     assert masking.get("qa_status") == "cf-deterministic", f"{row.id}: expected a deterministic CF flag_meanings mask, got masking={masking}"
 
@@ -334,7 +345,9 @@ async def test_prose_only_qa_dataset_discloses_no_mask_or_an_inferred_tag(invoke
     # name, not concept-ID-pinned by the PRD — a wrong spelling still skips cleanly via retrieve_subset.
     variable = "Aerosol_Optical_Depth_Land_Ocean_Mean"
     ds = await _open_after_retrieval(invoke, row, variables=[variable])
-    result = AggregationService().aggregate(ds, variable=variable)
+    service = AggregationService()
+    da = service.to_dataarray(ds, variable=variable)
+    result = service.aggregate(da, variable=variable, source_ds=ds)
     masking = result.meta.get("masking", {})
     assert masking.get("qa_status") in ("not applied — semantics unknown", "inferred, not verified"), (
         f"{row.id}: expected an explicit QA disclosure for a prose-only-QA product, got masking={masking}"
