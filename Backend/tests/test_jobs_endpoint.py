@@ -39,9 +39,22 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         # Two users, each with jobs scoped to their own "user-{id}" workspace —
         # proves the endpoint never leaks one researcher's jobs to another.
+        # Shape mirrors the real list_workspace contract: {handles: [{handle,
+        # type, created_at, summary}]}, not the fabricated {jobs, job_handle,
+        # dataset} keys the fake used to return (T26).
         self.workspace_jobs = {
-            "user-user-1": [{"job_handle": "job_1", "dataset": "TEMPO_NO2", "submitted_at": "2026-07-01T00:00:00Z"}],
-            "user-user-2": [{"job_handle": "job_2", "dataset": "MOD11A1", "submitted_at": "2026-07-02T00:00:00Z"}],
+            "user-user-1": [
+                {
+                    "handle": "job_1", "type": "job", "created_at": "2026-07-01T00:00:00Z",
+                    "summary": {"dataset_handle": "TEMPO_NO2"},
+                },
+            ],
+            "user-user-2": [
+                {
+                    "handle": "job_2", "type": "job", "created_at": "2026-07-02T00:00:00Z",
+                    "summary": {"dataset_handle": "MOD11A1"},
+                },
+            ],
         }
         self.statuses = {
             "job_1": {"job_handle": "job_1", "status": "ready", "progress": 100, "phase": "done", "obs_handle": "obs_1"},
@@ -50,7 +63,7 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.cancel_calls = []
 
         async def list_workspace(workspace_id):
-            return {"jobs": self.workspace_jobs.get(workspace_id, [])}
+            return {"handles": self.workspace_jobs.get(workspace_id, [])}
 
         async def get_retrieval_status(job_handle, workspace_id):
             return self.statuses[job_handle]
@@ -111,7 +124,7 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
         jobs1 = res1.json()["jobs"]
         self.assertEqual(len(jobs1), 1)
         self.assertEqual(jobs1[0]["job_handle"], "job_1")
-        self.assertEqual(jobs1[0]["dataset"], "TEMPO_NO2")
+        self.assertEqual(jobs1[0]["dataset_handle"], "TEMPO_NO2")
         self.assertEqual(jobs1[0]["status"], "ready")
         self.assertEqual(jobs1[0]["obs_handle"], "obs_1")
 

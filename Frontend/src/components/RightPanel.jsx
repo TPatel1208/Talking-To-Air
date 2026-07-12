@@ -2,7 +2,7 @@ import { useState } from 'react'
 import DiscoveryPane from './DiscoveryPane'
 import JobsPanel from './JobsPanel'
 
-const TERMINAL_STATUSES = new Set(['materialized', 'failed', 'cancelled'])
+const TERMINAL_STATUSES = new Set(['ready', 'failed', 'expired', 'cancelled'])
 
 export default function RightPanel({ discovery, jobs, jobsError, onCancelJob, onRefreshJobs, onRetrieve }) {
   const [tab, setTab] = useState('discover')

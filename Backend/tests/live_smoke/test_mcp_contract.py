@@ -164,6 +164,62 @@ class LiveMCPContractTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("size_mb", granule, f"granule record missing 'size_mb': {granule}")
             self.assertIn("time_start", granule, f"granule record missing 'time_start': {granule}")
 
+    async def test_list_workspace_and_get_retrieval_status_use_the_real_contract_keys(self):
+        """T26: services/jobs_service.py::list_jobs reads list_workspace's
+        {handles: [{handle, type, created_at, summary}]} shape (filtered to
+        type == "job") and fans out get_retrieval_status per handle — a fake
+        MCP mirroring the wrong keys ({jobs, job_handle, dataset}) shipped a
+        jobs panel that was always empty against the real server. This pins
+        the exact keys that composite consumes so that drift fails here,
+        not silently in production."""
+        aoi_result = await self._invoke("define_area_of_interest", location=_LOCATION)
+        aoi_handle = aoi_result["handle"]
+
+        search_result = await self._invoke("search_datasets", query=_QUERY, filters=None)
+        datasets = search_result.get("datasets") or search_result.get("results") or []
+        self.assertTrue(datasets, f"search_datasets returned no results for {_QUERY!r}: {search_result}")
+        dataset_handle = datasets[0]["handle"] if "handle" in datasets[0] else datasets[0]["dataset_handle"]
+
+        coverage_result = await self._invoke(
+            "check_coverage", dataset_handle=dataset_handle, aoi_handle=aoi_handle, time_range=_TIME_RANGE,
+        )
+        if not coverage_result.get("granule_count", 0):
+            self.skipTest(
+                f"no granules covering {_LOCATION!r}/{_TIME_RANGE!r} right now — "
+                "list_jobs' contract keys need a real job handle to pin"
+            )
+
+        retrieve_result = await self._invoke(
+            "retrieve_subset",
+            dataset_handle=dataset_handle,
+            aoi_handle=aoi_handle,
+            time_range=_TIME_RANGE,
+            variables=_VARIABLES,
+            output_format=None,
+        )
+        job_handle = retrieve_result["job_handle"]
+
+        workspace = await self._invoke("list_workspace")
+        self.assertIn("handles", workspace, f"list_workspace missing 'handles': {workspace}")
+        job_entries = [h for h in workspace["handles"] if h.get("handle") == job_handle]
+        self.assertTrue(job_entries, f"list_workspace's handles did not include job_handle {job_handle!r}: {workspace}")
+        entry = job_entries[0]
+        self.assertEqual(entry.get("type"), "job", f"job handle entry missing type == 'job': {entry}")
+        self.assertIn("created_at", entry, f"job handle entry missing 'created_at': {entry}")
+        self.assertIsInstance(entry.get("summary"), dict, f"job handle entry missing a dict 'summary': {entry}")
+
+        status = await self._invoke("get_retrieval_status", job_handle=job_handle)
+        self.assertIn("job_handle", status, f"get_retrieval_status missing 'job_handle': {status}")
+        self.assertIn("status", status, f"get_retrieval_status missing 'status': {status}")
+        self.assertTrue(status["status"], f"get_retrieval_status returned an empty status: {status}")
+
+        # Poll to a terminal status and confirm it lands in the closed
+        # vocabulary list_jobs' TERMINAL_STATUSES (services/retrieval_
+        # composites.py) actually recognizes — not the stale "materialized"
+        # the frontend used to check for.
+        terminal = await self._await_terminal_status(job_handle)
+        self.assertIn(terminal["status"], _REAL_TERMINAL_STATUSES)
+
     async def _await_terminal_status(self, job_handle: str) -> dict:
         import asyncio
 

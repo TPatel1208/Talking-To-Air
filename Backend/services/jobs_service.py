@@ -16,23 +16,39 @@ from typing import Any
 from langchain_core.tools import BaseTool
 
 from earthdata_mcp.results import parse_tool_result
+from services.retrieval_composites import TERMINAL_STATUSES
 
 
 async def list_jobs(tools: dict[str, BaseTool]) -> list[dict[str, Any]]:
-    """Return the caller's workspace jobs, each merged with its live status."""
+    """Return the caller's workspace jobs, each merged with its live status.
+
+    ``list_workspace`` returns every handle in the workspace as
+    ``{handles: [{handle, type, created_at, summary}]}`` — filtered here to
+    ``type == "job"`` and mapped to the field names the rest of this
+    composite (and the frontend) expect. Active (non-terminal) jobs sort
+    first, newest-first within each group, so a researcher sees what's still
+    running before what's already finished.
+    """
     workspace_raw = await tools["list_workspace"].ainvoke({})
     workspace = parse_tool_result(workspace_raw)
-    entries = workspace.get("jobs", [])
+    entries = [
+        {"job_handle": handle["handle"], "created_at": handle.get("created_at"), **(handle.get("summary") or {})}
+        for handle in workspace.get("handles", [])
+        if handle.get("type") == "job"
+    ]
 
     statuses = await asyncio.gather(*(
         tools["get_retrieval_status"].ainvoke({"job_handle": entry["job_handle"]})
         for entry in entries
     ))
 
-    return [
+    jobs = [
         {**entry, **parse_tool_result(status)}
         for entry, status in zip(entries, statuses)
     ]
+    jobs.sort(key=lambda job: job.get("created_at") or "", reverse=True)
+    jobs.sort(key=lambda job: job.get("status") in TERMINAL_STATUSES)
+    return jobs
 
 
 async def cancel_job(job_handle: str, tools: dict[str, BaseTool]) -> dict[str, Any]:

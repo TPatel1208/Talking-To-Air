@@ -1,8 +1,9 @@
-const TERMINAL_STATUSES = new Set(['materialized', 'failed', 'cancelled'])
+const TERMINAL_STATUSES = new Set(['ready', 'failed', 'expired', 'cancelled'])
 
 const STATUS_COLORS = {
-  materialized: 'var(--teal-text)',
+  ready: 'var(--teal-text)',
   failed: 'var(--error)',
+  expired: 'var(--text-muted)',
   cancelled: 'var(--text-muted)',
 }
 

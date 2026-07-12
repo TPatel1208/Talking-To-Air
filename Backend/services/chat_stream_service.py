@@ -14,7 +14,7 @@ from services.chart_service import ChartService
 from services.intent_router import route_intent
 from services.subagent_dispatch import run_ground, run_satellite
 from utils.message_utils import flatten_text_content, normalize_image_url
-from utils.streaming import stream_response
+from utils.streaming import stream_response, user_id_context
 
 logger = logging.getLogger(__name__)
 
@@ -44,98 +44,104 @@ class ChatStreamService:
         user_id: str,
         request_id: str,
     ) -> AsyncIterator[str]:
-        intent = route_intent(message)
-        route = "fast_path" if intent in _AGENT_CONSULTED_HEADERS else "supervisor"
-        logger.info(
-            "chat_route_decision",
-            extra={"_request_id": request_id, "_thread_id": thread_id, "_intent": intent, "_route": route},
-        )
-        if route == "fast_path":
-            sub_agent = ground_agent if intent == "GROUND" else satellite_agent
-            async for event in self._fast_path_events(
-                intent, sub_agent, agent, message, thread_id, user_id, request_id,
-            ):
-                yield event
-            return
+        # T26: bound before the fast path's asyncio.create_task(run()) spawns
+        # (below) so that task copies a context that already carries the
+        # real user id — the fast path calls run_satellite/run_ground
+        # directly, bypassing stream_response's own binding entirely, which
+        # is what left every fast-pathed retrieval scoped to "user-None".
+        with user_id_context(user_id):
+            intent = route_intent(message)
+            route = "fast_path" if intent in _AGENT_CONSULTED_HEADERS else "supervisor"
+            logger.info(
+                "chat_route_decision",
+                extra={"_request_id": request_id, "_thread_id": thread_id, "_intent": intent, "_route": route},
+            )
+            if route == "fast_path":
+                sub_agent = ground_agent if intent == "GROUND" else satellite_agent
+                async for event in self._fast_path_events(
+                    intent, sub_agent, agent, message, thread_id, user_id, request_id,
+                ):
+                    yield event
+                return
 
-        response_text = ""
-        image_urls = []
-        artifacts = []
-        tool_calls = []
-        # Charts already emitted this turn, by chart_id — a chart can reach
-        # this loop twice (once bubbled in real time via a chart_payload
-        # event, again batched inside a sub-agent's final tool_result
-        # envelope); the frontend appends every "chart" event with no dedup
-        # of its own (Frontend/src/hooks/useChat.js), so this set is the
-        # single point that keeps each chart_id rendered exactly once (T13).
-        emitted_chart_ids: set[str] = set()
-        # T22 story #8: the last non-None suggested_followups seen from a
-        # sub-agent's own AgentResult envelope, whether it arrives batched in
-        # a tool_result (the supervisor path) or inline in a structured text
-        # event — a plain dict (not a bare variable) so the nested helper
-        # methods below can update it by reference.
-        suggestions_box: dict[str, list[str]] = {}
-        started = time.monotonic()
-        try:
-            async for event_type, data in stream_response(agent, message, thread_id, user_id=user_id):
-                if event_type == "tool_call":
-                    tool_calls.append({"name": data["name"], "args": data["args"]})
-                    response_text = ""
-                    yield self.sse("tool_call", {"name": data["name"], "args": data["args"]})
-                elif event_type == "status":
-                    # T19: forward the whole payload, not just message —
-                    # stage/detail are additive fields emit_status may set;
-                    # rebuilding a message-only dict here silently dropped
-                    # them before they ever reached the SSE wire.
-                    yield self.sse("status", data)
-                elif event_type == "job_progress":
-                    yield self.sse("job_progress", data)
-                elif event_type == "chart_payload":
-                    chart = parse_chart_payload(data)
-                    if chart is not None:
-                        event = await self._emit_chart_once(thread_id, chart, user_id, emitted_chart_ids)
-                        if event is not None:
+            response_text = ""
+            image_urls = []
+            artifacts = []
+            tool_calls = []
+            # Charts already emitted this turn, by chart_id — a chart can reach
+            # this loop twice (once bubbled in real time via a chart_payload
+            # event, again batched inside a sub-agent's final tool_result
+            # envelope); the frontend appends every "chart" event with no dedup
+            # of its own (Frontend/src/hooks/useChat.js), so this set is the
+            # single point that keeps each chart_id rendered exactly once (T13).
+            emitted_chart_ids: set[str] = set()
+            # T22 story #8: the last non-None suggested_followups seen from a
+            # sub-agent's own AgentResult envelope, whether it arrives batched in
+            # a tool_result (the supervisor path) or inline in a structured text
+            # event — a plain dict (not a bare variable) so the nested helper
+            # methods below can update it by reference.
+            suggestions_box: dict[str, list[str]] = {}
+            started = time.monotonic()
+            try:
+                async for event_type, data in stream_response(agent, message, thread_id, user_id=user_id):
+                    if event_type == "tool_call":
+                        tool_calls.append({"name": data["name"], "args": data["args"]})
+                        response_text = ""
+                        yield self.sse("tool_call", {"name": data["name"], "args": data["args"]})
+                    elif event_type == "status":
+                        # T19: forward the whole payload, not just message —
+                        # stage/detail are additive fields emit_status may set;
+                        # rebuilding a message-only dict here silently dropped
+                        # them before they ever reached the SSE wire.
+                        yield self.sse("status", data)
+                    elif event_type == "job_progress":
+                        yield self.sse("job_progress", data)
+                    elif event_type == "chart_payload":
+                        chart = parse_chart_payload(data)
+                        if chart is not None:
+                            event = await self._emit_chart_once(thread_id, chart, user_id, emitted_chart_ids)
+                            if event is not None:
+                                yield event
+                    elif event_type == "tool_result":
+                        async for event in self._tool_result_events(
+                            data.get("content", ""),
+                            thread_id,
+                            user_id,
+                            image_urls,
+                            artifacts,
+                            emitted_chart_ids,
+                            suggestions_box,
+                        ):
                             yield event
-                elif event_type == "tool_result":
-                    async for event in self._tool_result_events(
-                        data.get("content", ""),
-                        thread_id,
-                        user_id,
-                        image_urls,
-                        artifacts,
-                        emitted_chart_ids,
-                        suggestions_box,
-                    ):
-                        yield event
-                elif event_type == "image":
-                    url = normalize_image_url(data.get("path", ""))
-                    if url:
-                        image_urls.append(url)
-                        yield self.sse("image", {"url": url})
-                elif event_type == "text":
-                    text, events = await self._text_events(
-                        data, thread_id, user_id, emitted_chart_ids, suggestions_box,
-                    )
-                    response_text += text
-                    if text:
-                        yield self.sse("text", {"content": text})
-                    for event in events:
-                        yield event
+                    elif event_type == "image":
+                        url = normalize_image_url(data.get("path", ""))
+                        if url:
+                            image_urls.append(url)
+                            yield self.sse("image", {"url": url})
+                    elif event_type == "text":
+                        text, events = await self._text_events(
+                            data, thread_id, user_id, emitted_chart_ids, suggestions_box,
+                        )
+                        response_text += text
+                        if text:
+                            yield self.sse("text", {"content": text})
+                        for event in events:
+                            yield event
 
-            done_payload = {
-                "thread_id": thread_id,
-                "response": self._strip_supervisor_preamble(response_text),
-                "image_urls": image_urls,
-                "artifacts": artifacts,
-                "tool_calls": tool_calls,
-            }
-            if "value" in suggestions_box:
-                done_payload["suggested_followups"] = suggestions_box["value"]
-            yield self.sse("done", done_payload)
-            self._log_request_complete(request_id, thread_id, started)
-        except Exception as e:
-            logger.exception("agent_failure", extra={"_request_id": request_id, "_thread_id": thread_id})
-            yield self.sse("error", {"detail": str(e)})
+                done_payload = {
+                    "thread_id": thread_id,
+                    "response": self._strip_supervisor_preamble(response_text),
+                    "image_urls": image_urls,
+                    "artifacts": artifacts,
+                    "tool_calls": tool_calls,
+                }
+                if "value" in suggestions_box:
+                    done_payload["suggested_followups"] = suggestions_box["value"]
+                yield self.sse("done", done_payload)
+                self._log_request_complete(request_id, thread_id, started)
+            except Exception as e:
+                logger.exception("agent_failure", extra={"_request_id": request_id, "_thread_id": thread_id})
+                yield self.sse("error", {"detail": str(e)})
 
     async def _fast_path_events(
         self,
