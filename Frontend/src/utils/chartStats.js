@@ -7,16 +7,27 @@ export function computeChartStats(chart) {
   if (chart.type === 'heatmap' || chart.type === 'heatmap_multi') {
     const payload = chart.type === 'heatmap_multi' ? chart.panels?.[0] : chart
     if (!payload) return null
-    const { val } = flattenPayload(payload)
-    return statsFromValues(val, payload.units)
+    return statsFromValues(rawCellValues(payload), payload.units)
   }
 
   if (chart.type === 'timeseries') {
-    const values = (chart.values || []).filter(Number.isFinite)
-    return statsFromValues(values, chart.units)
+    return statsFromValues(chart.values || [], chart.units)
   }
 
   return null
+}
+
+// Every cell of the payload's own grid, nulls included. Masked pixels (QA
+// drops, fill values, out-of-region cells) are serialized as null by the
+// backend and must count against validPct — flattenPayload strips them,
+// which is right for rendering but would make validPct always 100%.
+function rawCellValues(payload) {
+  if (Array.isArray(payload.values) && Array.isArray(payload.values[0])) {
+    return payload.values.flat()
+  }
+  const points = payload.points
+  if (points && Array.isArray(points.values)) return points.values
+  return []
 }
 
 function statsFromValues(values, units) {
