@@ -100,6 +100,14 @@ class Settings:
     retrieval_max_timeseries_days: int = field(
         default_factory=lambda: max(1, _int_env("RETRIEVAL_MAX_TIMESERIES_DAYS", 366))
     )
+    # Gate on a result bundle's *uncompressed* size before open_handle extracts
+    # and opens it. The retrieval byte caps above gate the estimate at submit
+    # time; this one catches what they can't — decompression, dtype widening,
+    # and multi-granule concatenation happen at open time, and an ungated open
+    # OOM-killed the backend on a full-day TEMPO NO2 bundle (live 2026-07-12).
+    bundle_open_max_uncompressed_bytes: int = field(
+        default_factory=lambda: max(1, _int_env("BUNDLE_OPEN_MAX_UNCOMPRESSED_BYTES", 2 * 1024 ** 3))
+    )
     edl_username: str = field(default_factory=lambda: os.getenv("EDL_USERNAME", ""))
     edl_password: str = field(default_factory=lambda: os.getenv("EDL_PASSWORD", ""))
     aqs_api_email: str = field(default_factory=lambda: os.getenv("AQS_API_EMAIL", "your_email@example.com"))

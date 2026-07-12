@@ -11,18 +11,41 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
 from langchain_core.tools import BaseTool
 
+from config.settings import get_settings
 from config.workflow_stages import STAGE_OPEN
-from earthdata_mcp.results import parse_tool_result
+from earthdata_mcp.results import CATEGORY_TOO_LARGE, MCPToolError, parse_tool_result
 from services.retrieval_composites import await_retrieval
 from utils.streaming import emit_status
 
 logger = logging.getLogger(__name__)
+
+try:
+    # Bound dask's threaded scheduler process-wide: every in-flight task can
+    # hold a whole granule chunk, and the default worker count (one per CPU)
+    # lets a single aggregation stage n_cpus granules at once — reintroducing
+    # the memory spike the lazy bundle open below exists to avoid. Two workers
+    # keep granule reads pipelined without staging the bundle.
+    import dask
+
+    dask.config.set(num_workers=2)
+except ImportError:  # pragma: no cover — dask is a declared dependency
+    dask = None
+
+# Bundle members are extracted here (under tempfile.gettempdir()) rather than
+# a per-call tempdir: members are opened lazily, so their files are read well
+# after _open_netcdf_bundle returns, and derived Datasets give no safe hook to
+# know when the last reader is done. Entries are keyed by bundle identity
+# (reused on repeat opens) and swept by age on each new extraction.
+_EXTRACT_CACHE_DIR_NAME = "tta_bundle_extract"
+_EXTRACT_CACHE_TTL_SECONDS = 3600.0
+_EXTRACT_COMPLETE_MARKER = ".complete"
 
 
 class OpenHandleError(RuntimeError):
@@ -128,7 +151,7 @@ def _open(storage_uri: str, media_type: str) -> Any:
     raise OpenHandleError(f"Unsupported media_type '{media_type}' for exported handle.")
 
 
-def _open_netcdf(path: str) -> Any:
+def _open_netcdf(path: str, chunks: dict | None = None) -> Any:
     """Open a NetCDF file, descending into HDF5 subgroups when the root
     group carries no data variables.
 
@@ -163,7 +186,7 @@ def _open_netcdf(path: str) -> Any:
     if _is_zipfile(path):
         return _open_netcdf_bundle(path)
 
-    groups = _open_all_groups(path)
+    groups = _open_all_groups(path, chunks)
     root = groups.pop("/", None)
     if root is not None and root.data_vars:
         return root  # genuinely flat file; nothing nested to merge
@@ -206,15 +229,25 @@ def _open_netcdf_bundle(path: str) -> Any:
     gets, and variable names stay bare (no group prefixes) — unlike the
     MCP's flattener, whose prefixed names this backend's callers don't use.
 
-    Members are loaded eagerly so the temp extraction dir can be removed
-    before returning; each member's CF time decodes against its *own* units
-    at open time (xarray's default), so granules with per-file epochs (e.g.
-    MERRA-2 daily) concat on absolute timestamps, not raw offsets. Members
-    whose singleton time dim has no coordinate variable get one synthesized
-    from their CMR granule date attrs, mirroring the MCP.
+    Members are opened *lazily* (one dask chunk per file), never eagerly
+    loaded: the previous load-everything-then-concat shape held the whole
+    day in memory twice, and a full-day TEMPO NO2 bundle OOM-killed the
+    backend (live 2026-07-12). Laziness means the extracted files must
+    outlive this call, so members land in a TTL-pruned cache directory
+    keyed by bundle identity (see :func:`_extract_bundle_cached`) instead
+    of a delete-before-return tempdir — a repeat open of the same bundle
+    also skips re-extraction. Before any extraction, the bundle's total
+    uncompressed size is gated (:func:`_gate_bundle_size`) so an
+    arbitrarily large request refuses deterministically rather than taking
+    the process down.
+
+    Each member's CF time decodes against its *own* units at open time
+    (xarray's default; time is an index coordinate, decoded even when data
+    variables stay lazy), so granules with per-file epochs (e.g. MERRA-2
+    daily) concat on absolute timestamps, not raw offsets. Members whose
+    singleton time dim has no coordinate variable get one synthesized from
+    their CMR granule date attrs, mirroring the MCP.
     """
-    import shutil
-    import tempfile
     import zipfile
 
     import xarray as xr
@@ -228,23 +261,23 @@ def _open_netcdf_bundle(path: str) -> Any:
             f"typically resolves it. Underlying error: {exc}"
         )
 
+    with zf:
+        # Granule filenames sort chronologically, so name order is time order.
+        names = sorted(n for n in zf.namelist() if not n.endswith("/"))
+        if not names:
+            raise UnreadableExportError(
+                f"Retrieved bundle at '{path}' is an empty archive — this is usually "
+                "a failed retrieval; retrying the retrieval typically resolves it."
+            )
+        _gate_bundle_size(zf, path)
+        extract_dir = _extract_bundle_cached(zf, path, names)
+
+    chunks = _lazy_chunks()
     members: list[Any] = []
-    tmpdir = tempfile.mkdtemp(prefix="nc_bundle_")
-    try:
-        with zf:
-            # Granule filenames sort chronologically, so name order is time order.
-            names = sorted(n for n in zf.namelist() if not n.endswith("/"))
-            if not names:
-                raise UnreadableExportError(
-                    f"Retrieved bundle at '{path}' is an empty archive — this is usually "
-                    "a failed retrieval; retrying the retrieval typically resolves it."
-                )
-            for name in names:
-                member_path = zf.extract(name, tmpdir)
-                ds = _open_netcdf(member_path)
-                members.append(_synthesize_member_time_coord(ds).load())
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
+    for name in names:
+        member_path = os.path.join(extract_dir, *name.split("/"))
+        ds = _open_netcdf(member_path, chunks=chunks)
+        members.append(_synthesize_member_time_coord(ds))
 
     if len(members) == 1:
         return members[0]
@@ -256,6 +289,109 @@ def _open_netcdf_bundle(path: str) -> Any:
             f"Could not combine the {len(members)} granules in bundle '{path}' onto a "
             f"shared time axis: {exc}"
         )
+
+
+def _gate_bundle_size(zf: Any, path: str) -> None:
+    """Refuse a bundle whose members' total *uncompressed* size exceeds the
+    configured cap, before anything is extracted or opened.
+
+    The retrieval-time byte caps (services.retrieval_composites) gate the
+    provider's estimate at submit time; this gate catches what they can't —
+    decompression, dtype widening and multi-granule concatenation all happen
+    at open time. Raising the same structured too_large error the retrieval
+    gates use keeps the failure on the T18 deterministic-error surface (the
+    agent relays "narrow the request") instead of the OOM killer's."""
+    granules = [info for info in zf.infolist() if not info.is_dir()]
+    total = sum(info.file_size for info in granules)
+    limit = get_settings().bundle_open_max_uncompressed_bytes
+    if total <= limit:
+        return
+    raise MCPToolError(
+        CATEGORY_TOO_LARGE,
+        f"This result bundle holds {len(granules)} granule file(s) totalling "
+        f"~{total:,} bytes uncompressed, over the {limit:,}-byte limit this "
+        f"deployment can open safely (bundle: '{path}').",
+        suggestion="Narrow the time range, area of interest, or variable list and retrieve again.",
+    )
+
+
+def _lazy_chunks() -> dict | None:
+    """``chunks={}`` (one dask chunk per variable per file) when dask is
+    installed, so bundle members stay on disk until a compute needs them and
+    reductions stream granule-by-granule; None otherwise, where xarray's
+    plain lazy arrays materialize at concat and the size gate is the only
+    protection."""
+    return None if dask is None else {}
+
+
+def _extract_bundle_cached(zf: Any, path: str, names: list[str]) -> str:
+    """Extract ``zf``'s members into a cache entry that outlives this call
+    and return its directory.
+
+    Lazily-opened members read these files long after the bundle open
+    returns — any compute up to the end of the tool call — and derived
+    Datasets keep no reference through which a per-call cleanup could know
+    when the last reader is done. So entries live under one process-local
+    cache root, keyed by the bundle file's identity (path/size/mtime),
+    touched on reuse, and pruned by age on each new extraction
+    (:func:`_prune_extract_cache`). Extraction goes into a staging dir
+    renamed atomically into place, so a concurrent open of the same bundle
+    either wins the rename or adopts the winner's completed entry."""
+    import hashlib
+    import shutil
+    import tempfile
+
+    root = os.path.join(tempfile.gettempdir(), _EXTRACT_CACHE_DIR_NAME)
+    os.makedirs(root, exist_ok=True)
+    _prune_extract_cache(root)
+
+    stat = os.stat(path)
+    key = hashlib.sha256(f"{path}|{stat.st_size}|{stat.st_mtime_ns}".encode()).hexdigest()[:24]
+    final_dir = os.path.join(root, key)
+    marker = os.path.join(final_dir, _EXTRACT_COMPLETE_MARKER)
+    if os.path.exists(marker):
+        os.utime(final_dir, None)  # keep a hot entry out of the pruner's reach
+        return final_dir
+
+    staging = tempfile.mkdtemp(prefix=f"staging-{key}-", dir=root)
+    try:
+        for name in names:
+            zf.extract(name, staging)
+        with open(os.path.join(staging, _EXTRACT_COMPLETE_MARKER), "w"):
+            pass
+        os.rename(staging, final_dir)
+    except OSError:
+        shutil.rmtree(staging, ignore_errors=True)
+        if os.path.exists(marker):
+            # Lost the race: a concurrent open of this bundle finished
+            # extracting between the marker check and the rename.
+            return final_dir
+        raise
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return final_dir
+
+
+def _prune_extract_cache(root: str, ttl_seconds: float = _EXTRACT_CACHE_TTL_SECONDS) -> None:
+    """Sweep cache entries (completed or abandoned staging dirs) untouched
+    for longer than the TTL. Reuse touches an entry's mtime, so only bundles
+    nothing has opened for a full TTL are removed — far longer than any
+    single tool call keeps lazy readers on them."""
+    import shutil
+    import time
+
+    cutoff = time.time() - ttl_seconds
+    try:
+        entries = list(os.scandir(root))
+    except OSError:
+        return
+    for entry in entries:
+        try:
+            if entry.is_dir(follow_symlinks=False) and entry.stat(follow_symlinks=False).st_mtime < cutoff:
+                shutil.rmtree(entry.path, ignore_errors=True)
+        except OSError:
+            continue
 
 
 def _synthesize_member_time_coord(ds: Any) -> Any:
@@ -298,14 +434,16 @@ def _strip_concat_unsafe_coord_attrs(ds: Any) -> Any:
     return ds
 
 
-def _open_all_groups(path: str) -> dict[str, Any]:
+def _open_all_groups(path: str, chunks: dict | None = None) -> dict[str, Any]:
     """Open every HDF5 group in the file, keyed by group path ("/" for the
     root). Tries h5netcdf first -- pure-Python via h5py (already a
     dependency), so no compiled netCDF-C library needed -- then falls back
     to netCDF4 for classic-format files h5netcdf can't read. These two
     engines between them cover every NetCDF variant (classic-3 via netCDF4,
     NetCDF-4/HDF5 via h5netcdf), so if *both* fail to open the file it isn't
-    readable data at all.
+    readable data at all. ``chunks`` is forwarded to the reader (bundle
+    members pass ``{}`` for lazy dask-backed variables; bare exports keep
+    the default eager-on-access behavior).
 
     In that case, raise UnreadableExportError with the readers' own errors
     rather than falling back to a bare ``xr.open_dataset(path)`` (no
@@ -322,7 +460,7 @@ def _open_all_groups(path: str) -> dict[str, Any]:
     errors: list[str] = []
     for engine in ("h5netcdf", "netcdf4"):
         try:
-            return dict(xr.open_groups(path, engine=engine))
+            return dict(xr.open_groups(path, engine=engine, chunks=chunks))
         except ImportError:
             continue  # engine not installed — try the other
         except (OSError, ValueError) as exc:

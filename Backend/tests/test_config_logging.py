@@ -99,6 +99,21 @@ class ConfigLoggingTests(unittest.TestCase):
         self.assertEqual(loaded.await_retrieval_poll_max_seconds, 20)
         self.assertEqual(loaded.await_retrieval_timeout_seconds, 60)
 
+    def test_settings_loads_bundle_open_gate_default_and_override(self):
+        from config.settings import get_settings
+
+        with patch.dict(os.environ, {}, clear=True):
+            get_settings.cache_clear()
+            loaded = get_settings()
+
+        self.assertEqual(loaded.bundle_open_max_uncompressed_bytes, 2 * 1024 ** 3)
+
+        with patch.dict(os.environ, {"BUNDLE_OPEN_MAX_UNCOMPRESSED_BYTES": "1234"}, clear=True):
+            get_settings.cache_clear()
+            loaded = get_settings()
+
+        self.assertEqual(loaded.bundle_open_max_uncompressed_bytes, 1234)
+
     def test_settings_loads_subagent_trim_token_ceiling_default_and_override(self):
         from config.settings import get_settings
 
