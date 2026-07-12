@@ -512,6 +512,194 @@ class OpenHandleGroupedNetcdfTests(unittest.IsolatedAsyncioTestCase):
     or (importlib.util.find_spec("netCDF4") is None and importlib.util.find_spec("h5netcdf") is None),
     "open_handle grouped-netcdf test dependencies are not installed",
 )
+class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
+    """The MCP ships every OPeNDAP subset and every multi-granule Harmony
+    result as ``application/netcdf-bundle+zip`` — a zip of NetCDF granule
+    subsets. Before the fix, _open's ``"netcdf" in mt`` substring check
+    matched that media type and fed the zip to the NetCDF engines, which
+    failed with "not a readable NetCDF/HDF5 dataset ... retrying the
+    retrieval typically resolves it" — a misleading message that sent the
+    agent (and users) into retry loops that could never succeed. Reproduced
+    against real /data/harmony/*/result.nc.zip and /data/opendap/*/
+    subset.nc.zip exports."""
+
+    async def asyncSetUp(self):
+        from fake_earthdata_mcp import HandleVolume, build_fake_mcp, FakeEarthdataMCPServer
+        from earthdata_mcp.client import load_raw_mcp_tools
+        from config.settings import Settings
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.volume = HandleVolume(self._tmpdir.name)
+
+        server = FakeEarthdataMCPServer(build_fake_mcp({
+            "export_result": self.volume.export_result,
+            "rematerialize": self.volume.rematerialize,
+            "get_retrieval_status": self.volume.get_retrieval_status,
+        }))
+        server.start()
+        self.addCleanup(server.stop)
+        settings = Settings(earthdata_mcp_url=server.url, earthdata_mcp_token=None)
+        self.tools = await load_raw_mcp_tools(settings)
+
+    @staticmethod
+    def _make_granule(day: int):
+        import numpy as np
+        import xarray as xr
+
+        def factory():
+            return xr.Dataset(
+                {"no2": (("time", "latitude", "longitude"), [[[1.0 * day, 2.0], [3.0, 4.0]]])},
+                coords={
+                    "time": [np.datetime64(f"2026-07-{day:02d}T12:00:00")],
+                    "latitude": [40.0, 41.0],
+                    "longitude": [-75.0, -74.0],
+                },
+            )
+
+        return factory
+
+    async def test_open_handle_concats_a_multi_granule_bundle_on_time(self):
+        import xarray as xr
+
+        from services.open_handle import open_handle
+
+        self.volume.add_netcdf_bundle("obs_bundle_multi", {
+            "granule_20260709.nc4": {None: self._make_granule(9)},
+            "granule_20260710.nc4": {None: self._make_granule(10)},
+        })
+
+        ds = await open_handle("obs_bundle_multi", self.tools)
+
+        self.assertIsInstance(ds, xr.Dataset)
+        self.assertIn("no2", ds.data_vars)
+        self.assertEqual(ds.sizes["time"], 2)
+        self.assertIn("latitude", ds.coords)
+        self.assertIn("longitude", ds.coords)
+
+    async def test_open_handle_opens_a_single_member_bundle(self):
+        """OPeNDAP subsets arrive as a bundle even for one granule
+        (subset.nc.zip with a single member)."""
+        from services.open_handle import open_handle
+
+        self.volume.add_netcdf_bundle("obs_bundle_single", {
+            "subset.nc4": {None: self._make_granule(10)},
+        })
+
+        ds = await open_handle("obs_bundle_single", self.tools)
+
+        self.assertIn("no2", ds.data_vars)
+        self.assertEqual(ds.sizes["time"], 1)
+
+    async def test_open_handle_merges_groups_and_promotes_latlon_inside_bundle_members(self):
+        """Bundle members go through the same _open_netcdf path as bare
+        NetCDF exports: grouped products keep bare variable names and get
+        their root-group grid coordinates attached."""
+        import xarray as xr
+
+        from services.open_handle import open_handle
+
+        def make_root():
+            return xr.Dataset(coords={
+                "longitude": ("longitude", [-75.0, -74.0]),
+                "latitude": ("latitude", [40.0, 41.0]),
+                "time": ("time", [0]),
+            })
+
+        def make_product_group():
+            return xr.Dataset({
+                "vertical_column_troposphere": (
+                    ("time", "latitude", "longitude"),
+                    [[[1.0, 2.0], [3.0, 4.0]]],
+                ),
+            })
+
+        self.volume.add_netcdf_bundle("obs_bundle_grouped", {
+            "TEMPO_NO2_L3_subsetted.nc4": {None: make_root, "product": make_product_group},
+        })
+
+        ds = await open_handle("obs_bundle_grouped", self.tools)
+
+        self.assertIn("vertical_column_troposphere", ds.data_vars)
+        self.assertIn("latitude", ds.coords)
+        self.assertIn("longitude", ds.coords)
+
+    async def test_open_handle_self_heals_a_corrupt_bundle_via_rematerialize(self):
+        from services.open_handle import open_handle
+
+        self.volume.add_netcdf_bundle("obs_bundle_corrupt", {
+            "granule_20260710.nc4": {None: self._make_granule(10)},
+        })
+        self.volume.corrupt("obs_bundle_corrupt")  # ready, but body is an HTML error page
+
+        ds = await open_handle("obs_bundle_corrupt", self.tools)
+
+        self.assertIn("no2", ds.data_vars)
+        self.assertEqual(self.volume.rematerialize_calls["obs_bundle_corrupt"], 1)
+
+
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES)
+    or (importlib.util.find_spec("netCDF4") is None and importlib.util.find_spec("h5netcdf") is None),
+    "open_handle grouped-netcdf test dependencies are not installed",
+)
+class OpenNetcdfMislabeledZipTests(unittest.TestCase):
+    """Legacy rows materialized before the MCP's content sniffing can carry a
+    plain-netCDF media type over zip bytes. _open_netcdf must route by the
+    file's own magic instead of failing with the misleading incomplete-
+    retrieval message."""
+
+    def test_open_netcdf_detects_zip_bytes_and_opens_them_as_a_bundle(self):
+        import zipfile
+
+        import numpy as np
+        import xarray as xr
+
+        from services.open_handle import _open_netcdf
+
+        member = xr.Dataset(
+            {"no2": (("time", "latitude", "longitude"), [[[1.0, 2.0], [3.0, 4.0]]])},
+            coords={
+                "time": [np.datetime64("2026-07-10T12:00:00")],
+                "latitude": [40.0, 41.0],
+                "longitude": [-75.0, -74.0],
+            },
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            member_path = os.path.join(tmpdir, "granule.nc4")
+            member.to_netcdf(member_path)
+            zip_path = os.path.join(tmpdir, "result.nc4")  # netcdf-looking name, zip bytes
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                zf.write(member_path, arcname="granule.nc4")
+
+            ds = _open_netcdf(zip_path)
+
+            self.assertIn("no2", ds.data_vars)
+
+
+class OpenNativeFormatMediaTypeTests(unittest.TestCase):
+    """HDF4 / native-archive exports (e.g. MODIS MAIAC) have no local reader,
+    and re-retrieving returns the same bytes — the error must say "pick a
+    different product", not the retry-shaped unreadable-file message."""
+
+    def test_open_raises_actionable_error_for_native_format_media_types(self):
+        from services.open_handle import OpenHandleError, UnreadableExportError, _open
+
+        for media_type in ("application/x-hdf4", "application/x-native-archive+zip"):
+            with self.subTest(media_type=media_type):
+                with self.assertRaises(OpenHandleError) as ctx:
+                    _open("file:///data/whatever", media_type)
+                self.assertNotIsInstance(ctx.exception, UnreadableExportError)
+                msg = str(ctx.exception)
+                self.assertIn("Retrying the retrieval will not help", msg)
+                self.assertIn("different collection", msg)
+
+
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES)
+    or (importlib.util.find_spec("netCDF4") is None and importlib.util.find_spec("h5netcdf") is None),
+    "open_handle grouped-netcdf test dependencies are not installed",
+)
 class OpenNetcdfUnreadableFileTests(unittest.TestCase):
     """A 'ready' export whose file has no valid NetCDF/HDF5 magic (a zero-
     byte file or an error-response body saved as .nc4) must surface an

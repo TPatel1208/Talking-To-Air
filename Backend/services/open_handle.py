@@ -111,6 +111,18 @@ def _open(storage_uri: str, media_type: str) -> Any:
         import pyarrow.parquet as pq
 
         return pq.read_table(path)
+    if "hdf4" in mt or "native-archive" in mt:
+        # The MCP materialized the provider's native distribution (HDF4 or a
+        # mixed archive) because no NetCDF conversion service exists for the
+        # collection. No local reader can open these, and re-retrieving
+        # returns the same bytes — the actionable move is a different product.
+        raise OpenHandleError(
+            f"This dataset is distributed in a native format ('{media_type}') that the "
+            "visualization pipeline cannot open. Retrying the retrieval will not help — "
+            "suggest a different collection for this variable (an L3/L4 NetCDF product) instead."
+        )
+    if "bundle" in mt:
+        return _open_netcdf_bundle(path)
     if "netcdf" in mt:
         return _open_netcdf(path)
     raise OpenHandleError(f"Unsupported media_type '{media_type}' for exported handle.")
@@ -143,6 +155,14 @@ def _open_netcdf(path: str) -> Any:
     """
     import xarray as xr
 
+    # A zip archive labeled plain netCDF (a bundle materialized before the
+    # MCP's content sniffing existed, or a mislabeled legacy row): both
+    # NetCDF engines reject it with "file signature not found", which the
+    # UnreadableExportError path below misreads as a failed retrieval and
+    # sends callers into pointless retries. Route by the bytes instead.
+    if _is_zipfile(path):
+        return _open_netcdf_bundle(path)
+
     groups = _open_all_groups(path)
     root = groups.pop("/", None)
     if root is not None and root.data_vars:
@@ -166,6 +186,116 @@ def _open_netcdf(path: str) -> Any:
     except (ValueError, xr.MergeError):
         merged = group_datasets[0]
     return _promote_lat_lon_coords(merged)
+
+
+def _is_zipfile(path: str) -> bool:
+    import zipfile
+
+    return zipfile.is_zipfile(path)
+
+
+def _open_netcdf_bundle(path: str) -> Any:
+    """Open a ``application/netcdf-bundle+zip`` export — a zip of NetCDF
+    granule subsets — into one Dataset, concatenated on ``time``.
+
+    The MCP ships every OPeNDAP subset and every multi-granule Harmony
+    result as one of these bundles (its own ``_open_netcdf_bundle`` in
+    ``tools/_dataio.py`` is the reference implementation). Each member is
+    opened through :func:`_open_netcdf`, so grouped products (TEMPO/OMI L3)
+    get the same group-merging and lat/lon promotion a bare NetCDF export
+    gets, and variable names stay bare (no group prefixes) — unlike the
+    MCP's flattener, whose prefixed names this backend's callers don't use.
+
+    Members are loaded eagerly so the temp extraction dir can be removed
+    before returning; each member's CF time decodes against its *own* units
+    at open time (xarray's default), so granules with per-file epochs (e.g.
+    MERRA-2 daily) concat on absolute timestamps, not raw offsets. Members
+    whose singleton time dim has no coordinate variable get one synthesized
+    from their CMR granule date attrs, mirroring the MCP.
+    """
+    import shutil
+    import tempfile
+    import zipfile
+
+    import xarray as xr
+
+    try:
+        zf = zipfile.ZipFile(path)
+    except zipfile.BadZipFile as exc:
+        raise UnreadableExportError(
+            f"Retrieved bundle at '{path}' is not a readable zip archive — this is "
+            "usually an incomplete or failed retrieval; retrying the retrieval "
+            f"typically resolves it. Underlying error: {exc}"
+        )
+
+    members: list[Any] = []
+    tmpdir = tempfile.mkdtemp(prefix="nc_bundle_")
+    try:
+        with zf:
+            # Granule filenames sort chronologically, so name order is time order.
+            names = sorted(n for n in zf.namelist() if not n.endswith("/"))
+            if not names:
+                raise UnreadableExportError(
+                    f"Retrieved bundle at '{path}' is an empty archive — this is usually "
+                    "a failed retrieval; retrying the retrieval typically resolves it."
+                )
+            for name in names:
+                member_path = zf.extract(name, tmpdir)
+                ds = _open_netcdf(member_path)
+                members.append(_synthesize_member_time_coord(ds).load())
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    if len(members) == 1:
+        return members[0]
+    normalized = [_strip_concat_unsafe_coord_attrs(ds) for ds in members]
+    try:
+        return xr.concat(normalized, dim="time")
+    except Exception as exc:
+        raise OpenHandleError(
+            f"Could not combine the {len(members)} granules in bundle '{path}' onto a "
+            f"shared time axis: {exc}"
+        )
+
+
+def _synthesize_member_time_coord(ds: Any) -> Any:
+    """Give a bundle member a real, indexed ``time`` coordinate before concat.
+
+    Some daily L3 products (e.g. OMI_MINDS_NO2d) carry a differently-cased
+    singleton time dimension (``Time``) with no coordinate variable at all —
+    the granule's date lives only in the ``RangeBeginningDate``/
+    ``RangeBeginningTime`` global attrs (standard CMR/UMM-G granule temporal
+    metadata). Left alone, ``xr.concat(dim="time")`` fabricates a brand-new
+    unindexed stacking dimension instead of reusing it. No-op when ``time``
+    already exists or the date attrs are absent. (Ported from the MCP's
+    ``_synthesize_bundle_time_coord``.)
+    """
+    import numpy as np
+
+    if "time" in ds.dims:
+        return ds
+    candidates = [d for d in ds.dims if str(d).lower() == "time" and ds.sizes[d] == 1]
+    if not candidates:
+        return ds
+    date = ds.attrs.get("RangeBeginningDate")
+    if not date:
+        return ds
+    time_str = f"{date}T{ds.attrs.get('RangeBeginningTime', '00:00:00').rstrip('Z')}"
+    ds = ds.rename({candidates[0]: "time"})
+    return ds.assign_coords({"time": [np.datetime64(time_str)]})
+
+
+def _strip_concat_unsafe_coord_attrs(ds: Any) -> Any:
+    """Drop ``units``/``calendar`` from coords so cross-granule concat doesn't
+    trip xarray's attribute-equality check when granules were written at
+    different times. Time values are already decoded to datetime64 per member,
+    so nothing downstream needs these attrs to interpret the axis."""
+    ds = ds.copy()
+    for coord in ds.coords:
+        for attr in ("units", "calendar"):
+            ds[coord].attrs.pop(attr, None)
+            ds[coord].encoding.pop(attr, None)
+    return ds
 
 
 def _open_all_groups(path: str) -> dict[str, Any]:
