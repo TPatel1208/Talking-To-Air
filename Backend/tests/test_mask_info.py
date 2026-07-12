@@ -64,6 +64,34 @@ class ColInfoForShortNameTests(unittest.TestCase):
         self.assertEqual(info["qa_good_values"], [0])
 
 
+class ShortNameFromAttrsTests(unittest.TestCase):
+    """AOD misrouting follow-up (2026-07-12): real granules spell the identity
+    marker differently. The AER_DBDT AOD export carries CF/ACDD ``ShortName``
+    and no lowercase ``short_name`` at all, so a lowercase-only lookup silently
+    failed to recognize a registered collection (missing both registry masking
+    and the primary_var fallback)."""
+
+    def test_reads_the_lowercase_short_name_spelling(self):
+        from datasets.mask_info import short_name_from_attrs
+
+        self.assertEqual(short_name_from_attrs({"short_name": "TEMPO_NO2_L3"}), "TEMPO_NO2_L3")
+
+    def test_reads_the_cf_acdd_ShortName_spelling(self):
+        from datasets.mask_info import short_name_from_attrs
+
+        self.assertEqual(
+            short_name_from_attrs({"ShortName": "AER_DBDT_D10KM_L3_MODIS_TERRA"}),
+            "AER_DBDT_D10KM_L3_MODIS_TERRA",
+        )
+
+    def test_returns_none_when_no_identity_marker_is_present(self):
+        from datasets.mask_info import short_name_from_attrs
+
+        self.assertIsNone(short_name_from_attrs({"title": "some product", "platform": "TERRA"}))
+        self.assertIsNone(short_name_from_attrs(None))
+        self.assertIsNone(short_name_from_attrs({}))
+
+
 class ResolveMaskInfoPrecedenceTests(unittest.TestCase):
     """T25 Phase 1: collections.yaml override -> UMM-Var facts -> CF file
     attrs -> mask nothing, with every tier's win recorded in provenance."""

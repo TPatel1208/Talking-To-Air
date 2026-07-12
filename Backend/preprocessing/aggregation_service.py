@@ -204,8 +204,10 @@ class AggregationService:
         Resolution never invents a scientific choice (T25): explicit
         ``variable`` -> the choice recorded for ``handle`` at retrieval time
         (services.variable_choice_registry) -> the file's only data
-        variable -> its only *science* variable once QA-flag vars are set
-        aside -> a structured, candidate-listing error. The previous
+        variable -> the collection's pinned ``primary_var`` (collections.yaml,
+        matched via the file's ``short_name`` attr -- a curated choice, not a
+        guess) -> its only *science* variable once QA-flag vars are set aside
+        -> a structured, candidate-listing error. The previous
         ``next(iter(data.data_vars))`` silent-first-variable fallback is
         deleted, not softened -- a multi-science-variable file with no choice
         made anywhere in that chain must refuse, not guess.
@@ -235,6 +237,14 @@ class AggregationService:
             if len(data_vars) == 1:
                 name = data_vars[0]
             else:
+                # A collection's pinned collections.yaml primary_var, matched
+                # via the file's short_name global attr, is a curated human
+                # choice -- not the deleted next-first-var guess -- so a
+                # registered multi-variable file (e.g. AER_DBDT AOD's 10
+                # science vars, primary COMBINE_AOD_550_AVG) resolves to its
+                # intended variable instead of a spurious refusal.
+                name = self._registry_primary_var(data, data_vars)
+            if name is None:
                 # A QA flag is never a science-variable candidate (T25): a
                 # TEMPO science+main_data_quality_flag pair still resolves to
                 # the single science variable without a spurious refusal.
@@ -260,6 +270,22 @@ class AggregationService:
             return requested
         leaf = requested.rsplit("/", 1)[-1]
         return leaf if leaf in data_vars else None
+
+    def _registry_primary_var(self, data: xr.Dataset, data_vars: list[str]) -> str | None:
+        """The collection's pinned ``primary_var`` (collections.yaml), matched
+        via the file's ``short_name`` global attr, if it names one of
+        ``data_vars`` (by exact or bare-leaf name, like every other tier). A
+        pinned primary_var is a curated human choice, not a guess, so honoring
+        it here does not reopen the deleted silent-first-variable behavior --
+        an unregistered file, or one whose primary_var isn't present, still
+        falls through to the science-var / refusal tiers below."""
+        from datasets.mask_info import col_info_for_short_name, short_name_from_attrs
+
+        short_name = short_name_from_attrs(getattr(data, "attrs", None))
+        if not short_name:
+            return None
+        primary = col_info_for_short_name(str(short_name).upper()).get("primary_var")
+        return self._match_var(primary, data_vars) if primary else None
 
     @staticmethod
     def _science_vars(data: xr.Dataset, data_vars: list[str]) -> list[str]:

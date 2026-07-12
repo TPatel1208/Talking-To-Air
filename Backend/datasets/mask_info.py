@@ -26,6 +26,23 @@ SOURCE_CF_ATTRS = "cf_attrs"
 SOURCE_NONE = "none"
 
 
+def short_name_from_attrs(attrs: Any = None) -> str | None:
+    """The collection short_name a granule carries as a global attribute,
+    tolerating the spellings real NASA products actually use: lowercase
+    ``short_name`` (some GES DISC L3) and the CF/ACDD ``ShortName`` (MODIS
+    AER_DBDT AOD and many others — live-verified 2026-07-12: the AER_DBDT
+    export carries ``ShortName`` and no lowercase ``short_name`` at all, so a
+    lowercase-only lookup silently failed to recognize a registered
+    collection). Returns None when no identity marker is present, so callers
+    fall back to their own default (typically the variable name)."""
+    if not attrs:
+        return None
+    for key, value in dict(attrs).items():
+        if str(key).lower() in ("short_name", "shortname") and value:
+            return str(value)
+    return None
+
+
 def override_for(short_name: str | None, overrides: dict[str, dict[str, float]] | None = None) -> dict[str, float]:
     """Return the col_info override for short_name, or {} if none is recorded."""
     overrides = MASK_OVERRIDES if overrides is None else overrides
