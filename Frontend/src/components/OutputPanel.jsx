@@ -4,6 +4,7 @@ import MapLibreHeatmapPanel from './MapLibreHeatmapPanel.jsx'
 import HeatmapMultiPanel from './HeatmapMultiPanel.jsx'
 import ArtifactMessage, { TableArtifactMessage } from './ArtifactMessage'
 import { computeChartStats, computeHistogram } from '../utils/chartStats'
+import { resolveMasking } from '../utils/maskingProvenance'
 
 function compactDate(value) {
   if (!value) return ''
@@ -75,6 +76,38 @@ function StatCard({ label, value }) {
   )
 }
 
+// Read-only QA-flag masking provenance. Lets the user see whether QA masking
+// actually ran on the plotted data (and by which tier) rather than inferring
+// it from the valid-pixel count above. Renders nothing when the payload
+// carries no masking record.
+function MaskingDisclosure({ chart }) {
+  const masking = useMemo(() => resolveMasking(chart), [chart])
+  if (!masking) return null
+  return (
+    <div style={{
+      background: 'var(--bg-secondary)', border: '1px solid var(--border)',
+      borderRadius: '10px', padding: '11px 13px',
+    }}>
+      <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '5px' }}>
+        QA-flag masking
+      </div>
+      <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>
+        {masking.qaStatus}
+      </div>
+      {masking.qaSource && (
+        <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+          Source: {masking.qaSource}
+        </div>
+      )}
+      {masking.qaNote && (
+        <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginTop: '4px', lineHeight: 1.45 }}>
+          {masking.qaNote}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function StatisticsTab({ chart }) {
   const stats = useMemo(() => computeChartStats(chart), [chart])
   if (!stats) {
@@ -82,12 +115,15 @@ function StatisticsTab({ chart }) {
   }
   const fmt = (n) => Number.isFinite(n) ? n.toExponential(3) : '—'
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px' }}>
-      <StatCard label="Mean" value={`${fmt(stats.mean)} ${stats.units || ''}`} />
-      <StatCard label="Max" value={`${fmt(stats.max)} ${stats.units || ''}`} />
-      <StatCard label="Min" value={`${fmt(stats.min)} ${stats.units || ''}`} />
-      <StatCard label="Valid values" value={`${stats.validPct.toFixed(1)}%`} />
-      <StatCard label="Sample count" value={stats.count.toLocaleString()} />
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px' }}>
+        <StatCard label="Mean" value={`${fmt(stats.mean)} ${stats.units || ''}`} />
+        <StatCard label="Max" value={`${fmt(stats.max)} ${stats.units || ''}`} />
+        <StatCard label="Min" value={`${fmt(stats.min)} ${stats.units || ''}`} />
+        <StatCard label="Valid values" value={`${stats.validPct.toFixed(1)}%`} />
+        <StatCard label="Sample count" value={stats.count.toLocaleString()} />
+      </div>
+      <MaskingDisclosure chart={chart} />
     </div>
   )
 }
