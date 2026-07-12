@@ -32,6 +32,13 @@ _STAGE_BY_TOOL_NAME: dict[str, tuple[str, str]] = {
 }
 
 
+class MissingUserContextError(RuntimeError):
+    """Raised when a workspace-bound MCP tool is called with no user context
+    bound (T26). A context-less workspace is an isolation hole, not a
+    default — minting a shared ``"user-None"`` workspace silently pooled
+    every caller's retrievals together, so this fails loud instead."""
+
+
 def bind_workspace(tools: dict[str, BaseTool], user_id_getter: Callable[[], str]) -> dict[str, BaseTool]:
     """Return copies of ``tools`` with workspace_id injected and hidden from the schema."""
     return {name: _bind_one(tool, user_id_getter) for name, tool in tools.items()}
@@ -42,7 +49,13 @@ def _bind_one(tool: BaseTool, user_id_getter: Callable[[], str]) -> BaseTool:
     stage_info = _STAGE_BY_TOOL_NAME.get(tool.name)
 
     async def _call(**kwargs):
-        kwargs["workspace_id"] = f"user-{user_id_getter()}"
+        user_id = user_id_getter()
+        if user_id is None:
+            raise MissingUserContextError(
+                f"No user context bound for tool {tool.name!r} — refusing to "
+                "mint a shared 'user-None' workspace."
+            )
+        kwargs["workspace_id"] = f"user-{user_id}"
         if stage_info is not None:
             emit_status(stage_info[1], stage=stage_info[0])
         # T18: bind_workspace is the one place every model-facing MCP tool

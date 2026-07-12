@@ -200,5 +200,47 @@ class WorkspaceBindingClassifiedErrorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.category, "user_input")
 
 
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
+    "MCP client test dependencies are not installed",
+)
+class WorkspaceMissingUserContextTests(unittest.IsolatedAsyncioTestCase):
+    """T26: a None user id must never mint a shared "user-None" workspace —
+    that pooled every caller's retrievals together (113 orphaned rows found
+    live). bind_workspace refuses instead, raising a typed error the model
+    never silently swallows into a default."""
+
+    async def asyncSetUp(self):
+        from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
+
+        received = {}
+
+        async def search_datasets(query, filters, workspace_id):
+            received["workspace_id"] = workspace_id
+            return {"datasets": [], "count": 0}
+
+        self.received = received
+        self.server = FakeEarthdataMCPServer(build_fake_mcp({"search_datasets": search_datasets}))
+        self.server.start()
+        self.addCleanup(self.server.stop)
+
+        from earthdata_mcp.client import load_raw_mcp_tools
+        from config.settings import Settings
+
+        self.tools = await load_raw_mcp_tools(Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None))
+
+    async def test_a_none_user_id_raises_instead_of_minting_user_none(self):
+        from earthdata_mcp.workspace import MissingUserContextError, bind_workspace
+
+        bound = bind_workspace(self.tools, lambda: None)
+
+        with self.assertRaises(MissingUserContextError):
+            await bound["search_datasets"].ainvoke({"query": "no2"})
+
+        # The MCP itself must never have been reached — the guard fires
+        # before workspace_id is ever constructed, let alone with "None".
+        self.assertNotIn("workspace_id", self.received)
+
+
 if __name__ == "__main__":
     unittest.main()

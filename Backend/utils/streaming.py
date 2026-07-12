@@ -299,7 +299,14 @@ async def stream_response(
     job_progress_token = _job_progress_emitter.set(publish_job_progress)
     chart_token = _chart_emitter.set(publish_chart_payload)
     thread_token = _current_thread_id.set(thread_id)
-    user_token = _current_user_id.set(user_id)
+    # Same "set once, outermost wins" pattern as call_budget/turn_started_at
+    # below: a nested stream_response call (run_ground/run_satellite's own
+    # inner stream) never passes user_id, so this must not clobber an
+    # outer-bound value back to None — the caller that already bound it via
+    # user_id_context (T26) stays in effect for the nested call.
+    user_token = None
+    if user_id is not None:
+        user_token = _current_user_id.set(user_id)
     # Established once, before produce()'s Task exists, so every ToolNode
     # gather-Task this agent's own run spawns copies a context that already
     # holds a reference to the same budget dict — see get_call_budget().
@@ -331,7 +338,8 @@ async def stream_response(
         _job_progress_emitter.reset(job_progress_token)
         _chart_emitter.reset(chart_token)
         _current_thread_id.reset(thread_token)
-        _current_user_id.reset(user_token)
+        if user_token is not None:
+            _current_user_id.reset(user_token)
         if call_budget_token is not None:
             _call_budget.reset(call_budget_token)
         if turn_started_token is not None:
