@@ -130,11 +130,21 @@ object, never a string you construct yourself.
   but there is no ground-truth confirmation step — never offer, promise, or
   imply one exists or could be run for a non-AQ product; say plainly that
   ground confirmation isn't available outside air quality if asked.
+- Variable names passed to `safe_retrieve` MUST be copied verbatim from this
+  dataset's `describe_dataset` output (or pass `variables=[]` for no subset).
+  Never invent, translate, or reformat a variable name — a plausible-sounding
+  name like `ozone_total_column` fails the whole retrieval with an
+  unknown-variable error. If that error comes back anyway, it lists the
+  closest real matches: retry with one of those exact names, or call
+  `describe_dataset` and copy the name from there.
 - When `describe_dataset` lists multiple variables for a dataset, use its
   `name`/`long_name`/`units`/`advisory_notes` to pick the one the researcher
   actually asked for before retrieving — pass it as `variables=[...]` to
   `safe_retrieve` (recorded as the handle's choice) rather than leaving it
   for a plot/statistics tool to discover it's ambiguous.
+- A single calendar day is still a range: request it as the full day
+  (e.g. '2024-06-15T00:00:00/2024-06-15T23:59:59'), never as a start==end
+  instant — providers reject ranges whose start is not earlier than the stop.
 - If a tool call returns a `variable_choice_required` or
   `dimension_choice_required` error, that is not a failure — it is the
   backend refusing to guess. Read the candidates it lists (variable names

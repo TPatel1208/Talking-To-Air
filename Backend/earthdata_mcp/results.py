@@ -105,6 +105,34 @@ _USER_INPUT_PATTERNS: tuple[tuple[str, str], ...] = (
         "Ambiguous location",
         "Use the HUC or FIPS prefix to disambiguate (e.g. 'HUC 0204' or 'FIPS 34023').",
     ),
+    # retrieve_subset rejecting a variable name that isn't in the collection
+    # (harmony-retrieval-mcp providers/opendap/_planning.py) — the message
+    # names the bad guess *and* the closest real matches, which is exactly
+    # what the model needs to retry correctly. Live 2026-07-11: classifying
+    # this as contract replaced it with the generic dead-end message, and the
+    # agent guessed variable names for four pollutants in a row, failed each
+    # time, and reported "configuration errors" to the researcher.
+    (
+        "Unknown variable(s) for this collection",
+        "Call describe_dataset and retry with a variable name copied exactly from "
+        "its output (the closest matches above are usually the right ones), or "
+        "retry with variables=[] to retrieve without a variable subset.",
+    ),
+)
+
+# Transient network failures raised *inside* an MCP tool (the server's own
+# httpx call to CMR/Harmony dying) arrive as prose through the same content
+# channel — unlike a client-side connection failure, which call_tool below
+# classifies before any prose exists. Live 2026-07-11: describe_dataset died
+# with the DNS shape at the exact moment the agent needed it to recover from
+# a failed retrieval, and the contract fallback told it nothing was retryable.
+_TRANSIENT_NETWORK_PATTERNS: tuple[str, ...] = (
+    "No address associated with hostname",
+    "Temporary failure in name resolution",
+    "All connection attempts failed",
+    "Connection refused",
+    "ConnectError",
+    "ConnectTimeout",
 )
 
 
@@ -170,6 +198,14 @@ def _classify_prose(text: str) -> MCPToolError:
     for pattern, suggestion in _USER_INPUT_PATTERNS:
         if pattern in stripped:
             return MCPToolError(CATEGORY_USER_INPUT, stripped, suggestion=suggestion, raw_preview=stripped[:300])
+
+    if any(pattern in stripped for pattern in _TRANSIENT_NETWORK_PATTERNS):
+        return MCPToolError(
+            CATEGORY_PROVIDER_UNAVAILABLE,
+            "The satellite data layer is temporarily unavailable.",
+            suggestion="Try again in a moment.",
+            raw_preview=stripped[:300],
+        )
 
     if "time_range" in stripped and "ISO-8601" in stripped:
         return MCPToolError(

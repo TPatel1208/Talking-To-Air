@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from langchain_core.tools import BaseTool
@@ -49,6 +49,29 @@ def _supports_variable_subsetting(variables: list[str]) -> bool:
 
     resolved = [index[v] for v in variables if v in index]
     return all(resolved) if resolved else True
+
+
+def _normalize_time_range(time_range: str) -> str:
+    """Widen a degenerate ``start/end`` interval where start == end — the
+    shape a single-date request ("June 15, 2024" → '2024-06-15/2024-06-15')
+    naturally produces — into a real span before any provider sees it.
+    Harmony rejects start >= stop outright (live 2026-07-11: six jobs failed
+    with "The temporal range's start must be earlier than its stop datetime",
+    surviving only when the OPeNDAP fallback happened to work). A date-only
+    pair means "that whole day"; a timestamped pair gets one second of width.
+    Anything unparseable is returned unchanged for the MCP's own time_range
+    validation to reject with its more specific message."""
+    parts = time_range.split("/", 1)
+    if len(parts) != 2 or parts[0] != parts[1]:
+        return time_range
+    start = parts[0].strip()
+    try:
+        parsed = datetime.fromisoformat(start)
+    except ValueError:
+        return time_range
+    if "T" not in start:
+        return f"{start}T00:00:00/{start}T23:59:59"
+    return f"{start}/{(parsed + timedelta(seconds=1)).isoformat()}"
 
 
 class RetrievalError(RuntimeError):
@@ -144,6 +167,7 @@ async def safe_retrieve(
     - above the hard cap: refused unconditionally, even if ``confirmed``.
     """
     settings = settings or get_settings()
+    time_range = _normalize_time_range(time_range)
     emit_status("Estimating retrieval size...", stage=STAGE_ESTIMATE)
     estimate_raw = await tools["estimate_retrieval_size"].ainvoke({
         "dataset_handle": dataset_handle,
@@ -241,6 +265,7 @@ async def point_timeseries(
     series has no size to estimate.
     """
     settings = settings or get_settings()
+    time_range = _normalize_time_range(time_range)
 
     span_days = _parse_time_span_days(time_range)
     if span_days is not None and span_days > settings.retrieval_max_timeseries_days:

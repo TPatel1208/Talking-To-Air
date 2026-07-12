@@ -365,6 +365,65 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(seen_variables, [["some_unregistered_variable"]])
 
+    async def test_safe_retrieve_widens_a_single_date_time_range_to_the_full_day(self):
+        """Live 2026-07-11: "June 15, 2024" reached the MCP as
+        '2024-06-15/2024-06-15' and Harmony rejected all six jobs with "The
+        temporal range's start must be earlier than its stop datetime",
+        leaving retrievals to live or die on the OPeNDAP fallback. A
+        degenerate start==end date pair means "that whole day" — widen it
+        before any provider sees it."""
+        from services.retrieval_composites import safe_retrieve
+
+        seen = {}
+
+        async def retrieve_subset(dataset_handle, aoi_handle, time_range, variables, output_format, workspace_id):
+            seen["time_range"] = time_range
+            return {"job_handle": "job_new", "obs_handle": "obs_new"}
+
+        tools, settings, calls = await self._tools_and_settings(estimated_bytes=1000, retrieve_subset=retrieve_subset)
+
+        await safe_retrieve(
+            "dataset_1", "aoi_1", "2024-06-15/2024-06-15", ["no2"], tools, settings=settings
+        )
+
+        self.assertEqual(seen["time_range"], "2024-06-15T00:00:00/2024-06-15T23:59:59")
+
+    async def test_safe_retrieve_widens_an_equal_timestamp_range_by_one_second(self):
+        # A timestamped instant ("midday") is degenerate the same way; give
+        # it one second of width instead of inventing a whole-day window.
+        from services.retrieval_composites import safe_retrieve
+
+        seen = {}
+
+        async def retrieve_subset(dataset_handle, aoi_handle, time_range, variables, output_format, workspace_id):
+            seen["time_range"] = time_range
+            return {"job_handle": "job_new", "obs_handle": "obs_new"}
+
+        tools, settings, calls = await self._tools_and_settings(estimated_bytes=1000, retrieve_subset=retrieve_subset)
+
+        await safe_retrieve(
+            "dataset_1", "aoi_1", "2024-06-15T12:00:00/2024-06-15T12:00:00", ["no2"], tools, settings=settings
+        )
+
+        self.assertEqual(seen["time_range"], "2024-06-15T12:00:00/2024-06-15T12:00:01")
+
+    async def test_safe_retrieve_leaves_a_real_time_range_unchanged(self):
+        from services.retrieval_composites import safe_retrieve
+
+        seen = {}
+
+        async def retrieve_subset(dataset_handle, aoi_handle, time_range, variables, output_format, workspace_id):
+            seen["time_range"] = time_range
+            return {"job_handle": "job_new", "obs_handle": "obs_new"}
+
+        tools, settings, calls = await self._tools_and_settings(estimated_bytes=1000, retrieve_subset=retrieve_subset)
+
+        await safe_retrieve(
+            "dataset_1", "aoi_1", "2024-06-01/2024-06-30", ["no2"], tools, settings=settings
+        )
+
+        self.assertEqual(seen["time_range"], "2024-06-01/2024-06-30")
+
     async def test_safe_retrieve_records_a_pending_choice_for_a_single_requested_variable(self):
         from services import variable_choice_registry
         from services.retrieval_composites import safe_retrieve

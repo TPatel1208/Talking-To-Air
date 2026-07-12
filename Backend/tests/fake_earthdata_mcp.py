@@ -255,8 +255,22 @@ class HandleVolume:
 
     def _path(self, handle: str) -> pathlib.Path:
         media_type, _ = self._factories[handle]
-        ext = {"zarr": ".zarr", "parquet": ".parquet", "netcdf": ".nc"}[media_type]
+        ext = {
+            "zarr": ".zarr",
+            "parquet": ".parquet",
+            "netcdf": ".nc",
+            "application/netcdf-bundle+zip": ".nc.zip",
+        }[media_type]
         return self.root / f"{handle}{ext}"
+
+    def _write_netcdf_groups(self, path: pathlib.Path, groups) -> None:
+        # groups is a dict of group name (None for root) -> Dataset factory,
+        # all written into one file -- models grouped providers like TEMPO
+        # (root empty, variables under /product).
+        first = True
+        for group_name, make_dataset in groups.items():
+            make_dataset().to_netcdf(path, group=group_name, mode="w" if first else "a")
+            first = False
 
     def _write(self, handle: str) -> None:
         media_type, factory = self._factories[handle]
@@ -264,13 +278,20 @@ class HandleVolume:
         if media_type == "zarr":
             factory().to_zarr(path, mode="w")
         elif media_type == "netcdf":
-            # factory is a dict of group name (None for root) -> Dataset
-            # factory, all written into one file -- models grouped
-            # providers like TEMPO (root empty, variables under /product).
-            first = True
-            for group_name, make_dataset in factory.items():
-                make_dataset().to_netcdf(path, group=group_name, mode="w" if first else "a")
-                first = False
+            self._write_netcdf_groups(path, factory)
+        elif media_type == "application/netcdf-bundle+zip":
+            # factory is a dict of member filename -> per-group factory dict,
+            # all zipped into one archive -- models the MCP's netCDF bundle
+            # exports (every OPeNDAP subset and multi-granule Harmony result).
+            import tempfile
+            import zipfile
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                with zipfile.ZipFile(path, "w") as zf:
+                    for member_name, groups in factory.items():
+                        member_path = pathlib.Path(tmpdir) / member_name
+                        self._write_netcdf_groups(member_path, groups)
+                        zf.write(member_path, arcname=member_name)
         else:
             import pyarrow.parquet as pq
 
@@ -288,6 +309,15 @@ class HandleVolume:
         """Register a NetCDF4 handle from one Dataset factory per HDF5
         group (key ``None`` for the root group)."""
         self._factories[handle] = ("netcdf", groups)
+        self._write(handle)
+
+    def add_netcdf_bundle(
+        self, handle: str, members: dict[str, dict[str | None, Callable[[], Any]]]
+    ) -> None:
+        """Register an ``application/netcdf-bundle+zip`` handle: a zip of
+        NetCDF members, each built from one Dataset factory per HDF5 group
+        (key ``None`` for the root group), keyed by member filename."""
+        self._factories[handle] = ("application/netcdf-bundle+zip", members)
         self._write(handle)
 
     def evict(self, handle: str) -> None:

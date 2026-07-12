@@ -141,6 +141,66 @@ class ParseToolResultClassifierTests(unittest.TestCase):
         self.assertNotIn("Error calling tool", ctx.exception.message)
         self.assertIn("zzzzqqqq nowhere", ctx.exception.message)
 
+    def test_unknown_variable_prose_classifies_as_user_input_preserving_candidates(self):
+        """Live 2026-07-11: the earthdata agent guessed 'ozone_total_column'
+        for a collection whose real variable is 'column_amount_o3'. The MCP's
+        ValueError names the guess *and* the closest real matches — swallowing
+        it into the generic contract message left the model unable to
+        self-correct, so it guessed again and eventually reported
+        "configuration errors" for four pollutants in a row."""
+        from earthdata_mcp.results import MCPToolError, parse_tool_result
+
+        raw = (
+            "Error calling tool 'retrieve_subset': Unknown variable(s) for this "
+            "collection: 'ozone_total_column' (closest matches: ['column_amount_o3', 'fc'])"
+        )
+
+        with self.assertRaises(MCPToolError) as ctx:
+            parse_tool_result(raw)
+
+        self.assertEqual(ctx.exception.category, "user_input")
+        self.assertIn("ozone_total_column", ctx.exception.message)
+        self.assertIn("column_amount_o3", ctx.exception.message)
+        self.assertIsNotNone(ctx.exception.suggestion)
+
+    def test_unknown_variable_prose_without_close_matches_still_surfaces_the_name(self):
+        # The no-matches shape ("'formaldehyde_total_column'" bare, live
+        # 2026-07-11) must classify the same way — the pattern anchors on the
+        # message prefix, not on the optional closest-matches suffix.
+        from earthdata_mcp.results import MCPToolError, parse_tool_result
+
+        raw = (
+            "Error calling tool 'retrieve_subset': Unknown variable(s) for this "
+            "collection: 'formaldehyde_total_column'"
+        )
+
+        with self.assertRaises(MCPToolError) as ctx:
+            parse_tool_result(raw)
+
+        self.assertEqual(ctx.exception.category, "user_input")
+        self.assertIn("formaldehyde_total_column", ctx.exception.message)
+        self.assertIsNotNone(ctx.exception.suggestion)
+
+    def test_transient_dns_failure_prose_classifies_as_provider_unavailable(self):
+        """Live 2026-07-11: describe_dataset died inside the MCP with a DNS
+        ConnectError ("[Errno -5] No address associated with hostname") at the
+        exact moment the agent needed it to recover from a failed retrieval.
+        A transient network failure raised server-side arrives as prose (not
+        as a client-side ConnectError, which call_tool already classifies) —
+        it must read as retryable, not as the dead-end contract message."""
+        from earthdata_mcp.results import MCPToolError, parse_tool_result
+
+        raw = (
+            "Error calling tool 'describe_dataset': [Errno -5] No address "
+            "associated with hostname"
+        )
+
+        with self.assertRaises(MCPToolError) as ctx:
+            parse_tool_result(raw)
+
+        self.assertEqual(ctx.exception.category, "provider_unavailable")
+        self.assertIsNotNone(ctx.exception.suggestion)
+
     def test_unknown_garbage_string_classifies_as_contract_never_crashes(self):
         from earthdata_mcp.results import MCPToolError, parse_tool_result
 
