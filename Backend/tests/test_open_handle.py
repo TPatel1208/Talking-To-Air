@@ -637,6 +637,54 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("no2", ds.data_vars)
         self.assertEqual(self.volume.rematerialize_calls["obs_bundle_corrupt"], 1)
 
+    async def test_open_handle_refuses_a_bundle_over_the_uncompressed_size_gate(self):
+        """A bundle whose members would exceed the configured uncompressed
+        size must refuse with a deterministic too_large error before any
+        member is extracted or opened — the previous behavior was to load
+        everything and let the OOM killer take the process down (live
+        2026-07-12, full-day TEMPO NO2)."""
+        from unittest.mock import patch
+
+        from config.settings import Settings
+        from earthdata_mcp.results import CATEGORY_TOO_LARGE, MCPToolError
+        from services.open_handle import open_handle
+
+        self.volume.add_netcdf_bundle("obs_bundle_big", {
+            "granule_20260709.nc4": {None: self._make_granule(9)},
+            "granule_20260710.nc4": {None: self._make_granule(10)},
+        })
+
+        tiny_cap = Settings(bundle_open_max_uncompressed_bytes=1)
+        with patch("services.open_handle.get_settings", return_value=tiny_cap):
+            with self.assertRaises(MCPToolError) as ctx:
+                await open_handle("obs_bundle_big", self.tools)
+
+        self.assertEqual(ctx.exception.category, CATEGORY_TOO_LARGE)
+        self.assertIn("Narrow", ctx.exception.suggestion or "")
+
+    async def test_bundle_members_open_lazily_as_dask_chunks(self):
+        """The memory contract behind the OOM fix: opening a bundle loads no
+        member into RAM — each granule stays on disk as one dask chunk, so a
+        downstream reduction streams granule-by-granule instead of staging
+        the whole day plus a concat copy. The compute assertion doubles as
+        the lifetime check: the extracted members must still be readable
+        after open_handle has returned."""
+        if importlib.util.find_spec("dask") is None:
+            self.skipTest("dask is not installed")
+
+        from services.open_handle import open_handle
+
+        self.volume.add_netcdf_bundle("obs_bundle_lazy", {
+            "granule_20260709.nc4": {None: self._make_granule(9)},
+            "granule_20260710.nc4": {None: self._make_granule(10)},
+        })
+
+        ds = await open_handle("obs_bundle_lazy", self.tools)
+
+        self.assertIsNotNone(ds["no2"].chunks)  # dask-backed, not an in-memory numpy array
+        # (9+2+3+4) + (10+2+3+4) — full compute still works post-return
+        self.assertEqual(float(ds["no2"].sum()), 37.0)
+
 
 @unittest.skipIf(
     any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES)
@@ -675,6 +723,89 @@ class OpenNetcdfMislabeledZipTests(unittest.TestCase):
             ds = _open_netcdf(zip_path)
 
             self.assertIn("no2", ds.data_vars)
+
+
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES)
+    or (importlib.util.find_spec("netCDF4") is None and importlib.util.find_spec("h5netcdf") is None),
+    "open_handle grouped-netcdf test dependencies are not installed",
+)
+class BundleExtractionCacheTests(unittest.TestCase):
+    """Bundle members are extracted into a TTL-pruned cache directory that
+    outlives the open call — lazily-opened members are read from these files
+    well after _open_netcdf_bundle returns, and no per-call cleanup hook can
+    know when the last derived Dataset is done with them. Entries are keyed
+    by the bundle file's identity, so a repeat open of the same bundle skips
+    re-extraction; stale entries are swept on the next extraction."""
+
+    def _write_bundle(self, tmpdir: str, zip_name: str, value: float) -> str:
+        import zipfile
+
+        import numpy as np
+        import xarray as xr
+
+        member = xr.Dataset(
+            {"no2": (("time", "latitude", "longitude"), [[[value, 2.0], [3.0, 4.0]]])},
+            coords={
+                "time": [np.datetime64("2026-07-10T12:00:00")],
+                "latitude": [40.0, 41.0],
+                "longitude": [-75.0, -74.0],
+            },
+        )
+        member_path = os.path.join(tmpdir, f"member_{zip_name}.nc4")
+        member.to_netcdf(member_path)
+        zip_path = os.path.join(tmpdir, zip_name)
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.write(member_path, arcname="granule.nc4")
+        return zip_path
+
+    def test_bundle_extraction_cache_reuses_and_prunes_entries(self):
+        import gc
+        import time
+        from unittest.mock import patch
+
+        from services.open_handle import _open_netcdf_bundle
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_home = os.path.join(tmpdir, "fake_tmp")
+            os.makedirs(cache_home)
+            zip_a = self._write_bundle(tmpdir, "bundle_a.zip", 1.0)
+            zip_b = self._write_bundle(tmpdir, "bundle_b.zip", 5.0)
+
+            def cache_entries():
+                roots = [
+                    d for d in os.listdir(cache_home)
+                    if os.path.isdir(os.path.join(cache_home, d))
+                ]
+                return sorted(
+                    entry
+                    for root in roots
+                    for entry in os.listdir(os.path.join(cache_home, root))
+                )
+
+            with patch("tempfile.gettempdir", return_value=cache_home):
+                ds_a = _open_netcdf_bundle(zip_a)
+                self.assertEqual(float(ds_a["no2"].sum()), 10.0)
+                first_entries = cache_entries()
+                self.assertEqual(len(first_entries), 1)
+
+                ds_a2 = _open_netcdf_bundle(zip_a)  # same bundle → reused, not re-extracted
+                self.assertEqual(cache_entries(), first_entries)
+                self.assertEqual(float(ds_a2["no2"].sum()), 10.0)
+
+                # Release open member files, then age the entry past the TTL:
+                # the next extraction (a different bundle) sweeps it.
+                del ds_a, ds_a2
+                gc.collect()
+                root = os.path.join(cache_home, os.listdir(cache_home)[0])
+                stale = time.time() - 100_000
+                os.utime(os.path.join(root, first_entries[0]), (stale, stale))
+
+                ds_b = _open_netcdf_bundle(zip_b)
+                self.assertEqual(float(ds_b["no2"].sum()), 14.0)
+                remaining = cache_entries()
+                self.assertEqual(len(remaining), 1)
+                self.assertNotEqual(remaining, first_entries)
 
 
 class OpenNativeFormatMediaTypeTests(unittest.TestCase):
