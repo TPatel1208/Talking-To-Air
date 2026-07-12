@@ -189,6 +189,45 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertIn("Cloud_Fraction", ctx.exception.message)
         self.assertIn("Aerosol_Optical_Depth", ctx.exception.message)
 
+    def test_to_dataarray_resolves_a_registered_multi_var_file_to_its_pinned_primary_var(self):
+        """AOD misrouting follow-up (2026-07-12): a registered collection's
+        pinned collections.yaml primary_var is a curated choice, not the
+        deleted first-var guess -- so AER_DBDT AOD (multiple AOD science vars,
+        primary COMBINE_AOD_550_AVG) resolves to that variable instead of
+        raising. Uses the CF/ACDD ``ShortName`` spelling the real AER_DBDT
+        export actually carries (live-verified 2026-07-12), not lowercase."""
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset({
+            "DT_AOD_550_AVG": (("lat", "lon"), [[1.0]]),
+            "DB_AOD_550_AVG": (("lat", "lon"), [[2.0]]),
+            "COMBINE_AOD_550_AVG": (("lat", "lon"), [[3.0]]),
+        })
+        ds.attrs["ShortName"] = "AER_DBDT_D10KM_L3_MODIS_TERRA"
+
+        da = AggregationService().to_dataarray(ds)
+
+        self.assertEqual(da.name, "COMBINE_AOD_550_AVG")
+        self.assertEqual(float(da.values[0, 0]), 3.0)
+
+    def test_to_dataarray_still_refuses_a_multi_var_file_when_the_collection_is_unregistered(self):
+        """The primary_var tier is registry-gated: the same shape whose
+        short_name matches no registered collection must still refuse, so the
+        never-guess doctrine holds for genuinely unknown files."""
+        from earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED, MCPToolError
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset({
+            "DT_AOD_550_AVG": (("lat", "lon"), [[1.0]]),
+            "COMBINE_AOD_550_AVG": (("lat", "lon"), [[3.0]]),
+        })
+        ds.attrs["ShortName"] = "NOT_A_REGISTERED_COLLECTION"
+
+        with self.assertRaises(MCPToolError) as ctx:
+            AggregationService().to_dataarray(ds)
+
+        self.assertEqual(ctx.exception.category, CATEGORY_VARIABLE_CHOICE_REQUIRED)
+
     def test_to_dataarray_explicit_variable_param_wins_on_a_multi_var_file(self):
         from preprocessing.aggregation_service import AggregationService
 

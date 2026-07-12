@@ -59,7 +59,7 @@ from typing import Annotated, List, Optional
 from pydantic import Field
 
 from config.workflow_stages import STAGE_RENDER
-from datasets.mask_info import col_info_for_short_name
+from datasets.mask_info import col_info_for_short_name, short_name_from_attrs
 from earthdata_mcp.results import MCPToolError
 from services.artifact_registry import build_artifact_reference
 from services.open_handle import OpenHandleError, open_handle
@@ -397,8 +397,9 @@ def _open_dataarray(ds, handle: str | None = None, variable: str | None = None):
     """Pick the science variable off an opened Dataset, unmasked.
 
     Resolution (T25): explicit ``variable`` -> the choice recorded for
-    ``handle`` at retrieval time -> the file's only data variable -> a
-    structured candidate-listing error (AggregationService.to_dataarray).
+    ``handle`` at retrieval time -> the file's only data variable -> the
+    collection's pinned ``primary_var`` (via short_name attr) -> a structured
+    candidate-listing error (AggregationService.to_dataarray).
     """
     return _aggregation_service.to_dataarray(ds, handle=handle, variable=variable)
 
@@ -414,15 +415,17 @@ def _build_dim_selector(dimension: str | None, dimension_value: float | None) ->
 
 def _mask_col_info(da, ds=None) -> dict:
     """The collections.yaml/registry masking metadata for a variable,
-    resolved by the collection's ``short_name`` global attribute (T25
+    resolved by the collection's short_name global attribute (T25
     masking-execution fix) -- collection identity is a dataset-level fact,
     so ``ds.attrs`` (the opened Dataset) is checked before the per-variable
-    ``da.attrs``. Falls back to the variable's own name when neither carries
-    an identity marker, so a MASK_OVERRIDES quirk keyed on it still applies.
+    ``da.attrs``. ``short_name_from_attrs`` tolerates both the lowercase
+    ``short_name`` and the CF/ACDD ``ShortName`` spelling real granules use.
+    Falls back to the variable's own name when neither carries an identity
+    marker, so a MASK_OVERRIDES quirk keyed on it still applies.
     """
     short_name = (
-        (ds.attrs.get("short_name") if ds is not None else None)
-        or da.attrs.get("short_name")
+        short_name_from_attrs(ds.attrs if ds is not None else None)
+        or short_name_from_attrs(da.attrs)
         or da.name
         or ""
     )

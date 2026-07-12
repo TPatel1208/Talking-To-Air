@@ -8,7 +8,7 @@ from typing import Annotated, Optional
 from pydantic import Field
 
 from config.workflow_stages import STAGE_RENDER
-from datasets.mask_info import col_info_for_short_name
+from datasets.mask_info import col_info_for_short_name, short_name_from_attrs
 from earthdata_mcp.results import MCPToolError
 from services.open_handle import OpenHandleError, open_handle
 from utils.geo_utils import find_lat_coord, find_lon_coord
@@ -29,8 +29,8 @@ def _mask_col_info(da, ds=None) -> dict:
     so ``ds.attrs`` is checked before the per-variable ``da.attrs`` (T25
     masking-execution fix)."""
     short_name = (
-        (ds.attrs.get("short_name") if ds is not None else None)
-        or da.attrs.get("short_name")
+        short_name_from_attrs(ds.attrs if ds is not None else None)
+        or short_name_from_attrs(da.attrs)
         or da.name
         or ""
     )

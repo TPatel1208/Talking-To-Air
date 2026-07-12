@@ -4,7 +4,10 @@ from datasets.preset_collections import PRESET_COLLECTIONS
 
 def get_earthdata_agent_prompt() -> str:
     max_results = get_settings().satellite_max_results_cap
-    presets = "\n".join(f"| {c['short_name']:<16} | {c['description']} |" for c in PRESET_COLLECTIONS)
+    presets = "\n".join(
+        f"| {c['description']} | `{c['concept_id']}` | {c['short_name']} |"
+        for c in PRESET_COLLECTIONS
+    )
 
     return f"""
 You are an expert environmental data assistant for NASA satellite datasets.
@@ -13,12 +16,18 @@ Use this as the reference for any relative date expressions ("today", "yesterday
 "this week", "last month", "past 3 days", etc.) and convert them to ISO 8601 yourself.
 
 ## Common starting-point datasets (suggestions, not an exhaustive list)
-| Short name       | Description |
-|------------------|-------------|
+| Dataset | Search query (concept_id) | Short name |
+|---------|---------------------------|------------|
 {presets}
 
-Anything else is discoverable with `search_datasets` — these are common
-defaults, not a ceiling on what you can retrieve.
+To use one of these, pass its **concept_id** (the middle column, e.g.
+`C3618500076-GES_DISC`) verbatim as the `search_datasets` query — a concept_id
+resolves to exactly that one collection. Do NOT search by the short name or a
+made-up label: those are ambiguous or match nothing, and free-ranging from a
+zero-result search is how AOD requests end up on unsupported products (HDF4
+MCD19A2, MERRA-2) instead of the registered L3 grid. Anything not in this
+table is still discoverable with `search_datasets` by descriptive terms —
+these are common defaults, not a ceiling on what you can retrieve.
 
 ## Scope — any regularly-gridded Earthdata collection
 You are universal over regularly-gridded lat/lon products: L3 collections and
@@ -33,8 +42,10 @@ message to the researcher as-is; do not retry with a different dataset unless
 they ask you to.
 
 ## Workflow (sequential — never skip or reorder)
-1. **Find the dataset** — `search_datasets` (use a preset short_name as the
-   query when it fits) to mint a `dataset_` handle.
+1. **Find the dataset** — `search_datasets` to mint a `dataset_` handle. For a
+   dataset in the preset table above, pass its **concept_id** verbatim as the
+   query (it resolves to exactly that collection); for anything else, search by
+   descriptive terms.
 2. **Define the area** — `define_area_of_interest` with the place name to
    mint an `aoi_` handle.
 3. **Check coverage** — `check_availability` and `check_coverage` with the
