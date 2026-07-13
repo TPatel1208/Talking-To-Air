@@ -2,9 +2,11 @@ import { useMemo, useState, useEffect, useRef } from 'react'
 import { TimeSeriesPanel, ChartToolbar, ProvenanceBlock } from './ChartMessage'
 import MapLibreHeatmapPanel from './MapLibreHeatmapPanel.jsx'
 import HeatmapMultiPanel from './HeatmapMultiPanel.jsx'
+import CompareGrid from './CompareGrid.jsx'
 import ArtifactMessage, { TableArtifactMessage } from './ArtifactMessage'
 import { computeChartStats, computeHistogram } from '../utils/chartStats'
 import { resolveMasking } from '../utils/maskingProvenance'
+import { filledCharts } from '../utils/compareMode'
 
 function compactDate(value) {
   if (!value) return ''
@@ -172,7 +174,67 @@ const CHART_TABS = {
 }
 const TAB_LABELS = { map: 'Map', chart: 'Chart', statistics: 'Statistics', histogram: 'Histogram', metadata: 'Metadata' }
 
-export default function OutputPanel({ focusedOutput, accessToken }) {
+const PANEL_COUNTS = [2, 3, 4]
+
+const compareButtonStyle = {
+  fontSize: '12.5px', fontWeight: 700, color: 'var(--teal-text)',
+  background: 'var(--teal-light)', border: '1px solid var(--teal)',
+  borderRadius: '7px', padding: '7px 12px', cursor: 'pointer',
+}
+const countButtonStyle = {
+  fontSize: '12.5px', fontWeight: 700, color: 'var(--text-primary)',
+  background: 'var(--bg-card)', border: '1px solid var(--border)',
+  borderRadius: '7px', padding: '6px 12px', cursor: 'pointer', minWidth: '32px',
+}
+const exitButtonStyle = {
+  fontSize: '12.5px', fontWeight: 700, color: 'var(--text-secondary)',
+  background: 'var(--bg-card)', border: '1px solid var(--border)',
+  borderRadius: '7px', padding: '7px 12px', cursor: 'pointer',
+}
+const cancelChooserStyle = {
+  fontSize: '14px', fontWeight: 700, color: 'var(--text-muted)',
+  background: 'transparent', border: 'none', cursor: 'pointer', padding: '4px 6px',
+}
+
+// Compare control (T28): idle "Compare" button -> inline 2/3/4 chooser ->
+// active status + exit. Lives in the output panel header regardless of
+// which body is currently rendered (empty state, single output, or grid).
+function CompareControl({ compareMode, compareCount, filledCount, onStart, onCancelChoosing, onPickCount, onExit }) {
+  if (compareMode === 'choosing-count') {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+        <span style={{ fontSize: '12px', color: 'var(--text-muted)', marginRight: '2px' }}>Compare how many?</span>
+        {PANEL_COUNTS.map(n => (
+          <button key={n} type="button" onClick={() => onPickCount(n)} style={countButtonStyle}>{n}</button>
+        ))}
+        <button type="button" onClick={onCancelChoosing} style={cancelChooserStyle} aria-label="Cancel compare">×</button>
+      </div>
+    )
+  }
+
+  if (compareMode === 'active') {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <span style={{ fontSize: '12.5px', fontWeight: 700, color: 'var(--text-secondary)' }}>
+          Comparing {filledCount} of {compareCount}
+        </span>
+        <button type="button" onClick={onExit} style={exitButtonStyle}>Exit compare</button>
+      </div>
+    )
+  }
+
+  return (
+    <button type="button" onClick={onStart} style={compareButtonStyle}>
+      Compare
+    </button>
+  )
+}
+
+export default function OutputPanel({
+  focusedOutput, accessToken,
+  compareMode = 'off', compareCount = 2, compareSelection = [],
+  onStartCompare, onCancelChooseCompare, onEnterCompare, onExitCompare,
+}) {
   const kind = focusedOutput?.kind
   const chart = kind === 'chart' ? focusedOutput.data : null
   const artifact = kind === 'artifact' ? focusedOutput.data : null
@@ -180,24 +242,56 @@ export default function OutputPanel({ focusedOutput, accessToken }) {
 
   const availableTabs = chart ? (CHART_TABS[chart.type] || ['metadata']) : []
   const [activeTab, setActiveTab] = useState(availableTabs[0])
+  const [autoScaleEach, setAutoScaleEach] = useState(false)
   const plotRootRef = useRef(null)
 
   useEffect(() => {
     setActiveTab(availableTabs[0])
   }, [focusedOutput, availableTabs.join(',')])
 
+  const compareControlProps = {
+    compareMode, compareCount, filledCount: filledCharts(compareSelection).length,
+    onStart: onStartCompare, onCancelChoosing: onCancelChooseCompare,
+    onPickCount: onEnterCompare, onExit: onExitCompare,
+  }
+
+  if (compareMode === 'active') {
+    return (
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', overflow: 'hidden' }}>
+        <div style={{ padding: '14px 22px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
+          <div style={{ fontSize: '16px', fontWeight: 800, color: 'var(--text-primary)' }}>Compare</div>
+          <CompareControl {...compareControlProps} />
+        </div>
+        <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '18px 22px', display: 'flex' }}>
+          <CompareGrid
+            compareCount={compareCount}
+            compareSelection={compareSelection}
+            accessToken={accessToken}
+            autoScaleEach={autoScaleEach}
+            onToggleAutoScale={setAutoScaleEach}
+          />
+        </div>
+      </div>
+    )
+  }
+
   if (!focusedOutput) {
     return (
-      <div style={{
-        flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column',
-        alignItems: 'center', justifyContent: 'center', textAlign: 'center',
-        background: 'var(--bg-primary)', color: 'var(--text-muted)', padding: '0 24px',
-      }}>
-        <div style={{ fontSize: '15px', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '6px' }}>
-          Ask a question to get started
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)' }}>
+        <div style={{ padding: '14px 22px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexShrink: 0 }}>
+          <CompareControl {...compareControlProps} />
         </div>
-        <div style={{ fontSize: '13px', lineHeight: 1.5, maxWidth: '360px' }}>
-          Run an analysis in the chat, then click any output card to open it here — map, chart, statistics, and metadata all in one place.
+        <div style={{
+          flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column',
+          alignItems: 'center', justifyContent: 'center', textAlign: 'center',
+          color: 'var(--text-muted)', padding: '0 24px',
+        }}>
+          <div style={{ fontSize: '15px', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '6px' }}>
+            Ask a question to get started
+          </div>
+          <div style={{ fontSize: '13px', lineHeight: 1.5, maxWidth: '360px' }}>
+            Run an analysis in the chat, then click any output card to open it here — map, chart, statistics, and metadata all in one place.
+          </div>
         </div>
       </div>
     )
@@ -205,20 +299,30 @@ export default function OutputPanel({ focusedOutput, accessToken }) {
 
   if (isTableArtifact) {
     return (
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', overflow: 'auto', padding: '18px 22px' }}>
-        <TableArtifactMessage artifact={artifact} accessToken={accessToken} />
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', overflow: 'hidden' }}>
+        <div style={{ padding: '14px 22px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexShrink: 0 }}>
+          <CompareControl {...compareControlProps} />
+        </div>
+        <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '18px 22px' }}>
+          <TableArtifactMessage artifact={artifact} accessToken={accessToken} />
+        </div>
       </div>
     )
   }
 
   if (artifact && !chart) {
     return (
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', overflow: 'auto', padding: '18px 22px' }}>
-        <div style={{ fontSize: '16px', fontWeight: 800, color: 'var(--text-primary)', marginBottom: '4px' }}>{artifact.title || 'Output'}</div>
-        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', margin: '10px 0 16px' }}>
-          {artifactMetaChips(artifact).map((chip, i) => <MetaChip key={i}>{chip}</MetaChip>)}
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', overflow: 'hidden' }}>
+        <div style={{ padding: '14px 22px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexShrink: 0 }}>
+          <CompareControl {...compareControlProps} />
         </div>
-        <ArtifactMessage artifact={artifact} accessToken={accessToken} />
+        <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '18px 22px' }}>
+          <div style={{ fontSize: '16px', fontWeight: 800, color: 'var(--text-primary)', marginBottom: '4px' }}>{artifact.title || 'Output'}</div>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', margin: '10px 0 16px' }}>
+            {artifactMetaChips(artifact).map((chip, i) => <MetaChip key={i}>{chip}</MetaChip>)}
+          </div>
+          <ArtifactMessage artifact={artifact} accessToken={accessToken} />
+        </div>
       </div>
     )
   }
@@ -230,6 +334,7 @@ export default function OutputPanel({ focusedOutput, accessToken }) {
     <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', overflow: 'hidden' }}>
       <div style={{ padding: '14px 22px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
         <div style={{ fontSize: '16px', fontWeight: 800, color: 'var(--text-primary)' }}>{title}</div>
+        <CompareControl {...compareControlProps} />
       </div>
 
       {metaChips.length > 0 && (

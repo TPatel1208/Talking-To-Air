@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import { starterMessage } from '../utils/starterPrompts'
+import { compareBadgeLabel, isChartComparable, isSelectionFull, slotIndexOf } from '../utils/compareMode'
 
 const TYPE_LABEL = { map: 'Map', comparison: 'Comparison', timeseries: 'Time series', table: 'Table' }
 
@@ -101,17 +102,22 @@ function ToolStepsCard({ toolCalls, error }) {
   )
 }
 
-/* ── Compact output card — click opens the full view in the central OutputPanel ── */
-function OutputCard({ item, active, onClick }) {
+/* ── Compact output card — click opens the full view in the central
+    OutputPanel, or (while compare mode is active) toggles slot membership.
+    `inert` cards (wrong chart type while comparing) are dimmed and
+    unclickable; `slotBadge` shows which comparison slot a card occupies. ── */
+function OutputCard({ item, active, inert, slotBadge, onClick }) {
   const { title, subtitle } = outputLabel(item)
   return (
     <div
-      onClick={onClick}
+      onClick={inert ? undefined : onClick}
       style={{
         display: 'flex', gap: '11px', alignItems: 'center',
-        border: `1px solid ${active ? 'var(--teal)' : 'var(--border)'}`,
-        borderRadius: '10px', padding: '10px', background: 'var(--bg-card)', cursor: 'pointer',
-        transition: 'border-color 0.15s',
+        border: `1px solid ${active || slotBadge ? 'var(--teal)' : 'var(--border)'}`,
+        borderRadius: '10px', padding: '10px', background: 'var(--bg-card)',
+        cursor: inert ? 'not-allowed' : 'pointer',
+        opacity: inert ? 0.45 : 1,
+        transition: 'border-color 0.15s, opacity 0.15s',
       }}
     >
       <div style={{
@@ -128,12 +134,24 @@ function OutputCard({ item, active, onClick }) {
         {subtitle && (
           <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '1px' }}>{subtitle}</div>
         )}
-        <div style={{
-          display: 'inline-block', fontSize: '10.5px', fontWeight: 700,
-          color: 'var(--teal-text)', background: 'var(--teal-light)',
-          borderRadius: '5px', padding: '2px 7px', marginTop: '5px',
-        }}>
-          ✓ Completed
+        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '5px' }}>
+          <div style={{
+            display: 'inline-block', fontSize: '10.5px', fontWeight: 700,
+            color: 'var(--teal-text)', background: 'var(--teal-light)',
+            borderRadius: '5px', padding: '2px 7px',
+          }}>
+            ✓ Completed
+          </div>
+          {slotBadge && (
+            <div style={{
+              display: 'inline-block', fontSize: '10.5px', fontWeight: 700,
+              color: 'var(--teal-text)', background: 'var(--bg-card)',
+              border: '1px solid var(--teal)',
+              borderRadius: '5px', padding: '2px 7px',
+            }}>
+              {slotBadge}
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -320,8 +338,31 @@ function FollowupChips({ suggestions, onSend }) {
 }
 
 /* ── Message bubble ── */
-function MessageBubble({ msg, accessToken, onFollowupClick, focusedOutput, onFocusOutput }) {
+function MessageBubble({
+  msg, accessToken, onFollowupClick, focusedOutput, onFocusOutput,
+  compareMode, compareSelection, onToggleCompareSlot, onCompareCapFull,
+}) {
   const isUser = msg.role === 'user'
+  const comparing = compareMode === 'active'
+
+  const handleChartCardClick = (chart) => {
+    if (!comparing) {
+      onFocusOutput({ kind: 'chart', data: chart })
+      return
+    }
+    if (!isChartComparable(chart, compareSelection)) return
+    const alreadyIn = slotIndexOf(compareSelection, chart) !== -1
+    if (!alreadyIn && isSelectionFull(compareSelection)) {
+      onCompareCapFull()
+      return
+    }
+    onToggleCompareSlot(chart)
+  }
+
+  const handleArtifactCardClick = (artifact) => {
+    if (comparing) return // table artifacts aren't comparable in T28
+    onFocusOutput({ kind: 'artifact', data: artifact })
+  }
 
   return (
     <div style={{
@@ -467,16 +508,19 @@ function MessageBubble({ msg, accessToken, onFollowupClick, focusedOutput, onFoc
               <OutputCard
                 key={`chart-${i}`}
                 item={{ kind: 'chart', data: chart }}
-                active={focusedOutput?.kind === 'chart' && focusedOutput.data === chart}
-                onClick={() => onFocusOutput({ kind: 'chart', data: chart })}
+                active={!comparing && focusedOutput?.kind === 'chart' && focusedOutput.data === chart}
+                inert={comparing && !isChartComparable(chart, compareSelection)}
+                slotBadge={comparing ? compareBadgeLabel(compareSelection, chart) : null}
+                onClick={() => handleChartCardClick(chart)}
               />
             ))}
             {msg.artifacts?.filter(a => a.type === 'table').map((artifact, i) => (
               <OutputCard
                 key={artifact.id || `artifact-${i}`}
                 item={{ kind: 'artifact', data: artifact }}
-                active={focusedOutput?.kind === 'artifact' && focusedOutput.data === artifact}
-                onClick={() => onFocusOutput({ kind: 'artifact', data: artifact })}
+                active={!comparing && focusedOutput?.kind === 'artifact' && focusedOutput.data === artifact}
+                inert={comparing}
+                onClick={() => handleArtifactCardClick(artifact)}
               />
             ))}
           </div>
@@ -574,10 +618,27 @@ function EmptyState({ onChipClick }) {
 }
 
 /* ── Main Chat component ── */
-export default function Chat({ messages, loading, error, accessToken, chatTitle, onSend, onAbort, onClearError, focusedOutput, onFocusOutput }) {
+export default function Chat({
+  messages, loading, error, accessToken, chatTitle, onSend, onAbort, onClearError,
+  focusedOutput, onFocusOutput,
+  compareMode = 'off', compareSelection = [], onToggleCompareSlot,
+}) {
   const [input, setInput] = useState('')
   const scrollContainerRef = useRef(null)
   const textareaRef = useRef(null)
+
+  // Transient "grid full" hint (T28) -- clicking an unselected, matching
+  // card while every slot is already taken is inert except for this cue.
+  const [capFullHint, setCapFullHint] = useState(false)
+  const capFullTimeoutRef = useRef(null)
+  const showCapFullHint = () => {
+    setCapFullHint(true)
+    if (capFullTimeoutRef.current) clearTimeout(capFullTimeoutRef.current)
+    capFullTimeoutRef.current = setTimeout(() => setCapFullHint(false), 2400)
+  }
+  useEffect(() => () => {
+    if (capFullTimeoutRef.current) clearTimeout(capFullTimeoutRef.current)
+  }, [])
 
   useEffect(() => {
     const el = scrollContainerRef.current
@@ -668,6 +729,19 @@ export default function Chat({ messages, loading, error, accessToken, chatTitle,
             </button>
           </div>
         )}
+        {compareMode === 'active' && capFullHint && (
+          <div style={{
+            margin: '14px 20px 0',
+            padding: '9px 12px',
+            border: '1px solid var(--border)',
+            borderRadius: '8px',
+            background: 'var(--bg-secondary)',
+            color: 'var(--text-secondary)',
+            fontSize: '12.5px',
+          }}>
+            Compare grid full — remove one to add another.
+          </div>
+        )}
         {isEmpty ? (
           <EmptyState onChipClick={handleSend} />
         ) : (
@@ -689,6 +763,10 @@ export default function Chat({ messages, loading, error, accessToken, chatTitle,
                   onFollowupClick={handleSend}
                   focusedOutput={focusedOutput}
                   onFocusOutput={onFocusOutput}
+                  compareMode={compareMode}
+                  compareSelection={compareSelection}
+                  onToggleCompareSlot={onToggleCompareSlot}
+                  onCompareCapFull={showCapFullHint}
                 />
               )
             )}

@@ -6,12 +6,13 @@
  * time series. Also renders the shared toolbar (query/CSV/PNG export) and
  * provenance block around whichever panel is chosen.
  */
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import Plotly from 'plotly.js-dist-min'
 import _createPlotlyComponent from 'react-plotly.js/factory'
 import { flattenPayload } from '../utils/flattenPayload.js'
 import MapLibreHeatmapPanel from './MapLibreHeatmapPanel.jsx'
 import HeatmapMultiPanel from './HeatmapMultiPanel.jsx'
+import { buildOverlayTraces } from '../utils/timeseriesCompare.js'
 
 const createPlotlyComponent =
   typeof _createPlotlyComponent === 'function'
@@ -376,6 +377,41 @@ export function TimeSeriesPanel({ payload }) {
     height: 300,
     xaxis:  { title: 'Time', showgrid: true, gridcolor: 'rgba(0,0,0,0.06)', zeroline: false, tickfont: { size: 10 } },
     yaxis:  { title: `${stat} (${units})`, showgrid: true, gridcolor: 'rgba(0,0,0,0.06)', zeroline: false, tickfont: { size: 10 }, exponentformat: 'e' },
+    datarevision: revision,
+  }
+
+  return (
+    <Plot data={data} layout={layout} config={BASE_CONFIG} revision={revision}
+      style={{ width: '100%' }} useResizeHandler />
+  )
+}
+
+// Compare mode's chart-overlay path (T29): one Plotly figure, one trace (and
+// legend entry) per series, sharing a single time and value axis. Only
+// mounted when the compatibility check (utils/timeseriesCompare.js) finds
+// matching units and overlapping time ranges across every slot -- reuses
+// TimeSeriesPanel's axis formatting/hover conventions rather than
+// reimplementing chart chrome.
+export function TimeSeriesOverlayPanel({ series, height = 320 }) {
+  const [revision, setRevision] = useState(0)
+  const mounted = useRef(false)
+  useEffect(() => {
+    if (!mounted.current) { mounted.current = true; requestAnimationFrame(() => setRevision(r => r + 1)) }
+  }, [])
+
+  const data = useMemo(() => buildOverlayTraces(series), [series])
+  const units = series?.[0]?.units || ''
+
+  const layout = {
+    paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+    font:   { family: "'Manrope', system-ui, sans-serif", size: 12, color: '#333333' },
+    margin: { t: 40, r: 16, b: 60, l: 16 },
+    title:  { text: 'Comparison', font: { size: 13, weight: 500 }, x: 0.5, xanchor: 'center' },
+    height,
+    xaxis:  { title: 'Time', showgrid: true, gridcolor: 'rgba(0,0,0,0.06)', zeroline: false, tickfont: { size: 10 } },
+    yaxis:  { title: units, showgrid: true, gridcolor: 'rgba(0,0,0,0.06)', zeroline: false, tickfont: { size: 10 }, exponentformat: 'e' },
+    showlegend: true,
+    legend: { orientation: 'h', y: -0.25 },
     datarevision: revision,
   }
 
