@@ -90,19 +90,15 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
     pendingAssistantUpdatesRef.current.push({ streamId, updater })
     if (frameRef.current !== null) return
 
-    frameRef.current = window.requestAnimationFrame
-      ? window.requestAnimationFrame(flushAssistantUpdates)
-      : window.setTimeout(flushAssistantUpdates, 16)
+    // setTimeout, not requestAnimationFrame: rAF is paused by the browser
+    // when the tab is backgrounded, which would freeze streamed replies at
+    // isLoading: true until the user switches back.
+    frameRef.current = window.setTimeout(flushAssistantUpdates, 16)
   }, [flushAssistantUpdates])
 
   const cancelScheduledFlush = useCallback(() => {
     if (frameRef.current === null) return
-
-    if (window.cancelAnimationFrame) {
-      window.cancelAnimationFrame(frameRef.current)
-    } else {
-      window.clearTimeout(frameRef.current)
-    }
+    window.clearTimeout(frameRef.current)
     frameRef.current = null
   }, [])
 
