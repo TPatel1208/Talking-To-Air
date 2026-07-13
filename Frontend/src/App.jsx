@@ -8,9 +8,9 @@ import { useJobs } from './hooks/useJobs'
 import { createEmptySelection, toggleSlot } from './utils/compareMode'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-// Thin clickable rail standing in for a side column while it's collapsed
-// (compare mode, T28) -- keeps a one-click way back rather than the column
-// just vanishing.
+// Thin clickable rail standing in for a side column while it's manually
+// collapsed -- keeps a one-click way back rather than the column just
+// vanishing.
 function CollapsedRail({ label, onExpand }) {
   return (
     <button
@@ -254,14 +254,22 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
   const [compareMode, setCompareMode] = useState('off')
   const [compareCount, setCompareCount] = useState(2)
   const [compareSelection, setCompareSelection] = useState([])
-  const [sideColumnsCollapsed, setSideColumnsCollapsed] = useState(false)
-  const manualExpandRef = useRef(false)
+
+  // Sessions, Chat, and Jobs/Discover collapse independently and only on
+  // explicit user action -- they used to auto-collapse together when compare
+  // mode started, but that made the layout jump around outside the user's
+  // control. Now it's just a manual, per-panel toggle that persists across
+  // mode changes.
+  const [sessionsCollapsed, setSessionsCollapsed] = useState(false)
+  const [chatCollapsed, setChatCollapsed] = useState(false)
+  const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false)
+  const toggleSessionsCollapsed = useCallback(() => setSessionsCollapsed(v => !v), [])
+  const toggleChatCollapsed = useCallback(() => setChatCollapsed(v => !v), [])
+  const toggleRightPanelCollapsed = useCallback(() => setRightPanelCollapsed(v => !v), [])
 
   const resetCompare = useCallback(() => {
     setCompareMode('off')
     setCompareSelection([])
-    setSideColumnsCollapsed(false)
-    manualExpandRef.current = false
   }, [])
 
   const startChoosingCompare = useCallback(() => setCompareMode('choosing-count'), [])
@@ -271,15 +279,9 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
     setCompareCount(count)
     setCompareSelection(createEmptySelection(count))
     setCompareMode('active')
-    if (!manualExpandRef.current) setSideColumnsCollapsed(true)
   }, [])
 
   const exitCompare = useCallback(() => resetCompare(), [resetCompare])
-
-  const expandSideColumns = useCallback(() => {
-    manualExpandRef.current = true
-    setSideColumnsCollapsed(false)
-  }, [])
 
   const toggleCompareSlot = useCallback((chart) => {
     setCompareSelection(prev => toggleSlot(prev, chart).selection)
@@ -340,8 +342,8 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
       overflow:   'hidden',
       background: 'var(--bg-primary)',
     }}>
-      {sideColumnsCollapsed ? (
-        <CollapsedRail label="sessions" onExpand={expandSideColumns} />
+      {sessionsCollapsed ? (
+        <CollapsedRail label="sessions" onExpand={toggleSessionsCollapsed} />
       ) : (
         <SessionSidebar
           sessions={sessions}
@@ -353,26 +355,32 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
           images={images}
           artifacts={artifacts}
           accessToken={accessToken}
+          onCollapse={toggleSessionsCollapsed}
         />
       )}
 
-      <div style={{ width: '380px', flexShrink: 0, borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        <Chat
-          messages={messages}
-          loading={loading}
-          error={error}
-          accessToken={accessToken}
-          chatTitle={chatTitle}
-          onSend={sendMessage}
-          onAbort={() => abortActiveRequest(true)}
-          onClearError={clearError}
-          focusedOutput={focusedOutput}
-          onFocusOutput={setFocusedOutput}
-          compareMode={compareMode}
-          compareSelection={compareSelection}
-          onToggleCompareSlot={toggleCompareSlot}
-        />
-      </div>
+      {chatCollapsed ? (
+        <CollapsedRail label="chat" onExpand={toggleChatCollapsed} />
+      ) : (
+        <div style={{ width: '380px', flexShrink: 0, borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <Chat
+            messages={messages}
+            loading={loading}
+            error={error}
+            accessToken={accessToken}
+            chatTitle={chatTitle}
+            onSend={sendMessage}
+            onAbort={() => abortActiveRequest(true)}
+            onClearError={clearError}
+            focusedOutput={focusedOutput}
+            onFocusOutput={setFocusedOutput}
+            compareMode={compareMode}
+            compareSelection={compareSelection}
+            onToggleCompareSlot={toggleCompareSlot}
+            onCollapse={toggleChatCollapsed}
+          />
+        </div>
+      )}
 
       <OutputPanel
         focusedOutput={focusedOutput}
@@ -386,8 +394,8 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
         onExitCompare={exitCompare}
       />
 
-      {sideColumnsCollapsed ? (
-        <CollapsedRail label="jobs and discover" onExpand={expandSideColumns} />
+      {rightPanelCollapsed ? (
+        <CollapsedRail label="jobs and discover" onExpand={toggleRightPanelCollapsed} />
       ) : (
         <RightPanel
           discovery={discovery}
@@ -397,6 +405,7 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
           onRefreshJobs={fetchJobs}
           onRetrieve={handleRetrieve}
           onViewResult={handleViewResult}
+          onCollapse={toggleRightPanelCollapsed}
         />
       )}
     </div>

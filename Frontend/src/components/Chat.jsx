@@ -622,6 +622,7 @@ export default function Chat({
   messages, loading, error, accessToken, chatTitle, onSend, onAbort, onClearError,
   focusedOutput, onFocusOutput,
   compareMode = 'off', compareSelection = [], onToggleCompareSlot,
+  onCollapse,
 }) {
   const [input, setInput] = useState('')
   const scrollContainerRef = useRef(null)
@@ -682,10 +683,30 @@ export default function Chat({
       <div style={{
         padding: '16px 20px 14px', borderBottom: '1px solid var(--border)',
         background: 'var(--bg-card)', flexShrink: 0,
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px',
       }}>
-        <span style={{ fontSize: '15px', fontWeight: '800', color: 'var(--text-primary)' }}>
+        <span style={{
+          fontSize: '15px', fontWeight: '800', color: 'var(--text-primary)',
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}>
           {chatTitle || 'New analysis'}
         </span>
+        {onCollapse && (
+          <button
+            type="button"
+            onClick={onCollapse}
+            title="Collapse chat"
+            aria-label="Collapse chat"
+            style={{
+              background: 'transparent', border: 'none', padding: '2px', cursor: 'pointer',
+              display: 'flex', flexShrink: 0, color: 'var(--text-muted)',
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="15 6 9 12 15 18" />
+            </svg>
+          </button>
+        )}
       </div>
 
       {/* Message area */}
