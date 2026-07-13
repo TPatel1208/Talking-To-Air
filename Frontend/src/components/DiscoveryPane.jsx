@@ -23,6 +23,12 @@ function GranulesTable({ granules }) {
 
 function DatasetCard({ dataset, location, timeRange, preview, coverage, granules, onPreview, onCoverage, onGranules, onRetrieve }) {
   const handle = dataset.dataset_handle
+  // Retrieve turns into the same chat message the agent parses for its time
+  // range (App.jsx::handleRetrieve) — an empty window silently drops the
+  // date instead of validating it, which is exactly how a retrieval ends up
+  // defaulting to "now". Gate it the same way checkCoverage/inspectGranules
+  // already require an area + window before calling out.
+  const canRetrieve = location.trim() && timeRange.trim()
 
   return (
     <div style={{
@@ -84,10 +90,13 @@ function DatasetCard({ dataset, location, timeRange, preview, coverage, granules
         </button>
         <button
           onClick={() => onRetrieve(dataset, location, timeRange)}
+          disabled={!canRetrieve}
+          title={canRetrieve ? undefined : 'Set an area and time window above first.'}
           style={{
             fontSize: '11px', padding: '4px 10px', borderRadius: '6px',
-            border: 'none', background: 'var(--teal)',
-            color: 'white', cursor: 'pointer',
+            border: 'none', background: canRetrieve ? 'var(--teal)' : 'var(--border)',
+            color: canRetrieve ? 'white' : 'var(--text-hint)',
+            cursor: canRetrieve ? 'pointer' : 'not-allowed',
           }}
         >
           Retrieve
@@ -223,7 +232,7 @@ export default function DiscoveryPane({
           />
         </div>
         <div style={{ fontSize: '10px', color: 'var(--text-hint)', marginTop: '4px' }}>
-          Quick-look and coverage checks below use this area/window.
+          Quick-look, coverage checks, and Retrieve below use this area/window.
         </div>
       </div>
 
