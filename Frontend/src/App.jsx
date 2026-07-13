@@ -193,6 +193,15 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
     sendMessage(`${parts.join(' ')}.`)
   }, [sendMessage])
 
+  // A job card's "View result" action hands off to the agent rather than
+  // rendering the obs_handle itself — same one-pipeline principle as
+  // handleRetrieve, and no new backend surface for opening a handle (T27).
+  const handleViewResult = useCallback((job) => {
+    if (!job.obs_handle) return
+    const label = job.short_name || job.dataset_handle || 'this retrieval'
+    sendMessage(`Show me the result of ${label} (${job.obs_handle}).`)
+  }, [sendMessage])
+
   // The central OutputPanel shows whichever chart/artifact is "focused" —
   // the newest one from a completed reply, or whatever the user clicked in
   // the chat history.
@@ -303,6 +312,7 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
         onCancelJob={cancelJob}
         onRefreshJobs={fetchJobs}
         onRetrieve={handleRetrieve}
+        onViewResult={handleViewResult}
       />
     </div>
   )

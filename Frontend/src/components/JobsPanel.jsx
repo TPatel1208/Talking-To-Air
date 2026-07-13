@@ -1,11 +1,17 @@
-const TERMINAL_STATUSES = new Set(['ready', 'failed', 'expired', 'cancelled'])
+import { useEffect, useRef, useState } from 'react'
+import {
+  TERMINAL_STATUSES, statusBadge, primaryAction, upstreamLine,
+  formatVariables, formatBbox, formatOutputFormat, formatTimeRange,
+} from '../utils/jobCard'
 
-const STATUS_COLORS = {
-  ready: 'var(--teal-text)',
-  failed: 'var(--error)',
-  expired: 'var(--text-muted)',
-  cancelled: 'var(--text-muted)',
+const CONFIRM_TIMEOUT_MS = 4000
+
+const buttonBase = {
+  fontSize: '11px', padding: '4px 10px', borderRadius: '6px', cursor: 'pointer', fontWeight: 600,
 }
+const ghostButtonStyle = { ...buttonBase, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)' }
+const primaryButtonStyle = { ...buttonBase, border: 'none', background: 'var(--teal)', color: 'white' }
+const dangerButtonStyle = { ...buttonBase, border: 'none', background: 'var(--error)', color: 'white' }
 
 function formatSubmittedAt(value) {
   if (!value) return ''
@@ -14,9 +20,85 @@ function formatSubmittedAt(value) {
   return date.toLocaleString()
 }
 
-function JobRow({ job, onCancel }) {
+function MetadataRow({ label, value }) {
+  if (!value) return null
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', fontSize: '11.5px' }}>
+      <span style={{ color: 'var(--text-muted)' }}>{label}</span>
+      <span style={{ color: 'var(--text-secondary)', textAlign: 'right' }}>{value}</span>
+    </div>
+  )
+}
+
+// PRD 021's enriched get_retrieval_status fields — undefined for whichever
+// don't apply to this job's provider/shape, so each row hides itself rather
+// than showing a blank value.
+function JobMetadata({ job }) {
+  return (
+    <div style={{
+      display: 'flex', flexDirection: 'column', gap: '5px',
+      padding: '9px 10px', background: 'var(--bg-secondary)', borderRadius: '8px',
+    }}>
+      <MetadataRow label="Variables" value={formatVariables(job.variables)} />
+      <MetadataRow label="Area" value={formatBbox(job.aoi_bbox)} />
+      <MetadataRow label="Time range" value={formatTimeRange(job.time_range)} />
+      <MetadataRow label="Provider" value={job.provider} />
+      <MetadataRow label="Format" value={formatOutputFormat(job.output_format)} />
+      <MetadataRow label="Granules" value={job.granule_count != null ? String(job.granule_count) : ''} />
+    </div>
+  )
+}
+
+function ProgressBar({ progress }) {
+  const pct = typeof progress === 'number' ? Math.max(0, Math.min(100, progress)) : null
+  return (
+    <div style={{ height: '4px', borderRadius: '2px', background: 'var(--bg-secondary)', overflow: 'hidden' }}>
+      <div style={{
+        height: '100%',
+        width: pct != null ? `${pct}%` : '35%',
+        borderRadius: '2px',
+        background: 'var(--teal)',
+        opacity: pct != null ? 1 : 0.5,
+      }} />
+    </div>
+  )
+}
+
+function JobRow({ job, onCancel, onViewResult }) {
+  const [expanded, setExpanded] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+  const [cancelling, setCancelling] = useState(false)
+  const confirmTimeoutRef = useRef(null)
+
+  useEffect(() => () => clearTimeout(confirmTimeoutRef.current), [])
+
   const isTerminal = TERMINAL_STATUSES.has(job.status)
-  const statusColor = STATUS_COLORS[job.status] || 'var(--text-secondary)'
+  const badge = statusBadge(job)
+  const action = primaryAction(job)
+  const subtleLine = upstreamLine(job.upstream) || job.note || null
+  const hasMetadata = Boolean(
+    (Array.isArray(job.variables) && job.variables.length) ||
+    (Array.isArray(job.aoi_bbox) && job.aoi_bbox.length) ||
+    job.time_range || job.provider || job.output_format || job.granule_count != null
+  )
+  const title = job.short_name || job.dataset_handle || job.job_handle
+
+  function handleCancelClick() {
+    if (!confirming) {
+      setConfirming(true)
+      confirmTimeoutRef.current = setTimeout(() => setConfirming(false), CONFIRM_TIMEOUT_MS)
+      return
+    }
+    clearTimeout(confirmTimeoutRef.current)
+    setConfirming(false)
+    setCancelling(true)
+    Promise.resolve(onCancel(job.job_handle)).finally(() => setCancelling(false))
+  }
+
+  function handleCancelBlur() {
+    clearTimeout(confirmTimeoutRef.current)
+    setConfirming(false)
+  }
 
   return (
     <div style={{
@@ -30,49 +112,69 @@ function JobRow({ job, onCancel }) {
     }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
         <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {job.dataset || job.job_handle}
+          {title}
         </span>
-        <span style={{ fontSize: '11px', fontWeight: 500, color: statusColor, textTransform: 'uppercase', letterSpacing: '0.04em', flexShrink: 0 }}>
-          {job.status}
+        <span style={{ fontSize: '11px', fontWeight: 500, color: cancelling ? 'var(--text-muted)' : badge.color, textTransform: 'uppercase', letterSpacing: '0.04em', flexShrink: 0 }}>
+          {cancelling ? 'Cancelling…' : badge.label}
         </span>
       </div>
 
-      {!isTerminal && (
-        <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-          {job.phase || 'in progress'}{typeof job.progress === 'number' ? ` — ${job.progress}%` : ''}
-        </div>
+      {!isTerminal && !cancelling && (
+        <>
+          <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+            {badge.label}{typeof job.progress === 'number' ? ` — ${job.progress}%` : ''}
+          </div>
+          <ProgressBar progress={job.progress} />
+        </>
       )}
 
       {job.status === 'failed' && job.message && (
-        <div style={{ fontSize: '12px', color: 'var(--error)' }}>{job.message}</div>
+        <div style={{ fontSize: '12px', color: 'var(--error)', fontWeight: 600 }}>{job.message}</div>
       )}
+
+      {job.status === 'expired' && (
+        <div style={{ fontSize: '11.5px', color: 'var(--text-hint)', fontStyle: 'italic' }}>
+          Expired — re-run the retrieval to regenerate this result.
+        </div>
+      )}
+
+      {subtleLine && (
+        <div style={{ fontSize: '11px', color: 'var(--text-hint)' }}>{subtleLine}</div>
+      )}
+
+      {expanded && hasMetadata && <JobMetadata job={job} />}
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
         <span style={{ fontSize: '11px', color: 'var(--text-hint)' }}>
-          {formatSubmittedAt(job.submitted_at)}
+          {formatSubmittedAt(job.submitted_at || job.created_at)}
         </span>
-        {!isTerminal && (
-          <button
-            onClick={() => onCancel(job.job_handle)}
-            style={{
-              fontSize:     '11px',
-              padding:      '4px 10px',
-              borderRadius: '6px',
-              border:       '1px solid var(--border)',
-              background:   'transparent',
-              color:        'var(--text-secondary)',
-              cursor:       'pointer',
-            }}
-          >
-            Cancel
-          </button>
-        )}
+        <div style={{ display: 'flex', gap: '6px' }}>
+          {hasMetadata && (
+            <button onClick={() => setExpanded(e => !e)} style={ghostButtonStyle}>
+              {expanded ? 'Less' : 'Details'}
+            </button>
+          )}
+          {action === 'view-result' && (
+            <button onClick={() => onViewResult(job)} style={primaryButtonStyle}>
+              View result
+            </button>
+          )}
+          {action === 'cancel' && !cancelling && (
+            <button
+              onClick={handleCancelClick}
+              onBlur={handleCancelBlur}
+              style={confirming ? dangerButtonStyle : ghostButtonStyle}
+            >
+              {confirming ? 'Confirm cancel?' : 'Cancel'}
+            </button>
+          )}
+        </div>
       </div>
     </div>
   )
 }
 
-export default function JobsPanel({ jobs, error, onCancel, onRefresh }) {
+export default function JobsPanel({ jobs, error, onCancel, onRefresh, onViewResult }) {
   return (
     <div style={{
       flex:          1,
@@ -105,7 +207,7 @@ export default function JobsPanel({ jobs, error, onCancel, onRefresh }) {
           </div>
         )}
         {jobs.map(job => (
-          <JobRow key={job.job_handle} job={job} onCancel={onCancel} />
+          <JobRow key={job.job_handle} job={job} onCancel={onCancel} onViewResult={onViewResult} />
         ))}
       </div>
     </div>

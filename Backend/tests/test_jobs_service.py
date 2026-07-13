@@ -145,6 +145,83 @@ class ListJobsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(jobs[0]["status"], "failed")
         self.assertEqual(jobs[0]["message"], "harmony: provider GES_DISC rejected request: invalid bbox")
 
+    async def test_list_jobs_passes_through_prd021s_enriched_status_fields_untouched(self):
+        """list_jobs is a thin composite (entry | status merge) — PRD 021's
+        curated request_spec slice on get_retrieval_status must reach the
+        frontend verbatim, with no backend-side reshaping (T27)."""
+        from services.jobs_service import list_jobs
+
+        async def list_workspace(workspace_id):
+            return {
+                "handles": [
+                    {
+                        "handle": "job_4", "type": "job", "created_at": "2026-07-01T00:00:00Z",
+                        "summary": {"dataset_handle": "TEMPO_NO2"},
+                    },
+                ]
+            }
+
+        async def get_retrieval_status(job_handle, workspace_id):
+            return {
+                "job_handle": "job_4",
+                "status": "running",
+                "progress": 40,
+                "phase": "processing",
+                "short_name": "TEMPO_NO2_L3",
+                "variables": ["product/vertical_column_troposphere"],
+                "aoi_bbox": [-75.5, 39.5, -74.0, 41.0],
+                "time_range": "2026-06-01T00:00:00/2026-06-30T23:59:59",
+                "provider": "harmony",
+                "output_format": "application/netcdf4",
+                "granule_count": 30,
+            }
+
+        tools = await self._tools({
+            "list_workspace": list_workspace,
+            "get_retrieval_status": get_retrieval_status,
+        })
+
+        jobs = await list_jobs(tools)
+
+        self.assertEqual(jobs[0]["short_name"], "TEMPO_NO2_L3")
+        self.assertEqual(jobs[0]["variables"], ["product/vertical_column_troposphere"])
+        self.assertEqual(jobs[0]["aoi_bbox"], [-75.5, 39.5, -74.0, 41.0])
+        self.assertEqual(jobs[0]["time_range"], "2026-06-01T00:00:00/2026-06-30T23:59:59")
+        self.assertEqual(jobs[0]["provider"], "harmony")
+        self.assertEqual(jobs[0]["output_format"], "application/netcdf4")
+        self.assertEqual(jobs[0]["granule_count"], 30)
+
+    async def test_list_jobs_degrades_one_unreadable_status_instead_of_failing_the_panel(self):
+        """The status fan-out is fault-isolated: a single job whose
+        get_retrieval_status returns an error envelope degrades to a
+        status:"error" row, and every healthy sibling still lists."""
+        from services.jobs_service import list_jobs
+
+        async def list_workspace(workspace_id):
+            return {
+                "handles": [
+                    {"handle": "job_ok", "type": "job", "created_at": "2026-07-02T00:00:00Z", "summary": {}},
+                    {"handle": "job_bad", "type": "job", "created_at": "2026-07-01T00:00:00Z", "summary": {}},
+                ]
+            }
+
+        async def get_retrieval_status(job_handle, workspace_id):
+            if job_handle == "job_bad":
+                return {"error": {"category": "provider_unavailable", "message": "status read failed"}}
+            return {"job_handle": "job_ok", "status": "running", "progress": 20, "phase": "processing"}
+
+        tools = await self._tools({
+            "list_workspace": list_workspace,
+            "get_retrieval_status": get_retrieval_status,
+        })
+
+        jobs = await list_jobs(tools)
+
+        by_handle = {job["job_handle"]: job for job in jobs}
+        self.assertEqual(len(jobs), 2)
+        self.assertEqual(by_handle["job_ok"]["status"], "running")
+        self.assertEqual(by_handle["job_bad"]["status"], "error")
+
 
 @unittest.skipIf(
     any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
@@ -177,6 +254,21 @@ class CancelJobTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, {"job_handle": "job_1", "status": "cancelled"})
         self.assertEqual(calls["job_handle"], "job_1")
+
+    async def test_cancel_job_passes_through_prd021s_upstream_flag_untouched(self):
+        """cancel_job is a thin proxy — PRD 021's `upstream` outcome
+        ("requested"/"unsupported"/"already_terminal"/"error") must reach the
+        frontend verbatim so the cancel UX can render an honest line (T27)."""
+        from services.jobs_service import cancel_job
+
+        async def cancel_retrieval(job_handle, workspace_id):
+            return {"job_handle": job_handle, "status": "cancelled", "cancelled": True, "upstream": "requested"}
+
+        tools = await self._tools({"cancel_retrieval": cancel_retrieval})
+
+        result = await cancel_job("job_1", tools)
+
+        self.assertEqual(result["upstream"], "requested")
 
 
 if __name__ == "__main__":

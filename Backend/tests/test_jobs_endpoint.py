@@ -134,6 +134,36 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(jobs2[0]["status"], "failed")
         self.assertEqual(jobs2[0]["message"], "harmony: provider GES_DISC rejected request: invalid bbox")
 
+    async def test_get_jobs_surfaces_prd021s_enriched_status_fields(self):
+        """The /jobs endpoint is a thin HTTP wrapper over list_jobs — PRD
+        021's curated request_spec slice must reach the frontend verbatim
+        (T27's card reads short_name/variables/aoi_bbox/etc. straight off
+        the job)."""
+        self.statuses["job_1"] = {
+            **self.statuses["job_1"],
+            "short_name": "TEMPO_NO2_L3",
+            "variables": ["product/vertical_column_troposphere"],
+            "aoi_bbox": [-75.5, 39.5, -74.0, 41.0],
+            "time_range": "2026-06-01T00:00:00/2026-06-30T23:59:59",
+            "provider": "harmony",
+            "output_format": "application/netcdf4",
+            "granule_count": 30,
+        }
+
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        auth_patches = self._auth_patch()
+        with auth_patches[0], auth_patches[1]:
+            async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                res = await client.get("/jobs", headers=self.auth_headers1)
+
+        job = res.json()["jobs"][0]
+        self.assertEqual(job["short_name"], "TEMPO_NO2_L3")
+        self.assertEqual(job["variables"], ["product/vertical_column_troposphere"])
+        self.assertEqual(job["aoi_bbox"], [-75.5, 39.5, -74.0, 41.0])
+        self.assertEqual(job["provider"], "harmony")
+        self.assertEqual(job["output_format"], "application/netcdf4")
+        self.assertEqual(job["granule_count"], 30)
+
     async def test_cancel_job_proxies_the_mcp_and_scopes_to_the_caller(self):
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
@@ -144,6 +174,44 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"job_handle": "job_1", "status": "cancelled"})
         self.assertEqual(self.cancel_calls, [("job_1", "user-user-1")])
+
+    async def test_cancel_job_surfaces_prd021s_upstream_flag(self):
+        """The cancel endpoint proxies cancel_retrieval's `upstream` outcome
+        verbatim so the panel can render an honest provider-cancel line.
+
+        Spins up its own fake MCP (rather than reusing asyncSetUp's, whose
+        handlers are already baked into a running server) and swaps it onto
+        app.state for the duration of the call."""
+        from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
+        from earthdata_mcp.toolset import load_earthdata_tools
+        from config.settings import Settings
+        from utils.streaming import current_user_id
+
+        cancel_calls = []
+
+        async def cancel_retrieval(job_handle, workspace_id):
+            cancel_calls.append((job_handle, workspace_id))
+            return {"job_handle": job_handle, "status": "cancelled", "cancelled": True, "upstream": "requested"}
+
+        server = FakeEarthdataMCPServer(build_fake_mcp({"cancel_retrieval": cancel_retrieval}))
+        server.start()
+        self.addCleanup(server.stop)
+        settings = Settings(earthdata_mcp_url=server.url, earthdata_mcp_token=None)
+        tools = await load_earthdata_tools(settings, current_user_id)
+
+        original_manager = self.api.app.state.earthdata_mcp_manager
+        self.api.app.state.earthdata_mcp_manager = SimpleNamespace(state="ready", tools=tools)
+        self.addCleanup(setattr, self.api.app.state, "earthdata_mcp_manager", original_manager)
+
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        auth_patches = self._auth_patch()
+        with auth_patches[0], auth_patches[1]:
+            async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                response = await client.post("/jobs/job_1/cancel", headers=self.auth_headers1)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["upstream"], "requested")
+        self.assertEqual(cancel_calls, [("job_1", "user-user-1")])
 
     async def test_jobs_fails_honestly_when_the_mcp_is_not_ready(self):
         original_manager = self.api.app.state.earthdata_mcp_manager

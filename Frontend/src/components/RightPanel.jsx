@@ -4,7 +4,7 @@ import JobsPanel from './JobsPanel'
 
 const TERMINAL_STATUSES = new Set(['ready', 'failed', 'expired', 'cancelled'])
 
-export default function RightPanel({ discovery, jobs, jobsError, onCancelJob, onRefreshJobs, onRetrieve }) {
+export default function RightPanel({ discovery, jobs, jobsError, onCancelJob, onRefreshJobs, onRetrieve, onViewResult }) {
   const [tab, setTab] = useState('discover')
   const hasRunningJobs = jobs.some(job => !TERMINAL_STATUSES.has(job.status))
 
@@ -72,7 +72,7 @@ export default function RightPanel({ discovery, jobs, jobsError, onCancelJob, on
       )}
 
       {tab === 'jobs' && (
-        <JobsPanel jobs={jobs} error={jobsError} onCancel={onCancelJob} onRefresh={onRefreshJobs} />
+        <JobsPanel jobs={jobs} error={jobsError} onCancel={onCancelJob} onRefresh={onRefreshJobs} onViewResult={onViewResult} />
       )}
     </div>
   )
