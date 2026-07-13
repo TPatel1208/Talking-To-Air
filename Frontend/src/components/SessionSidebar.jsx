@@ -88,7 +88,7 @@ function FileRow({ tag, title, subtitle, onDownload }) {
   )
 }
 
-export default function SessionSidebar({ sessions, threadId, onSwitch, onNew, onDelete, onLogout, images = [], artifacts = [], accessToken }) {
+export default function SessionSidebar({ sessions, threadId, onSwitch, onNew, onDelete, onLogout, images = [], artifacts = [], accessToken, onCollapse }) {
   const [nav, setNav] = useState('chats')
 
   const getSessionId = (session) => typeof session === 'string' ? session : session?.id
@@ -114,17 +114,35 @@ export default function SessionSidebar({ sessions, threadId, onSwitch, onNew, on
       overflow:      'hidden',
       padding:       '16px 14px',
     }}>
-      <div
-        onClick={onNew}
-        style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px',
-          padding: '9px 12px', borderRadius: '9px', background: 'var(--teal)', color: 'white',
-          fontWeight: 700, fontSize: '13px', marginBottom: '16px', cursor: 'pointer',
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
-          <span style={{ fontSize: '15px', lineHeight: 1 }}>+</span> New chat
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+        <div
+          onClick={onNew}
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px',
+            padding: '9px 12px', borderRadius: '9px', background: 'var(--teal)', color: 'white',
+            fontWeight: 700, fontSize: '13px', cursor: 'pointer', flex: 1,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
+            <span style={{ fontSize: '15px', lineHeight: 1 }}>+</span> New chat
+          </div>
         </div>
+        {onCollapse && (
+          <button
+            type="button"
+            onClick={onCollapse}
+            title="Collapse sessions"
+            aria-label="Collapse sessions"
+            style={{
+              background: 'transparent', border: 'none', padding: '2px', cursor: 'pointer',
+              display: 'flex', flexShrink: 0, color: 'var(--text-muted)',
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="15 6 9 12 15 18" />
+            </svg>
+          </button>
+        )}
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1px', marginBottom: '16px' }}>
