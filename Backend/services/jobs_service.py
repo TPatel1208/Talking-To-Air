@@ -15,8 +15,14 @@ from typing import Any
 
 from langchain_core.tools import BaseTool
 
-from earthdata_mcp.results import parse_tool_result
+from earthdata_mcp.results import MCPToolError, parse_tool_result
 from services.retrieval_composites import TERMINAL_STATUSES
+
+# Cap the get_retrieval_status fan-out: a workspace accumulates jobs over its
+# lifetime (hundreds in practice) and the panel refetches the whole list on
+# every load, so an unbounded gather would fire one MCP round-trip per job all
+# at once. 8 keeps the panel responsive without stampeding the MCP/worker.
+_STATUS_FANOUT_LIMIT = 8
 
 
 async def list_jobs(tools: dict[str, BaseTool]) -> list[dict[str, Any]]:
@@ -28,6 +34,11 @@ async def list_jobs(tools: dict[str, BaseTool]) -> list[dict[str, Any]]:
     composite (and the frontend) expect. Active (non-terminal) jobs sort
     first, newest-first within each group, so a researcher sees what's still
     running before what's already finished.
+
+    The per-handle ``get_retrieval_status`` fan-out is bounded and fault-
+    isolated: a single job whose status can't be read degrades to a
+    ``status: "error"`` row rather than failing the whole panel, so one bad
+    handle never blanks every healthy sibling.
     """
     workspace_raw = await tools["list_workspace"].ainvoke({})
     workspace = parse_tool_result(workspace_raw)
@@ -37,13 +48,22 @@ async def list_jobs(tools: dict[str, BaseTool]) -> list[dict[str, Any]]:
         if handle.get("type") == "job"
     ]
 
-    statuses = await asyncio.gather(*(
-        tools["get_retrieval_status"].ainvoke({"job_handle": entry["job_handle"]})
-        for entry in entries
-    ))
+    status_tool = tools["get_retrieval_status"]
+    semaphore = asyncio.Semaphore(_STATUS_FANOUT_LIMIT)
+
+    async def status_for(entry: dict[str, Any]) -> dict[str, Any]:
+        async with semaphore:
+            try:
+                return parse_tool_result(
+                    await status_tool.ainvoke({"job_handle": entry["job_handle"]})
+                )
+            except MCPToolError as exc:
+                return {"status": "error", "message": str(exc)}
+
+    statuses = await asyncio.gather(*(status_for(entry) for entry in entries))
 
     jobs = [
-        {**entry, **parse_tool_result(status)}
+        {**entry, **status}
         for entry, status in zip(entries, statuses)
     ]
     jobs.sort(key=lambda job: job.get("created_at") or "", reverse=True)
