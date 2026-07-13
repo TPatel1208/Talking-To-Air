@@ -202,7 +202,7 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, accessToke
             id: 'overlay',
             type: 'raster',
             source: 'overlay',
-            paint: { 'raster-resampling': 'linear', 'raster-fade-duration': 0 },
+            paint: { 'raster-resampling': 'nearest', 'raster-fade-duration': 0 },
           })
         }
         return

@@ -5,10 +5,9 @@
  * slot/badge/cap shell (App.jsx, compareMode.js) but render differently:
  *
  * - heatmap (T28): one independent, fully interactive MapLibreHeatmapPanel
- *   per filled slot -- own pan/zoom/hover, no synced viewport. Reuses
- *   HeatmapMultiPanel's grid-column convention (repeat(min(n,3)) columns --
- *   2 gives one row of 2, 3-4 fills the top row and wraps the rest to a
- *   second row). When every filled slot shares the same variable/units, all
+ *   per filled slot -- own pan/zoom/hover, no synced viewport. Grid is
+ *   repeat(min(n,2)) columns -- 2 gives one row of 2, 3 gives a 2+1 layout,
+ *   4 gives a proper 2x2. When every filled slot shares the same variable/units, all
  *   panels are recolored onto one shared vmin/vmax/colormap and render one
  *   shared legend here instead of their own; otherwise each panel keeps its
  *   own natively computed scale and legend, with an inline note explaining
@@ -80,7 +79,7 @@ function SlotGrid({ compareCount, compareSelection, height, hint, renderChart })
         minHeight: 0,
         overflow: 'auto',
         display: 'grid',
-        gridTemplateColumns: `repeat(${Math.min(compareCount, 3)}, 1fr)`,
+        gridTemplateColumns: `repeat(${Math.min(compareCount, 2)}, 1fr)`,
         gap: '14px',
         alignContent: 'start',
       }}
@@ -195,7 +194,7 @@ function TimeSeriesCompareBody({ compareCount, compareSelection, height }) {
   )
 }
 
-export default function CompareGrid({ compareCount, compareSelection, accessToken, autoScaleEach, onToggleAutoScale, height = 300 }) {
+export default function CompareGrid({ compareCount, compareSelection, accessToken, autoScaleEach, onToggleAutoScale, height = 420 }) {
   const kind = activeCompareKind(compareSelection)
 
   if (kind === 'timeseries') {

@@ -242,7 +242,7 @@ export default function OutputPanel({
 
   const availableTabs = chart ? (CHART_TABS[chart.type] || ['metadata']) : []
   const [activeTab, setActiveTab] = useState(availableTabs[0])
-  const [autoScaleEach, setAutoScaleEach] = useState(false)
+  const [autoScaleEach, setAutoScaleEach] = useState(true)
   const plotRootRef = useRef(null)
 
   useEffect(() => {
