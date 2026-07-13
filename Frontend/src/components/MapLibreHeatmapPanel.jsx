@@ -151,11 +151,24 @@ function addBorderLayer(map, geojson) {
   })
 }
 
-export default function MapLibreHeatmapPanel({ payload, height = 420, accessToken }) {
+export default function MapLibreHeatmapPanel({ payload, height = 420, accessToken, colorScaleOverride = null, hideLegend = false }) {
   const { title, variable, units, vmin, vmax, colormap, overlay, bounds, lats, lons } = payload
   const containerRef = useRef(null)
   const mapRef = useRef(null)
   const [hover, setHover] = useState(null)
+
+  // An externally supplied vmin/vmax/colormap wins over the payload's own --
+  // this is the hook compare mode's shared-scale logic (T28) uses to recolor
+  // every panel onto one range. The server-rendered overlay PNG is baked
+  // with the payload's native scale and can't be recolored client-side, so
+  // an override always forces the canvas-fallback path (rendered from the
+  // same lats/lons/values arrays hover already reads).
+  const effectiveVmin = colorScaleOverride?.vmin ?? vmin
+  const effectiveVmax = colorScaleOverride?.vmax ?? vmax
+  const effectiveColormap = colorScaleOverride?.colormap ?? colormap
+
+  const overrideRef = useRef(colorScaleOverride)
+  useEffect(() => { overrideRef.current = colorScaleOverride }, [colorScaleOverride])
 
   const [minx, miny, maxx, maxy] = bounds || [
     Math.min(...(lons || [])), Math.min(...(lats || [])),
@@ -167,6 +180,40 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, accessToke
     let map = null
     let basemapFailed = false
     let terrainFailed = false
+
+    // Renders the data overlay using whatever scale is current at call
+    // time (overrideRef, not the closed-over prop) -- either the server PNG
+    // (native scale, no override active) or a canvas frame built from the
+    // payload's arrays at the effective vmin/vmax/colormap.
+    const drawOverlay = (map) => {
+      const override = overrideRef.current
+      if (!override && overlay?.url) {
+        if (map.getLayer('overlay')) map.removeLayer('overlay')
+        if (map.getSource('overlay-canvas')) map.removeSource('overlay-canvas')
+        if (!map.getSource('overlay')) {
+          map.addSource('overlay', {
+            type: 'image',
+            url: `/api${overlay.url}`,
+            coordinates: overlayCornersFromBounds(overlay.bounds || bounds),
+          })
+        }
+        if (!map.getLayer('overlay')) {
+          map.addLayer({
+            id: 'overlay',
+            type: 'raster',
+            source: 'overlay',
+            paint: { 'raster-resampling': 'linear', 'raster-fade-duration': 0 },
+          })
+        }
+        return
+      }
+      addCanvasFallbackOverlay(map, {
+        ...payload,
+        vmin: override?.vmin ?? vmin,
+        vmax: override?.vmax ?? vmax,
+        colormap: override?.colormap ?? colormap,
+      })
+    }
 
     fetchTileConfig().then(tileConfig => {
       if (cancelled || !containerRef.current) return
@@ -196,7 +243,13 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, accessToke
           terrainFailed = true
           if (map.getLayer('hillshade')) map.setLayoutProperty('hillshade', 'visibility', 'none')
         } else if (sourceId === 'overlay') {
-          addCanvasFallbackOverlay(map, payload)
+          const override = overrideRef.current
+          addCanvasFallbackOverlay(map, {
+            ...payload,
+            vmin: override?.vmin ?? vmin,
+            vmax: override?.vmax ?? vmax,
+            colormap: override?.colormap ?? colormap,
+          })
         }
       })
 
@@ -209,21 +262,7 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, accessToke
         map.resize()
         map.fitBounds([[minx, miny], [maxx, maxy]], { padding: 24, animate: false })
 
-        if (overlay?.url) {
-          map.addSource('overlay', {
-            type: 'image',
-            url: `/api${overlay.url}`,
-            coordinates: overlayCornersFromBounds(overlay.bounds || bounds),
-          })
-          map.addLayer({
-            id: 'overlay',
-            type: 'raster',
-            source: 'overlay',
-            paint: { 'raster-resampling': 'linear', 'raster-fade-duration': 0 },
-          })
-        } else {
-          addCanvasFallbackOverlay(map, payload)
-        }
+        drawOverlay(map)
 
         if (isConusBounds(minx, miny, maxx, maxy)) {
           fetchUsStatesGeoJSON().then(geojson => {
@@ -249,7 +288,24 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, accessToke
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [payload])
 
-  const { gradientStops, ticks } = colorbarGeometry({ vmin, vmax, lut: colormap?.lut, tickCount: 5 })
+  // Recolor in place when the override changes after the map has already
+  // loaded (e.g. compare mode's "auto-scale each" toggle) -- no need to
+  // rebuild the whole WebGL map just to switch the overlay's color scale.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !map.isStyleLoaded()) return
+    const override = colorScaleOverride
+    if (!override && overlay?.url) return // native PNG already showing, nothing to redraw
+    addCanvasFallbackOverlay(map, {
+      ...payload,
+      vmin: override?.vmin ?? vmin,
+      vmax: override?.vmax ?? vmax,
+      colormap: override?.colormap ?? colormap,
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [colorScaleOverride])
+
+  const { gradientStops, ticks } = colorbarGeometry({ vmin: effectiveVmin, vmax: effectiveVmax, lut: effectiveColormap?.lut, tickCount: 5 })
 
   return (
     <div style={{ width: '100%' }}>
@@ -286,7 +342,7 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, accessToke
           </div>
         )}
 
-        <MapColorbar gradientStops={gradientStops} ticks={ticks} units={units} />
+        {!hideLegend && <MapColorbar gradientStops={gradientStops} ticks={ticks} units={units} />}
       </div>
     </div>
   )

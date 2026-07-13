@@ -5,7 +5,32 @@ import SessionSidebar from './components/SessionSidebar'
 import { useChat } from './hooks/useChat'
 import { useDiscovery } from './hooks/useDiscovery'
 import { useJobs } from './hooks/useJobs'
+import { createEmptySelection, toggleSlot } from './utils/compareMode'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+
+// Thin clickable rail standing in for a side column while it's collapsed
+// (compare mode, T28) -- keeps a one-click way back rather than the column
+// just vanishing.
+function CollapsedRail({ label, onExpand }) {
+  return (
+    <button
+      type="button"
+      onClick={onExpand}
+      title={`Show ${label}`}
+      aria-label={`Show ${label}`}
+      style={{
+        width: '28px', flexShrink: 0, border: 'none', cursor: 'pointer',
+        background: 'var(--bg-card)', color: 'var(--text-muted)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)',
+      }}
+    >
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <polyline points="9 18 15 12 9 6" />
+      </svg>
+    </button>
+  )
+}
 
 const API_BASE = '/api'
 const AUTH_STORAGE_KEY = 'tta.accessToken'
@@ -223,15 +248,54 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
     wasLoadingRef.current = loading
   }, [loading, messages])
 
+  // Compare mode (T28): off | choosing-count | active. Pure in-memory state,
+  // owned here alongside focusedOutput -- no new store, no persistence, and
+  // it resets on reload or session switch exactly like focusedOutput does.
+  const [compareMode, setCompareMode] = useState('off')
+  const [compareCount, setCompareCount] = useState(2)
+  const [compareSelection, setCompareSelection] = useState([])
+  const [sideColumnsCollapsed, setSideColumnsCollapsed] = useState(false)
+  const manualExpandRef = useRef(false)
+
+  const resetCompare = useCallback(() => {
+    setCompareMode('off')
+    setCompareSelection([])
+    setSideColumnsCollapsed(false)
+    manualExpandRef.current = false
+  }, [])
+
+  const startChoosingCompare = useCallback(() => setCompareMode('choosing-count'), [])
+  const cancelChoosingCompare = useCallback(() => setCompareMode('off'), [])
+
+  const enterCompare = useCallback((count) => {
+    setCompareCount(count)
+    setCompareSelection(createEmptySelection(count))
+    setCompareMode('active')
+    if (!manualExpandRef.current) setSideColumnsCollapsed(true)
+  }, [])
+
+  const exitCompare = useCallback(() => resetCompare(), [resetCompare])
+
+  const expandSideColumns = useCallback(() => {
+    manualExpandRef.current = true
+    setSideColumnsCollapsed(false)
+  }, [])
+
+  const toggleCompareSlot = useCallback((chart) => {
+    setCompareSelection(prev => toggleSlot(prev, chart).selection)
+  }, [])
+
   const handleNewSession = useCallback(() => {
     setFocusedOutput(null)
+    resetCompare()
     newSession()
-  }, [newSession])
+  }, [newSession, resetCompare])
 
   const handleSwitchSession = useCallback((id) => {
     setFocusedOutput(null)
+    resetCompare()
     switchSession(id)
-  }, [switchSession])
+  }, [switchSession, resetCompare])
 
   const chatTitle = useMemo(() => {
     const active = sessions.find(session => (typeof session === 'string' ? session : session?.id) === threadId)
@@ -276,17 +340,21 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
       overflow:   'hidden',
       background: 'var(--bg-primary)',
     }}>
-      <SessionSidebar
-        sessions={sessions}
-        threadId={threadId}
-        onSwitch={handleSwitchSession}
-        onNew={handleNewSession}
-        onDelete={deleteSession}
-        onLogout={handleLogout}
-        images={images}
-        artifacts={artifacts}
-        accessToken={accessToken}
-      />
+      {sideColumnsCollapsed ? (
+        <CollapsedRail label="sessions" onExpand={expandSideColumns} />
+      ) : (
+        <SessionSidebar
+          sessions={sessions}
+          threadId={threadId}
+          onSwitch={handleSwitchSession}
+          onNew={handleNewSession}
+          onDelete={deleteSession}
+          onLogout={handleLogout}
+          images={images}
+          artifacts={artifacts}
+          accessToken={accessToken}
+        />
+      )}
 
       <div style={{ width: '380px', flexShrink: 0, borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <Chat
@@ -300,20 +368,37 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
           onClearError={clearError}
           focusedOutput={focusedOutput}
           onFocusOutput={setFocusedOutput}
+          compareMode={compareMode}
+          compareSelection={compareSelection}
+          onToggleCompareSlot={toggleCompareSlot}
         />
       </div>
 
-      <OutputPanel focusedOutput={focusedOutput} accessToken={accessToken} />
-
-      <RightPanel
-        discovery={discovery}
-        jobs={jobs}
-        jobsError={jobsError}
-        onCancelJob={cancelJob}
-        onRefreshJobs={fetchJobs}
-        onRetrieve={handleRetrieve}
-        onViewResult={handleViewResult}
+      <OutputPanel
+        focusedOutput={focusedOutput}
+        accessToken={accessToken}
+        compareMode={compareMode}
+        compareCount={compareCount}
+        compareSelection={compareSelection}
+        onStartCompare={startChoosingCompare}
+        onCancelChooseCompare={cancelChoosingCompare}
+        onEnterCompare={enterCompare}
+        onExitCompare={exitCompare}
       />
+
+      {sideColumnsCollapsed ? (
+        <CollapsedRail label="jobs and discover" onExpand={expandSideColumns} />
+      ) : (
+        <RightPanel
+          discovery={discovery}
+          jobs={jobs}
+          jobsError={jobsError}
+          onCancelJob={cancelJob}
+          onRefreshJobs={fetchJobs}
+          onRetrieve={handleRetrieve}
+          onViewResult={handleViewResult}
+        />
+      )}
     </div>
   )
 }
