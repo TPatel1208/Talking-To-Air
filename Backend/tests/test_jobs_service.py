@@ -222,6 +222,48 @@ class ListJobsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(by_handle["job_ok"]["status"], "running")
         self.assertEqual(by_handle["job_bad"]["status"], "error")
 
+    async def test_list_jobs_degrades_one_raw_exception_instead_of_failing_the_panel(self):
+        """Fault isolation must hold for *any* failure mode a status call
+        raises, not just ones the MCP adapter classifies as MCPToolError --
+        a raw exception (e.g. a transport-level error the adapter doesn't
+        wrap, or a bug in parsing the response) must degrade that single row
+        instead of blowing up the whole asyncio.gather and blanking every
+        healthy sibling."""
+        from services.jobs_service import list_jobs
+
+        async def list_workspace(workspace_id):
+            return {
+                "handles": [
+                    {"handle": "job_ok", "type": "job", "created_at": "2026-07-02T00:00:00Z", "summary": {}},
+                    {"handle": "job_bad", "type": "job", "created_at": "2026-07-01T00:00:00Z", "summary": {}},
+                ]
+            }
+
+        async def get_retrieval_status(job_handle, workspace_id):
+            return {"job_handle": "job_ok", "status": "running", "progress": 20, "phase": "processing"}
+
+        tools = await self._tools({
+            "list_workspace": list_workspace,
+            "get_retrieval_status": get_retrieval_status,
+        })
+
+        real_status_tool = tools["get_retrieval_status"]
+
+        class RaisesRawExceptionForJobBad:
+            async def ainvoke(self, args):
+                if args["job_handle"] == "job_bad":
+                    raise RuntimeError("connection reset by peer")
+                return await real_status_tool.ainvoke(args)
+
+        tools = {**tools, "get_retrieval_status": RaisesRawExceptionForJobBad()}
+
+        jobs = await list_jobs(tools)
+
+        by_handle = {job["job_handle"]: job for job in jobs}
+        self.assertEqual(len(jobs), 2)
+        self.assertEqual(by_handle["job_ok"]["status"], "running")
+        self.assertEqual(by_handle["job_bad"]["status"], "error")
+
 
 @unittest.skipIf(
     any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
