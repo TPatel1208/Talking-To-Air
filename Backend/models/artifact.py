@@ -9,7 +9,7 @@ class MapArtifactMetadata(BaseModel):
     bbox: list[float]
     variable: str
     units: str
-    colorbar: dict[str, float]
+    colorbar: dict[str, float | None]
     source_handles: list[str] = Field(default_factory=list)
 
     @field_validator("bbox")
@@ -21,7 +21,7 @@ class MapArtifactMetadata(BaseModel):
 
     @field_validator("colorbar")
     @classmethod
-    def _colorbar_has_vmin_vmax(cls, v: dict[str, float]) -> dict[str, float]:
+    def _colorbar_has_vmin_vmax(cls, v: dict[str, float | None]) -> dict[str, float | None]:
         if "vmin" not in v or "vmax" not in v:
             raise ValueError("colorbar must include both 'vmin' and 'vmax'")
         return v

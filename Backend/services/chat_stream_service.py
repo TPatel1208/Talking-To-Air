@@ -228,6 +228,10 @@ class ChatStreamService:
             if not task.done():
                 task.cancel()
 
+        # run() puts __result__ before __task_done__ on every non-exception
+        # path, and the except block above returns before this point on
+        # __error__ — so reaching here guarantees result was set.
+        assert result is not None
         for chart in result.charts:
             event = await self._emit_chart_once(thread_id, chart, user_id, emitted_chart_ids)
             if event is not None:
