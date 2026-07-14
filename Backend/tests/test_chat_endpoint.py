@@ -33,6 +33,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.httpx = httpx
         self.api = api
         self.api.app.state.agent = object()
+        self.api.app.state.earthdata_mcp_tools = {}
         self.user = User(
             id="user-1",
             username="tester",
@@ -54,8 +55,8 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
             patch("services.auth_service.is_token_revoked", fake_is_token_revoked)
 
     async def test_chat_streams_done_event(self):
-        async def fake_stream_response(agent, message, thread_id):
-            yield "status", {"message": "Downloading satellite granules..."}
+        async def fake_stream_response(agent, message, thread_id, **kwargs):
+            yield "status", {"message": "Downloading satellite granules...", "stage": "progress", "detail": 40}
             yield "text", "hello"
 
         async def fake_save_session_metadata_once(thread_id, first_message, user_id):
@@ -75,6 +76,10 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("event: status", response.text)
         self.assertIn('"message": "Downloading satellite granules..."', response.text)
+        # T19: the supervisor path's own status forwarding must not rebuild
+        # a message-only payload — stage/detail have to survive to the wire.
+        self.assertIn('"stage": "progress"', response.text)
+        self.assertIn('"detail": 40', response.text)
         self.assertIn("event: done", response.text)
         self.assertIn('"response": "hello"', response.text)
         self.assertEqual(fake_save_session_metadata_once.called_with[2], self.user.id)
@@ -168,6 +173,163 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(png_response.headers["content-type"], "image/png")
         self.assertEqual(png_response.content, b"\x89PNG\r\n\x1a\n")
 
+    async def test_chart_overlay_endpoint_streams_the_stored_png(self):
+        import os
+        import tempfile
+
+        fd, overlay_path = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        with open(overlay_path, "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\nOVERLAYBYTES")
+
+        payload = {
+            "chart_id": "chart-1",
+            "title": "TEMPO over Texas",
+            "overlay": {"bounds": [0, 0, 1, 1], "_path": overlay_path},
+            "user_id": self.user.id,
+        }
+
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        async def fake_get_chart(chart_id):
+            return payload
+
+        try:
+            auth_patches = self._auth_patch()
+            with auth_patches[0], auth_patches[1], \
+                 patch.object(self.api.chart_service, "get_chart", fake_get_chart):
+                async with self.httpx.AsyncClient(
+                    transport=transport,
+                    base_url="http://testserver",
+                ) as client:
+                    response = await client.get("/chart/chart-1/overlay.png", headers=self.auth_headers)
+        finally:
+            os.remove(overlay_path)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-type"], "image/png")
+        self.assertEqual(response.content, b"\x89PNG\r\n\x1a\nOVERLAYBYTES")
+
+    async def test_chart_overlay_endpoint_serves_the_requested_panel(self):
+        import os
+        import tempfile
+
+        fd, path_a = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        with open(path_a, "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\nPANEL_A")
+        fd, path_b = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        with open(path_b, "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\nPANEL_B")
+
+        payload = {
+            "chart_id": "chart-1",
+            "type": "heatmap_multi",
+            "panels": [
+                {"overlay": {"bounds": [0, 0, 1, 1], "_path": path_a}},
+                {"overlay": {"bounds": [0, 0, 1, 1], "_path": path_b}},
+            ],
+            "user_id": self.user.id,
+        }
+
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        async def fake_get_chart(chart_id):
+            return payload
+
+        try:
+            auth_patches = self._auth_patch()
+            with auth_patches[0], auth_patches[1], \
+                 patch.object(self.api.chart_service, "get_chart", fake_get_chart):
+                async with self.httpx.AsyncClient(
+                    transport=transport,
+                    base_url="http://testserver",
+                ) as client:
+                    resp_a = await client.get("/chart/chart-1/overlay.png?panel=0", headers=self.auth_headers)
+                    resp_b = await client.get("/chart/chart-1/overlay.png?panel=1", headers=self.auth_headers)
+                    resp_missing = await client.get("/chart/chart-1/overlay.png?panel=5", headers=self.auth_headers)
+        finally:
+            os.remove(path_a)
+            os.remove(path_b)
+
+        self.assertEqual(resp_a.content, b"\x89PNG\r\n\x1a\nPANEL_A")
+        self.assertEqual(resp_b.content, b"\x89PNG\r\n\x1a\nPANEL_B")
+        self.assertEqual(resp_missing.status_code, 404)
+
+    async def test_chart_overlay_endpoint_serves_the_difference_panel(self):
+        import os
+        import tempfile
+
+        fd, path = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        with open(path, "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\nDIFF")
+
+        payload = {
+            "chart_id": "chart-1",
+            "type": "heatmap_multi",
+            "mode": "difference",
+            "difference": {"overlay": {"bounds": [0, 0, 1, 1], "_path": path}},
+            "user_id": self.user.id,
+        }
+
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        async def fake_get_chart(chart_id):
+            return payload
+
+        try:
+            auth_patches = self._auth_patch()
+            with auth_patches[0], auth_patches[1], \
+                 patch.object(self.api.chart_service, "get_chart", fake_get_chart):
+                async with self.httpx.AsyncClient(
+                    transport=transport,
+                    base_url="http://testserver",
+                ) as client:
+                    response = await client.get("/chart/chart-1/overlay.png", headers=self.auth_headers)
+        finally:
+            os.remove(path)
+
+        self.assertEqual(response.content, b"\x89PNG\r\n\x1a\nDIFF")
+
+    async def test_chart_overlay_endpoint_404s_when_no_overlay_was_rendered(self):
+        payload = {"chart_id": "chart-1", "title": "TEMPO over Texas", "user_id": self.user.id}
+
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        async def fake_get_chart(chart_id):
+            return payload
+
+        auth_patches = self._auth_patch()
+        with auth_patches[0], auth_patches[1], \
+             patch.object(self.api.chart_service, "get_chart", fake_get_chart):
+            async with self.httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                response = await client.get("/chart/chart-1/overlay.png", headers=self.auth_headers)
+
+        self.assertEqual(response.status_code, 404)
+
+    async def test_chart_overlay_endpoint_404s_for_another_users_chart(self):
+        payload = {
+            "chart_id": "chart-1",
+            "overlay": {"bounds": [0, 0, 1, 1], "_path": "/does/not/matter.png"},
+            "user_id": "someone-else",
+        }
+
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        async def fake_get_chart(chart_id):
+            return payload
+
+        auth_patches = self._auth_patch()
+        with auth_patches[0], auth_patches[1], \
+             patch.object(self.api.chart_service, "get_chart", fake_get_chart):
+            async with self.httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                response = await client.get("/chart/chart-1/overlay.png", headers=self.auth_headers)
+
+        self.assertEqual(response.status_code, 404)
+
     async def test_artifact_endpoints_return_paginated_rows_and_csv(self):
         from services.artifact_store import artifact_store
 
@@ -199,29 +361,6 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("epa-summary.csv", csv_response.headers["content-disposition"])
         self.assertIn(b"2024-01-01,10", csv_response.content)
 
-    async def test_admin_cache_prune_endpoint_returns_summary(self):
-        class FakeCache:
-            async def prune(self, older_than_days):
-                FakeCache.called_with = older_than_days
-                return {"pruned_entries": 2, "bytes_freed": 128}
-
-        self.api.app.state.data_loader = SimpleNamespace(_cache=FakeCache())
-        transport = self.httpx.ASGITransport(app=self.api.app)
-        auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1]:
-            async with self.httpx.AsyncClient(
-                transport=transport,
-                base_url="http://testserver",
-            ) as client:
-                response = await client.delete(
-                    "/admin/cache/prune?older_than_days=7",
-                    headers=self.auth_headers,
-                )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"pruned_entries": 2, "bytes_freed": 128})
-        self.assertEqual(FakeCache.called_with, 7)
-
     async def test_protected_endpoints_require_authentication(self):
         transport = self.httpx.ASGITransport(app=self.api.app)
         async with self.httpx.AsyncClient(
@@ -237,6 +376,22 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("http_requests_total", metrics.text)
         self.assertEqual(response.status_code, 401)
 
+    async def test_map_tiles_config_is_public_and_reflects_settings(self):
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        async with self.httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            response = await client.get("/config/map-tiles")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["basemap_light_url"], self.api.settings.map_basemap_light_url)
+        self.assertEqual(body["basemap_dark_url"], self.api.settings.map_basemap_dark_url)
+        self.assertEqual(body["terrain_dem_url"], self.api.settings.map_terrain_dem_url)
+        self.assertEqual(body["basemap_attribution"], self.api.settings.map_basemap_attribution)
+        self.assertEqual(body["terrain_attribution"], self.api.settings.map_terrain_attribution)
+
     async def test_health_reports_ok_when_dependencies_are_ready(self):
         transport = self.httpx.ASGITransport(app=self.api.app)
 
@@ -251,7 +406,31 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
                 response = await client.get("/health")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"status": "ok", "db": True, "agent": True})
+        # earthdata_mcp_manager is never started in this test (lifespan
+        # never runs), so it reports its initial "connecting" state (T17).
+        self.assertEqual(
+            response.json(), {"status": "ok", "db": True, "agent": True, "earthdata_mcp": "connecting"},
+        )
+
+    async def test_health_reports_the_earthdata_mcp_connection_state(self):
+        from types import SimpleNamespace
+
+        transport = self.httpx.ASGITransport(app=self.api.app)
+
+        async def healthy_db(timeout_seconds=2.0):
+            return True, None
+
+        self.api.app.state.earthdata_mcp_manager = SimpleNamespace(state="unavailable")
+        self.addCleanup(setattr, self.api.app.state, "earthdata_mcp_manager", None)
+
+        with patch.object(self.api, "check_db_pool", healthy_db):
+            async with self.httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                response = await client.get("/health")
+
+        self.assertEqual(response.json()["earthdata_mcp"], "unavailable")
 
     async def test_health_reports_degraded_when_database_fails(self):
         transport = self.httpx.ASGITransport(app=self.api.app)
@@ -295,7 +474,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(name, response.text)
 
     async def test_chat_validation_happens_before_streaming(self):
-        async def fake_stream_response(agent, message, thread_id):
+        async def fake_stream_response(agent, message, thread_id, **kwargs):
             fake_stream_response.called = True
             yield "text", "should not run"
 

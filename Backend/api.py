@@ -16,9 +16,21 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.routing import Match
 
+from agents.earthdata_agent import LazySatelliteAgent, build_earthdata_agent
+from agents.ground_sensor_agent import build_ground_agent
 from agents.supervisor_agent import build_agent
 from config.settings import get_settings
-from preprocessing.data_loader import DataLoader
+from config.starter_prompts import STARTER_PROMPTS
+from earthdata_mcp.connection import STATE_CONNECTING, STATE_READY, EarthdataMCPConnectionManager
+from earthdata_mcp.results import (
+    CATEGORY_CONTRACT,
+    CATEGORY_NOT_FOUND,
+    CATEGORY_NO_DATA,
+    CATEGORY_PROVIDER_UNAVAILABLE,
+    CATEGORY_TOO_LARGE,
+    CATEGORY_USER_INPUT,
+    MCPToolError,
+)
 from repositories.session_metadata_repository import (
     ensure_session_metadata_table,
     get_session_metadata,
@@ -34,7 +46,17 @@ from services.chat_stream_service import ChatStreamService
 from services.chart_service import ChartService
 from services.export_service import ExportService
 from services.history_service import HistoryService
-from tools.satellite_tools.harmony_api import set_data_loader
+from services.data_download_service import DataDownloadError, export_converted, iter_file_chunks
+from services.discovery_service import (
+    check_coverage,
+    describe_dataset,
+    inspect_granules,
+    preview_dataset,
+    search_datasets,
+)
+from services.jobs_service import cancel_job, list_jobs
+from services.methods_export_service import build_methods_markdown
+from services.provenance_service import get_citations, get_lineage
 from utils.db import active_pool_connections, check_db_pool, close_db_pool, init_db_pool, validate_config
 from utils.logging import configure_logging
 from utils.metrics import (
@@ -43,6 +65,7 @@ from utils.metrics import (
     render_prometheus_metrics,
     set_db_pool_connections_active,
 )
+from utils.streaming import current_user_id, user_id_context
 
 agent = None
 settings = get_settings()
@@ -52,8 +75,25 @@ logger = logging.getLogger(__name__)
 chart_service = ChartService()
 export_service = ExportService(settings.csv_export_max_granules)
 history_service = HistoryService(chart_service)
-chat_stream_service = ChatStreamService(chart_service, settings.long_request_seconds)
 session_repository = SessionRepository()
+
+
+async def _on_earthdata_mcp_ready(tools: dict) -> None:
+    """earthdata_mcp_manager's on_ready hook (T17): populates the legacy
+    app.state.earthdata_mcp_tools mirror (still read directly by the
+    unmigrated chart export.csv/.png/.nc endpoints) and rebuilds the real
+    satellite agent into whatever LazySatelliteAgent the current lifespan
+    cycle assigned to app.state.satellite_agent — see
+    agents/earthdata_agent.py for why a mutable placeholder, not a
+    reassigned reference, is what makes this visible to the supervisor's
+    already-built ask_earthdata_agent tool closure."""
+    app.state.earthdata_mcp_tools = tools
+    app.state.satellite_agent.set_real(build_earthdata_agent(mcp_tools=tools))
+    logger.info("earthdata_mcp_satellite_agent_ready", extra={"_event": "earthdata_mcp_satellite_agent_ready"})
+
+
+earthdata_mcp_manager = EarthdataMCPConnectionManager(settings, current_user_id, on_ready=_on_earthdata_mcp_ready)
+chat_stream_service = ChatStreamService(chart_service, settings.long_request_seconds, earthdata_mcp_manager)
 
 
 @asynccontextmanager
@@ -66,19 +106,43 @@ async def lifespan(app: FastAPI):
     await ensure_session_metadata_table()
 
     logger.info("startup_begin", extra={"_model": settings.llm_model})
-    data_loader = DataLoader()
-    app.state.data_loader = data_loader
-    set_data_loader(data_loader)
-    agent = await build_agent(settings.llm_model)
+    # T17: the backend boots without the earthdata-retrieval MCP — ground/EPA
+    # features work immediately. earthdata_mcp_manager runs a background
+    # connect loop (capped exponential backoff) instead of the old hard
+    # boot-time raise; misconfiguration (a malformed URL) still fails loud
+    # from validate_config() above, before any of this runs. satellite_agent
+    # is a LazySatelliteAgent placeholder — services.subagent_dispatch
+    # .run_satellite gates on earthdata_mcp_manager.state before ever
+    # touching it, so it's never invoked before _on_earthdata_mcp_ready
+    # (module scope) fills it in.
+    app.state.earthdata_mcp_tools = {}
+    app.state.earthdata_mcp_manager = earthdata_mcp_manager
+    app.state.satellite_agent = LazySatelliteAgent()
+    earthdata_mcp_manager.start()
+
+    # Built once here (not inside build_agent) so the supervisor's tool
+    # wrappers and the router fast path (services/chat_stream_service.py,
+    # T14) invoke the identical sub-agent instances.
+    ground_agent = build_ground_agent()
+    app.state.ground_agent = ground_agent
+    agent = await build_agent(
+        settings.llm_model,
+        ground_agent=ground_agent,
+        satellite_agent=app.state.satellite_agent,
+        mcp_manager=earthdata_mcp_manager,
+    )
     app.state.agent = agent
     logger.info("startup_complete")
     try:
         yield
     finally:
+        await earthdata_mcp_manager.stop()
         agent = None
         app.state.agent = None
-        app.state.data_loader = None
-        set_data_loader(None)
+        app.state.ground_agent = None
+        app.state.satellite_agent = None
+        app.state.earthdata_mcp_tools = None
+        app.state.earthdata_mcp_manager = None
         await close_db_pool()
         logger.info("shutdown_complete")
 
@@ -100,10 +164,14 @@ app.mount("/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
 PUBLIC_ENDPOINTS = {
     ("GET", "/health"),
     ("GET", "/metrics"),
+    ("GET", "/capabilities/starters"),
+    ("GET", "/config/map-tiles"),
     ("POST", "/auth/login"),
     ("POST", "/auth/register"),
 }
 ThreadId = Annotated[str, Path(pattern=r"^[A-Za-z0-9-]+$")]
+JobHandle = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]+$")]
+DatasetHandle = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]+$")]
 
 
 def _route_path(request: Request) -> str:
@@ -157,6 +225,28 @@ class AuthRequest(BaseModel):
     password: str = Field(min_length=1, max_length=1024)
 
 
+class DiscoverySearchRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=500)
+    filters: Optional[dict] = None
+
+
+class DiscoveryPreviewRequest(BaseModel):
+    location: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    time_range: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    layer: Optional[str] = Field(default=None, min_length=1, max_length=200)
+
+
+class DiscoveryCoverageRequest(BaseModel):
+    location: str = Field(min_length=1, max_length=200)
+    time_range: str = Field(min_length=1, max_length=200)
+
+
+class DiscoveryGranulesRequest(BaseModel):
+    location: str = Field(min_length=1, max_length=200)
+    time_range: str = Field(min_length=1, max_length=200)
+    limit: Optional[int] = Field(default=None, ge=1)
+
+
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
@@ -208,10 +298,15 @@ async def health():
     db_ok, db_error = await check_db_pool(timeout_seconds=2.0)
     active_agent = getattr(app.state, "agent", None) or agent
     agent_ok = active_agent is not None
+    # T17 story #6: the data layer's connection state, not just db/agent —
+    # so an MCP outage or schema mismatch is visible to monitoring the same
+    # way it's visible to a researcher.
+    manager = getattr(app.state, "earthdata_mcp_manager", None)
+    earthdata_mcp_state = manager.state if manager is not None else STATE_CONNECTING
     if db_ok and agent_ok:
-        return {"status": "ok", "db": True, "agent": True}
+        return {"status": "ok", "db": True, "agent": True, "earthdata_mcp": earthdata_mcp_state}
 
-    body = {"status": "degraded", "db": db_ok, "agent": agent_ok}
+    body = {"status": "degraded", "db": db_ok, "agent": agent_ok, "earthdata_mcp": earthdata_mcp_state}
     if db_error:
         body["db_error"] = db_error
     if not agent_ok:
@@ -224,12 +319,70 @@ def metrics():
     return Response(content=render_prometheus_metrics(), media_type=prometheus_content_type())
 
 
-@app.delete("/admin/cache/prune")
-async def prune_cache(older_than_days: int = Query(default=30, ge=0)):
-    data_loader = getattr(app.state, "data_loader", None)
-    if data_loader is None:
-        raise HTTPException(status_code=503, detail="Data loader is not ready")
-    return await data_loader._cache.prune(older_than_days)
+@app.get("/config/map-tiles")
+def config_map_tiles():
+    """T23: basemap/terrain tile sources as configuration, not code, so a
+    keyed or self-hosted provider can be swapped in without a redeploy.
+    Unauthenticated -- these are non-sensitive, static URLs the map needs
+    before the chart underneath it can even render."""
+    return {
+        "basemap_light_url": settings.map_basemap_light_url,
+        "basemap_dark_url": settings.map_basemap_dark_url,
+        "terrain_dem_url": settings.map_terrain_dem_url,
+        "basemap_attribution": settings.map_basemap_attribution,
+        "terrain_attribution": settings.map_terrain_attribution,
+    }
+
+
+@app.get("/capabilities/starters")
+def capabilities_starters():
+    """T22: the empty-chat's example questions — unauthenticated so a
+    first-time visitor sees them before signing in. The single backend-owned
+    constant (config.starter_prompts) is also what the eval harness's
+    task-coverage assertion checks, so nothing here can drift into a broken
+    promise (story #11)."""
+    return STARTER_PROMPTS
+
+
+# T18: one exception handler for every classified MCP tool outcome — pane
+# endpoints, agent tools, and chat answers all trace back to the same
+# taxonomy (story #11: one JSON error shape across every endpoint). T17's
+# unavailable/incompatible states render through this same handler (story
+# #13) via _earthdata_tools raising MCPToolError below, rather than a
+# second, differently-shaped 503.
+_CATEGORY_STATUS_CODES = {
+    CATEGORY_USER_INPUT: status.HTTP_422_UNPROCESSABLE_CONTENT,
+    CATEGORY_TOO_LARGE: status.HTTP_422_UNPROCESSABLE_CONTENT,
+    CATEGORY_NO_DATA: status.HTTP_200_OK,
+    CATEGORY_NOT_FOUND: status.HTTP_404_NOT_FOUND,
+    CATEGORY_PROVIDER_UNAVAILABLE: status.HTTP_503_SERVICE_UNAVAILABLE,
+    CATEGORY_CONTRACT: status.HTTP_500_INTERNAL_SERVER_ERROR,
+}
+
+
+@app.exception_handler(MCPToolError)
+async def _handle_mcp_tool_error(request: Request, exc: MCPToolError) -> JSONResponse:
+    status_code = _CATEGORY_STATUS_CODES.get(exc.category, status.HTTP_500_INTERNAL_SERVER_ERROR)
+    body: dict = {"category": exc.category, "message": exc.message}
+    if exc.suggestion:
+        body["suggestion"] = exc.suggestion
+    return JSONResponse(status_code=status_code, content={"error": body})
+
+
+def _earthdata_tools(request: Request) -> dict:
+    """Discovery/jobs/provenance endpoints' MCP tools, read through
+    earthdata_mcp_manager (T17) rather than app.state.earthdata_mcp_tools
+    directly, so a not-ready connection answers with the shared structured
+    503 instead of proxying a bare 500 from an empty/absent tool dict."""
+    manager = getattr(request.app.state, "earthdata_mcp_manager", None)
+    state = manager.state if manager is not None else STATE_CONNECTING
+    if manager is None or state != STATE_READY:
+        raise MCPToolError(
+            CATEGORY_PROVIDER_UNAVAILABLE,
+            f"The satellite data layer is temporarily unavailable (earthdata_mcp: {state}).",
+            suggestion="Ground/EPA endpoints are unaffected. Try again in a moment.",
+        )
+    return manager.tools
 
 
 @app.get("/chart/{chart_id}/export.csv")
@@ -242,7 +395,7 @@ async def export_chart_csv(chart_id: str, request: Request):
         raise HTTPException(status_code=422, detail=str(e))
 
     return StreamingResponse(
-        export_service.iter_chart_csv_chunks_async(payload),
+        export_service.iter_chart_csv_chunks_async(payload, request.app.state.earthdata_mcp_tools),
         media_type="text/csv; charset=utf-8",
         headers={
             "Content-Disposition": f'attachment; filename="{export_service.safe_export_name(payload, "csv")}"',
@@ -256,13 +409,106 @@ async def export_chart_csv(chart_id: str, request: Request):
 async def export_chart_png(chart_id: str, request: Request):
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
     try:
-        content = await export_service.build_chart_png_async(payload)
+        content = await export_service.build_chart_png_async(payload, request.app.state.earthdata_mcp_tools)
     except Exception as e:
         raise HTTPException(status_code=422, detail=str(e))
     return Response(
         content=content,
         media_type="image/png",
         headers={"Content-Disposition": f'attachment; filename="{export_service.safe_export_name(payload, "png")}"'},
+    )
+
+
+def _chart_overlay_path(payload: dict, panel: int | None) -> str | None:
+    """Resolve the stored overlay PNG path for a chart, or its Nth panel /
+    difference panel for a heatmap_multi comparison (T23)."""
+    if payload.get("type") == "heatmap_multi":
+        if panel is not None:
+            panels = payload.get("panels") or []
+            if 0 <= panel < len(panels):
+                return (panels[panel].get("overlay") or {}).get("_path")
+            return None
+        return (payload.get("difference") or {}).get("overlay", {}).get("_path")
+    return (payload.get("overlay") or {}).get("_path")
+
+
+@app.get("/chart/{chart_id}/overlay.png")
+async def chart_overlay_png(chart_id: str, request: Request, panel: int | None = None):
+    payload = await _get_owned_chart(chart_id, request.state.current_user.id)
+    overlay_path = _chart_overlay_path(payload, panel)
+    if not overlay_path or not os.path.isfile(overlay_path):
+        raise HTTPException(status_code=404, detail="This chart has no rendered overlay.")
+    with open(overlay_path, "rb") as f:
+        content = f.read()
+    return Response(content=content, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/chart/{chart_id}/provenance")
+async def chart_provenance_endpoint(chart_id: str, request: Request):
+    tools = _earthdata_tools(request)
+    payload = await _get_owned_chart(chart_id, request.state.current_user.id)
+    source_handles = _chart_source_handles(payload)
+    with user_id_context(request.state.current_user.id):
+        return await get_lineage(source_handles, tools)
+
+
+@app.get("/chart/{chart_id}/citations")
+async def chart_citations_endpoint(chart_id: str, request: Request):
+    tools = _earthdata_tools(request)
+    payload = await _get_owned_chart(chart_id, request.state.current_user.id)
+    source_handles = _chart_source_handles(payload)
+    with user_id_context(request.state.current_user.id):
+        return {"citations": await get_citations(source_handles, tools)}
+
+
+@app.get("/chart/{chart_id}/methods.md")
+async def chart_methods_endpoint(chart_id: str, request: Request):
+    tools = _earthdata_tools(request)
+    payload = await _get_owned_chart(chart_id, request.state.current_user.id)
+    source_handles = _chart_source_handles(payload)
+    with user_id_context(request.state.current_user.id):
+        lineage = await get_lineage(source_handles, tools)
+        citations = await get_citations(source_handles, tools)
+
+    provenance = payload.get("provenance") or {}
+    markdown = build_methods_markdown(
+        artifact_title=payload.get("title") or "Untitled artifact",
+        aoi_description=provenance.get("region_name") or "the study area",
+        time_window=_methods_time_window(provenance),
+        lineage=lineage,
+        citations=citations,
+    )
+    return Response(
+        content=markdown,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="methods-{export_service.safe_export_name(payload, "md")}"'},
+    )
+
+
+@app.get("/chart/{chart_id}/export.nc")
+async def export_chart_netcdf(chart_id: str, request: Request):
+    tools = request.app.state.earthdata_mcp_tools
+    if not tools:
+        raise HTTPException(status_code=503, detail="Earthdata MCP is not ready")
+    payload = await _get_owned_chart(chart_id, request.state.current_user.id)
+    source_handles = _chart_source_handles(payload)
+    if not source_handles:
+        raise HTTPException(status_code=422, detail="This chart does not include a source handle to export.")
+
+    try:
+        with user_id_context(request.state.current_user.id):
+            export = await export_converted(source_handles[0], "netcdf", tools)
+    except DataDownloadError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    return StreamingResponse(
+        iter_file_chunks(export["storage_uri"]),
+        media_type="application/x-netcdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{export_service.safe_export_name(payload, "nc")}"',
+            "Cache-Control": "no-store",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
@@ -299,6 +545,56 @@ async def export_artifact_csv(artifact_id: str, request: Request):
     )
 
 
+@app.get("/jobs")
+async def get_jobs(request: Request):
+    tools = _earthdata_tools(request)
+    with user_id_context(request.state.current_user.id):
+        jobs = await list_jobs(tools)
+    return {"jobs": jobs}
+
+
+@app.post("/jobs/{job_handle}/cancel")
+async def cancel_job_endpoint(job_handle: JobHandle, request: Request):
+    tools = _earthdata_tools(request)
+    with user_id_context(request.state.current_user.id):
+        return await cancel_job(job_handle, tools)
+
+
+@app.post("/discovery/search")
+async def discovery_search_endpoint(req: DiscoverySearchRequest, request: Request):
+    tools = _earthdata_tools(request)
+    with user_id_context(request.state.current_user.id):
+        return await search_datasets(req.query, req.filters, tools)
+
+
+@app.get("/discovery/dataset/{dataset_handle}")
+async def discovery_describe_endpoint(dataset_handle: DatasetHandle, request: Request):
+    tools = _earthdata_tools(request)
+    with user_id_context(request.state.current_user.id):
+        return await describe_dataset(dataset_handle, tools)
+
+
+@app.post("/discovery/dataset/{dataset_handle}/preview")
+async def discovery_preview_endpoint(dataset_handle: DatasetHandle, req: DiscoveryPreviewRequest, request: Request):
+    tools = _earthdata_tools(request)
+    with user_id_context(request.state.current_user.id):
+        return await preview_dataset(dataset_handle, req.location, req.time_range, req.layer, tools)
+
+
+@app.post("/discovery/dataset/{dataset_handle}/coverage")
+async def discovery_coverage_endpoint(dataset_handle: DatasetHandle, req: DiscoveryCoverageRequest, request: Request):
+    tools = _earthdata_tools(request)
+    with user_id_context(request.state.current_user.id):
+        return await check_coverage(dataset_handle, req.location, req.time_range, tools)
+
+
+@app.post("/discovery/dataset/{dataset_handle}/granules")
+async def discovery_granules_endpoint(dataset_handle: DatasetHandle, req: DiscoveryGranulesRequest, request: Request):
+    tools = _earthdata_tools(request)
+    with user_id_context(request.state.current_user.id):
+        return await inspect_granules(dataset_handle, req.location, req.time_range, req.limit, tools)
+
+
 def _safe_artifact_filename(value: str) -> str:
     safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in value.lower())
     safe = "-".join(part for part in safe.split("-") if part)
@@ -312,17 +608,32 @@ async def _get_owned_chart(chart_id: str, user_id: str):
     return payload
 
 
+def _chart_source_handles(payload: dict) -> list[str]:
+    return (payload.get("metadata") or {}).get("source_handles") or (payload.get("provenance") or {}).get("source_handles", [])
+
+
+def _methods_time_window(provenance: dict) -> str:
+    start, end = provenance.get("start_date"), provenance.get("end_date")
+    if start and end:
+        return f"{start}/{end}"
+    return "the analyzed period"
+
+
 @app.post("/chat")
 async def chat(req: ChatRequest, request: Request):
     user = request.state.current_user
     active_agent = getattr(app.state, "agent", None) or agent
     if active_agent is None:
         raise HTTPException(status_code=503, detail="Agent is not ready")
+    ground_agent = getattr(app.state, "ground_agent", None)
+    satellite_agent = getattr(app.state, "satellite_agent", None)
     thread_id = await _resolve_thread(req, user.id)
     request_id = str(uuid.uuid4())
     await _save_session_metadata(thread_id, req.message, user.id, request_id)
     return StreamingResponse(
-        chat_stream_service.stream_chat_events(active_agent, req.message, thread_id, user.id, request_id),
+        chat_stream_service.stream_chat_events(
+            active_agent, ground_agent, satellite_agent, req.message, thread_id, user.id, request_id,
+        ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

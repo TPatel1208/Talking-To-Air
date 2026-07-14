@@ -83,6 +83,11 @@ services:
       DB_NAME: "talking_to_air_memory"
       DB_USER: "postgres"
       DB_PASSWORD: "test"
+    volumes:
+      # test_chart_repository.py's schema-contract test reads this file
+      # straight off disk; it lives at the repo root so it's outside the
+      # ./Backend build context and must be bind-mounted in.
+      - ./sql/init_agent_charts.sql:/sql/init_agent_charts.sql:ro
     command: >
       sh -c "coverage run -m pytest tests/ -v --tb=short && coverage report"
 
@@ -116,6 +121,12 @@ services:
 # Fixed name (not project-prefixed), created by the harmony-retrieval-mcp
 # stack on its first `docker compose up`. Join it here as external so the
 # backend can reach that stack's `mcp` service at $EARTHDATA_MCP_URL.
+#
+# T17: the backend no longer requires that stack to be up first (or ever, for
+# ground/EPA-only use) — it boots regardless and connects to the MCP in the
+# background with capped retry, healing without a restart once it's up. Bring
+# up this stack and the harmony-retrieval-mcp stack in either order; see
+# README.md.
 networks:
   earthdata_net:
     external: true

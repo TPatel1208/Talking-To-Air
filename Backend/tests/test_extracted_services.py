@@ -46,6 +46,58 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, stored)
 
+    async def test_history_service_surfaces_a_map_artifact_from_a_tool_message(self):
+        from services.chart_service import ChartService
+        from services.history_service import HistoryService
+
+        tool_content = json.dumps({
+            "type": "heatmap",
+            "title": "TEMPO over NJ",
+            "chart_id": "map_abc123",
+            "vmin": 0.0,
+            "vmax": 1.0,
+            "bounds": [-75.0, 39.0, -73.0, 41.0],
+            "variable": "TEMPO_NO2",
+            "units": "mol/m^2",
+            "metadata": {"source_handles": ["obs_1"]},
+            "_artifact_refs": [{
+                "id": "map_abc123",
+                "type": "map",
+                "title": "TEMPO over NJ",
+                "metadata": {
+                    "bbox": [-75.0, 39.0, -73.0, 41.0],
+                    "variable": "TEMPO_NO2",
+                    "units": "mol/m^2",
+                    "colorbar": {"vmin": 0.0, "vmax": 1.0},
+                    "source_handles": ["obs_1"],
+                },
+            }],
+        })
+
+        class FakeAgent:
+            async def aget_state(self, config):
+                return SimpleNamespace(values={"messages": [
+                    SimpleNamespace(type="human", content="plot TEMPO NO2 over NJ"),
+                    SimpleNamespace(type="ai", content="", tool_calls=[{"id": "tc1", "name": "plot_singular", "args": {}}]),
+                    SimpleNamespace(type="tool", name="plot_singular", content=tool_content),
+                    SimpleNamespace(type="ai", content="Here is the map.", tool_calls=[]),
+                ]})
+
+        from services.artifact_store import artifact_store
+
+        with patch("services.chart_service.chart_repository.get_chart", AsyncMock(return_value=None)), \
+             patch("services.chart_service.chart_repository.save_chart", AsyncMock(side_effect=lambda thread_id, payload, user_id: {**payload, "thread_id": thread_id, "user_id": user_id})), \
+             patch.object(artifact_store, "claim", side_effect=AssertionError("map artifacts must not go through the table artifact_store")) as claim:
+            messages = await HistoryService(ChartService()).build_history(FakeAgent(), "thread-1", "user-1")
+
+        claim.assert_not_called()
+        assistant = messages[-1]
+        self.assertEqual(len(assistant["charts"]), 1)
+        self.assertEqual(assistant["charts"][0]["chart_id"], "map_abc123")
+        self.assertEqual(len(assistant["artifacts"]), 1)
+        self.assertEqual(assistant["artifacts"][0]["id"], "map_abc123")
+        self.assertEqual(assistant["artifacts"][0]["type"], "map")
+
     async def test_history_service_builds_plain_history(self):
         from services.chart_service import ChartService
         from services.history_service import HistoryService
@@ -66,20 +118,46 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         from services.chat_stream_service import ChatStreamService
         from services.chart_service import ChartService
 
-        async def fake_stream_response(agent, message, thread_id):
+        async def fake_stream_response(agent, message, thread_id, **kwargs):
             yield "text", "hello"
 
         service = ChatStreamService(ChartService(), long_request_seconds=999)
         with patch("services.chat_stream_service.stream_response", fake_stream_response):
             events = [
                 event
-                async for event in service.stream_chat_events(object(), "hi", "thread-1", "user-1", "req-1")
+                async for event in service.stream_chat_events(object(), None, None, "hi", "thread-1", "user-1", "req-1")
             ]
 
         self.assertIn("event: text", events[0])
         self.assertIn('"content": "hello"', events[0])
         self.assertIn("event: done", events[-1])
         self.assertIn('"response": "hello"', events[-1])
+
+    async def test_chat_stream_service_forwards_job_progress_events(self):
+        from services.chat_stream_service import ChatStreamService
+        from services.chart_service import ChartService
+
+        job_event = {
+            "job_handle": "job_1",
+            "status": "processing",
+            "progress": 40,
+            "phase": "materializing",
+            "message": "40% complete",
+        }
+
+        async def fake_stream_response(agent, message, thread_id, **kwargs):
+            yield "job_progress", job_event
+
+        service = ChatStreamService(ChartService(), long_request_seconds=999)
+        with patch("services.chat_stream_service.stream_response", fake_stream_response):
+            events = [
+                event
+                async for event in service.stream_chat_events(object(), None, None, "hi", "thread-1", "user-1", "req-1")
+            ]
+
+        self.assertIn("event: job_progress", events[0])
+        self.assertIn('"job_handle": "job_1"', events[0])
+        self.assertIn('"status": "processing"', events[0])
 
     async def test_chat_stream_service_does_not_warn_for_plain_tool_result(self):
         from services.chat_stream_service import ChatStreamService
@@ -130,6 +208,49 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         page = artifact_store.get_page(ref.id, "user-1")
         self.assertEqual(page["rows"], [{"date": "2024-01-01", "value": 10}])
 
+    async def test_chat_stream_service_emits_both_chart_and_artifact_for_a_map_payload(self):
+        from services.chat_stream_service import ChatStreamService
+        from services.chart_service import ChartService
+
+        content = json.dumps({
+            "type": "heatmap",
+            "title": "TEMPO over NJ",
+            "chart_id": "map_abc123",
+            "vmin": 0.0,
+            "vmax": 1.0,
+            "bounds": [-75.0, 39.0, -73.0, 41.0],
+            "variable": "TEMPO_NO2",
+            "units": "mol/m^2",
+            "metadata": {"source_handles": ["obs_1"]},
+            "_artifact_refs": [{
+                "id": "map_abc123",
+                "type": "map",
+                "title": "TEMPO over NJ",
+                "metadata": {
+                    "bbox": [-75.0, 39.0, -73.0, 41.0],
+                    "variable": "TEMPO_NO2",
+                    "units": "mol/m^2",
+                    "colorbar": {"vmin": 0.0, "vmax": 1.0},
+                    "source_handles": ["obs_1"],
+                },
+            }],
+        })
+        service = ChatStreamService(ChartService(), long_request_seconds=999)
+
+        with patch("services.chart_service.chart_repository.get_chart", AsyncMock(return_value=None)), \
+             patch("services.chart_service.chart_repository.save_chart", AsyncMock(side_effect=lambda thread_id, payload, user_id: {**payload, "thread_id": thread_id, "user_id": user_id})):
+            events = [
+                event
+                async for event in service._tool_result_events(content, "thread-1", "user-1", [], [])
+            ]
+
+        self.assertEqual(len(events), 2)
+        self.assertIn("event: chart", events[0])
+        self.assertIn('"chart_id": "map_abc123"', events[0])
+        self.assertIn("event: artifact", events[1])
+        self.assertIn('"id": "map_abc123"', events[1])
+        self.assertIn('"type": "map"', events[1])
+
     async def test_chat_stream_service_warns_for_malformed_chart_payload(self):
         from services.chat_stream_service import ChatStreamService
         from services.chart_service import ChartService
@@ -149,6 +270,63 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(events, [])
         self.assertIn("chart_payload_parse_failure", captured.output[0])
+
+    async def test_chat_stream_service_persists_and_emits_a_bubbled_chart_payload_event(self):
+        """T13: emit_chart's ("chart_payload", dict) event (bubbled up from a
+        sub-agent's own stream, mirroring job_progress) is persisted and
+        emitted as a "chart" SSE event directly, without waiting for the
+        sub-agent's final tool_result envelope."""
+        from services.chat_stream_service import ChatStreamService
+        from services.chart_service import ChartService
+
+        chart_payload = {"type": "heatmap", "chart_id": "map_abc123", "title": "TEMPO over NJ"}
+
+        async def fake_stream_response(agent, message, thread_id, **kwargs):
+            yield "chart_payload", chart_payload
+
+        service = ChatStreamService(ChartService(), long_request_seconds=999)
+        with patch("services.chat_stream_service.stream_response", fake_stream_response), \
+             patch("services.chart_service.chart_repository.get_chart", AsyncMock(return_value=None)), \
+             patch("services.chart_service.chart_repository.save_chart", AsyncMock(side_effect=lambda thread_id, payload, user_id: {**payload, "thread_id": thread_id, "user_id": user_id})):
+            events = [
+                event
+                async for event in service.stream_chat_events(object(), None, None, "hi", "thread-1", "user-1", "req-1")
+            ]
+
+        chart_events = [e for e in events if e.startswith("event: chart")]
+        self.assertEqual(len(chart_events), 1)
+        self.assertIn('"chart_id": "map_abc123"', chart_events[0])
+
+    async def test_chat_stream_service_never_emits_the_same_chart_id_twice(self):
+        """A chart bubbled via chart_payload and the same chart_id later
+        embedded in the sub-agent's tool_result envelope (AgentResult.charts)
+        must not double-render in the UI (Frontend/src/hooks/useChat.js just
+        appends every "chart" event to a list, with no dedup of its own)."""
+        from models import AgentResult, ChartPayload, agent_result_to_json
+        from services.chat_stream_service import ChatStreamService
+        from services.chart_service import ChartService
+
+        chart_payload = {"type": "heatmap", "chart_id": "map_abc123", "title": "TEMPO over NJ"}
+        envelope = agent_result_to_json(AgentResult(
+            text="Plotted NO2.",
+            charts=[ChartPayload(type="heatmap", chart_id="map_abc123", title="TEMPO over NJ")],
+        ))
+
+        async def fake_stream_response(agent, message, thread_id, **kwargs):
+            yield "chart_payload", chart_payload
+            yield "tool_result", {"name": "ask_earthdata_agent", "content": envelope}
+
+        service = ChatStreamService(ChartService(), long_request_seconds=999)
+        with patch("services.chat_stream_service.stream_response", fake_stream_response), \
+             patch("services.chart_service.chart_repository.get_chart", AsyncMock(return_value=None)), \
+             patch("services.chart_service.chart_repository.save_chart", AsyncMock(side_effect=lambda thread_id, payload, user_id: {**payload, "thread_id": thread_id, "user_id": user_id})):
+            events = [
+                event
+                async for event in service.stream_chat_events(object(), None, None, "hi", "thread-1", "user-1", "req-1")
+            ]
+
+        chart_events = [e for e in events if e.startswith("event: chart")]
+        self.assertEqual(len(chart_events), 1)
 
     async def test_find_closest_monitor_accepts_string_k(self):
         from tools.ground_sensor_tools import epa_aqs_tools

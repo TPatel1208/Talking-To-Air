@@ -32,7 +32,7 @@ def _load_epa_module():
         "services": MagicMock(),
         "services.artifact_store": MagicMock(artifact_store=fake_artifact_store),
         "utils": MagicMock(),
-        "utils.plotting": MagicMock(GeocodingService=MagicMock()),
+        "utils.plotting": MagicMock(get_geocoding_service=MagicMock()),
     }
 
     prev = {k: sys.modules.pop(k, None) for k in stubs}

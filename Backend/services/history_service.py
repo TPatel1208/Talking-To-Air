@@ -6,7 +6,7 @@ from typing import Any
 
 from services.artifact_store import artifact_store
 from services.chart_service import ChartService
-from utils.message_utils import PNG_PATH_RE, flatten_text_content, normalize_image_url
+from utils.message_utils import flatten_text_content
 
 
 class HistoryService:
@@ -84,13 +84,6 @@ class HistoryService:
         user_id: str,
     ) -> None:
         tool_text = flatten_text_content(msg.content)
-        for png_match in PNG_PATH_RE.finditer(tool_text):
-            url = normalize_image_url(png_match.group(1))
-            if url:
-                assistant = self._last_assistant(result)
-                if assistant and url not in assistant["imageUrls"]:
-                    assistant["imageUrls"].append(url)
-
         _, charts = self.chart_service.parse_charts(tool_text)
         for chart in charts:
             chart_payload = await self.chart_service.persist_chart_payload(thread_id, chart, user_id)
@@ -101,15 +94,21 @@ class HistoryService:
                     assistant["charts"].append(chart_payload)
 
         for ref in self._artifact_refs(tool_text):
-            try:
-                artifact = artifact_store.claim(ref["id"], user_id, thread_id).model_dump(exclude_none=True)
-            except KeyError:
-                # Artifact expired (TTL) or server restarted — fall back to the ref
-                # data carried in the message so the frontend can show a 404 error
-                # rather than silently hiding the table.
-                artifact = {k: v for k, v in ref.items() if k in ("id", "type", "title", "row_count", "metadata")}
-                if not artifact.get("id") or not artifact.get("type"):
-                    continue
+            if ref.get("type") == "table":
+                try:
+                    artifact = artifact_store.claim(ref["id"], user_id, thread_id).model_dump(exclude_none=True)
+                except KeyError:
+                    # Artifact expired (TTL) or server restarted — fall back to the ref
+                    # data carried in the message so the frontend can show a 404 error
+                    # rather than silently hiding the table.
+                    artifact = {k: v for k, v in ref.items() if k in ("id", "type", "title", "row_count", "metadata")}
+                    if not artifact.get("id") or not artifact.get("type"):
+                        continue
+            else:
+                # Chart-backed artifact types (map/comparison/timeseries) are
+                # already fully formed by artifact_registry and persisted
+                # durably alongside the chart payload above — pass through.
+                artifact = ref
             assistant = self._last_assistant(result)
             if assistant is not None:
                 assistant.setdefault("artifacts", [])

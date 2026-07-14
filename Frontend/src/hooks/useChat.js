@@ -1,10 +1,12 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { createSseParser } from '../utils/sseParser'
+import { applyWorkflowEvent, INITIAL_WORKFLOW_STATE } from '../utils/workflowStage'
+import { extractSuggestedFollowups } from '../utils/followups'
 
 const API_BASE = '/api'
 const ACTIVE_THREAD_STORAGE_KEY = 'tta.activeThreadId'
 
-export function useChat(accessToken, onUnauthorized) {
+export function useChat(accessToken, onUnauthorized, onJobProgress) {
   const [messages, setMessages] = useState([])
   const [threadId, setThreadId] = useState(null)
   const [sessions, setSessions] = useState([])
@@ -88,19 +90,15 @@ export function useChat(accessToken, onUnauthorized) {
     pendingAssistantUpdatesRef.current.push({ streamId, updater })
     if (frameRef.current !== null) return
 
-    frameRef.current = window.requestAnimationFrame
-      ? window.requestAnimationFrame(flushAssistantUpdates)
-      : window.setTimeout(flushAssistantUpdates, 16)
+    // setTimeout, not requestAnimationFrame: rAF is paused by the browser
+    // when the tab is backgrounded, which would freeze streamed replies at
+    // isLoading: true until the user switches back.
+    frameRef.current = window.setTimeout(flushAssistantUpdates, 16)
   }, [flushAssistantUpdates])
 
   const cancelScheduledFlush = useCallback(() => {
     if (frameRef.current === null) return
-
-    if (window.cancelAnimationFrame) {
-      window.cancelAnimationFrame(frameRef.current)
-    } else {
-      window.clearTimeout(frameRef.current)
-    }
+    window.clearTimeout(frameRef.current)
     frameRef.current = null
   }, [])
 
@@ -240,9 +238,12 @@ export function useChat(accessToken, onUnauthorized) {
         content: '',
         toolCalls: [],
         statusMessage: '',
+        workflowStage: INITIAL_WORKFLOW_STATE,
+        startedAt: Date.now(),
         imageUrls: [],
         charts: [],
         artifacts: [],
+        suggestedFollowups: [],
         isLoading: true,
         streamId,
       },
@@ -286,8 +287,9 @@ export function useChat(accessToken, onUnauthorized) {
             toolCalls: [...(msg.toolCalls || []), { name: data.name, args: data.args }],
           }))
         } else if (event === 'status') {
-          queueAssistantUpdate(streamId, () => ({
+          queueAssistantUpdate(streamId, msg => ({
             statusMessage: data.message || '',
+            workflowStage: applyWorkflowEvent(msg.workflowStage || INITIAL_WORKFLOW_STATE, 'status', data),
           }))
         } else if (event === 'image') {
           queueAssistantUpdate(streamId, msg => ({
@@ -309,11 +311,20 @@ export function useChat(accessToken, onUnauthorized) {
               artifacts: [...(msg.artifacts || []), data],
             }))
           }
+        } else if (event === 'job_progress') {
+          if (onJobProgress) onJobProgress(data)
+          queueAssistantUpdate(streamId, msg => ({
+            workflowStage: applyWorkflowEvent(msg.workflowStage || INITIAL_WORKFLOW_STATE, 'job_progress', data),
+          }))
         } else if (event === 'text') {
           const chunk = typeof data === 'string' ? data : data.content
           if (chunk) {
             queueAssistantUpdate(streamId, msg => ({
               content: `${msg.content || ''}${chunk}`,
+              // User story #6: narration stops cleanly the moment the
+              // answer starts streaming — progress never talks over
+              // results.
+              workflowStage: applyWorkflowEvent(msg.workflowStage || INITIAL_WORKFLOW_STATE, 'text', data),
             }))
           }
         } else if (event === 'done') {
@@ -326,7 +337,9 @@ export function useChat(accessToken, onUnauthorized) {
             imageUrls: (data.image_urls || []).map(u => `${API_BASE}${u}`),
             charts: msg.charts || [],
             artifacts: msg.artifacts?.length ? msg.artifacts : (data.artifacts || []),
+            suggestedFollowups: extractSuggestedFollowups(data),
             statusMessage: '',
+            workflowStage: INITIAL_WORKFLOW_STATE,
             isLoading: false,
           }))
           setSessions(prev => (
@@ -354,11 +367,15 @@ export function useChat(accessToken, onUnauthorized) {
 
       const msg = err.message || 'Request failed'
       setError(msg)
-      queueAssistantUpdate(streamId, () => ({
+      queueAssistantUpdate(streamId, prevMsg => ({
         content: `Error: ${msg}`,
         isError: true,
         isLoading: false,
         statusMessage: '',
+        // User story #9: the strip shows which stage failed, so the error
+        // answer has visible context instead of the progress trail just
+        // vanishing.
+        workflowStage: applyWorkflowEvent(prevMsg.workflowStage || INITIAL_WORKFLOW_STATE, 'error', {}),
       }))
     } finally {
       if (isCurrentRequest(requestId)) {
@@ -368,7 +385,7 @@ export function useChat(accessToken, onUnauthorized) {
         setLoading(false)
       }
     }
-  }, [abortActiveRequest, accessToken, authHeaders, getSessionId, handleUnauthorized, isCurrentRequest, makeLocalSession, persistActiveThread, queueAssistantUpdate])
+  }, [abortActiveRequest, accessToken, authHeaders, getSessionId, handleUnauthorized, isCurrentRequest, makeLocalSession, onJobProgress, persistActiveThread, queueAssistantUpdate])
 
   const newSession = useCallback(() => {
     abortActiveRequest()

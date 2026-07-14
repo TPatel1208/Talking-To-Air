@@ -11,6 +11,7 @@ Backend/cache_test.zarr/
 Backend/data/
 outputs/
 Backend/outputs/
+Backend/overlay_store/
 
 # Python
 __pycache__/
@@ -62,6 +63,9 @@ Thumbs.db
 
 # Test cache
 .pytest_cache/
+
+# Claude Code local config
+.claude/
 
 # Logs
 logs

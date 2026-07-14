@@ -24,6 +24,11 @@ AGENT_REQUESTS_TOTAL = Counter(
     "Completed subagent calls.",
     ["agent_type", "outcome"],
 )
+ENVELOPE_SALVAGED_TOTAL = Counter(
+    "envelope_salvaged_total",
+    "Sub-agent final messages salvaged from prose after failing envelope parsing.",
+    ["agent_type"],
+)
 HARMONY_FETCH_DURATION_SECONDS = Histogram(
     "harmony_fetch_duration_seconds",
     "Harmony job duration from submission through download completion.",
@@ -97,6 +102,10 @@ def record_agent_request(agent_type: str, outcome: str) -> None:
     AGENT_REQUESTS_TOTAL.labels(agent_type=agent_type, outcome=outcome).inc()
 
 
+def record_envelope_salvaged(agent_type: str) -> None:
+    ENVELOPE_SALVAGED_TOTAL.labels(agent_type=agent_type).inc()
+
+
 def observe_harmony_fetch(duration_seconds: float) -> None:
     HARMONY_FETCH_DURATION_SECONDS.observe(duration_seconds)
 
@@ -123,6 +132,8 @@ def initialize_labelsets() -> None:
     for agent_type in ("satellite", "ground_sensor"):
         for outcome in ("success", "failure", "timeout"):
             AGENT_REQUESTS_TOTAL.labels(agent_type=agent_type, outcome=outcome)
+    for agent_type in ("earthdata", "ground sensor"):
+        ENVELOPE_SALVAGED_TOTAL.labels(agent_type=agent_type)
     for cache_level in ("memory", "zarr", "postgis"):
         CACHE_HITS_TOTAL.labels(cache_level=cache_level)
 

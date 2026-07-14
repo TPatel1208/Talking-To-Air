@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from functools import lru_cache
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -32,14 +33,28 @@ def _int_env(name: str, default: int) -> int:
 class Settings:
     """Application settings loaded once from environment at startup/import."""
 
-    llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "openai/gpt-oss-120b"))
+    llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "gemini-2.5-flash"))
     ground_agent_model: str = field(
         default_factory=lambda: os.getenv(
             "GROUND_AGENT_MODEL",
-            "meta-llama/llama-4-scout-17b-16e-instruct",
+            "openai/gpt-oss-20b",
         )
     )
-    satellite_agent_model: str = field(default_factory=lambda: os.getenv("SATELLITE_AGENT_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"))
+    earthdata_agent_model: str = field(
+        default_factory=lambda: os.getenv(
+            "EARTHDATA_AGENT_MODEL",
+            os.getenv("SATELLITE_AGENT_MODEL", "gemini-3.1-flash-lite"),
+        )
+    )
+    supervisor_model_provider: str = field(
+        default_factory=lambda: os.getenv("SUPERVISOR_MODEL_PROVIDER", "google")
+    )
+    earthdata_agent_provider: str = field(
+        default_factory=lambda: os.getenv("EARTHDATA_AGENT_PROVIDER", "google")
+    )
+    ground_agent_provider: str = field(
+        default_factory=lambda: os.getenv("GROUND_AGENT_PROVIDER", "groq")
+    )
     google_api_key: str | None = field(default_factory=lambda: os.getenv("GOOGLE_API_KEY"))
     groq_api_key: str | None = field(default_factory=lambda: os.getenv("GROQ_API_KEY"))
 
@@ -67,10 +82,40 @@ class Settings:
     earthdata_token: str | None = field(default_factory=lambda: os.getenv("EARTHDATA_TOKEN"))
     earthdata_mcp_url: str = field(default_factory=lambda: os.getenv("EARTHDATA_MCP_URL", "http://mcp:8765/mcp"))
     earthdata_mcp_token: str | None = field(default_factory=lambda: os.getenv("EARTHDATA_MCP_TOKEN"))
+    retrieval_soft_cap_bytes: int = field(
+        default_factory=lambda: max(1, _int_env("RETRIEVAL_SOFT_CAP_BYTES", 2 * 1024 ** 3))
+    )
+    retrieval_hard_cap_bytes: int = field(
+        default_factory=lambda: max(1, _int_env("RETRIEVAL_HARD_CAP_BYTES", 10 * 1024 ** 3))
+    )
+    await_retrieval_poll_min_seconds: int = field(
+        default_factory=lambda: max(1, _int_env("AWAIT_RETRIEVAL_POLL_MIN_SECONDS", 2))
+    )
+    await_retrieval_poll_max_seconds: int = field(
+        default_factory=lambda: max(1, _int_env("AWAIT_RETRIEVAL_POLL_MAX_SECONDS", 15))
+    )
+    await_retrieval_timeout_seconds: int = field(
+        default_factory=lambda: max(1, _int_env("AWAIT_RETRIEVAL_TIMEOUT_SECONDS", 900))
+    )
+    retrieval_max_timeseries_days: int = field(
+        default_factory=lambda: max(1, _int_env("RETRIEVAL_MAX_TIMESERIES_DAYS", 366))
+    )
+    # Gate on a result bundle's *uncompressed* size before open_handle extracts
+    # and opens it. The retrieval byte caps above gate the estimate at submit
+    # time; this one catches what they can't — decompression, dtype widening,
+    # and multi-granule concatenation happen at open time, and an ungated open
+    # OOM-killed the backend on a full-day TEMPO NO2 bundle (live 2026-07-12).
+    bundle_open_max_uncompressed_bytes: int = field(
+        default_factory=lambda: max(1, _int_env("BUNDLE_OPEN_MAX_UNCOMPRESSED_BYTES", 2 * 1024 ** 3))
+    )
     edl_username: str = field(default_factory=lambda: os.getenv("EDL_USERNAME", ""))
     edl_password: str = field(default_factory=lambda: os.getenv("EDL_PASSWORD", ""))
     aqs_api_email: str = field(default_factory=lambda: os.getenv("AQS_API_EMAIL", "your_email@example.com"))
     aqs_api_key: str = field(default_factory=lambda: os.getenv("AQS_API_KEY", "your_aqs_key"))
+
+    subagent_trim_token_ceiling: int = field(
+        default_factory=lambda: max(1, _int_env("SUBAGENT_TRIM_TOKEN_CEILING", 20000))
+    )
 
     log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO").upper())
     log_format: str = field(default_factory=lambda: os.getenv("LOG_FORMAT", "text").strip().lower())
@@ -78,6 +123,32 @@ class Settings:
     jwt_secret_key: str | None = field(default_factory=lambda: os.getenv("JWT_SECRET_KEY"))
     jwt_algorithm: str = field(default_factory=lambda: os.getenv("JWT_ALGORITHM", "HS256"))
     jwt_expiration_minutes: int = field(default_factory=lambda: max(1, _int_env("JWT_EXPIRATION_MINUTES", 60)))
+
+    # T23 MapLibre basemap/terrain sources -- free-tier defaults, no API key.
+    # Configuration (not code) so a keyed/self-hosted provider can be swapped
+    # in without a redeploy as traffic grows; see the T23 PRD's "Further
+    # Notes" on these providers' lack of an SLA.
+    map_basemap_light_url: str = field(
+        default_factory=lambda: os.getenv(
+            "MAP_BASEMAP_LIGHT_URL", "https://basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png"
+        )
+    )
+    map_basemap_dark_url: str = field(
+        default_factory=lambda: os.getenv(
+            "MAP_BASEMAP_DARK_URL", "https://basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png"
+        )
+    )
+    map_terrain_dem_url: str = field(
+        default_factory=lambda: os.getenv(
+            "MAP_TERRAIN_DEM_URL", "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
+        )
+    )
+    map_basemap_attribution: str = field(
+        default_factory=lambda: os.getenv("MAP_BASEMAP_ATTRIBUTION", "© CARTO © OpenStreetMap contributors")
+    )
+    map_terrain_attribution: str = field(
+        default_factory=lambda: os.getenv("MAP_TERRAIN_ATTRIBUTION", "Terrain tiles: AWS Terrain Tiles")
+    )
 
     def __post_init__(self) -> None:
         if self.data_fetch_mode not in _VALID_FETCH_MODES:
@@ -99,12 +170,28 @@ class Settings:
         missing = []
         if not self.db_password:
             missing.append("DB_PASSWORD")
-        if not self.google_api_key:
+        configured_providers = {
+            self.supervisor_model_provider,
+            self.earthdata_agent_provider,
+            self.ground_agent_provider,
+        }
+        if "google" in configured_providers and not self.google_api_key:
             missing.append("GOOGLE_API_KEY")
+        if "groq" in configured_providers and not self.groq_api_key:
+            missing.append("GROQ_API_KEY")
         if not self.jwt_secret_key:
             missing.append("JWT_SECRET_KEY")
         if missing:
             raise RuntimeError(f"Missing required environment variable(s): {', '.join(missing)}")
+
+        # A malformed earthdata-retrieval MCP URL is a config typo to fix,
+        # not an outage — it must fail loudly at boot rather than being
+        # retried forever by the connection manager (T17).
+        parsed_mcp_url = urlsplit(self.earthdata_mcp_url)
+        if parsed_mcp_url.scheme not in ("http", "https") or not parsed_mcp_url.netloc:
+            raise ConfigurationError(
+                f"Invalid EARTHDATA_MCP_URL {self.earthdata_mcp_url!r}: must be an http(s) URL"
+            )
 
 
 @lru_cache(maxsize=1)

@@ -6,10 +6,7 @@ BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
-from services.intent_router import (  # noqa: E402
-    inject_routing_hint,
-    route_intent,
-)
+from services.intent_router import route_intent  # noqa: E402
 
 class RouteIntentTests(unittest.TestCase):
     # ── GROUND_ONLY ──────────────────────────────────────────────────────────
@@ -130,38 +127,6 @@ class RouteIntentTests(unittest.TestCase):
 
     def test_empty_message_routes_llm(self):
         self.assertEqual(route_intent(""), "LLM")
-
-
-class InjectRoutingHintTests(unittest.TestCase):
-    def test_ground_intent_prepends_directive(self):
-        msg = "Find the nearest NO2 monitor to Austin Texas"
-        result = inject_routing_hint(msg)
-        self.assertTrue(result.startswith("[ROUTE:GROUND_ONLY]\n\n"))
-        self.assertIn(msg, result)
-
-    def test_satellite_intent_prepends_directive(self):
-        msg = "Plot TROPOMI NO2 over Texas for 2024-01-15"
-        result = inject_routing_hint(msg)
-        self.assertTrue(result.startswith("[ROUTE:SATELLITE_ONLY]\n\n"))
-        self.assertIn(msg, result)
-
-    def test_both_intent_passes_through_unchanged(self):
-        msg = "Compare ground NO2 to TROPOMI over Austin"
-        self.assertEqual(inject_routing_hint(msg), msg)
-
-    def test_llm_intent_passes_through_unchanged(self):
-        msg = "What is air quality like?"
-        self.assertEqual(inject_routing_hint(msg), msg)
-
-    def test_directive_not_double_prepended_on_second_call(self):
-        msg = "nearest NO2 monitor to Denver"
-        once = inject_routing_hint(msg)
-        twice = inject_routing_hint(once)
-        # The already-prefixed message still starts with one directive
-        self.assertEqual(once.count("[ROUTE:GROUND_ONLY]"), 1)
-        # Second call sees the prefix text — the whole string becomes the new
-        # "message" for the supervisor, so it should not break anything.
-        self.assertIn("[ROUTE:GROUND_ONLY]", twice)
 
 
 if __name__ == "__main__":

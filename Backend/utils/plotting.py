@@ -18,10 +18,29 @@ from affine import Affine
 
 from typing import Optional, Tuple, Union, List
 
-from utils.geo_utils import LAT_COORD_CANDIDATES, LON_COORD_CANDIDATES, find_lat_coord, find_lon_coord
+from config.settings import get_settings
+from earthdata_mcp.results import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
+from utils.geo_utils import (
+    LAT_COORD_CANDIDATES,
+    LON_COORD_CANDIDATES,
+    ensure_supported_grid,
+    find_lat_coord,
+    find_lon_coord,
+    identify_time,
+)
 
 logger = logging.getLogger(__name__)
 _geocoding_service = None
+
+# Nominatim's usage policy (https://operations.osmfoundation.org/policies/nominatim/)
+# requires an identifying User-Agent naming the application and a means of
+# contact. Reuses AQS_API_EMAIL (already required for EPA AQS API
+# registration) as that contact address instead of adding a second
+# deployment-operator email setting — an unfilled placeholder here isn't just
+# a policy violation, Nominatim's edge actively 403s any User-Agent
+# containing an @example.com/.org/.net address (verified live 2026-07-07),
+# so a real address is required for geocoding to work at all.
+NOMINATIM_USER_AGENT = f"talking-to-air/1.0 (contact: {get_settings().aqs_api_email})"
 
 
 def get_geocoding_service() -> "GeocodingService":
@@ -243,24 +262,107 @@ def plot_map(
 
     return fig, ax
 
-def _normalize_to_2d(data_array: xr.DataArray) -> xr.DataArray:
-    """
-    Squeeze a DataArray down to 2D (lat, lon) by:
-      1. Dropping all size-1 dimensions (handles Time=1 cleanly)
-      2. Averaging over any remaining non-spatial dimensions (handles 4D layer dim)
-    """
-    SPATIAL = set(LAT_COORD_CANDIDATES + LON_COORD_CANDIDATES)
+def _non_selectable_dims(data_array: xr.DataArray) -> set:
+    """Dims that never require an explicit selection: spatial (lat/lon, by
+    CF identification -- T24) and time (by CF identification -- T25, the one
+    transparent auto-reduction)."""
+    non_selectable = set(LAT_COORD_CANDIDATES + LON_COORD_CANDIDATES)
+    non_selectable |= {name for name in (find_lat_coord(data_array), find_lon_coord(data_array)) if name}
+    time_name = identify_time(data_array)
+    if time_name:
+        non_selectable.add(time_name)
+    return non_selectable
 
-    # squeeze out all size-1 dims
+
+def _squeeze_size_one_dims(data_array: xr.DataArray) -> xr.DataArray:
     dims_to_squeeze = [d for d in data_array.dims if data_array.sizes[d] == 1]
-    if dims_to_squeeze:
-        data_array = data_array.squeeze(dims_to_squeeze)
+    return data_array.squeeze(dims_to_squeeze) if dims_to_squeeze else data_array
 
-    # average over any remaining non-spatial dims
-    extra_dims = [d for d in data_array.dims if d not in SPATIAL]
+
+def _dimension_choice_error(data_array: xr.DataArray, dim: str) -> MCPToolError:
+    if dim in data_array.coords:
+        coord = data_array[dim]
+        values = [v.item() if hasattr(v, "item") else v for v in coord.values.tolist()] if coord.ndim == 1 else coord.values.tolist()
+        units = coord.attrs.get("units", "")
+    else:
+        values = list(range(data_array.sizes[dim]))
+        units = ""
+    values_str = ", ".join(str(v) for v in values)
+    units_note = f", units {units}" if units else ""
+    name = data_array.name or "this variable"
+    return MCPToolError(
+        CATEGORY_DIMENSION_CHOICE_REQUIRED,
+        f"'{name}' has an additional dimension '{dim}' ({len(values)} values{units_note}) "
+        f"with no selection made: {values_str}.",
+        suggestion=f"Pass a dimension selector for '{dim}' with one of the values above.",
+    )
+
+
+def _select_dim_nearest(data_array: xr.DataArray, dim_name: str, value) -> xr.DataArray:
+    """Select ``value`` along ``dim_name`` by nearest match, but refuse a
+    request that falls outside the coordinate's own min--max range instead of
+    silently snapping to an edge level. ``method="nearest"`` alone turns a
+    units mismatch (a MERRA-2 ``lev`` coordinate in Pa with the model passing
+    hPa, say) into a plausible-looking selection of the wrong level, with no
+    signal that anything went wrong."""
+    coord = data_array[dim_name] if dim_name in data_array.coords else None
+    if coord is not None and coord.ndim == 1 and coord.size > 0:
+        try:
+            requested = float(value)
+        except (TypeError, ValueError):
+            requested = None
+        if requested is not None:
+            cmin = float(coord.min())
+            cmax = float(coord.max())
+            if not (cmin <= requested <= cmax):
+                raise _dimension_out_of_range_error(coord, dim_name, requested, cmin, cmax)
+    return data_array.sel({dim_name: value}, method="nearest")
+
+
+def _dimension_out_of_range_error(
+    coord: xr.DataArray, dim: str, value: float, cmin: float, cmax: float,
+) -> MCPToolError:
+    units = coord.attrs.get("units", "")
+    units_note = f" {units}" if units else ""
+    return MCPToolError(
+        CATEGORY_DIMENSION_CHOICE_REQUIRED,
+        f"Selection {value}{units_note} for dimension '{dim}' is outside its "
+        f"coordinate range [{cmin}, {cmax}]{units_note} -- refusing to snap to "
+        f"the nearest edge level, which is a likely units mismatch (e.g. hPa "
+        f"vs Pa).",
+        suggestion=f"Pass a '{dim}' value within [{cmin}, {cmax}]{units_note}.",
+    )
+
+
+def _normalize_to_2d(data_array: xr.DataArray, dim_selector: dict | None = None) -> xr.DataArray:
+    """
+    Squeeze a DataArray down to 2D (lat, lon):
+      1. Drop all size-1 dimensions (handles Time=1 cleanly).
+      2. Apply any explicit ``dim_selector`` ({dim_name: coordinate value}).
+      3. A surviving time dim (T25) still auto-reduces (mean) -- it's the
+         one transparent reduction, already disclosed via aggregate()'s own
+         cadence/n_granules meta; this is a defense-in-depth squeeze for a
+         caller that reaches _normalize_to_2d before aggregate() reduces it.
+      4. Any other dimension that still survives and isn't spatial is
+         refused with a structured, candidate-listing error naming the
+         dimension and its coordinate values -- never silently averaged.
+    """
+    non_selectable = _non_selectable_dims(data_array)
+    time_name = identify_time(data_array)
+    data_array = _squeeze_size_one_dims(data_array)
+
+    if dim_selector:
+        for dim_name, value in dim_selector.items():
+            if dim_name in data_array.dims:
+                data_array = _select_dim_nearest(data_array, dim_name, value)
+        data_array = _squeeze_size_one_dims(data_array)
+
+    if time_name and time_name in data_array.dims:
+        data_array = data_array.mean(dim=time_name, skipna=True)
+
+    extra_dims = [d for d in data_array.dims if d not in non_selectable]
     if extra_dims:
-        logger.info("_normalize_to_2d: averaging over %s", extra_dims)
-        data_array = data_array.mean(dim=extra_dims)
+        raise _dimension_choice_error(data_array, extra_dims[0])
 
     return data_array
 
@@ -286,6 +388,11 @@ def mask_data_by_geometry(
         Masked data array (copy, original unchanged)
     """
 
+    # The affine transform below assumes a 1-D rectilinear lat/lon grid. A
+    # 2-D curvilinear swath or a projected x/y grid would be silently
+    # mis-masked here -- refuse with a specific, typed error instead (T24).
+    ensure_supported_grid(data_array)
+
     # Find lat/lon coordinates (handle different naming conventions)
     lat_coord = find_lat_coord(data_array)
     lon_coord = find_lon_coord(data_array)
@@ -293,7 +400,8 @@ def mask_data_by_geometry(
     if lat_coord is None or lon_coord is None:
         raise ValueError(
             f"Could not find lat/lon coordinates. "
-            f"Available coords: {list(data_array.coords.keys())}"
+            f"Dims present: {list(data_array.dims)}; "
+            f"coords: {list(data_array.coords.keys())}"
         )
 
     # Get coordinate arrays
@@ -512,7 +620,7 @@ class GeocodingService:
             'polygon_geojson': 1  # Request polygon boundary
         }
         headers = {
-            'User-Agent': '(Educational project)'
+            'User-Agent': NOMINATIM_USER_AGENT
         }
 
         self.last_request = time.time()
@@ -567,7 +675,7 @@ class GeocodingService:
             'limit': 1,
             'polygon_geojson': 1,
         }
-        headers = {'User-Agent': '(Educational project)'}
+        headers = {'User-Agent': NOMINATIM_USER_AGENT}
 
         self.last_request = time.time()
         logger.info("satellite_geocode_requests", extra={"_location": location_name})

@@ -34,7 +34,7 @@ An MCP client layer (langchain-mcp-adapters, streamable HTTP, bearer token) that
 ## Testing Decisions
 
 - **New seam (the one new seam for the whole TTA series):** an in-process fake earthdata-MCP server — a FastMCP instance with canned tool responses and a tmp-dir "shared volume" — that the real client connects to over streamable HTTP in tests. Nothing mocks the adapter library's internals.
-- Tests: toolset loads and matches the curated list exactly; `workspace_id` injected and invisible to tool schemas; `await_retrieval` returns terminal states (materialized, failed, cancelled) and emits SSE events in order; `safe_retrieve` takes all three gate branches; unreachable-MCP startup fails loud.
+- Tests: toolset loads and matches the curated list exactly; `workspace_id` injected and invisible to tool schemas; `await_retrieval` returns terminal states (ready, failed, expired, cancelled) and emits SSE events in order; `safe_retrieve` takes all three gate branches; unreachable-MCP startup fails loud.
 - Prior art: the existing service/endpoint pytest suites; async tests follow the repo's existing async test patterns.
 
 ## Out of Scope

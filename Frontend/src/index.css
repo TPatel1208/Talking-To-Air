@@ -1,30 +1,31 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,400&family=DM+Serif+Display&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap');
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg-primary:      #f8f7f4;
-  --bg-secondary:    #f0ede8;
-  --bg-tertiary:     #e8e5df;
-  --bg-card:         #ffffff;
-  --border:          #dddbd5;
-  --border-hover:    #c8c5be;
-  --text-primary:    #2c2a28;
-  --text-secondary:  #5a5750;
-  --text-muted:      #9c9990;
-  --text-hint:       #b0ada8;
-  --accent:          #2c2a28;
-  --accent-text:     #f8f7f4;
-  --teal:            #1D9E75;
-  --teal-hover:      #178f68;
-  --teal-light:      #E1F5EE;
-  --teal-text:       #0F6E56;
-  --success:         #1D9E75;
-  --warning:         #c87c2a;
-  --error:           #b94040;
-  --font:            'DM Sans', system-ui, sans-serif;
-  --font-serif:      'DM Serif Display', Georgia, serif;
-  --font-mono:       'JetBrains Mono', 'Fira Code', monospace;
+  --bg-primary:      oklch(0.98 0.004 250);
+  --bg-secondary:    oklch(0.96 0.005 250);
+  --bg-tertiary:     oklch(0.94 0.005 250);
+  --bg-card:         oklch(1 0 0);
+  --border:          oklch(0.9 0.005 250);
+  --border-hover:    oklch(0.85 0.005 250);
+  --text-primary:    oklch(0.2 0.01 250);
+  --text-secondary:  oklch(0.45 0.01 250);
+  --text-muted:      oklch(0.55 0.01 250);
+  --text-hint:       oklch(0.6 0.01 250);
+  --accent:          oklch(0.5 0.13 155);
+  --accent-text:     white;
+  --teal:            oklch(0.5 0.13 155);
+  --teal-hover:      oklch(0.45 0.12 155);
+  --teal-light:      oklch(0.94 0.05 155);
+  --teal-text:       oklch(0.4 0.13 155);
+  --success:         oklch(0.5 0.13 155);
+  --warning:         oklch(0.65 0.15 70);
+  --error:           oklch(0.5 0.15 30);
+  --error-bg:        oklch(0.96 0.05 30);
+  --error-border:    oklch(0.85 0.08 30);
+  --font:            'Manrope', -apple-system, sans-serif;
+  --font-mono:       'IBM Plex Mono', 'Fira Code', monospace;
   --shadow-sm:       0 1px 4px rgba(0,0,0,0.07);
   --shadow-md:       0 2px 10px rgba(0,0,0,0.08);
 }

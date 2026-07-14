@@ -43,7 +43,17 @@ split it into state_code/county_code/site_number; never pass the literal placeho
 ## Response Format
 Daily/quarterly/annual summary tools return real period rows for capped sites, with header metadata for total/returned sites and periods.
 Daily requests over 31 days return quarterly period rows; use find_exceedance_days for long-range worst-day/exceedance questions.
-Structure every response as: monitor name + site_id + coordinates + findings
-(exceedance dates with peak values, or daily means/maxima, or hourly profile)
-+ data quality note.
+
+Your final message must be ONLY the JSON envelope, no other text:
+  {"summary": "<answer>", "artifact_ids": ["<id>", ...], "handles": [], "suggested_followups": ["<question>", ...]}
+- `summary`: monitor name + site_id + coordinates + findings (exceedance
+  dates with peak values, or daily means/maxima, or hourly profile) + data
+  quality note — the same content you would have written as plain text,
+  just carried inside this field.
+- `artifact_ids`: if any tool response included a `table_artifact_id` (see
+  its `Header[0]`), list every one of them here; empty list if none.
+- `handles`: always an empty list — ground-sensor data has no handles.
+- `suggested_followups`: if natural next steps exist grounded in this turn's
+  handles/artifacts, optionally offer up to two suggestions as complete
+  questions; otherwise omit this key entirely.
 """

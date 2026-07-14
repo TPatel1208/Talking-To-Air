@@ -11,12 +11,17 @@ from utils.db import pg_connection
 
 async def save_chart(thread_id: str, payload: dict[str, Any], user_id: str) -> dict[str, Any]:
     stored_payload = dict(payload)
-    stable_payload = json.dumps(
-        {k: v for k, v in stored_payload.items() if k not in {"chart_id", "thread_id", "user_id"}},
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    chart_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{user_id}:{thread_id}:{stable_payload}"))
+    # Callers that already minted an id up front (T06 artifact-typed plot
+    # payloads, so the id is stable and visible to the LLM before this ever
+    # persists) win over the content-hash id generic chart payloads get.
+    chart_id = stored_payload.get("chart_id")
+    if not chart_id:
+        stable_payload = json.dumps(
+            {k: v for k, v in stored_payload.items() if k not in {"chart_id", "thread_id", "user_id"}},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        chart_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{user_id}:{thread_id}:{stable_payload}"))
     stored_payload["chart_id"] = chart_id
     stored_payload["thread_id"] = thread_id
     stored_payload["user_id"] = user_id

@@ -43,6 +43,7 @@ COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 COPY . .
+RUN rm -rf tests .pytest_cache
 
 # Pre-create volume mount points with correct ownership
 RUN mkdir -p /app/data /app/outputs

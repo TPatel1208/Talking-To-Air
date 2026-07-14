@@ -5,6 +5,8 @@ import io
 import re
 from typing import Any, AsyncIterator, Iterable
 
+from utils.colormaps import resolve as resolve_colormap
+
 
 class ExportService:
     def __init__(self, csv_export_max_granules: int = 50):
@@ -33,12 +35,13 @@ class ExportService:
     async def iter_chart_csv_chunks_async(
         self,
         payload: dict[str, Any],
+        tools: dict[str, Any],
         chunk_size: int = 64 * 1024,
     ) -> AsyncIterator[bytes]:
         output = io.StringIO()
         writer = csv.writer(output)
 
-        async for row in self.iter_chart_csv_rows_async(payload):
+        async for row in self.iter_chart_csv_rows_async(payload, tools):
             writer.writerow(row)
             if output.tell() >= chunk_size:
                 yield output.getvalue().encode("utf-8")
@@ -99,7 +102,7 @@ class ExportService:
                 title=payload.get("title") or export.get("region_name") or "Chart",
                 extent=region["bounds"] if region else export.get("fetch_params", {}).get("bbox"),
                 mask_geometry=region["geometry"] if region else None,
-                cmap=payload.get("cmap") or export.get("chart_parameters", {}).get("cmap") or "Spectral_r",
+                cmap=payload.get("colormap", {}).get("name") or resolve_colormap(export.get("variable")).name,
             )
 
         fig.tight_layout()
@@ -108,7 +111,7 @@ class ExportService:
         plt.close(fig)
         return output.getvalue()
 
-    async def build_chart_png_async(self, payload: dict[str, Any]) -> bytes:
+    async def build_chart_png_async(self, payload: dict[str, Any], tools: dict[str, Any]) -> bytes:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
@@ -128,12 +131,13 @@ class ExportService:
                 mesh = await self._plot_heatmap_axis_async(
                     axes[0][idx],
                     panel,
+                    tools,
                     panel.get("region_name") or f"Panel {idx + 1}",
                 )
             if mesh is not None:
                 fig.colorbar(mesh, ax=axes.ravel().tolist(), label=export.get("units", ""))
         elif export_type == "timeseries":
-            rows = await self._timeseries_rows_async(export)
+            rows = await self._timeseries_rows_async(export, tools)
             fig, ax = plt.subplots(figsize=(9, 5))
             ax.plot([row[1] for row in rows], [row[3] for row in rows], marker="o", linewidth=1.5)
             ax.set_title(payload.get("title") or export.get("variable") or "Time series")
@@ -143,7 +147,7 @@ class ExportService:
         else:
             from utils.plotting import RegionResolver, plot_map
 
-            da = await self._export_data_array_async(export, collapse_to_2d=True)
+            da = await self._export_data_array_async(export, tools, collapse_to_2d=True)
             region = None
             region_name = export.get("region_name")
             if region_name:
@@ -154,9 +158,9 @@ class ExportService:
             fig, ax = plot_map(
                 da,
                 title=payload.get("title") or export.get("region_name") or "Chart",
-                extent=region["bounds"] if region else export.get("fetch_params", {}).get("bbox"),
+                extent=region["bounds"] if region else None,
                 mask_geometry=region["geometry"] if region else None,
-                cmap=payload.get("cmap") or export.get("chart_parameters", {}).get("cmap") or "Spectral_r",
+                cmap=payload.get("colormap", {}).get("name") or resolve_colormap(export.get("variable")).name,
             )
 
         fig.tight_layout()
@@ -192,7 +196,7 @@ class ExportService:
                 yield ["variable", "latitude", "longitude", "value", "units"]
                 yield from self._iter_heatmap_csv_rows(export)
 
-    async def iter_chart_csv_rows_async(self, payload: dict[str, Any]):
+    async def iter_chart_csv_rows_async(self, payload: dict[str, Any], tools: dict[str, Any]):
         export = payload.get("export") or {}
         if not export:
             raise ValueError("This chart does not include full-resolution export metadata.")
@@ -203,36 +207,27 @@ class ExportService:
                 if panel.get("aggregation_meta", {}).get("n_granules", 1) > 1:
                     async for row in self._iter_aggregated_heatmap_csv_rows_async(
                         panel,
+                        tools,
                         panel.get("region_name") or f"panel-{idx + 1}",
                     ):
                         yield row
                 else:
                     if idx == 0:
                         yield ["panel", "variable", "latitude", "longitude", "value", "units"]
-                    async for row in self._iter_heatmap_csv_rows_async(panel, panel.get("region_name") or f"panel-{idx + 1}"):
+                    async for row in self._iter_heatmap_csv_rows_async(panel, tools, panel.get("region_name") or f"panel-{idx + 1}"):
                         yield row
         elif export_type == "timeseries":
             yield ["variable", "time", "stat", "value", "units"]
-            for row in await self._timeseries_rows_async(export):
+            for row in await self._timeseries_rows_async(export, tools):
                 yield row
         else:
             if export.get("aggregation_meta", {}).get("n_granules", 1) > 1:
-                async for row in self._iter_aggregated_heatmap_csv_rows_async(export):
+                async for row in self._iter_aggregated_heatmap_csv_rows_async(export, tools):
                     yield row
             else:
                 yield ["variable", "latitude", "longitude", "value", "units"]
-                async for row in self._iter_heatmap_csv_rows_async(export):
+                async for row in self._iter_heatmap_csv_rows_async(export, tools):
                     yield row
-
-    def _export_data_dict(self, export: dict[str, Any]) -> dict[str, Any]:
-        fetch_params = export.get("fetch_params") or {}
-        return {
-            "variable": export.get("variable") or fetch_params.get("variable", ""),
-            "units": export.get("units", ""),
-            "bbox": ",".join(str(v) for v in fetch_params.get("bbox", [])),
-            "source": export.get("source", ""),
-            "fetch_params": fetch_params,
-        }
 
     def _export_lat_lon_names(self, da):
         lat_coord = next((c for c in ["lat", "latitude", "Latitude"] if c in da.coords), None)
@@ -244,13 +239,32 @@ class ExportService:
     def _export_data_array(self, export: dict[str, Any], collapse_to_2d: bool = True):
         raise RuntimeError("Chart data export requires the async export path.")
 
-    async def _export_data_array_async(self, export: dict[str, Any], collapse_to_2d: bool = True):
+    async def _export_data_array_async(self, export: dict[str, Any], tools: dict[str, Any], collapse_to_2d: bool = True):
         from preprocessing.aggregation_service import AggregationService
         from tools.satellite_tools.plot_tools import _normalize_longitudes, _sel_bounds
-        from utils.data_utils import _load_data
+        from services.open_handle import open_handle
         from utils.plotting import RegionResolver, mask_data_by_geometry
 
-        da = await _load_data(self._export_data_dict(export))
+        from earthdata_mcp.results import MCPToolError
+
+        source_handles = export.get("source_handles") or []
+        if not source_handles:
+            raise ValueError("This chart does not include a source handle for full-resolution export.")
+        ds = await open_handle(source_handles[0], tools)
+        # Pass the source handle so a stored payload whose ``variable`` wasn't
+        # persisted (or was persisted as None) still inherits the science
+        # variable recorded for this handle at retrieval time (T25). If it
+        # can't be resolved -- a genuinely multi-science-variable file with no
+        # recorded choice -- surface it as the export path's own ValueError
+        # (a clean 422) instead of letting the structured MCPToolError escape
+        # mid-stream on the CSV path, where the response has already started
+        # and no handler can turn it into a proper error response.
+        try:
+            da = AggregationService().to_dataarray(
+                ds, variable=export.get("variable"), handle=source_handles[0],
+            )
+        except MCPToolError as exc:
+            raise ValueError(exc.message) from exc
         lat_coord, lon_coord = self._export_lat_lon_names(da)
         da = _normalize_longitudes(da, lon_coord)
 
@@ -262,11 +276,10 @@ class ExportService:
             except Exception:
                 region = None
 
+        bounds = None
         if region:
             da = mask_data_by_geometry(da, region["geometry"])
             bounds = region["bounds"]
-        else:
-            bounds = (export.get("fetch_params") or {}).get("bbox")
 
         if bounds:
             lat_coord, lon_coord = self._export_lat_lon_names(da)
@@ -275,7 +288,7 @@ class ExportService:
         if collapse_to_2d:
             aggregation = AggregationService().aggregate(
                 da,
-                variable=export.get("variable") or (export.get("fetch_params") or {}).get("variable"),
+                variable=export.get("variable"),
                 stat=(export.get("aggregation_meta") or {}).get("stat", "mean"),
             )
             da = next(iter(aggregation.ds.data_vars.values()))
@@ -303,10 +316,10 @@ class ExportService:
             row.extend([variable, float(lats[row_idx]), float(lons[col_idx]), float(values[row_idx, col_idx]), units])
             yield row
 
-    async def _iter_heatmap_csv_rows_async(self, export: dict[str, Any], panel_name: str | None = None):
+    async def _iter_heatmap_csv_rows_async(self, export: dict[str, Any], tools: dict[str, Any], panel_name: str | None = None):
         import numpy as np
 
-        da = await self._export_data_array_async(export, collapse_to_2d=True)
+        da = await self._export_data_array_async(export, tools, collapse_to_2d=True)
         lat_coord, lon_coord = self._export_lat_lon_names(da)
         lats = da[lat_coord].values
         lons = da[lon_coord].values
@@ -394,15 +407,15 @@ class ExportService:
             row.extend([variable, float(lats[row_idx]), float(lons[col_idx]), *row_granules, float(mean_value) if np.isfinite(mean_value) else "", units])
             yield row
 
-    async def _iter_aggregated_heatmap_csv_rows_async(self, export: dict[str, Any], panel_name: str | None = None):
+    async def _iter_aggregated_heatmap_csv_rows_async(self, export: dict[str, Any], tools: dict[str, Any], panel_name: str | None = None):
         import numpy as np
         import pandas as pd
         from preprocessing.aggregation_service import AggregationService
 
-        da = await self._export_data_array_async(export, collapse_to_2d=False)
+        da = await self._export_data_array_async(export, tools, collapse_to_2d=False)
         lat_coord, lon_coord = self._export_lat_lon_names(da)
         if "time" not in da.dims:
-            async for row in self._iter_heatmap_csv_rows_async(export, panel_name):
+            async for row in self._iter_heatmap_csv_rows_async(export, tools, panel_name):
                 yield row
             return
 
@@ -427,7 +440,7 @@ class ExportService:
 
         aggregation = AggregationService().aggregate(
             da,
-            variable=export.get("variable") or (export.get("fetch_params") or {}).get("variable"),
+            variable=export.get("variable"),
             stat=meta.get("stat", "mean"),
         )
         mean_da = next(iter(aggregation.ds.data_vars.values()))
@@ -488,12 +501,15 @@ class ExportService:
             ])
         return rows
 
-    async def _timeseries_rows_async(self, export: dict[str, Any]):
+    async def _timeseries_rows_async(self, export: dict[str, Any], tools: dict[str, Any]):
+        if export.get("aggregation") == "point sample":
+            return await self._point_sample_timeseries_rows_async(export, tools)
+
         import numpy as np
         import pandas as pd
         from preprocessing.aggregation_service import AggregationService
 
-        da = await self._export_data_array_async(export, collapse_to_2d=False)
+        da = await self._export_data_array_async(export, tools, collapse_to_2d=False)
         if "time" not in da.dims:
             raise ValueError("Time-series export requires a time dimension.")
 
@@ -517,6 +533,22 @@ class ExportService:
             ])
         return rows
 
+    async def _point_sample_timeseries_rows_async(self, export: dict[str, Any], tools: dict[str, Any]):
+        from services.open_handle import open_handle
+        from tools.satellite_tools.retrieval_tools import _series_from_table
+
+        source_handles = export.get("source_handles") or []
+        if not source_handles:
+            raise ValueError("This chart does not include a source handle for full-resolution export.")
+
+        variable = export.get("variable", "")
+        table = await open_handle(source_handles[0], tools)
+        times, values = _series_from_table(table, variable)
+
+        stat = export.get("aggregation", "")
+        units = export.get("units", "")
+        return [[variable, time, stat, value, units] for time, value in zip(times, values)]
+
     def _plot_heatmap_axis(self, ax, export: dict[str, Any], title: str):
         da = self._export_data_array(export, collapse_to_2d=True)
         lat_coord, lon_coord = self._export_lat_lon_names(da)
@@ -525,22 +557,22 @@ class ExportService:
             da[lat_coord].values,
             da.values.astype(float),
             shading="auto",
-            cmap="Spectral_r",
+            cmap=resolve_colormap(export.get("variable")).name,
         )
         ax.set_title(title, fontsize=10)
         ax.set_xlabel("Longitude")
         ax.set_ylabel("Latitude")
         return mesh
 
-    async def _plot_heatmap_axis_async(self, ax, export: dict[str, Any], title: str):
-        da = await self._export_data_array_async(export, collapse_to_2d=True)
+    async def _plot_heatmap_axis_async(self, ax, export: dict[str, Any], tools: dict[str, Any], title: str):
+        da = await self._export_data_array_async(export, tools, collapse_to_2d=True)
         lat_coord, lon_coord = self._export_lat_lon_names(da)
         mesh = ax.pcolormesh(
             da[lon_coord].values,
             da[lat_coord].values,
             da.values.astype(float),
             shading="auto",
-            cmap="Spectral_r",
+            cmap=resolve_colormap(export.get("variable")).name,
         )
         ax.set_title(title, fontsize=10)
         ax.set_xlabel("Longitude")
