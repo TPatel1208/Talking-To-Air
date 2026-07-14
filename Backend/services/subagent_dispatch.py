@@ -67,7 +67,6 @@ async def run_ground(
                 "_event": "agent_budget_exceeded",
                 "_agent_type": "ground_sensor",
                 "_call_count": count,
-                "_thread_id": conversation_thread_id,
             },
         )
         return AgentResult(text=(
@@ -118,8 +117,6 @@ async def run_ground(
             extra={
                 "_event": "llm_tool_call_refusal",
                 "_agent_type": "ground_sensor",
-                "_task_summary": _task_summary(enriched_task),
-                "_thread_id": conversation_thread_id,
             },
         )
         retry_task = _ground_retry_task(enriched_task)
@@ -163,7 +160,6 @@ async def run_satellite(
             extra={
                 "_event": "satellite_dispatch_skipped_mcp_not_ready",
                 "_mcp_state": mcp_manager.state,
-                "_thread_id": conversation_thread_id,
             },
         )
         return AgentResult(
@@ -184,7 +180,6 @@ async def run_satellite(
                 "_event": "agent_budget_exceeded",
                 "_agent_type": "satellite",
                 "_call_count": count,
-                "_thread_id": conversation_thread_id,
             },
         )
         return AgentResult(text=(
@@ -278,8 +273,6 @@ async def run_satellite(
             extra={
                 "_event": "llm_tool_call_refusal",
                 "_agent_type": "satellite",
-                "_task_summary": _task_summary(enriched_task),
-                "_thread_id": conversation_thread_id,
             },
         )
         result = await _reprompt_final_envelope(satellite_agent, _satellite_retry_task(enriched_task), "satellite")
@@ -512,7 +505,6 @@ async def _load_satellite_context(conversation_thread_id: str | None) -> dict[st
         logger.warning(
             "satellite_context_load_failed",
             exc_info=True,
-            extra={"_thread_id": conversation_thread_id},
         )
         return {}
 
@@ -524,7 +516,6 @@ async def _persist_satellite_context(conversation_thread_id: str, context: dict[
         logger.warning(
             "satellite_context_save_failed",
             exc_info=True,
-            extra={"_thread_id": conversation_thread_id},
         )
 
 

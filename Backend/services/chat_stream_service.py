@@ -8,6 +8,8 @@ from typing import Any, AsyncIterator
 
 from langchain_core.messages import AIMessage, HumanMessage
 
+from config.error_templates import render_error_answer
+from earthdata_mcp.results import CATEGORY_CONTRACT
 from models import parse_agent_result, parse_chart_payload
 from services.artifact_store import artifact_store
 from services.chart_service import ChartService
@@ -139,9 +141,9 @@ class ChatStreamService:
                     done_payload["suggested_followups"] = suggestions_box["value"]
                 yield self.sse("done", done_payload)
                 self._log_request_complete(request_id, thread_id, started)
-            except Exception as e:
+            except Exception:
                 logger.exception("agent_failure", extra={"_request_id": request_id, "_thread_id": thread_id})
-                yield self.sse("error", {"detail": str(e)})
+                yield self.sse("error", {"detail": render_error_answer(CATEGORY_CONTRACT, "request")})
 
     async def _fast_path_events(
         self,
@@ -218,9 +220,9 @@ class ChatStreamService:
                 # intentionally not forwarded — the finalized envelope below
                 # becomes the one synthesized answer (T14 Out of Scope: no
                 # sub-agent token streaming through this path either).
-        except Exception as e:
+        except Exception:
             logger.exception("agent_failure", extra={"_request_id": request_id, "_thread_id": thread_id})
-            yield self.sse("error", {"detail": str(e)})
+            yield self.sse("error", {"detail": render_error_answer(CATEGORY_CONTRACT, "request")})
             return
         finally:
             if not task.done():
