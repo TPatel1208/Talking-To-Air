@@ -48,6 +48,7 @@ from repositories.user_connector_repository import (
 )
 from repositories.user_repository import create_user, ensure_user_table, get_user_by_username
 from services.auth_service import authenticate_request, create_access_token, hash_password, verify_password
+from services.connector_credential_service import EdlCredentialInjector
 from services.connector_token_service import TokenValidationError, decode_token_expiry
 from services.artifact_store import artifact_store
 from services.chat_stream_service import ChatStreamService
@@ -101,7 +102,13 @@ async def _on_earthdata_mcp_ready(tools: dict) -> None:
     logger.info("earthdata_mcp_satellite_agent_ready", extra={"_event": "earthdata_mcp_satellite_agent_ready"})
 
 
-earthdata_mcp_manager = EarthdataMCPConnectionManager(settings, current_user_id, on_ready=_on_earthdata_mcp_ready)
+# T31: one shared instance -- its in-process cache and per-turn
+# last_used_at coalescing are only meaningful as process-lifetime state, and
+# the connector endpoints below invalidate it directly on re-paste/disconnect.
+edl_credential_injector = EdlCredentialInjector(settings)
+earthdata_mcp_manager = EarthdataMCPConnectionManager(
+    settings, current_user_id, on_ready=_on_earthdata_mcp_ready, edl_injector=edl_credential_injector,
+)
 chat_stream_service = ChatStreamService(chart_service, settings.long_request_seconds, earthdata_mcp_manager)
 
 
@@ -386,6 +393,9 @@ async def set_connector_token_endpoint(connector_type: ConnectorType, req: SetCo
     row = await upsert_connector(
         request.state.current_user.id, connector_type, entry["auth_method"], encrypted_secret, expires_at,
     )
+    # T31: a re-paste must never be shadowed by the injector's short-TTL
+    # cache of the previous (possibly invalid/expired) row.
+    edl_credential_injector.invalidate(request.state.current_user.id)
     return _connector_view(entry, row)
 
 
@@ -394,6 +404,9 @@ async def disconnect_connector_endpoint(connector_type: ConnectorType, request: 
     _require_connector_cipher()
     entry = _connector_registry_entry(connector_type)
     await delete_connector(request.state.current_user.id, connector_type)
+    # T31: a disconnect must never leave a stale cached token injectable
+    # for the rest of the cache's TTL window.
+    edl_credential_injector.invalidate(request.state.current_user.id)
     return _connector_view(entry, None)
 
 

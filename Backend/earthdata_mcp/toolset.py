@@ -17,13 +17,18 @@ from langchain_core.tools import BaseTool
 from config.settings import Settings
 
 from .client import CURATED_TOOL_NAMES, load_raw_mcp_tools
-from .workspace import bind_workspace, model_view_describe_dataset
+from .workspace import EdlCredentialInjector, bind_workspace, model_view_describe_dataset
 
 
-async def load_earthdata_tools(settings: Settings, user_id_getter: Callable[[], str]) -> dict[str, BaseTool]:
+async def load_earthdata_tools(
+    settings: Settings,
+    user_id_getter: Callable[[], str],
+    *,
+    edl_injector: EdlCredentialInjector | None = None,
+) -> dict[str, BaseTool]:
     """Load, validate, and workspace-bind every tool the composites need."""
     raw = await load_raw_mcp_tools(settings)
-    return bind_workspace(raw, user_id_getter)
+    return bind_workspace(raw, user_id_getter, edl_injector=edl_injector)
 
 
 def curated_model_tools(tools: dict[str, BaseTool]) -> list[BaseTool]:

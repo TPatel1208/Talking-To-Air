@@ -287,6 +287,43 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
         # objects, so consumers (e.g. the satellite agent) must rebuild too.
         self.assertEqual(len(on_ready_calls), 2)
 
+    async def test_edl_injector_is_threaded_through_to_bind_workspace(self):
+        """T31: the manager's own job is connect/retry/schema-diff
+        bookkeeping (this file's docstring) — the actual injection behavior
+        is exercised end-to-end against a real advertising MCP schema in
+        test_earthdata_mcp_edl_injection.py. This just proves the manager
+        passes edl_injector through to bind_workspace rather than silently
+        dropping it, using the schema-stripping side effect as the signal."""
+        from earthdata_mcp.connection import EarthdataMCPConnectionManager, STATE_READY
+
+        tools = {"search_datasets": _fake_tool("search_datasets", ("query", "filters", "workspace_id", "edl_token"))}
+
+        async def loader(settings):
+            return tools
+
+        class _FakeInjector:
+            async def resolve(self, user_id):
+                return None
+
+            def mark_used(self, user_id):
+                pass
+
+            async def mark_invalid(self, user_id):
+                pass
+
+        manager = EarthdataMCPConnectionManager(
+            settings=object(), user_id_getter=lambda: "17", loader=loader, sleep=_yielding_sleep,
+            edl_injector=_FakeInjector(),
+        )
+
+        manager.start()
+        await asyncio.wait_for(_wait_for_state(manager, STATE_READY), timeout=1)
+
+        properties = manager.tools["search_datasets"].args_schema["properties"]
+        self.assertNotIn("edl_token", properties)
+        self.assertNotIn("workspace_id", properties)
+        await manager.stop()
+
 
 async def _wait_for_state(manager, target_state) -> None:
     while manager.state != target_state:

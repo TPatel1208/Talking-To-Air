@@ -123,5 +123,68 @@ class DeleteConnectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(deleted)
 
 
+class GetConnectorSecretRowTests(unittest.IsolatedAsyncioTestCase):
+    """T31: the one repository read that includes encrypted_secret -- used
+    only by services/connector_credential_service.py for per-call injection
+    resolution, never by an API response."""
+
+    async def test_selects_the_secret_scoped_to_user_and_connector_type(self):
+        from repositories import user_connector_repository
+
+        row = {"encrypted_secret": "blob", "expires_at": datetime.now(timezone.utc), "status": "connected"}
+        cursor = _FakeCursor(fetchone_result=row)
+        conn = _fake_conn(cursor=cursor)
+
+        with patch("repositories.user_connector_repository.pg_connection", _fake_pg_connection(conn)):
+            result = await user_connector_repository.get_connector_secret_row("user-1", "earthdata")
+
+        sql, params = cursor.execute.await_args.args
+        self.assertIn("encrypted_secret", sql)
+        self.assertIn("WHERE user_id = %s AND connector_type = %s", sql)
+        self.assertEqual(params, ("user-1", "earthdata"))
+        self.assertEqual(result, row)
+
+    async def test_returns_none_when_no_row_exists(self):
+        from repositories import user_connector_repository
+
+        cursor = _FakeCursor(fetchone_result=None)
+        conn = _fake_conn(cursor=cursor)
+
+        with patch("repositories.user_connector_repository.pg_connection", _fake_pg_connection(conn)):
+            result = await user_connector_repository.get_connector_secret_row("user-1", "earthdata")
+
+        self.assertIsNone(result)
+
+
+class TouchLastUsedAtTests(unittest.IsolatedAsyncioTestCase):
+    async def test_updates_last_used_at_scoped_to_user_and_connector_type(self):
+        from repositories import user_connector_repository
+
+        conn = _fake_conn()
+
+        with patch("repositories.user_connector_repository.pg_connection", _fake_pg_connection(conn)):
+            await user_connector_repository.touch_last_used_at("user-1", "earthdata")
+
+        sql, params = conn.execute.await_args.args
+        self.assertIn("SET last_used_at = NOW()", sql)
+        self.assertIn("WHERE user_id = %s AND connector_type = %s", sql)
+        self.assertEqual(params, ("user-1", "earthdata"))
+
+
+class SetConnectorStatusTests(unittest.IsolatedAsyncioTestCase):
+    async def test_updates_status_scoped_to_user_and_connector_type(self):
+        from repositories import user_connector_repository
+
+        conn = _fake_conn()
+
+        with patch("repositories.user_connector_repository.pg_connection", _fake_pg_connection(conn)):
+            await user_connector_repository.set_connector_status("user-1", "earthdata", "error")
+
+        sql, params = conn.execute.await_args.args
+        self.assertIn("SET status = %s", sql)
+        self.assertIn("WHERE user_id = %s AND connector_type = %s", sql)
+        self.assertEqual(params, ("error", "user-1", "earthdata"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -231,6 +231,25 @@ class ConnectorsEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(res.status_code, 401)
 
+    async def test_set_token_invalidates_the_edl_credential_injector_cache(self):
+        """T31: a re-paste must never be shadowed by the injector's
+        short-TTL cache of the previous row within the TTL window."""
+        raw_token = _make_edl_token()
+        invalidate_patch = patch("api.edl_credential_injector.invalidate")
+        with invalidate_patch as invalidate:
+            async with await self._client(self._auth_patches() + self._repo_patches()) as client:
+                await client.put("/connectors/earthdata/token", json={"token": raw_token}, headers=self.auth_headers1)
+
+        invalidate.assert_called_once_with("user-1")
+
+    async def test_disconnect_invalidates_the_edl_credential_injector_cache(self):
+        invalidate_patch = patch("api.edl_credential_injector.invalidate")
+        with invalidate_patch as invalidate:
+            async with await self._client(self._auth_patches() + self._repo_patches()) as client:
+                await client.delete("/connectors/earthdata", headers=self.auth_headers1)
+
+        invalidate.assert_called_once_with("user-1")
+
 
 if __name__ == "__main__":
     unittest.main()
