@@ -15,7 +15,7 @@ from typing import Any
 
 from langchain_core.tools import BaseTool
 
-from earthdata_mcp.results import MCPToolError, parse_tool_result
+from earthdata_mcp.results import parse_tool_result
 from services.retrieval_composites import TERMINAL_STATUSES
 
 # Cap the get_retrieval_status fan-out: a workspace accumulates jobs over its
@@ -57,7 +57,13 @@ async def list_jobs(tools: dict[str, BaseTool]) -> list[dict[str, Any]]:
                 return parse_tool_result(
                     await status_tool.ainvoke({"job_handle": entry["job_handle"]})
                 )
-            except MCPToolError as exc:
+            # Broad by design: this is the fault-isolation boundary the
+            # docstring promises. MCPToolError covers responses the adapter
+            # classifies; anything else (a transport error, a malformed
+            # response parse_tool_result chokes on) must degrade the same
+            # single row rather than reaching asyncio.gather and cancelling
+            # every other in-flight status call.
+            except Exception as exc:
                 return {"status": "error", "message": str(exc)}
 
     statuses = await asyncio.gather(*(status_for(entry) for entry in entries))

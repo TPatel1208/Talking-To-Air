@@ -11,13 +11,18 @@
 // ("queued at provider" vs. "submitted") and coincides with `status` once a
 // job is terminal.
 
-export const TERMINAL_STATUSES = new Set(['ready', 'failed', 'expired', 'cancelled'])
+// "error" is synthesized by services/jobs_service.py's fault-isolated
+// status fan-out (a single handle's get_retrieval_status call failed) --
+// terminal because the backend has nothing further to report and there's
+// no live job underneath a cancel could reach.
+export const TERMINAL_STATUSES = new Set(['ready', 'failed', 'expired', 'cancelled', 'error'])
 
 const STATUS_COLORS = {
   ready: 'var(--teal-text)',
   failed: 'var(--error)',
   expired: 'var(--warning)',
   cancelled: 'var(--text-muted)',
+  error: 'var(--error)',
 }
 
 // PRD 021's `upstream` outcomes on a cancel response. "unsupported" (OPeNDAP,

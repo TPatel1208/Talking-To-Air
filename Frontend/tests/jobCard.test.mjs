@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import {
   statusBadge, primaryAction, upstreamLine,
   formatVariables, formatBbox, formatOutputFormat, formatTimeRange,
-  sortJobs,
+  sortJobs, TERMINAL_STATUSES,
 } from '../src/utils/jobCard.js'
 
 test('statusBadge prefers phase for the label but status for the color', () => {
@@ -52,6 +52,17 @@ test('primaryAction is null for read-only terminal states', () => {
   for (const status of ['failed', 'expired', 'cancelled']) {
     assert.equal(primaryAction({ status }), null)
   }
+})
+
+test('a job whose status read itself failed (synthesized "error") is terminal, not a live running job', () => {
+  // services/jobs_service.py's fault-isolated status fan-out synthesizes
+  // status: "error" when a single handle's get_retrieval_status call fails.
+  // Without "error" in TERMINAL_STATUSES that row rendered as running, with
+  // a live Cancel button, for a job the backend can no longer even ask
+  // about.
+  assert.equal(TERMINAL_STATUSES.has('error'), true)
+  assert.equal(primaryAction({ status: 'error' }), null)
+  assert.equal(statusBadge({ status: 'error' }).color, 'var(--error)')
 })
 
 test('upstreamLine maps PRD 021 outcomes to the honest subtle-line copy', () => {
