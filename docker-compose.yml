@@ -47,6 +47,12 @@ services:
       - "8000:8000"
     volumes:
       - plot_outputs:/app/outputs
+      # Server-rendered map overlay PNGs (T23). Kept OUT of /app/outputs on
+      # purpose (that dir is served unauthenticated at /outputs), so it needs
+      # its own named volume — without one, a container recreate wipes every
+      # overlay while its chart payload persists in Postgres, and the map
+      # silently degrades to the canvas fallback ("quality lowered on restart").
+      - overlay_store:/app/overlay_store
       # earthdata-retrieval MCP's materialization volume, read-only, mounted
       # at the same absolute path (/data) the MCP stack uses internally so
       # `export_result`'s file:// URIs resolve as a plain filesystem read.
@@ -88,6 +94,9 @@ services:
       # straight off disk; it lives at the repo root so it's outside the
       # ./Backend build context and must be bind-mounted in.
       - ./sql/init_agent_charts.sql:/sql/init_agent_charts.sql:ro
+      # test_overlay_store_persistence.py asserts the deployment persists the
+      # overlay store; the compose file is likewise outside the build context.
+      - ./docker-compose.yml:/compose/docker-compose.yml:ro
     command: >
       sh -c "coverage run -m pytest tests/ -v --tb=short && coverage report"
 
@@ -136,6 +145,8 @@ volumes:
   pg_data:
     driver: local
   plot_outputs:
+    driver: local
+  overlay_store:
     driver: local
   # Owned by the harmony-retrieval-mcp stack (its `data` volume, fixed name
   # `earthdata_data`); joined here as external, read-only, so this stack is
