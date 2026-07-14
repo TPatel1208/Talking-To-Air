@@ -1,87 +1,40 @@
 # Talking to Air
 
-**Talking to Air** is an AI-powered conversational interface for querying, visualizing, and analyzing atmospheric data from NASA satellite missions and EPA ground sensors. Ask natural-language questions about air quality and get maps, trend plots, and statistical summaries drawn from real observations.
+**Talking to Air** is an AI-powered conversational interface for querying, visualizing, and analyzing atmospheric data from NASA satellite missions and EPA ground sensors. Ask natural-language questions about air quality and get interactive maps, trend plots, and statistical summaries drawn from real observations.
 
----
+## How it works
 
-## Features
+A React frontend talks to a FastAPI backend over a streamed (SSE) `/chat` endpoint. A **supervisor** agent routes each query to one of two subagents: a **satellite** agent that retrieves NASA data on demand through the [earthdata-retrieval MCP](https://github.com/TPatel1208/harmony-retrieval-mcp) (a separate stack, with size-gated "safe retrieval"), and a **ground-sensor** agent that queries the EPA AQS API. PostgreSQL holds conversation memory (one thread per session) and a chart/artifact index. Each agent's provider and model are configuration entries resolved through a single model factory, so switching providers is an environment change, not a code change.
 
-- **Multi-agent architecture** — a stateful supervisor agent routes queries to specialized satellite and ground-sensor subagents
-- **NASA Harmony integration** — fetches data on demand from OMI, TROPOMI, and TEMPO missions via the NASA Harmony API
-- **EPA AQS integration** — queries the EPA Air Quality System API for ground-level measurements
-- **Intelligent data caching** — downloaded granules are stored in Zarr format on disk and indexed in PostgreSQL to avoid redundant fetches
-- **Flexible fetch routing** — `DATA_FETCH_MODE` supports `auto`, `harmony`, `opendap`, and `s3` strategies
-- **Persistent sessions** — full conversation history is stored in PostgreSQL (one thread per session) using a LangGraph Postgres checkpointer
-- **Streaming responses** — the `/chat` endpoint streams Server-Sent Events so the UI updates progressively
-- **Production-ready observability** — structured JSON logging, named log events, and LangSmith tracing support
-
----
-
-## Supported Datasets
-
-| Dataset | Sensor | Variable | Resolution | Coverage |
-|---|---|---|---|---|
-| `OMI_NO2` | OMI / Aura | NO₂ | Daily | Global |
-| `TROPOMI_NO2` | Sentinel-5P | NO₂ | Monthly | Global |
-| `TEMPO_NO2` | TEMPO | NO₂ | Hourly | North America |
-| `TEMPO_O3TOT` | TEMPO | O₃ | Hourly | North America |
-| `OMI_O3` | OMI / Aura | O₃ | Daily | Global |
-| `TEMPO_HCHO` | TEMPO | HCHO | Hourly | North America |
-| `OMI_HCHO` | OMI / Aura | HCHO | Daily | Global |
-
----
-
-## Architecture
-
-```
-Frontend (React + Vite)
-        │  SSE stream
-        ▼
-Backend (FastAPI)
-        │
-        ▼
-Supervisor Agent  ──── Postgres checkpointer (conversation memory)
-   ├── Satellite Agent  ──  NASA Harmony / OPeNDAP / S3
-   └── Ground Sensor Agent  ──  EPA AQS API
-        │
-        ▼
-Cache Layer  ──  Zarr files on disk + PostgreSQL cache index
-```
-
-**Supervisor** — stateful LangGraph agent on Google Gemini 2.5 Flash (its own free-tier rate budget, separate from the Groq subagents). Owns the Postgres checkpointer and maintains one conversation thread per session. Trims its own context window to stay within the model's token budget.
-
-**Satellite Agent** — stateless LangGraph agent on Groq (the large tool-use model, with the full Groq budget to itself). Delegates data fetching to whichever strategy is configured (Harmony, OPeNDAP CE, or S3 direct). Produces maps and time-series plots using Cartopy and Matplotlib.
-
-**Ground Sensor Agent** — stateless LangGraph agent on Groq (the small model). Queries the EPA AQS API for PM₂.₅, O₃, NO₂, and other pollutants at monitoring stations.
-
-Each agent's provider + model is a configuration entry, resolved through one model factory (`config/model_factory.py`) — switching providers is an environment change, not a code change. See `SUPERVISOR_MODEL_PROVIDER`, `EARTHDATA_AGENT_PROVIDER`, and `GROUND_AGENT_PROVIDER` below.
+That's the whole picture you need to run it — this README is setup-focused. For internals, see [`docs/`](docs/) and the PRDs in [`docs/prds/`](docs/prds/).
 
 ---
 
 ## Prerequisites
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/)
-- [Google AI Studio API key](https://ai.google.dev/) (`GOOGLE_API_KEY`)
-- [Groq API key](https://console.groq.com/) (`GROQ_API_KEY`)
-- [NASA Earthdata account](https://urs.earthdata.nasa.gov/) (username + password)
-- [EPA AQS API key](https://aqs.epa.gov/aqsweb/documents/data_api.html) (email + key)
+- [Google AI Studio API key](https://ai.google.dev/) — `GOOGLE_API_KEY` (supervisor and satellite agents)
+- [Groq API key](https://console.groq.com/) — `GROQ_API_KEY` (ground-sensor agent)
+- [NASA Earthdata account](https://urs.earthdata.nasa.gov/) — username + password
+- [EPA AQS API key](https://aqs.epa.gov/aqsweb/documents/data_api.html) — email + key
+- The [harmony-retrieval-mcp](https://github.com/TPatel1208/harmony-retrieval-mcp) stack, for satellite data (see [Joining the MCP stack](#joining-the-earthdata-retrieval-mcp-stack) below). Ground/EPA features work without it.
 - Optional: [LangSmith API key](https://smith.langchain.com/) for tracing
 
 ---
 
 ## Quick Start
 
-1. **Clone the repository:**
+1. **Clone:**
    ```bash
-   git clone https://github.com/your-username/talking-to-air.git
-   cd talking-to-air
+   git clone https://github.com/TPatel1208/Talking-To-Air.git
+   cd Talking-To-Air
    ```
 
 2. **Configure environment:**
    ```bash
    cp .env.example .env
    ```
-   Open `.env` and fill in all required values (see [Environment Variables](#environment-variables) below).
+   Open `.env` and fill in the required values (see [Environment Variables](#environment-variables)).
 
 3. **Build and start:**
    ```bash
@@ -89,12 +42,12 @@ Each agent's provider + model is a configuration entry, resolved through one mod
    ```
 
 4. **Open the app:**
-   - Chat interface: http://localhost:5173
-   - API docs (Swagger): http://localhost:8000/docs
-   - Health check: http://localhost:8000/health
-   - Prometheus metrics: http://localhost:8000/metrics
+   - Chat interface — http://localhost:5173
+   - API docs (Swagger) — http://localhost:8000/docs
+   - Health check — http://localhost:8000/health
+   - Prometheus metrics — http://localhost:8000/metrics
 
-5. **Subsequent starts** (no rebuild needed unless dependencies change):
+5. **Subsequent starts** (no rebuild unless dependencies change):
    ```bash
    docker compose up
    ```
@@ -108,177 +61,141 @@ Each agent's provider + model is a configuration entry, resolved through one mod
 
 ## Joining the earthdata-retrieval MCP stack
 
-This stack connects to the [harmony-retrieval-mcp](https://github.com/your-username/harmony-retrieval-mcp) stack over a shared external Docker network, and reads that stack's materialized data volume directly (read-only) so `export_result`'s `file://` URIs resolve as a plain filesystem read in both containers.
+The satellite path retrieves NASA data through the [harmony-retrieval-mcp](https://github.com/TPatel1208/harmony-retrieval-mcp) stack. The two stacks connect over a shared external Docker network and share the MCP's materialized data volume (read-only), so a retrieved file's `file://` URI resolves as a plain filesystem read in both containers.
 
-**Startup order no longer matters (T17).** The backend boots without the MCP: ground/EPA features work immediately, and a background task connects to the MCP (with capped retry) and heals the satellite path without a restart once it's up — `/health`'s `earthdata_mcp` field reports `connecting`/`ready`/`unavailable`/`incompatible`. The one exception is a genuinely fresh machine that has never brought up the MCP stack's compose file: Docker's `external: true` network/volume must exist before *this* stack's `docker compose up` will succeed at all, so the MCP stack still needs to run at least once first to create them. After that one-time setup, bring either stack up first, in any order, on every subsequent `docker compose up`.
+**Startup order does not matter.** The backend boots without the MCP — ground/EPA features work immediately, and a background task connects to the MCP (with capped retry) and heals the satellite path without a restart once it's up. `/health`'s `earthdata_mcp` field reports `connecting` / `ready` / `unavailable` / `incompatible`. The one exception is a genuinely fresh machine: Docker's `external: true` network (`earthdata_net`) and volume (`earthdata_data`) must exist before this stack's `docker compose up` will succeed at all, so the MCP stack has to run **once** first to create them.
 
-1. **First time only:** bring up the MCP stack (in the harmony-retrieval-mcp repo, with `EARTHDATA_MCP_TRANSPORT=http` set in its `.env`) to create the external network `earthdata_net` and the external volume `earthdata_data`:
+1. **First time only** — in the `harmony-retrieval-mcp` repo (with `EARTHDATA_MCP_TRANSPORT=http` in its `.env`), bring the stack up to create the shared network and volume:
    ```bash
    docker compose up --build
    ```
 
 2. **Set `EARTHDATA_MCP_URL` and `EARTHDATA_MCP_TOKEN`** in this repo's `.env` to match that stack's HTTP endpoint and token.
 
-3. **Start this stack** (in either order relative to the MCP stack, from here on):
+3. **Start this stack** (either order relative to the MCP stack, from here on):
    ```bash
    docker compose up --build
    ```
 
-4. **Smoke check** — confirm the shared mount, network, and MCP connection all resolve:
+4. **Smoke check:**
    ```bash
-   docker compose exec backend ls /data
-   docker compose exec backend curl -H "Authorization: Bearer $EARTHDATA_MCP_TOKEN" http://mcp:8765/mcp
-   docker compose exec backend curl http://localhost:8000/health
+   docker compose exec backend ls /data       # lists what the MCP has materialized
+   docker compose exec backend curl http://localhost:8000/health   # earthdata_mcp: ready
    ```
-   The first command should list whatever the MCP stack has materialized; the second should get a response from the MCP's HTTP endpoint rather than a DNS/connection error; the third's `earthdata_mcp` field should read `ready` once the connect loop catches up (a few seconds).
-
----
-
-## Operations
-
-The backend exposes `/health` for dependency-aware readiness and `/metrics` in Prometheus text format. `/metrics` is intentionally exempt from API key authentication so a scraper can collect it, but production deployments should bind or proxy it only on a private, non-public interface.
-
-See [docs/runbook.md](docs/runbook.md) for health response interpretation, key metrics, Harmony timeout diagnosis, stalled request handling, and Zarr cache pruning.
 
 ---
 
 ## Environment Variables
 
-Copy `.env.example` to `.env` and fill in the values below.
+Copy `.env.example` to `.env` and fill in the values below. **`.env.example` is the exhaustive reference** — every tunable (retrieval poll bounds, granule concurrency, CSV/export caps, map basemap URLs, etc.) is documented there with defaults. The tables below cover what you actually need to set.
 
 ### Required
 
 | Variable | Description |
 |---|---|
-| `GOOGLE_API_KEY` | Google AI Studio key — used by the supervisor agent |
-| `GROQ_API_KEY` | Groq key — used by the satellite and ground-sensor subagents |
 | `DB_PASSWORD` | PostgreSQL password (any string you choose) |
+| `JWT_SECRET_KEY` | Long random secret for session auth tokens |
+| `GOOGLE_API_KEY` | Google AI Studio key — required if any agent uses the `google` provider (supervisor and satellite agents do by default) |
+| `GROQ_API_KEY` | Groq key — required if any agent uses the `groq` provider (the ground-sensor agent does by default) |
 | `EARTHDATA_USERNAME` / `EARTHDATA_PASSWORD` | NASA Earthdata credentials |
 | `EDL_USERNAME` / `EDL_PASSWORD` | Earth Data Login credentials (same account as Earthdata) |
-| `AQS_API_EMAIL` / `AQS_API_KEY` | EPA AQS API credentials — `AQS_API_EMAIL` is also reused as the contact address in the Nominatim geocoder's User-Agent, so it must be a real email (Nominatim rejects placeholder `@example.com`/`.org`/`.net` addresses) |
+| `AQS_API_EMAIL` / `AQS_API_KEY` | EPA AQS credentials. `AQS_API_EMAIL` is **also** the contact address in the Nominatim geocoder's User-Agent, so it must be a **real** email — Nominatim rejects placeholder `@example.com`/`.org`/`.net` addresses, and location lookups (ground *and* satellite) fail without it |
+| `EARTHDATA_MCP_URL` / `EARTHDATA_MCP_TOKEN` | Endpoint and bearer token of the MCP stack (satellite path only — see above) |
 
-### Optional / Tuning
+> The backend refuses to boot without `DB_PASSWORD`, `JWT_SECRET_KEY`, and the provider key(s) for whichever agents are configured. Earthdata/AQS/MCP values aren't checked at boot but are required for the corresponding features to work.
+
+### Common tuning
 
 | Variable | Default | Description |
 |---|---|---|
-| `LLM_MODEL` | `gemini-2.5-flash` | Supervisor model |
-| `SUPERVISOR_MODEL_PROVIDER` | `google` | Supervisor provider (`google` or `groq`) |
-| `EARTHDATA_AGENT_MODEL` | `openai/gpt-oss-120b` | Satellite (earthdata) subagent model |
-| `EARTHDATA_AGENT_PROVIDER` | `groq` | Satellite subagent provider (`groq` or `google`) |
-| `GROUND_AGENT_MODEL` | `openai/gpt-oss-20b` | Ground sensor subagent model |
-| `GROUND_AGENT_PROVIDER` | `groq` | Ground sensor subagent provider (`groq` or `google`) |
-| `DATA_FETCH_MODE` | `auto` | Fetch strategy: `auto`, `harmony`, `opendap`, or `s3` |
-| `S3_FORCE_FETCH` | `0` | Set to `1` to bypass the us-west-2 region check for S3 fetches |
-| `SATELLITE_MAX_RESULTS_CAP` | `20` | Maximum granule results per satellite query |
-| `MEMORY_CACHE_MAX_BYTES` | `524288000` | In-memory satellite dataset cache limit in bytes |
-| `LOG_LEVEL` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
-| `LOG_FORMAT` | `text` | Set to `json` for structured production logs |
-| `LONG_REQUEST_SECONDS` | `30` | Threshold (seconds) for `long_running_request` log events |
-| `DB_POOL_MIN_SIZE` | `1` | Minimum PostgreSQL connection pool size |
-| `DB_POOL_MAX_SIZE` | `10` | Maximum PostgreSQL connection pool size |
+| `SUPERVISOR_MODEL_PROVIDER` / `LLM_MODEL` | `google` / `gemini-2.5-flash` | Supervisor provider + model |
+| `EARTHDATA_AGENT_PROVIDER` / `EARTHDATA_AGENT_MODEL` | `google` / `gemini-3.1-flash-lite` | Satellite subagent provider + model |
+| `GROUND_AGENT_PROVIDER` / `GROUND_AGENT_MODEL` | `groq` / `openai/gpt-oss-20b` | Ground-sensor subagent provider + model |
+| `RETRIEVAL_SOFT_CAP_BYTES` | `2147483648` | Safe-retrieval gate — estimates at/below this proceed automatically; above it (up to the hard cap) pause for in-chat confirmation |
+| `RETRIEVAL_HARD_CAP_BYTES` | `10737418240` | Retrievals estimated above this are refused with guidance to narrow the request |
+| `BUNDLE_OPEN_MAX_UNCOMPRESSED_BYTES` | `2147483648` | Refuse to open a result bundle whose *uncompressed* size exceeds this (guards against OOM at open time) |
+| `LOG_LEVEL` / `LOG_FORMAT` | `INFO` / `text` | Set `LOG_FORMAT=json` for structured logs suitable for aggregators |
 | `LANGSMITH_API_KEY` | — | Enables LangSmith tracing when set |
-| `LANGCHAIN_PROJECT` | `talking_to_air_monitoring` | LangSmith project name |
-| `EARTHDATA_MCP_URL` | `http://mcp:8765/mcp` | URL of the earthdata-retrieval MCP's HTTP endpoint (see [Joining the earthdata-retrieval MCP stack](#joining-the-earthdata-retrieval-mcp-stack)) |
-| `EARTHDATA_MCP_TOKEN` | — | Bearer token for the MCP endpoint; must match that stack's `EARTHDATA_MCP_TOKEN` |
+
+Provider for each agent is `google` (Gemini) or `groq`; the model factory (`config/model_factory.py`) turns provider + model into a chat model, so either can change without touching code.
+
+---
+
+## Features
+
+- **Conversational querying** — ask in natural language; the supervisor routes to satellite or ground-sensor agents automatically.
+- **Interactive maps** — MapLibre heatmap panels with light/dark basemaps and terrain, single-panel and multi-panel layouts.
+- **Compare mode** — put two regions, pollutants, or time windows side by side in a compare grid.
+- **Jobs panel** — long-running satellite retrievals surface as cancellable jobs you can watch to completion.
+- **Trend plots & statistics** — time-series charts and statistical summaries over a region and date range.
+- **Provenance & export** — every chart carries its data provenance and methods; export as CSV, PNG, or NetCDF.
+- **Persistent sessions** — full conversation history stored in PostgreSQL, one thread per session, revisitable from the sidebar.
+- **Degrade-don't-die** — the satellite path heals in the background when the MCP comes up; ground/EPA features never wait on it.
+- **Observability** — structured JSON logging, named log events, `/health`, `/metrics`, and optional LangSmith tracing.
+
+### Datasets
+
+Beyond a set of built-in presets (OMI, TROPOMI, and TEMPO NO₂ / O₃ / HCHO), the satellite path supports **any gridded NASA collection** through universal coordinate discovery — lat/lon are identified from CF metadata rather than a hard-coded list.
 
 ---
 
 ## Usage
 
-### Example Queries
+Try these after startup as a smoke test:
 
-**Single location:**
 ```
 Plot NO2 levels in Texas on April 8, 2024
 What was the mean NO2 in Los Angeles in March 2024?
-Where was NO2 highest in California today?
-```
-
-**Comparisons:**
-```
 Compare NO2 between California and New York
-Show formaldehyde levels in London vs Tokyo
-How does O3 in Texas compare to Florida?
-```
-
-**Time series:**
-```
 Show the NO2 trend over Greece for the last 18 months
-Plot HCHO levels over Florida over the past year
-How has ozone changed in New York since January?
-```
-
-**Ground sensors:**
-```
 What are the current PM2.5 readings in Chicago?
-Show EPA air quality data for Houston last week
 ```
 
-### Interface Guide
-
-- **Chat window** — type your question in the input at the bottom of the screen
-- **Images** — generated maps and plots appear inline and open in a lightbox on click
-- **Tool badges** — yellow badges beside responses show which tools the agent invoked
-- **Sessions** — use the left sidebar to start a new conversation or revisit a previous one; all history is persisted
-
-### Dataset Constraints
-
-- **TEMPO datasets** cover **North America only** (hourly). For other regions use OMI or TROPOMI.
-- **TROPOMI_NO2** is **monthly resolution only** — single-day queries are not supported.
-- **Date formats** — natural language ("March 2024", "last 18 months") and ISO format ("2024-03-15") both work.
-- **Large bounding boxes** — queries over very large regions take longer and may hit granule caps.
+In the interface, type your question in the input at the bottom; generated maps and plots appear inline and open in a lightbox on click. The left sidebar starts a new conversation or reopens a previous one — all history is persisted.
 
 ---
 
 ## Development
 
-### Running Tests
+### Running tests (use Docker)
+
+Run the suites through Docker so results match CI exactly — the image bakes in the native geospatial stack (PROJ, GEOS, GDAL) and CI-pinned dependencies. **Always pass `--build`**; the test services bake source into the image at build time and won't see your edits otherwise.
 
 ```bash
-# From the repo root
-docker compose exec backend python -m unittest discover -s tests -p "test_*.py"
+docker compose --profile test run --build --rm backend-test    # pytest + coverage
+docker compose --profile test run --build --rm frontend-test   # frontend tests
 ```
 
-### Coverage
+Run a subset while iterating:
 
 ```bash
-docker compose exec backend coverage run -m unittest discover -s tests -p "test_*.py"
-docker compose exec backend coverage report
+docker compose --profile test run --build --rm backend-test sh -c "pytest tests/test_subagent_dispatch.py -q"
 ```
 
-The CI pipeline (`.github/workflows/backend-ci.yml`) runs on every push and PR to `main`. It installs system dependencies (PROJ, GEOS), lints Python syntax with `compileall`, runs the full test suite, and enforces a minimum 60% coverage threshold.
+See [`CLAUDE.md`](CLAUDE.md) for why host `python -m pytest` is discouraged (PROJ / `proj.db` and optional-dependency traps).
 
-### Load Testing
+### CI
 
-```bash
-python Backend/scripts/load_chat.py --url http://localhost:8000 --concurrency 10
-python Backend/scripts/load_chat.py --url http://localhost:8000 --concurrency 20
-```
+`.github/workflows/backend-ci.yml` runs on every push and PR to `main`:
 
-Tune `DB_POOL_MIN_SIZE` and `DB_POOL_MAX_SIZE` based on observed connection counts during load.
+- **Backend** — installs system geo deps, syntax-checks with `compileall`, lints with `ruff`, type-checks selected packages with `mypy`, then runs the test suite with coverage.
+- **Frontend** — `npm ci`, `npm test`, `npm run build`, and a Docker image build.
 
-### Database Schema
+### Database schema
 
-Fresh PostgreSQL volumes are initialized from SQL scripts mounted into `docker-entrypoint-initdb.d`:
+Fresh PostgreSQL volumes are initialized from SQL mounted into `docker-entrypoint-initdb.d`:
 
-- `sql/init_agent_charts.sql` creates `agent_charts`.
+- `sql/init_agent_charts.sql` creates the `agent_charts` table.
 
-Schema changes should be made in these SQL files. To apply init-script changes to a local fresh database, stop the stack and recreate the database volume with `docker compose down -v`, then start it again with `docker compose up --build`.
+Make schema changes in that file. To apply init-script changes locally, recreate the volume: `docker compose down -v` then `docker compose up --build`.
 
-### Logging
+---
 
-Set `LOG_FORMAT=json` in `.env` for structured logs suitable for log aggregators. Key event names emitted by the backend:
+## Operations
 
-| Event | Meaning |
-|---|---|
-| `startup_complete` | Application ready |
-| `shutdown_complete` | Clean shutdown |
-| `cache_hit` | Zarr data served from local cache |
-| `cache_miss` | Data fetched from remote source |
-| `agent_failure` | Subagent returned an error |
-| `response_truncated` | Context trimming removed messages |
-| `database_reconnect` | Pool recovered a lost connection |
-| `long_running_request` | Request exceeded `LONG_REQUEST_SECONDS` |
+The backend exposes `/health` for dependency-aware readiness and `/metrics` in Prometheus text format. `/metrics` is intentionally exempt from API-key auth so a scraper can reach it — in production, bind or proxy it on a private interface only.
+
+See [`docs/runbook.md`](docs/runbook.md) for health-response interpretation, key metrics, retrieval/timeout diagnosis, stalled-request handling, and cache pruning.
 
 ---
 
@@ -286,37 +203,17 @@ Set `LOG_FORMAT=json` in `.env` for structured logs suitable for log aggregators
 
 ```
 .
-├── Backend/
-│   ├── agents/             # Supervisor, satellite, and ground-sensor agents
-│   ├── config/             # Settings, system prompts
-│   ├── datasets/           # Dataset registry (collections.yaml) and collection tools
-│   ├── models/             # Pydantic models for agent results and chart payloads
-│   ├── preprocessing/      # Data loader, cache manager, cache index
-│   ├── repositories/       # PostgreSQL repositories for cache index and charts
-│   ├── scripts/            # Load testing and utility scripts
-│   ├── services/           # Harmony, OPeNDAP, and S3 fetch services
-│   ├── tests/              # Unit and integration tests
-│   ├── tools/
-│   │   ├── ground_sensor_tools/   # EPA AQS tools
-│   │   └── satellite_tools/       # Harmony API, plot, stat, and date tools
-│   ├── utils/              # DB pool, logging, plotting, streaming helpers
-│   ├── api.py              # FastAPI application entry point
-│   ├── Dockerfile
-│   └── requirements.txt
-├── Frontend/
-│   ├── src/
-│   │   ├── components/     # Chat, ChartMessage, Dashboard, ImageViewer, etc.
-│   │   ├── hooks/          # useChat (SSE client)
-│   │   └── utils/          # SSE parser
-│   ├── tests/
-│   ├── Dockerfile
-│   └── package.json
-├── sql/
-│   ├── init_cache_index.sql
-│   └── init_agent_charts.sql
+├── Backend/            # FastAPI app (api.py), agents, services, tools, tests
+│   ├── agents/         # Supervisor, satellite (earthdata), ground-sensor agents
+│   ├── earthdata_mcp/  # Client + toolset for the earthdata-retrieval MCP
+│   ├── services/       # Retrieval, discovery, jobs, export, chart, provenance
+│   ├── datasets/       # Dataset registry + universal coordinate discovery
+│   ├── config/         # Settings, model factory, system prompts
+│   └── tests/
+├── Frontend/           # React + Vite app (MapLibre, compare grid, jobs panel)
+├── sql/                # Postgres init scripts
+├── docs/               # Runbook, design notes, PRDs
 ├── docker-compose.yml
 ├── .env.example
 └── README.md
 ```
-
----
