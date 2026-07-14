@@ -20,6 +20,7 @@ import { nearestCell } from '../utils/heatmapHover.js'
 import { colorbarGeometry } from '../utils/colorbarGeometry.js'
 import { buildCanvasFallbackFrame } from '../utils/canvasFallback.js'
 import { fetchUsStatesGeoJSON, isConusBounds } from '../utils/regionBorders.js'
+import { resolveOverlayMode } from '../utils/overlayMode.js'
 
 const FALLBACK_TILE_CONFIG = {
   basemap_light_url: 'https://basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png',
@@ -155,6 +156,7 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, accessToke
   const { title, variable, units, vmin, vmax, colormap, overlay, bounds, lats, lons } = payload
   const containerRef = useRef(null)
   const mapRef = useRef(null)
+  const drawOverlayRef = useRef(null)
   const [hover, setHover] = useState(null)
 
   // An externally supplied vmin/vmax/colormap wins over the payload's own --
@@ -187,7 +189,7 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, accessToke
     // payload's arrays at the effective vmin/vmax/colormap.
     const drawOverlay = (map) => {
       const override = overrideRef.current
-      if (!override && overlay?.url) {
+      if (resolveOverlayMode(override, overlay?.url) === 'native') {
         if (map.getLayer('overlay')) map.removeLayer('overlay')
         if (map.getSource('overlay-canvas')) map.removeSource('overlay-canvas')
         if (!map.getSource('overlay')) {
@@ -214,6 +216,7 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, accessToke
         colormap: override?.colormap ?? colormap,
       })
     }
+    drawOverlayRef.current = drawOverlay
 
     fetchTileConfig().then(tileConfig => {
       if (cancelled || !containerRef.current) return
@@ -294,15 +297,11 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, accessToke
   useEffect(() => {
     const map = mapRef.current
     if (!map || !map.isStyleLoaded()) return
-    const override = colorScaleOverride
-    if (!override && overlay?.url) return // native PNG already showing, nothing to redraw
-    addCanvasFallbackOverlay(map, {
-      ...payload,
-      vmin: override?.vmin ?? vmin,
-      vmax: override?.vmax ?? vmax,
-      colormap: override?.colormap ?? colormap,
-    })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Always re-resolve and redraw (never skip based on the override alone):
+    // toggling an override off while a canvas-fallback frame is already
+    // showing must rebuild the native image source, not leave the stale
+    // shared-scale canvas in place while the legend above it moves on.
+    drawOverlayRef.current?.(map)
   }, [colorScaleOverride])
 
   const { gradientStops, ticks } = colorbarGeometry({ vmin: effectiveVmin, vmax: effectiveVmax, lut: effectiveColormap?.lut, tickCount: 5 })

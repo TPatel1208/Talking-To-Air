@@ -92,3 +92,12 @@ export function formatTimeRange(timeRange) {
   if (!start) return timeRange
   return end ? `${formatDate(start)} – ${formatDate(end)}` : formatDate(start)
 }
+
+// Mirrors services/jobs_service.py's list_jobs ordering: active jobs sort
+// before terminal ones, newest-first within each group. Re-applied after
+// every SSE merge (not just the initial fetch) so a job crossing into a
+// terminal status moves out of the active group immediately.
+export function sortJobs(jobs) {
+  const byRecency = [...jobs].sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
+  return byRecency.sort((a, b) => Number(TERMINAL_STATUSES.has(a.status)) - Number(TERMINAL_STATUSES.has(b.status)))
+}
