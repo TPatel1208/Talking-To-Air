@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react'
+import { sortJobs } from '../utils/jobCard.js'
 
 const API_BASE = '/api'
 
@@ -40,10 +41,8 @@ export function useJobs(accessToken) {
     if (!data || !data.job_handle) return
     setJobs(prev => {
       const idx = prev.findIndex(job => job.job_handle === data.job_handle)
-      if (idx === -1) return [...prev, data]
-      const next = [...prev]
-      next[idx] = { ...next[idx], ...data }
-      return next
+      const next = idx === -1 ? [...prev, data] : prev.map(job => (job.job_handle === data.job_handle ? { ...job, ...data } : job))
+      return sortJobs(next)
     })
   }, [])
 

@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import {
   statusBadge, primaryAction, upstreamLine,
   formatVariables, formatBbox, formatOutputFormat, formatTimeRange,
+  sortJobs,
 } from '../src/utils/jobCard.js'
 
 test('statusBadge prefers phase for the label but status for the color', () => {
@@ -91,4 +92,32 @@ test('formatTimeRange renders a start-end pair as localized dates', () => {
 test('formatTimeRange passes through an unparseable range unchanged', () => {
   assert.equal(formatTimeRange(''), '')
   assert.equal(formatTimeRange('not-a-range'), 'not-a-range')
+})
+
+test('sortJobs puts active jobs before terminal ones, newest first within each group', () => {
+  const jobs = [
+    { job_handle: 'old-terminal', status: 'ready', created_at: '2026-01-01T00:00:00Z' },
+    { job_handle: 'new-active', status: 'running', created_at: '2026-01-03T00:00:00Z' },
+    { job_handle: 'new-terminal', status: 'failed', created_at: '2026-01-02T00:00:00Z' },
+    { job_handle: 'old-active', status: 'pending', created_at: '2026-01-01T12:00:00Z' },
+  ]
+
+  const sorted = sortJobs(jobs).map(job => job.job_handle)
+
+  assert.deepEqual(sorted, ['new-active', 'old-active', 'new-terminal', 'old-terminal'])
+})
+
+test('sortJobs moves a job that just went terminal out of the active group without a manual refresh', () => {
+  // Mirrors the useJobs SSE merge path: an in-flight job's status flips to
+  // terminal via applyJobProgress, and the list must reflect the new
+  // active/terminal grouping immediately.
+  const jobs = [
+    { job_handle: 'a', status: 'running', created_at: '2026-01-02T00:00:00Z' },
+    { job_handle: 'b', status: 'running', created_at: '2026-01-01T00:00:00Z' },
+  ]
+  const justFinished = jobs.map(job => (job.job_handle === 'b' ? { ...job, status: 'ready' } : job))
+
+  const sorted = sortJobs(justFinished).map(job => job.job_handle)
+
+  assert.deepEqual(sorted, ['a', 'b'])
 })

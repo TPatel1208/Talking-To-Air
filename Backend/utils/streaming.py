@@ -305,7 +305,7 @@ async def stream_response(
     # outer-bound value back to None — the caller that already bound it via
     # user_id_context (T26) stays in effect for the nested call.
     user_token = None
-    if user_id is not None:
+    if user_id is not None and _current_user_id.get() is None:
         user_token = _current_user_id.set(user_id)
     # Established once, before produce()'s Task exists, so every ToolNode
     # gather-Task this agent's own run spawns copies a context that already

@@ -254,6 +254,10 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
   const [compareMode, setCompareMode] = useState('off')
   const [compareCount, setCompareCount] = useState(2)
   const [compareSelection, setCompareSelection] = useState([])
+  // Bumped on every enterCompare so OutputPanel can tell "still this compare
+  // session" from "a fresh one just started" without an effect/ref -- e.g.
+  // to re-arm a dismissed collapse-panel hint per session.
+  const [compareSessionId, setCompareSessionId] = useState(0)
 
   // Sessions, Chat, and Jobs/Discover collapse independently and only on
   // explicit user action -- they used to auto-collapse together when compare
@@ -279,6 +283,7 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
     setCompareCount(count)
     setCompareSelection(createEmptySelection(count))
     setCompareMode('active')
+    setCompareSessionId(id => id + 1)
   }, [])
 
   const exitCompare = useCallback(() => resetCompare(), [resetCompare])
@@ -388,10 +393,16 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
         compareMode={compareMode}
         compareCount={compareCount}
         compareSelection={compareSelection}
+        compareSessionId={compareSessionId}
         onStartCompare={startChoosingCompare}
         onCancelChooseCompare={cancelChoosingCompare}
         onEnterCompare={enterCompare}
         onExitCompare={exitCompare}
+        sessionsCollapsed={sessionsCollapsed}
+        chatCollapsed={chatCollapsed}
+        rightPanelCollapsed={rightPanelCollapsed}
+        onCollapseSessions={toggleSessionsCollapsed}
+        onCollapseRightPanel={toggleRightPanelCollapsed}
       />
 
       {rightPanelCollapsed ? (

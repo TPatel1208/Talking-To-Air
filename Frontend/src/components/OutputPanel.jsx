@@ -7,6 +7,7 @@ import ArtifactMessage, { TableArtifactMessage } from './ArtifactMessage'
 import { computeChartStats, computeHistogram } from '../utils/chartStats'
 import { resolveMasking } from '../utils/maskingProvenance'
 import { filledCharts } from '../utils/compareMode'
+import { shouldShowCollapseHint } from '../utils/compareLayoutHint'
 
 function compactDate(value) {
   if (!value) return ''
@@ -195,6 +196,36 @@ const cancelChooserStyle = {
   fontSize: '14px', fontWeight: 700, color: 'var(--text-muted)',
   background: 'transparent', border: 'none', cursor: 'pointer', padding: '4px 6px',
 }
+const hintActionStyle = {
+  fontSize: '11.5px', fontWeight: 700, color: 'var(--text-secondary)',
+  background: 'var(--bg-primary)', border: '1px solid var(--border)',
+  borderRadius: '6px', padding: '4px 9px', cursor: 'pointer', whiteSpace: 'nowrap',
+}
+const hintDismissStyle = {
+  fontSize: '14px', fontWeight: 700, color: 'var(--text-muted)',
+  background: 'transparent', border: 'none', cursor: 'pointer', padding: '2px 4px',
+}
+
+// Nudge (not an auto-collapse -- that jumped the layout around outside the
+// user's control, see App.jsx) offering a one-click way to free up width
+// when every side panel is still expanded during active compare.
+function CollapseHint({ onCollapseSessions, onCollapseRightPanel, onDismiss }) {
+  return (
+    <div style={{
+      margin: '10px 22px 0', padding: '8px 12px', borderRadius: '6px',
+      background: 'var(--bg-card)', border: '1px solid var(--border)',
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      gap: '12px', fontSize: '12px', color: 'var(--text-secondary)', flexShrink: 0,
+    }}>
+      <span>Comparing side by side needs room — collapse a side panel for more space.</span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+        <button type="button" onClick={onCollapseSessions} style={hintActionStyle}>Hide sessions</button>
+        <button type="button" onClick={onCollapseRightPanel} style={hintActionStyle}>Hide jobs &amp; discover</button>
+        <button type="button" onClick={onDismiss} aria-label="Dismiss hint" style={hintDismissStyle}>×</button>
+      </div>
+    </div>
+  )
+}
 
 // Compare control (T28): idle "Compare" button -> inline 2/3/4 chooser ->
 // active status + exit. Lives in the output panel header regardless of
@@ -232,8 +263,10 @@ function CompareControl({ compareMode, compareCount, filledCount, onStart, onCan
 
 export default function OutputPanel({
   focusedOutput, accessToken,
-  compareMode = 'off', compareCount = 2, compareSelection = [],
+  compareMode = 'off', compareCount = 2, compareSelection = [], compareSessionId = 0,
   onStartCompare, onCancelChooseCompare, onEnterCompare, onExitCompare,
+  sessionsCollapsed = false, chatCollapsed = false, rightPanelCollapsed = false,
+  onCollapseSessions, onCollapseRightPanel,
 }) {
   const kind = focusedOutput?.kind
   const chart = kind === 'chart' ? focusedOutput.data : null
@@ -243,11 +276,19 @@ export default function OutputPanel({
   const availableTabs = chart ? (CHART_TABS[chart.type] || ['metadata']) : []
   const [activeTab, setActiveTab] = useState(availableTabs[0])
   const [autoScaleEach, setAutoScaleEach] = useState(true)
+  // Keyed by compareSessionId (bumped once per enterCompare in App.jsx)
+  // rather than a boolean, so a dismissal doesn't leak into the next fresh
+  // compare session -- purely derived from props, no effect/ref needed.
+  const [hintDismissedForSession, setHintDismissedForSession] = useState(null)
   const plotRootRef = useRef(null)
 
   useEffect(() => {
     setActiveTab(availableTabs[0])
   }, [focusedOutput, availableTabs.join(',')])
+
+  const showCollapseHint = shouldShowCollapseHint({
+    compareMode, sessionsCollapsed, chatCollapsed, rightPanelCollapsed,
+  }) && hintDismissedForSession !== compareSessionId
 
   const compareControlProps = {
     compareMode, compareCount, filledCount: filledCharts(compareSelection).length,
@@ -262,6 +303,13 @@ export default function OutputPanel({
           <div style={{ fontSize: '16px', fontWeight: 800, color: 'var(--text-primary)' }}>Compare</div>
           <CompareControl {...compareControlProps} />
         </div>
+        {showCollapseHint && (
+          <CollapseHint
+            onCollapseSessions={onCollapseSessions}
+            onCollapseRightPanel={onCollapseRightPanel}
+            onDismiss={() => setHintDismissedForSession(compareSessionId)}
+          />
+        )}
         <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '18px 22px', display: 'flex' }}>
           <CompareGrid
             compareCount={compareCount}
