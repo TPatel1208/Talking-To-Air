@@ -122,7 +122,7 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
             manager.tools
 
     async def test_retries_with_backoff_and_recovers_after_n_failures(self):
-        from earthdata_mcp.connection import EarthdataMCPConnectionManager, STATE_READY, STATE_UNAVAILABLE
+        from earthdata_mcp.connection import EarthdataMCPConnectionManager, STATE_READY
         from earthdata_mcp.client import EarthdataMCPUnavailableError
 
         attempts = {"count": 0}

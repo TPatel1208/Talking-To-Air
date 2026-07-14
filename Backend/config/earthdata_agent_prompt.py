@@ -1,9 +1,7 @@
-from config.settings import get_settings
 from datasets.preset_collections import PRESET_COLLECTIONS
 
 
 def get_earthdata_agent_prompt() -> str:
-    max_results = get_settings().satellite_max_results_cap
     presets = "\n".join(
         f"| {c['description']} | `{c['concept_id']}` | {c['short_name']} |"
         for c in PRESET_COLLECTIONS

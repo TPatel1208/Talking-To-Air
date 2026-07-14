@@ -5,7 +5,7 @@ import os
 import sys
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, patch
 
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_DIR not in sys.path:
@@ -36,7 +36,7 @@ class RunSatelliteChartHarvestingTests(unittest.IsolatedAsyncioTestCase):
         return captured["tools"]["ask_earthdata_agent"]
 
     async def test_harvests_a_chart_from_a_chart_payload_event(self):
-        from models import AgentResult, agent_result_to_json
+        from models import AgentResult
 
         envelope = json.dumps({"summary": "Plotted NO2 over NJ.", "artifact_ids": [], "handles": ["obs_1"]})
 

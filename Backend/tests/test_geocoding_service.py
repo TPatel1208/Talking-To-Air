@@ -9,7 +9,7 @@ import importlib.util
 import os
 import sys
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_DIR not in sys.path:

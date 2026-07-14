@@ -5,7 +5,7 @@ import os
 import sys
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, patch
 
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_DIR not in sys.path:
