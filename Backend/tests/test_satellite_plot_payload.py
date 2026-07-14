@@ -345,7 +345,6 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         self.assertNotIn("overlay", result)
 
     def test_save_chart_leaves_overlay_url_unset_when_render_failed(self):
-        import json
         from tools.satellite_tools.plot_tools import _save_chart
 
         payload = {"type": "heatmap", "title": "No overlay", "overlay": {"bounds": [0, 0, 1, 1]}}
@@ -355,7 +354,6 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         self.assertNotIn("url", payload["overlay"])
 
     def test_save_chart_wires_a_per_panel_overlay_url_for_heatmap_multi(self):
-        import json
         from tools.satellite_tools.plot_tools import _save_chart
 
         payload = {

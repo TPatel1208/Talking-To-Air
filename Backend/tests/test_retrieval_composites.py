@@ -197,7 +197,6 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
         from earthdata_mcp.client import load_raw_mcp_tools
         from config.settings import Settings
-        from dataclasses import replace
 
         calls = {"retrieve_subset": 0}
 
