@@ -207,6 +207,136 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(full["masking"]["qa_status"], "verified")
         self.assertEqual(full["masking"]["qa_source"], "collections_yaml")
 
+    async def test_conduct_temporal_statistic_attaches_aggregation_meta_like_the_heatmap_path(self):
+        """T32: the timeseries chart path never called _attach_reproducibility
+        with agg_meta at all, so its Granules/cadence block never rendered
+        even though masking info was present. TEMPO_NO2 is registered
+        cadence=hourly (collections.yaml), so this also proves cadence is
+        threaded through, not just a hardcoded 'daily'."""
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import make_conduct_temporal_statistic
+
+        def make_ds():
+            return _tempo_no2_dataset(
+                xr,
+                values=[[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]],
+                flags=[[[0, 1], [0, 1]], [[0, 1], [0, 1]]],
+                time=["2024-01-01T00:00:00", "2024-01-01T01:00:00"],
+            )
+
+        self.volume.add_zarr("obs_1", make_ds)
+
+        emitted = {}
+
+        def fake_emit_chart(full_payload):
+            emitted["payload"] = full_payload
+
+        conduct_temporal_statistic = make_conduct_temporal_statistic(self.mcp_tools)
+        with patch("tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
+            raw = await conduct_temporal_statistic.ainvoke({
+                "handle": "obs_1", "location": "global", "stat": "mean",
+            })
+
+        result = json.loads(raw)
+        self.assertNotIn("error", result)
+
+        full = emitted["payload"]
+        agg_meta = full["aggregation_meta"]
+        self.assertEqual(agg_meta["n_granules"], 2)
+        self.assertEqual(agg_meta["cadence"], "hourly")
+        self.assertEqual(len(agg_meta["granule_dates"]), 2)
+        self.assertEqual(agg_meta["masking"]["qa_status"], "verified")
+
+        # The same fields land in provenance (T25 Phase 3 convention),
+        # never just in internal aggregation_meta.
+        self.assertEqual(full["provenance"]["n_granules"], 2)
+        self.assertEqual(full["provenance"]["cadence"], "hourly")
+        self.assertEqual(len(full["provenance"]["granule_dates"]), 2)
+
+    async def test_conduct_temporal_statistic_attaches_dataset_and_source_from_registry(self):
+        """T32: dataset/source come from the TEMPO_NO2 registry entry matched
+        via the opened granule's short_name attribute -- the same match
+        _mask_col_info already performs for masking, not a second lookup."""
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import make_conduct_temporal_statistic
+
+        def make_ds():
+            return _tempo_no2_dataset(
+                xr,
+                values=[[[1.0, 2.0], [3.0, 4.0]]],
+                flags=[[[0, 1], [0, 1]]],
+                time=["2024-01-01T00:00:00"],
+            )
+
+        self.volume.add_zarr("obs_1", make_ds)
+
+        emitted = {}
+
+        def fake_emit_chart(full_payload):
+            emitted["payload"] = full_payload
+
+        conduct_temporal_statistic = make_conduct_temporal_statistic(self.mcp_tools)
+        with patch("tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
+            raw = await conduct_temporal_statistic.ainvoke({
+                "handle": "obs_1", "location": "global", "stat": "mean",
+            })
+
+        result = json.loads(raw)
+        self.assertNotIn("error", result)
+
+        provenance = emitted["payload"]["provenance"]
+        self.assertEqual(provenance["dataset"], "TEMPO_NO2_L3")
+        self.assertEqual(provenance["provider"], "NASA LARC")
+        self.assertEqual(provenance["instrument"], "TEMPO")
+        self.assertEqual(provenance["source"], "NASA LARC — TEMPO")
+        self.assertEqual(provenance["qa_methodology"]["quality_flag_var"], "main_data_quality_flag")
+        self.assertEqual(provenance["qa_methodology"]["qa_good_values"], [0])
+
+    async def test_plot_singular_attaches_dataset_and_source_without_a_second_registry_lookup(self):
+        """T32's variable-definition/dataset attach must ride on the same
+        col_info the masking pipeline already resolved -- not a second call
+        to the registry. Spies on col_info_for_short_name (what
+        _mask_col_info calls) and asserts the call count is unchanged from
+        before this PRD: exactly one, for the one masking resolution the
+        tool already performed."""
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import make_plot_singular
+
+        def make_ds():
+            return _tempo_no2_dataset(
+                xr, values=[[1.0, 2.0], [3.0, 4.0]], flags=[[0, 1], [0, 1]],
+            )
+
+        self.volume.add_zarr("obs_1", make_ds)
+
+        emitted = {}
+
+        def fake_emit_chart(full_payload):
+            emitted["payload"] = full_payload
+
+        import tools.satellite_tools.plot_tools as plot_tools_module
+        calls = []
+        real_lookup = plot_tools_module.col_info_for_short_name
+
+        def counting_lookup(short_name):
+            calls.append(short_name)
+            return real_lookup(short_name)
+
+        plot_singular = make_plot_singular(self.mcp_tools)
+        with patch("tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart), \
+             patch.object(plot_tools_module, "col_info_for_short_name", counting_lookup):
+            raw = await plot_singular.ainvoke({"handle": "obs_1", "location": "global"})
+
+        result = json.loads(raw)
+        self.assertNotIn("error", result)
+
+        self.assertEqual(len(calls), 1)
+
+        provenance = emitted["payload"]["provenance"]
+        self.assertEqual(provenance["dataset"], "TEMPO_NO2_L3")
+        self.assertEqual(provenance["source"], "NASA LARC — TEMPO")
+        self.assertEqual(provenance["variable_definition"]["mask_note"], "fill values and a valid range are defined")
+
     async def test_compare_region_mode_masks_bad_flag_pixels_on_both_sides(self):
         import xarray as xr
         from tools.satellite_tools import comparison_tools

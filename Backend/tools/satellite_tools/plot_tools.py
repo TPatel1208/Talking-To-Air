@@ -455,7 +455,75 @@ def _query_definition(da, region: dict | None, aggregation: str, chart_parameter
     return {k: v for k, v in query.items() if v not in (None, "", [])}
 
 
-def _provenance(handles: list[str], da, region_name: str, aggregation: str, agg_meta: dict | None = None) -> dict:
+def _dataset_facts(col_info: dict | None) -> dict:
+    """Registry facts about the *collection* (T32) -- distinct from
+    ``provenance["variable"]``, which names the science variable plotted,
+    not the dataset it came from. ``col_info`` is whatever ``_mask_col_info``
+    already resolved for the masking pipeline (collections.yaml, matched by
+    the opened granule's short_name attr), so this is a read of data already
+    in hand, never a new lookup."""
+    col_info = col_info or {}
+    provider = col_info.get("provider") or ""
+    instrument = col_info.get("instrument") or ""
+    return {
+        "dataset": col_info.get("short_name") or "",
+        "dataset_description": col_info.get("description") or "",
+        "dataset_version": col_info.get("version") or "",
+        "collection_id": col_info.get("collection_id") or "",
+        "provider": provider,
+        "instrument": instrument,
+        "source": " — ".join(part for part in (provider, instrument) if part),
+    }
+
+
+def _variable_definition(da, col_info: dict | None) -> dict:
+    """long_name/valid-range/mask facts for the plotted variable (T32
+    Details -> Variable Definition), sourced from the registry col_info
+    already resolved for masking and the CF ``long_name`` attribute the
+    opened DataArray already carries -- no new MCP round trip.
+    ``advisory_notes`` stays empty here: those only exist in describe_dataset's
+    UMM-Var response, which no chart tool calls today."""
+    col_info = col_info or {}
+    valid_min = col_info.get("valid_min")
+    valid_max = col_info.get("valid_max")
+    fill_value = col_info.get("fill_value")
+    has_range = valid_min is not None or valid_max is not None
+    has_fill = fill_value is not None
+    if has_fill and has_range:
+        mask_note = "fill values and a valid range are defined"
+    elif has_fill:
+        mask_note = "fill values are defined, no valid range"
+    elif has_range:
+        mask_note = "a valid range is defined, no fill values"
+    else:
+        mask_note = "no fill/range metadata"
+    return {
+        "long_name": da.attrs.get("long_name", ""),
+        "units": da.attrs.get("units", ""),
+        "advisory_notes": [],
+        "valid_ranges": {"min": valid_min, "max": valid_max} if has_range else {},
+        "fill_value": fill_value,
+        "mask_note": mask_note,
+    }
+
+
+def _qa_methodology(col_info: dict | None) -> dict:
+    """The pinned collections.yaml QA rule as general methodology (T32
+    Details -> Provenance) -- distinct from ``masking``, which discloses
+    what was actually applied to *this* request."""
+    col_info = col_info or {}
+    methodology = {
+        "quality_flag_var": col_info.get("quality_flag_var"),
+        "qa_good_values": col_info.get("qa_good_values"),
+        "qa_bad_values": col_info.get("qa_bad_values"),
+    }
+    return {k: v for k, v in methodology.items() if v is not None}
+
+
+def _provenance(
+    handles: list[str], da, region_name: str, aggregation: str,
+    agg_meta: dict | None = None, col_info: dict | None = None,
+) -> dict:
     start_date, end_date = _time_range(da)
     provenance = {
         "variable": da.name or "",
@@ -465,6 +533,9 @@ def _provenance(handles: list[str], da, region_name: str, aggregation: str, agg_
         "aggregation": aggregation,
         "units": da.attrs.get("units", ""),
         "source_handles": list(handles),
+        **_dataset_facts(col_info),
+        "variable_definition": _variable_definition(da, col_info),
+        "qa_methodology": _qa_methodology(col_info),
     }
     if agg_meta:
         provenance["aggregation"] = agg_meta["aggregation_label"]
@@ -489,9 +560,10 @@ def _attach_reproducibility(
     chart_parameters: dict | None = None,
     agg_meta: dict | None = None,
     region: dict | None = None,
+    col_info: dict | None = None,
 ) -> dict:
     aggregation_label = agg_meta["aggregation_label"] if agg_meta else aggregation
-    payload["provenance"] = _provenance(handles, da, region_name, aggregation_label, agg_meta)
+    payload["provenance"] = _provenance(handles, da, region_name, aggregation_label, agg_meta, col_info)
     payload["query"] = _query_definition(da, region, aggregation_label, chart_parameters)
     payload["export"] = {
         "type": payload.get("type"),
@@ -636,6 +708,7 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
                     {"chart_type": "heatmap", "cmap": payload["cmap"], "location": location},
                     agg_meta,
                     region,
+                    col_info,
                 )
             except Exception as e:
                 return "payload", None, None, f"Failed to build chart payload: {e}"
@@ -770,6 +843,7 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
                         {"chart_type": "heatmap", "cmap": panel["cmap"], "location": location},
                         agg_meta,
                         region,
+                        col_info,
                     )
                 except Exception as e:
                     return "payload", None, None, f"Failed to build panel for '{location}': {e}"
@@ -913,7 +987,7 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
                 masked, variable=variable_name, col_info=col_info, source_ds=ds,
             )
 
-            times, values = [], []
+            times, values, valid_time_indices = [], [], []
             for i in range(masked.sizes[time_dim]):
                 slice_2d = masked.isel({time_dim: i}).values
                 try:
@@ -924,6 +998,7 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
                 timestamp = pd.Timestamp(raw_time).isoformat()
                 times.append(timestamp)
                 values.append(round(float(value), 6))
+                valid_time_indices.append(i)
 
             if not times:
                 return "error", f"No valid data found for '{location}' across any time step."
@@ -931,6 +1006,16 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
             # Sort by time
             paired = sorted(zip(times, values))
             sorted_times, sorted_values = zip(*paired)
+
+            # T32: same aggregation_label/granule_dates/n_granules/cadence
+            # summary the heatmap/comparison paths get from aggregate() --
+            # conduct_temporal_statistic keeps every timestep instead of
+            # reducing over time, so it builds this from its own
+            # valid_time_indices rather than calling aggregate().
+            agg_meta = _aggregation_service.timeseries_aggregation_meta(
+                masked, valid_time_indices, stat, time_dim, col_info=col_info,
+            )
+            agg_meta["masking"] = masking_provenance
 
             ts_payload = {
                 "type":     "timeseries",
@@ -942,6 +1027,7 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
                 "values":   list(sorted_values),
             }
             ts_payload["masking"] = masking_provenance
+            ts_payload["aggregation_meta"] = agg_meta
             _attach_reproducibility(
                 ts_payload,
                 [handle],
@@ -949,7 +1035,9 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
                 region["name"],
                 stat,
                 {"chart_type": "timeseries", "location": location},
-                region=region,
+                agg_meta,
+                region,
+                col_info,
             )
             return None, (ts_payload, variable_name)
 

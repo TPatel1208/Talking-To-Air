@@ -208,6 +208,113 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         self.assertEqual(payload["query"]["aggregation"], "single snapshot")
         self.assertEqual(payload["metadata"]["source_handles"], ["obs_1"])
 
+    def test_provenance_attaches_dataset_and_source_distinct_from_variable(self):
+        """T32: `dataset`/`source` are real registry facts about the
+        collection, not a fallback that reuses the plotted variable name."""
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import _attach_reproducibility
+
+        da = xr.DataArray(
+            [[1.0]],
+            dims=("lat", "lon"),
+            coords={"lat": [40.0], "lon": [-74.0], "time": "2024-01-01T00:00:00Z"},
+            name="vertical_column_troposphere",
+            attrs={"units": "mol/m^2"},
+        )
+        col_info = {
+            "short_name": "TEMPO_NO2_L3",
+            "description": "TEMPO tropospheric NO2 vertical column",
+            "version": "V04",
+            "collection_id": "C3685896708-LARC_CLOUD",
+            "provider": "NASA LARC",
+            "instrument": "TEMPO",
+        }
+
+        payload = _attach_reproducibility(
+            {"type": "heatmap", "title": "TEMPO over NJ"},
+            ["obs_1"], da, "New Jersey", "single snapshot",
+            region={"bounds": [-75.0, 39.0, -73.0, 41.0]}, col_info=col_info,
+        )
+
+        provenance = payload["provenance"]
+        self.assertEqual(provenance["variable"], "vertical_column_troposphere")
+        self.assertEqual(provenance["dataset"], "TEMPO_NO2_L3")
+        self.assertNotEqual(provenance["dataset"], provenance["variable"])
+        self.assertEqual(provenance["dataset_description"], "TEMPO tropospheric NO2 vertical column")
+        self.assertEqual(provenance["dataset_version"], "V04")
+        self.assertEqual(provenance["collection_id"], "C3685896708-LARC_CLOUD")
+        self.assertEqual(provenance["provider"], "NASA LARC")
+        self.assertEqual(provenance["instrument"], "TEMPO")
+        self.assertEqual(provenance["source"], "NASA LARC — TEMPO")
+
+    def test_provenance_attaches_variable_definition_and_qa_methodology(self):
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import _attach_reproducibility
+
+        da = xr.DataArray(
+            [[1.0]],
+            dims=("lat", "lon"),
+            coords={"lat": [40.0], "lon": [-74.0], "time": "2024-01-01T00:00:00Z"},
+            name="vertical_column_troposphere",
+            attrs={"units": "mol/m^2", "long_name": "NO2 tropospheric column"},
+        )
+        col_info = {
+            "short_name": "TEMPO_NO2_L3",
+            "valid_min": -1.0e15,
+            "valid_max": 1.0e18,
+            "fill_value": -1.0e30,
+            "quality_flag_var": "main_data_quality_flag",
+            "qa_good_values": [0],
+        }
+
+        payload = _attach_reproducibility(
+            {"type": "heatmap", "title": "TEMPO over NJ"},
+            ["obs_1"], da, "New Jersey", "single snapshot",
+            region={"bounds": [-75.0, 39.0, -73.0, 41.0]}, col_info=col_info,
+        )
+
+        var_def = payload["provenance"]["variable_definition"]
+        self.assertEqual(var_def["long_name"], "NO2 tropospheric column")
+        self.assertEqual(var_def["valid_ranges"], {"min": -1.0e15, "max": 1.0e18})
+        self.assertEqual(var_def["fill_value"], -1.0e30)
+        self.assertEqual(var_def["mask_note"], "fill values and a valid range are defined")
+        self.assertEqual(var_def["advisory_notes"], [])
+
+        qa_methodology = payload["provenance"]["qa_methodology"]
+        self.assertEqual(qa_methodology["quality_flag_var"], "main_data_quality_flag")
+        self.assertEqual(qa_methodology["qa_good_values"], [0])
+
+    def test_provenance_missing_dataset_facts_render_as_empty_not_error(self):
+        """No col_info at all (unregistered collection) must not raise --
+        every field the frontend expects is still present, just empty, so
+        the UI can render 'Not available' rather than crash on a missing key."""
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import _attach_reproducibility
+
+        da = xr.DataArray(
+            [[1.0]],
+            dims=("lat", "lon"),
+            coords={"lat": [40.0], "lon": [-74.0], "time": "2024-01-01T00:00:00Z"},
+            name="unregistered_var",
+            attrs={"units": "mol/m^2"},
+        )
+
+        payload = _attach_reproducibility(
+            {"type": "heatmap", "title": "Unregistered"},
+            ["obs_1"], da, "New Jersey", "single snapshot",
+            region={"bounds": [-75.0, 39.0, -73.0, 41.0]},
+        )
+
+        provenance = payload["provenance"]
+        self.assertEqual(provenance["dataset"], "")
+        self.assertEqual(provenance["source"], "")
+        self.assertEqual(provenance["provider"], "")
+        self.assertEqual(provenance["instrument"], "")
+        self.assertEqual(provenance["variable_definition"]["long_name"], "")
+        self.assertEqual(provenance["variable_definition"]["valid_ranges"], {})
+        self.assertEqual(provenance["variable_definition"]["mask_note"], "no fill/range metadata")
+        self.assertEqual(provenance["qa_methodology"], {})
+
     def test_save_chart_mints_a_map_artifact_id_for_a_heatmap_payload(self):
         import json
         import xarray as xr

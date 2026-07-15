@@ -19,6 +19,8 @@
 #   qa_bad_values: null            # ...or the values that fail, if easier to state
 #   supports_variable_subsetting: false
 #   description: ""
+#   provider: ""                   # DAAC/agency, e.g. "NASA GES DISC" (T32 provenance display)
+#   instrument: ""                 # instrument/platform, e.g. "MODIS/Terra" (T32 provenance display)
 # ---------------------------------------------------------------------------
 
 # ── NO2 ─────────────────────────────────────────────────────────────────────
@@ -29,6 +31,8 @@ OMI_NO2:
   version: "1.1"
   description: OMI NO2 tropospheric column
   cadence: daily
+  provider: NASA GES DISC
+  instrument: OMI/Aura
   primary_var: ColumnAmountNO2TropCloudScreened
   quality_flag_var: null
   variables:
@@ -49,6 +53,8 @@ TROPOMI_NO2:
   version: "2.4"
   description: Tropomi NO2 monthly mean
   cadence: monthly
+  provider: NASA GES DISC
+  instrument: TROPOMI/Sentinel-5P
   primary_var: Tropospheric_NO2
   quality_flag_var: null
   variables:
@@ -67,6 +73,8 @@ TEMPO_NO2:
   version: V04
   description: TEMPO tropospheric NO2 vertical column
   cadence: hourly
+  provider: NASA LARC
+  instrument: TEMPO
   primary_var: vertical_column_troposphere
   quality_flag_var: main_data_quality_flag
   qa_good_values: [0]
@@ -89,6 +97,8 @@ TEMPO_O3TOT:
   version: V04
   description: TEMPO Level 3 total ozone column
   cadence: hourly
+  provider: NASA LARC
+  instrument: TEMPO
   primary_var: column_amount_o3
   quality_flag_var: null
   variables:
@@ -112,6 +122,8 @@ OMI_O3:
   version: "003"
   description: OMI daily total ozone column
   cadence: daily
+  provider: NASA GES DISC
+  instrument: OMI/Aura
   primary_var: ColumnAmountO3
   quality_flag_var: null
   variables: []
@@ -130,6 +142,8 @@ TEMPO_HCHO:
   version: V04
   description: TEMPO formaldehyde (HCHO) vertical column
   cadence: hourly
+  provider: NASA LARC
+  instrument: TEMPO
   primary_var: vertical_column
   quality_flag_var: main_data_quality_flag
   qa_good_values: [0]
@@ -151,6 +165,8 @@ TEMPO_HCHO_V03:
   version: V03
   description: TEMPO formaldehyde (HCHO) vertical column (V03)
   cadence: hourly
+  provider: NASA LARC
+  instrument: TEMPO
   primary_var: vertical_column
   quality_flag_var: main_data_quality_flag
   qa_good_values: [0]
@@ -172,6 +188,8 @@ OMI_HCHO:
   version: "003"
   description: OMI HCHO total column daily
   cadence: daily
+  provider: NASA GES DISC
+  instrument: OMI/Aura
   primary_var: column_amount
   quality_flag_var: data_quality_flag
   qa_bad_values: [2]
@@ -193,6 +211,8 @@ MODIS_AOD_TERRA:
   version: "001"
   description: MODIS Terra AOD at 550nm combined Dark Target + Deep Blue
   cadence: daily
+  provider: NASA GES DISC
+  instrument: MODIS/Terra
   primary_var: COMBINE_AOD_550_AVG
   quality_flag_var: null
   variables: []
@@ -209,6 +229,8 @@ MODIS_AOD_AQUA:
   version: "001"
   description: MODIS Aqua AOD at 550nm combined Dark Target + Deep Blue
   cadence: daily
+  provider: NASA GES DISC
+  instrument: MODIS/Aqua
   primary_var: COMBINE_AOD_550_AVG
   quality_flag_var: null
   variables: []

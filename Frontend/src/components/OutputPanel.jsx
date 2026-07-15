@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect, useRef } from 'react'
-import { TimeSeriesPanel, ChartToolbar, ProvenanceBlock } from './ChartMessage'
+import { TimeSeriesPanel, ChartToolbar } from './ChartMessage'
 import MapLibreHeatmapPanel from './MapLibreHeatmapPanel.jsx'
 import HeatmapMultiPanel from './HeatmapMultiPanel.jsx'
 import CompareGrid from './CompareGrid.jsx'
@@ -8,6 +8,12 @@ import { computeChartStats, computeHistogram } from '../utils/chartStats'
 import { resolveMasking } from '../utils/maskingProvenance'
 import { filledCharts } from '../utils/compareMode'
 import { shouldShowCollapseHint } from '../utils/compareLayoutHint'
+import {
+  NOT_AVAILABLE, fmt, dateRangeLabel, granuleSummary, maskingStatusColor,
+  citationString, datasetLandingUrl, spatialFields, temporalFields,
+  qaMethodologyFields, variableDefinitionFields, reproducibilityFields,
+  reproducibilityQuery, rawMetadataJson,
+} from '../utils/metadataDisplay'
 
 function compactDate(value) {
   if (!value) return ''
@@ -158,9 +164,262 @@ function HistogramTab({ chart }) {
   )
 }
 
-function MetadataTab({ chart, artifact }) {
+// ── Metadata tab (T32): Overview (fully expanded) / Details (accordion) ────
+// Field derivation (which fact goes in which section, "Not available"
+// fallbacks, citation/query string-building) lives in utils/metadataDisplay
+// -- pure and unit-tested there; this file is just the JSX shell around it.
+
+function MetaField({ label, value }) {
+  return (
+    <div style={{ minWidth: 0 }}>
+      <div style={{ fontSize: '10px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+        {label}
+      </div>
+      <div style={{ fontSize: '12px', color: 'var(--text-secondary)', overflowWrap: 'anywhere', lineHeight: 1.45 }}>
+        {fmt(value)}
+      </div>
+    </div>
+  )
+}
+
+const smallButtonStyle = {
+  border: '1px solid var(--border)', background: 'var(--bg-card)',
+  color: 'var(--text-secondary)', borderRadius: '7px', padding: '4px 9px',
+  fontSize: '11px', fontFamily: 'var(--font)', cursor: 'pointer',
+}
+
+async function copyToClipboard(text, setState) {
+  try {
+    await navigator.clipboard.writeText(text)
+    setState('Copied')
+  } catch {
+    setState('Copy failed')
+  }
+  window.setTimeout(() => setState(''), 1600)
+}
+
+function MetadataOverview({ chart, onViewStatistics }) {
+  const provenance = chart.provenance || {}
+  const masking = useMemo(() => resolveMasking(chart), [chart])
+  const [copyState, setCopyState] = useState('')
+  const landingUrl = datasetLandingUrl(provenance.collection_id)
+  const dateRange = dateRangeLabel(provenance)
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+      <div>
+        <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '8px' }}>
+          This view
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px' }}>
+          <MetaField label="Dataset" value={provenance.dataset} />
+          <MetaField label="Variable" value={provenance.variable} />
+          <MetaField label="Date Range" value={dateRange} />
+          <MetaField label="Region" value={provenance.region_name} />
+          <MetaField label="Aggregation" value={chart.aggregation_meta?.aggregation_label || provenance.aggregation} />
+          <MetaField label="Granules" value={granuleSummary(chart)} />
+        </div>
+      </div>
+
+      <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: '10px', padding: '11px 13px' }}>
+        <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '5px' }}>
+          Data quality
+        </div>
+        {masking ? (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
+              <span aria-hidden style={{
+                width: '8px', height: '8px', borderRadius: '50%', flexShrink: 0,
+                background: maskingStatusColor(masking.qaStatus),
+              }} />
+              <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>
+                {masking.qaStatus}
+              </span>
+            </div>
+            {masking.qaNote && (
+              <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginTop: '4px', lineHeight: 1.45 }}>
+                {masking.qaNote}
+              </div>
+            )}
+            {onViewStatistics && (
+              <button type="button" onClick={onViewStatistics} style={{
+                marginTop: '6px', border: 0, background: 'transparent',
+                color: 'var(--teal-text)', fontSize: '11px', fontWeight: 700,
+                cursor: 'pointer', padding: 0,
+              }}>
+                See Statistics tab for details →
+              </button>
+            )}
+          </>
+        ) : (
+          <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{NOT_AVAILABLE}</div>
+        )}
+      </div>
+
+      <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: '10px', padding: '11px 13px' }}>
+        <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '5px' }}>
+          Source dataset
+        </div>
+        <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>{fmt(provenance.dataset)}</div>
+        <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginTop: '4px' }}>{fmt(provenance.dataset_description)}</div>
+        <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+          Version {fmt(provenance.dataset_version)} · {fmt(provenance.source)}
+        </div>
+        <div style={{ display: 'flex', gap: '10px', marginTop: '8px', alignItems: 'center' }}>
+          {landingUrl && (
+            <a href={landingUrl} target="_blank" rel="noreferrer" style={{ fontSize: '11px', color: 'var(--teal-text)', fontWeight: 700 }}>
+              View source dataset ↗
+            </a>
+          )}
+          <button type="button" onClick={() => copyToClipboard(citationString(provenance), setCopyState)} style={smallButtonStyle}>
+            {copyState || 'Copy citation'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function DetailsSection({ title, children }) {
+  return (
+    <details style={{ border: '1px solid var(--border)', borderRadius: '10px', background: 'var(--bg-card)' }}>
+      <summary style={{ cursor: 'pointer', padding: '10px 13px', fontSize: '12.5px', fontWeight: 700, color: 'var(--text-primary)' }}>
+        {title}
+      </summary>
+      <div style={{ padding: '0 13px 13px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        {children}
+      </div>
+    </details>
+  )
+}
+
+function SpatialSection({ chart }) {
+  const { regionName, bbox } = spatialFields(chart)
+  return (
+    <>
+      <MetaField label="Region" value={regionName} />
+      <MetaField label="Bounding box" value={bbox} />
+    </>
+  )
+}
+
+function TemporalSection({ chart }) {
+  const { dateRange, cadence, dates } = temporalFields(chart)
+  return (
+    <>
+      <MetaField label="Date Range" value={dateRange} />
+      <MetaField label="Cadence" value={cadence} />
+      <div>
+        <div style={{ fontSize: '10px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '4px' }}>
+          Granule dates
+        </div>
+        {dates.length ? (
+          <div style={{ maxHeight: '140px', overflow: 'auto', fontSize: '11px', lineHeight: 1.5, color: 'var(--text-secondary)' }}>
+            {dates.map((date, i) => <div key={`${date}-${i}`}>{date}</div>)}
+          </div>
+        ) : (
+          <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{NOT_AVAILABLE}</div>
+        )}
+      </div>
+    </>
+  )
+}
+
+function ProvenanceSection({ chart }) {
+  const { qualityFlagVar, qaGoodValues, qaBadValues, fillValueSource, validRangeSource } = qaMethodologyFields(chart)
+  return (
+    <>
+      <MetaField label="Quality flag variable" value={qualityFlagVar} />
+      <MetaField label="QA good values" value={qaGoodValues ? JSON.stringify(qaGoodValues) : null} />
+      <MetaField label="QA bad values" value={qaBadValues ? JSON.stringify(qaBadValues) : null} />
+      <MetaField label="Fill-value source" value={fillValueSource} />
+      <MetaField label="Valid-range source" value={validRangeSource} />
+    </>
+  )
+}
+
+function VariableDefinitionSection({ chart }) {
+  const { longName, units, advisoryNotes, validRange, maskNote } = variableDefinitionFields(chart)
+  return (
+    <>
+      <MetaField label="Long name" value={longName} />
+      <MetaField label="Units" value={units} />
+      <MetaField label="Advisory notes" value={advisoryNotes} />
+      <MetaField label="Valid range" value={validRange} />
+      <MetaField label="Mask note" value={maskNote} />
+    </>
+  )
+}
+
+function ReproducibilitySection({ chart }) {
+  const [copyState, setCopyState] = useState('')
+  const { dataset, startDate, endDate, bbox, aggregation, sourceHandles } = reproducibilityFields(chart)
+  const handleCopy = () => {
+    copyToClipboard(JSON.stringify(reproducibilityQuery(chart), null, 2), setCopyState)
+  }
+  return (
+    <>
+      <MetaField label="Dataset" value={dataset} />
+      <MetaField label="Start date" value={startDate} />
+      <MetaField label="End date" value={endDate} />
+      <MetaField label="Bounding box" value={bbox} />
+      <MetaField label="Aggregation" value={aggregation} />
+      <MetaField label="Source handles" value={sourceHandles} />
+      <button type="button" onClick={handleCopy} style={{ ...smallButtonStyle, alignSelf: 'flex-start' }}>
+        {copyState || 'Copy query'}
+      </button>
+    </>
+  )
+}
+
+function RawJsonToggle({ chart }) {
+  return (
+    <DetailsSection title="Raw JSON">
+      <pre style={{
+        fontSize: '10.5px', overflow: 'auto', maxHeight: '260px',
+        background: 'var(--bg-secondary)', padding: '8px', borderRadius: '6px', margin: 0,
+      }}>
+        {JSON.stringify(rawMetadataJson(chart), null, 2)}
+      </pre>
+    </DetailsSection>
+  )
+}
+
+function MetadataDetails({ chart }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      <DetailsSection title="Spatial"><SpatialSection chart={chart} /></DetailsSection>
+      <DetailsSection title="Temporal"><TemporalSection chart={chart} /></DetailsSection>
+      <DetailsSection title="Provenance"><ProvenanceSection chart={chart} /></DetailsSection>
+      <DetailsSection title="Variable Definition"><VariableDefinitionSection chart={chart} /></DetailsSection>
+      <DetailsSection title="Reproducibility"><ReproducibilitySection chart={chart} /></DetailsSection>
+      <RawJsonToggle chart={chart} />
+    </div>
+  )
+}
+
+const metaViewButtonStyle = (active) => ({
+  fontSize: '12px', fontWeight: 700,
+  color: active ? 'var(--text-primary)' : 'var(--text-muted)',
+  background: active ? 'var(--bg-secondary)' : 'transparent',
+  border: '1px solid var(--border)', borderRadius: '7px',
+  padding: '5px 11px', cursor: 'pointer',
+})
+
+function MetadataTab({ chart, artifact, onViewStatistics }) {
+  const [view, setView] = useState('overview')
   if (chart) {
-    return <ProvenanceBlock provenance={chart.provenance} aggregationMeta={chart.aggregation_meta} />
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+        <div style={{ display: 'flex', gap: '6px' }}>
+          <button type="button" onClick={() => setView('overview')} style={metaViewButtonStyle(view === 'overview')}>Overview</button>
+          <button type="button" onClick={() => setView('details')} style={metaViewButtonStyle(view === 'details')}>Details</button>
+        </div>
+        {view === 'overview'
+          ? <MetadataOverview chart={chart} onViewStatistics={onViewStatistics} />
+          : <MetadataDetails chart={chart} />}
+      </div>
+    )
   }
   if (artifact) {
     return <ArtifactMessage artifact={artifact} accessToken={undefined} />
@@ -403,7 +662,12 @@ export default function OutputPanel({
         {activeTab === 'chart' && chart.type === 'timeseries' && <TimeSeriesPanel payload={chart} />}
         {activeTab === 'statistics' && <StatisticsTab chart={chart} />}
         {activeTab === 'histogram' && <HistogramTab chart={chart} />}
-        {activeTab === 'metadata' && <MetadataTab chart={chart} />}
+        {activeTab === 'metadata' && (
+          <MetadataTab
+            chart={chart}
+            onViewStatistics={availableTabs.includes('statistics') ? () => setActiveTab('statistics') : undefined}
+          />
+        )}
       </div>
 
       {(activeTab === 'map' || activeTab === 'chart') && (

@@ -104,6 +104,29 @@ class AggregationService:
 
         return AggregatedResult(ds=result_ds, meta=meta)
 
+    def timeseries_aggregation_meta(
+        self,
+        data: xr.Dataset | xr.DataArray,
+        valid_indices: list[int],
+        stat: str,
+        time_dim: str | None = None,
+        *,
+        collection_id: str | None = None,
+        variable: str | None = None,
+        col_info: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """The same aggregation_label/granule_dates/n_granules/cadence summary
+        ``aggregate()`` builds, for a caller that keeps every timestep instead
+        of reducing over time (T32: conduct_temporal_statistic masks each
+        step via ``resolve_and_mask`` directly, never calling ``aggregate()``,
+        so its timeseries charts got no Granules/cadence block). ``valid_indices``
+        is the caller's own record of which timesteps survived masking --
+        the same shape ``aggregate()`` derives internally via
+        ``_valid_time_indices``.
+        """
+        cadence = self._cadence(data, collection_id, variable, col_info)
+        return self._build_meta(data, len(valid_indices), cadence, stat, valid_indices, time_dim)
+
     def resolve_and_mask(
         self,
         da: xr.DataArray,

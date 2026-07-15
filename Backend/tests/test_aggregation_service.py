@@ -160,6 +160,61 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertEqual(result.meta["masking"]["fill_value_source"], "collections_yaml")
         self.assertEqual(result.meta["masking"]["valid_range_source"], "collections_yaml")
 
+    def test_timeseries_aggregation_meta_matches_aggregate_meta_shape(self):
+        """T32: conduct_temporal_statistic keeps every timestep instead of
+        reducing over time, so it can't call aggregate() directly -- this
+        wrapper must build the identical aggregation_label/granule_dates/
+        n_granules/cadence summary aggregate() derives internally, from the
+        caller's own record of which timesteps survived masking."""
+        from preprocessing.aggregation_service import AggregationService
+
+        da = self.xr.DataArray(
+            self.np.array([
+                [[1.0, 2.0], [3.0, 4.0]],
+                [[5.0, 6.0], [7.0, 8.0]],
+            ]),
+            dims=("time", "lat", "lon"),
+            coords={
+                "time": ["2024-01-01", "2024-01-02"],
+                "lat": [40.0, 41.0],
+                "lon": [-75.0, -74.0],
+            },
+            name="no2",
+        )
+        service = AggregationService()
+
+        meta = service.timeseries_aggregation_meta(
+            da, valid_indices=[0, 1], stat="mean", time_dim="time", col_info=self.col_info,
+        )
+        reduced_meta = service.aggregate(da, stat="mean", col_info=self.col_info).meta
+
+        self.assertEqual(meta["n_granules"], 2)
+        self.assertEqual(meta["granule_dates"], ["2024-01-01", "2024-01-02"])
+        self.assertEqual(meta["cadence"], "daily")
+        self.assertEqual(meta["aggregation_label"], reduced_meta["aggregation_label"])
+        self.assertNotIn("masking", meta)  # caller merges its own masking_provenance in
+
+    def test_timeseries_aggregation_meta_counts_only_the_valid_indices_given(self):
+        from preprocessing.aggregation_service import AggregationService
+
+        da = self.xr.DataArray(
+            self.np.array([
+                [[1.0, 2.0]],
+                [[3.0, 4.0]],
+                [[5.0, 6.0]],
+            ]),
+            dims=("time", "lat", "lon"),
+            coords={"time": ["2024-01-01", "2024-01-02", "2024-01-03"], "lat": [40.0], "lon": [-75.0, -74.0]},
+            name="no2",
+        )
+
+        meta = AggregationService().timeseries_aggregation_meta(
+            da, valid_indices=[0, 2], stat="mean", time_dim="time", col_info=self.col_info,
+        )
+
+        self.assertEqual(meta["n_granules"], 2)
+        self.assertEqual(meta["granule_dates"], ["2024-01-01", "2024-01-03"])
+
     def test_to_dataarray_returns_the_single_data_var_with_no_choice_needed(self):
         from preprocessing.aggregation_service import AggregationService
 
