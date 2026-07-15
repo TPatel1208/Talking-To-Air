@@ -13,9 +13,8 @@ CONNECTOR_REGISTRY: list[dict[str, str]] = [
         "auth_method": "token",
         "token_docs_url": "https://urs.earthdata.nasa.gov/documentation/for_users/user_token",
         "description": (
-            "Paste your Earthdata Login user token so the platform can later act as you "
-            "against NASA services, instead of a shared account. Not consumed yet -- "
-            "this phase only stores it."
+            "Provides access to NASA Earthdata services"
+            ". Paste your Earthdata Login user token below."
         ),
     },
 ]
