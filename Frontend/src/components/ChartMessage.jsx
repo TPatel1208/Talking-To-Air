@@ -1,17 +1,15 @@
 /**
  * ChartMessage.jsx
  * ----------------
- * Dispatches a chart payload emitted by the backend to its renderer:
- * MapLibreHeatmapPanel/HeatmapMultiPanel for geo charts (T23), Plotly for
- * time series. Also renders the shared toolbar (query/CSV/PNG export) and
- * provenance block around whichever panel is chosen.
+ * The Plotly time-series panel (TimeSeriesPanel/TimeSeriesOverlayPanel) and
+ * the shared chart toolbar (query/CSV/PNG export, ChartToolbar) consumed by
+ * OutputPanel.jsx. Geo charts render via MapLibreHeatmapPanel/
+ * HeatmapMultiPanel directly, not through this file.
  */
 import { useState, useEffect, useMemo, useRef } from 'react'
 import Plotly from 'plotly.js-dist-min'
 import _createPlotlyComponent from 'react-plotly.js/factory'
 import { flattenPayload } from '../utils/flattenPayload.js'
-import MapLibreHeatmapPanel from './MapLibreHeatmapPanel.jsx'
-import HeatmapMultiPanel from './HeatmapMultiPanel.jsx'
 import { buildOverlayTraces } from '../utils/timeseriesCompare.js'
 
 const createPlotlyComponent =
@@ -121,101 +119,6 @@ async function downloadFromUrl(url, fallbackFilename, accessToken) {
   const blob = await response.blob()
   const filename = filenameFromDisposition(response.headers.get('content-disposition'), fallbackFilename)
   downloadBlob(filename, blob)
-}
-
-function compactDate(value) {
-  if (!value) return ''
-  return String(value).replace('T00:00:00', '').replace('T23:59:59', '').replace(/Z$/, '')
-}
-
-function formatBBox(bbox) {
-  if (!Array.isArray(bbox)) return bbox || ''
-  return bbox.map(value => Number.isFinite(value) ? value.toFixed(4) : value).join(', ')
-}
-
-function GranuleList({ meta, provenance }) {
-  const [open, setOpen] = useState(false)
-  const dates = meta?.granule_dates || provenance?.granule_dates || []
-  const nGranules = meta?.n_granules || provenance?.n_granules
-  const cadence = meta?.cadence || provenance?.cadence || ''
-  if (!nGranules && !dates.length) return null
-
-  const label = `${nGranules || dates.length} ${cadence ? `${cadence} ` : ''}granule${(nGranules || dates.length) === 1 ? '' : 's'}`
-  return (
-    <div style={{ minWidth: 0 }}>
-      <div style={{ fontSize: '10px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-        Granules
-      </div>
-      <button
-        type="button"
-        onClick={() => setOpen(value => !value)}
-        style={{
-          border: 0,
-          background: 'transparent',
-          padding: 0,
-          color: 'var(--text-secondary)',
-          fontSize: '11px',
-          fontFamily: 'var(--font)',
-          cursor: dates.length ? 'pointer' : 'default',
-          textAlign: 'left',
-        }}
-        disabled={!dates.length}
-      >
-        {label}{dates.length ? (open ? ' ^' : ' v') : ''}
-      </button>
-      {open && dates.length > 0 && (
-        <div style={{
-          marginTop: '6px',
-          maxHeight: '120px',
-          overflow: 'auto',
-          fontSize: '11px',
-          lineHeight: 1.45,
-          color: 'var(--text-secondary)',
-        }}>
-          {dates.map((date, index) => (
-            <div key={`${date}-${index}`}>{date}</div>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
-export function ProvenanceBlock({ provenance, aggregationMeta }) {
-  if (!provenance || typeof provenance !== 'object') return null
-  const items = [
-    ['Dataset', [provenance.dataset, provenance.variable].filter(Boolean).join(' / ')],
-    ['Date Range', [compactDate(provenance.start_date), compactDate(provenance.end_date)].filter(Boolean).join(' to ')],
-    ['Region', provenance.region_name || formatBBox(provenance.bbox)],
-    ['Aggregation', aggregationMeta?.aggregation_label || provenance.aggregation],
-    ['Source', provenance.source || provenance.endpoint],
-  ].filter(([, value]) => value)
-
-  const hasGranules = aggregationMeta?.n_granules || provenance.n_granules || aggregationMeta?.granule_dates?.length || provenance.granule_dates?.length
-  if (!items.length && !hasGranules) return null
-
-  return (
-    <div style={{
-      display: 'grid',
-      gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
-      gap: '8px',
-      padding: '10px',
-      borderTop: '1px solid var(--border)',
-      background: 'var(--bg-secondary)',
-    }}>
-      {items.map(([label, value]) => (
-        <div key={label} style={{ minWidth: 0 }}>
-          <div style={{ fontSize: '10px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-            {label}
-          </div>
-          <div style={{ fontSize: '11px', color: 'var(--text-secondary)', overflowWrap: 'anywhere', lineHeight: 1.45 }}>
-            {value}
-          </div>
-        </div>
-      ))}
-      <GranuleList meta={aggregationMeta} provenance={provenance} />
-    </div>
-  )
 }
 
 export function ChartToolbar({ chart, plotRootRef, accessToken }) {
@@ -421,32 +324,3 @@ export function TimeSeriesOverlayPanel({ series, height = 320 }) {
   )
 }
 
-// ── Public component ──────────────────────────────────────────────────────────
-export default function ChartMessage({ chart, accessToken }) {
-  const plotRootRef = useRef(null)
-  if (!chart || typeof chart !== 'object' || !chart.type) return null
-
-  const inner = (() => {
-    switch (chart.type) {
-      case 'heatmap':       return <MapLibreHeatmapPanel payload={chart} accessToken={accessToken} />
-      case 'heatmap_multi': return <HeatmapMultiPanel payload={chart} accessToken={accessToken} />
-      case 'timeseries':    return <TimeSeriesPanel payload={chart} />
-      default:
-        return <div style={{ fontSize: '12px', color: 'var(--text-muted)', padding: '8px' }}>Unknown chart type: {chart.type}</div>
-    }
-  })()
-
-  return (
-    <div style={{
-      margin: '8px 0', background: 'var(--bg-card)',
-      border: '1px solid var(--border)', borderRadius: '10px',
-      overflow: 'hidden', padding: '8px',
-    }}>
-      <ChartToolbar chart={chart} plotRootRef={plotRootRef} accessToken={accessToken} />
-      <div ref={plotRootRef}>
-        {inner}
-      </div>
-      <ProvenanceBlock provenance={chart.provenance} aggregationMeta={chart.aggregation_meta} />
-    </div>
-  )
-}

@@ -21,7 +21,7 @@
 import { useMemo, useState } from 'react'
 import MapLibreHeatmapPanel from './MapLibreHeatmapPanel.jsx'
 import { TimeSeriesPanel, TimeSeriesOverlayPanel } from './ChartMessage.jsx'
-import { MetadataOverview } from './OutputPanel.jsx'
+import { MetadataOverview } from './MetadataOverview.jsx'
 import { colorbarGeometry } from '../utils/colorbarGeometry.js'
 import { computeSharedColorScale } from '../utils/sharedColorScale.js'
 import { filledCharts, activeCompareKind } from '../utils/compareMode.js'

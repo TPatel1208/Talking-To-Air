@@ -4,14 +4,16 @@ import MapLibreHeatmapPanel from './MapLibreHeatmapPanel.jsx'
 import HeatmapMultiPanel from './HeatmapMultiPanel.jsx'
 import CompareGrid from './CompareGrid.jsx'
 import ArtifactMessage, { TableArtifactMessage } from './ArtifactMessage'
+import { MetadataOverview } from './MetadataOverview.jsx'
+import { MetaField } from './metadataPrimitives.jsx'
+import { smallButtonStyle, copyToClipboard } from '../utils/metadataUiHelpers.js'
 import { computeChartStats, computeHistogram } from '../utils/chartStats'
 import { resolveMasking } from '../utils/maskingProvenance'
 import { filledCharts } from '../utils/compareMode'
 import { focusChartPayload } from '../utils/compareSlotOverview'
 import { shouldShowCollapseHint } from '../utils/compareLayoutHint'
 import {
-  NOT_AVAILABLE, fmt, dateRangeLabel, granuleSummary, maskingStatusColor,
-  citationString, datasetLandingUrl, spatialFields, temporalFields,
+  NOT_AVAILABLE, fmt, spatialFields, temporalFields,
   qaMethodologyFields, variableDefinitionFields, reproducibilityFields,
   reproducibilityQuery, rawMetadataJson,
 } from '../utils/metadataDisplay'
@@ -174,128 +176,9 @@ function HistogramTab({ chart }) {
 // Field derivation (which fact goes in which section, "Not available"
 // fallbacks, citation/query string-building) lives in utils/metadataDisplay
 // -- pure and unit-tested there; this file is just the JSX shell around it.
-
-function MetaField({ label, value }) {
-  return (
-    <div style={{ minWidth: 0 }}>
-      <div style={{ fontSize: '10px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-        {label}
-      </div>
-      <div style={{ fontSize: '12px', color: 'var(--text-secondary)', overflowWrap: 'anywhere', lineHeight: 1.45 }}>
-        {fmt(value)}
-      </div>
-    </div>
-  )
-}
-
-const smallButtonStyle = {
-  border: '1px solid var(--border)', background: 'var(--bg-card)',
-  color: 'var(--text-secondary)', borderRadius: '7px', padding: '4px 9px',
-  fontSize: '11px', fontFamily: 'var(--font)', cursor: 'pointer',
-}
-
-async function copyToClipboard(text, setState) {
-  try {
-    await navigator.clipboard.writeText(text)
-    setState('Copied')
-  } catch {
-    setState('Copy failed')
-  }
-  window.setTimeout(() => setState(''), 1600)
-}
-
-export function MetadataOverview({ chart, onViewStatistics, onViewFullMetadata, note }) {
-  const provenance = chart.provenance || {}
-  const masking = useMemo(() => resolveMasking(chart), [chart])
-  const [copyState, setCopyState] = useState('')
-  const landingUrl = datasetLandingUrl(provenance.collection_id)
-  const dateRange = dateRangeLabel(provenance)
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-      <div>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginBottom: '8px' }}>
-          <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)' }}>
-            This view
-          </div>
-          {onViewFullMetadata && (
-            <button type="button" onClick={onViewFullMetadata} style={{
-              border: 0, background: 'transparent', color: 'var(--teal-text)',
-              fontSize: '11px', fontWeight: 700, cursor: 'pointer', padding: 0, flexShrink: 0,
-            }}>
-              View full metadata →
-            </button>
-          )}
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px' }}>
-          <MetaField label="Dataset" value={provenance.dataset} />
-          <MetaField label="Variable" value={provenance.variable} />
-          <MetaField label="Date Range" value={dateRange} />
-          <MetaField label="Region" value={provenance.region_name} />
-          <MetaField label="Aggregation" value={chart.aggregation_meta?.aggregation_label || provenance.aggregation} />
-          <MetaField label="Granules" value={granuleSummary(chart)} />
-        </div>
-      </div>
-
-      <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: '10px', padding: '11px 13px' }}>
-        <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '5px' }}>
-          Data quality
-        </div>
-        {masking ? (
-          <>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
-              <span aria-hidden style={{
-                width: '8px', height: '8px', borderRadius: '50%', flexShrink: 0,
-                background: maskingStatusColor(masking.qaStatus),
-              }} />
-              <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>
-                {masking.qaStatus}
-              </span>
-            </div>
-            {masking.qaNote && (
-              <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginTop: '4px', lineHeight: 1.45 }}>
-                {masking.qaNote}
-              </div>
-            )}
-            {onViewStatistics && (
-              <button type="button" onClick={onViewStatistics} style={{
-                marginTop: '6px', border: 0, background: 'transparent',
-                color: 'var(--teal-text)', fontSize: '11px', fontWeight: 700,
-                cursor: 'pointer', padding: 0,
-              }}>
-                See Statistics tab for details →
-              </button>
-            )}
-          </>
-        ) : (
-          <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{NOT_AVAILABLE}</div>
-        )}
-      </div>
-
-      <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: '10px', padding: '11px 13px' }}>
-        <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '5px', display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: '8px' }}>
-          <span>Source dataset</span>
-          {note && <span style={{ fontWeight: 400, fontStyle: 'italic', color: 'var(--text-muted)' }}>{note}</span>}
-        </div>
-        <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>{fmt(provenance.dataset)}</div>
-        <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginTop: '4px' }}>{fmt(provenance.dataset_description)}</div>
-        <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginTop: '4px' }}>
-          Version {fmt(provenance.dataset_version)} · {fmt(provenance.source)}
-        </div>
-        <div style={{ display: 'flex', gap: '10px', marginTop: '8px', alignItems: 'center' }}>
-          {landingUrl && (
-            <a href={landingUrl} target="_blank" rel="noreferrer" style={{ fontSize: '11px', color: 'var(--teal-text)', fontWeight: 700 }}>
-              View source dataset ↗
-            </a>
-          )}
-          <button type="button" onClick={() => copyToClipboard(citationString(provenance), setCopyState)} style={smallButtonStyle}>
-            {copyState || 'Copy citation'}
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
+// MetaField/smallButtonStyle/copyToClipboard live in metadataPrimitives.jsx
+// and MetadataOverview in its own module (imported above) so CompareGrid.jsx
+// can use MetadataOverview without importing this file (T34 review fix).
 
 function DetailsSection({ title, children }) {
   return (
@@ -450,8 +333,7 @@ function useTableColumnsPreview(artifact, accessToken) {
   return state
 }
 
-function TableMetadataOverview({ artifact, accessToken }) {
-  const { page, status } = useTableColumnsPreview(artifact, accessToken)
+function TableMetadataOverview({ artifact, page, status }) {
   const fields = tableOverviewFields(artifact, page)
   const loadingOr = (value) => (status === 'loading' ? '…' : fmt(value))
   return (
@@ -521,8 +403,7 @@ function ArtifactRawJsonToggle({ artifact }) {
   )
 }
 
-function TableMetadataDetails({ artifact, accessToken }) {
-  const { page, status } = useTableColumnsPreview(artifact, accessToken)
+function TableMetadataDetails({ artifact, accessToken, page, status }) {
   const { columns } = tableDetailsFields(artifact, page)
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
@@ -604,6 +485,11 @@ function GroundValidationDetails({ artifact }) {
 
 function MetadataTab({ chart, artifact, accessToken, onViewStatistics }) {
   const [view, setView] = useState('overview')
+  // Lifted above the Overview/Details toggle (T33 review fix) so switching
+  // between the two sub-tabs on a table artifact reuses the same fetched
+  // page instead of each mounting its own useTableColumnsPreview and
+  // refetching /api/artifacts/{id} every time the user toggles.
+  const { page: tablePage, status: tablePageStatus } = useTableColumnsPreview(artifact, accessToken)
   if (chart) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
@@ -627,8 +513,8 @@ function MetadataTab({ chart, artifact, accessToken, onViewStatistics }) {
         </div>
         {isTable
           ? (view === 'overview'
-            ? <TableMetadataOverview artifact={artifact} accessToken={accessToken} />
-            : <TableMetadataDetails artifact={artifact} accessToken={accessToken} />)
+            ? <TableMetadataOverview artifact={artifact} page={tablePage} status={tablePageStatus} />
+            : <TableMetadataDetails artifact={artifact} accessToken={accessToken} page={tablePage} status={tablePageStatus} />)
           : (view === 'overview'
             ? <GroundValidationOverview artifact={artifact} />
             : <GroundValidationDetails artifact={artifact} />)}

@@ -5,7 +5,8 @@ import {
   NOT_AVAILABLE, fmt, dateRangeLabel, granuleSummary, granuleDates,
   maskingStatusColor, resolveMaskingRaw, citationString, datasetLandingUrl,
   spatialFields, temporalFields, qaMethodologyFields, variableDefinitionFields,
-  reproducibilityQuery, reproducibilityFields, rawMetadataJson,
+  reproducibilityQuery, reproducibilityFields, rawMetadataJson, regionLabel,
+  hasProvenance,
 } from '../src/utils/metadataDisplay.js'
 
 // A fixture provenance object exercising every field the Overview/Details
@@ -70,6 +71,21 @@ test('fmt() falls back to "Not available" for null/undefined/empty', () => {
   assert.equal(fmt([]), NOT_AVAILABLE)
 })
 
+// Review fix: comparison_tools.py's heatmap_multi charts never set
+// provenance at all -- the Overview must recognize that and show one clear
+// empty state, not a fully-populated-looking grid of "Not available" per
+// field (which reads as a bug, not "this chart type has no provenance").
+test('hasProvenance is false when the chart has no provenance object at all', () => {
+  assert.equal(hasProvenance({ type: 'heatmap_multi' }), false)
+  assert.equal(hasProvenance({}), false)
+  assert.equal(hasProvenance(null), false)
+})
+
+test('hasProvenance is true even when individual provenance fields are missing', () => {
+  assert.equal(hasProvenance({ provenance: {} }), true)
+  assert.equal(hasProvenance(fixtureChart()), true)
+})
+
 test('fmt() passes real values through unchanged', () => {
   assert.equal(fmt('TEMPO_NO2_L3'), 'TEMPO_NO2_L3')
   assert.equal(fmt(0), 0)
@@ -102,6 +118,14 @@ test('granuleSummary singularizes a single granule and omits cadence when absent
 test('granuleSummary is null when no granule count is available', () => {
   assert.equal(granuleSummary({}), null)
   assert.equal(granuleSummary({ provenance: {} }), null)
+})
+
+// Review fix: a request whose masking excluded every timestep can
+// legitimately produce n_granules=0 -- that's a real signal ("this
+// request returned no valid data"), distinct from the field being absent.
+test('granuleSummary surfaces a legitimate zero-granule count instead of treating it as missing', () => {
+  assert.equal(granuleSummary({ provenance: { n_granules: 0, cadence: 'daily' } }), '0 daily granules')
+  assert.equal(granuleSummary({ aggregation_meta: { n_granules: 0 } }), '0 granules')
 })
 
 // ── Overview vs Details: granule dates only appear in Details ──────────────
@@ -181,6 +205,23 @@ test('spatialFields falls back to query.bbox when the chart has no top-level bou
 
 test('spatialFields returns nulls, not throws, with no chart data', () => {
   assert.deepEqual(spatialFields({}), { regionName: null, bbox: null })
+})
+
+// Review fix: the Overview's Region field used to show only region_name,
+// unlike the pre-T32 code's region_name-or-bbox fallback -- a chart with an
+// empty region_name (e.g. a raw bbox selection) has real coordinates that
+// should still surface instead of "Not available".
+test('regionLabel prefers region_name when present', () => {
+  assert.equal(regionLabel(fixtureChart()), 'New Jersey')
+})
+
+test('regionLabel falls back to the formatted bounding box when region_name is empty', () => {
+  const chart = fixtureChart({ provenance: { ...fixtureChart().provenance, region_name: null } })
+  assert.equal(regionLabel(chart), '-75.5000, 39.0000, -73.5000, 41.0000')
+})
+
+test('regionLabel is null when neither region_name nor a bbox is available', () => {
+  assert.equal(regionLabel({}), null)
 })
 
 // ── Details: Temporal section ───────────────────────────────────────────────

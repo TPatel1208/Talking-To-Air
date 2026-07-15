@@ -292,14 +292,20 @@ class ChatStreamService:
         write-back) is acceptable; the turn already answered — but it is
         logged loudly, never silent.
 
-        Writes the same tool_call/ToolMessage/AIMessage shape the
-        supervisor's own agent loop produces for ask_ground_sensor_agent /
-        ask_earthdata_agent (supervisor_agent.py), carrying the full
-        AgentResult JSON in the ToolMessage. HistoryService only ever
-        reconstructs a turn's chart/artifact cards from a role=="tool"
-        message (see _attach_tool_output) — a bare Human/AI pair here left
-        fast-pathed charts undiscoverable after a reload, even though they
-        were already durably persisted in agent_charts.
+        When the result carries a chart or artifact, writes the same
+        tool_call/ToolMessage/AIMessage shape the supervisor's own agent loop
+        produces for ask_ground_sensor_agent / ask_earthdata_agent
+        (supervisor_agent.py), carrying the full AgentResult JSON in the
+        ToolMessage. HistoryService only ever reconstructs a turn's chart/
+        artifact cards from a role=="tool" message (see _attach_tool_output)
+        — a bare Human/AI pair here left fast-pathed charts undiscoverable
+        after a reload, even though they were already durably persisted in
+        agent_charts.
+
+        A text-only result (no charts, no artifacts) has nothing for
+        _attach_tool_output to reconstruct, so it writes back just the plain
+        Human/AI pair instead — no synthetic tool call, no full AgentResult
+        JSON permanently bloating the checkpoint for every turn.
 
         ``as_node="model"`` is required, not cosmetic: LangGraph's
         aupdate_state only auto-infers which node an external update came
@@ -310,24 +316,31 @@ class ChatStreamService:
         ambiguous versions_seen and raises InvalidUpdateError without this —
         silently dropping that turn (and every later one) from history, not
         just its chart card."""
-        tool_call_id = str(uuid.uuid4())
-        tool_name = _INTENT_TOOL_NAMES[intent]
+        if result.charts or result.artifacts:
+            tool_call_id = str(uuid.uuid4())
+            tool_name = _INTENT_TOOL_NAMES[intent]
+            messages = [
+                HumanMessage(content=user_message),
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": tool_name, "args": {"task": user_message}, "id": tool_call_id}],
+                ),
+                ToolMessage(
+                    content=agent_result_to_json(result),
+                    tool_call_id=tool_call_id,
+                    name=tool_name,
+                ),
+                AIMessage(content=final_answer),
+            ]
+        else:
+            messages = [
+                HumanMessage(content=user_message),
+                AIMessage(content=final_answer),
+            ]
         try:
             await agent.aupdate_state(
                 {"configurable": {"thread_id": thread_id}},
-                {"messages": [
-                    HumanMessage(content=user_message),
-                    AIMessage(
-                        content="",
-                        tool_calls=[{"name": tool_name, "args": {"task": user_message}, "id": tool_call_id}],
-                    ),
-                    ToolMessage(
-                        content=agent_result_to_json(result),
-                        tool_call_id=tool_call_id,
-                        name=tool_name,
-                    ),
-                    AIMessage(content=final_answer),
-                ]},
+                {"messages": messages},
                 as_node="model",
             )
         except Exception:

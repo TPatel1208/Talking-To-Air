@@ -67,6 +67,7 @@ def _build_metadata(artifact_type: str, payload: dict[str, Any]):
     stats = payload.get("stats")
     coverage = payload.get("coverage")
     exceedance_dates = payload.get("exceedance_dates")
+    masking = payload.get("masking")
     if series:
         return TimeseriesArtifactMetadata(
             series=series,
@@ -74,6 +75,7 @@ def _build_metadata(artifact_type: str, payload: dict[str, Any]):
             stats=stats,
             coverage=coverage,
             exceedance_dates=exceedance_dates,
+            masking=masking,
         )
     return TimeseriesArtifactMetadata(
         series=[{
@@ -84,4 +86,5 @@ def _build_metadata(artifact_type: str, payload: dict[str, Any]):
         stats=stats,
         coverage=coverage,
         exceedance_dates=exceedance_dates,
+        masking=masking,
     )

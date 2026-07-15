@@ -420,6 +420,39 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(assistant["charts"]), 1)
         self.assertEqual(assistant["charts"][0]["chart_id"], "chart_xyz")
 
+    async def test_text_only_fast_pathed_turn_writes_back_a_plain_message_pair(self):
+        """Review fix: a fast-pathed turn with no charts/artifacts has
+        nothing for HistoryService's _attach_tool_output to reconstruct on
+        reload, so it must not pay for (or permanently checkpoint) the full
+        tool_calls/ToolMessage/AgentResult-JSON shape that chart/artifact
+        turns need. Only when the result actually carries a chart or
+        artifact should the write-back use that heavier shape."""
+        from langchain_core.messages import ToolMessage
+
+        from services.chat_stream_service import ChatStreamService
+        from services.chart_service import ChartService
+
+        ground_agent = FakeGroundAgent()  # default envelope: no artifact_ids, no handles
+        supervisor = FakeSupervisorAgent()
+        service = ChatStreamService(ChartService(), long_request_seconds=999)
+
+        get_ctx, save_ctx = _no_monitor_context()
+        with get_ctx, save_ctx:
+            [
+                event
+                async for event in service.stream_chat_events(
+                    supervisor, ground_agent, UntouchedAgent(),
+                    "Find the nearest NO2 monitor to Tampa FL", "thread-1", "user-1", "req-1",
+                )
+            ]
+
+        self.assertEqual(len(supervisor.update_state_calls), 1)
+        _config, values, _as_node = supervisor.update_state_calls[0]
+        written = values["messages"]
+        self.assertEqual(len(written), 2, "text-only turn should write back Human+AI only, not a tool_calls triple")
+        self.assertFalse(any(isinstance(m, ToolMessage) for m in written))
+        self.assertFalse(any(getattr(m, "tool_calls", None) for m in written))
+
     async def test_two_consecutive_fast_pathed_turns_on_one_thread_both_persist(self):
         """Regression: LangGraph's aupdate_state only auto-infers as_node
         when a thread's checkpoint has never been manually updated before —

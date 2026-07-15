@@ -1003,9 +1003,12 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
             if not times:
                 return "error", f"No valid data found for '{location}' across any time step."
 
-            # Sort by time
-            paired = sorted(zip(times, values))
-            sorted_times, sorted_values = zip(*paired)
+            # Sort by time -- valid_time_indices travels with the same sort
+            # key so aggregation_meta's granule_dates/date-range (built from
+            # it below) agree with the chart's actual plotted order, even
+            # when source timesteps arrive non-chronologically.
+            paired = sorted(zip(times, values, valid_time_indices))
+            sorted_times, sorted_values, sorted_valid_time_indices = zip(*paired)
 
             # T32: same aggregation_label/granule_dates/n_granules/cadence
             # summary the heatmap/comparison paths get from aggregate() --
@@ -1013,7 +1016,7 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
             # reducing over time, so it builds this from its own
             # valid_time_indices rather than calling aggregate().
             agg_meta = _aggregation_service.timeseries_aggregation_meta(
-                masked, valid_time_indices, stat, time_dim, col_info=col_info,
+                masked, list(sorted_valid_time_indices), stat, time_dim, col_info=col_info,
             )
             agg_meta["masking"] = masking_provenance
 

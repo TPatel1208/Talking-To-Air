@@ -28,6 +28,14 @@ export function formatBBox(bbox) {
   return bbox.map(value => Number.isFinite(value) ? value.toFixed(4) : value).join(', ')
 }
 
+// Some chart types (e.g. comparison_tools.py's heatmap_multi) never attach
+// a provenance object at all -- the Overview must show one clear empty
+// state for those, not a grid of "Not available" per field that reads as
+// a bug rather than "this chart type has no provenance to show".
+export function hasProvenance(chart) {
+  return Boolean(chart?.provenance)
+}
+
 export function dateRangeLabel(provenance) {
   const p = provenance || {}
   const range = [compactMetadataDate(p.start_date), compactMetadataDate(p.end_date)].filter(Boolean).join(' to ')
@@ -42,7 +50,7 @@ export function granuleSummary(chart) {
   const provenance = chart?.provenance || {}
   const nGranules = meta?.n_granules ?? provenance.n_granules
   const cadence = meta?.cadence || provenance.cadence || ''
-  if (!nGranules) return null
+  if (nGranules == null) return null
   return `${nGranules} ${cadence ? `${cadence} ` : ''}granule${nGranules === 1 ? '' : 's'}`
 }
 
@@ -95,6 +103,14 @@ export function spatialFields(chart) {
     regionName: provenance.region_name ?? null,
     bbox: bbox ? formatBBox(bbox) : null,
   }
+}
+
+// Overview's single-line Region fact: region_name when the backend resolved
+// one, else the raw bounding box coordinates -- so a bbox-only selection
+// (no named region) still shows something instead of "Not available".
+export function regionLabel(chart) {
+  const { regionName, bbox } = spatialFields(chart)
+  return regionName || bbox || null
 }
 
 export function temporalFields(chart) {

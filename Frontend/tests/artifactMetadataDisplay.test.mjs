@@ -120,6 +120,21 @@ test('groundValidationOverviewFields is null-safe for a missing series/stats/cov
   assert.equal(fields.satelliteVariable, null)
   assert.equal(fields.groundStations, null)
   assert.equal(fields.correlationSummary, null)
+  assert.equal(fields.qaStatus, null)
+})
+
+// Review fix (T34): validate_against_ground/exceedance_overlay now populate
+// masking provenance (Backend/services/artifact_registry.py forwards
+// ts_payload["masking"] into TimeseriesArtifactMetadata) so the "Data
+// quality" field has something real to show.
+test('groundValidationOverviewFields reads qaStatus from meta.masking', () => {
+  const fields = groundValidationOverviewFields(validateArtifact({
+    metadata: {
+      ...validateArtifact().metadata,
+      masking: { qa_status: 'verified', qa_source: 'collections_yaml', qa_note: '' },
+    },
+  }))
+  assert.equal(fields.qaStatus, 'verified')
 })
 
 test('groundValidationDetailsFields exposes the full series breakdown and source handles', () => {

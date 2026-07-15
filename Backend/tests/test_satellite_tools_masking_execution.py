@@ -253,6 +253,51 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(full["provenance"]["cadence"], "hourly")
         self.assertEqual(len(full["provenance"]["granule_dates"]), 2)
 
+    async def test_conduct_temporal_statistic_granule_dates_match_the_sorted_chart_order(self):
+        """The chart's times/values are explicitly sorted chronologically
+        before charting (source timesteps aren't guaranteed monotonic, e.g.
+        granules from multiple downloads concatenated out of order). The
+        aggregation_meta granule_dates/date-range must reflect that same
+        sorted order, not the pre-sort loop order -- otherwise the Metadata
+        tab's date range can disagree with what's actually plotted."""
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import make_conduct_temporal_statistic
+
+        def make_ds():
+            # Source timesteps arrive out of chronological order.
+            return _tempo_no2_dataset(
+                xr,
+                values=[[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]],
+                flags=[[[0, 0], [0, 0]], [[0, 0], [0, 0]]],
+                time=["2024-01-02T00:00:00", "2024-01-01T00:00:00"],
+            )
+
+        self.volume.add_zarr("obs_1", make_ds)
+
+        emitted = {}
+
+        def fake_emit_chart(full_payload):
+            emitted["payload"] = full_payload
+
+        conduct_temporal_statistic = make_conduct_temporal_statistic(self.mcp_tools)
+        with patch("tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
+            raw = await conduct_temporal_statistic.ainvoke({
+                "handle": "obs_1", "location": "global", "stat": "mean",
+            })
+
+        result = json.loads(raw)
+        self.assertNotIn("error", result)
+
+        full = emitted["payload"]
+        # Chart is sorted chronologically: Jan 1 (mean=6.5) before Jan 2 (mean=2.5).
+        self.assertEqual(full["times"][0][:10], "2024-01-01")
+        self.assertEqual(full["times"][1][:10], "2024-01-02")
+        self.assertEqual(full["values"], [6.5, 2.5])
+
+        agg_meta = full["aggregation_meta"]
+        self.assertEqual(agg_meta["granule_dates"], ["2024-01-01", "2024-01-02"])
+        self.assertIn("2024-01-01 to 2024-01-02", agg_meta["aggregation_label"])
+
     async def test_conduct_temporal_statistic_attaches_dataset_and_source_from_registry(self):
         """T32: dataset/source come from the TEMPO_NO2 registry entry matched
         via the opened granule's short_name attribute -- the same match

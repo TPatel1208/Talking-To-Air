@@ -57,6 +57,7 @@ class TimeseriesArtifactMetadata(BaseModel):
     stats: dict[str, Any] | None = None
     coverage: dict[str, Any] | None = None
     exceedance_dates: list[str] | None = None
+    masking: dict[str, Any] | None = None
 
     @field_validator("series")
     @classmethod
