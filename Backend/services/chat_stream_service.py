@@ -4,13 +4,14 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from typing import Any, AsyncIterator
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from config.error_templates import render_error_answer
 from earthdata_mcp.results import CATEGORY_CONTRACT
-from models import parse_agent_result, parse_chart_payload
+from models import AgentResult, agent_result_to_json, parse_agent_result, parse_chart_payload
 from services.artifact_store import artifact_store
 from services.chart_service import ChartService
 from services.intent_router import route_intent
@@ -23,6 +24,15 @@ logger = logging.getLogger(__name__)
 _AGENT_CONSULTED_HEADERS = {
     "GROUND": "Agent consulted: GROUND",
     "SATELLITE": "Agent consulted: SATELLITE",
+}
+
+# T14/history-fix: the supervisor tool a fast-pathed intent stands in for —
+# used so the write-back below reproduces the same tool_call/tool_result
+# shape create_agent's own loop would have produced (see supervisor_agent.py
+# ask_ground_sensor_agent / ask_earthdata_agent).
+_INTENT_TOOL_NAMES = {
+    "GROUND": "ask_ground_sensor_agent",
+    "SATELLITE": "ask_earthdata_agent",
 }
 
 
@@ -249,7 +259,7 @@ class ChatStreamService:
         final_text = f"{_AGENT_CONSULTED_HEADERS[intent]}\n\n{result.text}"
         yield self.sse("text", {"content": final_text})
 
-        await self._write_back_turn(supervisor_agent, thread_id, message, final_text)
+        await self._write_back_turn(supervisor_agent, thread_id, message, final_text, intent, result)
 
         done_payload = {
             "thread_id": thread_id,
@@ -267,16 +277,71 @@ class ChatStreamService:
         yield self.sse("done", done_payload)
         self._log_request_complete(request_id, thread_id, started)
 
-    async def _write_back_turn(self, agent: Any, thread_id: str, user_message: str, final_answer: str) -> None:
+    async def _write_back_turn(
+        self,
+        agent: Any,
+        thread_id: str,
+        user_message: str,
+        final_answer: str,
+        intent: str,
+        result: AgentResult,
+    ) -> None:
         """Append the fast-pathed turn to the supervisor's checkpointed
         thread state, so the conversation the supervisor sees on its next
         genuinely ambiguous turn is complete. Memory degradation (a failed
         write-back) is acceptable; the turn already answered — but it is
-        logged loudly, never silent."""
+        logged loudly, never silent.
+
+        When the result carries a chart or artifact, writes the same
+        tool_call/ToolMessage/AIMessage shape the supervisor's own agent loop
+        produces for ask_ground_sensor_agent / ask_earthdata_agent
+        (supervisor_agent.py), carrying the full AgentResult JSON in the
+        ToolMessage. HistoryService only ever reconstructs a turn's chart/
+        artifact cards from a role=="tool" message (see _attach_tool_output)
+        — a bare Human/AI pair here left fast-pathed charts undiscoverable
+        after a reload, even though they were already durably persisted in
+        agent_charts.
+
+        A text-only result (no charts, no artifacts) has nothing for
+        _attach_tool_output to reconstruct, so it writes back just the plain
+        Human/AI pair instead — no synthetic tool call, no full AgentResult
+        JSON permanently bloating the checkpoint for every turn.
+
+        ``as_node="model"`` is required, not cosmetic: LangGraph's
+        aupdate_state only auto-infers which node an external update came
+        from when the thread's checkpoint has never been touched by a manual
+        update before (empty versions_seen). The supervisor graph is the
+        only writer of this thread's checkpoint on the fast path, so every
+        write-back after the first one on a given thread hits genuinely
+        ambiguous versions_seen and raises InvalidUpdateError without this —
+        silently dropping that turn (and every later one) from history, not
+        just its chart card."""
+        if result.charts or result.artifacts:
+            tool_call_id = str(uuid.uuid4())
+            tool_name = _INTENT_TOOL_NAMES[intent]
+            messages = [
+                HumanMessage(content=user_message),
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": tool_name, "args": {"task": user_message}, "id": tool_call_id}],
+                ),
+                ToolMessage(
+                    content=agent_result_to_json(result),
+                    tool_call_id=tool_call_id,
+                    name=tool_name,
+                ),
+                AIMessage(content=final_answer),
+            ]
+        else:
+            messages = [
+                HumanMessage(content=user_message),
+                AIMessage(content=final_answer),
+            ]
         try:
             await agent.aupdate_state(
                 {"configurable": {"thread_id": thread_id}},
-                {"messages": [HumanMessage(content=user_message), AIMessage(content=final_answer)]},
+                {"messages": messages},
+                as_node="model",
             )
         except Exception:
             logger.warning(

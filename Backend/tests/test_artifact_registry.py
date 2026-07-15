@@ -167,6 +167,79 @@ class BuildArtifactReferenceTimeseriesTests(unittest.TestCase):
         self.assertEqual(ref.metadata["series"][1]["station_id"], "34-017-0006")
         self.assertEqual(ref.metadata["source_handles"], ["cube_1"])
 
+    def test_carries_stats_coverage_and_exceedance_dates_when_present(self):
+        # T33: validate_against_ground/exceedance_overlay already compute these
+        # facts (ts_payload["stats"]/["coverage"]/["exceedance_dates"]) but the
+        # artifact stub used to drop them -- the new Overview/Details needs them.
+        from services.artifact_registry import build_artifact_reference
+
+        payload = {
+            "chart_id": "ts_overlay2",
+            "type": "timeseries",
+            "title": "TEMPO NO2 vs 34-017-0006",
+            "stats": {"r": 0.87, "n": 12, "coverage_fraction": 0.6},
+            "coverage": {"n_total": 20, "n_valid": 12, "n_excluded": 8, "coverage_fraction": 0.6},
+            "exceedance_dates": ["2024-01-02", "2024-01-05"],
+            "metadata": {
+                "source_handles": ["cube_1"],
+                "series": [
+                    {"label": "TEMPO NO2 (satellite)", "source_kind": "satellite"},
+                    {"label": "EPA monitor 34-017-0006", "source_kind": "ground", "station_id": "34-017-0006"},
+                ],
+            },
+        }
+
+        ref = build_artifact_reference(payload)
+
+        self.assertEqual(ref.metadata["stats"], {"r": 0.87, "n": 12, "coverage_fraction": 0.6})
+        self.assertEqual(ref.metadata["coverage"], {"n_total": 20, "n_valid": 12, "n_excluded": 8, "coverage_fraction": 0.6})
+        self.assertEqual(ref.metadata["exceedance_dates"], ["2024-01-02", "2024-01-05"])
+
+    def test_carries_masking_provenance_when_present(self):
+        # T34 review fix: validate_against_ground/exceedance_overlay compute
+        # QA-masking provenance (ts_payload["masking"], same top-level spot
+        # plot_tools uses) but the artifact stub used to drop it -- the
+        # ground-validation Overview's "Data quality" field needs it.
+        from services.artifact_registry import build_artifact_reference
+
+        payload = {
+            "chart_id": "ts_overlay3",
+            "type": "timeseries",
+            "title": "TEMPO NO2 vs 34-017-0006",
+            "masking": {"qa_status": "verified", "qa_source": "collections_yaml", "qa_note": ""},
+            "metadata": {
+                "source_handles": ["cube_1"],
+                "series": [
+                    {"label": "TEMPO NO2 (satellite)", "source_kind": "satellite"},
+                    {"label": "EPA monitor 34-017-0006", "source_kind": "ground", "station_id": "34-017-0006"},
+                ],
+            },
+        }
+
+        ref = build_artifact_reference(payload)
+
+        self.assertEqual(ref.metadata["masking"]["qa_status"], "verified")
+        self.assertEqual(ref.metadata["masking"]["qa_source"], "collections_yaml")
+
+    def test_stats_coverage_and_exceedance_dates_are_optional(self):
+        # Additive/optional (T33) -- a payload with none of these still builds
+        # a valid artifact, existing smaller-shape consumers unaffected.
+        from services.artifact_registry import build_artifact_reference
+
+        payload = {
+            "chart_id": "ts_abc999",
+            "type": "timeseries",
+            "title": "TEMPO NO2 mean over New Jersey",
+            "metadata": {"source_handles": ["obs_1"]},
+        }
+
+        ref = build_artifact_reference(payload)
+
+        self.assertIsNone(ref.metadata.get("stats"))
+        self.assertIsNone(ref.metadata.get("coverage"))
+        self.assertIsNone(ref.metadata.get("exceedance_dates"))
+        self.assertIsNone(ref.metadata.get("masking"))
+
 
 if __name__ == "__main__":
     unittest.main()

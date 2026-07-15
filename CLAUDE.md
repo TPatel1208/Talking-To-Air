@@ -49,3 +49,29 @@ The host Windows checkout has two traps that Docker sidesteps:
 
 If you must run on the host anyway, `Backend/conftest.py` wires PROJ
 automatically — just be aware of the two known host-only failures above.
+
+## Frontend manual/browser testing
+
+For manual verification in the browser (e.g. the `/verify` or `/run` workflows,
+or ad-hoc UI checks), log in with the test account `test` / `1234` — it already
+has Earthdata credentials connected, so flows that require an authenticated
+connector (data retrieval, jobs, etc.) work without setting up a new account.
+
+Drive the frontend through its Docker container, not the Vite dev server. The
+`frontend` service serves the built `dist/` via nginx and does **not**
+hot-reload from source — after any frontend change, rebuild and restart it
+before testing:
+
+```bash
+docker compose build frontend && docker compose up -d frontend
+```
+
+Then point the browser tool at the container's URL (not `localhost:5173` or
+similar dev-server ports).
+
+The same trap applies to the `backend` service: it's a separate image from
+`backend-test` and does not rebuild automatically. `docker compose --profile
+test run --build --rm backend-test` only rebuilds the test image — after any
+backend code change, also run `docker compose build backend && docker
+compose up -d backend` before live-verifying in the browser, or you'll be
+testing stale backend code against a correctly-built frontend.

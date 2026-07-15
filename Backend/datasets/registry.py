@@ -38,6 +38,11 @@ class CollectionConfig(BaseModel):
     version:       str = ""
     description:   str = ""
     cadence:       Literal["hourly", "daily", "monthly"] = "daily"
+    # ── Provenance display (T32) ─────────────────────────────────────────────
+    # Free-text, not parsed by any masking/aggregation logic -- surfaced as
+    # "<provider> — <instrument>" in the Metadata tab's Source dataset block.
+    provider:      str = ""
+    instrument:    str = ""
 
     # ── Variable selection ────────────────────────────────────────────────
     primary_var:                 str

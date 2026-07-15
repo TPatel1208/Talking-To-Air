@@ -67,8 +67,8 @@ class FakeSupervisorAgent:
         self.state_messages = []
         self.update_state_calls = []
 
-    async def aupdate_state(self, config, values):
-        self.update_state_calls.append((config, values))
+    async def aupdate_state(self, config, values, as_node=None):
+        self.update_state_calls.append((config, values, as_node))
         self.state_messages.extend(values["messages"])
 
     async def astream(self, input_, config, stream_mode):
@@ -371,6 +371,138 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         joined = "".join(events)
         self.assertIn(first_turn_message, joined)
         self.assertIn("Rutgers University", joined)
+
+    async def test_fast_pathed_chart_card_survives_a_reload(self):
+        """Regression: a fast-pathed turn's write-back used to append only a
+        bare Human/AI pair to the supervisor's checkpointed thread. On
+        reload, HistoryService only ever reconstructs a message's chart/
+        artifact cards from a role=="tool" message (_attach_tool_output) —
+        so the chart the live stream showed vanished after a refresh even
+        though it was already durably persisted in agent_charts. The
+        write-back must now also carry a ToolMessage with the full
+        AgentResult envelope, the same shape the supervisor's own
+        ask_earthdata_agent tool call produces."""
+        from models import AgentResult, ChartPayload
+        from services.chart_service import ChartService
+        from services.chat_stream_service import ChatStreamService
+        from services.history_service import HistoryService
+
+        chart = ChartPayload(type="heatmap", chart_id="chart_xyz", title="NO2 over NJ")
+        satellite_result = AgentResult(text="Plotted NO2 over New Jersey.", charts=[chart])
+
+        supervisor = FakeSupervisorAgent()
+        service = ChatStreamService(ChartService(), long_request_seconds=999)
+
+        saved = {}
+
+        async def fake_save_chart(thread_id, payload, user_id):
+            saved.setdefault(payload["chart_id"], {**payload, "thread_id": thread_id, "user_id": user_id})
+            return saved[payload["chart_id"]]
+
+        with patch("services.chat_stream_service.run_satellite", AsyncMock(return_value=satellite_result)), \
+             patch("services.chart_service.chart_repository.get_chart", AsyncMock(return_value=None)), \
+             patch("services.chart_service.chart_repository.save_chart", AsyncMock(side_effect=fake_save_chart)):
+            [
+                event
+                async for event in service.stream_chat_events(
+                    supervisor, UntouchedAgent(), AsyncMock(),
+                    "Plot TROPOMI NO2 over New Jersey for 2024-01-15", "thread-1", "user-1", "req-1",
+                )
+            ]
+
+            class ReloadedAgent:
+                async def aget_state(self, config):
+                    return SimpleNamespace(values={"messages": supervisor.state_messages})
+
+            history = await HistoryService(ChartService()).build_history(ReloadedAgent(), "thread-1", "user-1")
+
+        assistant = next(m for m in history if m["role"] == "assistant" and m["content"])
+        self.assertEqual(len(assistant["charts"]), 1)
+        self.assertEqual(assistant["charts"][0]["chart_id"], "chart_xyz")
+
+    async def test_text_only_fast_pathed_turn_writes_back_a_plain_message_pair(self):
+        """Review fix: a fast-pathed turn with no charts/artifacts has
+        nothing for HistoryService's _attach_tool_output to reconstruct on
+        reload, so it must not pay for (or permanently checkpoint) the full
+        tool_calls/ToolMessage/AgentResult-JSON shape that chart/artifact
+        turns need. Only when the result actually carries a chart or
+        artifact should the write-back use that heavier shape."""
+        from langchain_core.messages import ToolMessage
+
+        from services.chat_stream_service import ChatStreamService
+        from services.chart_service import ChartService
+
+        ground_agent = FakeGroundAgent()  # default envelope: no artifact_ids, no handles
+        supervisor = FakeSupervisorAgent()
+        service = ChatStreamService(ChartService(), long_request_seconds=999)
+
+        get_ctx, save_ctx = _no_monitor_context()
+        with get_ctx, save_ctx:
+            [
+                event
+                async for event in service.stream_chat_events(
+                    supervisor, ground_agent, UntouchedAgent(),
+                    "Find the nearest NO2 monitor to Tampa FL", "thread-1", "user-1", "req-1",
+                )
+            ]
+
+        self.assertEqual(len(supervisor.update_state_calls), 1)
+        _config, values, _as_node = supervisor.update_state_calls[0]
+        written = values["messages"]
+        self.assertEqual(len(written), 2, "text-only turn should write back Human+AI only, not a tool_calls triple")
+        self.assertFalse(any(isinstance(m, ToolMessage) for m in written))
+        self.assertFalse(any(getattr(m, "tool_calls", None) for m in written))
+
+    async def test_two_consecutive_fast_pathed_turns_on_one_thread_both_persist(self):
+        """Regression: LangGraph's aupdate_state only auto-infers as_node
+        when a thread's checkpoint has never been manually updated before —
+        a second fast-pathed write-back on the same thread, with no as_node,
+        hits genuinely ambiguous versions_seen and raises
+        InvalidUpdateError, silently dropping that turn (and every later
+        one) from history, not just its chart card. A hand-rolled fake
+        agent (FakeSupervisorAgent above) can't reproduce this — it's a real
+        LangGraph pregel behavior — so this drives the actual supervisor
+        graph (agents.supervisor_agent.build_agent) against an in-memory
+        checkpointer."""
+        from langgraph.checkpoint.memory import InMemorySaver
+
+        from models import AgentResult
+        from services.chart_service import ChartService
+        from services.chat_stream_service import ChatStreamService
+
+        class FakeModel:
+            def bind_tools(self, tools, **kw):
+                return self
+
+            async def ainvoke(self, *a, **kw):
+                return SimpleNamespace(content="hi", tool_calls=[])
+
+        with patch("agents.supervisor_agent.build_chat_model", return_value=FakeModel()), \
+             patch("agents.supervisor_agent.get_checkpointer", return_value=InMemorySaver()):
+            from agents.supervisor_agent import build_agent
+
+            supervisor = await build_agent(ground_agent=object(), satellite_agent=object())
+
+        service = ChatStreamService(ChartService(), long_request_seconds=999)
+        thread_id = "thread-shared"
+
+        for i in range(2):
+            turn_result = AgentResult(text=f"Plotted NO2 over New Jersey, turn {i}.")
+            with patch("services.chat_stream_service.run_satellite", AsyncMock(return_value=turn_result)):
+                events = [
+                    event
+                    async for event in service.stream_chat_events(
+                        supervisor, UntouchedAgent(), AsyncMock(),
+                        f"Plot TROPOMI NO2 over New Jersey for 2024-01-{15 + i}",
+                        thread_id, "user-1", f"req-{i}",
+                    )
+                ]
+            joined = "".join(events)
+            self.assertNotIn("event: error", joined, f"turn {i} write-back must not fail")
+
+        state = await supervisor.aget_state({"configurable": {"thread_id": thread_id}})
+        human_messages = [m for m in state.values["messages"] if getattr(m, "type", None) == "human"]
+        self.assertEqual(len(human_messages), 2, "the second turn's write-back must not be silently dropped")
 
 
 if __name__ == "__main__":

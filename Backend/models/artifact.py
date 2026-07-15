@@ -54,6 +54,10 @@ class TimeseriesSeriesRef(BaseModel):
 class TimeseriesArtifactMetadata(BaseModel):
     series: list[TimeseriesSeriesRef]
     source_handles: list[str] = Field(default_factory=list)
+    stats: dict[str, Any] | None = None
+    coverage: dict[str, Any] | None = None
+    exceedance_dates: list[str] | None = None
+    masking: dict[str, Any] | None = None
 
     @field_validator("series")
     @classmethod

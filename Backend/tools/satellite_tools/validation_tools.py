@@ -45,17 +45,26 @@ def _nearest_cell_series(da, lat: float, lon: float):
     return da.sel({lat_coord: lat, lon_coord: lon}, method="nearest")
 
 
-def _extract_monitor_series(da, lat: float, lon: float, col_info: dict | None = None):
+def _extract_monitor_series(
+    da, lat: float, lon: float, col_info: dict | None = None, source_ds=None,
+):
     """Extract the satellite time series at the nearest cell to (lat, lon).
 
-    Fill values and out-of-range cells (per T03 masking, AggregationService.
-    apply_quality_mask) are excluded from the returned series and counted
-    toward coverage stats — never silently included as valid readings.
+    Fill values, out-of-range cells, and QA-flagged cells are excluded from
+    the returned series and counted toward coverage stats — never silently
+    included as valid readings. Routed through AggregationService.
+    resolve_and_mask, the same masking-resolution path plot_tools' aggregate/
+    conduct_temporal_statistic use (T25 masking-execution fix), instead of a
+    hand-rolled apply_quality_mask(ds=None) call that could never actually
+    apply QA-flag masking or disclose its provenance.
 
-    Returns (times: list[ISO str], values: list[float], coverage: dict) where
-    coverage = {n_total, n_valid, n_excluded, coverage_fraction}.
+    Returns (times: list[ISO str], values: list[float], coverage: dict,
+    masking: dict) where coverage = {n_total, n_valid, n_excluded,
+    coverage_fraction} and masking is the honest QA-masking provenance dict.
     """
-    masked = _aggregation_service.apply_quality_mask(da, col_info=col_info or {})
+    masked, masking = _aggregation_service.resolve_and_mask(
+        da, col_info=col_info, source_ds=source_ds,
+    )
     series = _nearest_cell_series(masked, lat, lon)
 
     n_total = series.sizes.get("time", 1)
@@ -76,7 +85,7 @@ def _extract_monitor_series(da, lat: float, lon: float, col_info: dict | None = 
         "n_excluded": int(n_total) - n_valid,
         "coverage_fraction": (n_valid / n_total) if n_total else 0.0,
     }
-    return times, values, coverage
+    return times, values, coverage, masking
 
 
 def _pair_daily(times: list[str], values: list[float], ground_daily: dict[str, float]) -> list[dict]:
@@ -283,7 +292,9 @@ def make_validate_against_ground(mcp_tools: dict[str, BaseTool]):
                     continue
 
                 lat, lon = float(monitor["latitude"]), float(monitor["longitude"])
-                times, values, coverage = _extract_monitor_series(da, lat, lon, col_info)
+                times, values, coverage, masking = _extract_monitor_series(
+                    da, lat, lon, col_info, source_ds=ds,
+                )
                 paired = _pair_daily(times, values, ground_daily)
                 if not paired:
                     continue
@@ -303,6 +314,7 @@ def make_validate_against_ground(mcp_tools: dict[str, BaseTool]):
                     "ground_units": ground_units_by_site.get(station_id, ""),
                     "stats": stats,
                     "coverage": coverage,
+                    "masking": masking,
                     "chart_id": f"ts_{uuid.uuid4().hex[:12]}",
                     "metadata": {
                         "source_handles": [handle],
@@ -472,7 +484,9 @@ def make_exceedance_overlay(mcp_tools: dict[str, BaseTool]):
                     continue
 
                 lat, lon = float(monitor["latitude"]), float(monitor["longitude"])
-                times, values, coverage = _extract_monitor_series(da, lat, lon, col_info)
+                times, values, coverage, masking = _extract_monitor_series(
+                    da, lat, lon, col_info, source_ds=ds,
+                )
 
                 station_name = monitor.get("local_site_name") or monitor.get("address") or station_id
                 ts_payload = {
@@ -481,11 +495,20 @@ def make_exceedance_overlay(mcp_tools: dict[str, BaseTool]):
                     "times": times,
                     "values": values,
                     "exceedance_dates": sorted(exceeded_dates),
+                    "coverage": coverage,
+                    "masking": masking,
                     "satellite_units": satellite_units,
                     "chart_id": f"ts_{uuid.uuid4().hex[:12]}",
                     "metadata": {
                         "source_handles": [handle],
-                        "series": [{"label": f"{variable_name} (satellite)", "source_kind": "satellite"}],
+                        "series": [
+                            {"label": f"{variable_name} (satellite)", "source_kind": "satellite"},
+                            {
+                                "label": f"EPA {station_id} ({station_name})",
+                                "source_kind": "ground",
+                                "station_id": station_id,
+                            },
+                        ],
                     },
                 }
                 ref = build_artifact_reference(ts_payload)

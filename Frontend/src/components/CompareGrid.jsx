@@ -18,13 +18,15 @@
  *   falls back to the same small-multiple grid layout, mounting one
  *   independent TimeSeriesPanel per filled slot instead of MapLibreHeatmapPanel.
  */
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import MapLibreHeatmapPanel from './MapLibreHeatmapPanel.jsx'
 import { TimeSeriesPanel, TimeSeriesOverlayPanel } from './ChartMessage.jsx'
+import { MetadataOverview } from './MetadataOverview.jsx'
 import { colorbarGeometry } from '../utils/colorbarGeometry.js'
 import { computeSharedColorScale } from '../utils/sharedColorScale.js'
 import { filledCharts, activeCompareKind } from '../utils/compareMode.js'
 import { timeseriesOverlayCompatible, toOverlaySeries } from '../utils/timeseriesCompare.js'
+import { toggleExpanded, slotScaleNote } from '../utils/compareSlotOverview.js'
 
 function SharedLegend({ vmin, vmax, colormap, units }) {
   const { gradientStops, ticks } = colorbarGeometry({ vmin, vmax, lut: colormap?.lut, tickCount: 5 })
@@ -69,9 +71,22 @@ function SlotPlaceholder({ height, hint }) {
   )
 }
 
+const infoToggleStyle = (active) => ({
+  flexShrink: 0, width: '20px', height: '20px', borderRadius: '50%',
+  border: `1px solid ${active ? 'var(--teal)' : 'var(--border)'}`,
+  background: active ? 'var(--teal-light)' : 'var(--bg-card)',
+  color: active ? 'var(--teal-text)' : 'var(--text-muted)',
+  fontSize: '11px', fontWeight: 800, fontStyle: 'italic', fontFamily: 'serif',
+  cursor: 'pointer', padding: 0, lineHeight: 1,
+})
+
 // Small-multiple grid shared by both kinds: one card per slot, `renderChart`
-// supplies the kind-specific panel for filled slots.
-function SlotGrid({ compareCount, compareSelection, height, hint, renderChart }) {
+// supplies the kind-specific panel for filled slots. Each filled slot also
+// gets an info toggle that expands T32's MetadataOverview (unchanged) below
+// the visualization, growing the cell rather than overlaying it (T34).
+function SlotGrid({ compareCount, compareSelection, height, hint, renderChart, onFocusChart, getNote }) {
+  const [expanded, setExpanded] = useState(() => new Set())
+
   return (
     <div
       style={{
@@ -84,20 +99,45 @@ function SlotGrid({ compareCount, compareSelection, height, hint, renderChart })
         alignContent: 'start',
       }}
     >
-      {compareSelection.map((chart, i) => (
-        <div
-          key={i}
-          style={{
-            border: '1px solid var(--border)', borderRadius: '10px',
-            padding: '10px', background: 'var(--bg-card)', minWidth: 0,
-          }}
-        >
-          <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '6px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            Slot {i + 1}{chart ? ` — ${chartLabel(chart)}` : ''}
+      {compareSelection.map((chart, i) => {
+        const isExpanded = Boolean(chart) && expanded.has(i)
+        return (
+          <div
+            key={i}
+            style={{
+              border: '1px solid var(--border)', borderRadius: '10px',
+              padding: '10px', background: 'var(--bg-card)', minWidth: 0,
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', marginBottom: '6px' }}>
+              <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                Slot {i + 1}{chart ? ` — ${chartLabel(chart)}` : ''}
+              </div>
+              {chart && (
+                <button
+                  type="button"
+                  onClick={() => setExpanded(prev => toggleExpanded(prev, i))}
+                  aria-label={isExpanded ? 'Hide slot metadata' : 'Show slot metadata'}
+                  title={isExpanded ? 'Hide metadata' : 'Show metadata'}
+                  style={infoToggleStyle(isExpanded)}
+                >
+                  i
+                </button>
+              )}
+            </div>
+            {chart ? renderChart(chart, i) : <SlotPlaceholder height={height} hint={hint} />}
+            {isExpanded && (
+              <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid var(--border)' }}>
+                <MetadataOverview
+                  chart={chart}
+                  note={getNote ? getNote(chart) : null}
+                  onViewFullMetadata={onFocusChart ? () => onFocusChart(chart) : undefined}
+                />
+              </div>
+            )}
           </div>
-          {chart ? renderChart(chart, i) : <SlotPlaceholder height={height} hint={hint} />}
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
@@ -105,7 +145,7 @@ function SlotGrid({ compareCount, compareSelection, height, hint, renderChart })
 // heatmap kind (T28): independent live MapLibreHeatmapPanel per slot, plus
 // the shared-color-scale legend/toggle when every filled slot's variable and
 // units match.
-function HeatmapCompareBody({ compareCount, compareSelection, accessToken, autoScaleEach, onToggleAutoScale, height }) {
+function HeatmapCompareBody({ compareCount, compareSelection, accessToken, autoScaleEach, onToggleAutoScale, height, onFocusChart }) {
   const filled = useMemo(() => filledCharts(compareSelection), [compareSelection])
   const shared = useMemo(() => computeSharedColorScale(filled), [filled])
   const useShared = shared.available && !autoScaleEach
@@ -151,6 +191,8 @@ function HeatmapCompareBody({ compareCount, compareSelection, accessToken, autoS
             hideLegend={useShared}
           />
         )}
+        onFocusChart={onFocusChart}
+        getNote={() => slotScaleNote(shared)}
       />
     </div>
   )
@@ -160,7 +202,7 @@ function HeatmapCompareBody({ compareCount, compareSelection, accessToken, autoS
 // shares units and its time range overlaps every other slot's; otherwise the
 // same small-multiple grid as the heatmap path, mounting independent
 // TimeSeriesPanel instances instead.
-function TimeSeriesCompareBody({ compareCount, compareSelection, height }) {
+function TimeSeriesCompareBody({ compareCount, compareSelection, height, onFocusChart }) {
   const filled = useMemo(() => filledCharts(compareSelection), [compareSelection])
   const { compatible, reason } = useMemo(() => timeseriesOverlayCompatible(filled), [filled])
   const series = useMemo(() => (compatible ? toOverlaySeries(filled) : []), [compatible, filled])
@@ -189,12 +231,13 @@ function TimeSeriesCompareBody({ compareCount, compareSelection, height }) {
         height={height}
         hint="Click a chart in chat to add"
         renderChart={(chart) => <TimeSeriesPanel payload={chart} />}
+        onFocusChart={onFocusChart}
       />
     </div>
   )
 }
 
-export default function CompareGrid({ compareCount, compareSelection, accessToken, autoScaleEach, onToggleAutoScale, height = 420 }) {
+export default function CompareGrid({ compareCount, compareSelection, accessToken, autoScaleEach, onToggleAutoScale, height = 420, onFocusChart }) {
   const kind = activeCompareKind(compareSelection)
 
   if (kind === 'timeseries') {
@@ -203,6 +246,7 @@ export default function CompareGrid({ compareCount, compareSelection, accessToke
         compareCount={compareCount}
         compareSelection={compareSelection}
         height={height}
+        onFocusChart={onFocusChart}
       />
     )
   }
@@ -215,6 +259,7 @@ export default function CompareGrid({ compareCount, compareSelection, accessToke
       autoScaleEach={autoScaleEach}
       onToggleAutoScale={onToggleAutoScale}
       height={height}
+      onFocusChart={onFocusChart}
     />
   )
 }

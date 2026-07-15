@@ -6,6 +6,7 @@ import { useChat } from './hooks/useChat'
 import { useDiscovery } from './hooks/useDiscovery'
 import { useJobs } from './hooks/useJobs'
 import { createEmptySelection, toggleSlot } from './utils/compareMode'
+import { reachableArtifacts } from './utils/artifactReachability'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 // Thin clickable rail standing in for a side column while it's manually
@@ -240,8 +241,8 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
         if (last.charts?.length) {
           setFocusedOutput({ kind: 'chart', data: last.charts[last.charts.length - 1] })
         } else {
-          const tableArtifact = (last.artifacts || []).find(a => a.type === 'table')
-          if (tableArtifact) setFocusedOutput({ kind: 'artifact', data: tableArtifact })
+          const artifact = reachableArtifacts(last)[0]
+          if (artifact) setFocusedOutput({ kind: 'artifact', data: artifact })
         }
       }
     }
@@ -389,6 +390,7 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
 
       <OutputPanel
         focusedOutput={focusedOutput}
+        onFocusOutput={setFocusedOutput}
         accessToken={accessToken}
         compareMode={compareMode}
         compareCount={compareCount}

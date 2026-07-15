@@ -1,13 +1,27 @@
 import { useMemo, useState, useEffect, useRef } from 'react'
-import { TimeSeriesPanel, ChartToolbar, ProvenanceBlock } from './ChartMessage'
+import { TimeSeriesPanel, ChartToolbar } from './ChartMessage'
 import MapLibreHeatmapPanel from './MapLibreHeatmapPanel.jsx'
 import HeatmapMultiPanel from './HeatmapMultiPanel.jsx'
 import CompareGrid from './CompareGrid.jsx'
 import ArtifactMessage, { TableArtifactMessage } from './ArtifactMessage'
-import { computeChartStats, computeHistogram } from '../utils/chartStats'
+import { MetadataOverview } from './MetadataOverview.jsx'
+import { MetaField } from './metadataPrimitives.jsx'
+import { smallButtonStyle, copyToClipboard } from '../utils/metadataUiHelpers.js'
+import { computeChartStats } from '../utils/chartStats'
 import { resolveMasking } from '../utils/maskingProvenance'
 import { filledCharts } from '../utils/compareMode'
+import { focusChartPayload } from '../utils/compareSlotOverview'
 import { shouldShowCollapseHint } from '../utils/compareLayoutHint'
+import {
+  NOT_AVAILABLE, fmt, spatialFields, temporalFields,
+  qaMethodologyFields, variableDefinitionFields, reproducibilityFields,
+  reproducibilityQuery, rawMetadataJson,
+} from '../utils/metadataDisplay'
+import {
+  tableOverviewFields, tableDetailsFields,
+  groundValidationOverviewFields, groundValidationDetailsFields,
+  rawArtifactMetadataJson,
+} from '../utils/artifactMetadataDisplay'
 
 function compactDate(value) {
   if (!value) return ''
@@ -131,36 +145,354 @@ function StatisticsTab({ chart }) {
   )
 }
 
-function HistogramTab({ chart }) {
-  const histogram = useMemo(() => computeHistogram(chart), [chart])
-  if (!histogram) {
-    return <div style={{ padding: '24px', color: 'var(--text-muted)', fontSize: '13px' }}>No numeric values available for this output.</div>
+// ── Metadata tab (T32): Overview (fully expanded) / Details (accordion) ────
+// Field derivation (which fact goes in which section, "Not available"
+// fallbacks, citation/query string-building) lives in utils/metadataDisplay
+// -- pure and unit-tested there; this file is just the JSX shell around it.
+// MetaField/smallButtonStyle/copyToClipboard live in metadataPrimitives.jsx
+// and MetadataOverview in its own module (imported above) so CompareGrid.jsx
+// can use MetadataOverview without importing this file (T34 review fix).
+
+function DetailsSection({ title, children }) {
+  return (
+    <details style={{ border: '1px solid var(--border)', borderRadius: '10px', background: 'var(--bg-card)' }}>
+      <summary style={{ cursor: 'pointer', padding: '10px 13px', fontSize: '12.5px', fontWeight: 700, color: 'var(--text-primary)' }}>
+        {title}
+      </summary>
+      <div style={{ padding: '0 13px 13px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        {children}
+      </div>
+    </details>
+  )
+}
+
+function SpatialSection({ chart }) {
+  const { regionName, bbox } = spatialFields(chart)
+  return (
+    <>
+      <MetaField label="Region" value={regionName} />
+      <MetaField label="Bounding box" value={bbox} />
+    </>
+  )
+}
+
+function TemporalSection({ chart }) {
+  const { dateRange, cadence, dates } = temporalFields(chart)
+  return (
+    <>
+      <MetaField label="Date Range" value={dateRange} />
+      <MetaField label="Cadence" value={cadence} />
+      <div>
+        <div style={{ fontSize: '10px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '4px' }}>
+          Granule dates
+        </div>
+        {dates.length ? (
+          <div style={{ maxHeight: '140px', overflow: 'auto', fontSize: '11px', lineHeight: 1.5, color: 'var(--text-secondary)' }}>
+            {dates.map((date, i) => <div key={`${date}-${i}`}>{date}</div>)}
+          </div>
+        ) : (
+          <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{NOT_AVAILABLE}</div>
+        )}
+      </div>
+    </>
+  )
+}
+
+function ProvenanceSection({ chart }) {
+  const { qualityFlagVar, qaGoodValues, qaBadValues, fillValueSource, validRangeSource } = qaMethodologyFields(chart)
+  return (
+    <>
+      <MetaField label="Quality flag variable" value={qualityFlagVar} />
+      <MetaField label="QA good values" value={qaGoodValues ? JSON.stringify(qaGoodValues) : null} />
+      <MetaField label="QA bad values" value={qaBadValues ? JSON.stringify(qaBadValues) : null} />
+      <MetaField label="Fill-value source" value={fillValueSource} />
+      <MetaField label="Valid-range source" value={validRangeSource} />
+    </>
+  )
+}
+
+function VariableDefinitionSection({ chart }) {
+  const { longName, units, advisoryNotes, validRange, maskNote } = variableDefinitionFields(chart)
+  return (
+    <>
+      <MetaField label="Long name" value={longName} />
+      <MetaField label="Units" value={units} />
+      <MetaField label="Advisory notes" value={advisoryNotes} />
+      <MetaField label="Valid range" value={validRange} />
+      <MetaField label="Mask note" value={maskNote} />
+    </>
+  )
+}
+
+function ReproducibilitySection({ chart }) {
+  const [copyState, setCopyState] = useState('')
+  const { dataset, startDate, endDate, bbox, aggregation, sourceHandles } = reproducibilityFields(chart)
+  const handleCopy = () => {
+    copyToClipboard(JSON.stringify(reproducibilityQuery(chart), null, 2), setCopyState)
   }
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-      <div style={{ flex: 1, display: 'flex', alignItems: 'flex-end', gap: '6px', borderBottom: '1px solid var(--border)', paddingBottom: '2px', minHeight: '160px' }}>
-        {histogram.buckets.map((bucket, i) => (
-          <div key={i} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end', height: '100%' }}>
-            <div style={{ fontSize: '9px', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', marginBottom: '4px' }}>{bucket.count}</div>
-            <div style={{
-              width: '100%', height: `${Math.max(bucket.pct, 2)}%`,
-              background: 'linear-gradient(180deg, var(--teal), var(--teal-hover))',
-              borderRadius: '4px 4px 0 0',
-            }} />
-          </div>
-        ))}
+    <>
+      <MetaField label="Dataset" value={dataset} />
+      <MetaField label="Start date" value={startDate} />
+      <MetaField label="End date" value={endDate} />
+      <MetaField label="Bounding box" value={bbox} />
+      <MetaField label="Aggregation" value={aggregation} />
+      <MetaField label="Source handles" value={sourceHandles} />
+      <button type="button" onClick={handleCopy} style={{ ...smallButtonStyle, alignSelf: 'flex-start' }}>
+        {copyState || 'Copy query'}
+      </button>
+    </>
+  )
+}
+
+function RawJsonToggle({ chart }) {
+  return (
+    <DetailsSection title="Raw JSON">
+      <pre style={{
+        fontSize: '10.5px', overflow: 'auto', maxHeight: '260px',
+        background: 'var(--bg-secondary)', padding: '8px', borderRadius: '6px', margin: 0,
+      }}>
+        {JSON.stringify(rawMetadataJson(chart), null, 2)}
+      </pre>
+    </DetailsSection>
+  )
+}
+
+function MetadataDetails({ chart }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      <DetailsSection title="Spatial"><SpatialSection chart={chart} /></DetailsSection>
+      <DetailsSection title="Temporal"><TemporalSection chart={chart} /></DetailsSection>
+      <DetailsSection title="Provenance"><ProvenanceSection chart={chart} /></DetailsSection>
+      <DetailsSection title="Variable Definition"><VariableDefinitionSection chart={chart} /></DetailsSection>
+      <DetailsSection title="Reproducibility"><ReproducibilitySection chart={chart} /></DetailsSection>
+      <RawJsonToggle chart={chart} />
+    </div>
+  )
+}
+
+const metaViewButtonStyle = (active) => ({
+  fontSize: '12px', fontWeight: 700,
+  color: active ? 'var(--text-primary)' : 'var(--text-muted)',
+  background: active ? 'var(--bg-secondary)' : 'transparent',
+  border: '1px solid var(--border)', borderRadius: '7px',
+  padding: '5px 11px', cursor: 'pointer',
+})
+
+// ── Artifact-shaped Metadata tab (T33): table and ground-validation
+// timeseries artifacts (map/comparison/chart-backed timeseries are
+// deliberately excluded -- see utils/artifactReachability.js). A sibling to
+// MetadataOverview/MetadataDetails above, reading ArtifactReference.metadata
+// shape via utils/artifactMetadataDisplay.js instead of chart provenance.
+
+// Table artifacts' ArtifactReference is a lightweight stub (id/title/
+// row_count/metadata) -- the full column list only exists on the paginated
+// `/api/artifacts/{id}` response, so Overview/Details fetch a minimal
+// (limit=1) page themselves to learn it, same endpoint TableArtifactMessage
+// already pages through for the grid.
+function useTableColumnsPreview(artifact, accessToken) {
+  const [state, setState] = useState({ page: null, status: 'loading' })
+  useEffect(() => {
+    if (!artifact?.id || artifact.type !== 'table') return undefined
+    let cancelled = false
+    fetch(`/api/artifacts/${artifact.id}?offset=0&limit=1`, {
+      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+    })
+      .then(response => (response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`))))
+      .then(page => { if (!cancelled) setState({ page, status: 'ready' }) })
+      .catch(() => { if (!cancelled) setState({ page: null, status: 'failed' }) })
+    return () => { cancelled = true }
+  }, [artifact?.id, artifact?.type, accessToken])
+  return state
+}
+
+function TableMetadataOverview({ artifact, page, status }) {
+  const fields = tableOverviewFields(artifact, page)
+  const loadingOr = (value) => (status === 'loading' ? '…' : fmt(value))
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+      <div>
+        <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '8px' }}>
+          This table
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px' }}>
+          <StatCard label="Rows" value={loadingOr(fields.rowCount?.toLocaleString?.() ?? fields.rowCount)} />
+          <StatCard label="Columns" value={loadingOr(fields.columnCount)} />
+        </div>
       </div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginTop: '8px' }}>
-        <span>{histogram.min.toExponential(2)}</span>
-        <span>{histogram.max.toExponential(2)}</span>
+      <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: '10px', padding: '11px 13px' }}>
+        <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '5px' }}>
+          Source dataset
+        </div>
+        <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>{fmt(fields.sourceDataset)}</div>
       </div>
     </div>
   )
 }
 
-function MetadataTab({ chart, artifact }) {
+function TableCsvExport({ artifact, accessToken }) {
+  const [state, setState] = useState('')
+  async function downloadCsv() {
+    setState('downloading')
+    try {
+      const response = await fetch(`/api/artifacts/${artifact.id}/csv`, {
+        headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+      })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const blob = await response.blob()
+      const disposition = response.headers.get('content-disposition')
+      const match = /filename="?([^";]+)"?/i.exec(disposition || '')
+      const filename = match?.[1]?.trim() || `${artifact.title || artifact.id}.csv`
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = filename
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(url)
+      setState('')
+    } catch (err) {
+      setState(err.message || 'Export failed')
+    }
+  }
+  return (
+    <button type="button" onClick={downloadCsv} disabled={state === 'downloading'} style={smallButtonStyle}>
+      {state === 'downloading' ? 'Exporting…' : (state || 'Download CSV')}
+    </button>
+  )
+}
+
+function ArtifactRawJsonToggle({ artifact }) {
+  return (
+    <DetailsSection title="Raw JSON">
+      <pre style={{
+        fontSize: '10.5px', overflow: 'auto', maxHeight: '260px',
+        background: 'var(--bg-secondary)', padding: '8px', borderRadius: '6px', margin: 0,
+      }}>
+        {JSON.stringify(rawArtifactMetadataJson(artifact), null, 2)}
+      </pre>
+    </DetailsSection>
+  )
+}
+
+function TableMetadataDetails({ artifact, accessToken, page, status }) {
+  const { columns } = tableDetailsFields(artifact, page)
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      <DetailsSection title="Columns">
+        {status === 'loading' ? (
+          <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Loading…</div>
+        ) : columns.length ? (
+          <div style={{ maxHeight: '160px', overflow: 'auto', fontSize: '11px', lineHeight: 1.5, color: 'var(--text-secondary)' }}>
+            {columns.map(column => <div key={column}>{column}</div>)}
+          </div>
+        ) : (
+          <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{NOT_AVAILABLE}</div>
+        )}
+      </DetailsSection>
+      <DetailsSection title="Export">
+        <TableCsvExport artifact={artifact} accessToken={accessToken} />
+      </DetailsSection>
+      <ArtifactRawJsonToggle artifact={artifact} />
+    </div>
+  )
+}
+
+function GroundValidationOverview({ artifact }) {
+  const fields = groundValidationOverviewFields(artifact)
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+      <div>
+        <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '8px' }}>
+          This comparison
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px' }}>
+          <MetaField label="Satellite variable" value={fields.satelliteVariable} />
+          <MetaField label="Ground station(s)" value={fields.groundStations} />
+        </div>
+      </div>
+      <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: '10px', padding: '11px 13px' }}>
+        <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '5px' }}>
+          Correlation / coverage
+        </div>
+        <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>{fmt(fields.correlationSummary)}</div>
+      </div>
+      <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: '10px', padding: '11px 13px' }}>
+        <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '5px' }}>
+          Data quality
+        </div>
+        <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>{fmt(fields.qaStatus)}</div>
+      </div>
+    </div>
+  )
+}
+
+function GroundValidationDetails({ artifact }) {
+  const fields = groundValidationDetailsFields(artifact)
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      <DetailsSection title="Series">
+        {fields.series.length ? fields.series.map((s, i) => (
+          <MetaField key={i} label={s.source_kind} value={s.station_id ? `${s.label} (${s.station_id})` : s.label} />
+        )) : <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{NOT_AVAILABLE}</div>}
+      </DetailsSection>
+      {fields.exceedanceDates?.length ? (
+        <DetailsSection title="Exceedance dates">
+          <div style={{ maxHeight: '140px', overflow: 'auto', fontSize: '11px', lineHeight: 1.5, color: 'var(--text-secondary)' }}>
+            {fields.exceedanceDates.map(date => <div key={date}>{date}</div>)}
+          </div>
+        </DetailsSection>
+      ) : fields.stats ? (
+        <DetailsSection title="Correlation methodology">
+          <MetaField label="Pearson r" value={fields.stats.r != null ? fields.stats.r.toFixed(3) : null} />
+          <MetaField label="N paired days" value={fields.stats.n} />
+          <MetaField label="Coverage fraction" value={fields.stats.coverage_fraction != null ? `${(fields.stats.coverage_fraction * 100).toFixed(1)}%` : null} />
+        </DetailsSection>
+      ) : null}
+      <MetaField label="Source handles" value={fields.sourceHandles} />
+      <ArtifactRawJsonToggle artifact={artifact} />
+    </div>
+  )
+}
+
+function MetadataTab({ chart, artifact, accessToken, onViewStatistics }) {
+  const [view, setView] = useState('overview')
+  // Lifted above the Overview/Details toggle (T33 review fix) so switching
+  // between the two sub-tabs on a table artifact reuses the same fetched
+  // page instead of each mounting its own useTableColumnsPreview and
+  // refetching /api/artifacts/{id} every time the user toggles.
+  const { page: tablePage, status: tablePageStatus } = useTableColumnsPreview(artifact, accessToken)
   if (chart) {
-    return <ProvenanceBlock provenance={chart.provenance} aggregationMeta={chart.aggregation_meta} />
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+        <div style={{ display: 'flex', gap: '6px' }}>
+          <button type="button" onClick={() => setView('overview')} style={metaViewButtonStyle(view === 'overview')}>Overview</button>
+          <button type="button" onClick={() => setView('details')} style={metaViewButtonStyle(view === 'details')}>Details</button>
+        </div>
+        {view === 'overview'
+          ? <MetadataOverview chart={chart} onViewStatistics={onViewStatistics} />
+          : <MetadataDetails chart={chart} />}
+      </div>
+    )
+  }
+  if (artifact?.type === 'table' || artifact?.type === 'timeseries') {
+    const isTable = artifact.type === 'table'
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+        <div style={{ display: 'flex', gap: '6px' }}>
+          <button type="button" onClick={() => setView('overview')} style={metaViewButtonStyle(view === 'overview')}>Overview</button>
+          <button type="button" onClick={() => setView('details')} style={metaViewButtonStyle(view === 'details')}>Details</button>
+        </div>
+        {isTable
+          ? (view === 'overview'
+            ? <TableMetadataOverview artifact={artifact} page={tablePage} status={tablePageStatus} />
+            : <TableMetadataDetails artifact={artifact} accessToken={accessToken} page={tablePage} status={tablePageStatus} />)
+          : (view === 'overview'
+            ? <GroundValidationOverview artifact={artifact} />
+            : <GroundValidationDetails artifact={artifact} />)}
+      </div>
+    )
   }
   if (artifact) {
     return <ArtifactMessage artifact={artifact} accessToken={undefined} />
@@ -169,11 +501,18 @@ function MetadataTab({ chart, artifact }) {
 }
 
 const CHART_TABS = {
-  heatmap: ['map', 'statistics', 'histogram', 'metadata'],
+  heatmap: ['map', 'statistics', 'metadata'],
   heatmap_multi: ['map', 'metadata'],
-  timeseries: ['chart', 'statistics', 'histogram', 'metadata'],
+  timeseries: ['chart', 'statistics', 'metadata'],
 }
-const TAB_LABELS = { map: 'Map', chart: 'Chart', statistics: 'Statistics', histogram: 'Histogram', metadata: 'Metadata' }
+// Table artifacts keep their existing grid alongside the new Metadata tab;
+// ground-validation timeseries artifacts have no chartable series data of
+// their own (T33 -- see PRD), so Metadata is their only tab.
+const ARTIFACT_TABS = {
+  table: ['table', 'metadata'],
+  timeseries: ['metadata'],
+}
+const TAB_LABELS = { map: 'Map', chart: 'Chart', statistics: 'Statistics', metadata: 'Metadata', table: 'Table' }
 
 const PANEL_COUNTS = [2, 3, 4]
 
@@ -261,8 +600,39 @@ function CompareControl({ compareMode, compareCount, filledCount, onStart, onCan
   )
 }
 
+// Table and ground-validation timeseries artifacts (T33) get an outer tab
+// bar of their own -- table keeps its existing grid alongside a new
+// Metadata tab; ground-validation timeseries has no chartable series data
+// of its own, so Metadata is its only tab (see ARTIFACT_TABS). The caller
+// keys this by artifact.id so switching artifacts remounts it fresh
+// (activeTab reset) instead of needing an effect to resync local state.
+function ArtifactTabsPanel({ artifact, accessToken, compareControlProps }) {
+  const tabs = ARTIFACT_TABS[artifact.type] || ['metadata']
+  const [activeTab, setActiveTab] = useState(tabs[0])
+
+  return (
+    <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', overflow: 'hidden' }}>
+      <div style={{ padding: '14px 22px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
+        <div style={{ fontSize: '16px', fontWeight: 800, color: 'var(--text-primary)' }}>{artifact.title || 'Output'}</div>
+        <CompareControl {...compareControlProps} />
+      </div>
+
+      <div style={{ display: 'flex', gap: '4px', padding: '14px 22px 0', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+        {tabs.map(tab => (
+          <TabButton key={tab} label={TAB_LABELS[tab]} active={activeTab === tab} onClick={() => setActiveTab(tab)} />
+        ))}
+      </div>
+
+      <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '18px 22px' }}>
+        {activeTab === 'table' && <TableArtifactMessage artifact={artifact} accessToken={accessToken} />}
+        {activeTab === 'metadata' && <MetadataTab artifact={artifact} accessToken={accessToken} />}
+      </div>
+    </div>
+  )
+}
+
 export default function OutputPanel({
-  focusedOutput, accessToken,
+  focusedOutput, accessToken, onFocusOutput,
   compareMode = 'off', compareCount = 2, compareSelection = [], compareSessionId = 0,
   onStartCompare, onCancelChooseCompare, onEnterCompare, onExitCompare,
   sessionsCollapsed = false, chatCollapsed = false, rightPanelCollapsed = false,
@@ -271,7 +641,7 @@ export default function OutputPanel({
   const kind = focusedOutput?.kind
   const chart = kind === 'chart' ? focusedOutput.data : null
   const artifact = kind === 'artifact' ? focusedOutput.data : null
-  const isTableArtifact = artifact?.type === 'table'
+  const isMetadataTabbedArtifact = artifact?.type === 'table' || artifact?.type === 'timeseries'
 
   const availableTabs = chart ? (CHART_TABS[chart.type] || ['metadata']) : []
   const [activeTab, setActiveTab] = useState(availableTabs[0])
@@ -317,6 +687,10 @@ export default function OutputPanel({
             accessToken={accessToken}
             autoScaleEach={autoScaleEach}
             onToggleAutoScale={setAutoScaleEach}
+            onFocusChart={onFocusOutput ? (chart) => {
+              onFocusOutput(focusChartPayload(chart))
+              onExitCompare?.()
+            } : undefined}
           />
         </div>
       </div>
@@ -345,17 +719,8 @@ export default function OutputPanel({
     )
   }
 
-  if (isTableArtifact) {
-    return (
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', overflow: 'hidden' }}>
-        <div style={{ padding: '14px 22px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexShrink: 0 }}>
-          <CompareControl {...compareControlProps} />
-        </div>
-        <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '18px 22px' }}>
-          <TableArtifactMessage artifact={artifact} accessToken={accessToken} />
-        </div>
-      </div>
-    )
+  if (isMetadataTabbedArtifact) {
+    return <ArtifactTabsPanel key={artifact.id} artifact={artifact} accessToken={accessToken} compareControlProps={compareControlProps} />
   }
 
   if (artifact && !chart) {
@@ -402,8 +767,12 @@ export default function OutputPanel({
         {activeTab === 'map' && chart.type === 'heatmap_multi' && <HeatmapMultiPanel payload={chart} accessToken={accessToken} />}
         {activeTab === 'chart' && chart.type === 'timeseries' && <TimeSeriesPanel payload={chart} />}
         {activeTab === 'statistics' && <StatisticsTab chart={chart} />}
-        {activeTab === 'histogram' && <HistogramTab chart={chart} />}
-        {activeTab === 'metadata' && <MetadataTab chart={chart} />}
+        {activeTab === 'metadata' && (
+          <MetadataTab
+            chart={chart}
+            onViewStatistics={availableTabs.includes('statistics') ? () => setActiveTab('statistics') : undefined}
+          />
+        )}
       </div>
 
       {(activeTab === 'map' || activeTab === 'chart') && (

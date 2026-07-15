@@ -87,7 +87,7 @@ class MonitorSeriesExtractionTests(unittest.TestCase):
             attrs={"_FillValue": -9999.0},
         )
 
-        times_out, values_out, coverage = _extract_monitor_series(da, lat=10.0, lon=30.0)
+        times_out, values_out, coverage, masking = _extract_monitor_series(da, lat=10.0, lon=30.0)
 
         self.assertEqual(values_out, [1.0, 3.0])
         self.assertEqual(len(times_out), 2)
@@ -111,7 +111,7 @@ class MonitorSeriesExtractionTests(unittest.TestCase):
             attrs={"valid_min": 0.0, "valid_max": 100.0},
         )
 
-        times_out, values_out, coverage = _extract_monitor_series(da, lat=10.0, lon=30.0)
+        times_out, values_out, coverage, masking = _extract_monitor_series(da, lat=10.0, lon=30.0)
 
         self.assertEqual(values_out, [5.0])
         self.assertEqual(coverage["n_total"], 2)
@@ -408,6 +408,17 @@ class ValidateAgainstGroundToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ground_series["station_id"], "34-017-0006")
         self.assertEqual(ref["metadata"]["source_handles"], ["cube_1"])
 
+        # T33: the artifact stub now carries the stats/coverage the tool
+        # already computed, not just series labels.
+        self.assertAlmostEqual(ref["metadata"]["stats"]["r"], 1.0)
+        self.assertEqual(ref["metadata"]["stats"]["n"], 3)
+        self.assertEqual(ref["metadata"]["coverage"]["n_excluded"], 0)
+
+        # Review fix: QA-masking provenance rides along on the artifact stub
+        # (same resolve_and_mask path plot_tools uses), not silently dropped
+        # -- the Overview's "Data quality" field needs qa_status to resolve.
+        self.assertIn("qa_status", ref["metadata"]["masking"])
+
         # Provenance: cube handle, monitor id, pairing params traceable end-to-end.
         self.assertEqual(monitor_result["source_handles"], ["cube_1"])
         self.assertIn("34-017-0006", result["monitor_ids"])
@@ -485,6 +496,24 @@ class ValidateAgainstGroundToolTests(unittest.IsolatedAsyncioTestCase):
         ref = result["_artifact_refs"][0]
         self.assertEqual(ref["type"], "timeseries")
         self.assertEqual(ref["metadata"]["source_handles"], ["cube_2"])
+
+        # The overlay is anchored to one named ground station -- its series
+        # metadata must include a "ground" entry (mirroring
+        # validate_against_ground) so the Metadata tab's "Ground station(s)"
+        # field isn't always "Not available".
+        series = ref["metadata"]["series"]
+        kinds = {s["source_kind"] for s in series}
+        self.assertEqual(kinds, {"satellite", "ground"})
+        ground_series = next(s for s in series if s["source_kind"] == "ground")
+        self.assertEqual(ground_series["station_id"], "34-017-0006")
+
+        # T33: exceedance dates and coverage the tool already computed now
+        # ride along on the artifact stub.
+        self.assertEqual(ref["metadata"]["exceedance_dates"], ["2024-01-02"])
+        self.assertEqual(ref["metadata"]["coverage"]["n_total"], 3)
+
+        # Review fix: QA-masking provenance rides along here too.
+        self.assertIn("qa_status", ref["metadata"]["masking"])
 
 
 if __name__ == "__main__":
