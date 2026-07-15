@@ -7,6 +7,7 @@ import ArtifactMessage, { TableArtifactMessage } from './ArtifactMessage'
 import { computeChartStats, computeHistogram } from '../utils/chartStats'
 import { resolveMasking } from '../utils/maskingProvenance'
 import { filledCharts } from '../utils/compareMode'
+import { focusChartPayload } from '../utils/compareSlotOverview'
 import { shouldShowCollapseHint } from '../utils/compareLayoutHint'
 import {
   NOT_AVAILABLE, fmt, dateRangeLabel, granuleSummary, maskingStatusColor,
@@ -203,7 +204,7 @@ async function copyToClipboard(text, setState) {
   window.setTimeout(() => setState(''), 1600)
 }
 
-function MetadataOverview({ chart, onViewStatistics }) {
+export function MetadataOverview({ chart, onViewStatistics, onViewFullMetadata, note }) {
   const provenance = chart.provenance || {}
   const masking = useMemo(() => resolveMasking(chart), [chart])
   const [copyState, setCopyState] = useState('')
@@ -213,8 +214,18 @@ function MetadataOverview({ chart, onViewStatistics }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
       <div>
-        <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '8px' }}>
-          This view
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginBottom: '8px' }}>
+          <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)' }}>
+            This view
+          </div>
+          {onViewFullMetadata && (
+            <button type="button" onClick={onViewFullMetadata} style={{
+              border: 0, background: 'transparent', color: 'var(--teal-text)',
+              fontSize: '11px', fontWeight: 700, cursor: 'pointer', padding: 0, flexShrink: 0,
+            }}>
+              View full metadata →
+            </button>
+          )}
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px' }}>
           <MetaField label="Dataset" value={provenance.dataset} />
@@ -262,8 +273,9 @@ function MetadataOverview({ chart, onViewStatistics }) {
       </div>
 
       <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: '10px', padding: '11px 13px' }}>
-        <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '5px' }}>
-          Source dataset
+        <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '5px', display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: '8px' }}>
+          <span>Source dataset</span>
+          {note && <span style={{ fontWeight: 400, fontStyle: 'italic', color: 'var(--text-muted)' }}>{note}</span>}
         </div>
         <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>{fmt(provenance.dataset)}</div>
         <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginTop: '4px' }}>{fmt(provenance.dataset_description)}</div>
@@ -761,7 +773,7 @@ function ArtifactTabsPanel({ artifact, accessToken, compareControlProps }) {
 }
 
 export default function OutputPanel({
-  focusedOutput, accessToken,
+  focusedOutput, accessToken, onFocusOutput,
   compareMode = 'off', compareCount = 2, compareSelection = [], compareSessionId = 0,
   onStartCompare, onCancelChooseCompare, onEnterCompare, onExitCompare,
   sessionsCollapsed = false, chatCollapsed = false, rightPanelCollapsed = false,
@@ -816,6 +828,10 @@ export default function OutputPanel({
             accessToken={accessToken}
             autoScaleEach={autoScaleEach}
             onToggleAutoScale={setAutoScaleEach}
+            onFocusChart={onFocusOutput ? (chart) => {
+              onFocusOutput(focusChartPayload(chart))
+              onExitCompare?.()
+            } : undefined}
           />
         </div>
       </div>

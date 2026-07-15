@@ -390,6 +390,7 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
 
       <OutputPanel
         focusedOutput={focusedOutput}
+        onFocusOutput={setFocusedOutput}
         accessToken={accessToken}
         compareMode={compareMode}
         compareCount={compareCount}
