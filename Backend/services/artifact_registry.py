@@ -64,12 +64,24 @@ def _build_metadata(artifact_type: str, payload: dict[str, Any]):
             source_handles=source_handles,
         )
     series = (payload.get("metadata") or {}).get("series")
+    stats = payload.get("stats")
+    coverage = payload.get("coverage")
+    exceedance_dates = payload.get("exceedance_dates")
     if series:
-        return TimeseriesArtifactMetadata(series=series, source_handles=source_handles)
+        return TimeseriesArtifactMetadata(
+            series=series,
+            source_handles=source_handles,
+            stats=stats,
+            coverage=coverage,
+            exceedance_dates=exceedance_dates,
+        )
     return TimeseriesArtifactMetadata(
         series=[{
             "label": payload.get("title"),
             "source_kind": "satellite",
         }],
         source_handles=source_handles,
+        stats=stats,
+        coverage=coverage,
+        exceedance_dates=exceedance_dates,
     )

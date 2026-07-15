@@ -14,6 +14,11 @@ import {
   qaMethodologyFields, variableDefinitionFields, reproducibilityFields,
   reproducibilityQuery, rawMetadataJson,
 } from '../utils/metadataDisplay'
+import {
+  tableOverviewFields, tableDetailsFields,
+  groundValidationOverviewFields, groundValidationDetailsFields,
+  rawArtifactMetadataJson,
+} from '../utils/artifactMetadataDisplay'
 
 function compactDate(value) {
   if (!value) return ''
@@ -406,7 +411,186 @@ const metaViewButtonStyle = (active) => ({
   padding: '5px 11px', cursor: 'pointer',
 })
 
-function MetadataTab({ chart, artifact, onViewStatistics }) {
+// ── Artifact-shaped Metadata tab (T33): table and ground-validation
+// timeseries artifacts (map/comparison/chart-backed timeseries are
+// deliberately excluded -- see utils/artifactReachability.js). A sibling to
+// MetadataOverview/MetadataDetails above, reading ArtifactReference.metadata
+// shape via utils/artifactMetadataDisplay.js instead of chart provenance.
+
+// Table artifacts' ArtifactReference is a lightweight stub (id/title/
+// row_count/metadata) -- the full column list only exists on the paginated
+// `/api/artifacts/{id}` response, so Overview/Details fetch a minimal
+// (limit=1) page themselves to learn it, same endpoint TableArtifactMessage
+// already pages through for the grid.
+function useTableColumnsPreview(artifact, accessToken) {
+  const [state, setState] = useState({ page: null, status: 'loading' })
+  useEffect(() => {
+    if (!artifact?.id || artifact.type !== 'table') return undefined
+    let cancelled = false
+    fetch(`/api/artifacts/${artifact.id}?offset=0&limit=1`, {
+      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+    })
+      .then(response => (response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`))))
+      .then(page => { if (!cancelled) setState({ page, status: 'ready' }) })
+      .catch(() => { if (!cancelled) setState({ page: null, status: 'failed' }) })
+    return () => { cancelled = true }
+  }, [artifact?.id, artifact?.type, accessToken])
+  return state
+}
+
+function TableMetadataOverview({ artifact, accessToken }) {
+  const { page, status } = useTableColumnsPreview(artifact, accessToken)
+  const fields = tableOverviewFields(artifact, page)
+  const loadingOr = (value) => (status === 'loading' ? '…' : fmt(value))
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+      <div>
+        <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '8px' }}>
+          This table
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px' }}>
+          <StatCard label="Rows" value={loadingOr(fields.rowCount?.toLocaleString?.() ?? fields.rowCount)} />
+          <StatCard label="Columns" value={loadingOr(fields.columnCount)} />
+        </div>
+      </div>
+      <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: '10px', padding: '11px 13px' }}>
+        <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '5px' }}>
+          Source dataset
+        </div>
+        <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>{fmt(fields.sourceDataset)}</div>
+      </div>
+    </div>
+  )
+}
+
+function TableCsvExport({ artifact, accessToken }) {
+  const [state, setState] = useState('')
+  async function downloadCsv() {
+    setState('downloading')
+    try {
+      const response = await fetch(`/api/artifacts/${artifact.id}/csv`, {
+        headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+      })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const blob = await response.blob()
+      const disposition = response.headers.get('content-disposition')
+      const match = /filename="?([^";]+)"?/i.exec(disposition || '')
+      const filename = match?.[1]?.trim() || `${artifact.title || artifact.id}.csv`
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = filename
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(url)
+      setState('')
+    } catch (err) {
+      setState(err.message || 'Export failed')
+    }
+  }
+  return (
+    <button type="button" onClick={downloadCsv} disabled={state === 'downloading'} style={smallButtonStyle}>
+      {state === 'downloading' ? 'Exporting…' : (state || 'Download CSV')}
+    </button>
+  )
+}
+
+function ArtifactRawJsonToggle({ artifact }) {
+  return (
+    <DetailsSection title="Raw JSON">
+      <pre style={{
+        fontSize: '10.5px', overflow: 'auto', maxHeight: '260px',
+        background: 'var(--bg-secondary)', padding: '8px', borderRadius: '6px', margin: 0,
+      }}>
+        {JSON.stringify(rawArtifactMetadataJson(artifact), null, 2)}
+      </pre>
+    </DetailsSection>
+  )
+}
+
+function TableMetadataDetails({ artifact, accessToken }) {
+  const { page, status } = useTableColumnsPreview(artifact, accessToken)
+  const { columns } = tableDetailsFields(artifact, page)
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      <DetailsSection title="Columns">
+        {status === 'loading' ? (
+          <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Loading…</div>
+        ) : columns.length ? (
+          <div style={{ maxHeight: '160px', overflow: 'auto', fontSize: '11px', lineHeight: 1.5, color: 'var(--text-secondary)' }}>
+            {columns.map(column => <div key={column}>{column}</div>)}
+          </div>
+        ) : (
+          <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{NOT_AVAILABLE}</div>
+        )}
+      </DetailsSection>
+      <DetailsSection title="Export">
+        <TableCsvExport artifact={artifact} accessToken={accessToken} />
+      </DetailsSection>
+      <ArtifactRawJsonToggle artifact={artifact} />
+    </div>
+  )
+}
+
+function GroundValidationOverview({ artifact }) {
+  const fields = groundValidationOverviewFields(artifact)
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+      <div>
+        <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '8px' }}>
+          This comparison
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px' }}>
+          <MetaField label="Satellite variable" value={fields.satelliteVariable} />
+          <MetaField label="Ground station(s)" value={fields.groundStations} />
+        </div>
+      </div>
+      <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: '10px', padding: '11px 13px' }}>
+        <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '5px' }}>
+          Correlation / coverage
+        </div>
+        <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>{fmt(fields.correlationSummary)}</div>
+      </div>
+      <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: '10px', padding: '11px 13px' }}>
+        <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '5px' }}>
+          Data quality
+        </div>
+        <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>{fmt(fields.qaStatus)}</div>
+      </div>
+    </div>
+  )
+}
+
+function GroundValidationDetails({ artifact }) {
+  const fields = groundValidationDetailsFields(artifact)
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      <DetailsSection title="Series">
+        {fields.series.length ? fields.series.map((s, i) => (
+          <MetaField key={i} label={s.source_kind} value={s.station_id ? `${s.label} (${s.station_id})` : s.label} />
+        )) : <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{NOT_AVAILABLE}</div>}
+      </DetailsSection>
+      {fields.exceedanceDates?.length ? (
+        <DetailsSection title="Exceedance dates">
+          <div style={{ maxHeight: '140px', overflow: 'auto', fontSize: '11px', lineHeight: 1.5, color: 'var(--text-secondary)' }}>
+            {fields.exceedanceDates.map(date => <div key={date}>{date}</div>)}
+          </div>
+        </DetailsSection>
+      ) : fields.stats ? (
+        <DetailsSection title="Correlation methodology">
+          <MetaField label="Pearson r" value={fields.stats.r != null ? fields.stats.r.toFixed(3) : null} />
+          <MetaField label="N paired days" value={fields.stats.n} />
+          <MetaField label="Coverage fraction" value={fields.stats.coverage_fraction != null ? `${(fields.stats.coverage_fraction * 100).toFixed(1)}%` : null} />
+        </DetailsSection>
+      ) : null}
+      <MetaField label="Source handles" value={fields.sourceHandles} />
+      <ArtifactRawJsonToggle artifact={artifact} />
+    </div>
+  )
+}
+
+function MetadataTab({ chart, artifact, accessToken, onViewStatistics }) {
   const [view, setView] = useState('overview')
   if (chart) {
     return (
@@ -421,6 +605,24 @@ function MetadataTab({ chart, artifact, onViewStatistics }) {
       </div>
     )
   }
+  if (artifact?.type === 'table' || artifact?.type === 'timeseries') {
+    const isTable = artifact.type === 'table'
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+        <div style={{ display: 'flex', gap: '6px' }}>
+          <button type="button" onClick={() => setView('overview')} style={metaViewButtonStyle(view === 'overview')}>Overview</button>
+          <button type="button" onClick={() => setView('details')} style={metaViewButtonStyle(view === 'details')}>Details</button>
+        </div>
+        {isTable
+          ? (view === 'overview'
+            ? <TableMetadataOverview artifact={artifact} accessToken={accessToken} />
+            : <TableMetadataDetails artifact={artifact} accessToken={accessToken} />)
+          : (view === 'overview'
+            ? <GroundValidationOverview artifact={artifact} />
+            : <GroundValidationDetails artifact={artifact} />)}
+      </div>
+    )
+  }
   if (artifact) {
     return <ArtifactMessage artifact={artifact} accessToken={undefined} />
   }
@@ -432,7 +634,14 @@ const CHART_TABS = {
   heatmap_multi: ['map', 'metadata'],
   timeseries: ['chart', 'statistics', 'histogram', 'metadata'],
 }
-const TAB_LABELS = { map: 'Map', chart: 'Chart', statistics: 'Statistics', histogram: 'Histogram', metadata: 'Metadata' }
+// Table artifacts keep their existing grid alongside the new Metadata tab;
+// ground-validation timeseries artifacts have no chartable series data of
+// their own (T33 -- see PRD), so Metadata is their only tab.
+const ARTIFACT_TABS = {
+  table: ['table', 'metadata'],
+  timeseries: ['metadata'],
+}
+const TAB_LABELS = { map: 'Map', chart: 'Chart', statistics: 'Statistics', histogram: 'Histogram', metadata: 'Metadata', table: 'Table' }
 
 const PANEL_COUNTS = [2, 3, 4]
 
@@ -520,6 +729,37 @@ function CompareControl({ compareMode, compareCount, filledCount, onStart, onCan
   )
 }
 
+// Table and ground-validation timeseries artifacts (T33) get an outer tab
+// bar of their own -- table keeps its existing grid alongside a new
+// Metadata tab; ground-validation timeseries has no chartable series data
+// of its own, so Metadata is its only tab (see ARTIFACT_TABS). The caller
+// keys this by artifact.id so switching artifacts remounts it fresh
+// (activeTab reset) instead of needing an effect to resync local state.
+function ArtifactTabsPanel({ artifact, accessToken, compareControlProps }) {
+  const tabs = ARTIFACT_TABS[artifact.type] || ['metadata']
+  const [activeTab, setActiveTab] = useState(tabs[0])
+
+  return (
+    <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', overflow: 'hidden' }}>
+      <div style={{ padding: '14px 22px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
+        <div style={{ fontSize: '16px', fontWeight: 800, color: 'var(--text-primary)' }}>{artifact.title || 'Output'}</div>
+        <CompareControl {...compareControlProps} />
+      </div>
+
+      <div style={{ display: 'flex', gap: '4px', padding: '14px 22px 0', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+        {tabs.map(tab => (
+          <TabButton key={tab} label={TAB_LABELS[tab]} active={activeTab === tab} onClick={() => setActiveTab(tab)} />
+        ))}
+      </div>
+
+      <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '18px 22px' }}>
+        {activeTab === 'table' && <TableArtifactMessage artifact={artifact} accessToken={accessToken} />}
+        {activeTab === 'metadata' && <MetadataTab artifact={artifact} accessToken={accessToken} />}
+      </div>
+    </div>
+  )
+}
+
 export default function OutputPanel({
   focusedOutput, accessToken,
   compareMode = 'off', compareCount = 2, compareSelection = [], compareSessionId = 0,
@@ -530,7 +770,7 @@ export default function OutputPanel({
   const kind = focusedOutput?.kind
   const chart = kind === 'chart' ? focusedOutput.data : null
   const artifact = kind === 'artifact' ? focusedOutput.data : null
-  const isTableArtifact = artifact?.type === 'table'
+  const isMetadataTabbedArtifact = artifact?.type === 'table' || artifact?.type === 'timeseries'
 
   const availableTabs = chart ? (CHART_TABS[chart.type] || ['metadata']) : []
   const [activeTab, setActiveTab] = useState(availableTabs[0])
@@ -604,17 +844,8 @@ export default function OutputPanel({
     )
   }
 
-  if (isTableArtifact) {
-    return (
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', overflow: 'hidden' }}>
-        <div style={{ padding: '14px 22px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexShrink: 0 }}>
-          <CompareControl {...compareControlProps} />
-        </div>
-        <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '18px 22px' }}>
-          <TableArtifactMessage artifact={artifact} accessToken={accessToken} />
-        </div>
-      </div>
-    )
+  if (isMetadataTabbedArtifact) {
+    return <ArtifactTabsPanel key={artifact.id} artifact={artifact} accessToken={accessToken} compareControlProps={compareControlProps} />
   }
 
   if (artifact && !chart) {

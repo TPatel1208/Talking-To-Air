@@ -481,6 +481,7 @@ def make_exceedance_overlay(mcp_tools: dict[str, BaseTool]):
                     "times": times,
                     "values": values,
                     "exceedance_dates": sorted(exceeded_dates),
+                    "coverage": coverage,
                     "satellite_units": satellite_units,
                     "chart_id": f"ts_{uuid.uuid4().hex[:12]}",
                     "metadata": {

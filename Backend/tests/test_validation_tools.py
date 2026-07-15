@@ -408,6 +408,12 @@ class ValidateAgainstGroundToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ground_series["station_id"], "34-017-0006")
         self.assertEqual(ref["metadata"]["source_handles"], ["cube_1"])
 
+        # T33: the artifact stub now carries the stats/coverage the tool
+        # already computed, not just series labels.
+        self.assertAlmostEqual(ref["metadata"]["stats"]["r"], 1.0)
+        self.assertEqual(ref["metadata"]["stats"]["n"], 3)
+        self.assertEqual(ref["metadata"]["coverage"]["n_excluded"], 0)
+
         # Provenance: cube handle, monitor id, pairing params traceable end-to-end.
         self.assertEqual(monitor_result["source_handles"], ["cube_1"])
         self.assertIn("34-017-0006", result["monitor_ids"])
@@ -485,6 +491,11 @@ class ValidateAgainstGroundToolTests(unittest.IsolatedAsyncioTestCase):
         ref = result["_artifact_refs"][0]
         self.assertEqual(ref["type"], "timeseries")
         self.assertEqual(ref["metadata"]["source_handles"], ["cube_2"])
+
+        # T33: exceedance dates and coverage the tool already computed now
+        # ride along on the artifact stub.
+        self.assertEqual(ref["metadata"]["exceedance_dates"], ["2024-01-02"])
+        self.assertEqual(ref["metadata"]["coverage"]["n_total"], 3)
 
 
 if __name__ == "__main__":

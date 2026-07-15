@@ -6,6 +6,7 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import { starterMessage } from '../utils/starterPrompts'
 import { compareBadgeLabel, isChartComparable, isSelectionFull, slotIndexOf } from '../utils/compareMode'
+import { reachableArtifacts } from '../utils/artifactReachability'
 
 const TYPE_LABEL = { map: 'Map', comparison: 'Comparison', timeseries: 'Time series', table: 'Table' }
 
@@ -499,10 +500,11 @@ function MessageBubble({
         )}
 
         {/* Output cards — click opens the full map/chart/table in the central
-            OutputPanel. Chart-backed artifact types (map/comparison/timeseries)
-            duplicate what msg.charts already covers, so only 'table' artifacts
+            OutputPanel. Chart-backed artifact types (map/comparison/chart-backed
+            timeseries) duplicate what msg.charts already covers, so only 'table'
+            and ground-validation 'timeseries' artifacts (no matching chart, T33)
             get their own card here. */}
-        {!isUser && (msg.charts?.length > 0 || msg.artifacts?.some(a => a.type === 'table')) && (
+        {!isUser && (msg.charts?.length > 0 || reachableArtifacts(msg).length > 0) && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
             {msg.charts?.map((chart, i) => (
               <OutputCard
@@ -514,7 +516,7 @@ function MessageBubble({
                 onClick={() => handleChartCardClick(chart)}
               />
             ))}
-            {msg.artifacts?.filter(a => a.type === 'table').map((artifact, i) => (
+            {reachableArtifacts(msg).map((artifact, i) => (
               <OutputCard
                 key={artifact.id || `artifact-${i}`}
                 item={{ kind: 'artifact', data: artifact }}
