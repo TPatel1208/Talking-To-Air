@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import ConnectorsPanel from './ConnectorsPanel'
 
 const API_BASE = '/api'
 
@@ -174,6 +175,21 @@ export default function SessionSidebar({ sessions, threadId, onSwitch, onNew, on
           </svg>
           Files
         </div>
+        <div
+          onClick={() => setNav('connectors')}
+          style={{
+            display: 'flex', alignItems: 'center', gap: '9px', padding: '8px 10px', borderRadius: '7px',
+            fontSize: '13px', fontWeight: nav === 'connectors' ? 700 : 600,
+            color: nav === 'connectors' ? 'var(--text-primary)' : 'var(--text-secondary)',
+            background: nav === 'connectors' ? 'var(--bg-secondary)' : 'transparent', cursor: 'pointer',
+          }}
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" style={{ flexShrink: 0 }}>
+            <path d="M9 12a3 3 0 1 0 6 0 3 3 0 0 0-6 0z" />
+            <path d="M6 12H3m18 0h-3M12 6V3m0 18v-3" strokeLinecap="round" />
+          </svg>
+          Connectors
+        </div>
       </div>
 
       {nav === 'chats' && (
@@ -266,6 +282,15 @@ export default function SessionSidebar({ sessions, threadId, onSwitch, onNew, on
               />
             ))}
           </div>
+        </>
+      )}
+
+      {nav === 'connectors' && (
+        <>
+          <div style={{ fontSize: '10.5px', fontWeight: 700, letterSpacing: '0.06em', color: 'var(--text-muted)', textTransform: 'uppercase', padding: '0 10px 8px' }}>
+            Connected services
+          </div>
+          <ConnectorsPanel accessToken={accessToken} />
         </>
       )}
 

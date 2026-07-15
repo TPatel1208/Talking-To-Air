@@ -98,7 +98,6 @@ Copy `.env.example` to `.env` and fill in the values below. **`.env.example` is 
 | `GOOGLE_API_KEY` | Google AI Studio key — required if any agent uses the `google` provider (supervisor and satellite agents do by default) |
 | `GROQ_API_KEY` | Groq key — required if any agent uses the `groq` provider (the ground-sensor agent does by default) |
 | `EARTHDATA_USERNAME` / `EARTHDATA_PASSWORD` | NASA Earthdata credentials |
-| `EDL_USERNAME` / `EDL_PASSWORD` | Earth Data Login credentials (same account as Earthdata) |
 | `AQS_API_EMAIL` / `AQS_API_KEY` | EPA AQS credentials. `AQS_API_EMAIL` is **also** the contact address in the Nominatim geocoder's User-Agent, so it must be a **real** email — Nominatim rejects placeholder `@example.com`/`.org`/`.net` addresses, and location lookups (ground *and* satellite) fail without it |
 | `EARTHDATA_MCP_URL` / `EARTHDATA_MCP_TOKEN` | Endpoint and bearer token of the MCP stack (satellite path only — see above) |
 
@@ -116,6 +115,7 @@ Copy `.env.example` to `.env` and fill in the values below. **`.env.example` is 
 | `BUNDLE_OPEN_MAX_UNCOMPRESSED_BYTES` | `2147483648` | Refuse to open a result bundle whose *uncompressed* size exceeds this (guards against OOM at open time) |
 | `LOG_LEVEL` / `LOG_FORMAT` | `INFO` / `text` | Set `LOG_FORMAT=json` for structured logs suitable for aggregators |
 | `LANGSMITH_API_KEY` | — | Enables LangSmith tracing when set |
+| `CONNECTOR_ENCRYPTION_KEY` | — | Comma-separated Fernet key(s) encrypting per-user connector tokens (T30's Connectors tab). Unset: the feature answers a structured 503 instead of blocking boot. Set but malformed: boot fails loudly. |
 
 Provider for each agent is `google` (Gemini) or `groq`; the model factory (`config/model_factory.py`) turns provider + model into a chat model, so either can change without touching code.
 

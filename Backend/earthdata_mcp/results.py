@@ -42,6 +42,35 @@ CATEGORY_UNSUPPORTED_GRID = "unsupported_grid"
 # deliberately instead of receiving whichever value happened to be first.
 CATEGORY_VARIABLE_CHOICE_REQUIRED = "variable_choice_required"
 CATEGORY_DIMENSION_CHOICE_REQUIRED = "dimension_choice_required"
+# T31 (PRD-022 soft dependency): per-user Earthdata credential classes an
+# upgraded MCP raises against an injected edl_token. Structured passthrough
+# only — _classify_dict handles any category generically, so these three
+# need no prose pattern; they exist to drive the actionable message
+# templates below, keyed off the category name PRD-022 sends.
+CATEGORY_TOKEN_INVALID = "token_invalid"
+CATEGORY_TOKEN_EXPIRED = "token_expired"
+CATEGORY_EULA_NOT_ACCEPTED = "eula_not_accepted"
+
+# T31 story #4/#5: fixed, actionable text for the three credential-injection
+# error classes -- substituted wholesale for whatever message/raw_preview the
+# MCP sent, never interpolating it. This is also the secret-hygiene
+# mechanism (PRD T31): the MCP's own prose for these classes could echo the
+# rejected edl_token (a validation-error style bounce), so it is never
+# forwarded into a log line or an envelope a researcher or the model sees.
+_TOKEN_ERROR_MESSAGES: dict[str, tuple[str, str]] = {
+    CATEGORY_TOKEN_INVALID: (
+        "Your Earthdata token is invalid.",
+        "Reconnect it in Settings -> Connectors.",
+    ),
+    CATEGORY_TOKEN_EXPIRED: (
+        "Your Earthdata token has expired.",
+        "Generate a new token and reconnect it in Settings -> Connectors.",
+    ),
+    CATEGORY_EULA_NOT_ACCEPTED: (
+        "This collection requires accepting its license at Earthdata Login before it can be retrieved.",
+        "Accept the license at Earthdata Login, then retry.",
+    ),
+}
 
 # The MCP's own structured answers (T18 story #9) — first-class results, not
 # errors; passed through as plain dicts for each composite's existing
@@ -160,11 +189,18 @@ def parse_tool_result(raw: Any) -> dict:
 def _classify_dict(data: dict) -> dict:
     error = data.get("error")
     if isinstance(error, dict) and "category" in error and "message" in error:
+        category = error["category"]
+        if category in _TOKEN_ERROR_MESSAGES:
+            message, suggestion = _TOKEN_ERROR_MESSAGES[category]
+            resolution_url = error.get("resolution_url")
+            if category == CATEGORY_EULA_NOT_ACCEPTED and resolution_url:
+                suggestion = f"{suggestion} ({resolution_url})"
+            raise _log(MCPToolError(category, message, suggestion=suggestion, raw_preview=None))
         # bind_workspace's own error envelope (T18), round-tripped back
         # through this same classifier by a backend composite that calls
         # parse_tool_result on what bind_workspace returned.
         raise _log(MCPToolError(
-            error["category"],
+            category,
             error["message"],
             suggestion=error.get("suggestion"),
             raw_preview=error.get("raw_preview"),

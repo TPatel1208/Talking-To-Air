@@ -11,13 +11,33 @@ from __future__ import annotations
 
 import copy
 import json
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
 from langchain_core.tools import BaseTool, StructuredTool
 
 from config.workflow_stages import STAGE_AOI, STAGE_COVERAGE, STAGE_SEARCH
-from earthdata_mcp.results import MCPToolError, call_tool, parse_tool_result
+from earthdata_mcp.results import CATEGORY_TOKEN_INVALID, MCPToolError, call_tool, parse_tool_result
 from utils.streaming import emit_status
+
+# T31: parameters injected here and hidden from the model-facing schema —
+# workspace_id always, edl_token only for a tool whose advertised schema
+# includes it (feature-detected per tool at bind time, see _bind_one).
+_HIDDEN_PARAMS = ("workspace_id", "edl_token")
+
+
+class EdlCredentialInjector(Protocol):
+    """Duck-typed seam bind_workspace calls into for T31 per-user Earthdata
+    credential injection — implemented by
+    services.connector_credential_service.EdlCredentialInjector. Kept as a
+    Protocol (not an import) so earthdata_mcp stays decoupled from the
+    services layer; tests pass a minimal fake with this shape."""
+
+    async def resolve(self, user_id: str) -> str | None: ...
+
+    def mark_used(self, user_id: str) -> None: ...
+
+    async def mark_invalid(self, user_id: str) -> None: ...
+
 
 # T19: one wrapper covers every curated discovery tool without touching the
 # MCP — searching/resolving/checking are exactly the stages the model-facing
@@ -39,13 +59,39 @@ class MissingUserContextError(RuntimeError):
     every caller's retrievals together, so this fails loud instead."""
 
 
-def bind_workspace(tools: dict[str, BaseTool], user_id_getter: Callable[[], str]) -> dict[str, BaseTool]:
-    """Return copies of ``tools`` with workspace_id injected and hidden from the schema."""
-    return {name: _bind_one(tool, user_id_getter) for name, tool in tools.items()}
+def bind_workspace(
+    tools: dict[str, BaseTool],
+    user_id_getter: Callable[[], str],
+    *,
+    edl_injector: EdlCredentialInjector | None = None,
+) -> dict[str, BaseTool]:
+    """Return copies of ``tools`` with workspace_id injected and hidden from
+    the schema. ``edl_injector`` (T31) additionally injects the calling
+    user's decrypted Earthdata token as ``edl_token`` — but only for a tool
+    whose advertised schema includes that parameter, and only when the
+    injector resolves one (connected ∧ unexpired); omitting ``edl_injector``
+    (the default) reproduces the pre-T31 behavior exactly, token or no
+    token, advertised or not."""
+    return {name: _bind_one(tool, user_id_getter, edl_injector) for name, tool in tools.items()}
 
 
-def _bind_one(tool: BaseTool, user_id_getter: Callable[[], str]) -> BaseTool:
-    schema = _schema_without_workspace_id(tool.args_schema)
+def _schema_properties(schema) -> dict:
+    return schema.get("properties", {}) if isinstance(schema, dict) else schema.schema().get("properties", {})
+
+
+def _bind_one(
+    tool: BaseTool,
+    user_id_getter: Callable[[], str],
+    edl_injector: EdlCredentialInjector | None,
+) -> BaseTool:
+    # T31: feature-detected once at bind time, off the MCP's advertised
+    # schema for *this* tool — an un-upgraded MCP (or a tool PRD-022 hasn't
+    # reached yet) simply never gets edl_token, no matter how live the
+    # user's connector is. Never added to the required-parameter contract
+    # check (earthdata_mcp/connection.py's REQUIRED_TOOL_PARAMS), so an
+    # un-upgraded MCP still reaches ready.
+    advertises_edl_token = "edl_token" in _schema_properties(tool.args_schema)
+    schema = _schema_without_hidden_params(tool.args_schema)
     stage_info = _STAGE_BY_TOOL_NAME.get(tool.name)
 
     async def _call(**kwargs):
@@ -58,6 +104,18 @@ def _bind_one(tool: BaseTool, user_id_getter: Callable[[], str]) -> BaseTool:
         kwargs["workspace_id"] = f"user-{user_id}"
         if stage_info is not None:
             emit_status(stage_info[1], stage=stage_info[0])
+
+        # T31 injection policy: connected ∧ unexpired ∧ advertising: send
+        # nothing otherwise and let the MCP fall back to its shared env
+        # credential. edl_injector.resolve() owns the connected/unexpired
+        # check and the just-in-time decrypt; it never caches plaintext.
+        injected = False
+        if advertises_edl_token and edl_injector is not None:
+            token = await edl_injector.resolve(user_id)
+            if token is not None:
+                kwargs["edl_token"] = token
+                injected = True
+
         # T18: bind_workspace is the one place every model-facing MCP tool
         # call passes through — classify here (call_tool catches a raised
         # transport failure, parse_tool_result classifies the returned
@@ -70,7 +128,21 @@ def _bind_one(tool: BaseTool, user_id_getter: Callable[[], str]) -> BaseTool:
             raw = await call_tool(tool, kwargs)
             result = parse_tool_result(raw)
         except MCPToolError as exc:
+            # T31: TOKEN_INVALID attributed to a token *this call actually
+            # injected* flips the connector's stored status so the
+            # Connectors tab agrees with the failure. TOKEN_EXPIRED relies
+            # on T30's derived-expired instead (no stored-status write), and
+            # EULA_NOT_ACCEPTED never touches status — the token is fine,
+            # the entitlement isn't. Never fires for the shared-credential
+            # path (injected is False), so one user's bad token can't flip
+            # another's connector.
+            if injected and exc.category == CATEGORY_TOKEN_INVALID:
+                await edl_injector.mark_invalid(user_id)
             return exc.to_tool_json()
+        if injected:
+            # Fire-and-forget and coalesced per agent turn inside mark_used
+            # itself — never on this call's critical path, never failing it.
+            edl_injector.mark_used(user_id)
         # T19 story #3: surface the granule count once check_coverage's own
         # response is known, so a researcher sees why their request is
         # small or large before the (potentially long) retrieval wait.
@@ -87,11 +159,12 @@ def _bind_one(tool: BaseTool, user_id_getter: Callable[[], str]) -> BaseTool:
     )
 
 
-def _schema_without_workspace_id(schema):
+def _schema_without_hidden_params(schema):
     schema = copy.deepcopy(schema)
     properties = schema.get("properties", {})
-    properties.pop("workspace_id", None)
-    schema["required"] = [name for name in schema.get("required", []) if name != "workspace_id"]
+    for name in _HIDDEN_PARAMS:
+        properties.pop(name, None)
+    schema["required"] = [name for name in schema.get("required", []) if name not in _HIDDEN_PARAMS]
     return schema
 
 

@@ -44,7 +44,7 @@ from langchain_core.tools import BaseTool
 
 from config.settings import Settings
 from earthdata_mcp.client import REQUIRED_TOOL_PARAMS, EarthdataMCPUnavailableError, load_raw_mcp_tools
-from earthdata_mcp.workspace import bind_workspace
+from earthdata_mcp.workspace import EdlCredentialInjector, bind_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +102,7 @@ class EarthdataMCPConnectionManager:
         initial_backoff_seconds: float = 1.0,
         max_backoff_seconds: float = 60.0,
         heartbeat_interval_seconds: float = 30.0,
+        edl_injector: EdlCredentialInjector | None = None,
     ):
         self._settings = settings
         self._user_id_getter = user_id_getter
@@ -111,6 +112,9 @@ class EarthdataMCPConnectionManager:
         self._initial_backoff = initial_backoff_seconds
         self._max_backoff = max_backoff_seconds
         self._heartbeat_interval = heartbeat_interval_seconds
+        # T31: passed straight through to bind_workspace below -- None
+        # reproduces pre-T31 behavior exactly (no edl_token ever injected).
+        self._edl_injector = edl_injector
         self._state = STATE_CONNECTING
         self._tools: dict[str, BaseTool] | None = None
         self._task: asyncio.Task | None = None
@@ -166,7 +170,7 @@ class EarthdataMCPConnectionManager:
                 backoff = min(backoff * 2, self._max_backoff)
                 continue
 
-            tools = bind_workspace(raw, self._user_id_getter)
+            tools = bind_workspace(raw, self._user_id_getter, edl_injector=self._edl_injector)
             # on_ready runs BEFORE the state flips to ready, so no caller can
             # ever observe state == ready with a stale/empty consumer (e.g.
             # api.py's satellite agent) still in place. It fires only on a

@@ -19,6 +19,7 @@ from starlette.routing import Match
 from agents.earthdata_agent import LazySatelliteAgent, build_earthdata_agent
 from agents.ground_sensor_agent import build_ground_agent
 from agents.supervisor_agent import build_agent
+from config.connectors import CONNECTOR_REGISTRY, CONNECTOR_REGISTRY_BY_TYPE
 from config.settings import get_settings
 from config.starter_prompts import STARTER_PROMPTS
 from earthdata_mcp.connection import STATE_CONNECTING, STATE_READY, EarthdataMCPConnectionManager
@@ -39,8 +40,16 @@ from repositories.session_metadata_repository import (
 )
 from repositories.revoked_token_repository import ensure_revoked_token_table, revoke_token
 from repositories.session_repository import SessionRepository
+from repositories.user_connector_repository import (
+    delete_connector,
+    ensure_user_connector_table,
+    list_connectors_for_user,
+    upsert_connector,
+)
 from repositories.user_repository import create_user, ensure_user_table, get_user_by_username
 from services.auth_service import authenticate_request, create_access_token, hash_password, verify_password
+from services.connector_credential_service import EdlCredentialInjector
+from services.connector_token_service import TokenValidationError, decode_token_expiry
 from services.artifact_store import artifact_store
 from services.chat_stream_service import ChatStreamService
 from services.chart_service import ChartService
@@ -57,6 +66,7 @@ from services.discovery_service import (
 from services.jobs_service import cancel_job, list_jobs
 from services.methods_export_service import build_methods_markdown
 from services.provenance_service import get_citations, get_lineage
+from utils.connector_crypto import encrypt_secret, get_connector_cipher
 from utils.db import active_pool_connections, check_db_pool, close_db_pool, init_db_pool, validate_config
 from utils.logging import configure_logging
 from utils.metrics import (
@@ -92,7 +102,13 @@ async def _on_earthdata_mcp_ready(tools: dict) -> None:
     logger.info("earthdata_mcp_satellite_agent_ready", extra={"_event": "earthdata_mcp_satellite_agent_ready"})
 
 
-earthdata_mcp_manager = EarthdataMCPConnectionManager(settings, current_user_id, on_ready=_on_earthdata_mcp_ready)
+# T31: one shared instance -- its in-process cache and per-turn
+# last_used_at coalescing are only meaningful as process-lifetime state, and
+# the connector endpoints below invalidate it directly on re-paste/disconnect.
+edl_credential_injector = EdlCredentialInjector(settings)
+earthdata_mcp_manager = EarthdataMCPConnectionManager(
+    settings, current_user_id, on_ready=_on_earthdata_mcp_ready, edl_injector=edl_credential_injector,
+)
 chat_stream_service = ChatStreamService(chart_service, settings.long_request_seconds, earthdata_mcp_manager)
 
 
@@ -104,6 +120,7 @@ async def lifespan(app: FastAPI):
     await ensure_user_table()
     await ensure_revoked_token_table()
     await ensure_session_metadata_table()
+    await ensure_user_connector_table()
 
     logger.info("startup_begin", extra={"_model": settings.llm_model})
     # T17: the backend boots without the earthdata-retrieval MCP — ground/EPA
@@ -172,6 +189,7 @@ PUBLIC_ENDPOINTS = {
 ThreadId = Annotated[str, Path(pattern=r"^[A-Za-z0-9-]+$")]
 JobHandle = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]+$")]
 DatasetHandle = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]+$")]
+ConnectorType = Annotated[str, Path(pattern=r"^[a-z0-9_-]+$")]
 
 
 def _route_path(request: Request) -> str:
@@ -259,6 +277,21 @@ class UserResponse(BaseModel):
     is_active: bool
 
 
+class SetConnectorTokenRequest(BaseModel):
+    token: str = Field(min_length=1, max_length=8192)
+
+
+class ConnectorStatusView(BaseModel):
+    connector_type: str
+    display_name: str
+    auth_method: str
+    description: str
+    token_docs_url: str
+    status: str
+    connected_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+
+
 @app.post("/auth/register", status_code=status.HTTP_201_CREATED, response_model=UserResponse)
 async def register(req: AuthRequest):
     password_hash = hash_password(req.password)
@@ -291,6 +324,90 @@ async def logout(request: Request):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication credentials")
     await revoke_token(jti, datetime.fromtimestamp(exp, tz=timezone.utc))
     return {"detail": "Logged out"}
+
+
+# T30: per-user connector (e.g. Earthdata Login) token storage. Registry-
+# driven -- CONNECTOR_REGISTRY is the single source of what cards the
+# frontend can render and what connector_type values these endpoints accept.
+# No endpoint here ever selects or returns encrypted_secret (see
+# repositories/user_connector_repository.py); this phase only stores the
+# token, nothing consumes it yet.
+def _connector_status(row: dict | None) -> str:
+    if row is None:
+        return "not_connected"
+    expires_at = row.get("expires_at")
+    if expires_at is not None and expires_at <= datetime.now(timezone.utc):
+        return "expired"
+    if row.get("status") == "error":
+        return "error"
+    return "connected"
+
+
+def _connector_view(entry: dict, row: dict | None) -> ConnectorStatusView:
+    return ConnectorStatusView(
+        connector_type=entry["connector_type"],
+        display_name=entry["display_name"],
+        auth_method=entry["auth_method"],
+        description=entry["description"],
+        token_docs_url=entry["token_docs_url"],
+        status=_connector_status(row),
+        connected_at=row.get("connected_at") if row else None,
+        expires_at=row.get("expires_at") if row else None,
+    )
+
+
+def _require_connector_cipher():
+    cipher = get_connector_cipher(settings)
+    if cipher is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Connectors are not configured on this deployment.",
+        )
+    return cipher
+
+
+def _connector_registry_entry(connector_type: str) -> dict:
+    entry = CONNECTOR_REGISTRY_BY_TYPE.get(connector_type)
+    if entry is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown connector type")
+    return entry
+
+
+@app.get("/connectors")
+async def list_connectors_endpoint(request: Request):
+    _require_connector_cipher()
+    rows = {row["connector_type"]: row for row in await list_connectors_for_user(request.state.current_user.id)}
+    return {"connectors": [_connector_view(entry, rows.get(entry["connector_type"])) for entry in CONNECTOR_REGISTRY]}
+
+
+@app.put("/connectors/{connector_type}/token")
+async def set_connector_token_endpoint(connector_type: ConnectorType, req: SetConnectorTokenRequest, request: Request):
+    cipher = _require_connector_cipher()
+    entry = _connector_registry_entry(connector_type)
+    try:
+        expires_at = decode_token_expiry(req.token)
+    except TokenValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
+
+    encrypted_secret = encrypt_secret(cipher, req.token)
+    row = await upsert_connector(
+        request.state.current_user.id, connector_type, entry["auth_method"], encrypted_secret, expires_at,
+    )
+    # T31: a re-paste must never be shadowed by the injector's short-TTL
+    # cache of the previous (possibly invalid/expired) row.
+    edl_credential_injector.invalidate(request.state.current_user.id)
+    return _connector_view(entry, row)
+
+
+@app.delete("/connectors/{connector_type}")
+async def disconnect_connector_endpoint(connector_type: ConnectorType, request: Request):
+    _require_connector_cipher()
+    entry = _connector_registry_entry(connector_type)
+    await delete_connector(request.state.current_user.id, connector_type)
+    # T31: a disconnect must never leave a stale cached token injectable
+    # for the rest of the cache's TTL window.
+    edl_credential_injector.invalidate(request.state.current_user.id)
+    return _connector_view(entry, None)
 
 
 @app.get("/health")

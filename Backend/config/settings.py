@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
+from utils.connector_crypto import ConnectorCryptoError, build_multi_fernet
 
 _VALID_FETCH_MODES = {"auto", "harmony", "opendap", "s3"}
 _VALID_LOG_FORMATS = {"text", "json"}
@@ -108,8 +109,6 @@ class Settings:
     bundle_open_max_uncompressed_bytes: int = field(
         default_factory=lambda: max(1, _int_env("BUNDLE_OPEN_MAX_UNCOMPRESSED_BYTES", 2 * 1024 ** 3))
     )
-    edl_username: str = field(default_factory=lambda: os.getenv("EDL_USERNAME", ""))
-    edl_password: str = field(default_factory=lambda: os.getenv("EDL_PASSWORD", ""))
     aqs_api_email: str = field(default_factory=lambda: os.getenv("AQS_API_EMAIL", "your_email@example.com"))
     aqs_api_key: str = field(default_factory=lambda: os.getenv("AQS_API_KEY", "your_aqs_key"))
 
@@ -123,6 +122,12 @@ class Settings:
     jwt_secret_key: str | None = field(default_factory=lambda: os.getenv("JWT_SECRET_KEY"))
     jwt_algorithm: str = field(default_factory=lambda: os.getenv("JWT_ALGORITHM", "HS256"))
     jwt_expiration_minutes: int = field(default_factory=lambda: max(1, _int_env("JWT_EXPIRATION_MINUTES", 60)))
+
+    # T30: per-user connector secret storage (MultiFernet). Comma-separated so
+    # a rotation can carry an old + new key simultaneously -- unset entirely
+    # means the connectors feature degrades to a structured 503 rather than
+    # blocking boot (ground/EPA-only deployments never need this).
+    connector_encryption_key: str | None = field(default_factory=lambda: os.getenv("CONNECTOR_ENCRYPTION_KEY"))
 
     # T23 MapLibre basemap/terrain sources -- free-tier defaults, no API key.
     # Configuration (not code) so a keyed/self-hosted provider can be swapped
@@ -192,6 +197,17 @@ class Settings:
             raise ConfigurationError(
                 f"Invalid EARTHDATA_MCP_URL {self.earthdata_mcp_url!r}: must be an http(s) URL"
             )
+
+        # T30: an unset CONNECTOR_ENCRYPTION_KEY degrades the connectors
+        # feature to a 503 (ground/EPA-only deployments don't need it) -- but
+        # a *set-and-malformed* key is a half-configured secret store, worse
+        # than none, so it fails boot loudly rather than surfacing as a
+        # confusing per-request decrypt error later.
+        if self.connector_encryption_key:
+            try:
+                build_multi_fernet(self.connector_encryption_key)
+            except ConnectorCryptoError as exc:
+                raise ConfigurationError(str(exc)) from exc
 
 
 @lru_cache(maxsize=1)
