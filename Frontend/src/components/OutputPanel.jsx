@@ -7,7 +7,7 @@ import ArtifactMessage, { TableArtifactMessage } from './ArtifactMessage'
 import { MetadataOverview } from './MetadataOverview.jsx'
 import { MetaField } from './metadataPrimitives.jsx'
 import { smallButtonStyle, copyToClipboard } from '../utils/metadataUiHelpers.js'
-import { computeChartStats, computeHistogram } from '../utils/chartStats'
+import { computeChartStats } from '../utils/chartStats'
 import { resolveMasking } from '../utils/maskingProvenance'
 import { filledCharts } from '../utils/compareMode'
 import { focusChartPayload } from '../utils/compareSlotOverview'
@@ -141,33 +141,6 @@ function StatisticsTab({ chart }) {
         <StatCard label="Sample count" value={stats.count.toLocaleString()} />
       </div>
       <MaskingDisclosure chart={chart} />
-    </div>
-  )
-}
-
-function HistogramTab({ chart }) {
-  const histogram = useMemo(() => computeHistogram(chart), [chart])
-  if (!histogram) {
-    return <div style={{ padding: '24px', color: 'var(--text-muted)', fontSize: '13px' }}>No numeric values available for this output.</div>
-  }
-  return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-      <div style={{ flex: 1, display: 'flex', alignItems: 'flex-end', gap: '6px', borderBottom: '1px solid var(--border)', paddingBottom: '2px', minHeight: '160px' }}>
-        {histogram.buckets.map((bucket, i) => (
-          <div key={i} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end', height: '100%' }}>
-            <div style={{ fontSize: '9px', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', marginBottom: '4px' }}>{bucket.count}</div>
-            <div style={{
-              width: '100%', height: `${Math.max(bucket.pct, 2)}%`,
-              background: 'linear-gradient(180deg, var(--teal), var(--teal-hover))',
-              borderRadius: '4px 4px 0 0',
-            }} />
-          </div>
-        ))}
-      </div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginTop: '8px' }}>
-        <span>{histogram.min.toExponential(2)}</span>
-        <span>{histogram.max.toExponential(2)}</span>
-      </div>
     </div>
   )
 }
@@ -528,9 +501,9 @@ function MetadataTab({ chart, artifact, accessToken, onViewStatistics }) {
 }
 
 const CHART_TABS = {
-  heatmap: ['map', 'statistics', 'histogram', 'metadata'],
+  heatmap: ['map', 'statistics', 'metadata'],
   heatmap_multi: ['map', 'metadata'],
-  timeseries: ['chart', 'statistics', 'histogram', 'metadata'],
+  timeseries: ['chart', 'statistics', 'metadata'],
 }
 // Table artifacts keep their existing grid alongside the new Metadata tab;
 // ground-validation timeseries artifacts have no chartable series data of
@@ -539,7 +512,7 @@ const ARTIFACT_TABS = {
   table: ['table', 'metadata'],
   timeseries: ['metadata'],
 }
-const TAB_LABELS = { map: 'Map', chart: 'Chart', statistics: 'Statistics', histogram: 'Histogram', metadata: 'Metadata', table: 'Table' }
+const TAB_LABELS = { map: 'Map', chart: 'Chart', statistics: 'Statistics', metadata: 'Metadata', table: 'Table' }
 
 const PANEL_COUNTS = [2, 3, 4]
 
@@ -794,7 +767,6 @@ export default function OutputPanel({
         {activeTab === 'map' && chart.type === 'heatmap_multi' && <HeatmapMultiPanel payload={chart} accessToken={accessToken} />}
         {activeTab === 'chart' && chart.type === 'timeseries' && <TimeSeriesPanel payload={chart} />}
         {activeTab === 'statistics' && <StatisticsTab chart={chart} />}
-        {activeTab === 'histogram' && <HistogramTab chart={chart} />}
         {activeTab === 'metadata' && (
           <MetadataTab
             chart={chart}
