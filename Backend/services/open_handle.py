@@ -129,6 +129,19 @@ def _open(storage_uri: str, media_type: str) -> Any:
     if "zarr" in mt:
         import xarray as xr
 
+        # The MCP's transform tools (compare/regrid) ship derived cubes as a
+        # *zipped* Zarr store (cube.zarr.zip) under the same "application/zarr"
+        # media type as a directory store, so route by the bytes. zarr-python 3
+        # dropped v2's ZipStore-from-".zip"-suffix inference: a plain
+        # xr.open_zarr(path) treats the zip file as an empty directory and
+        # raises "No group found in store ... at path ''" (live TEMPO NO2
+        # compare, 2026-07-16). Mirrors the MCP's own reader
+        # (tools/_dataio.py): ZipStore reads chunk blobs on demand, and the
+        # store is written consolidated=False.
+        if _is_zipfile(path):
+            import zarr
+
+            return xr.open_zarr(zarr.storage.ZipStore(path, mode="r"), consolidated=False)
         return xr.open_zarr(path)
     if "parquet" in mt:
         import pyarrow.parquet as pq

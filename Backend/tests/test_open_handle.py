@@ -55,6 +55,30 @@ class OpenHandleZarrTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(ds, xr.Dataset)
         self.assertIn("no2", ds.data_vars)
 
+    async def test_open_handle_opens_zipped_zarr_transform_export(self):
+        """The MCP's transform tools (compare/regrid) export derived cubes as
+        a *zipped* Zarr store (``cube.zarr.zip``, media_type
+        ``application/zarr``) — never a directory store. zarr-python 3
+        dropped v2's ZipStore-from-suffix inference, so a plain
+        ``xr.open_zarr(path)`` reads the zip file as an empty directory and
+        every compare dies with "No group found in store ... at path ''"
+        (live TEMPO NO2 Texas compare, 2026-07-16)."""
+        import xarray as xr
+
+        from services.open_handle import open_handle
+
+        def make_dataset():
+            return xr.Dataset(
+                {"product__vertical_column_troposphere": (("time", "y", "x"), [[[1.0, 2.0], [3.0, 4.0]]])}
+            )
+
+        self.volume.add_zarr_zip("cube_transform_1", make_dataset)
+
+        ds = await open_handle("cube_transform_1", self.tools)
+
+        self.assertIsInstance(ds, xr.Dataset)
+        self.assertIn("product__vertical_column_troposphere", ds.data_vars)
+
     async def test_open_handle_opens_parquet_handle_into_arrow_table(self):
         import pyarrow as pa
 

@@ -257,6 +257,7 @@ class HandleVolume:
         media_type, _ = self._factories[handle]
         ext = {
             "zarr": ".zarr",
+            "application/zarr": ".zarr.zip",
             "parquet": ".parquet",
             "netcdf": ".nc",
             "application/netcdf-bundle+zip": ".nc.zip",
@@ -277,6 +278,21 @@ class HandleVolume:
         path = self._path(handle)
         if media_type == "zarr":
             factory().to_zarr(path, mode="w")
+        elif media_type == "application/zarr":
+            # Written exactly the way the MCP's transform tools serialize a
+            # derived cube (harmony-retrieval-mcp tools/_dataio.py
+            # _zarr_zip_bytes): a Zarr directory tree, consolidated=False,
+            # zipped file-by-file with store-relative arcnames.
+            import tempfile
+            import zipfile
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                store_dir = pathlib.Path(tmpdir) / "store"
+                factory().to_zarr(store_dir, mode="w", consolidated=False)
+                with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for member in sorted(store_dir.rglob("*")):
+                        if member.is_file():
+                            zf.write(member, member.relative_to(store_dir))
         elif media_type == "netcdf":
             self._write_netcdf_groups(path, factory)
         elif media_type == "application/netcdf-bundle+zip":
@@ -299,6 +315,13 @@ class HandleVolume:
 
     def add_zarr(self, handle: str, make_dataset: Callable[[], Any]) -> None:
         self._factories[handle] = ("zarr", make_dataset)
+        self._write(handle)
+
+    def add_zarr_zip(self, handle: str, make_dataset: Callable[[], Any]) -> None:
+        """Register an ``application/zarr`` handle materialized as a *zipped*
+        Zarr store — the shape every MCP transform export (compare/regrid
+        cube.zarr.zip) arrives in, as opposed to add_zarr's directory store."""
+        self._factories[handle] = ("application/zarr", make_dataset)
         self._write(handle)
 
     def add_parquet(self, handle: str, make_table: Callable[[], Any]) -> None:
