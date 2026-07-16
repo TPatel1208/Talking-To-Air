@@ -392,6 +392,7 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
         focusedOutput={focusedOutput}
         onFocusOutput={setFocusedOutput}
         accessToken={accessToken}
+        onSend={sendMessage}
         compareMode={compareMode}
         compareCount={compareCount}
         compareSelection={compareSelection}

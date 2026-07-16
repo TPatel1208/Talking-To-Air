@@ -633,7 +633,7 @@ function ArtifactTabsPanel({ artifact, accessToken, compareControlProps }) {
 }
 
 export default function OutputPanel({
-  focusedOutput, accessToken, onFocusOutput,
+  focusedOutput, accessToken, onFocusOutput, onSend,
   compareMode = 'off', compareCount = 2, compareSelection = [], compareSessionId = 0,
   onStartCompare, onCancelChooseCompare, onEnterCompare, onExitCompare,
   sessionsCollapsed = false, chatCollapsed = false, rightPanelCollapsed = false,
@@ -768,7 +768,7 @@ export default function OutputPanel({
         {activeTab === 'map' && chart.type === 'heatmap_multi' && <HeatmapMultiPanel payload={chart} accessToken={accessToken} />}
         {activeTab === 'chart' && chart.type === 'timeseries' && <TimeSeriesPanel payload={chart} />}
         {(activeTab === 'map' || activeTab === 'chart') && (
-          <RelatedVariablesPanel related={chart.provenance?.related_variables} />
+          <RelatedVariablesPanel chart={chart} onSend={onSend} />
         )}
         {activeTab === 'statistics' && <StatisticsTab chart={chart} />}
         {activeTab === 'metadata' && (
