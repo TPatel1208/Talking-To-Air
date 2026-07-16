@@ -1,0 +1,104 @@
+{
+  "registry_key": "MODIS_AOD_AQUA",
+  "collection_id": "C3618504061-GES_DISC",
+  "short_name": "AER_DBDT_D10KM_L3_MODIS_AQUA",
+  "source": "granule open (AER_DBDT_D10KM_L3_MODIS_AQUA \u2014 reuses AER_DBDT Terra inventory (identical structure))",
+  "primary_var": "COMBINE_AOD_550_AVG",
+  "quality_flag_var": null,
+  "groups": [],
+  "variables": [
+    {
+      "name": "DT_Number_Of_Pixels",
+      "long_name": "Number of samples for Aerosol Optical Depth (AOD) at 0.55 micron for both ocean (Average) (Quality flag = 1, 2, 3) and land (corrected) (Quality flag = 3), for the grid",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "DT_AOD_550_AVG",
+      "long_name": "Aerosol Optical Depth (AOD) at 0.55 micron for both ocean (Average) (Quality flag = 1, 2, 3) and land (corrected) (Quality flag = 3), mean for the grid",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "DT_AOD_550_STD",
+      "long_name": "Aerosol Optical Depth (AOD) at 0.55 micron for both ocean (Average) (Quality flag = 1, 2, 3) and land (corrected) (Quality flag = 3), standard deviation for the grid",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "DB_Number_Of_Pixels",
+      "long_name": "Number of samples for Deep Blue/SOAR Aerosol Optical Depth (AOD) at 550 nm over land and ocean, QA-filtered, for the grids",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "DB_AOD_550_AVG",
+      "long_name": "Deep Blue/SOAR Aerosol Optical Depth (AOD) at 550 nm over land and ocean, QA-filtered, mean for the grid",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "DB_AOD_550_STD",
+      "long_name": "Deep Blue/SOAR Aerosol Optical Depth (AOD) at 550 nm over land and ocean, QA-filtered, standard deviation for the grid",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "DT_DB_AOD_550_AVG",
+      "long_name": "Aerosol Optical Depth (AOD) at 550 nm, derived using DT as preferred source, falling back to DB if DT is invalid. Values are averaged over the grid.",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "DB_DT_AOD_550_AVG",
+      "long_name": "Aerosol Optical Depth (AOD) at 550 nm, derived using DB as preferred source, falling back to DT if DB is invalid. Values are averaged over the grid.",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "COMBINE_AOD_550_AVG",
+      "long_name": "Aerosol Optical Depth (AOD) at 550 nm, combined average from DT and DB sources. Values are averaged over the grid, using valid values from both DT and DB.",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Sensor_Zenith_Angle",
+      "long_name": "TERRA MODIS Sensor Viewing Angle, mean for the grid",
+      "units": "degree",
+      "standard_name": null
+    },
+    {
+      "name": "Time",
+      "long_name": "time",
+      "units": null,
+      "standard_name": "time"
+    },
+    {
+      "name": "Longitude",
+      "long_name": "Geodetic Longitude",
+      "units": "degree_east",
+      "standard_name": "longitude"
+    },
+    {
+      "name": "Latitude",
+      "long_name": "Geodetic Latitude",
+      "units": "degree_north",
+      "standard_name": "latitude"
+    }
+  ],
+  "expected_roles": {
+    "DT_Number_Of_Pixels": "quality",
+    "DT_AOD_550_AVG": "science",
+    "DT_AOD_550_STD": "quality",
+    "DB_Number_Of_Pixels": "quality",
+    "DB_AOD_550_AVG": "science",
+    "DB_AOD_550_STD": "quality",
+    "DT_DB_AOD_550_AVG": "science",
+    "DB_DT_AOD_550_AVG": "science",
+    "COMBINE_AOD_550_AVG": "science",
+    "Sensor_Zenith_Angle": "context",
+    "Time": "context",
+    "Longitude": "context",
+    "Latitude": "context"
+  }
+}

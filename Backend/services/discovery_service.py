@@ -18,6 +18,8 @@ from typing import Any
 
 from langchain_core.tools import BaseTool
 
+from datasets.registry import CollectionConfig, load_registry
+from datasets.variable_roles import ROLE_DISPLAY_ORDER, classify_inventory
 from earthdata_mcp.results import CATEGORY_NO_DATA, parse_tool_result
 
 # Mirrors the MCP's own inspect_granules contract (harmony-retrieval-mcp's
@@ -35,7 +37,67 @@ async def search_datasets(query: str, filters: dict | None, tools: dict[str, Bas
 
 async def describe_dataset(dataset_handle: str, tools: dict[str, BaseTool]) -> dict[str, Any]:
     raw = await tools["describe_dataset"].ainvoke({"dataset_handle": dataset_handle, "detail": False})
-    return parse_tool_result(raw)
+    result = parse_tool_result(raw)
+    return _attach_inventory(result)
+
+
+def _registry_config_for(result: dict[str, Any]) -> CollectionConfig | None:
+    """The registered collection this describe_dataset result belongs to, matched
+    on the ``concept_id`` (== registry ``collection_id``) or ``short_name`` the
+    result carries — the same identity markers a real granule/CMR record uses.
+    ``dataset_handle`` itself is opaque, so identity comes from the payload, not
+    the handle. Returns None for an unregistered collection (the classifier
+    still runs name-only, just without the registry's primary/qa hints)."""
+    concept_id = result.get("concept_id")
+    metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+    short_name = metadata.get("short_name") or result.get("short_name")
+    for cfg in load_registry().values():
+        if concept_id and cfg.collection_id == concept_id:
+            return cfg
+        if short_name and cfg.short_name and cfg.short_name.upper() == str(short_name).upper():
+            return cfg
+    return None
+
+
+def _attach_inventory(result: dict[str, Any]) -> dict[str, Any]:
+    """Attach a classified, role-annotated ``inventory`` to a describe_dataset
+    result (PRD T35). Additive — existing callers ignoring the new key are
+    unaffected; the semantic classification lives backend-side next to its
+    consumers, exactly as masking semantics live in ``datasets/mask_info.py``
+    rather than the MCP. A result with no ``variables`` list is returned
+    untouched (no inventory key), so an empty/thin UMM-Var view (e.g. MODIS AOD)
+    honestly shows nothing rather than an invented one."""
+    variables = result.get("variables")
+    if not isinstance(variables, list) or not variables:
+        return result
+
+    cfg = _registry_config_for(result)
+    classified = classify_inventory(
+        variables,
+        groups=cfg.groups if cfg else None,
+        primary_var=cfg.primary_var if cfg else None,
+        quality_flag_var=cfg.quality_flag_var if cfg else None,
+    )
+    counts: dict[str, int] = {}
+    for entry in classified:
+        counts[entry["role"]] = counts.get(entry["role"], 0) + 1
+
+    result["inventory"] = {
+        "variables": classified,
+        "counts": counts,
+        "roles_present": [role for role in ROLE_DISPLAY_ORDER if counts.get(role)],
+        "collection_key": _registry_key_for(cfg),
+    }
+    return result
+
+
+def _registry_key_for(cfg: CollectionConfig | None) -> str | None:
+    if cfg is None:
+        return None
+    for key, candidate in load_registry().items():
+        if candidate is cfg:
+            return key
+    return None
 
 
 async def preview_dataset(

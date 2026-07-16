@@ -60,6 +60,7 @@ from pydantic import Field
 
 from config.workflow_stages import STAGE_RENDER
 from datasets.mask_info import col_info_for_short_name, short_name_from_attrs
+from datasets.variable_roles import related_variables
 from earthdata_mcp.results import MCPToolError
 from services.artifact_registry import build_artifact_reference
 from services.open_handle import OpenHandleError, open_handle
@@ -520,6 +521,22 @@ def _qa_methodology(col_info: dict | None) -> dict:
     return {k: v for k, v in methodology.items() if v is not None}
 
 
+def _related_variables(da, col_info: dict | None) -> dict:
+    """A lightweight related-variables view for the chart page (PRD T35): the
+    plotted variable's role plus its QA/uncertainty/context siblings, built
+    from the registry's curated ``variables`` subset already resolved in
+    ``col_info`` -- no describe_dataset round trip, since the chart path never
+    calls it. The plotted variable is the opened DataArray's (leaf) name."""
+    col_info = col_info or {}
+    return related_variables(
+        col_info.get("variables"),
+        groups=col_info.get("groups"),
+        primary_var=col_info.get("primary_var"),
+        quality_flag_var=col_info.get("quality_flag_var"),
+        plotted_variable=da.name or "",
+    )
+
+
 def _provenance(
     handles: list[str], da, region_name: str, aggregation: str,
     agg_meta: dict | None = None, col_info: dict | None = None,
@@ -536,6 +553,7 @@ def _provenance(
         **_dataset_facts(col_info),
         "variable_definition": _variable_definition(da, col_info),
         "qa_methodology": _qa_methodology(col_info),
+        "related_variables": _related_variables(da, col_info),
     }
     if agg_meta:
         provenance["aggregation"] = agg_meta["aggregation_label"]

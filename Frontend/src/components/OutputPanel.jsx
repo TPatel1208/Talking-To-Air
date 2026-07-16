@@ -4,6 +4,7 @@ import MapLibreHeatmapPanel from './MapLibreHeatmapPanel.jsx'
 import HeatmapMultiPanel from './HeatmapMultiPanel.jsx'
 import CompareGrid from './CompareGrid.jsx'
 import ArtifactMessage, { TableArtifactMessage } from './ArtifactMessage'
+import RelatedVariablesPanel from './RelatedVariablesPanel.jsx'
 import { MetadataOverview } from './MetadataOverview.jsx'
 import { MetaField } from './metadataPrimitives.jsx'
 import { smallButtonStyle, copyToClipboard } from '../utils/metadataUiHelpers.js'
@@ -766,6 +767,9 @@ export default function OutputPanel({
         {activeTab === 'map' && chart.type === 'heatmap' && <MapLibreHeatmapPanel payload={chart} height={480} accessToken={accessToken} />}
         {activeTab === 'map' && chart.type === 'heatmap_multi' && <HeatmapMultiPanel payload={chart} accessToken={accessToken} />}
         {activeTab === 'chart' && chart.type === 'timeseries' && <TimeSeriesPanel payload={chart} />}
+        {(activeTab === 'map' || activeTab === 'chart') && (
+          <RelatedVariablesPanel related={chart.provenance?.related_variables} />
+        )}
         {activeTab === 'statistics' && <StatisticsTab chart={chart} />}
         {activeTab === 'metadata' && (
           <MetadataTab

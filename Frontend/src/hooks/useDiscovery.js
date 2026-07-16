@@ -15,6 +15,7 @@ export function useDiscovery(accessToken) {
   const [previews, setPreviews] = useState({})
   const [coverages, setCoverages] = useState({})
   const [granules, setGranules] = useState({})
+  const [inventories, setInventories] = useState({})
 
   const authHeaders = useCallback((extra = {}) => ({
     ...extra,
@@ -103,6 +104,28 @@ export function useDiscovery(accessToken) {
     }
   }, [location, timeRange, authHeaders])
 
+  // Describe (GET /discovery/dataset/{handle}) returns the MCP's variable
+  // facts plus the T35 classified `inventory` the backend attaches. Toggling
+  // an already-loaded card clears it, so the button reads as a disclosure.
+  const inspectVariables = useCallback(async (datasetHandle) => {
+    const existing = inventories[datasetHandle]
+    if (existing && !existing.loading && !existing.error) {
+      setInventories(prev => { const next = { ...prev }; delete next[datasetHandle]; return next })
+      return
+    }
+    setInventories(prev => ({ ...prev, [datasetHandle]: { loading: true, error: null } }))
+    try {
+      const res = await fetch(`${API_BASE}/discovery/dataset/${datasetHandle}`, {
+        headers: authHeaders(),
+      })
+      if (!res.ok) throw new Error(await readErrorMessage(res))
+      const data = await res.json()
+      setInventories(prev => ({ ...prev, [datasetHandle]: { loading: false, error: null, inventory: data.inventory } }))
+    } catch (err) {
+      setInventories(prev => ({ ...prev, [datasetHandle]: { loading: false, error: err.message || 'Variable inventory failed' } }))
+    }
+  }, [inventories, authHeaders])
+
   const inspectGranules = useCallback(async (datasetHandle) => {
     if (!location.trim() || !timeRange.trim()) {
       setGranules(prev => ({
@@ -131,7 +154,7 @@ export function useDiscovery(accessToken) {
     location, setLocation,
     timeRange, setTimeRange,
     results, loading, error,
-    previews, coverages, granules,
-    search, preview, checkCoverage, inspectGranules,
+    previews, coverages, granules, inventories,
+    search, preview, checkCoverage, inspectGranules, inspectVariables,
   }
 }

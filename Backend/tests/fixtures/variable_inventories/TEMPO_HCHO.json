@@ -1,0 +1,183 @@
+{
+  "registry_key": "TEMPO_HCHO",
+  "collection_id": "C3685897141-LARC_CLOUD",
+  "short_name": "TEMPO_HCHO_L3",
+  "source": "describe_dataset detail=True",
+  "primary_var": "vertical_column",
+  "quality_flag_var": "main_data_quality_flag",
+  "groups": [
+    "product"
+  ],
+  "variables": [
+    {
+      "name": "geolocation/relative_azimuth_angle",
+      "long_name": "relative azimuth angle at pixel center",
+      "units": "degrees",
+      "standard_name": null
+    },
+    {
+      "name": "geolocation/solar_zenith_angle",
+      "long_name": "solar zenith angle at pixel center",
+      "units": "degrees",
+      "standard_name": null
+    },
+    {
+      "name": "geolocation/viewing_zenith_angle",
+      "long_name": "viewing zenith angle at pixel center",
+      "units": "degrees",
+      "standard_name": null
+    },
+    {
+      "name": "latitude",
+      "long_name": "latitude",
+      "units": "degrees_north",
+      "standard_name": "latitude"
+    },
+    {
+      "name": "longitude",
+      "long_name": "longitude",
+      "units": "degrees_east",
+      "standard_name": "longitude"
+    },
+    {
+      "name": "product/main_data_quality_flag",
+      "long_name": "main data quality flag",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "product/vertical_column",
+      "long_name": "formaldehyde vertical column",
+      "units": "molecules/cm^2",
+      "standard_name": null
+    },
+    {
+      "name": "product/vertical_column_uncertainty",
+      "long_name": "formaldehyde vertical column uncertainty",
+      "units": "molecules/cm^2",
+      "standard_name": null
+    },
+    {
+      "name": "qa_statistics/max_vertical_column_sample",
+      "long_name": "formaldehyde vertical column",
+      "units": "molecules/cm^2",
+      "standard_name": null
+    },
+    {
+      "name": "qa_statistics/min_vertical_column_sample",
+      "long_name": "formaldehyde vertical column",
+      "units": "molecules/cm^2",
+      "standard_name": null
+    },
+    {
+      "name": "qa_statistics/num_vertical_column_samples",
+      "long_name": "qa_statistics/num_vertical_column_samples",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "support_data/albedo",
+      "long_name": "surface albedo",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "support_data/amf",
+      "long_name": "formaldehyde air mass factor",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "support_data/amf_cloud_fraction",
+      "long_name": "cloud fraction",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "support_data/amf_cloud_pressure",
+      "long_name": "cloud pressure",
+      "units": "hPa",
+      "standard_name": null
+    },
+    {
+      "name": "support_data/eff_cloud_fraction",
+      "long_name": "effective cloud fraction",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "support_data/fitted_slant_column",
+      "long_name": "formaldehyde fitted slant column",
+      "units": "molecules/cm^2",
+      "standard_name": null
+    },
+    {
+      "name": "support_data/fitted_slant_column_uncertainty",
+      "long_name": "formaldehyde fitted slant column uncertainty",
+      "units": "molecules/cm^2",
+      "standard_name": null
+    },
+    {
+      "name": "support_data/pbl_height",
+      "long_name": "planetary boundary layer height",
+      "units": "m",
+      "standard_name": null
+    },
+    {
+      "name": "support_data/snow_ice_fraction",
+      "long_name": "fraction of pixel area covered by snow and/or ice",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "support_data/surface_pressure",
+      "long_name": "surface pressure",
+      "units": "hPa",
+      "standard_name": null
+    },
+    {
+      "name": "support_data/terrain_height",
+      "long_name": "terrain height",
+      "units": "m",
+      "standard_name": null
+    },
+    {
+      "name": "time",
+      "long_name": "scan start time",
+      "units": "seconds since 1980-01-06T00:00:00Z",
+      "standard_name": "time"
+    },
+    {
+      "name": "weight",
+      "long_name": "sum of area weights",
+      "units": "km^2",
+      "standard_name": null
+    }
+  ],
+  "expected_roles": {
+    "geolocation/relative_azimuth_angle": "context",
+    "geolocation/solar_zenith_angle": "context",
+    "geolocation/viewing_zenith_angle": "context",
+    "latitude": "context",
+    "longitude": "context",
+    "product/main_data_quality_flag": "quality",
+    "product/vertical_column": "science",
+    "product/vertical_column_uncertainty": "quality",
+    "qa_statistics/max_vertical_column_sample": "quality",
+    "qa_statistics/min_vertical_column_sample": "quality",
+    "qa_statistics/num_vertical_column_samples": "quality",
+    "support_data/albedo": "context",
+    "support_data/amf": "retrieval-metadata",
+    "support_data/amf_cloud_fraction": "retrieval-metadata",
+    "support_data/amf_cloud_pressure": "retrieval-metadata",
+    "support_data/eff_cloud_fraction": "context",
+    "support_data/fitted_slant_column": "retrieval-metadata",
+    "support_data/fitted_slant_column_uncertainty": "quality",
+    "support_data/pbl_height": "context",
+    "support_data/snow_ice_fraction": "context",
+    "support_data/surface_pressure": "context",
+    "support_data/terrain_height": "context",
+    "time": "context",
+    "weight": "unclassified"
+  }
+}

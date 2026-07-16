@@ -1,3 +1,5 @@
+import VariableInventory from './VariableInventory'
+
 function GranulesTable({ granules }) {
   return (
     <table style={{ width: '100%', fontSize: '11px', borderCollapse: 'collapse', color: 'var(--text-secondary)' }}>
@@ -21,7 +23,7 @@ function GranulesTable({ granules }) {
   )
 }
 
-function DatasetCard({ dataset, location, timeRange, preview, coverage, granules, onPreview, onCoverage, onGranules, onRetrieve }) {
+function DatasetCard({ dataset, location, timeRange, preview, coverage, granules, inventory, onPreview, onCoverage, onGranules, onInspect, onRetrieve }) {
   const handle = dataset.dataset_handle
   // Retrieve turns into the same chat message the agent parses for its time
   // range (App.jsx::handleRetrieve) — an empty window silently drops the
@@ -87,6 +89,16 @@ function DatasetCard({ dataset, location, timeRange, preview, coverage, granules
           }}
         >
           Granules
+        </button>
+        <button
+          onClick={() => onInspect(handle)}
+          style={{
+            fontSize: '11px', padding: '4px 10px', borderRadius: '6px',
+            border: '1px solid var(--border)', background: 'transparent',
+            color: 'var(--text-secondary)', cursor: 'pointer',
+          }}
+        >
+          Variables
         </button>
         <button
           onClick={() => onRetrieve(dataset, location, timeRange)}
@@ -155,6 +167,18 @@ function DatasetCard({ dataset, location, timeRange, preview, coverage, granules
           <GranulesTable granules={granules.granules} />
         </div>
       )}
+
+      {inventory?.loading && (
+        <div style={{ fontSize: '11px', color: 'var(--text-hint)' }}>Loading variables…</div>
+      )}
+      {inventory?.error && (
+        <div style={{ fontSize: '11px', color: 'var(--error)' }}>{inventory.error}</div>
+      )}
+      {inventory && !inventory.loading && !inventory.error && (
+        <div style={{ borderTop: '1px solid var(--border)', paddingTop: '8px', marginTop: '2px' }}>
+          <VariableInventory inventory={inventory.inventory} />
+        </div>
+      )}
     </div>
   )
 }
@@ -164,8 +188,8 @@ export default function DiscoveryPane({
   location, setLocation,
   timeRange, setTimeRange,
   results, loading, error,
-  previews, coverages, granules,
-  onSearch, onPreview, onCoverage, onGranules, onRetrieve,
+  previews, coverages, granules, inventories,
+  onSearch, onPreview, onCoverage, onGranules, onInspect, onRetrieve,
 }) {
   return (
     <div style={{
@@ -257,9 +281,11 @@ export default function DiscoveryPane({
             preview={previews[dataset.dataset_handle]}
             coverage={coverages[dataset.dataset_handle]}
             granules={granules[dataset.dataset_handle]}
+            inventory={inventories[dataset.dataset_handle]}
             onPreview={onPreview}
             onCoverage={onCoverage}
             onGranules={onGranules}
+            onInspect={onInspect}
             onRetrieve={onRetrieve}
           />
         ))}

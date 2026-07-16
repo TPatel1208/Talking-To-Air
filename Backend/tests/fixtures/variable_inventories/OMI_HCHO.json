@@ -1,0 +1,100 @@
+{
+  "registry_key": "OMI_HCHO",
+  "collection_id": "C1626121562-GES_DISC",
+  "short_name": "OMHCHOd",
+  "source": "describe_dataset detail=True",
+  "primary_var": "column_amount",
+  "quality_flag_var": "data_quality_flag",
+  "groups": [
+    "key_science_data",
+    "qa_statistics"
+  ],
+  "variables": [
+    {
+      "name": "key_science_data/column_amount",
+      "long_name": "HCHO column amount",
+      "units": "molecules/cm^2",
+      "standard_name": null
+    },
+    {
+      "name": "key_science_data/column_uncertainty",
+      "long_name": "HCHO column uncertainty",
+      "units": "molecules/cm^2",
+      "standard_name": null
+    },
+    {
+      "name": "latitude",
+      "long_name": "latitude",
+      "units": "degrees_north",
+      "standard_name": null
+    },
+    {
+      "name": "longitude",
+      "long_name": "longitude",
+      "units": "degrees_east",
+      "standard_name": null
+    },
+    {
+      "name": "qa_statistics/data_quality_flag",
+      "long_name": "main data quality flag",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "qa_statistics/num_samples",
+      "long_name": "number of samples",
+      "units": "1",
+      "standard_name": null
+    },
+    {
+      "name": "support_data/albedo",
+      "long_name": "surface albedo",
+      "units": "1",
+      "standard_name": null
+    },
+    {
+      "name": "support_data/amf",
+      "long_name": "air mass factor",
+      "units": "1",
+      "standard_name": null
+    },
+    {
+      "name": "support_data/cloud_fraction",
+      "long_name": "AMF cloud fraction",
+      "units": "1",
+      "standard_name": null
+    },
+    {
+      "name": "support_data/cloud_pressure",
+      "long_name": "AMF cloud pressure",
+      "units": "hPa",
+      "standard_name": null
+    },
+    {
+      "name": "support_data/sample_weight",
+      "long_name": "sample weight",
+      "units": "1",
+      "standard_name": null
+    },
+    {
+      "name": "support_data/terrain_height",
+      "long_name": "terrain height",
+      "units": "m",
+      "standard_name": null
+    }
+  ],
+  "expected_roles": {
+    "key_science_data/column_amount": "science",
+    "key_science_data/column_uncertainty": "quality",
+    "latitude": "context",
+    "longitude": "context",
+    "qa_statistics/data_quality_flag": "quality",
+    "qa_statistics/num_samples": "quality",
+    "support_data/albedo": "context",
+    "support_data/amf": "retrieval-metadata",
+    "support_data/cloud_fraction": "context",
+    "support_data/cloud_pressure": "context",
+    "support_data/sample_weight": "unclassified",
+    "support_data/terrain_height": "context"
+  }
+}

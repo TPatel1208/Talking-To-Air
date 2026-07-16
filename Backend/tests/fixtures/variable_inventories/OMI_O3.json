@@ -1,0 +1,125 @@
+{
+  "registry_key": "OMI_O3",
+  "collection_id": "C1266136037-GES_DISC",
+  "short_name": "OMDOAO3e",
+  "source": "describe_dataset detail=True",
+  "primary_var": "ColumnAmountO3",
+  "quality_flag_var": null,
+  "groups": [],
+  "variables": [
+    {
+      "name": "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/CloudFraction",
+      "long_name": "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/CloudFraction",
+      "units": "NoUnits",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/CloudFractionPrecision",
+      "long_name": "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/CloudFractionPrecision",
+      "units": "NoUnits",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/CloudPressure",
+      "long_name": "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/CloudPressure",
+      "units": "hPa",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/CloudPressurePrecision",
+      "long_name": "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/CloudPressurePrecision",
+      "units": "hPa",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/ColumnAmountO3",
+      "long_name": "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/ColumnAmountO3",
+      "units": "DU",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/ColumnAmountO3Precision",
+      "long_name": "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/ColumnAmountO3Precision",
+      "units": "DU",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/EffectiveTemperature",
+      "long_name": "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/EffectiveTemperature",
+      "units": "degree Celsius",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/EffectiveTemperaturePrecision",
+      "long_name": "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/EffectiveTemperaturePrecision",
+      "units": "degree Celsius",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/GhostColumnAmountO3",
+      "long_name": "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/GhostColumnAmountO3",
+      "units": "DU",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/SolarZenithAngle",
+      "long_name": "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/SolarZenithAngle",
+      "units": "deg",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/TerrainHeight",
+      "long_name": "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/TerrainHeight",
+      "units": "m",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/TerrainReflectivity",
+      "long_name": "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/TerrainReflectivity",
+      "units": "NoUnits",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/ViewingZenithAngle",
+      "long_name": "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/ViewingZenithAngle",
+      "units": "deg",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/ColumnAmountO3/XDim",
+      "long_name": "HDFEOS/GRIDS/ColumnAmountO3/XDim",
+      "units": "degrees_east",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/ColumnAmountO3/YDim",
+      "long_name": "HDFEOS/GRIDS/ColumnAmountO3/YDim",
+      "units": "degrees_north",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS_INFORMATION/StructMetadata_0",
+      "long_name": "HDFEOS_INFORMATION/StructMetadata_0",
+      "units": null,
+      "standard_name": null
+    }
+  ],
+  "expected_roles": {
+    "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/CloudFraction": "context",
+    "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/CloudFractionPrecision": "quality",
+    "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/CloudPressure": "context",
+    "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/CloudPressurePrecision": "quality",
+    "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/ColumnAmountO3": "science",
+    "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/ColumnAmountO3Precision": "quality",
+    "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/EffectiveTemperature": "context",
+    "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/EffectiveTemperaturePrecision": "quality",
+    "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/GhostColumnAmountO3": "retrieval-metadata",
+    "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/SolarZenithAngle": "context",
+    "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/TerrainHeight": "context",
+    "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/TerrainReflectivity": "context",
+    "HDFEOS/GRIDS/ColumnAmountO3/Data_Fields/ViewingZenithAngle": "context",
+    "HDFEOS/GRIDS/ColumnAmountO3/XDim": "context",
+    "HDFEOS/GRIDS/ColumnAmountO3/YDim": "context",
+    "HDFEOS_INFORMATION/StructMetadata_0": "unclassified"
+  }
+}

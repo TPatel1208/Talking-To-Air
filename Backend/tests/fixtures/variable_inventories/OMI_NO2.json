@@ -1,0 +1,69 @@
+{
+  "registry_key": "OMI_NO2",
+  "collection_id": "C1266136111-GES_DISC",
+  "short_name": "OMI_MINDS_NO2d",
+  "source": "describe_dataset detail=True",
+  "primary_var": "ColumnAmountNO2TropCloudScreened",
+  "quality_flag_var": null,
+  "groups": [],
+  "variables": [
+    {
+      "name": "HDFEOS/GRIDS/ColumnAmountNO2/Data_Fields/ColumnAmountNO2",
+      "long_name": "HDFEOS/GRIDS/ColumnAmountNO2/Data_Fields/ColumnAmountNO2",
+      "units": "molec/cm2",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/ColumnAmountNO2/Data_Fields/ColumnAmountNO2CloudScreened",
+      "long_name": "HDFEOS/GRIDS/ColumnAmountNO2/Data_Fields/ColumnAmountNO2CloudScreened",
+      "units": "molec/cm2",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/ColumnAmountNO2/Data_Fields/ColumnAmountNO2Trop",
+      "long_name": "HDFEOS/GRIDS/ColumnAmountNO2/Data_Fields/ColumnAmountNO2Trop",
+      "units": "molec/cm2",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/ColumnAmountNO2/Data_Fields/ColumnAmountNO2TropCloudScreened",
+      "long_name": "HDFEOS/GRIDS/ColumnAmountNO2/Data_Fields/ColumnAmountNO2TropCloudScreened",
+      "units": "molec/cm2",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/ColumnAmountNO2/Data_Fields/Weight",
+      "long_name": "HDFEOS/GRIDS/ColumnAmountNO2/Data_Fields/Weight",
+      "units": "NoUnits",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/ColumnAmountNO2/XDim",
+      "long_name": "HDFEOS/GRIDS/ColumnAmountNO2/XDim",
+      "units": "degrees_east",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/ColumnAmountNO2/YDim",
+      "long_name": "HDFEOS/GRIDS/ColumnAmountNO2/YDim",
+      "units": "degrees_north",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS_INFORMATION/StructMetadata_0",
+      "long_name": "HDFEOS_INFORMATION/StructMetadata_0",
+      "units": null,
+      "standard_name": null
+    }
+  ],
+  "expected_roles": {
+    "HDFEOS/GRIDS/ColumnAmountNO2/Data_Fields/ColumnAmountNO2": "science",
+    "HDFEOS/GRIDS/ColumnAmountNO2/Data_Fields/ColumnAmountNO2CloudScreened": "science",
+    "HDFEOS/GRIDS/ColumnAmountNO2/Data_Fields/ColumnAmountNO2Trop": "science",
+    "HDFEOS/GRIDS/ColumnAmountNO2/Data_Fields/ColumnAmountNO2TropCloudScreened": "science",
+    "HDFEOS/GRIDS/ColumnAmountNO2/Data_Fields/Weight": "unclassified",
+    "HDFEOS/GRIDS/ColumnAmountNO2/XDim": "context",
+    "HDFEOS/GRIDS/ColumnAmountNO2/YDim": "context",
+    "HDFEOS_INFORMATION/StructMetadata_0": "unclassified"
+  }
+}
