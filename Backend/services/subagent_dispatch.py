@@ -226,6 +226,13 @@ async def run_satellite(
                     chart = parse_chart_payload(data)
                     if chart is not None:
                         charts.append(chart)
+                    # Carry the chart id across turns so a later reliability
+                    # question ("why trust this?") can name it to
+                    # explain_measurement — the satellite agent is stateless
+                    # (fresh thread each dispatch), so without this the chart id
+                    # from a prior turn is unrecoverable and P3 can't ground.
+                    if isinstance(data, dict) and data.get("chart_id"):
+                        captured_context["last_chart_id"] = str(data["chart_id"])
                     continue
                 if event_type == "tool_result":
                     content = data.get("content", "")
@@ -561,6 +568,8 @@ def _inject_satellite_context(task: str, context: dict[str, str]) -> str:
         bits.append(f"aoi_handle={context['aoi_handle']}")
     if context.get("last_time_range"):
         bits.append(f"previously_checked_range={context['last_time_range']}")
+    if context.get("last_chart_id"):
+        bits.append(f"most_recent_chart_id={context['last_chart_id']}")
     if not bits:
         return task
     preamble = (

@@ -16,6 +16,7 @@ from langchain.tools import tool
 from langchain_core.tools import BaseTool
 
 from earthdata_mcp.results import MCPToolError
+from services.measurement_explanation import explain_measurement as _explain_measurement
 from services.open_handle import OpenHandleError, open_handle
 from services.retrieval_composites import RetrievalTimeoutError
 from services.retrieval_composites import await_retrieval as _await_retrieval
@@ -216,3 +217,36 @@ def make_point_timeseries(mcp_tools: dict[str, BaseTool]):
         return _save_chart(payload, f"{variable}_{location}_point_timeseries")
 
     return point_timeseries
+
+
+def make_explain_measurement():
+    @tool
+    async def explain_measurement(chart_id: str) -> str:
+        """
+        Retrieve the already-computed reliability evidence for a chart you (or
+        a recent turn) produced — call this, and only this, when the researcher
+        asks how reliable / trustworthy / confident a measurement is. It reads
+        the persisted chart's deterministic facts; it never recomputes or
+        retrieves anything.
+
+        Returns a JSON object:
+          - has_evidence: whether any companion evidence was retrieved for this
+            chart. If false, no QA/uncertainty/context facts exist yet — say so
+            plainly and offer to retrieve the QA flag / cloud fraction; never
+            invent a confidence claim.
+          - evidence: (when has_evidence) the list of {name, role, stat, value,
+            units, coverage} facts — QA pass rate, uncertainty, cloud fraction,
+            aerosol index. Explain STRICTLY from these; never cite a factor
+            that isn't here, and present each as evidence, not a verdict.
+          - masking: the qa_status/qa_source disclosure for the plotted variable.
+          - variable / units: what was plotted.
+          - reason: (when has_evidence is false) why there is nothing to explain.
+
+        Args:
+            chart_id : the artifact/chart id of the measurement in question,
+                        from this or a recent turn's envelope artifact_ids.
+        """
+        result = await _explain_measurement(chart_id)
+        return json.dumps(result)
+
+    return explain_measurement

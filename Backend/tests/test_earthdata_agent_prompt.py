@@ -164,5 +164,60 @@ class EarthdataAgentPromptT25Phase4Tests(unittest.TestCase):
         self.assertIn("not a failure", prompt.lower())
 
 
+class EarthdataAgentPromptT36Phase3Tests(unittest.TestCase):
+    """T36 Phase 3: the prompt has an "Explaining measurement reliability"
+    section that routes reliability questions through explain_measurement and
+    holds the grounding discipline — evidence-only, evidence-vs-verdict, and an
+    honest empty-evidence path that offers to retrieve the companions (the P1
+    loop) rather than confabulating confidence."""
+
+    def _prompt(self):
+        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+
+        return get_earthdata_agent_prompt()
+
+    def test_prompt_has_the_reliability_section_and_routes_to_the_tool(self):
+        prompt = self._prompt()
+
+        self.assertIn("Explaining measurement reliability", prompt)
+        self.assertIn("explain_measurement", prompt)
+        # Triggered by reliability/confidence phrasing (collapse whitespace so
+        # line wrapping can't hide a phrase).
+        lowered = " ".join(prompt.lower().split())
+        self.assertIn("how reliable", lowered)
+        self.assertIn("how confident", lowered)
+
+    def test_prompt_holds_the_evidence_only_and_evidence_vs_verdict_guardrails(self):
+        # Collapse whitespace so line wrapping can't hide a phrase.
+        prompt = " ".join(self._prompt().lower().split())
+
+        # Evidence-only: never assert a factor not in the returned evidence.
+        self.assertIn("only the facts in the returned", prompt)
+        self.assertIn("not in the returned evidence", prompt)
+        # Evidence, not verdict.
+        self.assertIn("never as a categorical verdict", prompt)
+        # Caveats: coverage and uncertainty are surfaced.
+        self.assertIn("coverage", prompt)
+        self.assertIn("uncertainty", prompt)
+
+    def test_prompt_empty_evidence_offers_retrieval_instead_of_confabulating(self):
+        prompt = " ".join(self._prompt().lower().split())
+
+        self.assertIn("has_evidence", prompt)
+        self.assertIn("no companion evidence", prompt)
+        # Offers the QA flag / cloud fraction retrieval as a suggested followup
+        # (the P1 loop), and refuses to manufacture confidence.
+        self.assertIn("qa flag", prompt)
+        self.assertIn("cloud fraction", prompt)
+        self.assertIn("suggested_followups", prompt)
+        self.assertIn("do not manufacture a confidence claim", prompt)
+
+    def test_prompt_relaxes_summary_length_for_reliability_only_but_keeps_contract(self):
+        prompt = " ".join(self._prompt().lower().split())
+
+        self.assertIn("reliability query class only", prompt)
+        self.assertIn("the json envelope contract is unchanged", prompt)
+
+
 if __name__ == "__main__":
     unittest.main()

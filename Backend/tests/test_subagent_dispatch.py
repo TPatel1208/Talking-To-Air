@@ -102,6 +102,20 @@ class HelperTests(unittest.TestCase):
 
         self.assertEqual(_inject_satellite_context("task", {}), "task")
 
+    def test_satellite_context_injection_carries_the_most_recent_chart_id(self):
+        """T36 P3: the satellite agent is stateless, so the chart id a follow-up
+        reliability question must hand to explain_measurement is only reachable
+        if it's injected as prior-retrieval context."""
+        from services.subagent_dispatch import _inject_satellite_context
+
+        enriched = _inject_satellite_context(
+            "How reliable is this measurement?",
+            {"last_chart_id": "map_c5e747d00b29"},
+        )
+
+        self.assertIn("most_recent_chart_id=map_c5e747d00b29", enriched)
+        self.assertTrue(enriched.endswith("How reliable is this measurement?"))
+
     def test_finalize_sub_agent_result_resolves_matching_artifact_ids_and_handles(self):
         from services.subagent_dispatch import _finalize_sub_agent_result
         from models import AgentResult
