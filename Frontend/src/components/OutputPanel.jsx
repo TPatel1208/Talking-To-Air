@@ -10,6 +10,7 @@ import { MetaField } from './metadataPrimitives.jsx'
 import { smallButtonStyle, copyToClipboard } from '../utils/metadataUiHelpers.js'
 import { computeChartStats } from '../utils/chartStats'
 import { resolveMasking } from '../utils/maskingProvenance'
+import { evidenceRows } from '../utils/evidenceSummary'
 import { filledCharts } from '../utils/compareMode'
 import { focusChartPayload } from '../utils/compareSlotOverview'
 import { shouldShowCollapseHint } from '../utils/compareLayoutHint'
@@ -126,10 +127,55 @@ function MaskingDisclosure({ chart }) {
   )
 }
 
+// Deterministic "Supporting information" (PRD T36 Phase 2): factual companion
+// evidence -- QA pass rate, retrieval uncertainty, cloud fraction, aerosol
+// index -- co-located with the plotted science variable and carrying honest
+// coverage, computed backend-side (provenance.evidence). No narrative: a
+// checklist of facts. Omits itself entirely when the file carries no evidence
+// bands (e.g. MODIS AOD), rather than showing an empty grid.
+function EvidenceSection({ chart }) {
+  const rows = useMemo(() => evidenceRows(chart), [chart])
+  if (!rows.length) return null
+  return (
+    <div style={{
+      background: 'var(--bg-secondary)', border: '1px solid var(--border)',
+      borderRadius: '10px', padding: '11px 13px',
+    }}>
+      <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '8px' }}>
+        Supporting information
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '9px' }}>
+        {rows.map(row => (
+          <div key={row.key} style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: '12px' }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: '12.5px', fontWeight: 700, color: 'var(--text-primary)', overflowWrap: 'anywhere' }}>
+                {row.label}
+              </div>
+              {row.coverageText && (
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                  {row.coverageText}
+                </div>
+              )}
+            </div>
+            <div style={{ fontSize: '13px', fontWeight: 800, fontFamily: 'var(--font-mono)', color: 'var(--text-primary)', whiteSpace: 'nowrap', textAlign: 'right' }}>
+              {row.valueText}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function StatisticsTab({ chart }) {
   const stats = useMemo(() => computeChartStats(chart), [chart])
   if (!stats) {
-    return <div style={{ padding: '24px', color: 'var(--text-muted)', fontSize: '13px' }}>No numeric values available for this output.</div>
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        <div style={{ padding: '24px', color: 'var(--text-muted)', fontSize: '13px' }}>No numeric values available for this output.</div>
+        <EvidenceSection chart={chart} />
+      </div>
+    )
   }
   const fmt = (n) => Number.isFinite(n) ? n.toExponential(3) : '—'
   return (
@@ -142,6 +188,7 @@ function StatisticsTab({ chart }) {
         <StatCard label="Sample count" value={stats.count.toLocaleString()} />
       </div>
       <MaskingDisclosure chart={chart} />
+      <EvidenceSection chart={chart} />
     </div>
   )
 }

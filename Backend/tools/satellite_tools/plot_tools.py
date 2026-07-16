@@ -59,8 +59,9 @@ from typing import Annotated, List, Optional
 from pydantic import Field
 
 from config.workflow_stages import STAGE_RENDER
-from datasets.mask_info import col_info_for_short_name, short_name_from_attrs
-from datasets.variable_roles import related_variables
+from datasets.mask_info import col_info_for_short_name, resolve_mask_info, short_name_from_attrs
+from datasets.qa_flags import resolve_qa_info
+from datasets.variable_roles import classify_inventory, related_variables
 from earthdata_mcp.results import MCPToolError
 from services.artifact_registry import build_artifact_reference
 from services.open_handle import OpenHandleError, open_handle
@@ -537,9 +538,237 @@ def _related_variables(da, col_info: dict | None) -> dict:
     )
 
 
+def _evi_leaf(name) -> str:
+    """The bare, lowercased leaf name of a (possibly group-qualified) variable
+    -- for comparing a classified inventory entry against the plotted science
+    variable / QA-flag variable without importing variable_roles' internals."""
+    return str(name or "").rsplit("/", 1)[-1].lower()
+
+
+def _band_valid_mask(values, fill_value, valid_min, valid_max):
+    """Boolean array of finite, non-fill, in-valid-range cells -- the same
+    fill/valid discipline ``AggregationService.apply_quality_mask`` applies to
+    the science variable, applied here to a companion band so an evidence stat
+    is computed only over real data. This is what keeps ``coverage`` honest and
+    guards the valid-pct-computed-after-null-stripping trap fixed once already
+    in this repo: fill cells are excluded from the numerator, never silently
+    averaged in."""
+    valid = np.isfinite(values)
+    if fill_value is not None:
+        try:
+            fill_f = float(fill_value)
+            if fill_f.is_integer():
+                valid &= values != fill_f
+            else:
+                valid &= ~np.isclose(values, fill_f, rtol=1e-6, atol=1e-9)
+        except (TypeError, ValueError):
+            pass
+    if valid_min is not None:
+        valid &= values >= valid_min
+    if valid_max is not None:
+        valid &= values <= valid_max
+    return valid
+
+
+def _crop_band_to_region(band, region):
+    """Crop a companion band to the plotted science variable's region footprint
+    -- the same ``mask_data_by_geometry`` + ``_sel_bounds`` crop the science
+    variable received, so the band is co-located pixel-for-pixel (companions
+    share the science grid, so this is xarray's inner-join alignment, no
+    reprojection). Returns ``(cropped_band, in_region_cell_count)`` where the
+    count is the region footprint measured off an all-ones twin -- independent
+    of the band's own fill/NaN, so ``coverage`` counts fill cells against the
+    total rather than dropping them (the valid-pct trap). Returns
+    ``(None, 0)`` when the band has no usable lat/lon grid to co-locate on."""
+    import xarray as xr
+
+    lon_coord = find_lon_coord(band)
+    if lon_coord:
+        band = _normalize_longitudes(band, lon_coord)
+    lat_coord = find_lat_coord(band)
+    lon_coord = find_lon_coord(band)
+    if lat_coord is None or lon_coord is None:
+        return None, 0
+
+    cropped = mask_data_by_geometry(band, region["geometry"])
+    cropped = _sel_bounds(cropped, lat_coord, lon_coord, region["bounds"])
+
+    footprint = mask_data_by_geometry(xr.ones_like(band), region["geometry"])
+    footprint = _sel_bounds(footprint, lat_coord, lon_coord, region["bounds"])
+    in_region = int(np.isfinite(np.asarray(footprint.values)).sum())
+    return cropped, in_region
+
+
+def _band_mean_fact(band, leaf, role, region, *, pct_of_science=None):
+    """A deterministic mean-over-valid-pixels evidence fact for a context or
+    uncertainty band, in the band's own units, carrying an honest coverage
+    valid-fraction. ``pct_of_science`` (the masked science mean) adds the
+    uncertainty as a fraction of the science value when available."""
+    cropped, in_region = _crop_band_to_region(band, region)
+    if cropped is None or in_region == 0:
+        return None
+    vals = np.asarray(cropped.values, dtype="float64")
+    resolved, _ = resolve_mask_info(cf_attrs=dict(band.attrs))
+    valid = _band_valid_mask(
+        vals, resolved.get("fill_value"), resolved.get("valid_min"), resolved.get("valid_max"),
+    )
+    valid_count = int(valid.sum())
+    if valid_count == 0:
+        return None
+    mean_val = float(np.mean(vals[valid]))
+    fact = {
+        "name": leaf,
+        "role": role,
+        "stat": "mean",
+        "value": round(mean_val, 6),
+        "units": band.attrs.get("units", "") or "",
+        "coverage": round(valid_count / in_region, 4),
+    }
+    if pct_of_science:
+        fact["pct_of_science"] = round(abs(mean_val / pct_of_science), 4)
+    return fact
+
+
+def _qa_pass_rate_fact(flag_band, qf_var, good_values, bad_values, region):
+    """A deterministic QA-pass-rate fact from the co-located flag band, using
+    the SAME good/bad flag values ``resolve_and_mask`` masks with -- never a
+    second QA doctrine. ``value`` is the fraction of valid flag pixels passing
+    over the region/time; ``coverage`` is the fraction of the region footprint
+    where a valid (non-fill) flag exists at all."""
+    cropped, in_region = _crop_band_to_region(flag_band, region)
+    if cropped is None or in_region == 0:
+        return None
+    vals = np.asarray(cropped.values, dtype="float64")
+    resolved, _ = resolve_mask_info(cf_attrs=dict(flag_band.attrs))
+    valid = _band_valid_mask(
+        vals, resolved.get("fill_value"), resolved.get("valid_min"), resolved.get("valid_max"),
+    )
+    valid_count = int(valid.sum())
+    if valid_count == 0:
+        return None
+    flat = vals[valid]
+    if good_values is not None:
+        passing = np.isin(flat, list(good_values))
+    else:
+        passing = ~np.isin(flat, list(bad_values))
+    return {
+        "name": str(qf_var).rsplit("/", 1)[-1],
+        "role": "quality",
+        "stat": "pass_rate",
+        "value": round(float(passing.sum()) / valid_count, 4),
+        "units": "",
+        "coverage": round(valid_count / in_region, 4),
+    }
+
+
+def _evidence(ds, da, col_info: dict | None, region: dict | None) -> list[dict]:
+    """Deterministic companion-evidence facts (PRD T36 Phase 2): the quality
+    and context bands sitting unused beside the plotted science variable in the
+    same opened Dataset, summarized as co-located facts a scientist can use to
+    judge *this* measurement -- QA pass rate, retrieval uncertainty, cloud
+    fraction, aerosol index -- each with honest coverage. No LLM, no narrative;
+    this is the facts layer P3 will later explain.
+
+    Driven entirely by T35's ``classify_inventory`` over ``ds.data_vars`` (the
+    High-confidence CF ``standard_name`` tier is reachable here, post-open) so
+    an evidence band is never invented -- a product with no context siblings
+    (e.g. MODIS AOD) yields ``[]``. Only bands already present in ``ds`` are
+    read; fetching a companion the file lacks is out of scope (Phase 3+).
+
+    Returns a list of ``{name, role, stat, value, units, coverage}`` facts
+    (uncertainty facts may add ``pct_of_science``). Best-effort: a band that
+    fails to co-locate is skipped, and any failure yields ``[]`` rather than
+    disturbing the chart's provenance -- evidence is purely additive.
+    """
+    if ds is None or not hasattr(ds, "data_vars") or region is None:
+        return []
+    col_info = col_info or {}
+    facts: list[dict] = []
+    science_leaf = _evi_leaf(da.name)
+
+    # The masked science mean, for uncertainty-as-percent-of-science.
+    try:
+        science_vals = np.asarray(da.values, dtype="float64")
+        finite = science_vals[np.isfinite(science_vals)]
+        science_mean = float(np.mean(finite)) if finite.size else None
+    except Exception:
+        science_mean = None
+
+    # QA pass rate -- reuse the exact flag var + good/bad values resolution
+    # ``resolve_and_mask`` uses, so the pass rate reports the one QA doctrine
+    # applied to the data, not a forked second one.
+    qf_leaf = None
+    try:
+        qf_var, flag_attrs = _aggregation_service._resolve_qa_flag_var(ds, da, col_info)
+        if qf_var and qf_var in ds.data_vars:
+            qf_leaf = _evi_leaf(qf_var)
+            qa_col_info, _ = resolve_qa_info(
+                yaml_info=col_info, flag_attrs=flag_attrs, short_name=col_info.get("short_name"),
+            )
+            good = qa_col_info.get("qa_good_values")
+            bad = qa_col_info.get("qa_bad_values")
+            if good is not None or bad is not None:
+                fact = _qa_pass_rate_fact(ds[qf_var], qf_var, good, bad, region)
+                if fact:
+                    facts.append(fact)
+    except Exception:
+        pass
+
+    # Context / uncertainty means -- classify the opened Dataset's bands and
+    # keep only High/Medium-confidence quality (uncertainty) and context bands,
+    # never the plotted science var, its science siblings, the QA flag (handled
+    # above), or unclassified bands.
+    try:
+        records = [
+            {
+                "name": name,
+                "standard_name": var.attrs.get("standard_name"),
+                "long_name": var.attrs.get("long_name"),
+                "units": var.attrs.get("units"),
+            }
+            for name, var in ds.data_vars.items()
+        ]
+        classified = classify_inventory(
+            records,
+            primary_var=col_info.get("primary_var"),
+            quality_flag_var=col_info.get("quality_flag_var"),
+        )
+    except Exception:
+        return facts
+
+    for entry in classified:
+        role, confidence, name = entry["role"], entry["confidence"], entry["name"]
+        leaf, norm = entry["leaf"], _evi_leaf(entry["leaf"])
+        if confidence not in ("high", "medium"):
+            continue
+        if role not in ("quality", "context"):
+            continue
+        if norm == science_leaf or norm == qf_leaf:
+            continue
+        if name not in ds.data_vars:
+            continue
+        is_uncertainty = "uncertainty" in norm
+        # Non-uncertainty quality bands (precision, std, sample counts) have no
+        # defined summary -- omit rather than invent one.
+        if role == "quality" and not is_uncertainty:
+            continue
+        try:
+            fact = _band_mean_fact(
+                ds[name], leaf, role, region,
+                pct_of_science=science_mean if is_uncertainty else None,
+            )
+        except Exception:
+            fact = None
+        if fact:
+            facts.append(fact)
+
+    return facts
+
+
 def _provenance(
     handles: list[str], da, region_name: str, aggregation: str,
     agg_meta: dict | None = None, col_info: dict | None = None,
+    ds=None, region: dict | None = None,
 ) -> dict:
     start_date, end_date = _time_range(da)
     provenance = {
@@ -554,6 +783,7 @@ def _provenance(
         "variable_definition": _variable_definition(da, col_info),
         "qa_methodology": _qa_methodology(col_info),
         "related_variables": _related_variables(da, col_info),
+        "evidence": _evidence(ds, da, col_info, region),
     }
     if agg_meta:
         provenance["aggregation"] = agg_meta["aggregation_label"]
@@ -579,9 +809,12 @@ def _attach_reproducibility(
     agg_meta: dict | None = None,
     region: dict | None = None,
     col_info: dict | None = None,
+    ds=None,
 ) -> dict:
     aggregation_label = agg_meta["aggregation_label"] if agg_meta else aggregation
-    payload["provenance"] = _provenance(handles, da, region_name, aggregation_label, agg_meta, col_info)
+    payload["provenance"] = _provenance(
+        handles, da, region_name, aggregation_label, agg_meta, col_info, ds=ds, region=region,
+    )
     payload["query"] = _query_definition(da, region, aggregation_label, chart_parameters)
     payload["export"] = {
         "type": payload.get("type"),
@@ -727,6 +960,7 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
                     agg_meta,
                     region,
                     col_info,
+                    ds=ds,
                 )
             except Exception as e:
                 return "payload", None, None, f"Failed to build chart payload: {e}"
@@ -862,6 +1096,7 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
                         agg_meta,
                         region,
                         col_info,
+                        ds=ds,
                     )
                 except Exception as e:
                     return "payload", None, None, f"Failed to build panel for '{location}': {e}"
@@ -1059,6 +1294,7 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
                 agg_meta,
                 region,
                 col_info,
+                ds=ds,
             )
             return None, (ts_payload, variable_name)
 
