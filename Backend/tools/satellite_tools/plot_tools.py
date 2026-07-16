@@ -68,9 +68,9 @@ from services.open_handle import OpenHandleError, open_handle
 from utils.geo_utils import find_lat_coord, find_lon_coord
 from utils.colormaps import resolve as resolve_colormap
 from utils.overlay_render import render_overlay_png
-from utils.plotting import _normalize_to_2d, mask_data_by_geometry, RegionResolver
+from utils.plotting import _normalize_to_2d, geometry_mask, mask_data_by_geometry, RegionResolver
 from utils.streaming import emit_chart, emit_status
-from preprocessing.aggregation_service import AggregationService
+from preprocessing.aggregation_service import AggregationService, fill_match, flag_pass_condition
 
 logger = logging.getLogger(__name__)
 
@@ -522,15 +522,38 @@ def _qa_methodology(col_info: dict | None) -> dict:
     return {k: v for k, v in methodology.items() if v is not None}
 
 
-def _related_variables(da, col_info: dict | None) -> dict:
+def _inventory_records(ds) -> list[dict]:
+    """The opened Dataset's bands as ``classify_inventory`` records. Names
+    here are bare leaves (open_handle merges groups without prefixing), so
+    each record carries the ``group_path`` attr open_handle stamped — the
+    only way the classifier's group priors can fire post-open."""
+    return [
+        {
+            "name": name,
+            "group": var.attrs.get("group_path"),
+            "standard_name": var.attrs.get("standard_name"),
+            "long_name": var.attrs.get("long_name"),
+            "units": var.attrs.get("units"),
+        }
+        for name, var in ds.data_vars.items()
+    ]
+
+
+def _related_variables(da, col_info: dict | None, ds=None) -> dict:
     """A lightweight related-variables view for the chart page (PRD T35): the
-    plotted variable's role plus its QA/uncertainty/context siblings, built
-    from the registry's curated ``variables`` subset already resolved in
-    ``col_info`` -- no describe_dataset round trip, since the chart path never
-    calls it. The plotted variable is the opened DataArray's (leaf) name."""
+    plotted variable's role plus its QA/uncertainty/context siblings. Built
+    from the opened Dataset's actual bands when it travels — the SAME source
+    ``_evidence`` reads, so the related-variables panel and the evidence facts
+    can never contradict each other (the registry's curated ``variables``
+    subset can be far narrower than the retrieved file). Falls back to that
+    curated subset when no source Dataset is available. The plotted variable
+    is the opened DataArray's (leaf) name."""
     col_info = col_info or {}
+    variables = col_info.get("variables")
+    if ds is not None and getattr(ds, "data_vars", None):
+        variables = _inventory_records(ds)
     return related_variables(
-        col_info.get("variables"),
+        variables,
         groups=col_info.get("groups"),
         primary_var=col_info.get("primary_var"),
         quality_flag_var=col_info.get("quality_flag_var"),
@@ -549,18 +572,16 @@ def _band_valid_mask(values, fill_value, valid_min, valid_max):
     """Boolean array of finite, non-fill, in-valid-range cells -- the same
     fill/valid discipline ``AggregationService.apply_quality_mask`` applies to
     the science variable, applied here to a companion band so an evidence stat
-    is computed only over real data. This is what keeps ``coverage`` honest and
-    guards the valid-pct-computed-after-null-stripping trap fixed once already
-    in this repo: fill cells are excluded from the numerator, never silently
-    averaged in."""
+    is computed only over real data. Fill matching is the shared
+    ``aggregation_service.fill_match`` — one definition, so a tolerance fix
+    there can never diverge from this path. This is what keeps ``coverage``
+    honest and guards the valid-pct-computed-after-null-stripping trap fixed
+    once already in this repo: fill cells are excluded from the numerator,
+    never silently averaged in."""
     valid = np.isfinite(values)
     if fill_value is not None:
         try:
-            fill_f = float(fill_value)
-            if fill_f.is_integer():
-                valid &= values != fill_f
-            else:
-                valid &= ~np.isclose(values, fill_f, rtol=1e-6, atol=1e-9)
+            valid &= ~np.asarray(fill_match(values, fill_value))
         except (TypeError, ValueError):
             pass
     if valid_min is not None:
@@ -572,29 +593,30 @@ def _band_valid_mask(values, fill_value, valid_min, valid_max):
 
 def _crop_band_to_region(band, region):
     """Crop a companion band to the plotted science variable's region footprint
-    -- the same ``mask_data_by_geometry`` + ``_sel_bounds`` crop the science
-    variable received, so the band is co-located pixel-for-pixel (companions
-    share the science grid, so this is xarray's inner-join alignment, no
-    reprojection). Returns ``(cropped_band, in_region_cell_count)`` where the
-    count is the region footprint measured off an all-ones twin -- independent
-    of the band's own fill/NaN, so ``coverage`` counts fill cells against the
-    total rather than dropping them (the valid-pct trap). Returns
-    ``(None, 0)`` when the band has no usable lat/lon grid to co-locate on."""
+    -- the same geometry mask + ``_sel_bounds`` crop the science variable
+    received, so the band is co-located pixel-for-pixel (companions share the
+    science grid, so this is xarray's inner-join alignment, no reprojection).
+    Returns ``(cropped_band, in_region_cell_count)`` where the count is the
+    region footprint measured off the geometry mask broadcast over an all-ones
+    twin -- independent of the band's own fill/NaN, so ``coverage`` counts
+    fill cells against the total rather than dropping them (the valid-pct
+    trap). The geometry is rasterized ONCE (``geometry_mask``): the mask
+    depends only on grid and geometry, so crop and footprint both derive from
+    it. Returns ``(None, 0)`` when the band has no usable lat/lon grid to
+    co-locate on."""
     import xarray as xr
 
     lon_coord = find_lon_coord(band)
     if lon_coord:
-        band = _normalize_longitudes(band, lon_coord)
+        band = _normalize_longitudes(band, lon_coord)  # keeps the coord's name
     lat_coord = find_lat_coord(band)
-    lon_coord = find_lon_coord(band)
     if lat_coord is None or lon_coord is None:
         return None, 0
 
-    cropped = mask_data_by_geometry(band, region["geometry"])
-    cropped = _sel_bounds(cropped, lat_coord, lon_coord, region["bounds"])
+    mask = geometry_mask(band, region["geometry"])
+    cropped = _sel_bounds(band.where(mask), lat_coord, lon_coord, region["bounds"])
 
-    footprint = mask_data_by_geometry(xr.ones_like(band), region["geometry"])
-    footprint = _sel_bounds(footprint, lat_coord, lon_coord, region["bounds"])
+    footprint = _sel_bounds(xr.ones_like(band).where(mask), lat_coord, lon_coord, region["bounds"])
     in_region = int(np.isfinite(np.asarray(footprint.values)).sum())
     return cropped, in_region
 
@@ -624,17 +646,21 @@ def _band_mean_fact(band, leaf, role, region, *, pct_of_science=None):
         "units": band.attrs.get("units", "") or "",
         "coverage": round(valid_count / in_region, 4),
     }
-    if pct_of_science:
+    # A 0.0 science mean (a legitimate value for anomaly-style fields) makes
+    # the ratio undefined — omit the key rather than divide by zero, which
+    # would lose the whole fact to the caller's best-effort except.
+    if pct_of_science is not None and pct_of_science != 0:
         fact["pct_of_science"] = round(abs(mean_val / pct_of_science), 4)
     return fact
 
 
 def _qa_pass_rate_fact(flag_band, qf_var, good_values, bad_values, region):
     """A deterministic QA-pass-rate fact from the co-located flag band, using
-    the SAME good/bad flag values ``resolve_and_mask`` masks with -- never a
-    second QA doctrine. ``value`` is the fraction of valid flag pixels passing
-    over the region/time; ``coverage`` is the fraction of the region footprint
-    where a valid (non-fill) flag exists at all."""
+    the SAME good/bad flag values AND the same pass condition
+    (``aggregation_service.flag_pass_condition``) ``resolve_and_mask`` masks
+    with -- never a second QA doctrine. ``value`` is the fraction of valid
+    flag pixels passing over the region/time; ``coverage`` is the fraction of
+    the region footprint where a valid (non-fill) flag exists at all."""
     cropped, in_region = _crop_band_to_region(flag_band, region)
     if cropped is None or in_region == 0:
         return None
@@ -646,11 +672,7 @@ def _qa_pass_rate_fact(flag_band, qf_var, good_values, bad_values, region):
     valid_count = int(valid.sum())
     if valid_count == 0:
         return None
-    flat = vals[valid]
-    if good_values is not None:
-        passing = np.isin(flat, list(good_values))
-    else:
-        passing = ~np.isin(flat, list(bad_values))
+    passing = np.asarray(flag_pass_condition(cropped, good_values, bad_values).values)[valid]
     return {
         "name": str(qf_var).rsplit("/", 1)[-1],
         "role": "quality",
@@ -719,17 +741,8 @@ def _evidence(ds, da, col_info: dict | None, region: dict | None) -> list[dict]:
     # never the plotted science var, its science siblings, the QA flag (handled
     # above), or unclassified bands.
     try:
-        records = [
-            {
-                "name": name,
-                "standard_name": var.attrs.get("standard_name"),
-                "long_name": var.attrs.get("long_name"),
-                "units": var.attrs.get("units"),
-            }
-            for name, var in ds.data_vars.items()
-        ]
         classified = classify_inventory(
-            records,
+            _inventory_records(ds),
             primary_var=col_info.get("primary_var"),
             quality_flag_var=col_info.get("quality_flag_var"),
         )
@@ -765,6 +778,23 @@ def _evidence(ds, da, col_info: dict | None, region: dict | None) -> list[dict]:
     return facts
 
 
+def _merged_multi_provenance(panels: list[dict]) -> dict:
+    """Top-level provenance for a heatmap_multi payload: panel 0's provenance
+    with the region names joined across panels — the pre-existing merge shape
+    — minus the per-panel ``evidence``/``related_variables`` sections. Those
+    are region-specific facts (QA pass rate, cloud fraction); presenting one
+    panel's as the whole comparison's would mislead exactly the trust
+    judgment they exist to support (T36). Each panel keeps its own."""
+    merged = dict(panels[0].get("provenance", {}))
+    merged.pop("evidence", None)
+    merged.pop("related_variables", None)
+    merged["region_name"] = ", ".join(
+        panel.get("provenance", {}).get("region_name", "") for panel in panels
+    )
+    merged["aggregation"] = "single snapshot comparison"
+    return merged
+
+
 def _provenance(
     handles: list[str], da, region_name: str, aggregation: str,
     agg_meta: dict | None = None, col_info: dict | None = None,
@@ -782,7 +812,7 @@ def _provenance(
         **_dataset_facts(col_info),
         "variable_definition": _variable_definition(da, col_info),
         "qa_methodology": _qa_methodology(col_info),
-        "related_variables": _related_variables(da, col_info),
+        "related_variables": _related_variables(da, col_info, ds=ds),
         "evidence": _evidence(ds, da, col_info, region),
     }
     if agg_meta:
@@ -1119,11 +1149,7 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
 
         multi_payload = {"type": "heatmap_multi", "title": title or f"{variable_name} Comparison", "panels": panels}
         if panels:
-            multi_payload["provenance"] = {
-                **panels[0].get("provenance", {}),
-                "region_name": ", ".join(panel.get("provenance", {}).get("region_name", "") for panel in panels),
-                "aggregation": "single snapshot comparison",
-            }
+            multi_payload["provenance"] = _merged_multi_provenance(panels)
             multi_payload["query"] = {
                 "dataset": variable_name,
                 "aggregation": "single snapshot comparison",

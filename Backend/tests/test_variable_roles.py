@@ -168,6 +168,21 @@ class GroupPriorTests(unittest.TestCase):
         role, _ = classify_variable("key_science_data/column_uncertainty", group="key_science_data")
         self.assertEqual(role, ROLE_QUALITY)
 
+    def test_explicit_record_group_reaches_the_group_priors(self):
+        """A post-open inventory (plot_tools' evidence path) carries bare leaf
+        names — open_handle merges groups without prefixing — so group
+        membership must be able to travel as an explicit per-record ``group``
+        and still fire the group priors, exactly as a slash-qualified
+        describe_dataset name does. TEMPO_NO2's real
+        qa_statistics/max_vertical_column_stratosphere_sample would otherwise
+        misread as science via the verticalcolumn stem."""
+        out = classify_inventory([
+            {"name": "max_vertical_column_stratosphere_sample", "group": "qa_statistics"},
+        ])
+        self.assertEqual(out[0]["role"], ROLE_QUALITY)
+        self.assertEqual(out[0]["confidence"], CONFIDENCE_HIGH)
+        self.assertEqual(out[0]["group"], "qa_statistics")
+
 
 class ConfidenceTests(unittest.TestCase):
     """Confidence describes the decision: High (metadata/group), Medium
@@ -234,6 +249,25 @@ class RelatedVariablesTests(unittest.TestCase):
         self.assertEqual(rv["qa_sibling"], "main_data_quality_flag")
         self.assertEqual(rv["uncertainty_sibling"], "vertical_column_uncertainty")
 
+    def test_precision_style_companion_is_the_uncertainty_sibling(self):
+        """OMI_O3 carries its error companion as ColumnAmountO3Precision — the
+        classifier already tags it quality; the sibling matcher must surface
+        it rather than requiring the literal <stem>uncertainty spelling."""
+        rv = related_variables(
+            ["ColumnAmountO3", "ColumnAmountO3Precision", "RadiativeCloudFraction"],
+            primary_var="ColumnAmountO3",
+            plotted_variable="ColumnAmountO3",
+        )
+        self.assertEqual(rv["uncertainty_sibling"], "ColumnAmountO3Precision")
+
+    def test_exact_uncertainty_spelling_is_preferred_over_other_suffixes(self):
+        rv = related_variables(
+            ["vertical_column", "vertical_column_std", "vertical_column_uncertainty"],
+            primary_var="vertical_column",
+            plotted_variable="vertical_column",
+        )
+        self.assertEqual(rv["uncertainty_sibling"], "vertical_column_uncertainty")
+
     def test_modis_aod_invents_no_context_siblings(self):
         # MODIS AOD's registry subset is empty — the panel must show the
         # plotted role and nothing spurious.
@@ -291,6 +325,34 @@ class EnrichmentSeamTests(unittest.TestCase):
         from services.discovery_service import _attach_inventory
 
         result = {"handle": "dataset_x", "variables": []}
+        enriched = _attach_inventory(result)
+        self.assertNotIn("inventory", enriched)
+
+    def test_concept_id_match_beats_an_earlier_short_name_match(self):
+        """TEMPO_HCHO and TEMPO_HCHO_V03 share short_name TEMPO_HCHO_L3 with
+        distinct collection_ids. A V03 describe result carrying its exact
+        concept_id must resolve to TEMPO_HCHO_V03 even though TEMPO_HCHO
+        iterates first in the registry and also matches on short_name —
+        concept_id is the stronger identity and wins across ALL entries."""
+        from services.discovery_service import _attach_inventory
+
+        result = {
+            "handle": "dataset_tempo_hcho_v03",
+            "concept_id": "C2930761273-LARC_CLOUD",  # TEMPO_HCHO_V03
+            "metadata": {"short_name": "TEMPO_HCHO_L3"},
+            "variables": [{"name": "product/vertical_column"}],
+        }
+        enriched = _attach_inventory(result)
+        self.assertEqual(enriched["inventory"]["collection_key"], "TEMPO_HCHO_V03")
+
+    def test_malformed_variable_record_degrades_to_no_inventory(self):
+        """A live MCP response with a non-string variable name must not become
+        an unhandled 500 (api.py registers only the MCPToolError handler): the
+        result degrades to its bare, inventory-less shape — the same honest
+        degrade plot_tools' evidence path already applies (T18 doctrine)."""
+        from services.discovery_service import _attach_inventory
+
+        result = {"handle": "dataset_x", "variables": [{"name": 123}]}
         enriched = _attach_inventory(result)
         self.assertNotIn("inventory", enriched)
 

@@ -103,6 +103,11 @@ _COORDINATE_NAMES = {
 }
 # Quality: uncertainties, flags, precisions, standard deviations, sample counts.
 _QUALITY_SUFFIXES = ("uncertainty", "qualityflag", "flag", "precision", "std", "stddev", "error")
+# The error-magnitude subset of the quality suffixes: a `<plotted-stem>` +
+# one of these is that variable's uncertainty companion (never the flag
+# suffixes — the QA flag is its own sibling slot). "uncertainty" first: the
+# exact spelling always wins when a product carries several.
+_UNCERTAINTY_SUFFIXES = ("uncertainty", "precision", "stddev", "std", "error")
 _QUALITY_SUBSTRS = ("uncertainty", "qualityflag", "precision",
                     "numberofpixel", "numberofsample", "numsample", "numberofobs")
 # Geometry (context): viewing/solar angles.
@@ -149,15 +154,18 @@ def _leaf(name: str | None) -> str:
 
 def _group_segments(name: str | None, group: str | None) -> set[str]:
     """Every group a variable belongs to, lowercased: the path segments of the
-    group-qualified name plus an explicitly supplied ``group``. The leaf name
-    itself is excluded."""
+    group-qualified name plus an explicitly supplied ``group`` (itself split
+    on ``/`` so a nested ``group_path`` matches by segment, exactly as a
+    qualified name does). The leaf name itself is excluded."""
     segments: set[str] = set()
     if name and "/" in name:
         for seg in name.split("/")[:-1]:
             if seg:
                 segments.add(seg.lower())
     if group:
-        segments.add(group.lower())
+        for seg in str(group).split("/"):
+            if seg:
+                segments.add(seg.lower())
     return segments
 
 
@@ -269,8 +277,13 @@ def classify_inventory(
         name = var.get("name")
         leaf = _leaf(name)
         norm_leaf = _norm(leaf)
+        # An explicit per-record group (a post-open inventory whose names are
+        # bare leaves — open_handle stamps ``group_path``) reaches the same
+        # group priors a slash-qualified describe_dataset name does.
+        explicit_group = var.get("group")
         role, confidence = classify_variable(
             name,
+            group=explicit_group,
             standard_name=var.get("standard_name"),
             long_name=var.get("long_name"),
             units=var.get("units"),
@@ -285,7 +298,7 @@ def classify_inventory(
         out.append({
             "name": name,
             "leaf": leaf,
-            "group": "/".join(name.split("/")[:-1]) if name and "/" in name else None,
+            "group": explicit_group or ("/".join(name.split("/")[:-1]) if name and "/" in name else None),
             "role": role,
             "confidence": confidence,
             "long_name": var.get("long_name"),
@@ -313,7 +326,9 @@ def related_variables(
     round trip is needed. Siblings:
 
     - ``qa_sibling``          -- the registry ``quality_flag_var`` leaf
-    - ``uncertainty_sibling`` -- ``<plotted-stem>_uncertainty`` if present
+    - ``uncertainty_sibling`` -- the plotted stem's error companion:
+      ``<stem>_uncertainty`` preferred, else ``<stem>`` + precision/std/
+      stddev/error (OMI's ``ColumnAmountO3Precision`` spelling)
     - ``context_siblings``    -- the inventory's context-role variable leaves
 
     Returns an empty-sibling structure (never invented companions) when a
@@ -348,8 +363,12 @@ def related_variables(
             continue  # the plotted variable is not its own sibling
         if entry["role"] == ROLE_CONTEXT:
             context_siblings.append(entry["leaf"])
-        if plotted_norm is not None and entry_norm == f"{plotted_norm}uncertainty":
-            uncertainty_sibling = entry["leaf"]
+        if plotted_norm is not None and entry_norm.startswith(plotted_norm):
+            suffix = entry_norm[len(plotted_norm):]
+            if suffix == "uncertainty":
+                uncertainty_sibling = entry["leaf"]  # exact spelling always wins
+            elif suffix in _UNCERTAINTY_SUFFIXES and uncertainty_sibling is None:
+                uncertainty_sibling = entry["leaf"]
 
     qa_leaf = _leaf(quality_flag_var) if quality_flag_var else None
     return {

@@ -178,6 +178,57 @@ class EvidenceComputationTests(unittest.TestCase):
         # No context band exists -> none invented.
         self.assertFalse(any(f["role"] == "context" for f in facts))
 
+    def test_group_stamped_band_classifies_by_its_group_prior(self):
+        """open_handle stamps each merged variable's source group as a
+        ``group_path`` attr (flat names would otherwise strand the group
+        priors). A markerless band under geolocation/ must classify as
+        context (High) in the evidence path and yield a mean fact — the same
+        verdict the describe_dataset inventory reaches from its
+        slash-qualified name."""
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import _evidence
+
+        ds = _dataset(xr, {
+            "column_amount_o3": (("lat", "lon"), [[300.0, 310.0], [320.0, 330.0]], {"units": "DU"}),
+            # No name marker at all — only the stamped group says context.
+            "pixel_weight": (
+                ("lat", "lon"), [[0.5, 0.5], [0.5, 0.5]], {"units": "1", "group_path": "geolocation"},
+            ),
+        })
+        da = ds["column_amount_o3"]
+        col_info = {"short_name": "TEMPO_O3TOT_L3", "primary_var": "column_amount_o3"}
+        facts = _evidence(ds, da, col_info, _global_region())
+
+        weight = self._fact(facts, "pixel_weight")
+        self.assertIsNotNone(weight)
+        self.assertEqual(weight["role"], "context")
+
+    def test_zero_science_mean_keeps_the_uncertainty_fact_without_pct(self):
+        """An anomaly/difference-style science field can legitimately average
+        exactly 0.0 — the pct-of-science ratio is then undefined (division by
+        zero), so the key is honestly omitted, but the uncertainty mean fact
+        itself must survive (a naive presence-only guard would raise inside
+        the best-effort except and silently lose the whole fact)."""
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import _evidence
+
+        ds = _dataset(xr, {
+            "vertical_column_troposphere": (
+                ("lat", "lon"), [[-2.0, -4.0], [2.0, 4.0]], {"units": "molecules/cm^2"},
+            ),
+            "vertical_column_troposphere_uncertainty": (
+                ("lat", "lon"), [[0.2, 0.4], [0.6, 0.8]], {"units": "molecules/cm^2"},
+            ),
+        })
+        da = ds["vertical_column_troposphere"]
+        col_info = {"short_name": "TEMPO_NO2_L3", "primary_var": "vertical_column_troposphere"}
+        facts = _evidence(ds, da, col_info, _global_region())
+
+        unc = self._fact(facts, "vertical_column_troposphere_uncertainty")
+        self.assertIsNotNone(unc)
+        self.assertAlmostEqual(unc["value"], 0.5)
+        self.assertNotIn("pct_of_science", unc)
+
     def test_qa_pass_rate_reuses_the_same_flag_and_good_values_masking_resolves(self):
         """The pass-rate fact must be computed with the exact flag var and good
         values ``resolve_and_mask`` masks with -- not a divergent second QA
@@ -243,6 +294,126 @@ class EvidenceComputationTests(unittest.TestCase):
         self.assertEqual(prov["masking"]["qa_status"], "verified")
         self.assertIn("related_variables", prov)
         self.assertEqual(prov["related_variables"]["role"], "science")
+
+    def test_related_variables_reflect_the_opened_dataset_not_just_the_curated_list(self):
+        """The registry's curated ``variables:`` subset can be far narrower
+        than the retrieved file (TEMPO_NO2 curates 2 of its 38 real
+        variables). related_variables and evidence must read the SAME source
+        — the opened Dataset — so the chart page can never say "no
+        companions" while showing companion-derived evidence facts below."""
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import _provenance
+
+        ds = _dataset(xr, {
+            "vertical_column_troposphere": (
+                ("lat", "lon"), [[2.0, 4.0], [6.0, 8.0]], {"units": "molecules/cm^2"},
+            ),
+            "vertical_column_troposphere_uncertainty": (
+                ("lat", "lon"), [[0.2, 0.4], [0.6, 0.8]], {"units": "molecules/cm^2"},
+            ),
+            "eff_cloud_fraction": (("lat", "lon"), [[0.0, 0.1], [0.2, 0.1]], {"units": "1"}),
+            "main_data_quality_flag": (("lat", "lon"), [[0, 0], [0, 0]]),
+        })
+        da = ds["vertical_column_troposphere"]
+        col_info = {
+            "short_name": "TEMPO_NO2_L3",
+            "primary_var": "vertical_column_troposphere",
+            "quality_flag_var": "main_data_quality_flag",
+            "qa_good_values": [0],
+            # The curated subset omits the uncertainty and context bands the
+            # file actually carries — the panel must still see them.
+            "variables": ["product/vertical_column_troposphere", "product/main_data_quality_flag"],
+        }
+        prov = _provenance(
+            ["obs_1"], da, "global", "single snapshot",
+            col_info=col_info, ds=ds, region=_global_region(),
+        )
+
+        rv = prov["related_variables"]
+        self.assertEqual(rv["uncertainty_sibling"], "vertical_column_troposphere_uncertainty")
+        self.assertIn("eff_cloud_fraction", rv["context_siblings"])
+        # And the evidence section is grounded in the same bands.
+        evidence_names = {f["name"] for f in prov["evidence"]}
+        self.assertIn("vertical_column_troposphere_uncertainty", evidence_names)
+        self.assertIn("eff_cloud_fraction", evidence_names)
+
+    def test_related_variables_fall_back_to_the_curated_list_without_a_dataset(self):
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import _provenance
+
+        ds = _dataset(xr, {
+            "vertical_column": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]], {"units": "molecules/cm^2"}),
+        })
+        da = ds["vertical_column"]
+        col_info = {
+            "primary_var": "vertical_column",
+            "quality_flag_var": "main_data_quality_flag",
+            "variables": [
+                "product/vertical_column", "product/vertical_column_uncertainty",
+                "product/main_data_quality_flag",
+            ],
+        }
+        prov = _provenance(["obs_1"], da, "global", "single snapshot", col_info=col_info)
+
+        rv = prov["related_variables"]
+        self.assertEqual(rv["uncertainty_sibling"], "vertical_column_uncertainty")
+        self.assertEqual(rv["qa_sibling"], "main_data_quality_flag")
+
+    def test_multi_panel_merge_drops_panel_specific_evidence_and_related_variables(self):
+        """A compare chart's top-level provenance inherits panel 0's — but
+        evidence facts (QA pass rate, cloud fraction) and related-variables
+        are region-specific: presenting one panel's as the whole comparison's
+        is misleading for exactly the trust judgment they exist to support.
+        They stay per-panel; the merged view omits them."""
+        from tools.satellite_tools.plot_tools import _merged_multi_provenance
+
+        panels = [
+            {"provenance": {
+                "variable": "vertical_column_troposphere",
+                "region_name": "New Jersey",
+                "evidence": [{"name": "main_data_quality_flag", "value": 0.96}],
+                "related_variables": {"role": "science"},
+                "masking": {"qa_status": "verified"},
+            }},
+            {"provenance": {
+                "variable": "vertical_column_troposphere",
+                "region_name": "Los Angeles",
+                "evidence": [{"name": "main_data_quality_flag", "value": 0.41}],
+                "related_variables": {"role": "science"},
+            }},
+        ]
+        merged = _merged_multi_provenance(panels)
+
+        self.assertNotIn("evidence", merged)
+        self.assertNotIn("related_variables", merged)
+        self.assertEqual(merged["region_name"], "New Jersey, Los Angeles")
+        self.assertEqual(merged["aggregation"], "single snapshot comparison")
+        # Non-panel-specific keys still inherit from panel 0 (pre-existing shape).
+        self.assertEqual(merged["variable"], "vertical_column_troposphere")
+        self.assertEqual(merged["masking"]["qa_status"], "verified")
+        # The panels themselves keep their own evidence untouched.
+        self.assertEqual(panels[0]["provenance"]["evidence"][0]["value"], 0.96)
+        self.assertEqual(panels[1]["provenance"]["evidence"][0]["value"], 0.41)
+
+    def test_geometry_mask_is_the_single_rasterization_mask_data_applies(self):
+        """geometry_mask is the one rasterization seam: applying it via
+        ``where()`` must equal ``mask_data_by_geometry``, so the evidence
+        crop can derive both its crop and its region-footprint count from a
+        single rasterize call instead of rasterizing an all-ones twin."""
+        import xarray as xr
+        from shapely.geometry import box
+        from utils.plotting import geometry_mask, mask_data_by_geometry
+
+        ds = _dataset(xr, {
+            "column_amount_o3": (("lat", "lon"), [[300.0, 310.0], [320.0, 330.0]], {"units": "DU"}),
+        })
+        band = ds["column_amount_o3"]
+        geometry = box(25.0, 5.0, 36.0, 16.0)  # covers only the lower-left cell
+
+        mask = geometry_mask(band, geometry)
+        xr.testing.assert_identical(band.where(mask), mask_data_by_geometry(band, geometry))
+        # The footprint count is readable straight off the mask.
+        self.assertEqual(int(mask.sum()), 1)
 
     def test_evidence_is_empty_and_safe_without_a_source_dataset(self):
         import xarray as xr

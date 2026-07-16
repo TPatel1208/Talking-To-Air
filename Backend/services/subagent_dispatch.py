@@ -226,13 +226,12 @@ async def run_satellite(
                     chart = parse_chart_payload(data)
                     if chart is not None:
                         charts.append(chart)
-                    # Carry the chart id across turns so a later reliability
-                    # question ("why trust this?") can name it to
+                    # Carry every chart id across turns so a later reliability
+                    # question ("why trust this?") can name one to
                     # explain_measurement — the satellite agent is stateless
-                    # (fresh thread each dispatch), so without this the chart id
-                    # from a prior turn is unrecoverable and P3 can't ground.
-                    if isinstance(data, dict) and data.get("chart_id"):
-                        captured_context["last_chart_id"] = str(data["chart_id"])
+                    # (fresh thread each dispatch), so without this the chart ids
+                    # from a prior turn are unrecoverable and P3 can't ground.
+                    _capture_chart_id(data, captured_context)
                     continue
                 if event_type == "tool_result":
                     content = data.get("content", "")
@@ -548,6 +547,22 @@ def _capture_satellite_context(name: Any, args: Any, captured: dict[str, str]) -
         captured["last_time_range"] = str(args["time_range"])
 
 
+def _capture_chart_id(data: Any, captured: dict[str, str]) -> None:
+    """Accumulate every chart id one dispatch streams, ordered, most recent
+    last, comma-joined (the persisted satellite context is a flat str->str
+    map). A single last-write-wins slot would misattribute a follow-up
+    reliability question whenever one turn mints several distinct charts
+    ("plot AOD and also NO2") — the streaming order of chart events is an
+    implementation artifact, not the chart the researcher means. A re-emitted
+    id moves to the most-recent slot rather than duplicating."""
+    if not isinstance(data, dict) or not data.get("chart_id"):
+        return
+    chart_id = str(data["chart_id"])
+    ids = [i for i in captured.get("last_chart_ids", "").split(",") if i and i != chart_id]
+    ids.append(chart_id)
+    captured["last_chart_ids"] = ",".join(ids)
+
+
 def _inject_satellite_context(task: str, context: dict[str, str]) -> str:
     """Prepend prior retrieval context to a satellite task, framed as
     UNVERIFIED — the handles likely still exist in the researcher's workspace
@@ -568,8 +583,20 @@ def _inject_satellite_context(task: str, context: dict[str, str]) -> str:
         bits.append(f"aoi_handle={context['aoi_handle']}")
     if context.get("last_time_range"):
         bits.append(f"previously_checked_range={context['last_time_range']}")
-    if context.get("last_chart_id"):
-        bits.append(f"most_recent_chart_id={context['last_chart_id']}")
+    chart_ids = [i for i in context.get("last_chart_ids", "").split(",") if i]
+    if not chart_ids and context.get("last_chart_id"):
+        chart_ids = [context["last_chart_id"]]  # context persisted before the multi-id capture
+    if len(chart_ids) == 1:
+        bits.append(f"most_recent_chart_id={chart_ids[0]}")
+    elif chart_ids:
+        # Several charts in play: the stateless agent has no other signal that
+        # ambiguity exists, so the disambiguation instruction must travel with
+        # the ids — a bare single id would confidently explain the wrong chart.
+        bits.append(
+            f"chart_ids_from_previous_turns={','.join(chart_ids)} (most recent last; "
+            "if the researcher's question could refer to more than one of these "
+            "charts, ask which chart is meant before calling explain_measurement)"
+        )
     if not bits:
         return task
     preamble = (

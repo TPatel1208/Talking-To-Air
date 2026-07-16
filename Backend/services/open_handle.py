@@ -191,7 +191,20 @@ def _open_netcdf(path: str, chunks: dict | None = None) -> Any:
     if root is not None and root.data_vars:
         return root  # genuinely flat file; nothing nested to merge
 
-    group_datasets = [g for g in groups.values() if g.data_vars]
+    # Merging by bare name destroys group membership, which is classification
+    # evidence (datasets/variable_roles' qa_statistics/geolocation/product
+    # priors). Stamp each variable's source group as a ``group_path`` attr so
+    # post-open classification sees the same group a describe_dataset
+    # inventory's slash-qualified name carries.
+    group_datasets = []
+    for group_key, gds in groups.items():
+        if not gds.data_vars:
+            continue
+        group_path = group_key.strip("/")
+        if group_path:
+            for var in gds.data_vars.values():
+                var.attrs.setdefault("group_path", group_path)
+        group_datasets.append(gds)
     if not group_datasets:
         return root if root is not None else xr.Dataset()
 

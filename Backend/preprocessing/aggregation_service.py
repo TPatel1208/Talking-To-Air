@@ -27,6 +27,46 @@ class AggregatedResult:
     meta: dict[str, Any]
 
 
+def fill_match(values: Any, fill: Any) -> Any:
+    """Boolean mask of cells equal to the fill value — the ONE definition of
+    fill matching, shared by the science-variable masking
+    (``apply_quality_mask``) and the companion-evidence valid mask
+    (``plot_tools._band_valid_mask``), so a tolerance fix can never silently
+    diverge between the two. Works on ``xr.DataArray`` and ``np.ndarray``
+    alike (pure elementwise ops).
+
+    Integer-valued fills (the common satellite case: -1, 0, -9999, 255)
+    are exact sentinels -> compare exactly. The old
+    ``atol=abs(fill)*1e-3`` band collapsed to atol=0 for a 0 fill (fine
+    by accident) but, worse, wrongly masked legitimate values *near* a
+    small fill (e.g. 49.99 against a 50 fill), and the widened UMM-Var
+    fill tier makes 0-valued fills reachable. Exact equality is correct
+    and never nukes a whole variable through a degenerate tolerance. A
+    genuine non-integer float fill (rare) keeps a fixed relative+absolute
+    tolerance for float-storage drift, independent of the fill magnitude.
+    """
+    fill_f = float(fill)
+    if fill_f.is_integer():
+        return values == fill_f
+    return np.isclose(values, fill_f, rtol=1e-6, atol=1e-9)
+
+
+def flag_pass_condition(qf: xr.DataArray, good_values: Any = None, bad_values: Any = None) -> xr.DataArray:
+    """Boolean condition of flag cells passing QA — the ONE good/bad flag
+    doctrine (T25), shared by ``apply_quality_mask`` and the evidence
+    pass-rate fact (``plot_tools._qa_pass_rate_fact``) so the reported pass
+    rate can never quietly disagree with the mask actually applied.
+
+    With ``good_values``, membership passes (``isin`` already excludes an
+    absent/NaN flag). With only ``bad_values``, a pixel passes only when its
+    flag is present AND not bad — an unknown-quality pixel (NaN/fill flag,
+    e.g. OMI_HCHO's uncomputed-quality) is never counted as good.
+    """
+    if good_values is not None:
+        return qf.isin(good_values)
+    return qf.notnull() & ~qf.isin(bad_values)
+
+
 class AggregationService:
     """Single entry point for satellite data validity filtering and reductions."""
 
@@ -359,7 +399,7 @@ class AggregationService:
         valid_max = col_info.get("valid_max", da.attrs.get("valid_max"))
 
         if actual_fill is not None:
-            da = da.where(~self._fill_match(da, actual_fill))
+            da = da.where(~fill_match(da, actual_fill))
         if valid_min is not None:
             da = da.where(da >= valid_min)
         if valid_max is not None:
@@ -370,36 +410,9 @@ class AggregationService:
             qf = ds[qf_var]
             good_values = col_info.get("qa_good_values")
             bad_values = col_info.get("qa_bad_values")
-            if good_values is not None:
-                da = da.where(qf.isin(good_values))
-            elif bad_values is not None:
-                # Symmetric with the good_values path: a pixel whose flag is
-                # absent (NaN/fill -> unknown quality, e.g. OMI_HCHO's
-                # uncomputed-quality) is dropped, not silently kept as good.
-                # ``isin`` already excludes NaN on the good path; mirror that
-                # here rather than ``~isin`` alone, which counts every
-                # unknown-flag pixel as good.
-                da = da.where(qf.notnull() & ~qf.isin(bad_values))
+            if good_values is not None or bad_values is not None:
+                da = da.where(flag_pass_condition(qf, good_values, bad_values))
         return da
-
-    @staticmethod
-    def _fill_match(da: xr.DataArray, fill: Any) -> xr.DataArray:
-        """Boolean mask of cells equal to the fill value.
-
-        Integer-valued fills (the common satellite case: -1, 0, -9999, 255)
-        are exact sentinels -> compare exactly. The old
-        ``atol=abs(fill)*1e-3`` band collapsed to atol=0 for a 0 fill (fine
-        by accident) but, worse, wrongly masked legitimate values *near* a
-        small fill (e.g. 49.99 against a 50 fill), and the widened UMM-Var
-        fill tier makes 0-valued fills reachable. Exact equality is correct
-        and never nukes a whole variable through a degenerate tolerance. A
-        genuine non-integer float fill (rare) keeps a fixed relative+absolute
-        tolerance for float-storage drift, independent of the fill magnitude.
-        """
-        fill_f = float(fill)
-        if fill_f.is_integer():
-            return da == fill
-        return np.isclose(da, fill_f, rtol=1e-6, atol=1e-9)
 
     def _resolve_qa_flag_var(
         self, ds: xr.Dataset | None, da: xr.DataArray, yaml_info: dict[str, Any],

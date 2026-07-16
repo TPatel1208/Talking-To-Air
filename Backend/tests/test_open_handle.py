@@ -353,6 +353,40 @@ class OpenHandleGroupedNetcdfTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("vertical_column_troposphere", ds.data_vars)
         self.assertIn("qa_value", ds.data_vars)
 
+    async def test_open_handle_stamps_each_variables_source_group(self):
+        """Merging groups by bare name destroys group membership, which is
+        classification evidence (variable_roles' qa_statistics/geolocation/
+        product priors). Each merged variable must carry its source group as
+        a ``group_path`` attr so post-open classification (T36 evidence) sees
+        the same group a describe_dataset inventory name would."""
+        import xarray as xr
+
+        from services.open_handle import open_handle
+
+        def make_root():
+            return xr.Dataset()
+
+        def make_product_group():
+            return xr.Dataset({
+                "vertical_column_troposphere": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]]),
+            })
+
+        def make_qa_group():
+            return xr.Dataset({
+                "max_vertical_column_sample": (("lat", "lon"), [[0.0, 0.0], [0.0, 0.0]]),
+            })
+
+        self.volume.add_netcdf("obs_tempo_stamped", {
+            None: make_root,
+            "product": make_product_group,
+            "qa_statistics": make_qa_group,
+        })
+
+        ds = await open_handle("obs_tempo_stamped", self.tools)
+
+        self.assertEqual(ds["vertical_column_troposphere"].attrs.get("group_path"), "product")
+        self.assertEqual(ds["max_vertical_column_sample"].attrs.get("group_path"), "qa_statistics")
+
     async def test_open_handle_leaves_a_genuinely_flat_netcdf_dataset_untouched(self):
         import xarray as xr
 

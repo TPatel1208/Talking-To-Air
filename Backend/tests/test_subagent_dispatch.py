@@ -116,6 +116,47 @@ class HelperTests(unittest.TestCase):
         self.assertIn("most_recent_chart_id=map_c5e747d00b29", enriched)
         self.assertTrue(enriched.endswith("How reliable is this measurement?"))
 
+    def test_capture_chart_id_accumulates_every_chart_of_a_turn(self):
+        """A single turn can mint several distinct charts ("plot AOD and also
+        NO2"). Last-write-wins would silently misattribute a follow-up
+        reliability question to whichever chart streamed last — every id must
+        survive, ordered, most recent last."""
+        from services.subagent_dispatch import _capture_chart_id
+
+        captured: dict[str, str] = {}
+        _capture_chart_id({"chart_id": "map_aod"}, captured)
+        _capture_chart_id({"chart_id": "map_no2"}, captured)
+        # A re-emitted id moves to the most-recent slot, never duplicates.
+        _capture_chart_id({"chart_id": "map_aod"}, captured)
+        _capture_chart_id({"no_chart": True}, captured)
+        _capture_chart_id("not a dict", captured)
+
+        self.assertEqual(captured["last_chart_ids"], "map_no2,map_aod")
+
+    def test_injection_of_a_single_chart_id_stays_unambiguous(self):
+        from services.subagent_dispatch import _inject_satellite_context
+
+        enriched = _inject_satellite_context(
+            "How reliable is this measurement?",
+            {"last_chart_ids": "map_only"},
+        )
+        self.assertIn("most_recent_chart_id=map_only", enriched)
+
+    def test_injection_of_multiple_chart_ids_asks_for_disambiguation(self):
+        """When the prior turn produced several charts, the stateless satellite
+        agent must see all of them plus an instruction to ask which chart is
+        meant — a bare single id would confidently explain the wrong one."""
+        from services.subagent_dispatch import _inject_satellite_context
+
+        enriched = _inject_satellite_context(
+            "Why should I trust this?",
+            {"last_chart_ids": "map_aod,map_no2"},
+        )
+        self.assertIn("map_aod", enriched)
+        self.assertIn("map_no2", enriched)
+        self.assertIn("ask which chart", enriched)
+        self.assertNotIn("most_recent_chart_id=", enriched)
+
     def test_finalize_sub_agent_result_resolves_matching_artifact_ids_and_handles(self):
         from services.subagent_dispatch import _finalize_sub_agent_result
         from models import AgentResult

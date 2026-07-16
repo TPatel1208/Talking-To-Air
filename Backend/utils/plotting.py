@@ -366,28 +366,19 @@ def _normalize_to_2d(data_array: xr.DataArray, dim_selector: dict | None = None)
 
     return data_array
 
-def mask_data_by_geometry(
+def geometry_mask(
     data_array: xr.DataArray,
     geometry: Union[Polygon, MultiPolygon]
 ) -> xr.DataArray:
     """
-    Mask xarray data to only show values within a geometry boundary.
-    Sets all points outside the geometry to NaN.
+    Boolean (lat, lon) DataArray: True inside ``geometry``.
 
-    Parameters
-    ----------
-    data_array : xarray.DataArray
-        Data with latitude/longitude coordinates
-        Handles common coord names: 'lat'/'latitude', 'lon'/'longitude'
-    geometry : Polygon or MultiPolygon
-        Boundary geometry from RegionResult
-
-    Returns
-    -------
-    xarray.DataArray
-        Masked data array (copy, original unchanged)
+    The single rasterization seam: ``mask_data_by_geometry`` applies it to
+    the data, and callers needing the region footprint as well (plot_tools'
+    evidence crop) read it off this same mask instead of rasterizing an
+    all-ones twin — the mask depends only on the grid and the geometry,
+    never on the data values.
     """
-
     # The affine transform below assumes a 1-D rectilinear lat/lon grid. A
     # 2-D curvilinear swath or a projected x/y grid would be silently
     # mis-masked here -- refuse with a specific, typed error instead (T24).
@@ -435,19 +426,44 @@ def mask_data_by_geometry(
         dtype=np.uint8
     )
 
-    # Convert to boolean (True = INSIDE geometry = keep)
-    mask_2d = (mask_2d == 1)
+    # Boolean (True = INSIDE geometry = keep), carrying the grid's own
+    # coordinates so it can be cropped/selected like the data itself.
+    return xr.DataArray(
+        mask_2d == 1,
+        coords={lat_coord: lats, lon_coord: lons},
+        dims=[lat_coord, lon_coord],
+    )
+
+
+def mask_data_by_geometry(
+    data_array: xr.DataArray,
+    geometry: Union[Polygon, MultiPolygon]
+) -> xr.DataArray:
+    """
+    Mask xarray data to only show values within a geometry boundary.
+    Sets all points outside the geometry to NaN.
+
+    Parameters
+    ----------
+    data_array : xarray.DataArray
+        Data with latitude/longitude coordinates
+        Handles common coord names: 'lat'/'latitude', 'lon'/'longitude'
+    geometry : Polygon or MultiPolygon
+        Boundary geometry from RegionResult
+
+    Returns
+    -------
+    xarray.DataArray
+        Masked data array (copy, original unchanged)
+    """
+    mask_da = geometry_mask(data_array, geometry)
 
     if data_array.ndim not in (2, 3):
         raise ValueError(f"Unsupported array dimension: {data_array.ndim}D")
 
-    mask_da = xr.DataArray(mask_2d, dims=[lat_coord, lon_coord])
-
     # xarray aligns by dimension name, so this works for both (lat, lon)
     # and Harmony-reformatted grids ordered as (time, lon, lat).
-    masked = data_array.where(mask_da)
-
-    return masked
+    return data_array.where(mask_da)
 def plot_diff_maps(
     data_arrays: List[xr.DataArray],
     titles: List[str],

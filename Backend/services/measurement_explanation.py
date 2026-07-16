@@ -63,7 +63,7 @@ def summarize_measurement_evidence(payload: dict[str, Any] | None) -> dict[str, 
 
     result: dict[str, Any] = {
         "chart_id": payload.get("chart_id"),
-        "variable": provenance.get("variable") or payload.get("variable"),
+        "variable": provenance.get("variable") if provenance.get("variable") is not None else payload.get("variable"),
         "units": provenance.get("units") if provenance.get("units") is not None else payload.get("units"),
         "has_evidence": bool(evidence),
     }
@@ -83,14 +83,26 @@ def summarize_measurement_evidence(payload: dict[str, Any] | None) -> dict[str, 
 
 async def explain_measurement(
     chart_id: str,
-    get_chart: Callable[[str], Awaitable[dict[str, Any] | None]] = chart_repository.get_chart,
+    get_chart: Callable[[str], Awaitable[dict[str, Any] | None]] | None = None,
+    *,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
     """Look up the persisted chart and return its reliability subset. A lookup
     that fails (or an unknown id) degrades to ``has_evidence: false`` with a
-    reason -- the agent never has to decode an error path (PRD T36 P3)."""
+    reason -- the agent never has to decode an error path (PRD T36 P3).
+
+    ``chart_id`` is a free-text, LLM-supplied tool argument, so ownership is
+    enforced here with the same semantics as every HTTP chart endpoint
+    (api.py ``_get_owned_chart``): a chart whose stored ``user_id`` doesn't
+    match the caller's reads exactly as not-found -- nothing about it leaks.
+    """
+    if get_chart is None:
+        get_chart = chart_repository.get_chart
     try:
         payload = await get_chart(chart_id)
     except Exception:
         logger.warning("explain_measurement_lookup_failed", extra={"_chart_id": chart_id})
+        payload = None
+    if payload is not None and payload.get("user_id") is not None and payload.get("user_id") != user_id:
         payload = None
     return summarize_measurement_evidence(payload)

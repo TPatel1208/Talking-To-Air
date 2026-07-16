@@ -23,6 +23,7 @@ from services.retrieval_composites import await_retrieval as _await_retrieval
 from services.retrieval_composites import point_timeseries as _point_timeseries
 from services.retrieval_composites import safe_retrieve as _safe_retrieve
 from tools.satellite_tools.plot_tools import _save_chart
+from utils.streaming import current_user_id
 
 
 def make_safe_retrieve(mcp_tools: dict[str, BaseTool]):
@@ -246,7 +247,11 @@ def make_explain_measurement():
             chart_id : the artifact/chart id of the measurement in question,
                         from this or a recent turn's envelope artifact_ids.
         """
-        result = await _explain_measurement(chart_id)
+        # Scope the lookup to the session's bound user (the same
+        # current_user_id() context every user-scoped tool path uses) so a
+        # chart_id belonging to someone else reads as not-found, mirroring
+        # api.py's _get_owned_chart.
+        result = await _explain_measurement(chart_id, user_id=current_user_id())
         return json.dumps(result)
 
     return explain_measurement
