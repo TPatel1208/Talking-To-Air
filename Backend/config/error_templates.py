@@ -40,7 +40,7 @@ _TEMPLATES: dict[str, str] = {
     ),
 }
 
-_DEFAULT_DETAIL = "no further detail is available"
+_DEFAULT_DETAIL = "No further detail is available."
 
 
 def render_error_answer(category: str, stage: str, detail: str | None = None) -> str:
@@ -48,6 +48,14 @@ def render_error_answer(category: str, stage: str, detail: str | None = None) ->
     observed facts (``stage``, ``detail``), no model in the loop. An
     unrecognized category still renders (falls back to the ``contract``
     template) rather than raising, matching the classifier's own
-    additive-safe rule."""
+    additive-safe rule.
+
+    ``detail`` is normalized to end with terminal punctuation: several
+    templates continue with another sentence after it, and an unpunctuated
+    detail produced run-ons like "...no further detail is available This
+    has been logged..." (live 2026-07-16)."""
     template = _TEMPLATES.get(category, _TEMPLATES[CATEGORY_CONTRACT])
-    return template.format(stage=stage, detail=detail or _DEFAULT_DETAIL)
+    detail = (detail or "").strip() or _DEFAULT_DETAIL
+    if detail[-1] not in ".!?":
+        detail += "."
+    return template.format(stage=stage, detail=detail)

@@ -21,7 +21,24 @@ class RenderErrorAnswerTests(unittest.TestCase):
 
         text = render_error_answer("contract", "chat turn")
 
-        self.assertIn("no further detail is available", text)
+        self.assertIn("No further detail is available.", text)
+
+    def test_default_detail_does_not_run_on_into_the_next_sentence(self):
+        """Regression (live 2026-07-16): the contract template continues with
+        "This has been logged..." after {detail}, and the unpunctuated default
+        produced "...no further detail is available This has been logged"."""
+        from config.error_templates import render_error_answer
+
+        text = render_error_answer("contract", "chat turn")
+
+        self.assertNotIn("available This", text)
+
+    def test_an_unpunctuated_caller_detail_gains_terminal_punctuation(self):
+        from config.error_templates import render_error_answer
+
+        text = render_error_answer("contract", "chat turn", "socket closed unexpectedly")
+
+        self.assertIn("socket closed unexpectedly. This has been logged", text)
 
     def test_unrecognized_category_falls_back_to_the_contract_template_instead_of_raising(self):
         from config.error_templates import render_error_answer
