@@ -13,7 +13,7 @@ from earthdata_mcp.results import MCPToolError
 from services.open_handle import OpenHandleError, open_handle
 from tools.satellite_tools.plot_tools import _normalize_longitudes
 from utils.geo_utils import find_lat_coord, find_lon_coord
-from utils.plotting import _normalize_to_2d, mask_data_by_geometry, RegionResolver
+from utils.plotting import _normalize_to_2d, apply_mask_region_type, mask_data_by_geometry, RegionResolver
 from utils.streaming import emit_status
 from preprocessing.aggregation_service import AggregationService, area_weighted_mean
 
@@ -108,6 +108,10 @@ def make_compute_statistic_tool(mcp_tools: dict[str, BaseTool]):
             # CPU-bound mask -> aggregate -> stats chain (T16), run off the
             # event loop via asyncio.to_thread below.
             masked = mask_data_by_geometry(da, region['geometry'])
+            # T42: an empty mask that self-healed to boundary cells downgrades
+            # the disclosed region_type -- read it off the masked array so the
+            # result names what was actually computed.
+            apply_mask_region_type(masked, region)
             col_info = _mask_col_info(masked, ds)
             dim_selector = _build_dim_selector(dimension, dimension_value)
 
@@ -143,6 +147,10 @@ def make_compute_statistic_tool(mcp_tools: dict[str, BaseTool]):
                     "n_pixels": int(len(valid)),
                     "aggregation_meta": aggregation.meta,
                     "source_handles": [handle],
+                    # T42 region fidelity: the region we actually masked.
+                    "region_name": region.get("display_name") or region.get("name"),
+                    "display_name": region.get("display_name") or region.get("name"),
+                    "region_type": region.get("region_type"),
                 }
                 # Each statistic is computed on the basis that makes it true
                 # to its name, and that basis is disclosed:
@@ -177,7 +185,14 @@ def make_compute_statistic_tool(mcp_tools: dict[str, BaseTool]):
 
             return None, result
 
-        status, result = await asyncio.to_thread(_mask_aggregate_stats)
+        # The geometry mask itself can refuse (unsupported/unidentifiable
+        # grid, T24/T44) — that classified answer must reach the agent as a
+        # structured error, never escape the tool off-taxonomy (QA
+        # 2026-07-17: GPM stats surfaced as a generic internal error).
+        try:
+            status, result = await asyncio.to_thread(_mask_aggregate_stats)
+        except MCPToolError as e:
+            return json.dumps({"error": e.to_dict()})
         if status == "error":
             return json.dumps({"error": result})
         return json.dumps(result)
@@ -241,6 +256,7 @@ def make_find_daily_peak(mcp_tools: dict[str, BaseTool]):
             # CPU-bound mask -> aggregate -> peak search chain (T16), run
             # off the event loop via asyncio.to_thread below.
             masked = mask_data_by_geometry(da, region['geometry'])
+            apply_mask_region_type(masked, region)  # T42: disclose boundary_cells self-heal
 
             col_info = _mask_col_info(masked, ds)
             try:
@@ -316,9 +332,18 @@ def make_find_daily_peak(mcp_tools: dict[str, BaseTool]):
                 "peak_lon":   peak_lon,
                 "aggregation_meta": aggregation.meta,
                 "source_handles": [handle],
+                # T42 region fidelity: the region we actually masked.
+                "region_name": region.get("display_name") or region.get("name"),
+                "display_name": region.get("display_name") or region.get("name"),
+                "region_type": region.get("region_type"),
             }
 
-        status, result = await asyncio.to_thread(_mask_aggregate_peak)
+        # See compute_statistic_tool: a mask refusal is a classified answer,
+        # not an exception to escape off-taxonomy.
+        try:
+            status, result = await asyncio.to_thread(_mask_aggregate_peak)
+        except MCPToolError as e:
+            return json.dumps({"error": e.to_dict()})
         if status == "error":
             return json.dumps({"error": result})
         return json.dumps(result)

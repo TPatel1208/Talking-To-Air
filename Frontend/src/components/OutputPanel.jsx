@@ -9,7 +9,7 @@ import { MetadataOverview } from './MetadataOverview.jsx'
 import { MetaField } from './metadataPrimitives.jsx'
 import { smallButtonStyle, copyToClipboard } from '../utils/metadataUiHelpers.js'
 import { computeChartStats } from '../utils/chartStats'
-import { resolveMasking } from '../utils/maskingProvenance'
+import { resolveMasking, resolveRegionFidelity } from '../utils/maskingProvenance'
 import { evidenceRows } from '../utils/evidenceSummary'
 import { filledCharts } from '../utils/compareMode'
 import { focusChartPayload } from '../utils/compareSlotOverview'
@@ -99,28 +99,53 @@ function StatCard({ label, value }) {
 // actually ran on the plotted data (and by which tier) rather than inferring
 // it from the valid-pixel count above. Renders nothing when the payload
 // carries no masking record.
+// One-line, plain-language caveat for a region_type that isn't a faithful
+// polygon (T42). Keeps the researcher from reading "mean over the US" as the
+// real US when it was a rectangle, a point buffer, or the touched cells.
+const REGION_TYPE_NOTE = {
+  bounding_box: 'approximated as a bounding box (a rectangle), not the named boundary',
+  point_buffer: 'approximated as a small box around a geocoded point (no boundary found)',
+  boundary_cells: 'smaller than a grid cell — showing the cells it touches',
+}
+
 function MaskingDisclosure({ chart }) {
   const masking = useMemo(() => resolveMasking(chart), [chart])
-  if (!masking) return null
+  const region = useMemo(() => resolveRegionFidelity(chart), [chart])
+  if (!masking && !region) return null
   return (
     <div style={{
       background: 'var(--bg-secondary)', border: '1px solid var(--border)',
       borderRadius: '10px', padding: '11px 13px',
     }}>
-      <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '5px' }}>
-        QA-flag masking
-      </div>
-      <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>
-        {masking.qaStatus}
-      </div>
-      {masking.qaSource && (
-        <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginTop: '4px' }}>
-          Source: {masking.qaSource}
-        </div>
+      {masking && (
+        <>
+          <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '5px' }}>
+            QA-flag masking
+          </div>
+          <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>
+            {masking.qaStatus}
+          </div>
+          {masking.qaSource && (
+            <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+              Source: {masking.qaSource}
+            </div>
+          )}
+          {masking.qaNote && (
+            <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginTop: '4px', lineHeight: 1.45 }}>
+              {masking.qaNote}
+            </div>
+          )}
+        </>
       )}
-      {masking.qaNote && (
-        <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginTop: '4px', lineHeight: 1.45 }}>
-          {masking.qaNote}
+      {region && (
+        <div style={{ marginTop: masking ? '9px' : 0 }}>
+          <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '5px' }}>
+            Region fidelity
+          </div>
+          <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', lineHeight: 1.45 }}>
+            {region.displayName ? <strong>{region.displayName}</strong> : 'Region'}{' '}
+            {REGION_TYPE_NOTE[region.regionType] || region.regionType}
+          </div>
         </div>
       )}
     </div>

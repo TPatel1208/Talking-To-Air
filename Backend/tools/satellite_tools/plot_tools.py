@@ -68,7 +68,7 @@ from services.open_handle import OpenHandleError, open_handle
 from utils.geo_utils import find_lat_coord, find_lon_coord
 from utils.colormaps import resolve as resolve_colormap
 from utils.overlay_render import render_overlay_png
-from utils.plotting import _normalize_to_2d, geometry_mask, mask_data_by_geometry, RegionResolver
+from utils.plotting import _normalize_to_2d, apply_mask_region_type, geometry_mask, mask_data_by_geometry, RegionResolver
 from utils.streaming import emit_chart, emit_status
 from preprocessing.aggregation_service import AggregationService, fill_match, flag_pass_condition
 
@@ -816,6 +816,11 @@ def _provenance(
         "start_date": start_date,
         "end_date": end_date,
         "region_name": region_name,
+        # T42 region fidelity: what kind of region was masked, and the
+        # display_name it resolved to -- so a bounding-box "US" or a
+        # wrong-place geocode is checkable in the answer, not just the title.
+        "region_type": (region or {}).get("region_type"),
+        "display_name": (region or {}).get("display_name") or region_name,
         "aggregation": aggregation,
         "units": da.attrs.get("units", ""),
         "source_handles": list(handles),
@@ -955,6 +960,7 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
                     raise ValueError(f"Cannot find lat/lon coords. Available: {list(da.coords)}")
                 masked = _normalize_longitudes(da, lon_coord)
                 masked = mask_data_by_geometry(masked, region["geometry"])
+                apply_mask_region_type(masked, region)  # T42: disclose boundary_cells self-heal
                 bounds = region["bounds"]  # (minx, miny, maxx, maxy)
                 masked = _sel_bounds(masked, lat_coord, lon_coord, bounds)
             except Exception as e:
@@ -1096,6 +1102,7 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
                         raise ValueError(f"Cannot find lat/lon coords. Available: {list(da.coords)}")
                     masked = _normalize_longitudes(da, lon_coord)
                     masked = mask_data_by_geometry(masked, region["geometry"])
+                    apply_mask_region_type(masked, region)  # T42: disclose boundary_cells self-heal
                 except Exception as e:
                     return "mask", None, None, f"Masking failed for '{location}': {e}"
 
@@ -1240,6 +1247,7 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
             # CPU-bound mask -> per-timestep aggregate -> payload chain
             # (T16), run off the event loop via asyncio.to_thread below.
             masked = mask_data_by_geometry(da, region["geometry"])
+            apply_mask_region_type(masked, region)  # T42: disclose boundary_cells self-heal
 
             lat_coord = find_lat_coord(masked)
             lon_coord = find_lon_coord(masked)

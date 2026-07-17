@@ -157,6 +157,97 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["n_pixels"], 2)
         self.assertEqual(result["aggregation_meta"]["masking"]["qa_status"], "verified")
 
+    async def test_compute_statistic_result_discloses_region_type_and_display_name(self):
+        """T42: the stats result names *what kind* of region was masked and the
+        display_name it resolved, so "mean over the US" is checkable against
+        what was actually computed. 'global' is a preset bounding box."""
+        import xarray as xr
+        from tools.satellite_tools.stat_tools import make_compute_statistic_tool
+
+        def make_ds():
+            return _tempo_no2_dataset(
+                xr, values=[[1.0, 2.0], [3.0, 4.0]], flags=[[0, 0], [0, 0]],
+            )
+
+        self.volume.add_zarr("obs_1", make_ds)
+
+        compute_statistic_tool = make_compute_statistic_tool(self.mcp_tools)
+        raw = await compute_statistic_tool.ainvoke({
+            "handle": "obs_1", "location": "global", "stats": ["mean"],
+        })
+        result = json.loads(raw)
+
+        self.assertNotIn("error", result)
+        self.assertEqual(result["region_type"], "bounding_box")
+        self.assertEqual(result["display_name"], "Global")
+
+    async def test_plot_singular_provenance_discloses_region_type_and_display_name(self):
+        """T42: heatmap provenance names what kind of region was masked and the
+        display_name it resolved (rides alongside region_name via
+        _attach_reproducibility)."""
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import make_plot_singular
+
+        def make_ds():
+            return _tempo_no2_dataset(
+                xr, values=[[1.0, 2.0], [3.0, 4.0]], flags=[[0, 0], [0, 0]],
+            )
+
+        self.volume.add_zarr("obs_1", make_ds)
+
+        emitted = {}
+
+        def fake_emit_chart(full_payload):
+            emitted["payload"] = full_payload
+
+        plot_singular = make_plot_singular(self.mcp_tools)
+        with patch("tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
+            raw = await plot_singular.ainvoke({"handle": "obs_1", "location": "global"})
+
+        result = json.loads(raw)
+        self.assertNotIn("error", result)
+
+        provenance = emitted["payload"]["provenance"]
+        self.assertEqual(provenance["region_type"], "bounding_box")
+        self.assertEqual(provenance["display_name"], "Global")
+
+    async def test_compute_statistic_subcell_region_self_heals_to_boundary_cells(self):
+        """T42: a region smaller than a grid cell covers no cell center, so
+        center-containment masking returns nothing. Instead of "no valid
+        data", the tool returns the touched boundary cells and discloses
+        region_type: boundary_cells. The stubbed region is a 0.2° box inside
+        the cell centered at (lat=20, lon=40) but not containing its center."""
+        import xarray as xr
+        from shapely.geometry import box
+        from unittest.mock import AsyncMock
+        from tools.satellite_tools import stat_tools
+
+        def make_ds():
+            return _tempo_no2_dataset(
+                xr, values=[[1.0, 2.0], [3.0, 4.0]], flags=[[0, 0], [0, 0]],
+            )
+
+        self.volume.add_zarr("obs_1", make_ds)
+
+        subcell = {
+            "geometry": box(43.0, 23.0, 43.2, 23.2),
+            "bounds": (43.0, 23.0, 43.2, 23.2),
+            "name": "Tiny Neighborhood",
+            "display_name": "Tiny Neighborhood",
+            "region_type": "point_buffer",
+        }
+
+        compute_statistic_tool = stat_tools.make_compute_statistic_tool(self.mcp_tools)
+        with patch.object(stat_tools._resolver, "aresolve_location", AsyncMock(return_value=subcell)):
+            raw = await compute_statistic_tool.ainvoke({
+                "handle": "obs_1", "location": "Tiny Neighborhood", "stats": ["mean"],
+            })
+        result = json.loads(raw)
+
+        self.assertNotIn("error", result)
+        self.assertEqual(result["region_type"], "boundary_cells")
+        self.assertGreaterEqual(result["n_pixels"], 1)
+
     async def test_find_daily_peak_excludes_a_bad_flag_pixel_even_though_it_is_numerically_highest(self):
         import xarray as xr
         from tools.satellite_tools.stat_tools import make_find_daily_peak

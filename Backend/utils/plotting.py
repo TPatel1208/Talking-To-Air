@@ -1,5 +1,8 @@
 import logging
 import asyncio
+import functools
+import json
+import os
 import httpx
 import requests
 import time
@@ -19,7 +22,11 @@ from affine import Affine
 from typing import Optional, Tuple, Union, List
 
 from config.settings import get_settings
-from earthdata_mcp.results import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
+from earthdata_mcp.results import (
+    CATEGORY_DIMENSION_CHOICE_REQUIRED,
+    CATEGORY_UNSUPPORTED_GRID,
+    MCPToolError,
+)
 from utils.geo_utils import (
     LAT_COORD_CANDIDATES,
     LON_COORD_CANDIDATES,
@@ -49,6 +56,34 @@ def get_geocoding_service() -> "GeocodingService":
     if _geocoding_service is None:
         _geocoding_service = GeocodingService()
     return _geocoding_service
+
+
+# Real (simplified Natural Earth 110m) boundaries for the multi-country
+# presets, so "mean over the US" doesn't average in Sonora and the Atlantic
+# (T42). Built once by scripts/build_preset_regions.py and checked in under
+# datasets/ (data/ is a runtime volume, .dockerignore'd -- this asset must be
+# baked into the image). Loaded lazily and cached here -- no runtime fetch.
+_PRESET_REGIONS_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "datasets", "preset_regions.geojson"
+)
+
+
+@functools.lru_cache(maxsize=1)
+def load_preset_polygons() -> dict:
+    """``{preset_id: shapely geometry}`` from the checked-in preset GeoJSON,
+    parsed once. Returns ``{}`` (so callers fall back to bounding boxes) if
+    the asset is missing or unreadable rather than failing region resolution
+    outright."""
+    try:
+        with open(_PRESET_REGIONS_PATH, encoding="utf-8") as fh:
+            fc = json.load(fh)
+        return {
+            feature["id"]: shape(feature["geometry"])
+            for feature in fc.get("features", [])
+        }
+    except (OSError, ValueError, KeyError) as e:
+        logger.warning("Could not load preset polygons: %s", e)
+        return {}
 
 
 def plot_map(
@@ -140,9 +175,12 @@ def plot_map(
     lon_coord = find_lon_coord(data_array)
 
     if lat_coord is None or lon_coord is None:
-        raise ValueError(
-            f"Could not find lat/lon coordinates. "
-            f"Available: {list(data_array.coords.keys())}"
+        # Same typed refusal as geometry_mask — see the comment there.
+        raise MCPToolError(
+            CATEGORY_UNSUPPORTED_GRID,
+            "Could not identify latitude/longitude coordinates on this product "
+            f"(coords: {list(data_array.coords.keys())}).",
+            suggestion="Try a gridded (Level 3) product published on a lat/lon grid.",
         )
 
     # --- 2. Compute adaptive color scale ---
@@ -416,10 +454,16 @@ def geometry_mask(
     lon_coord = find_lon_coord(data_array)
 
     if lat_coord is None or lon_coord is None:
-        raise ValueError(
-            f"Could not find lat/lon coordinates. "
-            f"Dims present: {list(data_array.dims)}; "
-            f"coords: {list(data_array.coords.keys())}"
+        # Typed like the curvilinear/projected refusals above, so the stat/
+        # plot tools answer a classified error instead of letting a bare
+        # ValueError escape off-taxonomy — live, that surfaced as a generic
+        # "internal error" for a plot and a false "no data found" for a
+        # point query (QA 2026-07-17, GPM).
+        raise MCPToolError(
+            CATEGORY_UNSUPPORTED_GRID,
+            "Could not identify latitude/longitude coordinates on this product "
+            f"(dims: {list(data_array.dims)}; coords: {list(data_array.coords.keys())}).",
+            suggestion="Try a gridded (Level 3) product published on a lat/lon grid.",
         )
 
     # Get coordinate arrays
@@ -453,13 +497,38 @@ def geometry_mask(
         dtype=np.uint8
     )
 
+    # Empty-mask self-heal (T42): a region smaller than a grid cell can cover
+    # zero cell *centers*, so center-containment rasterization returns nothing
+    # for data that is right there. Retry with all_touched -- which keeps any
+    # cell the geometry intersects at all -- and, if that recovers cells,
+    # return them disclosed as boundary_cells. If it's still empty the region
+    # genuinely misses the grid, and today's no-data answer stands.
+    region_type = None
+    if not mask_2d.any():
+        boundary_2d = rasterize(
+            [(geometry, 1)],
+            out_shape=(len(lats), len(lons)),
+            transform=transform,
+            fill=0,
+            dtype=np.uint8,
+            all_touched=True,
+        )
+        if boundary_2d.any():
+            mask_2d = boundary_2d
+            region_type = "boundary_cells"
+
     # Boolean (True = INSIDE geometry = keep), carrying the grid's own
     # coordinates so it can be cropped/selected like the data itself.
-    return xr.DataArray(
+    mask_da = xr.DataArray(
         mask_2d == 1,
         coords={lat_coord: lats, lon_coord: lons},
         dims=[lat_coord, lon_coord],
     )
+    if region_type is not None:
+        # A masking-time fidelity fact (depends only on grid + geometry):
+        # callers read it off the mask to disclose region_type in provenance.
+        mask_da.attrs["region_type"] = region_type
+    return mask_da
 
 
 def mask_data_by_geometry(
@@ -490,7 +559,23 @@ def mask_data_by_geometry(
 
     # xarray aligns by dimension name, so this works for both (lat, lon)
     # and Harmony-reformatted grids ordered as (time, lon, lat).
-    return data_array.where(mask_da)
+    masked = data_array.where(mask_da)
+    # Carry the mask's fidelity signal (T42): when geometry_mask self-healed
+    # an empty mask to boundary cells, surface that here (``.where`` doesn't
+    # keep the mask's attrs) so the tool can disclose region_type.
+    if mask_da.attrs.get("region_type"):
+        masked.attrs["region_type"] = mask_da.attrs["region_type"]
+    return masked
+
+
+def apply_mask_region_type(masked: xr.DataArray, region: dict) -> None:
+    """Downgrade ``region['region_type']`` to the masking-time fact when the
+    mask self-healed (T42): a sub-cell region that ``geometry_mask`` rescued
+    with ``all_touched`` is ``boundary_cells``, not the polygon/box/point the
+    resolver first named. Mutates the caller-owned ``region`` dict in place."""
+    mask_region_type = masked.attrs.get("region_type")
+    if mask_region_type:
+        region["region_type"] = mask_region_type
 def plot_diff_maps(
     data_arrays: List[xr.DataArray],
     titles: List[str],
@@ -771,7 +856,7 @@ class RegionResolver:
         'antarctica':    {'geometry': box(-180, -90,  180, -60), 'bounds': (-180, -90,  180, -60), 'name': 'Antarctica'},
 
         # --- United States ---
-        'the united states':  {'geometry': box(-125, 24, -66, 50), 'bounds': (-125, 24, -66, 50), 'name': 'United States'},
+        'united states':  {'geometry': box(-125, 24, -66, 50), 'bounds': (-125, 24, -66, 50), 'name': 'United States'},
         'usa':            {'geometry': box(-125, 24, -66, 50), 'bounds': (-125, 24, -66, 50), 'name': 'United States'},
         'us':             {'geometry': box(-125, 24, -66, 50), 'bounds': (-125, 24, -66, 50), 'name': 'United States'},
         'conus':          {'geometry': box(-125, 24, -66, 50), 'bounds': (-125, 24, -66, 50), 'name': 'Continental US'},
@@ -810,55 +895,97 @@ class RegionResolver:
         'southern africa':    {'geometry': box( 11, -35, 40, -15), 'bounds': ( 11, -35, 40, -15), 'name': 'Southern Africa'},
     }
 
+    # Preset keys that resolve to a real polygon (feature id in
+    # preset_regions.geojson). Everything else in ``global_regions`` stays a
+    # disclosed bounding box -- pure-ocean/quadrant concepts where a rectangle
+    # is the honest answer (T42).
+    _POLYGON_PRESET_IDS = {
+        "united states": "united states", "usa": "united states", "us": "united states",
+        "conus": "conus", "continental us": "conus",
+        "contiguous us": "conus", "lower 48": "conus",
+        "north america": "north america", "south america": "south america",
+        "europe": "europe", "africa": "africa", "asia": "asia",
+        "oceania": "oceania", "antarctica": "antarctica",
+    }
+
+    def _finalize_preset(self, preset: dict, key: str) -> dict:
+        """Return a preset enriched with the T42 fidelity disclosure fields.
+        A multi-country concept (US, a continent) is upgraded to its real
+        Natural Earth polygon and labelled ``region_type: polygon``; every
+        other preset stays the crude rectangle it is, honestly labelled
+        ``bounding_box``. ``display_name`` is the human name the answer should
+        cite. A copy, so the shared ``global_regions`` dict is never mutated."""
+        region = dict(preset)
+        region.setdefault("display_name", region.get("name", ""))
+        polygon_id = self._POLYGON_PRESET_IDS.get(key)
+        polygon = load_preset_polygons().get(polygon_id) if polygon_id else None
+        if polygon is not None:
+            region["geometry"] = polygon
+            region["bounds"] = polygon.bounds
+            region["region_type"] = "polygon"
+        else:
+            region.setdefault("region_type", "bounding_box")
+        return region
+
+    @staticmethod
+    def _geocoded_region(geo_result: dict) -> dict:
+        """Build a RegionResult from a geocoder hit, disclosing which kind of
+        footprint it is: ``polygon`` when Nominatim returned a real boundary,
+        or ``point_buffer`` when it didn't and we mint a 0.1° box around the
+        centroid. ``display_name`` is the geocoder's own label, carried
+        through so a wrong-place answer ("Paris, Texas") is catchable. Shared
+        by the sync and async resolvers so a place can't resolve two ways."""
+        if geo_result.get("polygon"):
+            geometry = shape(geo_result["polygon"])
+            region_type = "polygon"
+        else:
+            lon, lat = geo_result["longitude"], geo_result["latitude"]
+            delta = 0.1  # degrees
+            geometry = box(lon - delta, lat - delta, lon + delta, lat + delta)
+            region_type = "point_buffer"
+        display_name = geo_result["display_name"]
+        return {
+            "geometry": geometry,
+            "bounds": geometry.bounds,  # (minx, miny, maxx, maxy)
+            "name": display_name,
+            "display_name": display_name,
+            "region_type": region_type,
+        }
+
+    @staticmethod
+    def _normalize_location_name(location_name: str) -> str:
+        """One normalization for both resolvers (T42 sync/async parity): lower,
+        strip, collapse whitespace, and drop a leading "the " so "the
+        Netherlands" and "the north america" resolve the same by either code
+        path. Previously only the async path stripped "the ", so the same
+        input could resolve two different ways."""
+        normalized = " ".join(location_name.lower().strip().split())
+        return normalized.removeprefix("the ")
+
     def resolve_location(self, location_name: str):
         """Convert location name to RegionResult with geometry"""
         # Check for global regions first
-        location_lower = location_name.lower().strip()
+        location_lower = self._normalize_location_name(location_name)
         if location_lower in self.global_regions:
-            return self.global_regions[location_lower]
+            return self._finalize_preset(self.global_regions[location_lower], location_lower)
 
         geo_result = self.geocoding_service.geocode(location_name)
         if geo_result is None:
             return None
 
-        # Convert GeoJSON polygon to shapely geometry
-        if geo_result['polygon']:
-            geometry = shape(geo_result['polygon'])
-        else:
-            # Fallback: create small box around point
-            lon, lat = geo_result['longitude'], geo_result['latitude']
-            delta = 0.1  # degrees
-            geometry = box(lon - delta, lat - delta, lon + delta, lat + delta)
-
-        return {
-            'geometry': geometry,
-            'bounds': geometry.bounds,  # (minx, miny, maxx, maxy)
-            'name': geo_result['display_name']
-        }
+        return self._geocoded_region(geo_result)
 
     async def aresolve_location(self, location_name: str):
         """Async version of resolve_location() for agent tool execution."""
-        location_lower = location_name.lower().strip()
-        location_lower = location_lower.removeprefix('the ')
+        location_lower = self._normalize_location_name(location_name)
         if location_lower in self.global_regions:
-            return self.global_regions[location_lower]
+            return self._finalize_preset(self.global_regions[location_lower], location_lower)
 
         geo_result = await self.geocoding_service.ageocode(location_name)
         if geo_result is None:
             return None
 
-        if geo_result['polygon']:
-            geometry = shape(geo_result['polygon'])
-        else:
-            lon, lat = geo_result['longitude'], geo_result['latitude']
-            delta = 0.1
-            geometry = box(lon - delta, lat - delta, lon + delta, lat + delta)
-
-        return {
-            'geometry': geometry,
-            'bounds': geometry.bounds,
-            'name': geo_result['display_name']
-        }
+        return self._geocoded_region(geo_result)
 
     def plot_singular(self, data_array, location_name, **kwargs):
         """Plot data for a single location"""
