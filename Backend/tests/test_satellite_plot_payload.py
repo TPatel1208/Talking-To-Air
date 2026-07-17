@@ -502,6 +502,73 @@ class SatellitePlotPayloadTests(unittest.TestCase):
 
         self.assertNotIn("_artifact_refs", result)
 
+    @staticmethod
+    def _reduced_2d_da():
+        """A time-less 2D DataArray, shaped like what reaches _provenance/
+        _query_definition after aggregation collapsed (or the granule never
+        had) the time dimension."""
+        import numpy as np
+        import xarray as xr
+
+        return xr.DataArray(
+            np.ones((2, 2)),
+            dims=("lat", "lon"),
+            coords={"lat": [40.0, 41.0], "lon": [-75.0, -74.0]},
+            name="no2",
+            attrs={"units": "molec cm-2"},
+        )
+
+    def test_provenance_dates_fall_back_to_aggregation_meta_for_a_timeless_reduced_array(self):
+        """Regression: the Metadata tab showed "Date Range: Not available" for
+        every aggregated map -- _provenance derived start/end from the
+        *reduced* array (time dim already collapsed), and monthly L3 granules
+        never had a time coordinate at all. The aggregation meta now carries
+        the range; provenance must use it."""
+        from tools.satellite_tools.plot_tools import _provenance
+
+        agg_meta = {
+            "aggregation_label": "Single Snapshot Mean, 1 monthly granule, 2024-01-01 to 2024-01-31",
+            "title_suffix": "Single Snapshot Mean (2024, 1 monthly granule)",
+            "granule_dates": ["2024-01-01"],
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-31",
+            "n_granules": 1,
+            "cadence": "monthly",
+            "stat": "mean",
+        }
+
+        provenance = _provenance(["obs_x"], self._reduced_2d_da(), "Houston", "mean", agg_meta)
+
+        self.assertEqual(provenance["start_date"], "2024-01-01")
+        self.assertEqual(provenance["end_date"], "2024-01-31")
+        self.assertEqual(provenance["granule_dates"], ["2024-01-01"])
+
+    def test_query_definition_dates_fall_back_to_aggregation_meta(self):
+        from tools.satellite_tools.plot_tools import _query_definition
+
+        agg_meta = {"start_date": "2024-01-01", "end_date": "2024-01-31", "granule_dates": ["2024-01-01"]}
+
+        query = _query_definition(self._reduced_2d_da(), None, "mean", agg_meta=agg_meta)
+
+        self.assertEqual(query["start_date"], "2024-01-01")
+        self.assertEqual(query["end_date"], "2024-01-31")
+
+    def test_time_range_prefers_the_time_coordinate_over_aggregation_meta(self):
+        import numpy as np
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import _time_range
+
+        da = xr.DataArray(
+            np.ones((2, 1, 1)),
+            dims=("time", "lat", "lon"),
+            coords={"time": ["2024-06-01", "2024-06-02"], "lat": [40.0], "lon": [-75.0]},
+        )
+
+        start, end = _time_range(da, {"start_date": "1999-01-01", "end_date": "1999-01-31"})
+
+        self.assertEqual(start, "2024-06-01")
+        self.assertEqual(end, "2024-06-02")
+
 
 if __name__ == "__main__":
     unittest.main()

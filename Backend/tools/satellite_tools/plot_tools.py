@@ -434,17 +434,27 @@ def _mask_col_info(da, ds=None) -> dict:
     return col_info_for_short_name(str(short_name).upper())
 
 
-def _time_range(da) -> tuple[str, str]:
-    if "time" not in da.coords:
-        return "", ""
-    times = sorted(str(t) for t in np.atleast_1d(da["time"].values))
-    if not times:
-        return "", ""
-    return times[0], times[-1]
+def _time_range(da, agg_meta: dict | None = None) -> tuple[str, str]:
+    """Temporal range of ``da`` -- from its time coordinate when it still has
+    one, else from the aggregation meta. The fallback matters twice over: the
+    array reaching provenance/query builders is the *reduced* one (time dim
+    already collapsed away by the aggregation), and some granules (monthly L3
+    means) never had a time coordinate at all -- their coverage lives in global
+    attrs, which aggregation meta now captures (``_build_meta``)."""
+    if "time" in da.coords:
+        times = sorted(str(t) for t in np.atleast_1d(da["time"].values))
+        if times:
+            return times[0], times[-1]
+    if agg_meta:
+        start = agg_meta.get("start_date") or ""
+        end = agg_meta.get("end_date") or ""
+        dates = agg_meta.get("granule_dates") or []
+        return start or (dates[0] if dates else ""), end or (dates[-1] if dates else "")
+    return "", ""
 
 
-def _query_definition(da, region: dict | None, aggregation: str, chart_parameters: dict | None = None) -> dict:
-    start_date, end_date = _time_range(da)
+def _query_definition(da, region: dict | None, aggregation: str, chart_parameters: dict | None = None, agg_meta: dict | None = None) -> dict:
+    start_date, end_date = _time_range(da, agg_meta)
     query = {
         "dataset": da.name or "",
         "start_date": start_date,
@@ -800,7 +810,7 @@ def _provenance(
     agg_meta: dict | None = None, col_info: dict | None = None,
     ds=None, region: dict | None = None,
 ) -> dict:
-    start_date, end_date = _time_range(da)
+    start_date, end_date = _time_range(da, agg_meta)
     provenance = {
         "variable": da.name or "",
         "start_date": start_date,
@@ -845,7 +855,7 @@ def _attach_reproducibility(
     payload["provenance"] = _provenance(
         handles, da, region_name, aggregation_label, agg_meta, col_info, ds=ds, region=region,
     )
-    payload["query"] = _query_definition(da, region, aggregation_label, chart_parameters)
+    payload["query"] = _query_definition(da, region, aggregation_label, chart_parameters, agg_meta)
     payload["export"] = {
         "type": payload.get("type"),
         "variable": da.name or "",
@@ -1244,9 +1254,18 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
 
             dim_selector = _build_dim_selector(dimension, dimension_value)
             if dim_selector:
+                # Same selection seam as _normalize_to_2d: nearest-match on a
+                # real coordinate, positional on a coordinate-less dim, and a
+                # structured refusal (never an xarray internals crash) on a
+                # bad value.
+                from utils.plotting import _select_dim_nearest
+
                 for dim_name, value in dim_selector.items():
                     if dim_name in masked.dims:
-                        masked = masked.sel({dim_name: value}, method="nearest")
+                        try:
+                            masked = _select_dim_nearest(masked, dim_name, value)
+                        except MCPToolError as e:
+                            return "dimension_choice_required", e.to_dict()
             extra_dims = [d for d in masked.dims if d not in (lat_coord, lon_coord, time_dim)]
             if extra_dims:
                 from utils.plotting import _dimension_choice_error

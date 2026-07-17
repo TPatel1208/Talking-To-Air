@@ -306,7 +306,13 @@ def _select_dim_nearest(data_array: xr.DataArray, dim_name: str, value) -> xr.Da
     hPa, say) into a plausible-looking selection of the wrong level, with no
     signal that anything went wrong."""
     coord = data_array[dim_name] if dim_name in data_array.coords else None
-    if coord is not None and coord.ndim == 1 and coord.size > 0:
+    if coord is None:
+        # A dim with no coordinate can only be selected by position —
+        # _dimension_choice_error advertises indices 0..n-1 for exactly this
+        # case, and xarray's .sel(method="nearest") refuses index-less dims
+        # outright ("no associated coordinate or index").
+        return _select_dim_positional(data_array, dim_name, value)
+    if coord.ndim == 1 and coord.size > 0:
         try:
             requested = float(value)
         except (TypeError, ValueError):
@@ -317,6 +323,27 @@ def _select_dim_nearest(data_array: xr.DataArray, dim_name: str, value) -> xr.Da
             if not (cmin <= requested <= cmax):
                 raise _dimension_out_of_range_error(coord, dim_name, requested, cmin, cmax)
     return data_array.sel({dim_name: value}, method="nearest")
+
+
+def _select_dim_positional(data_array: xr.DataArray, dim_name: str, value) -> xr.DataArray:
+    """Select by integer position along a coordinate-less ``dim_name``,
+    keeping the same refuse-don't-snap contract as ``_select_dim_nearest``:
+    a fractional or out-of-range index is a structured, range-naming error,
+    never a clamp or a silent truncation."""
+    size = data_array.sizes[dim_name]
+    try:
+        requested = float(value)
+    except (TypeError, ValueError):
+        requested = None
+    if requested is None or not requested.is_integer() or not (0 <= int(requested) < size):
+        raise MCPToolError(
+            CATEGORY_DIMENSION_CHOICE_REQUIRED,
+            f"Dimension '{dim_name}' has no coordinate values, so it is selected "
+            f"by position — got {value!r}, expected an integer index in "
+            f"[0, {size - 1}].",
+            suggestion=f"Pass a '{dim_name}' index between 0 and {size - 1}.",
+        )
+    return data_array.isel({dim_name: int(requested)})
 
 
 def _dimension_out_of_range_error(
@@ -643,7 +670,11 @@ class GeocodingService:
         logger.info("satellite_geocode_requests", extra={"_location": location_name})
 
         try:
-            response = requests.get(url, params=params, headers=headers)
+            # timeout is load-bearing: this sync path still runs on the event
+            # loop in a few legacy callers (export_service) — without it a
+            # hanging Nominatim response freezes the whole single-worker
+            # backend (every SSE stream, heartbeat, and /health) indefinitely.
+            response = requests.get(url, params=params, headers=headers, timeout=15)
             data = response.json()
 
             if data:
