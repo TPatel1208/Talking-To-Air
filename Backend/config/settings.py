@@ -98,6 +98,20 @@ class Settings:
     await_retrieval_timeout_seconds: int = field(
         default_factory=lambda: max(1, _int_env("AWAIT_RETRIEVAL_TIMEOUT_SECONDS", 900))
     )
+    # T38: the one seam every MCP call passes through (earthdata_mcp/results.py
+    # call_tool) times out an individual tool.ainvoke — generous by default
+    # because retrieve_subset submissions and large export_result calls are
+    # legitimately slow, but bounded so a wedged call can't pin a turn forever.
+    mcp_call_timeout_seconds: int = field(
+        default_factory=lambda: max(1, _int_env("MCP_CALL_TIMEOUT_SECONDS", 120))
+    )
+    # T38: the whole-turn deadline stream_chat_events/_fast_path_events enforce
+    # around their event loop. Must stay comfortably above
+    # await_retrieval_timeout_seconds (validate_startup asserts this) so a
+    # legitimate long retrieval poll is never misread as a hung turn.
+    chat_turn_timeout_seconds: int = field(
+        default_factory=lambda: max(1, _int_env("CHAT_TURN_TIMEOUT_SECONDS", 1800))
+    )
     retrieval_max_timeseries_days: int = field(
         default_factory=lambda: max(1, _int_env("RETRIEVAL_MAX_TIMESERIES_DAYS", 366))
     )
@@ -188,6 +202,15 @@ class Settings:
             missing.append("JWT_SECRET_KEY")
         if missing:
             raise RuntimeError(f"Missing required environment variable(s): {', '.join(missing)}")
+
+        # T38: a turn deadline that isn't comfortably above the retrieval
+        # poll-loop's own deadline would make every retrieval that runs the
+        # full await_retrieval_timeout_seconds a guaranteed turn timeout.
+        if self.chat_turn_timeout_seconds <= self.await_retrieval_timeout_seconds:
+            raise ConfigurationError(
+                f"CHAT_TURN_TIMEOUT_SECONDS ({self.chat_turn_timeout_seconds}) must be greater "
+                f"than AWAIT_RETRIEVAL_TIMEOUT_SECONDS ({self.await_retrieval_timeout_seconds})"
+            )
 
         # A malformed earthdata-retrieval MCP URL is a config typo to fix,
         # not an outage — it must fail loudly at boot rather than being

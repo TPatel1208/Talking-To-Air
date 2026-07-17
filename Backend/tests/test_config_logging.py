@@ -237,6 +237,53 @@ class ConfigLoggingTests(unittest.TestCase):
         )
         loaded.validate_startup()  # must not raise
 
+    def test_settings_loads_mcp_call_timeout_and_chat_turn_timeout_defaults(self):
+        from config.settings import get_settings
+
+        with patch.dict(os.environ, {}, clear=True):
+            get_settings.cache_clear()
+            loaded = get_settings()
+
+        self.assertEqual(loaded.mcp_call_timeout_seconds, 120)
+        self.assertEqual(loaded.chat_turn_timeout_seconds, 1800)
+
+    def test_settings_loads_mcp_call_timeout_and_chat_turn_timeout_from_env(self):
+        from config.settings import get_settings
+
+        with patch.dict(
+            os.environ,
+            {"MCP_CALL_TIMEOUT_SECONDS": "45", "CHAT_TURN_TIMEOUT_SECONDS": "600"},
+            clear=True,
+        ):
+            get_settings.cache_clear()
+            loaded = get_settings()
+
+        self.assertEqual(loaded.mcp_call_timeout_seconds, 45)
+        self.assertEqual(loaded.chat_turn_timeout_seconds, 600)
+
+    def test_validate_startup_rejects_a_chat_turn_timeout_not_greater_than_await_retrieval_timeout(self):
+        from config.settings import ConfigurationError, Settings
+
+        # A misconfiguration here would make every retrieval that runs the
+        # full await_retrieval_timeout_seconds a guaranteed turn timeout.
+        loaded = Settings(
+            db_password="x", jwt_secret_key="x", google_api_key="x", groq_api_key="x",
+            await_retrieval_timeout_seconds=900,
+            chat_turn_timeout_seconds=900,
+        )
+        with self.assertRaisesRegex(ConfigurationError, "CHAT_TURN_TIMEOUT_SECONDS"):
+            loaded.validate_startup()
+
+    def test_validate_startup_accepts_a_chat_turn_timeout_greater_than_await_retrieval_timeout(self):
+        from config.settings import Settings
+
+        loaded = Settings(
+            db_password="x", jwt_secret_key="x", google_api_key="x", groq_api_key="x",
+            await_retrieval_timeout_seconds=900,
+            chat_turn_timeout_seconds=1800,
+        )
+        loaded.validate_startup()  # must not raise
+
     def test_settings_normalizes_invalid_modes(self):
         from config.settings import get_settings
 

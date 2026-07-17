@@ -14,10 +14,13 @@ point: a dict back, or ``MCPToolError`` with a category a caller can act on.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
 from typing import Any
+
+from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -271,10 +274,10 @@ def _log(exc: MCPToolError) -> MCPToolError:
     return exc
 
 
-async def call_tool(tool: Any, kwargs: dict) -> Any:
+async def call_tool(tool: Any, kwargs: dict, timeout: float | None = None) -> Any:
     """Invoke ``tool.ainvoke(kwargs)`` and return its raw, unclassified
     result — or raise ``MCPToolError`` (category ``provider_unavailable``)
-    for a transport/session-level failure.
+    for a transport/session-level failure or a call that exceeds its budget.
 
     A connection failure is *raised* by langchain_mcp_adapters, never
     returned as tool content (content only carries MCP-side ``isError``
@@ -294,14 +297,26 @@ async def call_tool(tool: Any, kwargs: dict) -> Any:
     errors (``httpx.ReadTimeout``/``ReadError``/``RemoteProtocolError``,
     ``httpcore.ReadError``, an ``anyio`` resource error) that the old
     connect-only tuple let escape unclassified.
+
+    T38: ``call_tool`` is the one seam every model-facing MCP call passes
+    through (bind_workspace wraps every tool with it), so a per-call budget
+    here bounds a wedged ``tool.ainvoke`` — a stuck MCP call — without the
+    caller having to know anything about timeouts. ``timeout`` defaults to
+    ``settings.mcp_call_timeout_seconds`` (generous — retrieve_subset
+    submissions and large export_result calls are legitimately slow) but a
+    composite may pass a tighter one (e.g. an individual await_retrieval
+    status poll, whose own loop already bounds the whole wait).
     """
     import anyio
     import httpcore
     import httpx
     from mcp.shared.exceptions import McpError
 
+    if timeout is None:
+        timeout = get_settings().mcp_call_timeout_seconds
+
     try:
-        return await tool.ainvoke(kwargs)
+        return await asyncio.wait_for(tool.ainvoke(kwargs), timeout=timeout)
     except* (
         httpx.TransportError,
         httpcore.NetworkError,
@@ -319,3 +334,10 @@ async def call_tool(tool: Any, kwargs: dict) -> Any:
             suggestion="Try again in a moment.",
             raw_preview=str(detail)[:300],
         )) from eg
+    except* TimeoutError:
+        raise _log(MCPToolError(
+            CATEGORY_PROVIDER_UNAVAILABLE,
+            "The data service stopped responding.",
+            suggestion="Try again in a moment.",
+            raw_preview=f"tool call exceeded {timeout}s",
+        )) from None

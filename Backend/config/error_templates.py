@@ -59,3 +59,21 @@ def render_error_answer(category: str, stage: str, detail: str | None = None) ->
     if detail[-1] not in ".!?":
         detail += "."
     return template.format(stage=stage, detail=detail)
+
+
+# T38: distinct from the taxonomy templates above — a turn deadline is not an
+# MCPToolError category, it is stream_chat_events/_fast_path_events giving up
+# on the whole turn rather than one classified failure. Names any job handles
+# still running server-side (collected from this turn's job_progress events)
+# so a researcher staring at the timeout answer knows the Jobs panel, not a
+# retry, is where to look.
+_TURN_TIMEOUT_TEMPLATE = (
+    "This request ran out of time before it could finish. {jobs_detail}"
+    "This was not a problem with your question — try again, or check the "
+    "Jobs panel for anything still running."
+)
+
+
+def render_turn_timeout_answer(job_handles: list[str] | None = None) -> str:
+    jobs_detail = f"Still running: {', '.join(job_handles)}. " if job_handles else ""
+    return _TURN_TIMEOUT_TEMPLATE.format(jobs_detail=jobs_detail)

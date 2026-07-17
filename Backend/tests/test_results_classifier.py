@@ -13,6 +13,7 @@ import importlib.util
 import os
 import sys
 import unittest
+from unittest.mock import patch
 
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_DIR not in sys.path:
@@ -390,6 +391,62 @@ class CallToolConnectionFailureTests(unittest.IsolatedAsyncioTestCase):
         result = await call_tool(_WorkingTool(), {"query": "no2"})
 
         self.assertEqual(result, '{"results": []}')
+
+    async def test_call_tool_times_out_on_a_never_resolving_tool_and_classifies_as_provider_unavailable(self):
+        # T38: call_tool is the one seam every MCP call passes through — a
+        # wedged tool.ainvoke (stuck MCP call) must not pin the caller
+        # forever. A tiny explicit timeout stands in for
+        # settings.mcp_call_timeout_seconds without needing real time to pass.
+        import asyncio
+
+        from earthdata_mcp.results import MCPToolError, call_tool
+
+        class _HangingTool:
+            name = "describe_dataset"
+
+            async def ainvoke(self, kwargs):
+                await asyncio.sleep(999)
+
+        with self.assertRaises(MCPToolError) as ctx:
+            await call_tool(_HangingTool(), {"dataset_id": "x"}, timeout=0.05)
+
+        self.assertEqual(ctx.exception.category, "provider_unavailable")
+
+    async def test_call_tool_with_a_tiny_timeout_does_not_affect_a_fast_tool(self):
+        from earthdata_mcp.results import call_tool
+
+        class _WorkingTool:
+            name = "search_datasets"
+
+            async def ainvoke(self, kwargs):
+                return '{"results": []}'
+
+        result = await call_tool(_WorkingTool(), {"query": "no2"}, timeout=0.05)
+
+        self.assertEqual(result, '{"results": []}')
+
+    async def test_call_tool_default_timeout_is_sourced_from_settings(self):
+        # Composites (bind_workspace) never pass timeout explicitly on the
+        # common path — the default must come from settings, not be
+        # unbounded, so an un-tuned deployment still gets a bounded call.
+        import asyncio
+
+        import earthdata_mcp.results as results_module
+        from config.settings import Settings
+        from earthdata_mcp.results import MCPToolError, call_tool
+
+        class _HangingTool:
+            name = "describe_dataset"
+
+            async def ainvoke(self, kwargs):
+                await asyncio.sleep(999)
+
+        fake_settings = Settings(mcp_call_timeout_seconds=0.05)
+        with patch.object(results_module, "get_settings", return_value=fake_settings):
+            with self.assertRaises(MCPToolError) as ctx:
+                await call_tool(_HangingTool(), {"dataset_id": "x"})
+
+        self.assertEqual(ctx.exception.category, "provider_unavailable")
 
 
 @unittest.skipIf(

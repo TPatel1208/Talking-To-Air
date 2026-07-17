@@ -110,7 +110,9 @@ edl_credential_injector = EdlCredentialInjector(settings)
 earthdata_mcp_manager = EarthdataMCPConnectionManager(
     settings, current_user_id, on_ready=_on_earthdata_mcp_ready, edl_injector=edl_credential_injector,
 )
-chat_stream_service = ChatStreamService(chart_service, settings.long_request_seconds, earthdata_mcp_manager)
+chat_stream_service = ChatStreamService(
+    chart_service, settings.long_request_seconds, earthdata_mcp_manager, settings.chat_turn_timeout_seconds,
+)
 
 
 @asynccontextmanager

@@ -55,5 +55,23 @@ class RenderErrorAnswerTests(unittest.TestCase):
             self.assertTrue(text)
 
 
+class RenderTurnTimeoutAnswerTests(unittest.TestCase):
+    def test_names_no_running_jobs_when_none_were_seen(self):
+        from config.error_templates import render_turn_timeout_answer
+
+        text = render_turn_timeout_answer([])
+
+        self.assertIn("ran out of time", text)
+        self.assertNotIn("Still running", text)
+
+    def test_names_in_flight_job_handles_so_the_jobs_panel_story_stays_coherent(self):
+        from config.error_templates import render_turn_timeout_answer
+
+        text = render_turn_timeout_answer(["job_abc123", "job_def456"])
+
+        self.assertIn("job_abc123", text)
+        self.assertIn("job_def456", text)
+
+
 if __name__ == "__main__":
     unittest.main()

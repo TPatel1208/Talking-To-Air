@@ -337,6 +337,54 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("event: done", joined)
         supervisor_agent.aupdate_state.assert_not_called()
 
+    async def test_fast_path_turn_deadline_ends_with_timeout_error_then_done_and_cancels_the_sub_agent(self):
+        """T38: the fast path owns its own cancellable task (run() via
+        asyncio.create_task) — a wedged satellite tool call must not hang
+        the turn forever, and the sub-agent's own stream must actually be
+        cancelled once the deadline fires."""
+        from services.chat_stream_service import ChatStreamService
+        from services.chart_service import ChartService
+
+        class HangingSatelliteAgent:
+            def __init__(self):
+                self.cancelled = False
+
+            async def astream(self, input_, config, stream_mode):
+                try:
+                    await asyncio.sleep(999)
+                    yield "messages", (SimpleNamespace(content="unreachable", type="ai", tool_calls=None), {})
+                except asyncio.CancelledError:
+                    self.cancelled = True
+                    raise
+
+        ground_agent = UntouchedAgent()
+        satellite_agent = HangingSatelliteAgent()
+        supervisor_agent = AsyncMock()
+        service = ChatStreamService(ChartService(), long_request_seconds=999, chat_turn_timeout_seconds=0.05)
+
+        events = [
+            event
+            async for event in service.stream_chat_events(
+                supervisor_agent, ground_agent, satellite_agent,
+                "Plot TROPOMI NO2 over New Jersey for 2024-01-15", "thread-1", "user-1", "req-1",
+            )
+        ]
+        # Cancellation is scheduled (Task.cancel()), not delivered
+        # synchronously, and here it must propagate through run_satellite's
+        # own nested stream_response layer too — give the loop a few ticks.
+        for _ in range(10):
+            if satellite_agent.cancelled:
+                break
+            await asyncio.sleep(0)
+
+        joined = "".join(events)
+        self.assertIn("event: error", joined)
+        self.assertIn("event: done", joined)
+        self.assertLess(joined.index("event: error"), joined.index("event: done"))
+        self.assertIn("ran out of time", joined)
+        self.assertTrue(satellite_agent.cancelled)
+        supervisor_agent.aupdate_state.assert_not_called()
+
     async def test_fast_pathed_turn_is_written_back_and_visible_to_the_next_supervisor_turn(self):
         from services.chat_stream_service import ChatStreamService
         from services.chart_service import ChartService
