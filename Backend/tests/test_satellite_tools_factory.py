@@ -334,7 +334,13 @@ class SatelliteToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(result)
 
         self.assertNotIn("error", payload)
-        self.assertEqual(payload["mean"], 2.5)
+        # The regional mean is cos(latitude) area-weighted: rows at lat=10
+        # ([1,2]) and lat=20 ([3,4]).
+        import math
+
+        w10, w20 = math.cos(math.radians(10.0)), math.cos(math.radians(20.0))
+        expected_mean = ((1.0 + 2.0) * w10 + (3.0 + 4.0) * w20) / (2 * (w10 + w20))
+        self.assertAlmostEqual(payload["mean"], expected_mean)
         self.assertEqual(payload["max"], 4.0)
         self.assertEqual(payload["source_handles"], ["obs_stat"])
 

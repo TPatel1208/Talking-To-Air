@@ -11,10 +11,11 @@ from config.workflow_stages import STAGE_RENDER
 from datasets.mask_info import col_info_for_short_name, short_name_from_attrs
 from earthdata_mcp.results import MCPToolError
 from services.open_handle import OpenHandleError, open_handle
+from tools.satellite_tools.plot_tools import _normalize_longitudes
 from utils.geo_utils import find_lat_coord, find_lon_coord
 from utils.plotting import _normalize_to_2d, mask_data_by_geometry, RegionResolver
 from utils.streaming import emit_status
-from preprocessing.aggregation_service import AggregationService
+from preprocessing.aggregation_service import AggregationService, area_weighted_mean
 
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "outputs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -78,13 +79,26 @@ def make_compute_statistic_tool(mcp_tools: dict[str, BaseTool]):
         """
         try:
             ds = await open_handle(handle, mcp_tools)
+            # Normalize longitude on the whole opened Dataset, before
+            # extracting the science DataArray -- the plot_singular
+            # convention. A 0..360 grid otherwise rasterizes a western-
+            # hemisphere region entirely outside the data ("No valid data
+            # found" for data that's fully present), and normalizing only
+            # the extracted array would leave ds's sibling QA-flag variable
+            # on 0..360, so QA alignment would hit an empty intersection.
+            ds_lon_coord = find_lon_coord(ds)
+            if ds_lon_coord:
+                ds = _normalize_longitudes(ds, ds_lon_coord)
             da = _aggregation_service.to_dataarray(ds, handle=handle, variable=variable)
         except MCPToolError as e:
             return json.dumps({"error": e.to_dict()})
         except OpenHandleError as e:
             return json.dumps({"error": f"Failed to open handle '{handle}': {e}"})
 
-        region = _resolver.resolve_location(location)
+        # aresolve_location, never the sync resolve_location: the sync path
+        # does a blocking HTTP geocode (plus a rate-limit sleep) directly on
+        # the event loop, freezing every concurrent stream for its duration.
+        region = await _resolver.aresolve_location(location)
         if region is None:
             return json.dumps({"error": f"Could not resolve location: '{location}'"})
 
@@ -94,42 +108,72 @@ def make_compute_statistic_tool(mcp_tools: dict[str, BaseTool]):
             # CPU-bound mask -> aggregate -> stats chain (T16), run off the
             # event loop via asyncio.to_thread below.
             masked = mask_data_by_geometry(da, region['geometry'])
-
             col_info = _mask_col_info(masked, ds)
-            try:
+            dim_selector = _build_dim_selector(dimension, dimension_value)
+
+            def _reduced_field(stat):
+                """Mask, reduce over time with ``stat`` per cell, and squeeze
+                to a 2-D (lat, lon) field."""
                 aggregation = _aggregation_service.aggregate(
                     masked,
                     variable=masked.name,
-                    stat="mean",
+                    stat=stat,
                     col_info=col_info,
                     source_ds=ds,
                 )
                 reduced = next(iter(aggregation.ds.data_vars.values()))
-                reduced = _normalize_to_2d(reduced, dim_selector=_build_dim_selector(dimension, dimension_value))
-            except ValueError as e:
-                return "error", str(e)
-            except MCPToolError as e:
-                return "error", e.to_dict()
-
-            values = reduced.values
-            valid = values[np.isfinite(values)]
-            if len(valid) == 0:
-                return "error", f"No valid data found for '{location}'. The region may be outside the data bbox."
+                return aggregation, _normalize_to_2d(reduced, dim_selector=dim_selector)
 
             invalid_stats = [s for s in stats if s not in VALID_STATS]
             if invalid_stats:
                 return "error", f"Unknown stats: {invalid_stats}. Valid: {sorted(VALID_STATS)}"
 
-            result = {
-                "location": location,
-                "variable": reduced.name or "",
-                "units":    reduced.attrs.get("units", ""),
-                "n_pixels": int(len(valid)),
-                "aggregation_meta": aggregation.meta,
-                "source_handles": [handle],
-            }
-            for s in stats:
-                result[s] = _aggregation_service.compute_values_stat(valid, s)
+            try:
+                aggregation, mean_field = _reduced_field("mean")
+
+                values = mean_field.values
+                valid = values[np.isfinite(values)]
+                if len(valid) == 0:
+                    return "error", f"No valid data found for '{location}'. The region may be outside the data bbox."
+
+                result = {
+                    "location": location,
+                    "variable": mean_field.name or "",
+                    "units":    mean_field.attrs.get("units", ""),
+                    "n_pixels": int(len(valid)),
+                    "aggregation_meta": aggregation.meta,
+                    "source_handles": [handle],
+                }
+                # Each statistic is computed on the basis that makes it true
+                # to its name, and that basis is disclosed:
+                #   - max/min compose exactly across time (the max of per-cell
+                #     maxima IS the max over every observation), so they reduce
+                #     time with the same stat — the old max-of-the-time-MEAN-
+                #     field systematically understated multi-day extremes.
+                #   - mean is the cos(latitude) area-weighted mean of the
+                #     temporal-mean field (area_weighted_mean).
+                #   - median/std don't compose across time; they are computed
+                #     over the temporal-mean field and say so.
+                stat_basis: dict[str, str] = {}
+                for s in stats:
+                    if s in ("max", "min"):
+                        _, extremum_field = _reduced_field(s)
+                        field_values = extremum_field.values
+                        result[s] = _aggregation_service.compute_values_stat(
+                            field_values[np.isfinite(field_values)], s,
+                        )
+                        stat_basis[s] = f"{s} over every valid observation (all timesteps)"
+                    elif s == "mean":
+                        result[s] = area_weighted_mean(mean_field)
+                        stat_basis[s] = "cos(latitude) area-weighted spatial mean of the temporal-mean field"
+                    else:
+                        result[s] = _aggregation_service.compute_values_stat(valid, s)
+                        stat_basis[s] = f"{s} of the temporal-mean field (per-cell mean over time first)"
+                result["stat_basis"] = stat_basis
+            except ValueError as e:
+                return "error", str(e)
+            except MCPToolError as e:
+                return "error", e.to_dict()
 
             return None, result
 
@@ -172,13 +216,22 @@ def make_find_daily_peak(mcp_tools: dict[str, BaseTool]):
         """
         try:
             ds = await open_handle(handle, mcp_tools)
+            # See compute_statistic_tool: normalize the whole Dataset's
+            # longitude to -180..180 before extraction, so geometry masking
+            # and QA-flag alignment both see one coordinate convention.
+            ds_lon_coord = find_lon_coord(ds)
+            if ds_lon_coord:
+                ds = _normalize_longitudes(ds, ds_lon_coord)
             da = _aggregation_service.to_dataarray(ds, handle=handle, variable=variable)
         except MCPToolError as e:
             return json.dumps({"error": e.to_dict()})
         except OpenHandleError as e:
             return json.dumps({"error": f"Failed to open handle '{handle}': {e}"})
 
-        region = _resolver.resolve_location(location)
+        # aresolve_location, never the sync resolve_location — see
+        # compute_statistic_tool: the sync path blocks the event loop on a
+        # geocoding HTTP call plus a rate-limit sleep.
+        region = await _resolver.aresolve_location(location)
         if region is None:
             return json.dumps({"error": f"Could not resolve location: '{location}'"})
 
@@ -191,10 +244,16 @@ def make_find_daily_peak(mcp_tools: dict[str, BaseTool]):
 
             col_info = _mask_col_info(masked, ds)
             try:
+                # stat="max": the peak of the per-cell MAX field is the true
+                # peak over every observation in the period (max composes
+                # exactly across time). The old stat="mean" reduced time
+                # first, so "worst pollution point" was the peak of the
+                # period-AVERAGE map — systematically understating multi-day
+                # extremes and possibly misplacing them.
                 aggregation = _aggregation_service.aggregate(
                     masked,
                     variable=masked.name,
-                    stat="mean",
+                    stat="max",
                     col_info=col_info,
                     source_ds=ds,
                 )

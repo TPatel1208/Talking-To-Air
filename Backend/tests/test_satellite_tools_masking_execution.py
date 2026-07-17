@@ -146,8 +146,14 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
         result = json.loads(raw)
 
         self.assertNotIn("error", result)
-        # Good cells (flag=0): 1.0, 3.0 -> mean 2.0. Unmasked mean would be 2.5.
-        self.assertAlmostEqual(result["mean"], 2.0)
+        # Good cells (flag=0): 1.0 at lat=10 and 3.0 at lat=20. The regional
+        # mean is cos(latitude) area-weighted (area_weighted_mean) — an
+        # unweighted mean (2.0 here) would over-weight the higher latitude.
+        import math
+
+        w10, w20 = math.cos(math.radians(10.0)), math.cos(math.radians(20.0))
+        expected_mean = (1.0 * w10 + 3.0 * w20) / (w10 + w20)
+        self.assertAlmostEqual(result["mean"], expected_mean)
         self.assertEqual(result["n_pixels"], 2)
         self.assertEqual(result["aggregation_meta"]["masking"]["qa_status"], "verified")
 
@@ -414,10 +420,14 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertNotIn("error", result)
         full = emitted["payload"]
-        # Good cells (flag=0) only: A -> [1.0, 3.0] mean=2.0 (unmasked 2.5);
-        # B -> [10.0, 30.0] mean=20.0 (unmasked 25.0).
-        self.assertAlmostEqual(full["stats"]["A"]["mean"], 2.0)
-        self.assertAlmostEqual(full["stats"]["B"]["mean"], 20.0)
+        # Good cells (flag=0) only: A -> 1.0 at lat=10, 3.0 at lat=20;
+        # B is 10x A. Means are cos(latitude) area-weighted.
+        import math
+
+        w10, w20 = math.cos(math.radians(10.0)), math.cos(math.radians(20.0))
+        expected_a = (1.0 * w10 + 3.0 * w20) / (w10 + w20)
+        self.assertAlmostEqual(full["stats"]["A"]["mean"], expected_a)
+        self.assertAlmostEqual(full["stats"]["B"]["mean"], 10.0 * expected_a)
 
 
 if __name__ == "__main__":

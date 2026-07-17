@@ -341,8 +341,14 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
         # Shared color scale across both panels (region mode never differences).
         self.assertEqual(full["panels"][0]["vmin"], full["panels"][1]["vmin"])
         self.assertEqual(full["panels"][0]["vmax"], full["panels"][1]["vmax"])
-        self.assertAlmostEqual(full["stats"]["Newark"]["mean"], 2.5)
-        self.assertAlmostEqual(full["stats"]["Philly"]["mean"], 25.0)
+        # Means are cos(latitude) area-weighted: rows at lat=10 ([1,2]) and
+        # lat=20 ([3,4]); Philly's fixture is 10x Newark's.
+        import math
+
+        w10, w20 = math.cos(math.radians(10.0)), math.cos(math.radians(20.0))
+        expected_newark = ((1.0 + 2.0) * w10 + (3.0 + 4.0) * w20) / (2 * (w10 + w20))
+        self.assertAlmostEqual(full["stats"]["Newark"]["mean"], expected_newark)
+        self.assertAlmostEqual(full["stats"]["Philly"]["mean"], 10.0 * expected_newark)
         self.assertNotIn("difference", full)
 
         # T23: each panel gets its own rendered overlay, colorized against
@@ -419,7 +425,13 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(full["mode"], "difference")
         # b - a: [[1,2],[3,4]] doubled -> diff = a itself: [[1,2],[3,4]]
         self.assertEqual(full["difference"]["values"], [[1.0, 2.0], [3.0, 4.0]])
-        self.assertAlmostEqual(full["stats"]["mean_difference"], 2.5)
+        # mean_difference is cos(latitude) area-weighted (lat rows 10/20);
+        # percent change stays exactly 100% since b = 2a cell-for-cell.
+        import math
+
+        w10, w20 = math.cos(math.radians(10.0)), math.cos(math.radians(20.0))
+        expected_mean_diff = ((1.0 + 2.0) * w10 + (3.0 + 4.0) * w20) / (2 * (w10 + w20))
+        self.assertAlmostEqual(full["stats"]["mean_difference"], expected_mean_diff)
         self.assertAlmostEqual(full["stats"]["percent_change"], 100.0)
         # Diverging, zero-centered scale.
         self.assertAlmostEqual(full["difference"]["vmin"], -full["difference"]["vmax"])

@@ -26,7 +26,7 @@ from langchain_core.tools import BaseTool
 from config.workflow_stages import STAGE_RENDER
 from datasets.mask_info import col_info_for_short_name, short_name_from_attrs
 from earthdata_mcp.results import MCPToolError, parse_tool_result
-from preprocessing.aggregation_service import AggregationService
+from preprocessing.aggregation_service import AggregationService, area_weighted_mean
 from services.open_handle import OpenHandleError, open_handle
 from tools.satellite_tools.plot_tools import (
     _da_to_heatmap_payload,
@@ -74,17 +74,20 @@ def _anomaly_stats(da_a, da_b, diff, threshold: float | None) -> dict:
 
     All computed only over cells valid on both sides (``diff`` already
     carries NaN wherever either side was missing — see ``_difference``).
+    Means are cos(latitude) area-weighted (``area_weighted_mean``) — on a
+    lat/lon grid an unweighted cell mean over-weights high latitudes, and a
+    percent change built from two such means inherits the bias.
     """
     diff_vals = np.asarray(diff.values, dtype=float)
     valid_diff = diff_vals[np.isfinite(diff_vals)]
 
-    a_vals = np.asarray(da_a.values, dtype=float)
-    diff_mask = np.isfinite(diff_vals)
-    a_paired = a_vals[diff_mask]
-    a_paired_valid = a_paired[np.isfinite(a_paired)]
+    # Period A restricted to the same paired (valid-on-both-sides) cells,
+    # kept as a DataArray so the weighted mean still sees the latitude axis.
+    a_paired = da_a.where(diff.notnull())
+    a_paired_vals = np.asarray(a_paired.values, dtype=float)
 
-    mean_difference = float(np.mean(valid_diff)) if valid_diff.size else None
-    mean_a = float(np.mean(a_paired_valid)) if a_paired_valid.size else None
+    mean_difference = area_weighted_mean(diff) if valid_diff.size else None
+    mean_a = area_weighted_mean(a_paired) if np.isfinite(a_paired_vals).any() else None
     percent_change = (
         (mean_difference / mean_a) * 100.0
         if mean_difference is not None and mean_a not in (None, 0.0)
@@ -109,13 +112,16 @@ def _anomaly_stats(da_a, da_b, diff, threshold: float | None) -> dict:
 
 
 def _region_stats(da) -> dict | None:
-    """Basic descriptive stats over da's valid cells, or None if none are valid."""
+    """Basic descriptive stats over da's valid cells, or None if none are
+    valid. The mean is cos(latitude) area-weighted (``area_weighted_mean``);
+    median/max/min are order statistics, which weighting doesn't move enough
+    to justify a weighted-quantile dependency."""
     values = np.asarray(da.values, dtype=float)
     valid = values[np.isfinite(values)]
     if valid.size == 0:
         return None
     return {
-        "mean": float(np.mean(valid)),
+        "mean": area_weighted_mean(da),
         "median": float(np.median(valid)),
         "max": float(np.max(valid)),
         "min": float(np.min(valid)),
