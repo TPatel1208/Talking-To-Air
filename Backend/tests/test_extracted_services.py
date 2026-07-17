@@ -553,7 +553,9 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["Body"][0]["monitor_name"], "Site 0")
         self.assertEqual(result["Body"][0]["n_periods"], 1)
         self.assertEqual(result["Body"][0]["mean"], 1.0)
-        self.assertEqual(result["Body"][0]["min"], 1.0)
+        # dailyData supplies no minimum_value; min must be null, never a
+        # copy of the mean (fabricated-stats regression).
+        self.assertIsNone(result["Body"][0]["min"])
         self.assertEqual(result["Body"][0]["max"], 2.0)
         self.assertEqual(result["Body"][0]["peak"], {"value": 2.5, "date": "2024-01-01", "first_max_hour": 13})
         artifact_id = result["_artifact_refs"][0]["id"]
