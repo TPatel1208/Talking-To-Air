@@ -30,6 +30,16 @@ transition into ready (boot or recovery), never on a heartbeat that finds
 the MCP still healthy, so a steady-state loop doesn't rebuild the satellite
 agent every interval for nothing.
 
+Steady-state heartbeats are dampened (PRD T40): a single probe miss logs
+and re-probes shortly after instead of demoting, so one transient blip
+doesn't flap every consumer to unavailable for 30 seconds. Only
+``heartbeat_failure_threshold`` *consecutive* misses demotes to
+unavailable and falls back to the full connect loop above. The steady-state
+probe itself (``earthdata_mcp.client.probe_mcp_tools`` by default) is a
+tool listing, not a full load-bind-verify — no rebind, no ``on_ready`` — so
+a healthy connection isn't rebuilt from scratch every 30 seconds for
+nothing.
+
 Boot-time misconfiguration (a malformed URL, a missing required setting) is
 not this module's concern — that still fails loudly from
 config.settings.Settings.validate_startup before the manager ever starts.
@@ -43,7 +53,12 @@ from typing import Any, Awaitable, Callable
 from langchain_core.tools import BaseTool
 
 from config.settings import Settings
-from earthdata_mcp.client import REQUIRED_TOOL_PARAMS, EarthdataMCPUnavailableError, load_raw_mcp_tools
+from earthdata_mcp.client import (
+    REQUIRED_TOOL_PARAMS,
+    EarthdataMCPUnavailableError,
+    load_raw_mcp_tools,
+    probe_mcp_tools,
+)
 from earthdata_mcp.workspace import EdlCredentialInjector, bind_workspace
 
 logger = logging.getLogger(__name__)
@@ -54,6 +69,7 @@ STATE_UNAVAILABLE = "unavailable"
 STATE_INCOMPATIBLE = "incompatible"
 
 Loader = Callable[[Settings], Awaitable[dict[str, BaseTool]]]
+Probe = Callable[[Settings], Awaitable[Any]]
 OnReady = Callable[[dict[str, BaseTool]], Awaitable[None]]
 Sleeper = Callable[[float], Awaitable[None]]
 
@@ -85,10 +101,11 @@ def check_tool_schemas(tools: dict[str, BaseTool]) -> dict[str, list[str]]:
 class EarthdataMCPConnectionManager:
     """Background connect/reconnect loop for the earthdata-retrieval MCP.
 
-    ``loader``/``sleep`` are injectable seams for tests (a fake client that
-    fails N times then succeeds, and a no-op sleep so retry tests don't
-    actually wait out the backoff) — production callers rely on the
-    defaults (``load_raw_mcp_tools``, ``asyncio.sleep``).
+    ``loader``/``probe``/``sleep`` are injectable seams for tests (a fake
+    client that fails N times then succeeds, a fake steady-state probe, and
+    a no-op sleep so retry tests don't actually wait out the backoff) —
+    production callers rely on the defaults (``load_raw_mcp_tools``,
+    ``probe_mcp_tools``, ``asyncio.sleep``).
     """
 
     def __init__(
@@ -98,20 +115,26 @@ class EarthdataMCPConnectionManager:
         *,
         on_ready: OnReady | None = None,
         loader: Loader = load_raw_mcp_tools,
+        probe: Probe = probe_mcp_tools,
         sleep: Sleeper = asyncio.sleep,
         initial_backoff_seconds: float = 1.0,
         max_backoff_seconds: float = 60.0,
         heartbeat_interval_seconds: float = 30.0,
+        heartbeat_failure_threshold: int = 2,
+        heartbeat_retry_seconds: float = 5.0,
         edl_injector: EdlCredentialInjector | None = None,
     ):
         self._settings = settings
         self._user_id_getter = user_id_getter
         self._on_ready = on_ready
         self._loader = loader
+        self._probe = probe
         self._sleep = sleep
         self._initial_backoff = initial_backoff_seconds
         self._max_backoff = max_backoff_seconds
         self._heartbeat_interval = heartbeat_interval_seconds
+        self._heartbeat_failure_threshold = heartbeat_failure_threshold
+        self._heartbeat_retry_seconds = heartbeat_retry_seconds
         # T31: passed straight through to bind_workspace below -- None
         # reproduces pre-T31 behavior exactly (no edl_token ever injected).
         self._edl_injector = edl_injector
@@ -192,7 +215,12 @@ class EarthdataMCPConnectionManager:
                 self._tools = tools
                 self._transition(STATE_READY)
                 backoff = self._initial_backoff
-                await self._sleep(self._heartbeat_interval)
+                # Stays here (probing, not reconnecting) until N consecutive
+                # misses -- see _heartbeat_while_ready's docstring. Returning
+                # falls through to the top of this loop, which re-runs the
+                # full connect path (on_ready fires again on recovery, since
+                # _heartbeat_while_ready already demoted the state below).
+                await self._heartbeat_while_ready()
             except EarthdataMCPUnavailableError as exc:
                 self._transition(STATE_UNAVAILABLE, detail=str(exc))
                 await self._sleep(backoff)
@@ -212,6 +240,38 @@ class EarthdataMCPConnectionManager:
                 self._transition(STATE_UNAVAILABLE, detail="unexpected connect-loop error")
                 await self._sleep(backoff)
                 backoff = min(backoff * 2, self._max_backoff)
+
+    async def _heartbeat_while_ready(self) -> None:
+        """PRD T40: while ready, probe on the heartbeat interval. A single
+        miss doesn't demote -- it logs and re-probes after a short retry
+        delay instead of transitioning, so a transient blip stays invisible
+        to every consumer gated on ``.state``. Only
+        ``heartbeat_failure_threshold`` *consecutive* misses transitions to
+        unavailable, at which point this returns so the outer connect loop
+        re-runs the full connect path. A probe that succeeds at any point
+        (including between failures) resets the count."""
+        consecutive_failures = 0
+        await self._sleep(self._heartbeat_interval)
+        while True:
+            try:
+                await self._probe(self._settings)
+            except Exception as exc:
+                consecutive_failures += 1
+                logger.warning(
+                    "earthdata_mcp_heartbeat_miss",
+                    extra={
+                        "_event": "earthdata_mcp_heartbeat_miss",
+                        "_consecutive_failures": consecutive_failures,
+                        "_threshold": self._heartbeat_failure_threshold,
+                    },
+                )
+                if consecutive_failures >= self._heartbeat_failure_threshold:
+                    self._transition(STATE_UNAVAILABLE, detail=str(exc))
+                    return
+                await self._sleep(self._heartbeat_retry_seconds)
+                continue
+            consecutive_failures = 0
+            await self._sleep(self._heartbeat_interval)
 
     def _transition(self, new_state: str, *, detail: Any = None) -> None:
         old_state = self._state

@@ -35,6 +35,16 @@ async def _yielding_sleep(_seconds) -> None:
     await asyncio.sleep(0)
 
 
+async def _probe_ok(_settings) -> set[str]:
+    """Default success probe for tests that only care about connect/retry/
+    schema-diff/on_ready behavior, not heartbeat dampening -- just needs to
+    not raise. Since the manager reaches ready and keeps heartbeating for
+    its whole lifetime (T17), any test that reaches ready and lets the
+    fake sleep yield needs an explicit probe -- the production default
+    (probe_mcp_tools) would otherwise hit a real network call."""
+    return set()
+
+
 def _fake_tool(name: str, params: tuple[str, ...]):
     # ``.args`` is what check_tool_schemas compares against; ``.args_schema``/
     # ``.description`` are what earthdata_mcp.workspace.bind_workspace needs
@@ -99,7 +109,7 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
             return tools
 
         manager = EarthdataMCPConnectionManager(
-            settings=object(), user_id_getter=lambda: "17", loader=loader, sleep=_yielding_sleep,
+            settings=object(), user_id_getter=lambda: "17", loader=loader, probe=_probe_ok, sleep=_yielding_sleep,
         )
         self.assertEqual(manager.state, STATE_CONNECTING)
 
@@ -141,7 +151,7 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0)
 
         manager = EarthdataMCPConnectionManager(
-            settings=object(), user_id_getter=lambda: "1", loader=flaky_loader, sleep=fake_sleep,
+            settings=object(), user_id_getter=lambda: "1", loader=flaky_loader, probe=_probe_ok, sleep=fake_sleep,
         )
 
         manager.start()
@@ -203,7 +213,8 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(set(ready_tools.keys()), {"search_datasets"})
 
         manager = EarthdataMCPConnectionManager(
-            settings=object(), user_id_getter=lambda: "1", loader=loader, on_ready=on_ready, sleep=_yielding_sleep,
+            settings=object(), user_id_getter=lambda: "1", loader=loader, on_ready=on_ready, probe=_probe_ok,
+            sleep=_yielding_sleep,
         )
 
         manager.start()
@@ -227,7 +238,8 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
             on_ready_calls.append(ready_tools)
 
         manager = EarthdataMCPConnectionManager(
-            settings=object(), user_id_getter=lambda: "1", loader=loader, on_ready=on_ready, sleep=_yielding_sleep,
+            settings=object(), user_id_getter=lambda: "1", loader=loader, on_ready=on_ready, probe=_probe_ok,
+            sleep=_yielding_sleep,
         )
 
         manager.start()
@@ -262,12 +274,20 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
                 return tools
             raise EarthdataMCPUnavailableError("connection refused")
 
+        async def flaky_probe(settings):
+            if mcp_up["value"]:
+                return set()
+            raise EarthdataMCPUnavailableError("connection refused")
+
         async def on_ready(ready_tools):
             on_ready_calls.append(ready_tools)
 
+        # T40: threshold=1 pins the pre-dampening behavior this test is
+        # about — a single probe miss is still enough to detect a genuine,
+        # sustained outage (dampening only changes what happens with 2+).
         manager = EarthdataMCPConnectionManager(
-            settings=object(), user_id_getter=lambda: "1", loader=flaky_loader, on_ready=on_ready,
-            sleep=_yielding_sleep,
+            settings=object(), user_id_getter=lambda: "1", loader=flaky_loader, probe=flaky_probe,
+            on_ready=on_ready, heartbeat_failure_threshold=1, sleep=_yielding_sleep,
         )
 
         manager.start()
@@ -309,7 +329,7 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
             return tools
 
         manager = EarthdataMCPConnectionManager(
-            settings=object(), user_id_getter=lambda: "1", loader=loader, sleep=_yielding_sleep,
+            settings=object(), user_id_getter=lambda: "1", loader=loader, probe=_probe_ok, sleep=_yielding_sleep,
         )
 
         with self.assertLogs("earthdata_mcp.connection", level="ERROR") as captured:
@@ -340,7 +360,7 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
                 raise RuntimeError("satellite agent rebuild failed")
 
         manager = EarthdataMCPConnectionManager(
-            settings=object(), user_id_getter=lambda: "1", loader=loader, on_ready=on_ready,
+            settings=object(), user_id_getter=lambda: "1", loader=loader, on_ready=on_ready, probe=_probe_ok,
             sleep=_yielding_sleep,
         )
 
@@ -377,7 +397,7 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
                 pass
 
         manager = EarthdataMCPConnectionManager(
-            settings=object(), user_id_getter=lambda: "17", loader=loader, sleep=_yielding_sleep,
+            settings=object(), user_id_getter=lambda: "17", loader=loader, probe=_probe_ok, sleep=_yielding_sleep,
             edl_injector=_FakeInjector(),
         )
 
@@ -388,6 +408,163 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("edl_token", properties)
         self.assertNotIn("workspace_id", properties)
         await manager.stop()
+
+
+class HeartbeatDampeningTests(unittest.IsolatedAsyncioTestCase):
+    """PRD T40: demotion from ready requires N consecutive heartbeat
+    failures (default 2) -- a single blip logs and re-probes on a short
+    interval instead of transitioning."""
+
+    async def test_a_single_failing_probe_does_not_demote_from_ready(self):
+        from earthdata_mcp.connection import EarthdataMCPConnectionManager, STATE_READY
+        from earthdata_mcp.client import EarthdataMCPUnavailableError
+
+        tools = {"search_datasets": _fake_tool("search_datasets", ("query", "filters", "workspace_id"))}
+        probe_calls = {"count": 0}
+
+        async def loader(settings):
+            return tools
+
+        async def flaky_once_probe(settings):
+            probe_calls["count"] += 1
+            if probe_calls["count"] == 1:
+                raise EarthdataMCPUnavailableError("transient network blip")
+            return set()
+
+        manager = EarthdataMCPConnectionManager(
+            settings=object(), user_id_getter=lambda: "1", loader=loader, probe=flaky_once_probe,
+            sleep=_yielding_sleep,
+        )
+
+        with self.assertLogs("earthdata_mcp.connection", level="WARNING") as captured:
+            manager.start()
+            await asyncio.wait_for(_wait_for_state(manager, STATE_READY), timeout=1)
+            # Let the flaky probe's single failure (and its recovery) run.
+            while probe_calls["count"] < 2:
+                await asyncio.sleep(0.01)
+            for _ in range(5):
+                await asyncio.sleep(0)
+
+        self.assertEqual(manager.state, STATE_READY)
+        self.assertTrue(any("earthdata_mcp_heartbeat_miss" in line for line in captured.output))
+        await manager.stop()
+
+    async def test_threshold_consecutive_failures_demotes_then_recovers_via_the_connect_loop(self):
+        from earthdata_mcp.connection import (
+            EarthdataMCPConnectionManager,
+            STATE_READY,
+            STATE_UNAVAILABLE,
+        )
+        from earthdata_mcp.client import EarthdataMCPUnavailableError
+
+        tools = {"search_datasets": _fake_tool("search_datasets", ("query", "filters", "workspace_id"))}
+        on_ready_calls = []
+        mcp_up = {"value": True}
+
+        async def loader(settings):
+            if not mcp_up["value"]:
+                raise EarthdataMCPUnavailableError("connection refused")
+            return tools
+
+        async def flaky_probe(settings):
+            if not mcp_up["value"]:
+                raise EarthdataMCPUnavailableError("connection refused")
+            return set()
+
+        async def on_ready(ready_tools):
+            on_ready_calls.append(ready_tools)
+
+        manager = EarthdataMCPConnectionManager(
+            settings=object(), user_id_getter=lambda: "1", loader=loader, probe=flaky_probe, on_ready=on_ready,
+            heartbeat_failure_threshold=2, sleep=_yielding_sleep,
+        )
+
+        manager.start()
+        await asyncio.wait_for(_wait_for_state(manager, STATE_READY), timeout=1)
+        self.assertEqual(len(on_ready_calls), 1)
+
+        mcp_up["value"] = False
+        await asyncio.wait_for(_wait_for_state(manager, STATE_UNAVAILABLE), timeout=1)
+
+        mcp_up["value"] = True
+        await asyncio.wait_for(_wait_for_state(manager, STATE_READY), timeout=1)
+        await manager.stop()
+
+        # Demotion happened via the probe; recovery re-runs the full connect
+        # path, which must re-fire on_ready exactly once for the recovery.
+        self.assertEqual(len(on_ready_calls), 2)
+
+    async def test_a_success_between_failures_resets_the_consecutive_count(self):
+        # threshold=2: fail, succeed, fail, succeed, ... must never reach 2
+        # *consecutive* failures, so the manager should never demote. Proven
+        # via on_ready's call count rather than just the final state, since
+        # a demote-then-instantly-recover (loader always succeeds here)
+        # would otherwise land back on STATE_READY too and mask a missing
+        # reset.
+        from earthdata_mcp.connection import EarthdataMCPConnectionManager, STATE_READY
+        from earthdata_mcp.client import EarthdataMCPUnavailableError
+
+        tools = {"search_datasets": _fake_tool("search_datasets", ("query", "filters", "workspace_id"))}
+        probe_calls = {"count": 0}
+        on_ready_calls = []
+
+        async def loader(settings):
+            return tools
+
+        async def alternating_probe(settings):
+            probe_calls["count"] += 1
+            if probe_calls["count"] % 2 == 1:
+                raise EarthdataMCPUnavailableError("transient network blip")
+            return set()
+
+        async def on_ready(ready_tools):
+            on_ready_calls.append(ready_tools)
+
+        manager = EarthdataMCPConnectionManager(
+            settings=object(), user_id_getter=lambda: "1", loader=loader, probe=alternating_probe,
+            on_ready=on_ready, heartbeat_failure_threshold=2, sleep=_yielding_sleep,
+        )
+
+        manager.start()
+        await asyncio.wait_for(_wait_for_state(manager, STATE_READY), timeout=1)
+        while probe_calls["count"] < 8:
+            await asyncio.sleep(0.01)
+        await manager.stop()
+
+        self.assertEqual(manager.state, STATE_READY)
+        # Never demoted, so on_ready never re-fires beyond the initial connect.
+        self.assertEqual(len(on_ready_calls), 1)
+
+    async def test_steady_state_probes_dont_call_the_loader(self):
+        # The whole point of the light probe (PRD T40): steady-state
+        # heartbeats must not repeat the expensive full load-bind-verify
+        # path every interval -- only a genuine (re)connect calls the loader.
+        from earthdata_mcp.connection import EarthdataMCPConnectionManager, STATE_READY
+
+        tools = {"search_datasets": _fake_tool("search_datasets", ("query", "filters", "workspace_id"))}
+        loader_calls = {"count": 0}
+        probe_calls = {"count": 0}
+
+        async def loader(settings):
+            loader_calls["count"] += 1
+            return tools
+
+        async def probe(settings):
+            probe_calls["count"] += 1
+            return set()
+
+        manager = EarthdataMCPConnectionManager(
+            settings=object(), user_id_getter=lambda: "1", loader=loader, probe=probe, sleep=_yielding_sleep,
+        )
+
+        manager.start()
+        await asyncio.wait_for(_wait_for_state(manager, STATE_READY), timeout=1)
+        while probe_calls["count"] < 10:
+            await asyncio.sleep(0.01)
+        await manager.stop()
+
+        self.assertEqual(loader_calls["count"], 1)
+        self.assertGreaterEqual(probe_calls["count"], 10)
 
 
 async def _wait_for_state(manager, target_state) -> None:

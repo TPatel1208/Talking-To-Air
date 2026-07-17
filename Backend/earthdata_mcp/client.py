@@ -110,8 +110,11 @@ class EarthdataMCPUnavailableError(RuntimeError):
     """Raised when the earthdata-retrieval MCP is unreachable or missing a required tool."""
 
 
-async def load_raw_mcp_tools(settings: Settings) -> dict[str, BaseTool]:
-    """Connect to the earthdata-retrieval MCP and return every tool it exposes, by name."""
+async def _list_mcp_tools(settings: Settings) -> list[BaseTool]:
+    """Connect to the earthdata-retrieval MCP and return every tool it
+    exposes. Shared by ``load_raw_mcp_tools`` (connect-time, full load) and
+    ``probe_mcp_tools`` (steady-state heartbeat, listing only) -- both need
+    the same connect-and-list step and the same unreachable-MCP wrapping."""
     headers = {}
     if settings.earthdata_mcp_token:
         headers["Authorization"] = f"Bearer {settings.earthdata_mcp_token}"
@@ -124,17 +127,37 @@ async def load_raw_mcp_tools(settings: Settings) -> dict[str, BaseTool]:
         }
     })
     try:
-        tools = await client.get_tools()
+        return await client.get_tools()
     except Exception as exc:
         raise EarthdataMCPUnavailableError(
             f"Could not reach earthdata-retrieval MCP at {settings.earthdata_mcp_url}: {exc}"
         ) from exc
 
-    by_name = {tool.name: tool for tool in tools}
-    missing = [name for name in REQUIRED_TOOL_NAMES if name not in by_name]
+
+def _require_all_present(names: set[str], url: str) -> None:
+    missing = [name for name in REQUIRED_TOOL_NAMES if name not in names]
     if missing:
         raise EarthdataMCPUnavailableError(
-            f"earthdata-retrieval MCP at {settings.earthdata_mcp_url} is missing "
-            f"required tool(s): {', '.join(missing)}"
+            f"earthdata-retrieval MCP at {url} is missing required tool(s): {', '.join(missing)}"
         )
+
+
+async def load_raw_mcp_tools(settings: Settings) -> dict[str, BaseTool]:
+    """Connect to the earthdata-retrieval MCP and return every tool it exposes, by name."""
+    tools = await _list_mcp_tools(settings)
+    by_name = {tool.name: tool for tool in tools}
+    _require_all_present(set(by_name.keys()), settings.earthdata_mcp_url)
     return by_name
+
+
+async def probe_mcp_tools(settings: Settings) -> set[str]:
+    """Lightweight steady-state heartbeat check (PRD T40): list the MCP's
+    tool names and confirm every required tool is still present -- no
+    schema fetch beyond what listing requires, no workspace bind. Raises
+    ``EarthdataMCPUnavailableError`` exactly like ``load_raw_mcp_tools``
+    (unreachable, or a required tool went missing), so the connection
+    manager's heartbeat can treat any probe exception as a single miss."""
+    tools = await _list_mcp_tools(settings)
+    names = {tool.name for tool in tools}
+    _require_all_present(names, settings.earthdata_mcp_url)
+    return names
