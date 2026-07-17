@@ -491,6 +491,25 @@ class RunGroundTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved_thread_id, "thread-1")
         self.assertEqual(saved_context["site_id"], "34-023-0011")
 
+    async def test_run_ground_renders_an_unexpected_exception_through_the_taxonomy(self):
+        # T37: a bare exception string (possibly empty: KeyError('x') →
+        # "'x'") must never become the ground agent's "answer".
+        from services import subagent_dispatch
+        from config.error_templates import render_error_answer
+
+        class ExplodingGroundAgent:
+            async def ainvoke(self, input_, config):
+                raise RuntimeError("secret path leak /opt/creds")
+
+        subagent_dispatch.get_call_budget().clear()
+
+        with patch.object(subagent_dispatch, "get_ground_monitor_context", AsyncMock(return_value={})), \
+             patch.object(subagent_dispatch, "save_ground_monitor_context", AsyncMock()):
+            result = await subagent_dispatch.run_ground(ExplodingGroundAgent(), "task", "thread-1")
+
+        self.assertNotIn("secret path leak", result.text)
+        self.assertEqual(result.text, render_error_answer("contract", "ground sensor agent"))
+
     async def test_run_ground_second_call_in_the_same_task_is_budget_blocked(self):
         from services import subagent_dispatch
 
@@ -717,6 +736,48 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(result.text, "Plotted NO2 over NJ.")
+
+    async def test_run_satellite_renders_an_unexpected_exception_through_the_taxonomy(self):
+        # T37: an arbitrary exception string must never become the
+        # sub-agent's "answer" the supervisor can dress up — it renders as
+        # the taxonomy's honest contract answer, real exception in the logs.
+        from services import subagent_dispatch
+        from config.error_templates import render_error_answer
+
+        class ExplodingSatelliteAgent:
+            async def astream(self, input_, config, stream_mode):
+                raise RuntimeError("secret path leak /opt/creds")
+                yield  # pragma: no cover — makes this an async generator
+
+        subagent_dispatch.get_call_budget().clear()
+        result = await subagent_dispatch.run_satellite(ExplodingSatelliteAgent(), "task", "thread-1")
+
+        self.assertNotIn("secret path leak", result.text)
+        self.assertEqual(result.text, render_error_answer("contract", "earthdata agent"))
+
+    async def test_run_satellite_renders_a_classified_mcp_error_with_its_own_category(self):
+        from services import subagent_dispatch
+        from config.error_templates import render_error_answer
+        from earthdata_mcp.results import CATEGORY_PROVIDER_UNAVAILABLE, MCPToolError
+
+        class ExplodingSatelliteAgent:
+            async def astream(self, input_, config, stream_mode):
+                raise MCPToolError(
+                    CATEGORY_PROVIDER_UNAVAILABLE, "The satellite data layer is temporarily unavailable.",
+                )
+                yield  # pragma: no cover
+
+        subagent_dispatch.get_call_budget().clear()
+        result = await subagent_dispatch.run_satellite(ExplodingSatelliteAgent(), "task", "thread-1")
+
+        self.assertEqual(
+            result.text,
+            render_error_answer(
+                CATEGORY_PROVIDER_UNAVAILABLE,
+                "earthdata agent",
+                "The satellite data layer is temporarily unavailable.",
+            ),
+        )
 
     async def test_run_satellite_without_a_manager_dispatches_normally(self):
         # Default (no mcp_manager passed) preserves today's behavior for

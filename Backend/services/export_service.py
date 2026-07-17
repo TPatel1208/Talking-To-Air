@@ -5,7 +5,45 @@ import io
 import re
 from typing import Any, AsyncIterator, Iterable
 
+import logging
+
 from utils.colormaps import resolve as resolve_colormap
+
+logger = logging.getLogger(__name__)
+
+
+async def materialize_first_chunk(chunks: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+    """Await ``chunks``' first chunk before the caller commits to a response
+    (T37): the common export failures (not-ready tools, missing handle,
+    evicted export) surface while producing that first chunk, and letting
+    them raise *here* — before any 200 header is sent — turns a silently
+    truncated download into a clean 4xx/5xx. Returns an iterator that
+    replays the materialized chunk and then streams the rest."""
+    try:
+        first = await chunks.__anext__()
+    except StopAsyncIteration:
+        first = None
+    return _replay_then_stream(first, chunks)
+
+
+async def _replay_then_stream(first: bytes | None, rest: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+    from earthdata_mcp.results import CATEGORY_CONTRACT, MCPToolError
+
+    if first is not None:
+        yield first
+    try:
+        async for chunk in rest:
+            yield chunk
+    except MCPToolError as exc:
+        # The 200 is already committed — the honest remaining move is a
+        # clearly marked trailer so the file self-identifies as truncated
+        # (T37 story #2). Category only, never the message: the trailer is
+        # file content a researcher may share onward.
+        logger.exception("export_stream_failed_mid_stream", extra={"_category": exc.category})
+        yield f"\n# EXPORT INCOMPLETE — {exc.category}\n".encode("utf-8")
+    except Exception:
+        logger.exception("export_stream_failed_mid_stream", extra={"_category": CATEGORY_CONTRACT})
+        yield f"\n# EXPORT INCOMPLETE — {CATEGORY_CONTRACT}\n".encode("utf-8")
 
 
 class ExportService:

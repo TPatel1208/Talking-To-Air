@@ -94,10 +94,8 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         settings = Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None)
         self.api.app.state.earthdata_mcp_tools = await load_earthdata_tools(settings, current_user_id)
-        # Provenance/citations/methods read tools through
-        # earthdata_mcp_manager (T17); export.nc stays on the legacy
-        # app.state.earthdata_mcp_tools mirror (see test_export_netcdf_*
-        # below), so both must be kept in sync in this setUp.
+        # Provenance/citations/methods/export.nc all read tools through
+        # earthdata_mcp_manager (T17/T37).
         self.api.app.state.earthdata_mcp_manager = SimpleNamespace(
             state="ready", tools=self.api.app.state.earthdata_mcp_tools,
         )
@@ -217,14 +215,15 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        original_tools = self.api.app.state.earthdata_mcp_tools
-        self.api.app.state.earthdata_mcp_tools = broken_tools
+        # T37: export.nc reads tools through the readiness gate (manager.tools).
+        original_manager = self.api.app.state.earthdata_mcp_manager
+        self.api.app.state.earthdata_mcp_manager = SimpleNamespace(state="ready", tools=broken_tools)
         try:
             with auth_patches[0], auth_patches[1], patch.object(self.api.chart_service, "get_chart", fake_get_chart):
                 async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                     response = await client.get("/chart/chart-1/export.nc", headers=self.auth_headers)
         finally:
-            self.api.app.state.earthdata_mcp_tools = original_tools
+            self.api.app.state.earthdata_mcp_manager = original_manager
 
         self.assertEqual(response.status_code, 422)
         self.assertIn("NetCDF export is not available", response.json()["detail"])

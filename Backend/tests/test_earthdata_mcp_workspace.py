@@ -229,14 +229,21 @@ class WorkspaceMissingUserContextTests(unittest.IsolatedAsyncioTestCase):
 
         self.tools = await load_raw_mcp_tools(Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None))
 
-    async def test_a_none_user_id_raises_instead_of_minting_user_none(self):
-        from earthdata_mcp.workspace import MissingUserContextError, bind_workspace
+    async def test_a_none_user_id_returns_a_contract_error_instead_of_minting_user_none(self):
+        # T37: the refusal is still loud, but it now classifies as a T18
+        # contract error envelope — legible like every other failure —
+        # instead of surfacing as an unclassified traceback string.
+        import json
+
+        from earthdata_mcp.workspace import bind_workspace
 
         bound = bind_workspace(self.tools, lambda: None)
 
-        with self.assertRaises(MissingUserContextError):
-            await bound["search_datasets"].ainvoke({"query": "no2"})
+        raw = await bound["search_datasets"].ainvoke({"query": "no2"})
+        body = json.loads(raw)["error"]
 
+        self.assertEqual(body["category"], "contract")
+        self.assertIn("No user context", body["message"])
         # The MCP itself must never have been reached — the guard fires
         # before workspace_id is ever constructed, let alone with "None".
         self.assertNotIn("workspace_id", self.received)

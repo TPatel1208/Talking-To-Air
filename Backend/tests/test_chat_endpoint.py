@@ -140,6 +140,43 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(deleted.json(), {"deleted": "thread-1"})
         self.assertEqual(fake_delete_session.called_with, ("thread-1", self.user.id))
 
+    async def test_session_endpoint_500s_never_leak_the_exception_text(self):
+        # T37: internal error text (driver messages, paths) must go to the
+        # logs, not the client — every 500 body carries the generic detail.
+        class FakeAgent:
+            async def aget_state(self, config):
+                raise RuntimeError("secret driver path C:\\db\\creds")
+
+        self.api.app.state.agent = FakeAgent()
+
+        async def raising_list_sessions(user_id):
+            raise RuntimeError("secret driver path C:\\db\\creds")
+
+        async def raising_delete_session(thread_id, user_id):
+            raise RuntimeError("secret driver path C:\\db\\creds")
+
+        async def fake_session_belongs_to_user(thread_id, user_id):
+            return True
+
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        auth_patches = self._auth_patch()
+        with auth_patches[0], auth_patches[1], \
+             patch.object(self.api.session_repository, "list_sessions", raising_list_sessions), \
+             patch.object(self.api.session_repository, "delete_session", raising_delete_session), \
+             patch.object(self.api, "session_belongs_to_user", fake_session_belongs_to_user):
+            async with self.httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                sessions = await client.get("/sessions", headers=self.auth_headers)
+                history = await client.get("/session/thread-1/history", headers=self.auth_headers)
+                deleted = await client.delete("/session/thread-1", headers=self.auth_headers)
+
+        for response in (sessions, history, deleted):
+            self.assertEqual(response.status_code, 500)
+            self.assertEqual(response.json()["detail"], "Internal server error")
+            self.assertNotIn("secret driver path", response.text)
+
     async def test_chart_export_endpoints_return_downloads(self):
         payload = {
             "chart_id": "chart-1",
@@ -147,6 +184,10 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
             "export": {"type": "heatmap"},
             "user_id": self.user.id,
         }
+
+        # T37: export endpoints read tools through the readiness gate.
+        self.api.app.state.earthdata_mcp_manager = SimpleNamespace(state="ready", tools={})
+        self.addCleanup(setattr, self.api.app.state, "earthdata_mcp_manager", None)
 
         transport = self.httpx.ASGITransport(app=self.api.app)
         async def fake_get_chart(chart_id):
@@ -172,6 +213,180 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(png_response.status_code, 200)
         self.assertEqual(png_response.headers["content-type"], "image/png")
         self.assertEqual(png_response.content, b"\x89PNG\r\n\x1a\n")
+
+    async def test_chart_csv_export_503s_with_the_taxonomy_body_when_the_mcp_is_not_ready(self):
+        # T37: export.csv must go through the same T17 readiness gate as
+        # every other MCP-backed endpoint — never fail inside the
+        # StreamingResponse generator after a 200 has been committed.
+        # No earthdata_mcp_manager on app.state (lifespan never ran here),
+        # which reads as "connecting" — not ready.
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        auth_patches = self._auth_patch()
+        with auth_patches[0], auth_patches[1]:
+            async with self.httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                response = await client.get("/chart/chart-1/export.csv", headers=self.auth_headers)
+
+        self.assertEqual(response.status_code, 503)
+        body = response.json()["error"]
+        self.assertEqual(body["category"], "provider_unavailable")
+        self.assertIn("temporarily unavailable", body["message"])
+
+    async def test_chart_csv_export_fails_clean_when_the_stream_dies_before_the_first_chunk(self):
+        # T37: the common failures (missing handle, evicted export) surface
+        # inside the CSV generator. The endpoint must materialize the first
+        # chunk before committing to a 200, so these become a clean 422 —
+        # never a 0-byte file that looks like a successful download.
+        payload = {
+            "chart_id": "chart-1",
+            "title": "TEMPO over Texas",
+            "export": {"type": "heatmap"},
+            "user_id": self.user.id,
+        }
+        self.api.app.state.earthdata_mcp_manager = SimpleNamespace(state="ready", tools={})
+        self.addCleanup(setattr, self.api.app.state, "earthdata_mcp_manager", None)
+
+        async def broken_chunks(payload_, tools, chunk_size=64 * 1024):
+            raise ValueError("This chart does not include a source handle for full-resolution export.")
+            yield  # pragma: no cover — makes this an async generator
+
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        async def fake_get_chart(chart_id):
+            return payload
+
+        auth_patches = self._auth_patch()
+        with auth_patches[0], auth_patches[1], \
+             patch.object(self.api.chart_service, "get_chart", fake_get_chart), \
+             patch.object(self.api.export_service, "iter_chart_csv_chunks_async", broken_chunks):
+            async with self.httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                response = await client.get("/chart/chart-1/export.csv", headers=self.auth_headers)
+
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("source handle", response.json()["detail"])
+
+    async def test_chart_csv_export_marks_a_mid_stream_failure_with_an_incomplete_trailer(self):
+        # T37: once streaming has begun the 200 is committed — a failure
+        # after the first chunk must append a clearly marked trailer so a
+        # truncated file is never mistaken for the full dataset.
+        payload = {
+            "chart_id": "chart-1",
+            "title": "TEMPO over Texas",
+            "export": {"type": "heatmap"},
+            "user_id": self.user.id,
+        }
+        self.api.app.state.earthdata_mcp_manager = SimpleNamespace(state="ready", tools={})
+        self.addCleanup(setattr, self.api.app.state, "earthdata_mcp_manager", None)
+
+        async def dying_chunks(payload_, tools, chunk_size=64 * 1024):
+            yield b"variable,latitude,longitude,value,units\n"
+            raise RuntimeError("secret internal path leak")
+
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        async def fake_get_chart(chart_id):
+            return payload
+
+        auth_patches = self._auth_patch()
+        with auth_patches[0], auth_patches[1], \
+             patch.object(self.api.chart_service, "get_chart", fake_get_chart), \
+             patch.object(self.api.export_service, "iter_chart_csv_chunks_async", dying_chunks):
+            async with self.httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                response = await client.get("/chart/chart-1/export.csv", headers=self.auth_headers)
+
+        self.assertEqual(response.status_code, 200)
+        text = response.content.decode("utf-8")
+        self.assertTrue(text.startswith("variable,latitude,longitude,value,units\n"))
+        self.assertIn("# EXPORT INCOMPLETE — contract", text)
+        self.assertNotIn("secret internal path leak", text)
+
+    async def test_chart_csv_export_trailer_names_the_taxonomy_category_of_a_classified_failure(self):
+        payload = {
+            "chart_id": "chart-1",
+            "title": "TEMPO over Texas",
+            "export": {"type": "heatmap"},
+            "user_id": self.user.id,
+        }
+        self.api.app.state.earthdata_mcp_manager = SimpleNamespace(state="ready", tools={})
+        self.addCleanup(setattr, self.api.app.state, "earthdata_mcp_manager", None)
+
+        async def dying_chunks(payload_, tools, chunk_size=64 * 1024):
+            from earthdata_mcp.results import CATEGORY_PROVIDER_UNAVAILABLE, MCPToolError
+
+            yield b"variable,latitude,longitude,value,units\n"
+            raise MCPToolError(CATEGORY_PROVIDER_UNAVAILABLE, "The satellite data layer is temporarily unavailable.")
+
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        async def fake_get_chart(chart_id):
+            return payload
+
+        auth_patches = self._auth_patch()
+        with auth_patches[0], auth_patches[1], \
+             patch.object(self.api.chart_service, "get_chart", fake_get_chart), \
+             patch.object(self.api.export_service, "iter_chart_csv_chunks_async", dying_chunks):
+            async with self.httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                response = await client.get("/chart/chart-1/export.csv", headers=self.auth_headers)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("# EXPORT INCOMPLETE — provider_unavailable", response.content.decode("utf-8"))
+
+    async def test_chart_netcdf_export_503s_with_the_taxonomy_body_when_the_mcp_is_not_ready(self):
+        # T37: export.nc answered a bespoke bare-detail 503; it must speak
+        # the shared T18 taxonomy like every other MCP-backed endpoint.
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        auth_patches = self._auth_patch()
+        with auth_patches[0], auth_patches[1]:
+            async with self.httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                response = await client.get("/chart/chart-1/export.nc", headers=self.auth_headers)
+
+        self.assertEqual(response.status_code, 503)
+        body = response.json()["error"]
+        self.assertEqual(body["category"], "provider_unavailable")
+        self.assertIn("temporarily unavailable", body["message"])
+
+    async def test_chart_netcdf_export_fails_clean_when_the_converted_file_is_gone(self):
+        # T37: an evicted/vanished converted file must fail before the 200
+        # commits — never stream a 0-byte "successful" NetCDF download.
+        payload = {
+            "chart_id": "chart-1",
+            "title": "TEMPO over Texas",
+            "metadata": {"source_handles": ["obs_1"]},
+            "user_id": self.user.id,
+        }
+        self.api.app.state.earthdata_mcp_manager = SimpleNamespace(state="ready", tools={})
+        self.addCleanup(setattr, self.api.app.state, "earthdata_mcp_manager", None)
+
+        async def fake_export_converted(handle, target_format, tools):
+            return {"status": "ready", "storage_uri": "file:///does/not/exist.nc"}
+
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        async def fake_get_chart(chart_id):
+            return payload
+
+        auth_patches = self._auth_patch()
+        with auth_patches[0], auth_patches[1], \
+             patch.object(self.api.chart_service, "get_chart", fake_get_chart), \
+             patch.object(self.api, "export_converted", fake_export_converted):
+            async with self.httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                response = await client.get("/chart/chart-1/export.nc", headers=self.auth_headers)
+
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("no longer available", response.json()["detail"])
 
     async def test_chart_overlay_endpoint_streams_the_stored_png(self):
         import os

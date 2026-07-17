@@ -11,13 +11,16 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 from typing import Any, Callable, Protocol
 
 from langchain_core.tools import BaseTool, StructuredTool
 
 from config.workflow_stages import STAGE_AOI, STAGE_COVERAGE, STAGE_SEARCH
-from earthdata_mcp.results import CATEGORY_TOKEN_INVALID, MCPToolError, call_tool, parse_tool_result
+from earthdata_mcp.results import CATEGORY_CONTRACT, CATEGORY_TOKEN_INVALID, MCPToolError, call_tool, parse_tool_result
 from utils.streaming import emit_status
+
+logger = logging.getLogger(__name__)
 
 # T31: parameters injected here and hidden from the model-facing schema —
 # workspace_id always, edl_token only for a tool whose advertised schema
@@ -53,10 +56,13 @@ _STAGE_BY_TOOL_NAME: dict[str, tuple[str, str]] = {
 
 
 class MissingUserContextError(RuntimeError):
-    """Raised when a workspace-bound MCP tool is called with no user context
-    bound (T26). A context-less workspace is an isolation hole, not a
-    default — minting a shared ``"user-None"`` workspace silently pooled
-    every caller's retrievals together, so this fails loud instead."""
+    """A workspace-bound MCP tool was called with no user context bound
+    (T26). A context-less workspace is an isolation hole, not a default —
+    minting a shared ``"user-None"`` workspace silently pooled every
+    caller's retrievals together, so this fails loud instead. Since T37 it
+    is returned classified as a T18 ``contract`` error envelope (still
+    logged loudly — it indicates a programming error) rather than raised
+    bare into an unclassified traceback string."""
 
 
 def bind_workspace(
@@ -97,10 +103,15 @@ def _bind_one(
     async def _call(**kwargs):
         user_id = user_id_getter()
         if user_id is None:
-            raise MissingUserContextError(
+            exc = MissingUserContextError(
                 f"No user context bound for tool {tool.name!r} — refusing to "
                 "mint a shared 'user-None' workspace."
             )
+            logger.error(
+                "missing_user_context",
+                extra={"_event": "missing_user_context", "_tool": tool.name},
+            )
+            return MCPToolError(CATEGORY_CONTRACT, str(exc)).to_tool_json()
         kwargs["workspace_id"] = f"user-{user_id}"
         if stage_info is not None:
             emit_status(stage_info[1], stage=stage_info[0])

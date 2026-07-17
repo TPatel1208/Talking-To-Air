@@ -53,7 +53,7 @@ from services.connector_token_service import TokenValidationError, decode_token_
 from services.artifact_store import artifact_store
 from services.chat_stream_service import ChatStreamService
 from services.chart_service import ChartService
-from services.export_service import ExportService
+from services.export_service import ExportService, materialize_first_chunk
 from services.history_service import HistoryService
 from services.data_download_service import DataDownloadError, export_converted, iter_file_chunks
 from services.discovery_service import (
@@ -91,7 +91,8 @@ session_repository = SessionRepository()
 async def _on_earthdata_mcp_ready(tools: dict) -> None:
     """earthdata_mcp_manager's on_ready hook (T17): populates the legacy
     app.state.earthdata_mcp_tools mirror (still read directly by the
-    unmigrated chart export.csv/.png/.nc endpoints) and rebuilds the real
+    unmigrated chart export.png endpoint; export.csv/.nc moved to the
+    readiness gate in T37) and rebuilds the real
     satellite agent into whatever LazySatelliteAgent the current lifespan
     cycle assigned to app.state.satellite_agent — see
     agents/earthdata_agent.py for why a mutable placeholder, not a
@@ -504,15 +505,28 @@ def _earthdata_tools(request: Request) -> dict:
 
 @app.get("/chart/{chart_id}/export.csv")
 async def export_chart_csv(chart_id: str, request: Request):
+    # T37: resolved through the T17 readiness gate (shared structured 503),
+    # never app.state.earthdata_mcp_tools directly — a not-ready MCP must
+    # fail here, before any 200 header is committed, not inside the
+    # StreamingResponse generator.
+    tools = _earthdata_tools(request)
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
+    if not payload.get("export"):
+        raise HTTPException(status_code=422, detail="This chart does not include full-resolution export metadata.")
+
+    # T37: materialize the first chunk before committing to a 200 — the
+    # common failures (missing handle, evicted export) raise here as a clean
+    # 4xx/5xx instead of truncating the download mid-stream. An MCPToolError
+    # propagates to the shared taxonomy handler.
     try:
-        if not payload.get("export"):
-            raise ValueError("This chart does not include full-resolution export metadata.")
-    except Exception as e:
+        stream = await materialize_first_chunk(
+            export_service.iter_chart_csv_chunks_async(payload, tools)
+        )
+    except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
     return StreamingResponse(
-        export_service.iter_chart_csv_chunks_async(payload, request.app.state.earthdata_mcp_tools),
+        stream,
         media_type="text/csv; charset=utf-8",
         headers={
             "Content-Disposition": f'attachment; filename="{export_service.safe_export_name(payload, "csv")}"',
@@ -604,9 +618,9 @@ async def chart_methods_endpoint(chart_id: str, request: Request):
 
 @app.get("/chart/{chart_id}/export.nc")
 async def export_chart_netcdf(chart_id: str, request: Request):
-    tools = request.app.state.earthdata_mcp_tools
-    if not tools:
-        raise HTTPException(status_code=503, detail="Earthdata MCP is not ready")
+    # T37: same readiness gate (shared structured 503) as every other
+    # MCP-backed endpoint, instead of a bespoke bare-detail 503.
+    tools = _earthdata_tools(request)
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
     source_handles = _chart_source_handles(payload)
     if not source_handles:
@@ -618,8 +632,17 @@ async def export_chart_netcdf(chart_id: str, request: Request):
     except DataDownloadError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
+    # T37: materialize the first chunk before committing to a 200 — an
+    # evicted/vanished converted file raises here instead of streaming a
+    # truncated "successful" download.
+    try:
+        stream = await materialize_first_chunk(iter_file_chunks(export["storage_uri"]))
+    except OSError:
+        logger.exception("export_netcdf_file_unreadable", extra={"_chart_id": chart_id})
+        raise HTTPException(status_code=422, detail="The converted export is no longer available. Please retry the export.")
+
     return StreamingResponse(
-        iter_file_chunks(export["storage_uri"]),
+        stream,
         media_type="application/x-netcdf",
         headers={
             "Content-Disposition": f'attachment; filename="{export_service.safe_export_name(payload, "nc")}"',
@@ -771,14 +794,20 @@ async def _save_session_metadata(thread_id: str, message: str, user_id: str, req
     except Exception:
         logger.exception("session_metadata_save_failed", extra={"_request_id": request_id, "_thread_id": thread_id})
 
+# T37: session endpoint catch-alls answer with a fixed generic detail — the
+# real exception goes to the logs with request context, never to the client.
+_INTERNAL_ERROR_DETAIL = "Internal server error"
+
+
 @app.get("/sessions")
 async def get_sessions(request: Request):
     try:
         return {"sessions": await session_repository.list_sessions(request.state.current_user.id)}
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("sessions_list_failed", extra={"_user_id": request.state.current_user.id})
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
 
 @app.get("/session/{thread_id}/history")
 async def get_history(thread_id: ThreadId, request: Request):
@@ -792,8 +821,9 @@ async def get_history(thread_id: ThreadId, request: Request):
         return {"messages": await history_service.build_history(active_agent, thread_id, user_id)}
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("session_history_failed", extra={"_thread_id": thread_id})
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
 
 
 @app.delete("/session/{thread_id}")
@@ -805,5 +835,6 @@ async def remove_session(thread_id: ThreadId, request: Request):
         return {"deleted": thread_id}
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("session_delete_failed", extra={"_thread_id": thread_id})
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)

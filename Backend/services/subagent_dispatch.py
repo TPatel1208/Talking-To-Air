@@ -23,7 +23,7 @@ from typing import Any
 from config.error_templates import render_error_answer
 from config.model_factory import structured_output
 from earthdata_mcp.connection import STATE_READY
-from earthdata_mcp.results import CATEGORY_CONTRACT, CATEGORY_PROVIDER_UNAVAILABLE
+from earthdata_mcp.results import CATEGORY_CONTRACT, CATEGORY_PROVIDER_UNAVAILABLE, MCPToolError
 from models import AgentResult, SubAgentEnvelope, parse_agent_result, parse_chart_payload, parse_sub_agent_envelope
 from models.artifact import ArtifactReference
 from repositories.session_metadata_repository import (
@@ -103,7 +103,9 @@ async def run_ground(
             raise
         except Exception as exc:
             outcome = "failure"
-            text = str(exc)
+            # T37: taxonomy answer, never a bare exception string (see
+            # _render_unexpected_exception).
+            text = _render_unexpected_exception(exc, "ground sensor agent")
             artifact_refs = []
         finally:
             record_agent_request("ground_sensor", outcome)
@@ -252,7 +254,12 @@ async def run_satellite(
             outcome = "failure"
             if exc.__class__.__name__ == "HarmonyTimeoutError":
                 outcome = "timeout"
-            text_parts = [str(exc)]
+            # T37: an arbitrary exception string must never become the
+            # sub-agent's "answer" the supervisor may dress up — render the
+            # taxonomy's honest error answer instead (classified category
+            # when it's an MCPToolError, contract otherwise); the real
+            # exception goes to the logs.
+            text_parts = [_render_unexpected_exception(exc, "earthdata agent")]
         finally:
             record_agent_request("satellite", outcome)
 
@@ -314,6 +321,22 @@ _GROUND_RETRY_TOOL_GUIDANCE = (
     "'NO2 1-hour 2010', 'PM25 24-hour 2024', 'Ozone 8-hour 2015', "
     "'SO2 1-hour 2010', 'CO 8-hour 1971'. Use integer k values."
 )
+
+
+def _render_unexpected_exception(exc: Exception, stage: str) -> str:
+    """T37: the honest taxonomy answer for an exception that escaped a
+    sub-agent turn. A classified MCPToolError keeps its own category and
+    message; anything else is a contract failure whose text (possibly
+    empty, possibly an internal path) never reaches the researcher — the
+    real exception goes to the logs here."""
+    if isinstance(exc, MCPToolError):
+        return render_error_answer(exc.category, stage, exc.message)
+    logger.exception(
+        "subagent_unexpected_exception",
+        extra={"_event": "subagent_unexpected_exception", "_stage": stage},
+        exc_info=exc,
+    )
+    return render_error_answer(CATEGORY_CONTRACT, stage)
 
 
 def _finalize_sub_agent_result(result: AgentResult, agent_label: str) -> AgentResult:
