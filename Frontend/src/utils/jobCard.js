@@ -23,6 +23,11 @@ const STATUS_COLORS = {
   expired: 'var(--warning)',
   cancelled: 'var(--text-muted)',
   error: 'var(--error)',
+  // "paused" is derived by the backend (services/retrieval_composites.
+  // annotate_paused) from a Harmony auto-pause the MCP would otherwise
+  // report as "running" forever. Non-terminal on purpose: the row keeps its
+  // Cancel button, and the paused guidance arrives as `note`.
+  paused: 'var(--warning)',
 }
 
 // PRD 021's `upstream` outcomes on a cancel response. "unsupported" (OPeNDAP,

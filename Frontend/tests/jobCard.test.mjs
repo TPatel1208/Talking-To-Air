@@ -65,6 +65,19 @@ test('a job whose status read itself failed (synthesized "error") is terminal, n
   assert.equal(statusBadge({ status: 'error' }).color, 'var(--error)')
 })
 
+test('a provider-paused job renders as a warning badge with Cancel still available', () => {
+  // The backend derives status "paused" (annotate_paused) from a Harmony
+  // auto-pause the MCP reports as "running" forever. It must not be
+  // terminal (the researcher's only way out is Cancel) and must not render
+  // as an eternally processing row.
+  const job = { status: 'paused', phase: 'paused at provider' }
+  assert.equal(TERMINAL_STATUSES.has('paused'), false)
+  assert.equal(primaryAction(job), 'cancel')
+  const badge = statusBadge(job)
+  assert.equal(badge.label, 'Paused at provider')
+  assert.equal(badge.color, 'var(--warning)')
+})
+
 test('upstreamLine maps PRD 021 outcomes to the honest subtle-line copy', () => {
   assert.equal(upstreamLine('requested'), 'Stop requested at provider')
   assert.equal(upstreamLine('already_terminal'), 'Provider had already finished')

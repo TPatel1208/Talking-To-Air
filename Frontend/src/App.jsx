@@ -376,7 +376,13 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
             accessToken={accessToken}
             chatTitle={chatTitle}
             onSend={sendMessage}
-            onAbort={() => abortActiveRequest(true)}
+            onAbort={() => {
+              // Stop must mean stop: abort the stream AND cancel whatever
+              // retrieval jobs this turn reported as still in flight —
+              // locally and (best-effort) upstream at the provider.
+              const inFlightJobs = abortActiveRequest(true) || []
+              inFlightJobs.forEach(handle => cancelJob(handle))
+            }}
             onClearError={clearError}
             focusedOutput={focusedOutput}
             onFocusOutput={setFocusedOutput}

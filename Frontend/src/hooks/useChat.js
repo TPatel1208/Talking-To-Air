@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { createSseParser } from '../utils/sseParser'
 import { applyWorkflowEvent, INITIAL_WORKFLOW_STATE } from '../utils/workflowStage'
 import { extractSuggestedFollowups } from '../utils/followups'
+import { TERMINAL_STATUSES as TERMINAL_JOB_STATUSES } from '../utils/jobCard'
 
 const API_BASE = '/api'
 const ACTIVE_THREAD_STORAGE_KEY = 'tta.activeThreadId'
@@ -21,6 +22,12 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
   const pendingAssistantUpdatesRef = useRef([])
   const threadIdRef = useRef(null)
   const didRestoreRef = useRef(false)
+  // Retrieval jobs the active stream has reported as still in flight
+  // (via job_progress events). "Stop request" returns these from
+  // abortActiveRequest so the caller can cancel them — stopping the chat
+  // turn alone leaves the job running at the provider and the jobs panel
+  // stuck on a row nothing will ever finish.
+  const activeJobHandlesRef = useRef(new Set())
 
   useEffect(() => {
     loadingRef.current = loading
@@ -105,6 +112,8 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
   const abortActiveRequest = useCallback((markCancelled = false) => {
     const controller = abortControllerRef.current
     const streamId = activeStreamIdRef.current
+    const inFlightJobHandles = Array.from(activeJobHandlesRef.current)
+    activeJobHandlesRef.current = new Set()
 
     if (controller && !controller.signal.aborted) {
       controller.abort()
@@ -131,6 +140,8 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
           : msg
       )))
     }
+
+    return inFlightJobHandles
   }, [])
 
   useEffect(() => {
@@ -229,6 +240,9 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
     activeRequestIdRef.current = requestId
     activeStreamIdRef.current = streamId
     abortControllerRef.current = controller
+    // Fresh turn, fresh in-flight-job tracking: handles from a completed
+    // earlier stream must not be cancelled by a later Stop click.
+    activeJobHandlesRef.current = new Set()
 
     setMessages(prev => [
       ...prev,
@@ -267,6 +281,11 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
 
       const decoder = new TextDecoder()
       const reader = res.body.getReader()
+      // The stream must end with a `done` (or `error`) event. If it ends
+      // without one — backend killed mid-turn, proxy idle timeout, container
+      // restart — reader.read() completes cleanly, nothing throws, and the
+      // assistant bubble would stay isLoading forever.
+      let sawDone = false
       const parser = createSseParser(({ event, data: rawData }) => {
         if (!isCurrentRequest(requestId)) return
 
@@ -312,6 +331,13 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
             }))
           }
         } else if (event === 'job_progress') {
+          if (data && data.job_handle) {
+            if (TERMINAL_JOB_STATUSES.has(data.status)) {
+              activeJobHandlesRef.current.delete(data.job_handle)
+            } else {
+              activeJobHandlesRef.current.add(data.job_handle)
+            }
+          }
           if (onJobProgress) onJobProgress(data)
           queueAssistantUpdate(streamId, msg => ({
             workflowStage: applyWorkflowEvent(msg.workflowStage || INITIAL_WORKFLOW_STATE, 'job_progress', data),
@@ -328,6 +354,7 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
             }))
           }
         } else if (event === 'done') {
+          sawDone = true
           const newId = data.thread_id
           setThreadId(newId)
           threadIdRef.current = newId
@@ -361,6 +388,22 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
       const finalChunk = decoder.decode()
       if (finalChunk) parser.feed(finalChunk)
       parser.end()
+
+      if (!sawDone && isCurrentRequest(requestId)) {
+        // Stream ended without a terminal event: surface it instead of
+        // leaving the bubble spinning. Keep any partial text — the backend
+        // may still be working server-side, and its results (charts, jobs)
+        // land in history/the Jobs panel.
+        const note = 'Connection lost before the response finished. The backend may still be working — check the Jobs panel, or reopen this session shortly to see any results.'
+        setError('Connection lost before the response finished.')
+        queueAssistantUpdate(streamId, prevMsg => ({
+          content: prevMsg.content ? `${prevMsg.content}\n\n${note}` : note,
+          isError: true,
+          isLoading: false,
+          statusMessage: '',
+          workflowStage: applyWorkflowEvent(prevMsg.workflowStage || INITIAL_WORKFLOW_STATE, 'error', {}),
+        }))
+      }
     } catch (err) {
       if (err.name === 'AbortError') return
       if (!isCurrentRequest(requestId)) return
@@ -381,6 +424,7 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
       if (isCurrentRequest(requestId)) {
         abortControllerRef.current = null
         activeStreamIdRef.current = null
+        activeJobHandlesRef.current = new Set()
         loadingRef.current = false
         setLoading(false)
       }
