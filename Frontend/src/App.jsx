@@ -197,11 +197,14 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
     messages,
     loading,
     error,
+    historyError,
     threadId,
     sessions,
     sendMessage,
     newSession,
     switchSession,
+    reloadSession,
+    retryHistory,
     deleteSession,
     abortActiveRequest,
     clearError,
@@ -373,6 +376,9 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
             messages={messages}
             loading={loading}
             error={error}
+            historyError={historyError}
+            onRetryHistory={retryHistory}
+            onReloadSession={reloadSession}
             accessToken={accessToken}
             chatTitle={chatTitle}
             onSend={sendMessage}

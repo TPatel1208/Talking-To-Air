@@ -338,10 +338,32 @@ function FollowupChips({ suggestions, onSend }) {
   )
 }
 
+/* ── "Reload session" — the one-click recovery affordance on a
+    connection-lost message (T41). Re-fetches history into place rather
+    than leaving the researcher to know to reload the session by hand. ── */
+function ReloadSessionButton({ onReloadSession }) {
+  if (!onReloadSession) return null
+  return (
+    <button
+      type="button"
+      onClick={onReloadSession}
+      style={{
+        marginTop: '8px', padding: '6px 12px', borderRadius: '100px',
+        fontSize: '12px', fontWeight: 600, fontFamily: 'var(--font)',
+        background: 'var(--bg-card)', border: '1px solid var(--error-border)',
+        color: 'var(--error)', cursor: 'pointer',
+      }}
+    >
+      Reload session
+    </button>
+  )
+}
+
 /* ── Message bubble ── */
 function MessageBubble({
   msg, accessToken, onFollowupClick, focusedOutput, onFocusOutput,
   compareMode, compareSelection, onToggleCompareSlot, onCompareCapFull,
+  onReloadSession,
 }) {
   const isUser = msg.role === 'user'
   const comparing = compareMode === 'active'
@@ -494,6 +516,7 @@ function MessageBubble({
                 {msg.imageUrls?.filter(Boolean).map((url, i) => (
                   <InlineImage key={i} url={url} accessToken={accessToken} />
                 ))}
+                {msg.isConnectionLost && <ReloadSessionButton onReloadSession={onReloadSession} />}
               </>
             )}
           </div>
@@ -622,6 +645,7 @@ function EmptyState({ onChipClick }) {
 /* ── Main Chat component ── */
 export default function Chat({
   messages, loading, error, accessToken, chatTitle, onSend, onAbort, onClearError,
+  historyError, onRetryHistory, onReloadSession,
   focusedOutput, onFocusOutput,
   compareMode = 'off', compareSelection = [], onToggleCompareSlot,
   onCollapse,
@@ -752,6 +776,44 @@ export default function Chat({
             </button>
           </div>
         )}
+        {/* T41: a failed history load never wipes the screen -- it keeps
+            whatever was on it and offers a retry, distinct from the
+            request-error banner above so it's clear this is "couldn't load
+            history", not "your last message failed." */}
+        {historyError && (
+          <div style={{
+            margin: '14px 20px 0',
+            padding: '10px 12px',
+            border: '1px solid var(--error-border)',
+            borderRadius: '8px',
+            background: 'var(--error-bg)',
+            color: 'var(--error)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '12px',
+            fontSize: '13px',
+            lineHeight: 1.45,
+          }}>
+            <span>{historyError}</span>
+            <button
+              onClick={onRetryHistory}
+              style={{
+                border: '1px solid var(--error-border)',
+                background: 'transparent',
+                color: 'var(--error)',
+                cursor: 'pointer',
+                fontSize: '12px',
+                fontWeight: 600,
+                borderRadius: '100px',
+                padding: '4px 10px',
+                flexShrink: 0,
+              }}
+            >
+              Retry
+            </button>
+          </div>
+        )}
         {compareMode === 'active' && capFullHint && (
           <div style={{
             margin: '14px 20px 0',
@@ -790,6 +852,7 @@ export default function Chat({
                   compareSelection={compareSelection}
                   onToggleCompareSlot={onToggleCompareSlot}
                   onCompareCapFull={showCapFullHint}
+                  onReloadSession={onReloadSession}
                 />
               )
             )}
