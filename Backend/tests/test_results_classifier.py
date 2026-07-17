@@ -300,6 +300,84 @@ class CallToolConnectionFailureTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(ctx.exception.category, "provider_unavailable")
 
+    async def test_read_timeout_mid_call_classifies_as_provider_unavailable(self):
+        # A call that dies AFTER connecting (MCP restarted mid-retrieval, a
+        # network blip during a long response) raises a read-phase transport
+        # error, not a ConnectError. The old connect-only tuple let these
+        # escape unclassified — the request 500'd as a generic contract
+        # failure instead of the friendly provider_unavailable answer.
+        import httpx
+
+        from earthdata_mcp.results import MCPToolError, call_tool
+
+        class _BrokenTool:
+            name = "search_datasets"
+
+            async def ainvoke(self, kwargs):
+                raise httpx.ReadTimeout("timed out reading response")
+
+        with self.assertRaises(MCPToolError) as ctx:
+            await call_tool(_BrokenTool(), {"query": "no2"})
+
+        self.assertEqual(ctx.exception.category, "provider_unavailable")
+
+    async def test_remote_protocol_error_wrapped_in_group_classifies_as_provider_unavailable(self):
+        # The server closing the connection mid-response arrives as
+        # httpx.RemoteProtocolError, usually wrapped in the transport's anyio
+        # task-group ExceptionGroup — the same grouping the ConnectError
+        # regression test above pins.
+        import httpx
+
+        from earthdata_mcp.results import MCPToolError, call_tool
+
+        class _BrokenTool:
+            name = "search_datasets"
+
+            async def ainvoke(self, kwargs):
+                raise ExceptionGroup(
+                    "unhandled errors in a TaskGroup",
+                    [httpx.RemoteProtocolError("peer closed connection without sending complete message body")],
+                )
+
+        with self.assertRaises(MCPToolError) as ctx:
+            await call_tool(_BrokenTool(), {"query": "no2"})
+
+        self.assertEqual(ctx.exception.category, "provider_unavailable")
+
+    async def test_httpcore_read_error_classifies_as_provider_unavailable(self):
+        import httpcore
+
+        from earthdata_mcp.results import MCPToolError, call_tool
+
+        class _BrokenTool:
+            name = "search_datasets"
+
+            async def ainvoke(self, kwargs):
+                raise httpcore.ReadError("connection reset by peer")
+
+        with self.assertRaises(MCPToolError) as ctx:
+            await call_tool(_BrokenTool(), {"query": "no2"})
+
+        self.assertEqual(ctx.exception.category, "provider_unavailable")
+
+    async def test_anyio_closed_resource_classifies_as_provider_unavailable(self):
+        # The streamable-HTTP session's own stream dying can surface as an
+        # anyio resource error rather than any httpx/httpcore type.
+        import anyio
+
+        from earthdata_mcp.results import MCPToolError, call_tool
+
+        class _BrokenTool:
+            name = "search_datasets"
+
+            async def ainvoke(self, kwargs):
+                raise anyio.ClosedResourceError()
+
+        with self.assertRaises(MCPToolError) as ctx:
+            await call_tool(_BrokenTool(), {"query": "no2"})
+
+        self.assertEqual(ctx.exception.category, "provider_unavailable")
+
     async def test_successful_call_returns_the_raw_result_unclassified(self):
         from earthdata_mcp.results import call_tool
 

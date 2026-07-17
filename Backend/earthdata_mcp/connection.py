@@ -137,6 +137,22 @@ class EarthdataMCPConnectionManager:
         if self._task is not None:
             return
         self._task = asyncio.create_task(self._connect_loop())
+        # Belt and suspenders: the loop body classifies every exception, so
+        # this should never fire — but if the loop ever does die, the failure
+        # must be loud. A silently-dead watchdog freezes the state forever:
+        # /health keeps reporting the last state and no reconnect ever runs.
+        self._task.add_done_callback(self._log_if_loop_died)
+
+    def _log_if_loop_died(self, task: asyncio.Task) -> None:
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.critical(
+                "earthdata_mcp_connect_loop_died",
+                exc_info=exc,
+                extra={"_event": "earthdata_mcp_connect_loop_died", "_state": self._state},
+            )
 
     async def stop(self) -> None:
         if self._task is None:
@@ -157,31 +173,45 @@ class EarthdataMCPConnectionManager:
         while True:
             try:
                 raw = await self._loader(self._settings)
+
+                mismatches = check_tool_schemas(raw)
+                if mismatches:
+                    self._transition(STATE_INCOMPATIBLE, detail=mismatches)
+                    await self._sleep(backoff)
+                    backoff = min(backoff * 2, self._max_backoff)
+                    continue
+
+                tools = bind_workspace(raw, self._user_id_getter, edl_injector=self._edl_injector)
+                # on_ready runs BEFORE the state flips to ready, so no caller can
+                # ever observe state == ready with a stale/empty consumer (e.g.
+                # api.py's satellite agent) still in place. It fires only on a
+                # genuine transition into ready (boot or recovery) — not on a
+                # heartbeat that finds an already-ready MCP still healthy.
+                if self._state != STATE_READY and self._on_ready is not None:
+                    await self._on_ready(tools)
+                self._tools = tools
+                self._transition(STATE_READY)
+                backoff = self._initial_backoff
+                await self._sleep(self._heartbeat_interval)
             except EarthdataMCPUnavailableError as exc:
                 self._transition(STATE_UNAVAILABLE, detail=str(exc))
                 await self._sleep(backoff)
                 backoff = min(backoff * 2, self._max_backoff)
-                continue
-
-            mismatches = check_tool_schemas(raw)
-            if mismatches:
-                self._transition(STATE_INCOMPATIBLE, detail=mismatches)
+            except Exception:
+                # Anything the specific branch above didn't classify — a
+                # bind_workspace/schema-check bug, an on_ready (satellite
+                # agent rebuild) failure, a transport error the client didn't
+                # wrap. Before this catch, any such exception killed the task
+                # silently and froze the state forever (a dead watchdog:
+                # /health lies, no reconnect ever runs). CancelledError is a
+                # BaseException, so stop() still cancels cleanly through here.
+                logger.exception(
+                    "earthdata_mcp_connect_loop_error",
+                    extra={"_event": "earthdata_mcp_connect_loop_error", "_state": self._state},
+                )
+                self._transition(STATE_UNAVAILABLE, detail="unexpected connect-loop error")
                 await self._sleep(backoff)
                 backoff = min(backoff * 2, self._max_backoff)
-                continue
-
-            tools = bind_workspace(raw, self._user_id_getter, edl_injector=self._edl_injector)
-            # on_ready runs BEFORE the state flips to ready, so no caller can
-            # ever observe state == ready with a stale/empty consumer (e.g.
-            # api.py's satellite agent) still in place. It fires only on a
-            # genuine transition into ready (boot or recovery) — not on a
-            # heartbeat that finds an already-ready MCP still healthy.
-            if self._state != STATE_READY and self._on_ready is not None:
-                await self._on_ready(tools)
-            self._tools = tools
-            self._transition(STATE_READY)
-            backoff = self._initial_backoff
-            await self._sleep(self._heartbeat_interval)
 
     def _transition(self, new_state: str, *, detail: Any = None) -> None:
         old_state = self._state

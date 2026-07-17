@@ -287,6 +287,71 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
         # objects, so consumers (e.g. the satellite agent) must rebuild too.
         self.assertEqual(len(on_ready_calls), 2)
 
+    async def test_an_unexpected_error_lands_unavailable_instead_of_killing_the_loop(self):
+        # Only EarthdataMCPUnavailableError used to be caught in the connect
+        # loop — anything else (a bind_workspace bug, a transport error the
+        # client didn't wrap) killed the background task silently, freezing
+        # the state forever: /health kept reporting the last state and no
+        # reconnect ever ran again. The loop must classify the unexpected
+        # error as an outage and keep retrying.
+        from earthdata_mcp.connection import (
+            EarthdataMCPConnectionManager,
+            STATE_READY,
+            STATE_UNAVAILABLE,
+        )
+
+        tools = {"search_datasets": _fake_tool("search_datasets", ("query", "filters", "workspace_id"))}
+        broken = {"value": True}
+
+        async def loader(settings):
+            if broken["value"]:
+                raise RuntimeError("not an EarthdataMCPUnavailableError")
+            return tools
+
+        manager = EarthdataMCPConnectionManager(
+            settings=object(), user_id_getter=lambda: "1", loader=loader, sleep=_yielding_sleep,
+        )
+
+        with self.assertLogs("earthdata_mcp.connection", level="ERROR") as captured:
+            manager.start()
+            await asyncio.wait_for(_wait_for_state(manager, STATE_UNAVAILABLE), timeout=1)
+
+        self.assertTrue(any("earthdata_mcp_connect_loop_error" in line for line in captured.output))
+
+        broken["value"] = False
+        await asyncio.wait_for(_wait_for_state(manager, STATE_READY), timeout=1)
+        await manager.stop()
+
+    async def test_an_on_ready_failure_lands_unavailable_and_retries(self):
+        # on_ready rebuilds the satellite agent (api.py) — if that rebuild
+        # throws, the manager must degrade to unavailable and retry, not die
+        # holding state=connecting forever with no tools and no watchdog.
+        from earthdata_mcp.connection import EarthdataMCPConnectionManager, STATE_READY
+
+        tools = {"search_datasets": _fake_tool("search_datasets", ("query", "filters", "workspace_id"))}
+        on_ready_calls = []
+
+        async def loader(settings):
+            return tools
+
+        async def on_ready(ready_tools):
+            on_ready_calls.append(ready_tools)
+            if len(on_ready_calls) == 1:
+                raise RuntimeError("satellite agent rebuild failed")
+
+        manager = EarthdataMCPConnectionManager(
+            settings=object(), user_id_getter=lambda: "1", loader=loader, on_ready=on_ready,
+            sleep=_yielding_sleep,
+        )
+
+        manager.start()
+        await asyncio.wait_for(_wait_for_state(manager, STATE_READY), timeout=1)
+        await manager.stop()
+
+        # The failed first call left the state short of ready, so the retry
+        # genuinely transitions into ready and must re-fire on_ready.
+        self.assertEqual(len(on_ready_calls), 2)
+
     async def test_edl_injector_is_threaded_through_to_bind_workspace(self):
         """T31: the manager's own job is connect/retry/schema-diff
         bookkeeping (this file's docstring) — the actual injection behavior

@@ -287,14 +287,31 @@ async def call_tool(tool: Any, kwargs: dict) -> Any:
     ``httpx.ConnectError``/``httpcore.ConnectError`` in a ``BaseExceptionGroup``
     rather than raising it bare — ``except*`` unwraps that regardless of
     whether the underlying exception arrived grouped or not (PEP 654).
+
+    The net is the transport *base* classes, not an enumerated list of
+    connect-phase types: a call that dies AFTER connecting (MCP restarted
+    mid-call, network blip during a long response) raises read/write-phase
+    errors (``httpx.ReadTimeout``/``ReadError``/``RemoteProtocolError``,
+    ``httpcore.ReadError``, an ``anyio`` resource error) that the old
+    connect-only tuple let escape unclassified.
     """
+    import anyio
     import httpcore
     import httpx
     from mcp.shared.exceptions import McpError
 
     try:
         return await tool.ainvoke(kwargs)
-    except* (httpcore.ConnectError, httpx.ConnectError, httpx.ConnectTimeout, McpError) as eg:
+    except* (
+        httpx.TransportError,
+        httpcore.NetworkError,
+        httpcore.TimeoutException,
+        httpcore.ProtocolError,
+        anyio.ClosedResourceError,
+        anyio.BrokenResourceError,
+        anyio.EndOfStream,
+        McpError,
+    ) as eg:
         detail = eg.exceptions[0] if eg.exceptions else eg
         raise _log(MCPToolError(
             CATEGORY_PROVIDER_UNAVAILABLE,
