@@ -215,6 +215,73 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertEqual(meta["n_granules"], 2)
         self.assertEqual(meta["granule_dates"], ["2024-01-01", "2024-01-03"])
 
+    def test_aggregate_falls_back_to_ecs_range_attrs_when_no_time_coordinate_exists(self):
+        """Monthly L3 means (e.g. HAQ_TROPOMI_NO2_GLOBAL_M_L3) have lat/lon
+        dims only -- the month lives exclusively in RangeBeginningDate/
+        RangeEndingDate global attrs. The Metadata tab showed "Date Range:
+        Not available"/"Granule Dates: Not available" for these charts because
+        _build_meta only read time coordinates (regression)."""
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset(
+            {"no2": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]])},
+            coords={"lat": [40.0, 41.0], "lon": [-75.0, -74.0]},
+            attrs={
+                "cadence": "monthly",
+                "RangeBeginningDate": "2024-01-01",
+                "RangeBeginningTime": "00:00:00.000000Z",
+                "RangeEndingDate": "2024-01-31",
+                "RangeEndingTime": "23:59:59.999999Z",
+            },
+        )
+
+        meta = AggregationService().aggregate(ds, stat="mean", variable="no2", col_info=self.col_info).meta
+
+        self.assertEqual(meta["n_granules"], 1)
+        self.assertEqual(meta["start_date"], "2024-01-01")
+        self.assertEqual(meta["end_date"], "2024-01-31")
+        self.assertEqual(meta["granule_dates"], ["2024-01-01"])
+        self.assertIn("2024-01-01 to 2024-01-31", meta["aggregation_label"])
+
+    def test_aggregate_reads_range_attrs_from_source_ds_when_data_is_an_extracted_dataarray(self):
+        """Every real tool path passes an already-extracted DataArray as
+        ``data`` (variable attrs only -- no global attrs) plus the opened
+        Dataset as ``source_ds``: the temporal fallback must look there."""
+        from preprocessing.aggregation_service import AggregationService
+
+        source_ds = self.xr.Dataset(
+            {"no2": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]])},
+            coords={"lat": [40.0, 41.0], "lon": [-75.0, -74.0]},
+            attrs={"time_coverage_start": "2024-01-01T00:00:00Z", "time_coverage_end": "2024-01-31T23:59:59Z"},
+        )
+        da = source_ds["no2"]
+
+        meta = AggregationService().aggregate(
+            da, stat="mean", variable="no2", col_info=self.col_info, source_ds=source_ds,
+        ).meta
+
+        self.assertEqual(meta["start_date"], "2024-01-01")
+        self.assertEqual(meta["end_date"], "2024-01-31")
+        self.assertEqual(meta["granule_dates"], ["2024-01-01"])
+
+    def test_aggregate_meta_start_and_end_come_from_the_time_coordinate_when_present(self):
+        """The explicit meta start_date/end_date facts (new) must agree with
+        the granule_dates the time coordinate already produced -- attrs are a
+        fallback, never an override."""
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset(
+            {"no2": (("time", "lat", "lon"), [[[1.0]], [[2.0]]])},
+            coords={"time": ["2024-06-01", "2024-06-02"], "lat": [40.0], "lon": [-75.0]},
+            attrs={"cadence": "daily", "RangeBeginningDate": "1999-01-01", "RangeEndingDate": "1999-01-31"},
+        )
+
+        meta = AggregationService().aggregate(ds, stat="mean", variable="no2", col_info=self.col_info).meta
+
+        self.assertEqual(meta["start_date"], "2024-06-01")
+        self.assertEqual(meta["end_date"], "2024-06-02")
+        self.assertEqual(meta["granule_dates"], ["2024-06-01", "2024-06-02"])
+
     def test_to_dataarray_returns_the_single_data_var_with_no_choice_needed(self):
         from preprocessing.aggregation_service import AggregationService
 
@@ -762,6 +829,70 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertEqual(values[0, 0], 1.0)  # flag 0 -> known, not bad -> kept
         self.assertTrue(self.np.isnan(values[0, 1]))  # flag 2 -> bad -> masked
         self.assertTrue(self.np.isnan(values[0, 2]))  # flag NaN -> unknown -> masked
+
+    def test_apply_quality_mask_honors_a_combined_cf_valid_range_attr(self):
+        """CF allows ``valid_range: [min, max]`` INSTEAD of valid_min/
+        valid_max, and xarray does not apply it on decode — ignoring it meant
+        no range mask at all for products publishing only that spelling."""
+        from preprocessing.aggregation_service import AggregationService
+
+        da = self.xr.DataArray(
+            self.np.array([[-5.0, 1.0], [2.0, 150.0]]),
+            dims=("lat", "lon"),
+            attrs={"valid_range": [0.0, 100.0]},
+            name="aod",
+        )
+
+        masked = AggregationService().apply_quality_mask(da, col_info={})
+
+        values = masked.values
+        self.assertTrue(self.np.isnan(values[0, 0]))  # below valid_range min
+        self.assertEqual(values[0, 1], 1.0)
+        self.assertEqual(values[1, 0], 2.0)
+        self.assertTrue(self.np.isnan(values[1, 1]))  # above valid_range max
+
+    def test_explicit_valid_min_max_attrs_win_over_valid_range(self):
+        from preprocessing.aggregation_service import AggregationService
+
+        da = self.xr.DataArray(
+            self.np.array([[5.0, 15.0]]),
+            dims=("lat", "lon"),
+            attrs={"valid_min": 0.0, "valid_max": 10.0, "valid_range": [0.0, 100.0]},
+            name="aod",
+        )
+
+        masked = AggregationService().apply_quality_mask(da, col_info={})
+
+        self.assertEqual(masked.values[0, 0], 5.0)
+        self.assertTrue(self.np.isnan(masked.values[0, 1]))  # 15 > valid_max 10
+
+    def test_cadence_defaults_to_unknown_for_an_unregistered_collection(self):
+        """An off-registry product's cadence is a fact this backend does not
+        have. The old "daily" default stamped a false provenance claim ("12
+        daily granules" over a year of monthly means) and fed the period-
+        label heuristics wrong inputs — the honest answer is "unknown", and
+        the granule label says just "granules"."""
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset(
+            {
+                "some_unregistered_var": (
+                    ("time", "lat", "lon"),
+                    self.np.array([[[1.0, 2.0]], [[3.0, 4.0]]]),
+                )
+            },
+            coords={
+                "time": ["2024-01-01", "2024-02-01"],
+                "lat": [40.0],
+                "lon": [-75.0, -74.0],
+            },
+        )
+
+        result = AggregationService().aggregate(ds, stat="mean", variable="some_unregistered_var")
+
+        self.assertEqual(result.meta["cadence"], "unknown")
+        self.assertIn("2 granules", result.meta["aggregation_label"])
+        self.assertNotIn("daily", result.meta["aggregation_label"])
 
 
 if __name__ == "__main__":

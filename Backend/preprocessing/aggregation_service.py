@@ -27,6 +27,35 @@ class AggregatedResult:
     meta: dict[str, Any]
 
 
+# Global-attribute spellings that carry a granule's temporal coverage when the
+# file has no time coordinate at all (e.g. HAQ_TROPOMI_NO2_GLOBAL_M_L3 monthly
+# means: dims are lat/lon only, the month lives in RangeBeginningDate/
+# RangeEndingDate). ACDD first, then the ECS/CMR pair every GES DISC product
+# stamps. Each entry is (date_key, optional_time_key).
+_TEMPORAL_START_ATTRS = (("time_coverage_start", None), ("RangeBeginningDate", "RangeBeginningTime"))
+_TEMPORAL_END_ATTRS = (("time_coverage_end", None), ("RangeEndingDate", "RangeEndingTime"))
+
+
+def _attr_timestamp(attrs: dict, candidates: tuple) -> str:
+    for date_key, time_key in candidates:
+        date = attrs.get(date_key)
+        if not date:
+            continue
+        date = str(date).strip()
+        time = str(attrs.get(time_key) or "").strip() if time_key else ""
+        if time and "T" not in date:
+            return f"{date}T{time.rstrip('Z')}"
+        return date
+    return ""
+
+
+def attrs_time_range(attrs: dict | None) -> tuple[str, str]:
+    """Granule temporal coverage from global attributes -- the fallback for
+    files whose date exists only as metadata, never as a time coordinate."""
+    attrs = attrs or {}
+    return _attr_timestamp(attrs, _TEMPORAL_START_ATTRS), _attr_timestamp(attrs, _TEMPORAL_END_ATTRS)
+
+
 def fill_match(values: Any, fill: Any) -> Any:
     """Boolean mask of cells equal to the fill value — the ONE definition of
     fill matching, shared by the science-variable masking
@@ -49,6 +78,36 @@ def fill_match(values: Any, fill: Any) -> Any:
     if fill_f.is_integer():
         return values == fill_f
     return np.isclose(values, fill_f, rtol=1e-6, atol=1e-9)
+
+
+def area_weighted_mean(da: xr.DataArray) -> float:
+    """Cosine-latitude area-weighted mean over a (lat, lon) field — the ONE
+    definition of a regional mean, shared by the statistics tool and the
+    comparison stats so they can never disagree.
+
+    On a regular lat/lon grid, cell area shrinks by cos(latitude) toward the
+    poles, so an unweighted mean over grid cells over-weights high latitudes
+    — a few percent for a CONUS-scale region, badly wrong for continental or
+    global ones. Falls back to the unweighted mean when no latitude
+    dimension is identifiable (point data, an already-flattened array).
+    Raises ``ValueError`` when no finite values remain, mirroring
+    ``compute_values_stat``.
+    """
+    from utils.geo_utils import find_lat_coord
+
+    values = np.asarray(da.values, dtype=float)
+    if not np.isfinite(values).any():
+        raise ValueError("No finite values available for statistic.")
+
+    lat_name = find_lat_coord(da)
+    if lat_name is None or lat_name not in da.dims:
+        return float(np.nanmean(values[np.isfinite(values)]))
+
+    weights = np.cos(np.deg2rad(da[lat_name]))
+    result = float(da.weighted(weights).mean(skipna=True))
+    if not np.isfinite(result):
+        raise ValueError("No finite values available for statistic.")
+    return result
 
 
 def flag_pass_condition(qf: xr.DataArray, good_values: Any = None, bad_values: Any = None) -> xr.DataArray:
@@ -137,8 +196,15 @@ class AggregationService:
         result_ds.attrs["n_granules"] = len(valid_indices)
         result_ds.attrs["cadence"] = self._cadence(data, collection_id, variable, col_info)
 
+        # Global attrs are the temporal-fallback source for time-coordinate-less
+        # granules; the tool layer's opened Dataset (source_ds) carries them
+        # when ``data`` is an already-extracted DataArray (variable attrs only).
+        source_attrs: dict[str, Any] = {}
+        for attr_source in (source_ds, data):
+            source_attrs.update(getattr(attr_source, "attrs", None) or {})
         meta = self._build_meta(
             data, len(valid_indices), self._cadence(data, collection_id, variable, col_info), stat, valid_indices, time_dim,
+            source_attrs=source_attrs,
         )
         meta["masking"] = masking_provenance
 
@@ -165,7 +231,10 @@ class AggregationService:
         ``_valid_time_indices``.
         """
         cadence = self._cadence(data, collection_id, variable, col_info)
-        return self._build_meta(data, len(valid_indices), cadence, stat, valid_indices, time_dim)
+        return self._build_meta(
+            data, len(valid_indices), cadence, stat, valid_indices, time_dim,
+            source_attrs=getattr(data, "attrs", None),
+        )
 
     def resolve_and_mask(
         self,
@@ -397,6 +466,13 @@ class AggregationService:
         actual_fill = col_info.get("fill_value", da.attrs.get("_FillValue"))
         valid_min = col_info.get("valid_min", da.attrs.get("valid_min"))
         valid_max = col_info.get("valid_max", da.attrs.get("valid_max"))
+        if valid_min is None and valid_max is None:
+            # CF's combined ``valid_range: [min, max]`` spelling — published
+            # INSTEAD of valid_min/valid_max by plenty of NASA products, and
+            # not applied by xarray on decode (see mask_info's CF tier).
+            from datasets.mask_info import _split_valid_range_attr
+
+            valid_min, valid_max = _split_valid_range_attr(da.attrs.get("valid_range"))
 
         if actual_fill is not None:
             da = da.where(~fill_match(da, actual_fill))
@@ -483,7 +559,12 @@ class AggregationService:
         if attrs.get("cadence"):
             return str(attrs["cadence"])
         info = col_info or self._collection_info(collection_id, variable)
-        return str(info.get("cadence", "daily"))
+        # "unknown", never "daily": an off-registry product's cadence is a
+        # fact this backend does not have, and defaulting it stamped a false
+        # provenance claim ("12 daily granules" on a year of monthly means)
+        # plus wrong period labels ("Annual"/"Daily" inference below) on
+        # exactly the datasets the universal pipeline exists to welcome.
+        return str(info.get("cadence", "unknown"))
 
     def _build_meta(
         self,
@@ -493,17 +574,36 @@ class AggregationService:
         stat: str,
         valid_indices: list[int],
         time_dim: str | None = None,
+        source_attrs: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         time_dim = time_dim or identify_time(data)
         times = []
         if time_dim and time_dim in getattr(data, "coords", {}):
-            all_times = [str(t) for t in data[time_dim].values]
+            all_times = [str(t) for t in np.atleast_1d(data[time_dim].values)]
             times = [all_times[i] for i in valid_indices if i < len(all_times)]
 
         start = self._date_only(times[0]) if times else ""
         end = self._date_only(times[-1]) if times else ""
+        if not times:
+            # No time coordinate on the data at all (e.g. a monthly L3 mean
+            # whose dims are lat/lon only): the granule's coverage lives in
+            # its global attrs (ACDD time_coverage_* / ECS RangeBeginning*).
+            # Fall back there rather than reporting "no dates" for data that
+            # plainly has one -- the granule list is the coverage start (the
+            # granule's own date), disclosed only for the single-granule case
+            # where that is exact.
+            attr_start, attr_end = attrs_time_range(source_attrs)
+            start = self._date_only(attr_start)
+            end = self._date_only(attr_end)
+            if n_granules <= 1 and start:
+                times = [start]
+        # An unknown cadence is disclosed as plain "granules" — never dressed
+        # up as a frequency word the data never claimed.
         cadence_label = {"hourly": "hourly", "daily": "daily", "monthly": "monthly"}.get(cadence, cadence)
-        granule_str = f"{n_granules} {cadence_label} granule{'s' if n_granules != 1 else ''}"
+        if cadence == "unknown":
+            granule_str = f"{n_granules} granule{'s' if n_granules != 1 else ''}"
+        else:
+            granule_str = f"{n_granules} {cadence_label} granule{'s' if n_granules != 1 else ''}"
 
         if n_granules <= 1:
             period = "Single Snapshot"
@@ -527,6 +627,12 @@ class AggregationService:
             "aggregation_label": aggregation_label,
             "title_suffix": f"{period} {stat_label} ({year_label}, {granule_str})" if year_label else f"{period} {stat_label} ({granule_str})",
             "granule_dates": [self._date_only(t) for t in times],
+            # Explicit range facts so provenance/query builders don't have to
+            # re-derive them from a DataArray whose time dim the aggregation
+            # itself already reduced away (plot_tools passes the *reduced*
+            # array downstream).
+            "start_date": start,
+            "end_date": end,
             "n_granules": int(n_granules),
             "cadence": cadence,
             "stat": stat,

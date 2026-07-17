@@ -128,6 +128,13 @@ def resolve_mask_info(
         else:
             valid_min = cf_attrs.get("valid_min")
             valid_max = cf_attrs.get("valid_max")
+            if valid_min is None and valid_max is None:
+                # CF also allows the combined ``valid_range: [min, max]``
+                # attribute, which plenty of NASA products publish INSTEAD of
+                # valid_min/valid_max — and xarray does not apply it on
+                # decode, so ignoring it here meant no range mask at all for
+                # those products.
+                valid_min, valid_max = _split_valid_range_attr(cf_attrs.get("valid_range"))
             if valid_min is not None or valid_max is not None:
                 provenance["valid_range_source"] = SOURCE_CF_ATTRS
     if valid_min is not None:
@@ -141,6 +148,18 @@ def resolve_mask_info(
 
     provenance["applied"] = "fill_value" in resolved or "valid_min" in resolved or "valid_max" in resolved
     return resolved, provenance
+
+
+def _split_valid_range_attr(valid_range: Any) -> tuple[Any, Any]:
+    """A CF ``valid_range`` attr's (min, max), or (None, None) when absent
+    or not a 2-element sequence (a malformed attr masks nothing rather than
+    guessing)."""
+    try:
+        if valid_range is not None and len(valid_range) == 2:
+            return valid_range[0], valid_range[1]
+    except TypeError:
+        pass
+    return None, None
 
 
 def _first_fill_value(fill_values: list[dict[str, Any]] | None) -> float | None:
