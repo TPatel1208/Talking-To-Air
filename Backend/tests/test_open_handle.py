@@ -411,6 +411,56 @@ class OpenHandleGroupedNetcdfTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ds["vertical_column_troposphere"].attrs.get("group_path"), "product")
         self.assertEqual(ds["max_vertical_column_sample"].attrs.get("group_path"), "qa_statistics")
 
+    async def test_open_handle_qualifies_leaf_name_collisions_instead_of_silently_overriding(self):
+        """The same leaf name in two groups used to merge with
+        compat="override" — whichever group iterated first silently won, so
+        a plausible number could come from the wrong variable. Colliding
+        variables must keep their group-qualified names, so an explicit
+        qualified request resolves exactly and a bare ambiguous one is
+        refused with candidates (T25 doctrine), never guessed."""
+        import xarray as xr
+
+        from earthdata_mcp.results import MCPToolError
+        from preprocessing.aggregation_service import AggregationService
+        from services.open_handle import open_handle
+
+        def make_root():
+            return xr.Dataset()
+
+        def make_product_group():
+            return xr.Dataset({
+                "vertical_column": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]]),
+            })
+
+        def make_support_group():
+            return xr.Dataset({
+                "vertical_column": (("lat", "lon"), [[100.0, 200.0], [300.0, 400.0]]),
+            })
+
+        self.volume.add_netcdf("obs_collide", {
+            None: make_root,
+            "product": make_product_group,
+            "support_data": make_support_group,
+        })
+
+        ds = await open_handle("obs_collide", self.tools)
+
+        # Both survive, group-qualified — neither silently shadowed.
+        self.assertIn("product/vertical_column", ds.data_vars)
+        self.assertIn("support_data/vertical_column", ds.data_vars)
+        self.assertNotIn("vertical_column", ds.data_vars)
+
+        # An explicit qualified request resolves to exactly that group's data.
+        service = AggregationService()
+        da = service.to_dataarray(ds, variable="product/vertical_column")
+        self.assertEqual(float(da.values[0][0]), 1.0)
+
+        # A bare ambiguous request refuses with candidates, never guesses.
+        with self.assertRaises(MCPToolError) as ctx:
+            service.to_dataarray(ds, variable=None)
+        self.assertIn("product/vertical_column", ctx.exception.message)
+        self.assertIn("support_data/vertical_column", ctx.exception.message)
+
     async def test_open_handle_leaves_a_genuinely_flat_netcdf_dataset_untouched(self):
         import xarray as xr
 
@@ -719,6 +769,64 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(ctx.exception.category, CATEGORY_TOO_LARGE)
         self.assertIn("Narrow", ctx.exception.suggestion or "")
+
+    @staticmethod
+    def _make_attr_dated_granule(month: int):
+        """HAQ TROPOMI monthly L3 shape (live 2026-07-16): no time dimension
+        at all — 2D (Latitude, Longitude) only, the month living solely in
+        the RangeBeginningDate/RangeBeginningTime global attrs."""
+        import xarray as xr
+
+        def factory():
+            return xr.Dataset(
+                {"Tropospheric_NO2": (("Latitude", "Longitude"), [[1.0 * month, 2.0], [3.0, 4.0]])},
+                coords={"Latitude": [40.0, 41.0], "Longitude": [-75.0, -74.0]},
+                attrs={
+                    "RangeBeginningDate": f"2024-{month:02d}-01",
+                    "RangeBeginningTime": "00:00:00.000000Z",
+                },
+            )
+
+        return factory
+
+    async def test_bundle_members_with_no_time_dim_get_an_indexed_time_coord(self):
+        """Members with no time dim at all (attr-dated monthly L3, e.g. HAQ
+        TROPOMI NO2) must gain a synthesized, *indexed* time coordinate
+        before concat. Left alone, xr.concat(dim="time") fabricates a bare
+        index-less dim, and every downstream time selection dies with
+        xarray's "no associated coordinate or index" (live 2026-07-16)."""
+        from services.open_handle import open_handle
+
+        self.volume.add_netcdf_bundle("obs_bundle_attr_dated", {
+            "tropomi_202406.nc4": {None: self._make_attr_dated_granule(6)},
+            "tropomi_202407.nc4": {None: self._make_attr_dated_granule(7)},
+        })
+
+        ds = await open_handle("obs_bundle_attr_dated", self.tools)
+
+        self.assertEqual(ds.sizes["time"], 2)
+        self.assertIn("time", ds.coords)  # indexed coordinate, not a bare stacking dim
+        self.assertIn("time", ds.indexes)
+        self.assertEqual(
+            [str(t)[:10] for t in ds["time"].values],
+            ["2024-06-01", "2024-07-01"],
+        )
+
+    async def test_single_member_bundle_with_no_time_dim_also_gains_time(self):
+        """The synthesis applies uniformly, so single-month opens of the same
+        product carry the same shape (a size-1 indexed time) as multi-month
+        opens — downstream squeezing already handles time=1 cleanly."""
+        from services.open_handle import open_handle
+
+        self.volume.add_netcdf_bundle("obs_bundle_attr_dated_single", {
+            "tropomi_202406.nc4": {None: self._make_attr_dated_granule(6)},
+        })
+
+        ds = await open_handle("obs_bundle_attr_dated_single", self.tools)
+
+        self.assertEqual(ds.sizes["time"], 1)
+        self.assertIn("time", ds.coords)
+        self.assertEqual(str(ds["time"].values[0])[:10], "2024-06-01")
 
     async def test_bundle_members_open_lazily_as_dask_chunks(self):
         """The memory contract behind the OOM fix: opening a bundle loads no

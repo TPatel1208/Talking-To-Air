@@ -217,9 +217,39 @@ def _open_netcdf(path: str, chunks: dict | None = None) -> Any:
         if group_path:
             for var in gds.data_vars.values():
                 var.attrs.setdefault("group_path", group_path)
-        group_datasets.append(gds)
+        group_datasets.append((group_path, gds))
     if not group_datasets:
         return root if root is not None else xr.Dataset()
+
+    # A leaf name that appears in MORE than one group must not be merged by
+    # bare name: xr.merge(compat="override") silently keeps whichever group
+    # iterates first — plausible numbers from possibly the wrong variable, on
+    # exactly the unregistered products this dynamic path exists to support.
+    # Colliding variables keep their group-qualified name ("product/foo",
+    # "support_data/foo") instead: an explicit qualified request still
+    # resolves exactly, and a bare ambiguous one falls through to
+    # AggregationService.to_dataarray's refuse-with-candidates error rather
+    # than a silent pick (the T25 doctrine).
+    leaf_counts: dict[str, int] = {}
+    for _, gds in group_datasets:
+        for name in gds.data_vars:
+            leaf_counts[name] = leaf_counts.get(name, 0) + 1
+    collided = {name for name, count in leaf_counts.items() if count > 1}
+    if collided:
+        logger.warning(
+            "netcdf_group_leaf_name_collision",
+            extra={"_event": "netcdf_group_leaf_name_collision", "_names": sorted(collided), "_path": path},
+        )
+        group_datasets = [
+            (
+                group_path,
+                gds.rename({n: f"{group_path}/{n}" for n in gds.data_vars if n in collided})
+                if group_path and collided.intersection(gds.data_vars)
+                else gds,
+            )
+            for group_path, gds in group_datasets
+        ]
+    group_datasets = [gds for _, gds in group_datasets]
 
     # The root group can carry the shared grid coordinates (lat/lon/time)
     # with no data_vars of its own -- a TEMPO L3 single-variable subset
@@ -423,28 +453,40 @@ def _prune_extract_cache(root: str, ttl_seconds: float = _EXTRACT_CACHE_TTL_SECO
 def _synthesize_member_time_coord(ds: Any) -> Any:
     """Give a bundle member a real, indexed ``time`` coordinate before concat.
 
-    Some daily L3 products (e.g. OMI_MINDS_NO2d) carry a differently-cased
-    singleton time dimension (``Time``) with no coordinate variable at all —
-    the granule's date lives only in the ``RangeBeginningDate``/
-    ``RangeBeginningTime`` global attrs (standard CMR/UMM-G granule temporal
-    metadata). Left alone, ``xr.concat(dim="time")`` fabricates a brand-new
-    unindexed stacking dimension instead of reusing it. No-op when ``time``
-    already exists or the date attrs are absent. (Ported from the MCP's
+    Two shapes of attr-dated L3 product need this — in both, the granule's
+    date lives only in the ``RangeBeginningDate``/``RangeBeginningTime``
+    global attrs (standard CMR/UMM-G granule temporal metadata):
+
+    - a differently-cased singleton time dimension with no coordinate
+      variable (e.g. OMI_MINDS_NO2d's ``Time``), which gets renamed and
+      assigned the synthesized timestamp; and
+    - no time-like dimension at all (e.g. HAQ TROPOMI monthly L3: 2-D
+      lat/lon only), which gets a size-1 indexed ``time`` via expand_dims.
+
+    Left alone, ``xr.concat(dim="time")`` fabricates a brand-new *unindexed*
+    stacking dimension in both cases, and every downstream time selection
+    dies inside xarray with "no associated coordinate or index" (live
+    TROPOMI, 2026-07-16). No-op when ``time`` already exists or the date
+    attrs are absent or unparseable. (Extends the MCP's
     ``_synthesize_bundle_time_coord``.)
     """
     import numpy as np
 
     if "time" in ds.dims:
         return ds
-    candidates = [d for d in ds.dims if str(d).lower() == "time" and ds.sizes[d] == 1]
-    if not candidates:
-        return ds
     date = ds.attrs.get("RangeBeginningDate")
     if not date:
         return ds
     time_str = f"{date}T{ds.attrs.get('RangeBeginningTime', '00:00:00').rstrip('Z')}"
-    ds = ds.rename({candidates[0]: "time"})
-    return ds.assign_coords({"time": [np.datetime64(time_str)]})
+    try:
+        timestamp = np.datetime64(time_str)
+    except ValueError:
+        return ds  # malformed attrs — synthesis is best-effort, never fatal
+    candidates = [d for d in ds.dims if str(d).lower() == "time" and ds.sizes[d] == 1]
+    if candidates:
+        ds = ds.rename({candidates[0]: "time"})
+        return ds.assign_coords({"time": [timestamp]})
+    return ds.expand_dims(time=[timestamp])
 
 
 def _strip_concat_unsafe_coord_attrs(ds: Any) -> Any:
