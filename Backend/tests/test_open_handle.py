@@ -973,6 +973,14 @@ class BundleExtractionCacheTests(unittest.TestCase):
                 self.assertEqual(len(remaining), 1)
                 self.assertNotEqual(remaining, first_entries)
 
+                # Release ds_b's own open file handle on its extracted member
+                # before the tempdir (which contains the patched cache_home)
+                # tears down below -- on Windows an open handle makes that
+                # cleanup raise PermissionError; POSIX allows unlinking an
+                # open file, so this only bites on a Windows host run.
+                del ds_b
+                gc.collect()
+
 
 class OpenNativeFormatMediaTypeTests(unittest.TestCase):
     """HDF4 / native-archive exports (e.g. MODIS MAIAC) have no local reader,

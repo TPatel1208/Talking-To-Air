@@ -186,6 +186,7 @@ See [`CLAUDE.md`](CLAUDE.md) for why host `python -m pytest` is discouraged (PRO
 Fresh PostgreSQL volumes are initialized from SQL mounted into `docker-entrypoint-initdb.d`:
 
 - `sql/init_agent_charts.sql` creates the `agent_charts` table.
+- `sql/init_agent_artifacts.sql` creates the `agent_artifacts` table (durable table artifacts, T39).
 
 Make schema changes in that file. To apply init-script changes locally, recreate the volume: `docker compose down -v` then `docker compose up --build`.
 

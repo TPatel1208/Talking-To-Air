@@ -2,7 +2,7 @@ import os
 import sys
 import importlib.util
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from types import SimpleNamespace
 from datetime import datetime, timezone
 
@@ -553,11 +553,13 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
             ["date", "value"],
             [{"date": "2024-01-01", "value": 10}, {"date": "2024-01-02", "value": 20}],
         )
-        artifact_store.claim(ref.id, self.user.id, "thread-1")
 
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1]:
+        with auth_patches[0], auth_patches[1], \
+             patch("services.artifact_store.artifact_repository.save_artifact", AsyncMock()), \
+             patch("services.artifact_store.artifact_repository.delete_expired_unclaimed", AsyncMock()):
+            await artifact_store.claim(ref.id, self.user.id, "thread-1")
             async with self.httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",

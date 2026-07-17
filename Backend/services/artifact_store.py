@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
 from models.artifact import ArtifactReference, TableArtifactPayload
+from repositories import artifact_repository
 
 
 @dataclass
@@ -21,6 +22,17 @@ class StoredArtifact:
 
 
 class ArtifactStore:
+    """Table artifacts, write-through to Postgres (T39).
+
+    ``put_table`` (mint) only ever touches the in-memory dict -- the tool
+    that mints a table doesn't yet know who owns it. ``claim`` (the stream
+    service attaches ownership moments later) is the durability boundary:
+    it upserts the row to ``agent_artifacts`` so it survives a restart and
+    is readable from any worker. Reads check memory first and rehydrate
+    from Postgres on a miss, so memory is a hot cache, not the system of
+    record, for anything already claimed.
+    """
+
     def __init__(self, ttl_seconds: int = 30 * 60):
         self.ttl_seconds = ttl_seconds
         self._artifacts: dict[str, StoredArtifact] = {}
@@ -41,41 +53,48 @@ class ArtifactStore:
             metadata=metadata or {},
         )
         now = time.time()
-        self._artifacts[artifact_id] = StoredArtifact(
+        stored = StoredArtifact(
             payload=payload,
             created_at=now,
             expires_at=now + self.ttl_seconds,
         )
-        return self.reference(artifact_id)
+        self._artifacts[artifact_id] = stored
+        return self._build_reference(artifact_id, stored)
 
-    def reference(self, artifact_id: str) -> ArtifactReference:
-        stored = self._active_artifact(artifact_id)
-        payload = stored.payload
-        return ArtifactReference(
-            id=artifact_id,
-            type=payload.type,
-            title=payload.title,
-            row_count=len(payload.rows),
-            metadata=payload.metadata,
-        )
+    async def reference(self, artifact_id: str) -> ArtifactReference:
+        stored = await self._active_artifact(artifact_id)
+        return self._build_reference(artifact_id, stored)
 
-    def claim(self, artifact_id: str, user_id: str, thread_id: str) -> ArtifactReference:
-        stored = self._active_artifact(artifact_id)
+    async def claim(self, artifact_id: str, user_id: str, thread_id: str) -> ArtifactReference:
+        stored = await self._active_artifact(artifact_id)
         if stored.user_id is None:
             stored.user_id = user_id
             stored.thread_id = thread_id
         elif stored.user_id != user_id:
             raise KeyError(artifact_id)
-        return self.reference(artifact_id)
+        await artifact_repository.save_artifact(
+            artifact_id,
+            stored.user_id,
+            stored.thread_id,
+            stored.payload.title,
+            stored.payload.columns,
+            stored.payload.rows,
+            stored.payload.metadata,
+        )
+        # T39 user story #4: rows are only ever written here (mint stays
+        # in-memory-only), so no unclaimed row should ever exist -- this is
+        # a defensive sweep against a future write path that changes that.
+        await artifact_repository.delete_expired_unclaimed(self.ttl_seconds)
+        return self._build_reference(artifact_id, stored)
 
-    def get_page(
+    async def get_page(
         self,
         artifact_id: str,
         user_id: str,
         offset: int = 0,
         limit: int = 100,
     ) -> dict[str, Any]:
-        stored = self._owned_artifact(artifact_id, user_id)
+        stored = await self._owned_artifact(artifact_id, user_id)
         rows = stored.payload.rows
         offset = max(offset, 0)
         limit = min(max(limit, 1), 1000)
@@ -92,7 +111,7 @@ class ArtifactStore:
         }
 
     async def iter_csv_chunks(self, artifact_id: str, user_id: str) -> AsyncIterator[bytes]:
-        stored = self._owned_artifact(artifact_id, user_id)
+        stored = await self._owned_artifact(artifact_id, user_id)
         output = io.StringIO()
         writer = csv.DictWriter(output, fieldnames=stored.payload.columns, extrasaction="ignore")
         writer.writeheader()
@@ -115,17 +134,48 @@ class ArtifactStore:
         for artifact_id in expired:
             self._artifacts.pop(artifact_id, None)
 
-    def _active_artifact(self, artifact_id: str) -> StoredArtifact:
+    async def _active_artifact(self, artifact_id: str) -> StoredArtifact:
         self.cleanup()
         stored = self._artifacts.get(artifact_id)
-        if stored is None:
+        if stored is not None:
+            return stored
+        row = await artifact_repository.get_artifact(artifact_id)
+        if row is None:
+            raise KeyError(artifact_id)
+        return self._rehydrate(artifact_id, row)
+
+    async def _owned_artifact(self, artifact_id: str, user_id: str) -> StoredArtifact:
+        stored = await self._active_artifact(artifact_id)
+        if stored.user_id is not None and stored.user_id != user_id:
             raise KeyError(artifact_id)
         return stored
 
-    def _owned_artifact(self, artifact_id: str, user_id: str) -> StoredArtifact:
-        stored = self._active_artifact(artifact_id)
-        if stored.user_id is not None and stored.user_id != user_id:
-            raise KeyError(artifact_id)
+    def _build_reference(self, artifact_id: str, stored: StoredArtifact) -> ArtifactReference:
+        payload = stored.payload
+        return ArtifactReference(
+            id=artifact_id,
+            type=payload.type,
+            title=payload.title,
+            row_count=len(payload.rows),
+            metadata=payload.metadata,
+        )
+
+    def _rehydrate(self, artifact_id: str, row: dict[str, Any]) -> StoredArtifact:
+        payload = TableArtifactPayload(
+            title=row["title"],
+            columns=row["columns"],
+            rows=row["rows"],
+            metadata=row.get("metadata") or {},
+        )
+        now = time.time()
+        stored = StoredArtifact(
+            payload=payload,
+            created_at=now,
+            expires_at=now + self.ttl_seconds,
+            user_id=row["user_id"],
+            thread_id=row["thread_id"],
+        )
+        self._artifacts[artifact_id] = stored
         return stored
 
 

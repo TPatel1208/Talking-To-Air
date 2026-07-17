@@ -22,6 +22,7 @@ services:
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ./sql/init_agent_charts.sql:/docker-entrypoint-initdb.d/01_agent_charts.sql:ro
+      - ./sql/init_agent_artifacts.sql:/docker-entrypoint-initdb.d/02_agent_artifacts.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d talking_to_air_memory"]
       interval: 10s
@@ -90,10 +91,11 @@ services:
       DB_USER: "postgres"
       DB_PASSWORD: "test"
     volumes:
-      # test_chart_repository.py's schema-contract test reads this file
-      # straight off disk; it lives at the repo root so it's outside the
-      # ./Backend build context and must be bind-mounted in.
+      # test_chart_repository.py's / test_artifact_repository.py's schema-contract
+      # tests read these files straight off disk; they live at the repo root so
+      # they're outside the ./Backend build context and must be bind-mounted in.
       - ./sql/init_agent_charts.sql:/sql/init_agent_charts.sql:ro
+      - ./sql/init_agent_artifacts.sql:/sql/init_agent_artifacts.sql:ro
       # test_overlay_store_persistence.py asserts the deployment persists the
       # overlay store; the compose file is likewise outside the build context.
       - ./docker-compose.yml:/compose/docker-compose.yml:ro

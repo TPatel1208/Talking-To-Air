@@ -15,6 +15,18 @@ class ConfigLoggingTests(unittest.TestCase):
         from config import settings
 
         settings.get_settings.cache_clear()
+        # get_settings() calls load_dotenv() on every cache miss, which reads
+        # this checkout's real .env (repo root) straight into os.environ --
+        # bypassing patch.dict(..., clear=True) below and leaking real
+        # secrets/config into what these tests assert are un-set defaults.
+        # Docker's backend-test image has no .env in its build context, so
+        # this only bites on a host run with a real .env present (see
+        # CLAUDE.md's "Optional deps / .env bleed" note). Neutralize it here
+        # so these tests assert Settings' own defaults, not the developer's
+        # local file.
+        self._load_dotenv_patcher = patch("config.settings.load_dotenv")
+        self._load_dotenv_patcher.start()
+        self.addCleanup(self._load_dotenv_patcher.stop)
 
     def tearDown(self):
         from config import settings

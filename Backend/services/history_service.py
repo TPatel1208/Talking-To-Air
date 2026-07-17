@@ -96,10 +96,13 @@ class HistoryService:
         for ref in self._artifact_refs(tool_text):
             if ref.get("type") == "table":
                 try:
-                    artifact = artifact_store.claim(ref["id"], user_id, thread_id).model_dump(exclude_none=True)
+                    claimed = await artifact_store.claim(ref["id"], user_id, thread_id)
+                    artifact = claimed.model_dump(exclude_none=True)
                 except KeyError:
-                    # Artifact expired (TTL) or server restarted — fall back to the ref
-                    # data carried in the message so the frontend can show a 404 error
+                    # T39: claim() rehydrates a previously-claimed artifact from
+                    # Postgres, so this now only fires for one that was minted but
+                    # never claimed before its TTL — fall back to the ref data
+                    # carried in the message so the frontend can show a 404 error
                     # rather than silently hiding the table.
                     artifact = {k: v for k, v in ref.items() if k in ("id", "type", "title", "row_count", "metadata")}
                     if not artifact.get("id") or not artifact.get("type"):

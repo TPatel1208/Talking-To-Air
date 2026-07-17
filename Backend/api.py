@@ -47,6 +47,7 @@ from repositories.user_connector_repository import (
     upsert_connector,
 )
 from repositories.user_repository import create_user, ensure_user_table, get_user_by_username
+from repositories.artifact_repository import ensure_artifact_table
 from services.auth_service import authenticate_request, create_access_token, hash_password, verify_password
 from services.connector_credential_service import EdlCredentialInjector
 from services.connector_token_service import TokenValidationError, decode_token_expiry
@@ -124,6 +125,7 @@ async def lifespan(app: FastAPI):
     await ensure_revoked_token_table()
     await ensure_session_metadata_table()
     await ensure_user_connector_table()
+    await ensure_artifact_table()
 
     logger.info("startup_begin", extra={"_model": settings.llm_model})
     # T17: the backend boots without the earthdata-retrieval MCP — ground/EPA
@@ -662,7 +664,7 @@ async def get_artifact(
     limit: int = Query(default=100, ge=1, le=1000),
 ):
     try:
-        return artifact_store.get_page(artifact_id, request.state.current_user.id, offset, limit)
+        return await artifact_store.get_page(artifact_id, request.state.current_user.id, offset, limit)
     except KeyError:
         raise HTTPException(status_code=404, detail="Artifact not found")
 
@@ -670,8 +672,8 @@ async def get_artifact(
 @app.get("/artifacts/{artifact_id}/csv")
 async def export_artifact_csv(artifact_id: str, request: Request):
     try:
-        artifact = artifact_store.reference(artifact_id)
-        artifact_store.get_page(artifact_id, request.state.current_user.id, 0, 1)
+        artifact = await artifact_store.reference(artifact_id)
+        await artifact_store.get_page(artifact_id, request.state.current_user.id, 0, 1)
     except KeyError:
         raise HTTPException(status_code=404, detail="Artifact not found")
 

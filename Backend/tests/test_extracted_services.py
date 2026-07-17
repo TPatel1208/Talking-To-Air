@@ -192,21 +192,23 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         content = json.dumps({"Header": [{"rows": 1}], "Body": [], "_artifact_refs": [ref.model_dump()]})
         service = ChatStreamService(ChartService(), long_request_seconds=999)
 
-        events = [
-            event
-            async for event in service._tool_result_events(
-                content,
-                "thread-1",
-                "user-1",
-                [],
-                [],
-            )
-        ]
+        with patch("services.artifact_store.artifact_repository.save_artifact", AsyncMock()), \
+             patch("services.artifact_store.artifact_repository.delete_expired_unclaimed", AsyncMock()):
+            events = [
+                event
+                async for event in service._tool_result_events(
+                    content,
+                    "thread-1",
+                    "user-1",
+                    [],
+                    [],
+                )
+            ]
 
         self.assertEqual(len(events), 1)
         self.assertIn("event: artifact", events[0])
         self.assertIn(ref.id, events[0])
-        page = artifact_store.get_page(ref.id, "user-1")
+        page = await artifact_store.get_page(ref.id, "user-1")
         self.assertEqual(page["rows"], [{"date": "2024-01-01", "value": 10}])
 
     async def test_chat_stream_service_emits_both_chart_and_artifact_for_a_map_payload(self):
@@ -620,7 +622,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["Body"][0]["max"], 2.0)
         self.assertEqual(result["Body"][0]["peak"], {"value": 2.5, "date": "2024-01-01", "first_max_hour": 13})
         artifact_id = result["_artifact_refs"][0]["id"]
-        page = epa_aqs_tools.artifact_store.get_page(artifact_id, "user-1")
+        page = await epa_aqs_tools.artifact_store.get_page(artifact_id, "user-1")
         self.assertEqual(page["total_rows"], 25)
 
     async def test_daily_summary_returns_one_row_per_day_for_site(self):

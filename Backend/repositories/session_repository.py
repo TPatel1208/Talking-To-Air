@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from repositories.artifact_repository import delete_artifacts_for_session
 from repositories.chart_repository import delete_charts_for_session
 from repositories.session_metadata_repository import delete_session_metadata, list_session_metadata
 from utils.db import pg_connection
@@ -16,6 +17,7 @@ class SessionRepository:
         if not deleted:
             return False
         await delete_charts_for_session(thread_id, user_id)
+        await delete_artifacts_for_session(thread_id, user_id)
         # LangGraph does not currently expose a session-delete helper here.
         # These table names are internal to LangGraph's Postgres checkpointer
         # and should be revisited when upgrading LangGraph.

@@ -295,7 +295,7 @@ class ChatStreamService:
             if event is not None:
                 yield event
         for artifact_ref in result.artifacts:
-            payload = self._resolve_artifact_payload(
+            payload = await self._resolve_artifact_payload(
                 artifact_ref.model_dump(exclude_none=True), user_id, thread_id,
             )
             if payload is None:
@@ -450,7 +450,7 @@ class ChatStreamService:
         agent_result = parse_agent_result(content)
         if agent_result is not None:
             for artifact_ref in agent_result.artifacts:
-                payload = self._resolve_artifact_payload(
+                payload = await self._resolve_artifact_payload(
                     artifact_ref.model_dump(exclude_none=True), user_id, thread_id,
                 )
                 if payload is None:
@@ -487,7 +487,7 @@ class ChatStreamService:
 
         if artifact_refs:
             for ref in artifact_refs:
-                payload = self._resolve_artifact_payload(ref, user_id, thread_id)
+                payload = await self._resolve_artifact_payload(ref, user_id, thread_id)
                 if payload is None:
                     continue
                 if artifacts is not None and payload not in artifacts:
@@ -508,21 +508,21 @@ class ChatStreamService:
                 },
             )
 
-    def _resolve_artifact_payload(
+    async def _resolve_artifact_payload(
         self,
         ref: dict[str, Any],
         user_id: str,
         thread_id: str,
     ) -> dict[str, Any] | None:
-        """Table artifacts live in the ephemeral in-memory artifact_store and
-        need ownership claimed on first sight. Chart-backed artifact types
+        """Table artifacts are claimed (and, per T39, durably persisted to
+        Postgres) on first sight here. Chart-backed artifact types
         (map/comparison/timeseries) are already fully formed by
         artifact_registry and persisted durably alongside the chart payload
         that carries them — pass them through as-is."""
         if ref.get("type") != "table":
             return ref
         try:
-            claimed = artifact_store.claim(ref["id"], user_id, thread_id)
+            claimed = await artifact_store.claim(ref["id"], user_id, thread_id)
         except KeyError:
             logger.warning(
                 "artifact_ref_missing",
@@ -550,7 +550,7 @@ class ChatStreamService:
                     if event is not None:
                         events.append(event)
                 for artifact in structured_result.artifacts:
-                    payload = self._resolve_artifact_payload(
+                    payload = await self._resolve_artifact_payload(
                         artifact.model_dump(exclude_none=True), user_id, thread_id,
                     )
                     if payload is None:
