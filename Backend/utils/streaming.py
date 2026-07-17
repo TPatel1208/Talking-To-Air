@@ -80,8 +80,15 @@ def emit_job_progress(
     progress=None,
     phase: str | None = None,
     message: str | None = None,
+    note: str | None = None,
 ) -> None:
-    """Emit a structured retrieval-job progress event for the active SSE stream."""
+    """Emit a structured retrieval-job progress event for the active SSE stream.
+
+    ``note`` is an additive plain-language line the jobs panel renders under
+    the row (today: the provider-paused guidance from
+    services.retrieval_composites.annotate_paused). Always present in the
+    payload — a later event without one must clear a stale note when the
+    frontend merges events into its row."""
     emitter = _job_progress_emitter.get()
     if emitter:
         emitter({
@@ -90,6 +97,7 @@ def emit_job_progress(
             "progress": progress,
             "phase": phase,
             "message": message,
+            "note": note,
         })
 
 

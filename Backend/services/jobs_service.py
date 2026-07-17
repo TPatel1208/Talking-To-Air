@@ -16,7 +16,7 @@ from typing import Any
 from langchain_core.tools import BaseTool
 
 from earthdata_mcp.results import parse_tool_result
-from services.retrieval_composites import TERMINAL_STATUSES
+from services.retrieval_composites import TERMINAL_STATUSES, annotate_paused
 
 # Cap the get_retrieval_status fan-out: a workspace accumulates jobs over its
 # lifetime (hundreds in practice) and the panel refetches the whole list on
@@ -54,9 +54,13 @@ async def list_jobs(tools: dict[str, BaseTool]) -> list[dict[str, Any]]:
     async def status_for(entry: dict[str, Any]) -> dict[str, Any]:
         async with semaphore:
             try:
-                return parse_tool_result(
+                # annotate_paused: a Harmony-auto-paused job reports as
+                # "running" forever (the MCP maps paused -> running); the
+                # panel must show it as paused-with-guidance, not an
+                # eternally processing row.
+                return annotate_paused(parse_tool_result(
                     await status_tool.ainvoke({"job_handle": entry["job_handle"]})
-                )
+                ))
             # Broad by design: this is the fault-isolation boundary the
             # docstring promises. MCPToolError covers responses the adapter
             # classifies; anything else (a transport error, a malformed

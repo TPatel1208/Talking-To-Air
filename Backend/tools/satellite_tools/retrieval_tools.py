@@ -84,6 +84,12 @@ def make_await_retrieval(mcp_tools: dict[str, BaseTool]):
         handle on success. A failed/cancelled job is returned, not raised —
         report its message to the researcher verbatim.
 
+        A status of "paused" means the data provider paused the job (usually
+        because the request was too large) and it will NOT finish on its own.
+        Do not call await_retrieval on it again — relay the returned note to
+        the researcher and suggest narrowing the time range or area (they can
+        cancel the paused job from the Jobs panel).
+
         Args:
             job_handle : job_ handle returned by safe_retrieve.
         """

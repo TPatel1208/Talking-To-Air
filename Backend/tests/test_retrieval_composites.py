@@ -162,6 +162,138 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(stage_events), 3)
         self.assertEqual([s["detail"] for s in stage_events], [0, 40, 100])
 
+    async def test_await_retrieval_surfaces_a_provider_paused_job_instead_of_polling_to_timeout(self):
+        """Live 2026-07-16 (job_142cbb2faa6aecc0): Harmony auto-paused a
+        multi-month retrieval at 0% and the MCP kept reporting status
+        "running" (its status mapper folds "paused" into RUNNING) with the
+        provider's paused text only in `message`. await_retrieval must stop
+        polling and return an honest "paused" status with guidance — not
+        narrate an ever-climbing timer until the timeout."""
+        from services.retrieval_composites import await_retrieval
+
+        calls = {"n": 0}
+
+        async def get_retrieval_status(job_handle, workspace_id):
+            calls["n"] += 1
+            return {
+                "job_handle": "job_paused",
+                "status": "running",
+                "progress": 0,
+                "phase": "processing",
+                "message": "The job is paused and may be resumed using the provided link",
+            }
+
+        tools, settings = await self._tools({"get_retrieval_status": get_retrieval_status})
+        settings = self._fast_settings(settings)
+
+        seen = []
+        import utils.streaming as streaming
+
+        token = streaming._job_progress_emitter.set(lambda data: seen.append(data))
+        try:
+            result = await await_retrieval("job_paused", tools, settings=settings)
+        finally:
+            streaming._job_progress_emitter.reset(token)
+
+        self.assertEqual(result["status"], "paused")
+        self.assertEqual(result["phase"], "paused at provider")
+        self.assertIn("narrow", result["note"].lower())
+        # One poll was enough — no spin until the timeout.
+        self.assertEqual(calls["n"], 1)
+        # The jobs panel heard about the pause too, guidance included.
+        self.assertEqual(seen[-1]["status"], "paused")
+        self.assertIn("cancel", seen[-1]["note"].lower())
+
+    async def test_await_retrieval_does_not_mistake_a_terminal_message_mentioning_paused(self):
+        """A failed job whose provider message happens to contain the word
+        "paused" must stay failed — annotation only rescues non-terminal
+        statuses."""
+        from services.retrieval_composites import await_retrieval
+
+        async def get_retrieval_status(job_handle, workspace_id):
+            return {
+                "job_handle": "job_f",
+                "status": "failed",
+                "message": "job was paused and then failed upstream",
+            }
+
+        tools, settings = await self._tools({"get_retrieval_status": get_retrieval_status})
+        settings = self._fast_settings(settings)
+
+        result = await await_retrieval("job_f", tools, settings=settings)
+
+        self.assertEqual(result["status"], "failed")
+        self.assertNotIn("note", result)
+
+    async def test_await_retrieval_survives_transient_status_poll_failures(self):
+        """A single network blip during a 15-minute Harmony job used to throw
+        away the whole await — the agent reported failure while the job
+        completed unobserved at the provider. A transient provider_unavailable
+        poll outcome must be retried (bounded), not surfaced."""
+        from services.retrieval_composites import await_retrieval
+
+        calls = {"n": 0}
+
+        async def get_retrieval_status(job_handle, workspace_id):
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                # The MCP's own upstream call dying mid-poll arrives as prose
+                # the classifier maps to provider_unavailable (results.py's
+                # _TRANSIENT_NETWORK_PATTERNS).
+                raise ValueError("All connection attempts failed")
+            return {"job_handle": "job_flaky", "status": "ready", "obs_handle": "obs_flaky"}
+
+        tools, settings = await self._tools({"get_retrieval_status": get_retrieval_status})
+        settings = self._fast_settings(settings)
+
+        result = await await_retrieval("job_flaky", tools, settings=settings)
+
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(result["obs_handle"], "obs_flaky")
+        self.assertEqual(calls["n"], 3)
+
+    async def test_await_retrieval_gives_up_after_persistent_poll_failures(self):
+        # Bounded, not infinite: a genuinely down MCP must still surface as
+        # the classified provider_unavailable error, not retry forever.
+        from earthdata_mcp.results import MCPToolError
+        from services.retrieval_composites import POLL_TRANSIENT_FAILURE_LIMIT, await_retrieval
+
+        calls = {"n": 0}
+
+        async def get_retrieval_status(job_handle, workspace_id):
+            calls["n"] += 1
+            raise ValueError("All connection attempts failed")
+
+        tools, settings = await self._tools({"get_retrieval_status": get_retrieval_status})
+        settings = self._fast_settings(settings)
+
+        with self.assertRaises(MCPToolError) as ctx:
+            await await_retrieval("job_down", tools, settings=settings)
+
+        self.assertEqual(ctx.exception.category, "provider_unavailable")
+        self.assertEqual(calls["n"], POLL_TRANSIENT_FAILURE_LIMIT + 1)
+
+    async def test_await_retrieval_does_not_retry_a_non_transient_poll_error(self):
+        # Only transient outages are retried — a contract-class failure (a
+        # malformed request, a backend bug) must fail loud on the first poll.
+        from earthdata_mcp.results import MCPToolError
+        from services.retrieval_composites import await_retrieval
+
+        calls = {"n": 0}
+
+        async def get_retrieval_status(job_handle, workspace_id):
+            calls["n"] += 1
+            raise ValueError("1 validation error for get_retrieval_status")
+
+        tools, settings = await self._tools({"get_retrieval_status": get_retrieval_status})
+        settings = self._fast_settings(settings)
+
+        with self.assertRaises(MCPToolError) as ctx:
+            await await_retrieval("job_bug", tools, settings=settings)
+
+        self.assertNotEqual(ctx.exception.category, "provider_unavailable")
+        self.assertEqual(calls["n"], 1)
+
     async def test_await_retrieval_times_out_when_job_never_reaches_terminal_state(self):
         from services.retrieval_composites import RetrievalTimeoutError, await_retrieval
 
@@ -201,6 +333,10 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
         calls = {"retrieve_subset": 0}
 
         async def estimate_retrieval_size(dataset_handle, aoi_handle, time_range, workspace_id):
+            # None models an estimator that couldn't price the request — the
+            # response simply carries no estimated_bytes field at all.
+            if estimated_bytes is None:
+                return {}
             return {"estimated_bytes": estimated_bytes}
 
         async def default_retrieve_subset(dataset_handle, aoi_handle, time_range, variables, output_format, workspace_id):
@@ -482,6 +618,40 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
             variable_choice_registry._pending[result["job_handle"]][0],
             "product/vertical_column_troposphere",
         )
+
+    async def test_safe_retrieve_pauses_for_confirmation_when_size_cannot_be_estimated(self):
+        """A missing estimate must not sail past the caps as if it were zero
+        bytes — "couldn't price it" is not "free". The old
+        ``estimate.get("estimated_bytes", 0)`` submitted unconditionally,
+        making the guardrail silently inert exactly when the estimator was
+        blind."""
+        from services.retrieval_composites import safe_retrieve
+
+        tools, settings, calls = await self._tools_and_settings(estimated_bytes=None)
+
+        result = await safe_retrieve(
+            "dataset_1", "aoi_1", "2024-01-01/2024-01-02", ["no2"], tools, settings=settings
+        )
+
+        self.assertEqual(result["status"], "needs_confirmation")
+        self.assertIsNone(result["estimated_bytes"])
+        self.assertIn("could not estimate", result["message"].lower())
+        self.assertEqual(calls["retrieve_subset"], 0)
+
+    async def test_safe_retrieve_proceeds_without_an_estimate_once_confirmed(self):
+        # The researcher can still say "go ahead" — the bundle-open size gate
+        # (services/open_handle.py) remains the backstop at open time.
+        from services.retrieval_composites import safe_retrieve
+
+        tools, settings, calls = await self._tools_and_settings(estimated_bytes=None)
+
+        result = await safe_retrieve(
+            "dataset_1", "aoi_1", "2024-01-01/2024-01-02", ["no2"], tools, settings=settings, confirmed=True
+        )
+
+        self.assertEqual(result["status"], "submitted")
+        self.assertIsNone(result["estimated_bytes"])
+        self.assertEqual(calls["retrieve_subset"], 1)
 
     async def test_safe_retrieve_refuses_above_hard_cap_even_if_confirmed(self):
         from services.retrieval_composites import safe_retrieve

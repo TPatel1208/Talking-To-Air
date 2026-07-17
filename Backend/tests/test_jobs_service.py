@@ -82,6 +82,40 @@ class ListJobsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(by_handle["job_2"]["status"], "processing")
         self.assertEqual(by_handle["job_2"]["progress"], 40)
 
+    async def test_list_jobs_surfaces_a_provider_paused_job_as_paused_with_guidance(self):
+        """Live 2026-07-16 (job_142cbb2faa6aecc0): a Harmony auto-paused job
+        reports status "running" from the MCP forever, with the pause visible
+        only in the provider message. The panel row must say paused (with the
+        cancel-and-narrow note), not "Processing — 0%" indefinitely."""
+        from services.jobs_service import list_jobs
+
+        async def list_workspace(workspace_id):
+            return {
+                "handles": [
+                    {"handle": "job_paused", "type": "job", "created_at": "2026-07-16T00:00:00Z", "summary": {}},
+                ]
+            }
+
+        async def get_retrieval_status(job_handle, workspace_id):
+            return {
+                "job_handle": "job_paused",
+                "status": "running",
+                "progress": 0,
+                "phase": "processing",
+                "message": "The job is paused and may be resumed using the provided link",
+            }
+
+        tools = await self._tools({
+            "list_workspace": list_workspace,
+            "get_retrieval_status": get_retrieval_status,
+        })
+
+        jobs = await list_jobs(tools)
+
+        self.assertEqual(jobs[0]["status"], "paused")
+        self.assertEqual(jobs[0]["phase"], "paused at provider")
+        self.assertIn("cancel", jobs[0]["note"].lower())
+
     async def test_list_jobs_sorts_active_jobs_first_then_newest_first_within_each_group(self):
         from services.jobs_service import list_jobs
 
