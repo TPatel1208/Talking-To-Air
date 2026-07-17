@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import uuid
 import json
 from typing import Any
@@ -9,8 +10,30 @@ from psycopg.types.json import Jsonb
 from utils.db import pg_connection
 
 
+def _sanitize_non_finite(value: Any) -> Any:
+    """Clamp non-finite floats (inf/-inf/nan) to None, recursively.
+
+    Postgres `json`/`jsonb` only accepts RFC-compliant JSON, but Python's
+    serialiser happily emits the literal tokens ``Infinity``/``-Infinity``/
+    ``NaN`` — so any payload carrying a non-finite float (e.g. the
+    ``valid_max: .inf`` "no upper bound" sentinel collections.yaml pins for
+    the HCHO products) crashed the INSERT with ``invalid input syntax for
+    type json``. This is the single persistence boundary for chart payloads,
+    so sanitising here protects every current and future payload shape.
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _sanitize_non_finite(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_non_finite(v) for v in value]
+    return value
+
+
 async def save_chart(thread_id: str, payload: dict[str, Any], user_id: str) -> dict[str, Any]:
-    stored_payload = dict(payload)
+    # Sanitise before the id hash below too, so a payload that differs only
+    # by inf-vs-null dedupes to the same chart_id.
+    stored_payload = _sanitize_non_finite(dict(payload))
     # Callers that already minted an id up front (T06 artifact-typed plot
     # payloads, so the id is stable and visible to the LLM before this ever
     # persists) win over the content-hash id generic chart payloads get.

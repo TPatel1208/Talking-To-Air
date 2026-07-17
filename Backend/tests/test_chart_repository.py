@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import sys
@@ -80,6 +81,73 @@ class SaveChartIdSelectionTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(stored["chart_id"], "map_abc123")
+
+
+class SaveChartNonFiniteSanitisationTests(unittest.IsolatedAsyncioTestCase):
+    """Postgres `json`/`jsonb` rejects the literal `Infinity`/`-Infinity`/`NaN`
+    tokens Python's json serialiser happily emits for non-finite floats.
+
+    Regression for the HCHO crash: collections.yaml pins `valid_max: .inf`
+    ("no upper bound") for TEMPO_HCHO/OMHCHOd, which flowed via
+    plot_tools._variable_definition into the chart payload and blew up the
+    INSERT with `invalid input syntax for type json ... Token "Infinity"`.
+    save_chart is the persistence boundary, so it must clamp non-finite
+    floats to null for ANY payload, not just HCHO's valid_ranges.
+    """
+
+    async def test_payload_with_non_finite_floats_persists_as_valid_json_with_nulls(self):
+        from repositories import chart_repository
+
+        conn = MagicMock()
+        conn.execute = AsyncMock()
+        conn.commit = AsyncMock()
+
+        payload = {
+            "type": "heatmap",
+            "provenance": {
+                "variable_definition": {
+                    "valid_ranges": {"min": 0.0, "max": float("inf")},
+                },
+            },
+            "stats": {"values": [float("-inf"), float("nan"), 1.5]},
+            "metadata": {"vmax": float("inf"), "name": "hcho"},
+        }
+
+        with patch("repositories.chart_repository.pg_connection", _fake_pg_connection(conn)):
+            stored = await chart_repository.save_chart("thread-1", payload, "user-1")
+
+        # The exact property Postgres enforces: RFC-compliant JSON. A dump
+        # with allow_nan=False raises ValueError if any Infinity/NaN token
+        # would reach the jsonb column.
+        args = conn.execute.await_args.args[1]
+        jsonb_payload, jsonb_metadata = args[3], args[4]
+        json.dumps(jsonb_payload.obj, allow_nan=False)
+        json.dumps(jsonb_metadata.obj, allow_nan=False)
+
+        # inf/-inf/nan are clamped to null; finite values survive untouched.
+        ranges = stored["provenance"]["variable_definition"]["valid_ranges"]
+        self.assertIsNone(ranges["max"])
+        self.assertEqual(ranges["min"], 0.0)
+        self.assertEqual(stored["stats"]["values"], [None, None, 1.5])
+        self.assertIsNone(stored["metadata"]["vmax"])
+        self.assertEqual(stored["metadata"]["name"], "hcho")
+
+    async def test_sanitised_payloads_still_dedupe_to_the_same_hash_id(self):
+        from repositories import chart_repository
+
+        conn = MagicMock()
+        conn.execute = AsyncMock()
+        conn.commit = AsyncMock()
+
+        with patch("repositories.chart_repository.pg_connection", _fake_pg_connection(conn)):
+            with_inf = await chart_repository.save_chart(
+                "thread-1", {"type": "heatmap", "vmax": float("inf")}, "user-1"
+            )
+            with_null = await chart_repository.save_chart(
+                "thread-1", {"type": "heatmap", "vmax": None}, "user-1"
+            )
+
+        self.assertEqual(with_inf["chart_id"], with_null["chart_id"])
 
 
 if __name__ == "__main__":
