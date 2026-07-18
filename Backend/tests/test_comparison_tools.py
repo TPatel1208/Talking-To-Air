@@ -60,6 +60,43 @@ class VariableMismatchTests(unittest.TestCase):
     any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
     "comparison-tool dependencies are not installed",
 )
+class UnitsMismatchTests(unittest.TestCase):
+    def test_equal_units_are_not_a_mismatch(self):
+        import xarray as xr
+        from tools.satellite_tools.comparison_tools import _units_mismatch_error
+
+        da_a = xr.DataArray([1.0], name="no2", attrs={"units": "mol/m^2"})
+        da_b = xr.DataArray([2.0], name="no2", attrs={"units": "mol/m^2"})
+
+        self.assertIsNone(_units_mismatch_error(da_a, da_b))
+
+    def test_absent_units_on_either_side_are_not_a_mismatch(self):
+        import xarray as xr
+        from tools.satellite_tools.comparison_tools import _units_mismatch_error
+
+        da_a = xr.DataArray([1.0], name="no2", attrs={"units": "mol/m^2"})
+        da_b = xr.DataArray([2.0], name="no2")  # no units attr at all
+
+        self.assertIsNone(_units_mismatch_error(da_a, da_b))
+
+    def test_different_units_are_rejected_naming_both(self):
+        import xarray as xr
+        from tools.satellite_tools.comparison_tools import _units_mismatch_error
+
+        da_a = xr.DataArray([1.0], name="vertical_column_troposphere", attrs={"units": "molec/cm^2"})
+        da_b = xr.DataArray([2.0], name="vertical_column_troposphere", attrs={"units": "mol/m^2"})
+
+        error = _units_mismatch_error(da_a, da_b)
+
+        self.assertIsNotNone(error)
+        self.assertIn("molec/cm^2", error)
+        self.assertIn("mol/m^2", error)
+
+
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
+    "comparison-tool dependencies are not installed",
+)
 class DifferenceTests(unittest.TestCase):
     def test_difference_is_period_b_minus_period_a(self):
         import xarray as xr
@@ -136,6 +173,61 @@ class AnomalyStatsTests(unittest.TestCase):
         self.assertAlmostEqual(stats["area_exceeding_threshold"]["fraction"], 0.5)
         self.assertEqual(stats["area_exceeding_threshold"]["threshold"], 5.0)
 
+    def test_percent_change_is_reported_when_the_baseline_clears_the_floor(self):
+        import numpy as np
+        import xarray as xr
+        from tools.satellite_tools.comparison_tools import (
+            _PERCENT_CHANGE_FLOOR_FRACTION,
+            _anomaly_stats,
+            _difference,
+        )
+
+        # A spans 1..101 (mean ~51); its own 2–98th-percentile range is wide,
+        # so the floor is a few units and the sizeable mean clears it easily.
+        a_vals = np.arange(1.0, 102.0)
+        da_a = xr.DataArray(a_vals, dims=("x",))
+        da_b = xr.DataArray(a_vals + a_vals, dims=("x",))  # b = 2a -> +100%
+        diff = _difference(da_a, da_b)
+
+        spread = float(np.percentile(a_vals, 98) - np.percentile(a_vals, 2))
+        floor = _PERCENT_CHANGE_FLOOR_FRACTION * spread
+        self.assertGreater(abs(a_vals.mean()), floor)  # baseline clears the floor
+
+        stats = _anomaly_stats(da_a, da_b, diff, threshold=None)
+
+        self.assertAlmostEqual(stats["percent_change"], 100.0)
+        self.assertNotIn("percent_change_note", stats)
+
+    def test_percent_change_is_withheld_with_a_note_when_the_baseline_is_below_the_floor(self):
+        import numpy as np
+        import xarray as xr
+        from tools.satellite_tools.comparison_tools import (
+            _PERCENT_CHANGE_FLOOR_FRACTION,
+            _anomaly_stats,
+            _difference,
+        )
+
+        # A is ~symmetric about zero (mean a hair above zero) but has a wide
+        # magnitude range -- the anomaly-field case where a tiny baseline would
+        # otherwise explode the percentage. b is a small constant shift, so the
+        # mean difference is real and finite.
+        a_vals = np.arange(-50.0, 51.0) + 1.0  # -49..51, mean = 1.0
+        da_a = xr.DataArray(a_vals, dims=("x",))
+        da_b = xr.DataArray(a_vals + 3.0, dims=("x",))
+        diff = _difference(da_a, da_b)
+
+        spread = float(np.percentile(np.abs(a_vals), 98) - np.percentile(np.abs(a_vals), 2))
+        floor = _PERCENT_CHANGE_FLOOR_FRACTION * spread
+        self.assertLess(abs(a_vals.mean()), floor)  # baseline is under the floor
+
+        stats = _anomaly_stats(da_a, da_b, diff, threshold=None)
+
+        # mean_difference is always kept; percent change is the thing withheld.
+        self.assertAlmostEqual(stats["mean_difference"], 3.0)
+        self.assertIsNone(stats["percent_change"])
+        self.assertIn("percent_change_note", stats)
+        self.assertIn("baseline too small", stats["percent_change_note"].lower())
+
 
 @unittest.skipIf(
     any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
@@ -153,6 +245,41 @@ class SplitAlignedTests(unittest.TestCase):
         )
 
         da_a, da_b = _split_aligned(da)
+
+        self.assertEqual(da_a.values.tolist(), [[1.0, 2.0]])
+        self.assertEqual(da_b.values.tolist(), [[10.0, 20.0]])
+
+    def test_prefers_explicit_source_labels_over_position_so_a_reorder_cannot_flip_sign(self):
+        import xarray as xr
+        from tools.satellite_tools.comparison_tools import _split_aligned
+
+        # The MCP stamps the source handles as the `source` coordinate, but in
+        # the *opposite* order from how they were passed. Label selection must
+        # win: A is the array labeled obs_a regardless of its position.
+        da = xr.DataArray(
+            [[[10.0, 20.0]], [[1.0, 2.0]]],
+            dims=("source", "lat", "lon"),
+            coords={"source": ["obs_b", "obs_a"], "lat": [10.0], "lon": [30.0, 40.0]},
+        )
+
+        da_a, da_b = _split_aligned(da, handle_a="obs_a", handle_b="obs_b")
+
+        self.assertEqual(da_a.values.tolist(), [[1.0, 2.0]])   # the obs_a-labeled slice
+        self.assertEqual(da_b.values.tolist(), [[10.0, 20.0]])  # the obs_b-labeled slice
+
+    def test_falls_back_to_positional_order_when_sources_carry_no_handle_labels(self):
+        import xarray as xr
+        from tools.satellite_tools.comparison_tools import _split_aligned
+
+        # Integer source coords (no handle names) -> the MCP input-order
+        # convention: position 0 is A, position 1 is B.
+        da = xr.DataArray(
+            [[[1.0, 2.0]], [[10.0, 20.0]]],
+            dims=("source", "lat", "lon"),
+            coords={"source": [0, 1], "lat": [10.0], "lon": [30.0, 40.0]},
+        )
+
+        da_a, da_b = _split_aligned(da, handle_a="obs_a", handle_b="obs_b")
 
         self.assertEqual(da_a.values.tolist(), [[1.0, 2.0]])
         self.assertEqual(da_b.values.tolist(), [[10.0, 20.0]])

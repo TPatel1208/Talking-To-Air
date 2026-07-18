@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Any
 
@@ -80,6 +81,19 @@ def fill_match(values: Any, fill: Any) -> Any:
     return np.isclose(values, fill_f, rtol=1e-6, atol=1e-9)
 
 
+def _sample_std(a: Any, **kwargs: Any) -> Any:
+    """Sample standard deviation (ddof=1), NaN-aware. Over a handful of
+    granules the values are a *sample* of the field's variability, not the
+    whole population — population std (ddof=0) understates it (~22% low at
+    n=3). A single sample (n=1) has no spread to estimate at all: the honest
+    answer is NaN, so the degenerate-slice RuntimeWarning is suppressed rather
+    than papered over with a fabricated 0.0. Signature mirrors ``np.nanstd``
+    (accepts ``axis=`` from ``xarray.DataArray.reduce``)."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        return np.nanstd(a, ddof=1, **kwargs)
+
+
 def area_weighted_mean(da: xr.DataArray) -> float:
     """Cosine-latitude area-weighted mean over a (lat, lon) field — the ONE
     definition of a regional mean, shared by the statistics tool and the
@@ -134,7 +148,7 @@ class AggregationService:
         "median": np.nanmedian,
         "max": np.nanmax,
         "min": np.nanmin,
-        "std": np.nanstd,
+        "std": _sample_std,
     }
 
     def aggregate(

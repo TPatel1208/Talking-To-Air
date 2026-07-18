@@ -40,6 +40,14 @@ from utils.streaming import emit_status
 
 _aggregation_service = AggregationService()
 
+# Percent change is suppressed when period A's mean is smaller than this
+# fraction of A's own 2–98th-percentile magnitude range — i.e. the baseline is
+# too small, relative to the data's own scale, to normalize by without the
+# percentage exploding. A fraction of the field's own spread (not an absolute
+# constant) keeps the guard scale-free across variables of wildly different
+# magnitudes.
+_PERCENT_CHANGE_FLOOR_FRACTION = 0.05
+
 
 def _difference(da_a, da_b):
     """period B minus period A, cell-by-cell.
@@ -51,21 +59,71 @@ def _difference(da_a, da_b):
     return da_b - da_a
 
 
-def _split_aligned(aligned):
+def _source_labels(aligned) -> list[str] | None:
+    """String values of the ``source`` coordinate, if it carries them — the
+    handles the MCP stamped for each aligned slice. None when there is no
+    ``source`` coordinate to read labels from."""
+    if "source" not in getattr(aligned, "coords", {}):
+        return None
+    return [str(v) for v in np.atleast_1d(aligned["source"].values)]
+
+
+def _aligned_source_order(aligned, handle_a, handle_b):
+    """The (A, B) selectors for pulling the two sources out of the aligned
+    cube. Prefers *label* selection when the ``source`` coordinate stamps both
+    handles (an MCP-side reorder then can't flip which slice is A); falls back
+    to positional order otherwise. Each selector is ``("sel", handle)`` or
+    ``("isel", index)``, applied by ``_apply_source_selector`` — shared by the
+    science DataArray split and the sibling-Dataset split so their per-source
+    pairing can never diverge."""
+    labels = _source_labels(aligned)
+    if handle_a and handle_b and labels is not None and handle_a in labels and handle_b in labels:
+        return ("sel", handle_a), ("sel", handle_b)
+    return ("isel", 0), ("isel", 1)
+
+
+def _apply_source_selector(obj, selector):
+    kind, key = selector
+    return obj.sel(source=key) if kind == "sel" else obj.isel(source=key)
+
+
+def _split_aligned(aligned, handle_a: str | None = None, handle_b: str | None = None):
     """Split the MCP `align` transform's output into its two source arrays.
 
     ``align(source_handles=[a, b])`` grid-aligns >=2 gridded inputs into one
-    cube_ handle; TTA's convention for a two-source align (the MCP's own
-    layout for the merged cube isn't otherwise specified) is a leading
-    ``source`` dimension of length 2, in the same order the handles were
-    passed — ``isel(source=0)`` is A, ``isel(source=1)`` is B.
+    cube_ handle with a leading ``source`` dimension of length 2. Which slice
+    is A vs B is resolved by *label* when the aligned cube stamps the source
+    handles on the ``source`` coordinate (harmony-retrieval-mcp PRD-023) —
+    passing ``handle_a``/``handle_b`` then selects by name, so an MCP-side
+    reorder of the ``source`` dim cannot silently flip every difference sign
+    (the worst wrong answer: the map still looks right).
+
+    Without stamped labels (or without the handles) it falls back to positional
+    order — ``isel(source=0)`` is A, ``isel(source=1)`` is B — which relies on
+    the MCP preserving input order in ``source``. That assumption is pinned by
+    a contract test in the harmony-retrieval-mcp repo
+    (``test_align_preserves_source_order``); this docstring is its TTA-side
+    anchor. Until PRD-023 stamps labels, positional order is the live path.
     """
     if "source" not in aligned.dims:
         raise ValueError(f"Aligned result has no 'source' dimension: dims={list(aligned.dims)}")
     n_sources = aligned.sizes["source"]
     if n_sources != 2:
         raise ValueError(f"Expected an aligned result with 2 sources, found {n_sources}.")
-    return aligned.isel(source=0), aligned.isel(source=1)
+    sel_a, sel_b = _aligned_source_order(aligned, handle_a, handle_b)
+    return _apply_source_selector(aligned, sel_a), _apply_source_selector(aligned, sel_b)
+
+
+def _percent_change_floor(a_paired_vals) -> float | None:
+    """The smallest period-A mean magnitude a percent change may be normalized
+    by: ``_PERCENT_CHANGE_FLOOR_FRACTION`` of |A|'s own 2–98th-percentile
+    range over the paired-valid cells. Returns None when A has no valid cells
+    (nothing to scale against)."""
+    valid = np.abs(a_paired_vals[np.isfinite(a_paired_vals)])
+    if valid.size == 0:
+        return None
+    spread = float(np.percentile(valid, 98) - np.percentile(valid, 2))
+    return _PERCENT_CHANGE_FLOOR_FRACTION * spread
 
 
 def _anomaly_stats(da_a, da_b, diff, threshold: float | None) -> dict:
@@ -77,6 +135,13 @@ def _anomaly_stats(da_a, da_b, diff, threshold: float | None) -> dict:
     Means are cos(latitude) area-weighted (``area_weighted_mean``) — on a
     lat/lon grid an unweighted cell mean over-weights high latitudes, and a
     percent change built from two such means inherits the bias.
+
+    Percent change is withheld (``percent_change=None`` with a
+    ``percent_change_note`` explaining why) when period A's mean is too small,
+    relative to the field's own dynamic range, to normalize by — see
+    ``_percent_change_floor``. Near-zero baselines are routine for anomaly-like
+    fields, and dividing by one yields an absurd "+48,000%" with full
+    confidence. The absolute ``mean_difference`` is always reported regardless.
     """
     diff_vals = np.asarray(diff.values, dtype=float)
     valid_diff = diff_vals[np.isfinite(diff_vals)]
@@ -88,17 +153,28 @@ def _anomaly_stats(da_a, da_b, diff, threshold: float | None) -> dict:
 
     mean_difference = area_weighted_mean(diff) if valid_diff.size else None
     mean_a = area_weighted_mean(a_paired) if np.isfinite(a_paired_vals).any() else None
-    percent_change = (
-        (mean_difference / mean_a) * 100.0
-        if mean_difference is not None and mean_a not in (None, 0.0)
-        else None
-    )
+
+    percent_change = None
+    percent_change_note = None
+    if mean_difference is not None and mean_a is not None:
+        floor = _percent_change_floor(a_paired_vals)
+        if mean_a == 0.0 or (floor is not None and abs(mean_a) < floor):
+            percent_change_note = (
+                "Percent change withheld — baseline too small to normalize by: period A's "
+                f"area-weighted mean ({mean_a:.3g}) is under {_PERCENT_CHANGE_FLOOR_FRACTION:.0%} of "
+                "the field's own 2–98th-percentile range, where a percentage would explode. "
+                "The absolute mean difference is reported instead."
+            )
+        else:
+            percent_change = (mean_difference / mean_a) * 100.0
 
     stats = {
         "n_cells": int(valid_diff.size),
         "mean_difference": mean_difference,
         "percent_change": percent_change,
     }
+    if percent_change_note is not None:
+        stats["percent_change_note"] = percent_change_note
 
     if threshold is not None:
         exceeding = valid_diff[np.abs(valid_diff) >= threshold]
@@ -171,6 +247,27 @@ def _variable_mismatch_error(da_a, da_b) -> str | None:
         return (
             f"Cannot compare different variables: '{name_a}' (A) vs '{name_b}' (B). "
             "compare only supports comparing the same variable across two regions or periods."
+        )
+    return None
+
+
+def _units_mismatch_error(da_a, da_b) -> str | None:
+    """Return an error message if da_a/da_b carry different (non-empty) units,
+    else None.
+
+    ``compare`` differences raw numbers cell-by-cell; two products both naming
+    their column ``vertical_column_troposphere`` but storing it in molec/cm^2
+    vs mol/m^2 would otherwise be differenced as if commensurable, under a
+    single (wrong) unit label. No unit conversion is attempted here (out of
+    scope) -- naming both units is the actionable answer, mirroring
+    ``_variable_mismatch_error``. Absent units on either side can't be checked
+    and are not treated as a mismatch."""
+    units_a = str(da_a.attrs.get("units", "") or "").strip()
+    units_b = str(da_b.attrs.get("units", "") or "").strip()
+    if units_a and units_b and units_a != units_b:
+        return (
+            f"Cannot compare values in different units: '{units_a}' (A) vs '{units_b}' (B). "
+            "compare does not convert units — retrieve both sides in the same units to difference them."
         )
     return None
 
@@ -313,6 +410,10 @@ def make_compare(mcp_tools: dict[str, BaseTool]):
         if mismatch:
             return json.dumps({"error": mismatch})
 
+        units_mismatch = _units_mismatch_error(da_a, da_b)
+        if units_mismatch:
+            return json.dumps({"error": units_mismatch})
+
         empty_a = _empty_overlap_error(da_a, f"{label_a} ({handle_a})")
         if empty_a:
             return json.dumps({"error": empty_a})
@@ -363,7 +464,7 @@ def make_compare(mcp_tools: dict[str, BaseTool]):
             return json.dumps({"error": f"Failed to open the aligned result '{aligned_handle}': {e}"})
 
         try:
-            aligned_a, aligned_b = _split_aligned(aligned_da)
+            aligned_a, aligned_b = _split_aligned(aligned_da, handle_a, handle_b)
         except ValueError as e:
             return json.dumps({"error": f"Grid alignment produced an unusable result: {e}"})
 
@@ -374,7 +475,9 @@ def make_compare(mcp_tools: dict[str, BaseTool]):
         # already-sliced science DataArray doesn't have (T25 masking-
         # execution fix).
         if "source" in aligned_ds.dims:
-            aligned_ds_a, aligned_ds_b = aligned_ds.isel(source=0), aligned_ds.isel(source=1)
+            sel_a, sel_b = _aligned_source_order(aligned_da, handle_a, handle_b)
+            aligned_ds_a = _apply_source_selector(aligned_ds, sel_a)
+            aligned_ds_b = _apply_source_selector(aligned_ds, sel_b)
         else:
             aligned_ds_a = aligned_ds_b = aligned_ds
 

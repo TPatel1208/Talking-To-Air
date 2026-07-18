@@ -17,7 +17,7 @@ import { useEffect, useRef, useState } from 'react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import { nearestCell } from '../utils/heatmapHover.js'
-import { colorbarGeometry } from '../utils/colorbarGeometry.js'
+import { colorbarGeometry, scaleClipNote } from '../utils/colorbarGeometry.js'
 import { buildCanvasFallbackFrame } from '../utils/canvasFallback.js'
 import { fetchUsStatesGeoJSON, isConusBounds } from '../utils/regionBorders.js'
 import { resolveOverlayMode } from '../utils/overlayMode.js'
@@ -153,7 +153,7 @@ function addBorderLayer(map, geojson) {
 }
 
 export default function MapLibreHeatmapPanel({ payload, height = 420, accessToken, colorScaleOverride = null, hideLegend = false }) {
-  const { title, variable, units, vmin, vmax, colormap, overlay, bounds, lats, lons } = payload
+  const { title, variable, units, vmin, vmax, colormap, overlay, bounds, lats, lons, scale } = payload
   const containerRef = useRef(null)
   const mapRef = useRef(null)
   const drawOverlayRef = useRef(null)
@@ -305,6 +305,10 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, accessToke
   }, [colorScaleOverride])
 
   const { gradientStops, ticks } = colorbarGeometry({ vmin: effectiveVmin, vmax: effectiveVmax, lut: effectiveColormap?.lut, tickCount: 5 })
+  // Only disclose the payload's percentile clip when the shown scale is still
+  // the payload's own -- an active colorScaleOverride (compare auto-scale)
+  // replaces vmin/vmax, so that clip no longer describes what's rendered.
+  const clipNote = colorScaleOverride ? null : scaleClipNote(scale)
 
   return (
     <div style={{ width: '100%' }}>
@@ -341,13 +345,13 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, accessToke
           </div>
         )}
 
-        {!hideLegend && <MapColorbar gradientStops={gradientStops} ticks={ticks} units={units} />}
+        {!hideLegend && <MapColorbar gradientStops={gradientStops} ticks={ticks} units={units} clipNote={clipNote} />}
       </div>
     </div>
   )
 }
 
-function MapColorbar({ gradientStops, ticks, units }) {
+function MapColorbar({ gradientStops, ticks, units, clipNote }) {
   if (!gradientStops.length) return null
   const gradientId = 'tta-colorbar-gradient'
   return (
@@ -382,6 +386,11 @@ function MapColorbar({ gradientStops, ticks, units }) {
       </div>
       {units && (
         <div style={{ fontSize: '9px', color: '#555', textAlign: 'center', marginTop: 2 }}>{units}</div>
+      )}
+      {clipNote && (
+        <div style={{ fontSize: '8px', color: '#777', textAlign: 'center', marginTop: 2, fontStyle: 'italic' }}>
+          {clipNote}
+        </div>
       )}
     </div>
   )

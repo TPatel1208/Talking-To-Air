@@ -158,6 +158,40 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         expected = tuple(resolve("NO2").lut[128])  # 5.0 is the midpoint of [0, 10]
         self.assertEqual(pixel, expected)
 
+    def test_percentile_derived_bounds_stamp_a_percentile_scale_the_legend_can_disclose(self):
+        import numpy as np
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import _da_to_heatmap_payload
+
+        da = xr.DataArray(
+            np.linspace(0.0, 1.0, 12).reshape(3, 4),
+            dims=("lat", "lon"),
+            coords={"lat": np.linspace(10, 20, 3), "lon": np.linspace(-100, -90, 4)},
+        )
+
+        payload = _da_to_heatmap_payload(da, "Auto", "NO2", "mol/m^2")
+
+        # The vmin/vmax came from the 2nd–98th percentile clip -> the legend
+        # can honestly say the extremes are saturated.
+        self.assertEqual(payload["scale"], {"method": "percentile", "p": [2, 98]})
+
+    def test_explicit_value_range_stamps_an_explicit_scale(self):
+        import numpy as np
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import _da_to_heatmap_payload
+
+        da = xr.DataArray(
+            np.full((6, 8), 5.0),
+            dims=("lat", "lon"),
+            coords={"lat": np.linspace(10, 20, 6), "lon": np.linspace(-100, -90, 8)},
+        )
+
+        # A caller-imposed shared/diverging scale (comparison panels) is not a
+        # percentile clip of this array -> no clip disclosure.
+        payload = _da_to_heatmap_payload(da, "Shared", "NO2", "mol/m^2", value_range=(0.0, 10.0))
+
+        self.assertEqual(payload["scale"], {"method": "explicit"})
+
     def test_render_overlay_true_persists_a_png_and_records_its_path(self):
         import os
         import numpy as np

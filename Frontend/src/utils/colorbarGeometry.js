@@ -22,3 +22,21 @@ export function colorbarGeometry({ vmin, vmax, lut, tickCount = 5 }) {
 function rgbaToCss([r, g, b, a = 255]) {
   return `rgba(${r}, ${g}, ${b}, ${(a / 255).toFixed(3)})`
 }
+
+// A one-line disclosure for the legend when the color scale is a percentile
+// clip (T43): the extreme tails are saturated, so a reader must not mistake
+// the colored range for the data's true min/max. Returns null for a
+// caller-imposed (explicit) scale — which is not a clip of this field — and
+// for older payloads carrying no `scale` at all.
+export function scaleClipNote(scale) {
+  if (!scale || scale.method !== 'percentile') return null
+  const p = Array.isArray(scale.p) && scale.p.length === 2 ? scale.p : [2, 98]
+  return `Color scale clipped at ${ordinal(p[0])}–${ordinal(p[1])} percentile`
+}
+
+function ordinal(n) {
+  const rem100 = n % 100
+  if (rem100 >= 11 && rem100 <= 13) return `${n}th`
+  const suffix = { 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] || 'th'
+  return `${n}${suffix}`
+}

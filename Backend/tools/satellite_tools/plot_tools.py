@@ -225,6 +225,12 @@ def _da_to_heatmap_payload(
     # same range, or the rendered map and its legend would disagree about
     # what a color means (T23's anti-drift guarantee).
     vmin, vmax = value_range if value_range is not None else _percentile_bounds(arr)
+    # Disclose how the color scale was set so the legend can be honest about
+    # saturation (T43): a percentile clip saturates the extreme 2%/98% tails,
+    # which a reader must not mistake for the data's true range. An explicitly
+    # passed range (a shared/diverging comparison scale) is the caller's own
+    # choice, not a clip of this array -> nothing to disclose.
+    scale = {"method": "explicit"} if value_range is not None else {"method": "percentile", "p": [2, 98]}
 
     lats_out = da[lat_coord].values
     lons_out = da[lon_coord].values
@@ -268,6 +274,7 @@ def _da_to_heatmap_payload(
         "points":   points,
         "vmin": float(f"{vmin:.6e}"),
         "vmax": float(f"{vmax:.6e}"),
+        "scale": scale,
         "colormap": {"name": colormap.name, "lut": colormap.lut},
         "overlay": overlay,
     }

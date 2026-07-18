@@ -70,9 +70,31 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertEqual(float(service.aggregate(da, stat="max", col_info=self.col_info).ds["no2"].values[0, 1]), 7.0)
         self.assertEqual(float(service.aggregate(da, stat="min", col_info=self.col_info).ds["no2"].values[0, 1]), 3.0)
         self.assertEqual(float(service.aggregate(da, stat="median", col_info=self.col_info).ds["no2"].values[0, 0]), 3.0)
-        self.assertAlmostEqual(float(service.aggregate(da, stat="std", col_info=self.col_info).ds["no2"].values[0, 0]), 2.0)
+        # Sample std (ddof=1) over the two granules [1, 5]: sqrt(((1-3)^2 +
+        # (5-3)^2) / (2-1)) = sqrt(8). Population std (ddof=0) would understate
+        # this as 2.0 — few-granule variability is a *sample*, not the whole.
+        self.assertAlmostEqual(
+            float(service.aggregate(da, stat="std", col_info=self.col_info).ds["no2"].values[0, 0]),
+            self.np.sqrt(8.0),
+        )
         with self.assertRaises(ValueError):
             service.aggregate(da, stat="mode", col_info=self.col_info)
+
+    def test_sample_std_of_a_single_granule_is_nan_not_a_fabricated_zero(self):
+        """n=1 has no sample spread to estimate: ddof=1 makes the honest answer
+        NaN, not the 0.0 that ddof=0 would fabricate (and never a crash)."""
+        from preprocessing.aggregation_service import AggregationService
+
+        da = self.xr.DataArray(
+            self.np.array([[[5.0, 5.0]]]),
+            dims=("time", "lat", "lon"),
+            coords={"time": ["2024-01-01"], "lat": [40.0], "lon": [-75.0, -74.0]},
+            name="no2",
+        )
+
+        result = AggregationService().aggregate(da, stat="std", col_info=self.col_info)
+
+        self.assertTrue(self.np.isnan(float(result.ds["no2"].values[0, 0])))
 
     def test_apply_quality_mask_falls_back_to_dataset_attrs_when_col_info_empty(self):
         from preprocessing.aggregation_service import AggregationService
