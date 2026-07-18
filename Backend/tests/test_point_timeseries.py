@@ -173,6 +173,83 @@ class PointTimeseriesToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.aoi_calls, [])
         self.assertEqual(self.submit_calls, [])
 
+    async def _build_tool_with(self, *, define_area_of_interest, retrieve_timeseries):
+        from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
+        from earthdata_mcp.client import load_raw_mcp_tools
+        from config.settings import Settings
+        from tools.satellite_tools.factory import build_satellite_tools
+
+        server = FakeEarthdataMCPServer(build_fake_mcp({
+            "define_area_of_interest": define_area_of_interest,
+            "retrieve_timeseries": retrieve_timeseries,
+            "get_retrieval_status": self.volume.get_retrieval_status,
+            "export_result": self.volume.export_result,
+            "rematerialize": self.volume.rematerialize,
+        }))
+        server.start()
+        self.addCleanup(server.stop)
+        settings = Settings(earthdata_mcp_url=server.url, earthdata_mcp_token=None)
+        mcp_tools = await load_raw_mcp_tools(settings)
+        return {t.name: t for t in build_satellite_tools(mcp_tools)}["point_timeseries"]
+
+    async def test_missing_aoi_handle_is_a_classified_contract_error_not_a_silent_none(self):
+        """T44 story #4: an AOI response with no handle used to flow on as
+        None into the submit call. Off-taxonomy that's a contract violation the
+        agent should be able to explain — classify it, name the tool, and don't
+        submit a retrieval against a null AOI."""
+        submitted = []
+
+        async def define_area_of_interest(location, workspace_id):
+            return {}  # no handle / aoi_handle
+
+        async def retrieve_timeseries(**kwargs):
+            submitted.append(kwargs)
+            return {"job_handle": "job_x"}
+
+        tool = await self._build_tool_with(
+            define_area_of_interest=define_area_of_interest,
+            retrieve_timeseries=retrieve_timeseries,
+        )
+        result = await tool.ainvoke({
+            "dataset_handle": "dataset_1",
+            "location": "Newark, NJ",
+            "time_range": "2024-01-01/2024-01-31",
+            "variable": "no2",
+        })
+        payload = json.loads(result)
+
+        self.assertIn("error", payload)
+        self.assertEqual(payload["error"]["category"], "contract")
+        self.assertIn("define_area_of_interest", payload["error"]["message"])
+        self.assertEqual(submitted, [])  # never submitted against a null AOI
+
+    async def test_missing_job_handle_is_a_classified_contract_error_not_a_bare_keyerror(self):
+        """A submit response with no job_handle used to KeyError off-taxonomy.
+        It must be a classified contract error naming the tool and the absent
+        field instead."""
+        async def define_area_of_interest(location, workspace_id):
+            return {"handle": "aoi_1", "location": location}
+
+        async def retrieve_timeseries(**kwargs):
+            return {}  # no job_handle
+
+        tool = await self._build_tool_with(
+            define_area_of_interest=define_area_of_interest,
+            retrieve_timeseries=retrieve_timeseries,
+        )
+        result = await tool.ainvoke({
+            "dataset_handle": "dataset_1",
+            "location": "Newark, NJ",
+            "time_range": "2024-01-01/2024-01-31",
+            "variable": "no2",
+        })
+        payload = json.loads(result)
+
+        self.assertIn("error", payload)
+        self.assertEqual(payload["error"]["category"], "contract")
+        self.assertIn("retrieve_timeseries", payload["error"]["message"])
+        self.assertIn("job_handle", payload["error"]["message"])
+
     async def test_surfaces_a_failed_job_message(self):
         async def failing_get_retrieval_status(job_handle, workspace_id):
             return {"job_handle": job_handle, "status": "failed", "message": "appeears: provider rejected request"}

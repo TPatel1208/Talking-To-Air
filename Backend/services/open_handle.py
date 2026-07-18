@@ -349,12 +349,13 @@ def _open_netcdf_bundle(path: str) -> Any:
         return members[0]
     normalized = [_strip_concat_unsafe_coord_attrs(ds) for ds in members]
     try:
-        return xr.concat(normalized, dim="time")
+        combined = xr.concat(normalized, dim="time")
     except Exception as exc:
         raise OpenHandleError(
             f"Could not combine the {len(members)} granules in bundle '{path}' onto a "
             f"shared time axis: {exc}"
         )
+    return _order_bundle_time(combined, path)
 
 
 def _gate_bundle_size(zf: Any, path: str) -> None:
@@ -458,6 +459,48 @@ def _prune_extract_cache(root: str, ttl_seconds: float = _EXTRACT_CACHE_TTL_SECO
                 shutil.rmtree(entry.path, ignore_errors=True)
         except OSError:
             continue
+
+
+def _order_bundle_time(ds: Any, path: str) -> Any:
+    """Put a concatenated bundle onto a monotonic, duplicate-free time axis.
+
+    The members were concatenated in filename order on the MCP's assumption
+    that "names sort chronologically". Two failures follow from trusting it:
+
+    - A provider whose names don't sort against their dates leaves a
+      non-monotonic ``time`` axis, and a later ``sel(time=slice(...))``
+      silently returns the wrong subset. Sorting by the decoded timestamps
+      makes ordering independent of the naming scheme.
+    - Overlapping orbits and reprocessed granules can carry *identical*
+      timestamps, which double-count that granule in a mean and break
+      ``sel(time=...)`` with an opaque non-unique-index error. Keep the first
+      occurrence (in the original name order, so the choice is deterministic)
+      and disclose the drop in a ``bundle_duplicate_timestamps`` event.
+
+    No-op when there is no ``time`` coordinate to order by."""
+    import numpy as np
+
+    if "time" not in ds.coords or "time" not in ds.dims:
+        return ds
+
+    # De-duplicate in the current (name) order so keep-first is deterministic,
+    # *then* sort — sorting first would make "first" depend on argsort's
+    # tie-breaking among equal timestamps.
+    times = np.asarray(ds["time"].values)
+    _, first_idx = np.unique(times, return_index=True)
+    if first_idx.size != times.size:
+        keep = np.sort(first_idx)  # preserve name order among the survivors
+        logger.info(
+            "bundle_duplicate_timestamps",
+            extra={
+                "_event": "bundle_duplicate_timestamps",
+                "_duplicate_count": int(times.size - first_idx.size),
+                "_kept": int(first_idx.size),
+                "_path": path,
+            },
+        )
+        ds = ds.isel(time=keep)
+    return ds.sortby("time")
 
 
 def _synthesize_member_time_coord(ds: Any) -> Any:

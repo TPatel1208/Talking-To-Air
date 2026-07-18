@@ -71,6 +71,47 @@ class MaskGridSupportTests(unittest.TestCase):
         self.assertIn("projected", ctx.exception.message.lower())
         self.assertIn("lambert_conformal_conic", ctx.exception.message)
 
+    def test_non_uniform_1d_grid_raises_typed_unsupported_error(self):
+        # T44 story #1: geometry_mask derives ONE resolution from the axis
+        # endpoints, so a 1-D grid whose spacing varies gets a progressively
+        # misplaced mask — wrong pixels in the statistics, no error. Refuse it
+        # with the typed unsupported_grid contract instead of mis-masking.
+        da = xr.DataArray(
+            np.ones((4, 2)),
+            dims=("latitude", "longitude"),
+            coords={
+                # 40, 41, 42, 50 — the last gap (8°) is nothing like the 1° steps.
+                "latitude": ("latitude", [40.0, 41.0, 42.0, 50.0], {"units": "degrees_north"}),
+                "longitude": ("longitude", [-75.0, -74.0], {"units": "degrees_east"}),
+            },
+        )
+
+        with self.assertRaises(MCPToolError) as ctx:
+            mask_data_by_geometry(da, box(-76, 39, -73, 52))
+
+        self.assertEqual(ctx.exception.category, CATEGORY_UNSUPPORTED_GRID)
+        self.assertIn("non-uniform", ctx.exception.message.lower())
+
+    def test_uniform_grid_with_float_jitter_below_tolerance_still_masks(self):
+        # Regression for real grids: a genuinely uniform grid carries tiny
+        # floating-point wobble in its step (e.g. 0.25° cells stored as
+        # binary floats). That jitter is far below the tolerance and must NOT
+        # be mistaken for a non-uniform grid, or every real product refuses.
+        lat = np.arange(30.0, 40.0, 0.25)
+        lat = lat + np.random.default_rng(0).uniform(-1e-9, 1e-9, size=lat.shape)
+        da = xr.DataArray(
+            np.ones((lat.size, 2)),
+            dims=("latitude", "longitude"),
+            coords={
+                "latitude": ("latitude", lat, {"units": "degrees_north"}),
+                "longitude": ("longitude", [-75.0, -74.0], {"units": "degrees_east"}),
+            },
+        )
+
+        masked = mask_data_by_geometry(da, box(-76, 29, -73, 41))
+
+        self.assertIsInstance(masked, xr.DataArray)
+
     def test_no_recognizable_coords_raises_typed_error_naming_the_dims_present(self):
         # QA 2026-07-17: this used to be a bare ValueError, which escaped the
         # stat tools off-taxonomy — a generic "internal error" for a plot and

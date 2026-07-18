@@ -20,6 +20,7 @@ from config.settings import Settings, get_settings
 from config.workflow_stages import STAGE_ESTIMATE, STAGE_PROGRESS, STAGE_SUBMIT
 from datasets.registry import known_quality_flag_vars, load_registry
 from earthdata_mcp.results import (
+    CATEGORY_CONTRACT,
     CATEGORY_PROVIDER_UNAVAILABLE,
     CATEGORY_TOO_LARGE,
     MCPToolError,
@@ -386,6 +387,17 @@ async def point_timeseries(
     aoi_raw = await tools["define_area_of_interest"].ainvoke({"location": location})
     aoi = parse_tool_result(aoi_raw)
     aoi_handle = aoi.get("handle") or aoi.get("aoi_handle")
+    # An AOI response with no handle used to flow on as None and submit a
+    # retrieval against a null area; off-taxonomy that's a contract violation
+    # the agent should be able to explain, not a silent wrong request.
+    if not aoi_handle:
+        raise MCPToolError(
+            CATEGORY_CONTRACT,
+            "define_area_of_interest returned no area-of-interest handle "
+            "(expected a 'handle' or 'aoi_handle' field), so the point-timeseries "
+            "retrieval can't be located.",
+            suggestion="Try a different phrasing of the location, or a nearby named place.",
+        )
 
     emit_status("Submitting point timeseries retrieval...", stage=STAGE_SUBMIT)
     submit_raw = await tools["retrieve_timeseries"].ainvoke({
@@ -396,6 +408,17 @@ async def point_timeseries(
         "point_sample": True,
     })
     submit = parse_tool_result(submit_raw)
+    # A submit response with no job_handle used to KeyError below off-taxonomy;
+    # classify it so the failure reads as a contract violation naming the tool
+    # and the absent field rather than an opaque traceback.
+    job_handle = submit.get("job_handle")
+    if not job_handle:
+        raise MCPToolError(
+            CATEGORY_CONTRACT,
+            "retrieve_timeseries returned no 'job_handle', so the submitted "
+            "point-timeseries retrieval can't be awaited.",
+            suggestion="Retry the retrieval; if it persists, the product may not support point sampling.",
+        )
 
-    status = await await_retrieval(submit["job_handle"], tools, settings=settings)
+    status = await await_retrieval(job_handle, tools, settings=settings)
     return {"aoi_handle": aoi_handle, **status}

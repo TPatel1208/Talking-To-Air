@@ -1,10 +1,13 @@
-from datasets.preset_collections import PRESET_COLLECTIONS
+from datasets.preset_collections import get_preset_collections
 
 
 def get_earthdata_agent_prompt() -> str:
+    # Call the accessor at build time (not an import-time constant), so a
+    # collections.yaml key typo surfaces here as a named error rather than an
+    # import cascade at process boot (T44).
     presets = "\n".join(
         f"| {c['description']} | `{c['concept_id']}` | {c['short_name']} |"
-        for c in PRESET_COLLECTIONS
+        for c in get_preset_collections()
     )
 
     return f"""

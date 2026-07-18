@@ -685,6 +685,55 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("latitude", ds.coords)
         self.assertIn("longitude", ds.coords)
 
+    async def test_open_handle_orders_bundle_by_time_not_filename(self):
+        """T44 story #2: the MCP concatenates bundle members in filename order
+        ('names sort chronologically'). A provider whose names don't sort
+        against their dates would yield a non-monotonic time axis, and a later
+        sel(time=slice(...)) would silently return the wrong subset. The open
+        must order by the decoded timestamps, not the alphabetics."""
+        import numpy as np
+
+        from services.open_handle import open_handle
+
+        # Alphabetical order (a_ < z_) is the OPPOSITE of date order (9 < 10).
+        self.volume.add_netcdf_bundle("obs_bundle_misordered", {
+            "z_earliest.nc4": {None: self._make_granule(9)},
+            "a_latest.nc4": {None: self._make_granule(10)},
+        })
+
+        ds = await open_handle("obs_bundle_misordered", self.tools)
+
+        times = ds["time"].values
+        self.assertEqual(ds.sizes["time"], 2)
+        self.assertTrue(np.all(np.diff(times) > np.timedelta64(0)))  # strictly increasing
+        self.assertEqual(str(times[0])[:10], "2026-07-09")
+
+    async def test_open_handle_dedupes_duplicate_bundle_timestamps_keep_first(self):
+        """T44 story #2: overlapping orbits and reprocessed granules can carry
+        identical timestamps. Left in, they double-count that granule in a mean
+        and break later sel(time=...) with an opaque non-unique-index error.
+        Keep the first occurrence, disclose the drop in a log event, and never
+        crash."""
+        from services.open_handle import open_handle
+
+        self.volume.add_netcdf_bundle("obs_bundle_dupes", {
+            "granule_a.nc4": {None: self._make_granule(9)},
+            "granule_b.nc4": {None: self._make_granule(9)},  # same timestamp
+            "granule_c.nc4": {None: self._make_granule(10)},
+        })
+
+        with self.assertLogs("services.open_handle", level="INFO") as logs:
+            ds = await open_handle("obs_bundle_dupes", self.tools)
+
+        self.assertEqual(ds.sizes["time"], 2)  # the duplicate collapsed to one
+        # sel on the previously-duplicated timestamp resolves cleanly.
+        picked = ds.sel(time="2026-07-09")
+        self.assertEqual(float(picked["no2"].sum()), 18.0)  # 9+2+3+4 — one granule, not doubled to 36
+        self.assertTrue(
+            any("bundle_duplicate_timestamps" in msg for msg in logs.output),
+            f"expected a bundle_duplicate_timestamps event, got: {logs.output}",
+        )
+
     async def test_open_handle_opens_a_single_member_bundle(self):
         """OPeNDAP subsets arrive as a bundle even for one granule
         (subset.nc.zip with a single member)."""
