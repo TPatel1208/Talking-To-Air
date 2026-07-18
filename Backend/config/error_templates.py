@@ -77,3 +77,79 @@ _TURN_TIMEOUT_TEMPLATE = (
 def render_turn_timeout_answer(job_handles: list[str] | None = None) -> str:
     jobs_detail = f"Still running: {', '.join(job_handles)}. " if job_handles else ""
     return _TURN_TIMEOUT_TEMPLATE.format(jobs_detail=jobs_detail)
+
+
+# T46: silent scope substitution. When a retrieval answers a materially
+# different question than the one asked — a single-day request served by a
+# monthly mean, a time range clamped to coverage, a region that resolved to a
+# different place — the researcher must read that in the chat answer, not
+# discover it in the Metadata tab's fine print. This is templated (never
+# model-composed) for the same reason the taxonomy answers above are: the
+# model can't paraphrase away an inconvenient correction it didn't want to
+# admit. Rendered from provenance's requested_scope/delivered_scope facts in
+# the dispatch layer (services/subagent_dispatch.py), the same seam that
+# appends T18/T37 error answers.
+
+
+def _date_part(value: str | None) -> str | None:
+    """The YYYY-MM-DD of an ISO date or datetime, or None. Time-of-day is
+    below the granularity any substitution disclosure cares about — a single-
+    date request naturally widens to T00:00:00/T23:59:59, which is not a
+    substitution to announce."""
+    if not value:
+        return None
+    return str(value).split("T", 1)[0].strip() or None
+
+
+def _requested_span(time_range: str | None) -> tuple[str | None, str | None]:
+    """The (start, end) date parts of a requested ``start/end`` range (or a
+    bare single date). Unparseable shapes yield (None, None) — nothing to
+    compare against, so no note, rather than a false alarm."""
+    if not time_range:
+        return (None, None)
+    parts = str(time_range).split("/", 1)
+    start = _date_part(parts[0])
+    end = _date_part(parts[1]) if len(parts) == 2 else start
+    return (start, end)
+
+
+def render_scope_note(requested_scope: dict | None, delivered_scope: dict | None) -> str | None:
+    """A one-line disclosure when the delivered scope differs materially from
+    the requested one, or ``None`` when they match (don't nag on an exact
+    request). Filled only from observed facts — never a guess at why the
+    substitution happened.
+
+    "Differ materially" (decided against real T46 cases):
+    - time: requested vs delivered date parts differ (any narrowing/widening,
+      including a single day served by a whole month);
+    - region: the delivered region/display name differs from the requested
+      location string (exact-string fuzz — the goal is catching a
+      *substitution*, not a synonym)."""
+    requested_scope = requested_scope or {}
+    delivered_scope = delivered_scope or {}
+
+    clauses: list[str] = []
+
+    req_start, req_end = _requested_span(requested_scope.get("time_range"))
+    del_start = _date_part(delivered_scope.get("start_date"))
+    del_end = _date_part(delivered_scope.get("end_date"))
+    if req_start and del_start and (req_start, req_end) != (del_start, del_end):
+        requested_time = req_start if req_start == req_end else f"{req_start} to {req_end}"
+        delivered_time = del_start if del_start == del_end else f"{del_start} to {del_end}"
+        cadence = str(delivered_scope.get("cadence") or "").strip()
+        cadence_clause = f" (this is a {cadence} product)" if cadence and cadence.lower() != "unknown" else ""
+        clauses.append(
+            f"you asked for {requested_time}, but the data shown covers "
+            f"{delivered_time}{cadence_clause}"
+        )
+
+    requested_location = str(requested_scope.get("location") or "").strip()
+    delivered_region = str(delivered_scope.get("region_name") or "").strip()
+    if requested_location and delivered_region and requested_location.lower() != delivered_region.lower():
+        clauses.append(
+            f"you asked about {requested_location}, but the data shown covers {delivered_region}"
+        )
+
+    if not clauses:
+        return None
+    return "Note: " + "; ".join(clauses) + "."

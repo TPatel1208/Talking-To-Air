@@ -55,6 +55,30 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(variable_choice_registry.get("obs_choice"), "Cloud_Fraction")
 
+    async def test_await_retrieval_finalizes_a_pending_requested_scope_into_the_ready_handle(self):
+        """T46: the requested scope safe_retrieve/point_timeseries recorded by
+        job_handle is promoted onto the obs_/cube_ handle the job resolves to,
+        so a later plot can echo it — the same two-step handoff as the T25
+        variable choice above."""
+        from services import scope_registry
+        from services.retrieval_composites import await_retrieval
+
+        scope_registry._pending.clear()
+        scope_registry._scopes.clear()
+        self.addCleanup(scope_registry._pending.clear)
+        self.addCleanup(scope_registry._scopes.clear)
+        scope_registry.record_pending("job_scope", {"location": "California", "time_range": "2024-07-15/2024-07-15"})
+
+        async def get_retrieval_status(job_handle, workspace_id):
+            return {"job_handle": "job_scope", "status": "ready", "obs_handle": "obs_scope"}
+
+        tools, settings = await self._tools({"get_retrieval_status": get_retrieval_status})
+        settings = self._fast_settings(settings)
+
+        await await_retrieval("job_scope", tools, settings=settings)
+
+        self.assertEqual(scope_registry.get("obs_scope")["location"], "California")
+
     async def test_await_retrieval_does_not_record_a_choice_for_a_failed_job(self):
         from services import variable_choice_registry
         from services.retrieval_composites import await_retrieval
@@ -371,6 +395,27 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "submitted")
         self.assertEqual(result["job_handle"], "job_new")
         self.assertEqual(calls["retrieve_subset"], 1)
+
+    async def test_safe_retrieve_records_the_requested_time_range_scope_for_the_job(self):
+        """T46: safe_retrieve only ever sees an opaque aoi_handle (not a place
+        name), but it knows the requested time_range — record it so a later
+        plot can disclose a single-day request served by a monthly mean."""
+        from services import scope_registry
+        from services.retrieval_composites import safe_retrieve
+
+        scope_registry._pending.clear()
+        scope_registry._scopes.clear()
+        self.addCleanup(scope_registry._pending.clear)
+        self.addCleanup(scope_registry._scopes.clear)
+
+        tools, settings, calls = await self._tools_and_settings(estimated_bytes=1000)
+
+        await safe_retrieve(
+            "dataset_1", "aoi_1", "2024-07-15/2024-07-15", ["no2"], tools, settings=settings
+        )
+        scope_registry.finalize("job_new", "obs_new")
+
+        self.assertIn("2024-07-15", scope_registry.get("obs_new")["time_range"])
 
     async def test_safe_retrieve_pauses_for_confirmation_between_caps(self):
         from services.retrieval_composites import safe_retrieve
@@ -735,6 +780,41 @@ class PointTimeseriesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "ready")
         self.assertEqual(result["obs_handle"], "cube_ts_1")
         self.assertEqual(result["aoi_handle"], "aoi_newark")
+
+    async def test_point_timeseries_records_the_requested_location_and_time_range_scope(self):
+        """T46: point_timeseries has both the place name and the time range, so
+        it records the full requested scope — echoed onto the cube handle the
+        job resolves to (via await_retrieval), disclosable end-to-end."""
+        from services import scope_registry
+        from services.retrieval_composites import point_timeseries
+
+        scope_registry._pending.clear()
+        scope_registry._scopes.clear()
+        self.addCleanup(scope_registry._pending.clear)
+        self.addCleanup(scope_registry._scopes.clear)
+
+        async def define_area_of_interest(location, workspace_id):
+            return {"handle": "aoi_newark", "location": location}
+
+        async def retrieve_timeseries(dataset_handle, time_range, variables, aoi_handle, output_format, point_sample, workspace_id):
+            return {"job_handle": "job_ts_1"}
+
+        async def get_retrieval_status(job_handle, workspace_id):
+            return {"job_handle": job_handle, "status": "ready", "obs_handle": "cube_ts_1"}
+
+        tools, settings = await self._tools_and_settings({
+            "define_area_of_interest": define_area_of_interest,
+            "retrieve_timeseries": retrieve_timeseries,
+            "get_retrieval_status": get_retrieval_status,
+        })
+
+        await point_timeseries(
+            "dataset_1", "Newark, NJ", "2024-01-01/2024-01-31", "no2", tools, settings=settings,
+        )
+
+        recorded = scope_registry.get("cube_ts_1")
+        self.assertEqual(recorded["location"], "Newark, NJ")
+        self.assertIn("2024-01-01", recorded["time_range"])
 
     async def test_point_timeseries_refuses_an_over_span_request_without_any_mcp_calls(self):
         from earthdata_mcp.results import CATEGORY_TOO_LARGE, MCPToolError

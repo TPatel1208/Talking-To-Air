@@ -199,6 +199,22 @@ class WorkspaceBindingClassifiedErrorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(ctx.exception.category, "user_input")
 
+    async def test_a_rejected_aoi_input_leaves_a_greppable_log_event(self):
+        """T46 story #4: the live silent-substitution incident (2026-07-17)
+        left NOTHING to grep for. A user_input rejection from
+        define_area_of_interest must fire a named log event carrying the
+        offending input, so the regression is discoverable from logs."""
+        from earthdata_mcp.workspace import bind_workspace
+
+        bound = bind_workspace(self.tools, lambda: "17")
+
+        with self.assertLogs("earthdata_mcp.workspace", level="WARNING") as cm:
+            await bound["define_area_of_interest"].ainvoke({"location": "zzzzqqqq nowhere"})
+
+        rejection_lines = [r for r in cm.records if getattr(r, "_event", None) == "aoi_user_input_rejected"]
+        self.assertEqual(len(rejection_lines), 1)
+        self.assertEqual(rejection_lines[0]._location, "zzzzqqqq nowhere")
+
 
 @unittest.skipIf(
     any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),

@@ -20,10 +20,16 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any
 
-from config.error_templates import render_error_answer
+from config.error_templates import render_error_answer, render_scope_note
 from config.model_factory import structured_output
 from earthdata_mcp.connection import STATE_READY
-from earthdata_mcp.results import CATEGORY_CONTRACT, CATEGORY_PROVIDER_UNAVAILABLE, MCPToolError
+from earthdata_mcp.results import (
+    CATEGORY_CONTRACT,
+    CATEGORY_PROVIDER_UNAVAILABLE,
+    CATEGORY_USER_INPUT,
+    MCPToolError,
+    parse_tool_result,
+)
 from models import AgentResult, SubAgentEnvelope, parse_agent_result, parse_chart_payload, parse_sub_agent_envelope
 from models.artifact import ArtifactReference
 from repositories.session_metadata_repository import (
@@ -203,6 +209,11 @@ async def run_satellite(
     satellite_context = await _load_satellite_context(conversation_thread_id)
     enriched_task = _inject_satellite_context(f"[Current UTC time: {now}]\n\n{task}", satellite_context)
     captured_context: dict[str, str] = {}
+    # T46: the first define_area_of_interest user_input rejection seen this
+    # turn. Its presence alongside a delivered chart means the agent improvised
+    # a substitute region instead of relaying the rejection — the no-
+    # substitution guard below refuses that answer deterministically.
+    aoi_rejection: dict[str, MCPToolError] = {}
 
     async def _invoke(task_text: str) -> AgentResult:
         charts = []
@@ -237,6 +248,7 @@ async def run_satellite(
                     continue
                 if event_type == "tool_result":
                     content = data.get("content", "")
+                    _capture_aoi_rejection(data.get("name"), content, aoi_rejection)
                     artifacts.extend(_artifact_refs_from_content(content))
                     nested = parse_agent_result(content)
                     if nested is not None:
@@ -291,6 +303,7 @@ async def run_satellite(
         result = await _reprompt_final_envelope(satellite_agent, _satellite_retry_task(enriched_task), "satellite")
 
     finalized = _finalize_sub_agent_result(result, "earthdata")
+    finalized = _guard_aoi_substitution(finalized, aoi_rejection.get("error"))
     if captured_context and conversation_thread_id:
         await _persist_satellite_context(
             conversation_thread_id, {**satellite_context, **captured_context}
@@ -354,16 +367,82 @@ def _finalize_sub_agent_result(result: AgentResult, agent_label: str) -> AgentRe
     """
     envelope = parse_sub_agent_envelope(result.text)
     if envelope is None:
-        return _salvage_sub_agent_result(result, agent_label)
+        return _append_scope_note(_salvage_sub_agent_result(result, agent_label))
     discovered = {ref.id: ref for ref in result.artifacts}
     artifacts = [discovered[artifact_id] for artifact_id in envelope.artifact_ids if artifact_id in discovered]
-    return AgentResult(
+    return _append_scope_note(AgentResult(
         text=truncate_text(envelope.summary, 2000, agent_name=agent_label),
         charts=result.charts,
         artifacts=artifacts,
         handles=envelope.handles,
         suggested_followups=envelope.suggested_followups,
+    ))
+
+
+def _capture_aoi_rejection(name: Any, content: Any, into: dict[str, MCPToolError]) -> None:
+    """Record the first define_area_of_interest user_input rejection seen in a
+    turn's tool stream (T46). The rejection travels as bind_workspace's own
+    error envelope in the tool_result content, which parse_tool_result
+    re-raises as a typed MCPToolError. Non-AOI tools, non-error results, and
+    non-user_input errors (a transient provider outage isn't the researcher's
+    fault) are ignored; only the first rejection is kept."""
+    if name != "define_area_of_interest" or into.get("error") is not None:
+        return
+    try:
+        parse_tool_result(content)
+    except MCPToolError as exc:
+        if exc.category == CATEGORY_USER_INPUT:
+            into["error"] = exc
+    except Exception:
+        pass
+
+
+def _guard_aoi_substitution(result: AgentResult, rejection: MCPToolError | None) -> AgentResult:
+    """T46 story #1: when define_area_of_interest rejected the requested area
+    with a user_input error but the turn still delivered a chart, the agent
+    improvised a substitute region instead of relaying the rejection — the
+    live 2026-07-17 incident answered an impossible bbox with a confident
+    'North America' map. Replace the answer with the deterministic T18 error
+    relay (the exact mechanism as salvage — no model in the loop) and drop the
+    wrong-region chart, so a researcher never receives a confident map of a
+    region they did not ask about. A rejection with no delivered chart (the
+    agent relayed it and asked a clarifying question) is left untouched."""
+    if rejection is None or not result.charts:
+        return result
+    detail = rejection.message
+    if rejection.suggestion:
+        detail = f"{detail.rstrip('.')}. {rejection.suggestion}"
+    return AgentResult(
+        text=render_error_answer(CATEGORY_USER_INPUT, "area-of-interest request", detail),
+        metadata={"aoi_substitution_refused": True},
     )
+
+
+def _chart_provenance(chart: Any) -> dict:
+    """The provenance dict off a finalized chart, whether it survived as a
+    ChartPayload (extra='allow', provenance is an attribute) or a plain
+    dict."""
+    if isinstance(chart, dict):
+        prov = chart.get("provenance")
+    else:
+        prov = getattr(chart, "provenance", None)
+    return prov if isinstance(prov, dict) else {}
+
+
+def _append_scope_note(result: AgentResult) -> AgentResult:
+    """T46: append the deterministic scope-substitution disclosure to a
+    finalized answer when any chart's provenance records a requested scope
+    that differs materially from what was delivered. Rendered by the T18/T37
+    template machinery (render_scope_note) from provenance facts — never
+    composed by the model, so an inconvenient correction can't be paraphrased
+    away. A no-op when nothing was substituted (don't nag on exact matches)."""
+    for chart in result.charts:
+        provenance = _chart_provenance(chart)
+        note = render_scope_note(provenance.get("requested_scope"), provenance.get("delivered_scope"))
+        if note:
+            result.text = f"{result.text}\n\n{note}" if result.text else note
+            return result
+    return result
 
 
 def _salvage_sub_agent_result(result: AgentResult, agent_label: str) -> AgentResult:

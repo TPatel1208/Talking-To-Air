@@ -176,6 +176,57 @@ class HelperTests(unittest.TestCase):
         self.assertEqual([a.id for a in finalized.artifacts], ["art_1"])
         self.assertEqual(finalized.handles, ["obs_1"])
 
+    def test_finalize_appends_a_scope_note_when_a_chart_discloses_a_substitution(self):
+        """T46 story #2/#5: a single-day request served by the monthly mean —
+        the substitution is stamped in the chart's provenance, and the chat
+        answer the researcher reads carries the deterministic disclosure, not
+        just the Metadata tab."""
+        from services.subagent_dispatch import _finalize_sub_agent_result
+        from models import AgentResult, ChartPayload
+
+        chart = ChartPayload(type="heatmap", title="NO2", provenance={
+            "requested_scope": {"location": "California", "time_range": "2024-07-15/2024-07-15"},
+            "delivered_scope": {
+                "region_name": "California",
+                "start_date": "2024-07-01T00:00:00",
+                "end_date": "2024-07-31T23:59:59",
+                "cadence": "monthly",
+            },
+        })
+        raw = AgentResult(
+            text=json.dumps({"summary": "Here is the NO2 map.", "artifact_ids": [], "handles": []}),
+            charts=[chart],
+        )
+
+        finalized = _finalize_sub_agent_result(raw, "earthdata")
+
+        self.assertIn("Here is the NO2 map.", finalized.text)
+        self.assertIn("2024-07-15", finalized.text)
+        self.assertIn("monthly", finalized.text.lower())
+
+    def test_finalize_adds_no_scope_note_when_a_charts_scopes_match(self):
+        """Regression: an exact request must not be nagged with a note."""
+        from services.subagent_dispatch import _finalize_sub_agent_result
+        from models import AgentResult, ChartPayload
+
+        chart = ChartPayload(type="heatmap", title="NO2", provenance={
+            "requested_scope": {"location": "California", "time_range": "2024-07-01/2024-07-31"},
+            "delivered_scope": {
+                "region_name": "California",
+                "start_date": "2024-07-01T00:00:00",
+                "end_date": "2024-07-31T00:00:00",
+                "cadence": "monthly",
+            },
+        })
+        raw = AgentResult(
+            text=json.dumps({"summary": "Here is the NO2 map.", "artifact_ids": [], "handles": []}),
+            charts=[chart],
+        )
+
+        finalized = _finalize_sub_agent_result(raw, "earthdata")
+
+        self.assertEqual(finalized.text, "Here is the NO2 map.")
+
     def test_finalize_sub_agent_result_drops_unknown_artifact_ids(self):
         from services.subagent_dispatch import _finalize_sub_agent_result
         from models import AgentResult
@@ -671,6 +722,78 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved_context["location"], "New Jersey")
         self.assertEqual(saved_context["dataset_handle"], "dataset_ab12")
         self.assertEqual(saved_context["last_time_range"], "2024-06-05/2024-06-05")
+
+    async def test_run_satellite_refuses_a_region_substituted_after_an_aoi_user_input_rejection(self):
+        """T46 live repro (2026-07-17): an impossible bbox (south > north) was
+        answered with a confident 'Tropospheric_NO2 over North America' map.
+        The AOI rejection + a delivered chart for a substituted region ⇒ the
+        answer becomes the deterministic T18 error relay, and the wrong-region
+        map is dropped (story #1: never a confident map of a region I didn't
+        ask about)."""
+        from services import subagent_dispatch
+
+        error_env = json.dumps({"error": {
+            "category": "user_input",
+            "message": "Invalid bounding box: south latitude exceeds north latitude.",
+            "suggestion": "Check the bounding box: south latitude must be less than north latitude.",
+        }})
+        plot_result = json.dumps({"text": "", "charts": [{"type": "heatmap", "title": "NO2 over North America"}]})
+        envelope = json.dumps({
+            "summary": "Here is Tropospheric NO2 over North America.",
+            "artifact_ids": [], "handles": [],
+        })
+
+        class FakeSatelliteAgent:
+            async def astream(self, input_, config, stream_mode):
+                yield "updates", {"agent": {"messages": [
+                    SimpleNamespace(name="define_area_of_interest", content=error_env, tool_calls=None),
+                ]}}
+                await asyncio.sleep(0)
+                yield "updates", {"tools": {"messages": [
+                    SimpleNamespace(name="plot_singular", content=plot_result, tool_calls=None),
+                ]}}
+                await asyncio.sleep(0)
+                yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
+
+        subagent_dispatch.get_call_budget().clear()
+        result = await subagent_dispatch.run_satellite(
+            FakeSatelliteAgent(), "Plot NO2 for bbox north=10 south=40 east=-70 west=-60", "thread-1",
+        )
+
+        self.assertNotIn("North America", result.text)
+        self.assertIn("could not proceed", result.text)
+        self.assertIn("south latitude", result.text)
+        self.assertEqual(result.charts, [])
+
+    async def test_run_satellite_leaves_a_clarifying_answer_when_no_region_was_substituted(self):
+        """Regression / no over-fire: when the agent relays the rejection and
+        asks a clarifying question instead of substituting a region (no chart
+        delivered), its answer stands — the guard only replaces a *substituted*
+        answer."""
+        from services import subagent_dispatch
+
+        error_env = json.dumps({"error": {
+            "category": "user_input",
+            "message": "Invalid bounding box: south latitude exceeds north latitude.",
+            "suggestion": "Check the bounding box: south latitude must be less than north latitude.",
+        }})
+        clarifying = "That bounding box is invalid — south is north of north. Which region did you mean?"
+        envelope = json.dumps({"summary": clarifying, "artifact_ids": [], "handles": []})
+
+        class FakeSatelliteAgent:
+            async def astream(self, input_, config, stream_mode):
+                yield "updates", {"agent": {"messages": [
+                    SimpleNamespace(name="define_area_of_interest", content=error_env, tool_calls=None),
+                ]}}
+                await asyncio.sleep(0)
+                yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
+
+        subagent_dispatch.get_call_budget().clear()
+        result = await subagent_dispatch.run_satellite(
+            FakeSatelliteAgent(), "Plot NO2 for bbox north=10 south=40 east=-70 west=-60", "thread-1",
+        )
+
+        self.assertEqual(result.text, clarifying)
 
     async def test_run_satellite_second_call_in_the_same_task_is_budget_blocked(self):
         from services import subagent_dispatch

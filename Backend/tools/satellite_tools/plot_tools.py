@@ -63,6 +63,7 @@ from datasets.mask_info import col_info_for_short_name, resolve_mask_info, short
 from datasets.qa_flags import resolve_qa_info
 from datasets.variable_roles import classify_inventory, related_variables
 from earthdata_mcp.results import MCPToolError
+from services import scope_registry
 from services.artifact_registry import build_artifact_reference
 from services.open_handle import OpenHandleError, open_handle
 from utils.geo_utils import find_lat_coord, find_lon_coord
@@ -812,6 +813,29 @@ def _merged_multi_provenance(panels: list[dict]) -> dict:
     return merged
 
 
+def _delivered_scope(region_name: str, start_date: str, end_date: str, agg_meta: dict | None) -> dict:
+    """The scope the retrieval actually delivered — region and the data's own
+    date span and cadence. Compared against the recorded requested scope by
+    the T46 disclosure template."""
+    return {
+        "region_name": region_name,
+        "start_date": start_date,
+        "end_date": end_date,
+        "cadence": (agg_meta or {}).get("cadence"),
+    }
+
+
+def _requested_scope(handles: list[str]) -> dict | None:
+    """The requested scope a composite recorded for any of this chart's source
+    handles (T46), or None if none was recorded (a plot over a handle minted
+    outside safe_retrieve/point_timeseries — nothing to disclose against)."""
+    for handle in handles:
+        recorded = scope_registry.get(handle)
+        if recorded:
+            return recorded
+    return None
+
+
 def _provenance(
     handles: list[str], da, region_name: str, aggregation: str,
     agg_meta: dict | None = None, col_info: dict | None = None,
@@ -823,6 +847,13 @@ def _provenance(
         "start_date": start_date,
         "end_date": end_date,
         "region_name": region_name,
+        # T46 silent scope substitution: the delivered scope (always) and the
+        # requested scope the composite recorded for this handle (when one was
+        # recorded) travel together, so the dispatch layer can disclose a
+        # single-day request served by a monthly mean, or a clamped range, in
+        # the chat answer -- not just the Metadata tab's fine print.
+        "delivered_scope": _delivered_scope(region_name, start_date, end_date, agg_meta),
+        "requested_scope": _requested_scope(handles),
         # T42 region fidelity: what kind of region was masked, and the
         # display_name it resolved to -- so a bounding-box "US" or a
         # wrong-place geocode is checkable in the answer, not just the title.

@@ -318,6 +318,67 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         self.assertEqual(qa_methodology["quality_flag_var"], "main_data_quality_flag")
         self.assertEqual(qa_methodology["qa_good_values"], [0])
 
+    def test_provenance_stamps_delivered_scope_from_the_plotted_data(self):
+        """T46: the scope actually delivered — region, the data's own date
+        span, and cadence — travels in provenance so the disclosure layer (and
+        the Metadata tab) can compare it against what was requested."""
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import _attach_reproducibility
+
+        da = xr.DataArray(
+            [[1.0]],
+            dims=("lat", "lon"),
+            coords={"lat": [40.0], "lon": [-74.0], "time": "2024-07-01T00:00:00Z"},
+            name="TEMPO_NO2",
+            attrs={"units": "mol/m^2"},
+        )
+        agg_meta = {
+            "aggregation_label": "monthly mean",
+            "n_granules": 1,
+            "cadence": "monthly",
+            "granule_dates": ["2024-07-01"],
+        }
+
+        payload = _attach_reproducibility(
+            {"type": "heatmap", "title": "TEMPO over CA"},
+            ["obs_1"], da, "California", "monthly mean",
+            agg_meta=agg_meta, region={"bounds": [-124.0, 32.0, -114.0, 42.0]},
+        )
+
+        delivered = payload["provenance"]["delivered_scope"]
+        self.assertEqual(delivered["region_name"], "California")
+        self.assertEqual(delivered["cadence"], "monthly")
+        self.assertTrue(delivered["start_date"].startswith("2024-07-01"))
+
+    def test_provenance_stamps_requested_scope_recorded_for_the_handle(self):
+        """T46: the requested scope the composite recorded against this handle
+        is echoed back into provenance, so a single-day request answered by a
+        monthly mean is disclosable end-to-end."""
+        import xarray as xr
+        from services import scope_registry
+        from tools.satellite_tools.plot_tools import _attach_reproducibility
+
+        scope_registry.record_pending("job_x", {"location": "California", "time_range": "2024-07-15/2024-07-15"})
+        scope_registry.finalize("job_x", "obs_scope_1")
+
+        da = xr.DataArray(
+            [[1.0]],
+            dims=("lat", "lon"),
+            coords={"lat": [40.0], "lon": [-74.0], "time": "2024-07-01T00:00:00Z"},
+            name="TEMPO_NO2",
+            attrs={"units": "mol/m^2"},
+        )
+
+        payload = _attach_reproducibility(
+            {"type": "heatmap", "title": "TEMPO over CA"},
+            ["obs_scope_1"], da, "California", "monthly mean",
+            region={"bounds": [-124.0, 32.0, -114.0, 42.0]},
+        )
+
+        requested = payload["provenance"]["requested_scope"]
+        self.assertEqual(requested["location"], "California")
+        self.assertEqual(requested["time_range"], "2024-07-15/2024-07-15")
+
     def test_provenance_missing_dataset_facts_render_as_empty_not_error(self):
         """No col_info at all (unregistered collection) must not raise --
         every field the frontend expects is still present, just empty, so

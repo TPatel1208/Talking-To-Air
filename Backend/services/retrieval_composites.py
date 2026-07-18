@@ -26,7 +26,7 @@ from earthdata_mcp.results import (
     MCPToolError,
     parse_tool_result,
 )
-from services import variable_choice_registry
+from services import scope_registry, variable_choice_registry
 from utils.streaming import emit_job_progress, emit_status
 
 logger = logging.getLogger(__name__)
@@ -220,6 +220,10 @@ async def await_retrieval(
                 # to_dataarray refusing a multi-variable file all over again.
                 handle = data.get("obs_handle") or data.get("cube_handle")
                 variable_choice_registry.finalize(job_handle, handle)
+                # T46: promote the requested scope (recorded at submission) onto
+                # the resolved handle, so a later plot/stat can disclose any
+                # silent substitution between requested and delivered scope.
+                scope_registry.finalize(job_handle, handle)
             return data
 
         if loop.time() >= deadline:
@@ -335,6 +339,12 @@ async def safe_retrieve(
     if len(science_variables) == 1:
         variable_choice_registry.record_pending(subset.get("job_handle"), science_variables[0])
 
+    # T46: safe_retrieve only sees an opaque aoi_handle (not a place name), so
+    # it records just the requested time_range — enough to disclose a single-
+    # day request served by a monthly mean. Region substitution on this path
+    # is caught by the dispatch-layer AOI guard instead.
+    scope_registry.record_pending(subset.get("job_handle"), {"time_range": time_range})
+
     return {"status": "submitted", "estimated_bytes": estimated_bytes, **subset}
 
 
@@ -419,6 +429,11 @@ async def point_timeseries(
             "point-timeseries retrieval can't be awaited.",
             suggestion="Retry the retrieval; if it persists, the product may not support point sampling.",
         )
+
+    # T46: point_timeseries knows both the place name and the time range, so it
+    # records the full requested scope for the job — promoted onto the cube
+    # handle by await_retrieval's finalize.
+    scope_registry.record_pending(job_handle, {"location": location, "time_range": time_range})
 
     status = await await_retrieval(job_handle, tools, settings=settings)
     return {"aoi_handle": aoi_handle, **status}

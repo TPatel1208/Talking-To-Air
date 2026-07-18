@@ -99,6 +99,22 @@ class ParseToolResultClassifierTests(unittest.TestCase):
         self.assertIn("zzzzqqqq nowhere", ctx.exception.message)
         self.assertIsNotNone(ctx.exception.suggestion)
 
+    def test_inverted_bounding_box_prose_classifies_as_user_input(self):
+        """T46 live repro (2026-07-17): define_area_of_interest rejects an
+        inverted bbox with 'south latitude exceeds north latitude'. That is a
+        researcher-fixable input, so it must classify as user_input (not the
+        contract fallback) — the whole silent-substitution guard depends on it
+        being recognized as such."""
+        from earthdata_mcp.results import MCPToolError, parse_tool_result
+
+        raw = "Invalid bounding box: south latitude exceeds north latitude."
+
+        with self.assertRaises(MCPToolError) as ctx:
+            parse_tool_result(raw)
+
+        self.assertEqual(ctx.exception.category, "user_input")
+        self.assertIsNotNone(ctx.exception.suggestion)
+
     def test_ambiguous_location_prose_classifies_as_user_input(self):
         from earthdata_mcp.results import MCPToolError, parse_tool_result
 

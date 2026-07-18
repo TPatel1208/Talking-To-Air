@@ -133,6 +133,14 @@ _USER_INPUT_PATTERNS: tuple[tuple[str, str], ...] = (
     # prefix this backend never anchors against.
     ("results for location", "Try a more specific location name."),
     ("location must be provided", "Provide a location."),
+    # T46 live repro (2026-07-17): define_area_of_interest rejects an inverted
+    # bounding box (south >= north). A researcher-fixable input — classifying
+    # it as contract replaced the clear message with the generic dead-end and
+    # let the agent improvise a substitute region ("North America") with no
+    # disclosure. Matched on the invariant clause of both the latitude and
+    # longitude inversion messages.
+    ("latitude exceeds north latitude", "Check the bounding box: south latitude must be less than north latitude."),
+    ("longitude exceeds east longitude", "Check the bounding box: west longitude must be less than east longitude."),
     (
         "Ambiguous location",
         "Use the HUC or FIPS prefix to disambiguate (e.g. 'HUC 0204' or 'FIPS 34023').",

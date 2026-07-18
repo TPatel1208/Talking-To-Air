@@ -17,7 +17,14 @@ from typing import Any, Callable, Protocol
 from langchain_core.tools import BaseTool, StructuredTool
 
 from config.workflow_stages import STAGE_AOI, STAGE_COVERAGE, STAGE_SEARCH
-from earthdata_mcp.results import CATEGORY_CONTRACT, CATEGORY_TOKEN_INVALID, MCPToolError, call_tool, parse_tool_result
+from earthdata_mcp.results import (
+    CATEGORY_CONTRACT,
+    CATEGORY_TOKEN_INVALID,
+    CATEGORY_USER_INPUT,
+    MCPToolError,
+    call_tool,
+    parse_tool_result,
+)
 from utils.streaming import emit_status
 
 logger = logging.getLogger(__name__)
@@ -149,6 +156,22 @@ def _bind_one(
             # another's connector.
             if injected and exc.category == CATEGORY_TOKEN_INVALID:
                 await edl_injector.mark_invalid(user_id)
+            # T46 story #4: a rejected AOI *input* must leave a greppable trace.
+            # The live 2026-07-17 incident (define_area_of_interest rejected an
+            # inverted bbox, the agent improvised "North America") left nothing
+            # to grep for. Log the named event with the offending location so a
+            # silent-substitution regression is discoverable from logs; the
+            # dispatch-layer guard (services/subagent_dispatch.py) uses the same
+            # signal to refuse the substituted answer.
+            if tool.name == "define_area_of_interest" and exc.category == CATEGORY_USER_INPUT:
+                logger.warning(
+                    "aoi_user_input_rejected",
+                    extra={
+                        "_event": "aoi_user_input_rejected",
+                        "_location": kwargs.get("location"),
+                        "_detail": exc.message,
+                    },
+                )
             return exc.to_tool_json()
         if injected:
             # Fire-and-forget and coalesced per agent turn inside mark_used

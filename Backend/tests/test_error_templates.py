@@ -73,5 +73,42 @@ class RenderTurnTimeoutAnswerTests(unittest.TestCase):
         self.assertIn("job_def456", text)
 
 
+class RenderScopeNoteTests(unittest.TestCase):
+    def test_a_single_day_request_answered_by_a_monthly_mean_gets_a_disclosure_note(self):
+        """T46 story #2: the substitution the researcher reads must say so —
+        a one-day request answered with the monthly mean names both scopes."""
+        from config.error_templates import render_scope_note
+
+        note = render_scope_note(
+            {"location": "California", "time_range": "2024-07-15/2024-07-15"},
+            {
+                "region_name": "California",
+                "start_date": "2024-07-01T00:00:00",
+                "end_date": "2024-07-31T23:59:59",
+                "cadence": "monthly",
+            },
+        )
+
+        self.assertIsNotNone(note)
+        self.assertIn("2024-07-15", note)
+        self.assertIn("monthly", note.lower())
+
+    def test_an_exact_match_adds_no_note(self):
+        """Regression: don't nag when delivered scope equals the request."""
+        from config.error_templates import render_scope_note
+
+        note = render_scope_note(
+            {"location": "California", "time_range": "2024-07-01/2024-07-31"},
+            {
+                "region_name": "California",
+                "start_date": "2024-07-01T00:00:00",
+                "end_date": "2024-07-31T00:00:00",
+                "cadence": "monthly",
+            },
+        )
+
+        self.assertIsNone(note)
+
+
 if __name__ == "__main__":
     unittest.main()
