@@ -41,25 +41,41 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.api = api
         self.api.app.state.agent = object()
 
+        # Fixtures mirror the REAL MCP contract (src/earthdata_mcp/tools/
+        # provenance.py): get_provenance returns {handle, ancestors:
+        # [{handle, depth}], events: [{event_type, detail, created_at}]}
+        # (events newest-first), and cite_dataset returns CMR's own record
+        # ({handle, concept_id, doi, doi_authority, collection_citations,
+        # reference_citation_count}). The previous imagined shape (inputs/
+        # kind/stage/at, dataset_handle/citation) made methods.md KeyError
+        # and citations silently empty against the live server (QA
+        # 2026-07-17 blocker).
         async def get_provenance(handle, workspace_id):
             return {
                 "handle": "obs_1",
-                "kind": "observation",
-                "events": [
-                    {"stage": "routed", "at": "2026-07-01T00:00:00Z", "provider": "GES_DISC"},
-                    {"stage": "materialized", "at": "2026-07-01T00:12:00Z"},
+                "ancestors": [
+                    {"handle": "dataset_tempo_no2", "depth": 1},
+                    {"handle": "aoi_nj", "depth": 1},
                 ],
-                "inputs": [
-                    {"handle": "dataset_tempo_no2", "kind": "dataset", "description": "TEMPO NO2 L3"},
-                    {"handle": "aoi_nj", "kind": "aoi", "description": "New Jersey"},
+                "events": [
+                    {"event_type": "materialized", "detail": {}, "created_at": "2026-07-01T00:12:00Z"},
+                    {"event_type": "routed", "detail": {"provider": "GES_DISC"}, "created_at": "2026-07-01T00:00:00Z"},
                 ],
             }
 
         async def cite_dataset(dataset_handle, workspace_id):
             return {
-                "dataset_handle": dataset_handle,
+                "handle": dataset_handle,
+                "concept_id": "C2930725014-LARC_CLOUD",
                 "doi": "10.5067/TEMPO/NO2/L3",
-                "citation": "NASA, TEMPO NO2 Tropospheric Column L3, doi:10.5067/TEMPO/NO2/L3",
+                "doi_authority": "https://doi.org",
+                "collection_citations": [{
+                    "Creator": "NASA/LARC/SD/ASDC",
+                    "Title": "TEMPO NO2 tropospheric and stratospheric columns V03",
+                    "Publisher": "NASA Atmospheric Science Data Center",
+                    "ReleaseDate": "2024-01-01T00:00:00.000Z",
+                }],
+                "reference_citation_count": 12,
             }
 
         self.fixture_path = tempfile.NamedTemporaryFile(suffix=".nc", delete=False).name
@@ -99,6 +115,10 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.api.app.state.earthdata_mcp_manager = SimpleNamespace(
             state="ready", tools=self.api.app.state.earthdata_mcp_tools,
         )
+        # app.state is process-global — leave no manager behind, or a later
+        # test file that expects "no manager => connecting" fails when this
+        # module happens to run first.
+        self.addCleanup(setattr, self.api.app.state, "earthdata_mcp_manager", None)
 
         self.user = User(
             id="user-1", username="tester", password_hash="hash",
@@ -141,8 +161,22 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
                 response = await client.get("/chart/chart-1/provenance", headers=self.auth_headers)
 
         self.assertEqual(response.status_code, 200)
-        handles = {node["handle"] for node in response.json()["nodes"]}
+        nodes = response.json()["nodes"]
+        handles = {node["handle"] for node in nodes}
         self.assertEqual(handles, {"obs_1", "dataset_tempo_no2", "aoi_nj"})
+        # Kinds are derived from the handle prefix — the real MCP response
+        # carries no kind field, and downstream consumers (citations, the
+        # methods text) key off it.
+        kinds = {node["handle"]: node["kind"] for node in nodes}
+        self.assertEqual(kinds["dataset_tempo_no2"], "dataset")
+        self.assertEqual(kinds["aoi_nj"], "aoi")
+        self.assertEqual(kinds["obs_1"], "observation")
+        obs_node = next(node for node in nodes if node["handle"] == "obs_1")
+        self.assertEqual(
+            [event["event_type"] for event in obs_node["events"]],
+            ["routed", "materialized"],
+            "events render oldest-first even though the MCP answers newest-first",
+        )
 
     async def test_citations_endpoint_returns_the_deduplicated_dataset_citations(self):
         async def fake_get_chart(chart_id):
@@ -155,13 +189,14 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
                 response = await client.get("/chart/chart-1/citations", headers=self.auth_headers)
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {
-            "citations": [{
-                "dataset_handle": "dataset_tempo_no2",
-                "doi": "10.5067/TEMPO/NO2/L3",
-                "citation": "NASA, TEMPO NO2 Tropospheric Column L3, doi:10.5067/TEMPO/NO2/L3",
-            }],
-        })
+        citations = response.json()["citations"]
+        self.assertEqual(len(citations), 1)
+        self.assertEqual(citations[0]["handle"], "dataset_tempo_no2")
+        self.assertEqual(citations[0]["doi"], "10.5067/TEMPO/NO2/L3")
+        self.assertEqual(
+            citations[0]["collection_citations"][0]["Title"],
+            "TEMPO NO2 tropospheric and stratospheric columns V03",
+        )
 
     async def test_methods_endpoint_returns_downloadable_markdown_naming_the_real_dataset(self):
         async def fake_get_chart(chart_id):
@@ -176,9 +211,35 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers["content-type"], "text/markdown; charset=utf-8")
         self.assertIn("attachment", response.headers["content-disposition"])
-        self.assertIn("TEMPO NO2 L3", response.text)
+        self.assertIn("TEMPO NO2 tropospheric and stratospheric columns V03", response.text)
         self.assertIn("New Jersey", response.text)
         self.assertIn("10.5067/TEMPO/NO2/L3", response.text)
+        self.assertIn("materialized (2026-07-01T00:12:00Z)", response.text)
+        self.assertIn("- 2026-07-01", response.text, "retrieval date derives from the materialized event")
+
+    async def test_methods_endpoint_answers_on_taxonomy_when_assembly_crashes(self):
+        # QA 2026-07-17 blocker: a KeyError inside the methods assembly
+        # escaped as a bare ExceptionGroup ("RuntimeError: No response
+        # returned") — the endpoint must classify any assembly surprise as
+        # a contract error and answer through the shared taxonomy handler.
+        async def fake_get_chart(chart_id):
+            return self.chart_payload
+
+        def exploding_build(**kwargs):
+            raise KeyError("stage")
+
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        auth_patches = self._auth_patch()
+        with auth_patches[0], auth_patches[1], \
+             patch.object(self.api.chart_service, "get_chart", fake_get_chart), \
+             patch.object(self.api, "build_methods_markdown", exploding_build):
+            async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                response = await client.get("/chart/chart-1/methods.md", headers=self.auth_headers)
+
+        self.assertEqual(response.status_code, 500)
+        body = response.json()["error"]
+        self.assertEqual(body["category"], "contract")
+        self.assertNotIn("stage", body["message"], "raw exception text stays in the logs")
 
     async def test_export_netcdf_streams_the_converted_file(self):
         async def fake_get_chart(chart_id):

@@ -153,6 +153,24 @@ def user_id_context(user_id: str):
         _current_user_id.reset(token)
 
 
+async def iter_with_user_id(user_id: str, chunks: AsyncGenerator) -> AsyncGenerator:
+    """Re-bind ``current_user_id()`` around every pull of ``chunks``.
+
+    A StreamingResponse body iterates *after* the endpoint handler has
+    returned, so a ``with user_id_context(...)`` inside the handler has
+    already been reset by the time later chunks are produced — any
+    workspace-bound MCP tool called while generating those chunks would
+    refuse with missing_user_context. This wrapper carries the request's
+    user binding across that boundary, one pull at a time."""
+    while True:
+        with user_id_context(user_id):
+            try:
+                chunk = await chunks.__anext__()
+            except StopAsyncIteration:
+                return
+        yield chunk
+
+
 def _message_text_chunk(message) -> str:
     tool_calls = getattr(message, "tool_calls", None)
     if tool_calls:

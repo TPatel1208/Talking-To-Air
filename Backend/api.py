@@ -606,13 +606,28 @@ async def chart_methods_endpoint(chart_id: str, request: Request):
         citations = await get_citations(source_handles, tools)
 
     provenance = payload.get("provenance") or {}
-    markdown = build_methods_markdown(
-        artifact_title=payload.get("title") or "Untitled artifact",
-        aoi_description=provenance.get("region_name") or "the study area",
-        time_window=_methods_time_window(provenance),
-        lineage=lineage,
-        citations=citations,
-    )
+    try:
+        markdown = build_methods_markdown(
+            artifact_title=payload.get("title") or "Untitled artifact",
+            aoi_description=provenance.get("region_name") or "the study area",
+            time_window=_methods_time_window(provenance),
+            lineage=lineage,
+            citations=citations,
+        )
+    except MCPToolError:
+        raise
+    except Exception:
+        # Any surprise inside the methods assembly (e.g. a KeyError on a
+        # shifted provenance shape) is a contract failure, not a stack trace
+        # to leak: classify it through the shared taxonomy handler with a
+        # generic message — the raw exception text stays in the logs. Without
+        # this the KeyError escaped as a bare ExceptionGroup 500 (QA
+        # 2026-07-17 blocker).
+        logger.exception("methods_markdown_assembly_failed", extra={"_chart_id": chart_id})
+        raise MCPToolError(
+            CATEGORY_CONTRACT,
+            "The methods document could not be assembled for this chart.",
+        )
     return Response(
         content=markdown,
         media_type="text/markdown; charset=utf-8",

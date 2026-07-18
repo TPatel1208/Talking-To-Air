@@ -14,12 +14,14 @@ handle plots fine but refuses to compute stats.
 These tests mirror test_satellite_tools_masking_execution.py's production
 shape: a TEMPO_NO2 Dataset (science var + sibling QA-flag var) opened
 through the HandleVolume/open_handle seam, on a 0..360 longitude grid over
-the continental US, masked with the offline 'usa' region (lon -125..-66).
-The fixtures keep bad QA flags so they also pin the reason normalization
-must happen on the whole Dataset before the DataArray is extracted (the
-plot_singular convention): normalizing only the extracted science array
-would leave the sibling flag variable on 0..360 and QA alignment would
-produce an empty intersection instead of a mask.
+the continental US, masked with the offline 'usa' region (a real
+Natural-Earth US polygon since T42). The fixture cells sit squarely in the
+CONUS interior so both survive the polygon mask; they keep bad QA flags so
+they also pin the reason normalization must happen on the whole Dataset
+before the DataArray is extracted (the plot_singular convention):
+normalizing only the extracted science array would leave the sibling flag
+variable on 0..360 and QA alignment would produce an empty intersection
+instead of a mask.
 """
 import importlib.util
 import json
@@ -68,16 +70,17 @@ class StatToolsLongitudeNormalizationTests(unittest.IsolatedAsyncioTestCase):
 
     def _add_us_dataset_on_0_360_longitudes(self, values, flags):
         """A TEMPO_NO2-shaped Dataset over the continental US whose
-        longitudes use the 0..360 convention: 245/255 are -115/-105 once
-        normalized, squarely inside the offline 'usa' region box
-        (-125..-66 lon, 24..50 lat)."""
+        longitudes use the 0..360 convention: 258/262 are -102/-98 once
+        normalized, and lat 38/42 puts every cell squarely in the CONUS
+        interior (the Great Plains) — inside the real Natural-Earth 'usa'
+        polygon the resolver returns since T42, not just a bounding box."""
         from test_satellite_tools_masking_execution import _tempo_no2_dataset
         import xarray as xr
 
         def make_ds():
             return _tempo_no2_dataset(
                 xr, values=values, flags=flags,
-                lat=(30.0, 35.0), lon=(245.0, 255.0),
+                lat=(38.0, 42.0), lon=(258.0, 262.0),
             )
 
         self.volume.add_zarr("obs_1", make_ds)
@@ -96,14 +99,14 @@ class StatToolsLongitudeNormalizationTests(unittest.IsolatedAsyncioTestCase):
         result = json.loads(raw)
 
         self.assertNotIn("error", result)
-        # Good cells (flag=0): 1.0 at lat=30, 3.0 at lat=35, cos(latitude)
+        # Good cells (flag=0): 1.0 at lat=38, 3.0 at lat=42, cos(latitude)
         # area-weighted. A da-only normalization would break QA alignment
         # (empty intersection with the still-0..360 flag var); no
         # normalization at all yields "No valid data found".
         import math
 
-        w30, w35 = math.cos(math.radians(30.0)), math.cos(math.radians(35.0))
-        expected_mean = (1.0 * w30 + 3.0 * w35) / (w30 + w35)
+        w38, w42 = math.cos(math.radians(38.0)), math.cos(math.radians(42.0))
+        expected_mean = (1.0 * w38 + 3.0 * w42) / (w38 + w42)
         self.assertAlmostEqual(result["mean"], expected_mean)
         self.assertEqual(result["n_pixels"], 2)
         self.assertEqual(result["aggregation_meta"]["masking"]["qa_status"], "verified")
@@ -112,8 +115,8 @@ class StatToolsLongitudeNormalizationTests(unittest.IsolatedAsyncioTestCase):
         from tools.satellite_tools.stat_tools import make_find_daily_peak
 
         # The numerically highest raw value (99.0) carries a bad flag; the
-        # true peak once masked is the good-flag 3.0 cell at lat=35, lon=245
-        # (-115 once normalized).
+        # true peak once masked is the good-flag 3.0 cell at lat=42, lon=258
+        # (-102 once normalized).
         self._add_us_dataset_on_0_360_longitudes(
             values=[[1.0, 99.0], [3.0, 4.0]], flags=[[0, 1], [0, 1]],
         )
@@ -124,10 +127,10 @@ class StatToolsLongitudeNormalizationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertNotIn("error", result)
         self.assertAlmostEqual(result["peak_value"], 3.0)
-        self.assertAlmostEqual(result["peak_lat"], 35.0)
+        self.assertAlmostEqual(result["peak_lat"], 42.0)
         # The reported peak longitude uses the -180..180 convention the rest
         # of the app (charts, geocoding) speaks — not the source's 0..360.
-        self.assertAlmostEqual(result["peak_lon"], -115.0)
+        self.assertAlmostEqual(result["peak_lon"], -102.0)
 
 
 if __name__ == "__main__":

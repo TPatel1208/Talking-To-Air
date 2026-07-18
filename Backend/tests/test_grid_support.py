@@ -71,13 +71,19 @@ class MaskGridSupportTests(unittest.TestCase):
         self.assertIn("projected", ctx.exception.message.lower())
         self.assertIn("lambert_conformal_conic", ctx.exception.message)
 
-    def test_no_recognizable_coords_error_names_the_dims_present(self):
+    def test_no_recognizable_coords_raises_typed_error_naming_the_dims_present(self):
+        # QA 2026-07-17: this used to be a bare ValueError, which escaped the
+        # stat tools off-taxonomy — a generic "internal error" for a plot and
+        # a false "no data found" for a point query. It must speak the same
+        # typed unsupported_grid contract as the curvilinear/projected
+        # refusals (T44 story #3).
         da = xr.DataArray(np.ones((2, 2)), dims=("scanline", "ground_pixel"))
 
-        with self.assertRaises(ValueError) as ctx:
+        with self.assertRaises(MCPToolError) as ctx:
             mask_data_by_geometry(da, box(-76, 39, -73, 42))
 
-        self.assertIn("scanline", str(ctx.exception))
+        self.assertEqual(ctx.exception.category, CATEGORY_UNSUPPORTED_GRID)
+        self.assertIn("scanline", ctx.exception.message)
         self.assertIn("ground_pixel", str(ctx.exception))
 
 

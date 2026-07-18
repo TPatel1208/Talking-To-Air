@@ -276,7 +276,11 @@ class HandleVolume:
     def _write(self, handle: str) -> None:
         media_type, factory = self._factories[handle]
         path = self._path(handle)
-        if media_type == "zarr":
+        if media_type == "netcdf" and callable(factory):
+            # add_hdf5: a raw writer for provider-native HDF5 layouts
+            # to_netcdf can't produce (e.g. GPM's scale-less datasets).
+            factory(str(path))
+        elif media_type == "zarr":
             factory().to_zarr(path, mode="w")
         elif media_type == "application/zarr":
             # Written exactly the way the MCP's transform tools serialize a
@@ -326,6 +330,14 @@ class HandleVolume:
 
     def add_parquet(self, handle: str, make_table: Callable[[], Any]) -> None:
         self._factories[handle] = ("parquet", make_table)
+        self._write(handle)
+
+    def add_hdf5(self, handle: str, write_file: Callable[[str], None]) -> None:
+        """Register a handle whose bytes ``write_file(path)`` lays down raw
+        (h5py-level control) — for provider-native HDF5 layouts to_netcdf
+        can't produce, e.g. GPM's dimension-scale-less datasets. Still
+        exported as media_type 'netcdf', exactly as the MCP reports them."""
+        self._factories[handle] = ("netcdf", write_file)
         self._write(handle)
 
     def add_netcdf(self, handle: str, groups: dict[str | None, Callable[[], Any]]) -> None:

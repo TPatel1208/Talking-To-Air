@@ -200,9 +200,19 @@ def _open_netcdf(path: str, chunks: dict | None = None) -> Any:
         return _open_netcdf_bundle(path)
 
     groups = _open_all_groups(path, chunks)
+    # GPM-style products (IMERG) carry no netCDF dimension scales, so both
+    # engines invent placeholder dims (phony_dim_N) and the science variable
+    # opens with no lat/lon identity at all. The files DO declare the real
+    # dims per variable (GPM's DimensionNames attr) — honor that before any
+    # merging/promotion, same coordinate-discovery doctrine as T24.
+    groups = {key: _apply_declared_dimension_names(gds) for key, gds in groups.items()}
     root = groups.pop("/", None)
-    if root is not None and root.data_vars:
-        return root  # genuinely flat file; nothing nested to merge
+    if root is not None and root.data_vars and not any(gds.data_vars for gds in groups.values()):
+        # Genuinely flat file; nothing nested to merge. (Root data_vars alone
+        # don't qualify: GPM 3CMB puts header strings in the root and ALL its
+        # science data in nested /Grids groups — the old root-only return
+        # silently discarded every science variable, live 2026-07-17.)
+        return root
 
     # Merging by bare name destroys group membership, which is classification
     # evidence (datasets/variable_roles' qa_statistics/geolocation/product
@@ -542,6 +552,65 @@ def _open_all_groups(path: str, chunks: dict | None = None) -> dict[str, Any]:
         + ("; ".join(errors) if errors else "no NetCDF engine (h5netcdf/netCDF4) is installed")
         + "."
     )
+
+
+def _apply_declared_dimension_names(ds: Any) -> Any:
+    """Rename engine-invented placeholder dims to the names the file itself
+    declares via per-variable ``DimensionNames`` attributes (the GPM
+    convention for HDF5 files without netCDF dimension scales).
+
+    Dims whose declared name matches an existing 1-D variable are
+    ``swap_dims``-ed so that variable becomes a real dimension coordinate
+    (lat/lon/time get their identity back); dims whose declared name is
+    otherwise unclaimed are plain-renamed. Opportunistic and safe by
+    construction: any disagreement between variables, duplicate target, or
+    name collision leaves the dataset exactly as it opened — this must
+    never break a product that was already working.
+    """
+    mapping: dict[str, str] = {}
+    for var in ds.variables.values():
+        declared = var.attrs.get("DimensionNames") or getattr(var, "encoding", {}).get("DimensionNames")
+        if declared is None:
+            continue
+        if isinstance(declared, bytes):
+            declared = declared.decode("utf-8", "replace")
+        names = [name.strip() for name in str(declared).split(",")]
+        if len(names) != len(var.dims):
+            continue
+        for dim, name in zip(var.dims, names):
+            if not name or name == dim:
+                continue
+            if mapping.get(dim, name) != name:
+                return ds  # two variables disagree on this dim's name
+            mapping[dim] = name
+
+    mapping = {dim: name for dim, name in mapping.items() if dim in ds.dims}
+    if not mapping:
+        return ds
+    targets = list(mapping.values())
+    if len(set(targets)) != len(targets):
+        return ds  # two dims claim the same name
+    if any(name in ds.dims for name in targets):
+        return ds  # target name already names a different dim
+
+    swaps: dict[str, str] = {}
+    renames: dict[str, str] = {}
+    for dim, name in mapping.items():
+        declared_var = ds.variables.get(name)
+        if declared_var is not None and declared_var.dims == (dim,):
+            swaps[dim] = name
+        elif name not in ds.variables:
+            renames[dim] = name
+        else:
+            return ds  # name taken by a variable that can't be this dim's axis
+    try:
+        if swaps:
+            ds = ds.swap_dims(swaps)
+        if renames:
+            ds = ds.rename_dims(renames)
+    except (ValueError, KeyError):  # pragma: no cover — belt over the checks above
+        return ds
+    return ds
 
 
 def _promote_lat_lon_coords(ds: Any) -> Any:
