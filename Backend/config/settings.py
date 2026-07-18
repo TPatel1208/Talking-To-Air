@@ -132,6 +132,13 @@ class Settings:
 
     log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO").upper())
     log_format: str = field(default_factory=lambda: os.getenv("LOG_FORMAT", "text").strip().lower())
+    # T45: gates the /debug/heap-snapshot tracemalloc endpoint. Off by
+    # default -- tracemalloc adds per-allocation overhead, so this is an
+    # opt-in diagnostic for chasing a specific memory incident, not a
+    # standing production setting.
+    debug_heap_profiling_enabled: bool = field(
+        default_factory=lambda: os.getenv("DEBUG_HEAP_PROFILING_ENABLED", "").strip() == "1"
+    )
     long_request_seconds: float = field(default_factory=lambda: float(os.getenv("LONG_REQUEST_SECONDS", "30")))
     jwt_secret_key: str | None = field(default_factory=lambda: os.getenv("JWT_SECRET_KEY"))
     jwt_algorithm: str = field(default_factory=lambda: os.getenv("JWT_ALGORITHM", "HS256"))

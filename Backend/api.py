@@ -1,7 +1,9 @@
+import asyncio
 import json
 import logging
 import os
 import time
+import tracemalloc
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -73,6 +75,7 @@ from utils.logging import configure_logging
 from utils.metrics import (
     observe_http_request,
     prometheus_content_type,
+    refresh_process_gauges,
     render_prometheus_metrics,
     set_db_pool_connections_active,
 )
@@ -210,14 +213,38 @@ async def record_request_metrics(request: Request, call_next):
     started = time.perf_counter()
     status_code = 500
     path = _route_path(request)
+    response = None
     try:
         response = await call_next(request)
         status_code = response.status_code
         return response
     finally:
-        duration = time.perf_counter() - started
         set_db_pool_connections_active(active_pool_connections())
-        observe_http_request(request.method, path, status_code, duration)
+        # A streaming response (StreamingResponse, or the equivalent
+        # call_next builds when another BaseHTTPMiddleware wraps this one)
+        # exposes body_iterator; call_next already returned by the time
+        # headers exist, well before an SSE stream's slow work runs, so
+        # observing here would put every /chat turn at ~0ms. Defer to the
+        # iterator's own close instead; non-streaming routes are unaffected.
+        if response is not None and hasattr(response, "body_iterator"):
+            _observe_request_metrics_at_stream_close(response, request.method, path, status_code, started)
+        else:
+            observe_http_request(request.method, path, status_code, time.perf_counter() - started)
+
+
+def _observe_request_metrics_at_stream_close(
+    response, method: str, path: str, status_code: int, started: float,
+) -> None:
+    original_iterator = response.body_iterator
+
+    async def _timed_iterator():
+        try:
+            async for chunk in original_iterator:
+                yield chunk
+        finally:
+            observe_http_request(method, path, status_code, time.perf_counter() - started)
+
+    response.body_iterator = _timed_iterator()
 
 
 @app.middleware("http")
@@ -438,7 +465,35 @@ async def health():
 
 @app.get("/metrics")
 def metrics():
+    refresh_process_gauges()
     return Response(content=render_prometheus_metrics(), media_type=prometheus_content_type())
+
+
+@app.get("/debug/heap-snapshot")
+async def heap_snapshot(limit: int = 25):
+    """T45: tracemalloc top-allocations snapshot for chasing a specific
+    memory incident (the 2026-07-17 QA jump-and-plateau) -- gated behind
+    DEBUG_HEAP_PROFILING_ENABLED, off by default, since tracemalloc adds
+    per-allocation overhead this deployment shouldn't pay standingly.
+    Requires auth like every other route (not in PUBLIC_ENDPOINTS)."""
+    if not settings.debug_heap_profiling_enabled:
+        raise HTTPException(status_code=404, detail="Not found")
+    if not tracemalloc.is_tracing():
+        tracemalloc.start()
+        return {"top": [], "note": "tracemalloc just started; call again after some traffic for history."}
+    snapshot = tracemalloc.take_snapshot()
+    top_stats = snapshot.statistics("lineno")[:limit]
+    return {
+        "top": [
+            {
+                "file": stat.traceback[0].filename,
+                "line": stat.traceback[0].lineno,
+                "size_bytes": stat.size,
+                "count": stat.count,
+            }
+            for stat in top_stats
+        ],
+    }
 
 
 @app.get("/config/map-tiles")
@@ -567,14 +622,18 @@ def _chart_overlay_path(payload: dict, panel: int | None) -> str | None:
     return (payload.get("overlay") or {}).get("_path")
 
 
+def _read_overlay_bytes(path: str) -> bytes:
+    with open(path, "rb") as f:
+        return f.read()
+
+
 @app.get("/chart/{chart_id}/overlay.png")
 async def chart_overlay_png(chart_id: str, request: Request, panel: int | None = None):
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
     overlay_path = _chart_overlay_path(payload, panel)
     if not overlay_path or not os.path.isfile(overlay_path):
         raise HTTPException(status_code=404, detail="This chart has no rendered overlay.")
-    with open(overlay_path, "rb") as f:
-        content = f.read()
+    content = await asyncio.to_thread(_read_overlay_bytes, overlay_path)
     return Response(content=content, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 

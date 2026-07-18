@@ -50,6 +50,18 @@ DB_POOL_CONNECTIONS_ACTIVE = Gauge(
     "db_pool_connections_active",
     "Current active PostgreSQL pool connections.",
 )
+PROCESS_RSS_BYTES = Gauge(
+    "process_rss_bytes",
+    "Resident set size of the backend process in bytes.",
+)
+MATPLOTLIB_OPEN_FIGURES = Gauge(
+    "matplotlib_open_figures",
+    "Number of matplotlib figures currently open (created but not yet closed).",
+)
+BUNDLE_EXTRACT_CACHE_BYTES = Gauge(
+    "bundle_extract_cache_bytes",
+    "Total on-disk size of the bundle-extract TTL cache in bytes.",
+)
 
 _PROMETHEUS_COUNTER_ALIASES = {
     "harmony_jobs_timed_out": HARMONY_TIMEOUTS_TOTAL,
@@ -121,6 +133,47 @@ def record_cache_miss() -> None:
 def set_db_pool_connections_active(value: int | float | None) -> None:
     if value is not None:
         DB_POOL_CONNECTIONS_ACTIVE.set(value)
+
+
+def _current_process_rss_bytes() -> int | None:
+    """Current (not peak) resident set size, read from /proc/self/status --
+    ru_maxrss is a high-water mark that only ever climbs, which would hide a
+    plateau-then-shrink shape; VmRSS reflects the process's actual current
+    footprint. None on a non-Linux host (this deploys via Docker/Linux; a
+    host run just skips the gauge instead of raising)."""
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) * 1024
+    except OSError:
+        return None
+    return None
+
+
+def refresh_process_gauges() -> None:
+    """Refresh the process-health gauges (RSS, open matplotlib figures,
+    bundle extract-cache size) -- called on each /metrics scrape rather than
+    a timer, so idle time costs nothing and every scrape is current as of
+    itself. Each source is best-effort: a missing/uninstalled dependency
+    skips that one gauge rather than failing the whole scrape."""
+    rss = _current_process_rss_bytes()
+    if rss is not None:
+        PROCESS_RSS_BYTES.set(rss)
+
+    try:
+        import matplotlib.pyplot as plt
+
+        MATPLOTLIB_OPEN_FIGURES.set(len(plt.get_fignums()))
+    except ImportError:
+        pass
+
+    try:
+        from services.open_handle import extract_cache_size_bytes
+
+        BUNDLE_EXTRACT_CACHE_BYTES.set(extract_cache_size_bytes())
+    except ImportError:
+        pass
 
 
 def initialize_labelsets() -> None:

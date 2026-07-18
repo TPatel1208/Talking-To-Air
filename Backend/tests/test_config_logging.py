@@ -249,6 +249,21 @@ class ConfigLoggingTests(unittest.TestCase):
         )
         loaded.validate_startup()  # must not raise
 
+    def test_settings_loads_debug_heap_profiling_flag_default_and_override(self):
+        from config.settings import get_settings
+
+        with patch.dict(os.environ, {}, clear=True):
+            get_settings.cache_clear()
+            loaded = get_settings()
+
+        self.assertFalse(loaded.debug_heap_profiling_enabled)
+
+        with patch.dict(os.environ, {"DEBUG_HEAP_PROFILING_ENABLED": "1"}, clear=True):
+            get_settings.cache_clear()
+            loaded = get_settings()
+
+        self.assertTrue(loaded.debug_heap_profiling_enabled)
+
     def test_settings_loads_mcp_call_timeout_and_chat_turn_timeout_defaults(self):
         from config.settings import get_settings
 
@@ -305,6 +320,23 @@ class ConfigLoggingTests(unittest.TestCase):
 
         self.assertEqual(loaded.data_fetch_mode, "auto")
         self.assertEqual(loaded.log_format, "text")
+
+    def test_configure_logging_silences_the_benign_langchain_google_genai_schema_warning(self):
+        """T45: langchain_google_genai._function_utils logs
+        "Key '...' is not supported in schema, ignoring" at WARNING for
+        every unrecognized JSON-schema keyword in a tool's pydantic model —
+        known-benign, but noisy enough to drown real WARNING/ERROR events in
+        the log auditor's correlation (QA note, 2026-07-17). Silenced at
+        logger config rather than at each call site."""
+        from utils.logging import configure_logging
+
+        noisy_logger = logging.getLogger("langchain_google_genai._function_utils")
+        unrelated_logger = logging.getLogger("api")
+
+        configure_logging()
+
+        self.assertFalse(noisy_logger.isEnabledFor(logging.WARNING))
+        self.assertTrue(unrelated_logger.isEnabledFor(logging.WARNING))
 
     def test_json_formatter_outputs_expected_fields_and_extra_values(self):
         from utils.logging import JsonFormatter

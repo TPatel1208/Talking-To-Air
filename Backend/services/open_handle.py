@@ -461,6 +461,26 @@ def _prune_extract_cache(root: str, ttl_seconds: float = _EXTRACT_CACHE_TTL_SECO
             continue
 
 
+def extract_cache_size_bytes() -> int:
+    """Total on-disk size of the bundle-extract TTL cache
+    (:func:`_extract_bundle_cached`), in bytes. Feeds the
+    bundle_extract_cache_bytes gauge -- an unexpectedly large cache is a
+    plausible, checkable culprit for a memory/disk plateau, distinct from
+    Python heap growth. 0 (not an error) when the directory doesn't exist
+    yet -- nothing has opened a bundle in this process."""
+    import tempfile
+
+    root = os.path.join(tempfile.gettempdir(), _EXTRACT_CACHE_DIR_NAME)
+    total = 0
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for name in filenames:
+            try:
+                total += os.path.getsize(os.path.join(dirpath, name))
+            except OSError:
+                continue  # pruned/removed concurrently -- not this call's problem
+    return total
+
+
 def _order_bundle_time(ds: Any, path: str) -> Any:
     """Put a concatenated bundle onto a monotonic, duplicate-free time axis.
 

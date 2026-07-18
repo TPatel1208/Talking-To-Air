@@ -545,6 +545,60 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status_code, 404)
 
+    async def test_chart_overlay_endpoint_does_not_block_the_event_loop(self):
+        """T45: chart_overlay_png used to read the overlay PNG with a
+        synchronous open()/read() straight on the event loop — a slow disk
+        (or a large overlay) would stall every other concurrent stream for
+        the read's duration. Hermetic per the OpenHandleEventLoopOffloadTests
+        pattern: only that a concurrent coroutine keeps making progress while
+        a (patched-slow) read is in flight."""
+        import asyncio
+        import time
+
+        payload = {
+            "chart_id": "chart-1",
+            "overlay": {"bounds": [0, 0, 1, 1], "_path": "/overlay/does-not-need-to-exist.png"},
+            "user_id": self.user.id,
+        }
+
+        transport = self.httpx.ASGITransport(app=self.api.app)
+
+        async def fake_get_chart(chart_id):
+            return payload
+
+        def slow_read_overlay_bytes(path):
+            time.sleep(0.5)
+            return b"\x89PNG\r\n\x1a\nSLOW"
+
+        tick_count = 0
+
+        async def ticker():
+            nonlocal tick_count
+            for _ in range(15):
+                await asyncio.sleep(0.03)
+                tick_count += 1
+
+        auth_patches = self._auth_patch()
+        with auth_patches[0], auth_patches[1], \
+             patch.object(self.api.chart_service, "get_chart", fake_get_chart), \
+             patch("os.path.isfile", return_value=True), \
+             patch.object(self.api, "_read_overlay_bytes", slow_read_overlay_bytes):
+            async with self.httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                response, _ = await asyncio.gather(
+                    client.get("/chart/chart-1/overlay.png", headers=self.auth_headers),
+                    ticker(),
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"\x89PNG\r\n\x1a\nSLOW")
+        # ticker() needs ~0.45s (15 * 0.03s) of its own. If the 0.5s read ran
+        # on the event loop it would starve the ticker down to a couple of
+        # ticks in that window instead of the full 15.
+        self.assertEqual(tick_count, 15)
+
     async def test_artifact_endpoints_return_paginated_rows_and_csv(self):
         from services.artifact_store import artifact_store
 

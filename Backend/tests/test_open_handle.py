@@ -1084,5 +1084,73 @@ class OpenNetcdfUnreadableFileTests(unittest.TestCase):
                 self.assertNotIn("did not find a match in any of xarray", msg)
 
 
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES)
+    or (importlib.util.find_spec("netCDF4") is None and importlib.util.find_spec("h5netcdf") is None),
+    "open_handle lazy/eager equivalence test dependencies are not installed",
+)
+class OpenNetcdfLazyVsEagerEquivalenceTests(unittest.TestCase):
+    """T45: a bare (non-bundle) export opens via _open_netcdf(path) eagerly,
+    while a bundle member opens via _open_netcdf(path, chunks={}) with dask
+    chunks. Nothing pinned that the two paths mask/aggregate identically --
+    a dask-related regression in one path could silently diverge from the
+    other, surfacing as a subtly different mean rather than a test failure."""
+
+    def setUp(self):
+        import tempfile
+
+        import numpy as np
+        import xarray as xr
+
+        self.np = np
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+
+        ds = xr.Dataset(
+            {
+                "no2": (
+                    ("time", "lat", "lon"),
+                    np.array([
+                        [[1.0, 2.0], [3.0, 4.0]],
+                        [[-999.0, -999.0], [-999.0, -999.0]],
+                        [[5.0, 6.0], [7.0, 8.0]],
+                    ]),
+                )
+            },
+            coords={
+                "time": np.array(["2024-01-01", "2024-01-02", "2024-01-03"], dtype="datetime64[ns]"),
+                "lat": [40.0, 41.0],
+                "lon": [-75.0, -74.0],
+            },
+            attrs={"cadence": "daily"},
+        )
+        self.path = os.path.join(self._tmpdir.name, "eager_vs_lazy.nc")
+        ds.to_netcdf(self.path)
+        self.col_info = {
+            "primary_var": "no2",
+            "cadence": "daily",
+            "fill_value": -999.0,
+            "valid_min": 0.0,
+            "valid_max": 100.0,
+        }
+
+    def test_eager_and_dask_backed_opens_aggregate_identically(self):
+        from preprocessing.aggregation_service import AggregationService
+        from services.open_handle import _open_netcdf
+
+        eager_ds = _open_netcdf(self.path)
+        lazy_ds = _open_netcdf(self.path, chunks={})
+
+        service = AggregationService()
+        eager_result = service.aggregate(eager_ds, stat="mean", variable="no2", col_info=self.col_info)
+        lazy_result = service.aggregate(lazy_ds, stat="mean", variable="no2", col_info=self.col_info)
+
+        self.assertEqual(eager_result.meta["n_granules"], lazy_result.meta["n_granules"])
+        self.assertEqual(eager_result.meta["granule_dates"], lazy_result.meta["granule_dates"])
+        self.np.testing.assert_array_equal(
+            eager_result.ds["no2"].values, lazy_result.ds["no2"].values,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

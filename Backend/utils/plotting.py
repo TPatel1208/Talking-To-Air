@@ -3,6 +3,7 @@ import asyncio
 import functools
 import json
 import os
+import threading
 import httpx
 import requests
 import time
@@ -19,7 +20,7 @@ from shapely.geometry import box, shape, Polygon, MultiPolygon
 from rasterio.features import rasterize
 from affine import Affine
 
-from typing import Optional, Tuple, Union, List
+from typing import Optional, Tuple, Union
 
 from config.settings import get_settings
 from earthdata_mcp.results import (
@@ -576,128 +577,6 @@ def apply_mask_region_type(masked: xr.DataArray, region: dict) -> None:
     mask_region_type = masked.attrs.get("region_type")
     if mask_region_type:
         region["region_type"] = mask_region_type
-def plot_diff_maps(
-    data_arrays: List[xr.DataArray],
-    titles: List[str],
-    extent: Optional[List[Tuple[float, float, float, float]]] = None,
-    cmap: str = "Spectral_r",
-    figsize: Optional[Tuple[int, int]] = None,
-    dpi: int = 150,
-    vmin: Optional[float] = None,
-    vmax: Optional[float] = None,
-    mask_geometries: Optional[List[Union[Polygon, MultiPolygon]]] = None
-    ) -> Tuple[plt.Figure, List[plt.Axes]]:
-    """
-    Plot several difference maps side-by-side for comparison.
-
-    Parameters
-    ----------
-    data_arrays : list of xr.DataArray
-        Difference fields to display.
-    titles : list of str
-        Titles for each subplot.
-    extent : tuple, optional
-        Bounding box for all subplots.
-    cmap : str, optional
-        Diverging colormap for differences.
-    figsize : tuple, optional
-        Figure size. If None, computed automatically.
-    dpi : int, optional
-        Output resolution.
-    symmetric : bool, optional
-        Force symmetric colorbar around zero.
-    vmin, vmax : float, optional
-        Manual color limits.
-
-    Returns
-    -------
-    fig : matplotlib.figure.Figure
-    axes : list of matplotlib.axes.Axes
-    """
-    n_plots = len(data_arrays)
-    if len(titles) != n_plots:
-        raise ValueError(f"Number of titles ({len(titles)}) must match number of data arrays ({n_plots})")
-
-    if n_plots == 0:
-        raise ValueError("Must provide at least one data array to plot")
-
-    # Determine layout
-    if n_plots <= 3:
-        nrows, ncols = 1, n_plots
-    else:
-        ncols = 3
-        nrows = int(np.ceil(n_plots / ncols))
-
-    # Auto compute figsize
-    if figsize is None:
-        figsize = (6 * ncols, 5 * nrows)
-
-    # Symmetric color scale
-    if vmin is None or vmax is None:
-        values = np.hstack([da.values.flatten() for da in data_arrays])
-        values = values[np.isfinite(values)]
-        if len(values) > 0:
-            abs_max = np.max(np.abs(values))
-            vmin = 0 if vmin is None else vmin
-            vmax = abs_max if vmax is None else vmax
-
-    # Make figure
-    fig, axes = plt.subplots(
-        nrows=nrows,
-        ncols=ncols,
-        figsize=figsize,
-        dpi=dpi,
-        subplot_kw={'projection': ccrs.PlateCarree()},
-        squeeze=False
-    )
-    axes_flat = axes.flatten()
-
-    # Plot each map
-    for idx, (da, title) in enumerate(zip(data_arrays, titles)):
-        ax = axes_flat[idx]
-        im = da.plot(
-            ax=ax,
-            transform=ccrs.PlateCarree(),
-            cmap=cmap,
-            vmin=vmin,
-            vmax=vmax,
-            add_colorbar=False
-        )
-
-        if extent:
-            cartopy_extent = [extent[idx][0], extent[idx][2], extent[idx][1], extent[idx][3]]
-            ax.set_extent(cartopy_extent, crs=ccrs.PlateCarree())
-
-        ax.set_title(title, fontsize=11, fontweight="bold")
-        ax.coastlines(linewidth=0.5)
-        ax.add_feature(cfeature.STATES, linewidth=0.3, edgecolor='black', alpha=0.5)
-    if mask_geometries is not None:
-        for idx, mask_geometry in enumerate(mask_geometries):
-            axes_flat[idx].add_geometries(
-                [mask_geometry],
-                crs=ccrs.PlateCarree(),
-                facecolor='none',
-                edgecolor='red',
-                linewidth=2,
-                alpha=0.8
-            )
-    # Hide unused subplots
-    for idx in range(n_plots, len(axes_flat)):
-        axes_flat[idx].set_visible(False)
-
-    # Add shared colorbar
-    cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
-    cbar = fig.colorbar(im, cax=cbar_ax)
-    name = data_arrays[0].name or "Difference"
-    units = getattr(data_arrays[0], "units", "")
-    cbar.set_label(f"{name} {f'({units})' if units else ''}")
-
-    plt.tight_layout(rect=[0, 0, 0.90, 1])
-
-    return fig, axes_flat[:n_plots].tolist()
-
-
-
 class GeocodingService:
     """Free geocoding using Nominatim (OpenStreetMap) with polygon and bounding box"""
 
@@ -705,6 +584,28 @@ class GeocodingService:
         self.cache = {}
         self.cache_ttl_seconds = cache_ttl_seconds
         self.last_request = 0
+        # Guards the read-modify-write on last_request below: geocode()
+        # (sync, sometimes run in a worker thread) and ageocode() (async, on
+        # the event loop) share this one throttle timestamp, and without
+        # coordination two concurrent calls can both read a stale value and
+        # both pass the 1 rps check at once -- Nominatim's usage policy 403s
+        # on exactly that. A threading.Lock (not asyncio.Lock) works for
+        # both paths because the critical section below is pure arithmetic,
+        # held for microseconds -- the actual wait happens after release, so
+        # the async path never blocks the event loop on a contended lock.
+        self._throttle_lock = threading.Lock()
+
+    def _reserve_throttle_slot(self) -> float:
+        """Atomically claim the next allowed request slot (>=1s after the
+        previously claimed one) and return how long the caller must still
+        wait for it. Shared by geocode()/ageocode() so concurrent calls from
+        either path always claim distinct, correctly-spaced slots instead of
+        both reading the same last_request before either updates it."""
+        with self._throttle_lock:
+            now = time.time()
+            next_slot = max(now, self.last_request + 1.0)
+            self.last_request = next_slot
+            return max(0.0, next_slot - now)
 
     def _cache_key(self, location_name: str) -> str:
         return " ".join(location_name.lower().strip().split())
@@ -736,9 +637,9 @@ class GeocodingService:
             return cached
 
         # Rate limit: 1 request per second
-        time_since_last = time.time() - self.last_request
-        if time_since_last < 1.0:
-            time.sleep(1.0 - time_since_last)
+        wait_seconds = self._reserve_throttle_slot()
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
 
         url = "https://nominatim.openstreetmap.org/search"
         params = {
@@ -751,7 +652,6 @@ class GeocodingService:
             'User-Agent': NOMINATIM_USER_AGENT
         }
 
-        self.last_request = time.time()
         logger.info("satellite_geocode_requests", extra={"_location": location_name})
 
         try:
@@ -796,9 +696,9 @@ class GeocodingService:
         if cached is not None:
             return cached
 
-        time_since_last = time.time() - self.last_request
-        if time_since_last < 1.0:
-            await asyncio.sleep(1.0 - time_since_last)
+        wait_seconds = self._reserve_throttle_slot()
+        if wait_seconds > 0:
+            await asyncio.sleep(wait_seconds)
 
         url = "https://nominatim.openstreetmap.org/search"
         params = {
@@ -809,7 +709,6 @@ class GeocodingService:
         }
         headers = {'User-Agent': NOMINATIM_USER_AGENT}
 
-        self.last_request = time.time()
         logger.info("satellite_geocode_requests", extra={"_location": location_name})
 
         try:
@@ -1001,28 +900,5 @@ class RegionResolver:
             title=title,
             extent=region['bounds'],
             mask_geometry=region['geometry'],
-            **kwargs
-        )
-    def plot_multiple(self, data_array, location_names, **kwargs):
-        """Plot data for multiple locations for comparison"""
-        regions = []
-        for name in location_names:
-            region = self.resolve_location(name)
-            if region:
-                regions.append(region)
-
-        data_arrays = [
-            mask_data_by_geometry(data_array, r['geometry'])
-            for r in regions
-        ]
-        titles = [r['name'] for r in regions]
-        extents = [r['bounds'] for r in regions]
-        geometries = [r['geometry'] for r in regions]
-
-        return plot_diff_maps(
-            data_arrays,
-            titles,
-            extent=extents,
-            mask_geometries=geometries,
             **kwargs
         )

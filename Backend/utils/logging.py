@@ -26,6 +26,15 @@ class JsonFormatter(logging.Formatter):
 
 def configure_logging(settings: Settings | None = None) -> None:
     settings = settings or get_settings()
+    # langchain_google_genai logs "Key '...' is not supported in schema,
+    # ignoring" at WARNING for every unrecognized JSON-schema keyword in a
+    # tool's pydantic model -- known-benign (the schema still converts fine),
+    # but frequent enough to drown real WARNING/ERROR log signal. Set above
+    # the root/settings level regardless of it, and unconditionally (not
+    # just on first configure_logging() call) since tests and reconfigures
+    # must not let it slip back to WARNING.
+    logging.getLogger("langchain_google_genai").setLevel(logging.ERROR)
+
     root = logging.getLogger()
     if root.handlers:
         root.setLevel(settings.log_level)
