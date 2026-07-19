@@ -718,7 +718,12 @@ def _band_mean_fact(band, leaf, role, region, *, pct_of_science=None):
     valid_count = int(valid.sum())
     if valid_count == 0:
         return None
-    mean_val = float(np.mean(vals[valid]))
+    # Cos(latitude) area-weighted, the SAME regional-mean definition as the
+    # headline science mean (Finding #13) -- an unweighted grid-cell mean
+    # over-weights poleward pixels, so context/uncertainty evidence over a
+    # continental region would silently disagree with the value it qualifies.
+    # Falls back to the unweighted mean when the band has no latitude dim.
+    mean_val = area_weighted_mean(cropped)
     fact = {
         "name": leaf,
         "role": role,
@@ -789,11 +794,14 @@ def _evidence(ds, da, col_info: dict | None, region: dict | None) -> list[dict]:
     facts: list[dict] = []
     science_leaf = _evi_leaf(da.name)
 
-    # The masked science mean, for uncertainty-as-percent-of-science.
+    # The masked science mean, for uncertainty-as-percent-of-science. Cos-lat
+    # area-weighted (Finding #13) so the pct-of-science ratio divides a
+    # weighted band mean by a weighted science mean -- like by like -- rather
+    # than mixing a weighted numerator with an unweighted denominator.
     try:
-        science_vals = np.asarray(da.values, dtype="float64")
-        finite = science_vals[np.isfinite(science_vals)]
-        science_mean = float(np.mean(finite)) if finite.size else None
+        finite = np.asarray(da.values, dtype="float64")
+        finite = finite[np.isfinite(finite)]
+        science_mean = area_weighted_mean(da) if finite.size else None
     except Exception:
         science_mean = None
 

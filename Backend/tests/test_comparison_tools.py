@@ -355,6 +355,34 @@ class RegionStatsTests(unittest.TestCase):
 
         self.assertIsNone(_region_stats(da))
 
+    def test_extremes_disclose_the_field_they_summarize(self):
+        """Finding #12: compare region max/min are order statistics of the
+        *period-mean* field (compare always time-means each side), so they sit
+        below the instantaneous peak. A bare "Max"/"Min" label invites reading
+        them as the true peak/trough. When the caller names the field basis, the
+        stats disclose it so the label can be qualified rather than bare."""
+        import xarray as xr
+        from tools.satellite_tools.comparison_tools import _region_stats
+
+        da = xr.DataArray([[1.0, 2.0], [3.0, 4.0]], dims=("lat", "lon"))
+
+        stats = _region_stats(da, basis="period-mean")
+
+        self.assertEqual(stats["basis"], "period-mean")
+        # The bare values are unchanged; only their provenance is disclosed.
+        self.assertEqual(stats["max"], 4.0)
+        self.assertEqual(stats["min"], 1.0)
+
+    def test_basis_is_omitted_when_the_caller_does_not_name_one(self):
+        """Regression: the disclosure is additive — a caller that doesn't name
+        a field basis (a plain snapshot) gets the original stats shape."""
+        import xarray as xr
+        from tools.satellite_tools.comparison_tools import _region_stats
+
+        stats = _region_stats(xr.DataArray([[1.0, 2.0], [3.0, 4.0]], dims=("lat", "lon")))
+
+        self.assertNotIn("basis", stats)
+
 
 @unittest.skipIf(
     any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
@@ -699,6 +727,10 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
         expected_newark = ((1.0 + 2.0) * w10 + (3.0 + 4.0) * w20) / (2 * (w10 + w20))
         self.assertAlmostEqual(full["stats"]["Newark"]["mean"], expected_newark)
         self.assertAlmostEqual(full["stats"]["Philly"]["mean"], 10.0 * expected_newark)
+        # Finding #12: each region's extremes disclose they summarize the
+        # period-mean map, not the instantaneous peak.
+        self.assertEqual(full["stats"]["Newark"]["basis"], "period-mean")
+        self.assertEqual(full["stats"]["Philly"]["basis"], "period-mean")
         self.assertNotIn("difference", full)
 
         # T23: each panel gets its own rendered overlay, colorized against

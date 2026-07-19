@@ -109,6 +109,64 @@ class RenderScopeNoteTests(unittest.TestCase):
 
         self.assertIsNone(note)
 
+    def test_canonicalization_suffix_is_not_a_false_substitution(self):
+        """Finding #10: the geocoder canonicalizes "California" to
+        "California, United States". Same place, extra detail — the delivered
+        region only appends a canonicalization suffix, so it must NOT read as a
+        substitution ("you asked about California, but ... California, United
+        States")."""
+        from config.error_templates import render_scope_note
+
+        note = render_scope_note(
+            {"location": "California", "time_range": "2024-07-01/2024-07-31"},
+            {
+                "region_name": "California, United States",
+                "start_date": "2024-07-01T00:00:00",
+                "end_date": "2024-07-31T00:00:00",
+                "cadence": "monthly",
+            },
+        )
+
+        self.assertIsNone(note)
+
+    def test_an_abbreviated_component_is_not_a_false_substitution(self):
+        """Finding #10: "Los Angeles, CA" and the canonical "Los Angeles,
+        California, United States" name the same place — the leading locality
+        matches, so the mid-string CA→California expansion is not a
+        substitution."""
+        from config.error_templates import render_scope_note
+
+        note = render_scope_note(
+            {"location": "Los Angeles, CA", "time_range": "2024-07-01/2024-07-31"},
+            {
+                "region_name": "Los Angeles, California, United States",
+                "start_date": "2024-07-01T00:00:00",
+                "end_date": "2024-07-31T00:00:00",
+                "cadence": "monthly",
+            },
+        )
+
+        self.assertIsNone(note)
+
+    def test_a_genuine_region_substitution_still_warns(self):
+        """Finding #10 must not silence real substitutions: a request for one
+        place answered with a different place still names both."""
+        from config.error_templates import render_scope_note
+
+        note = render_scope_note(
+            {"location": "California", "time_range": "2024-07-01/2024-07-31"},
+            {
+                "region_name": "Nevada, United States",
+                "start_date": "2024-07-01T00:00:00",
+                "end_date": "2024-07-31T00:00:00",
+                "cadence": "monthly",
+            },
+        )
+
+        self.assertIsNotNone(note)
+        self.assertIn("California", note)
+        self.assertIn("Nevada", note)
+
 
 if __name__ == "__main__":
     unittest.main()

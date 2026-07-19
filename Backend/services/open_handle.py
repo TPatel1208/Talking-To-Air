@@ -558,8 +558,33 @@ def _synthesize_member_time_coord(ds: Any) -> Any:
     candidates = [d for d in ds.dims if str(d).lower() == "time" and ds.sizes[d] == 1]
     if candidates:
         ds = ds.rename({candidates[0]: "time"})
-        return ds.assign_coords({"time": [timestamp]})
+        # Preserve a real per-granule time coordinate the differently-cased dim
+        # already carried (Finding #15): only OMI_MINDS_NO2d's case -- a Time
+        # dim with no coordinate variable -- needs the attr timestamp. When the
+        # dim already indexes a real datetime (a genuine overpass time),
+        # overwriting it with the attr date's (midnight) stamp would collapse
+        # two same-day granules to identical timestamps, and _order_bundle_time
+        # would dedup one away -- halving a "daily average" from real distinct
+        # observations.
+        if not _has_real_time_coord(ds):
+            ds = ds.assign_coords({"time": [timestamp]})
+        return ds
     return ds.expand_dims(time=[timestamp])
+
+
+def _has_real_time_coord(ds: Any) -> bool:
+    """Whether ``ds`` already carries a genuine datetime ``time`` coordinate
+    (an indexed datetime64 with at least one non-NaT value) -- as opposed to a
+    bare dimension or an integer index that only *names* time. Synthesis fills
+    the latter but must never clobber the former (Finding #15)."""
+    import numpy as np
+
+    if "time" not in ds.coords:
+        return False
+    values = np.asarray(ds["time"].values)
+    if not np.issubdtype(values.dtype, np.datetime64):
+        return False
+    return not bool(np.all(np.isnat(values)))
 
 
 def _strip_concat_unsafe_coord_attrs(ds: Any) -> Any:

@@ -53,6 +53,51 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertEqual(result.meta["granule_dates"], ["2024-01-01", "2024-01-03"])
         self.assertEqual(float(da.sel(lat=40.0, lon=-75.0)), 3.0)
 
+    def test_clustered_granules_are_cadence_weighted_not_over_counted(self):
+        """Finding #11: 'average over the period' must weight each cadence
+        bucket equally, not each granule. Three granules on 2024-01-01 (value
+        10) and one on 2024-01-02 (value 0): the naive per-granule mean is
+        (10+10+10+0)/4 = 7.5, over-weighting the dense first day. The
+        cadence-weighted (per-day) mean is (10 + 0)/2 = 5.0."""
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset(
+            {"no2": (("time", "lat", "lon"), self.np.array([
+                [[10.0]], [[10.0]], [[10.0]], [[0.0]],
+            ]))},
+            coords={
+                "time": [
+                    "2024-01-01T06:00:00", "2024-01-01T12:00:00",
+                    "2024-01-01T18:00:00", "2024-01-02T12:00:00",
+                ],
+                "lat": [40.0], "lon": [-75.0],
+            },
+            attrs={"cadence": "daily"},
+        )
+
+        result = AggregationService().aggregate(ds, stat="mean", variable="no2", col_info=self.col_info)
+
+        self.assertAlmostEqual(float(result.ds["no2"].sel(lat=40.0, lon=-75.0)), 5.0)
+
+    def test_evenly_cadenced_granules_are_unchanged_by_weighting(self):
+        """Finding #11 guard: one granule per cadence bucket weights every day
+        equally already, so the cadence-weighted mean equals the plain mean --
+        the fix only moves clustered sampling, never evenly-spaced series."""
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset(
+            {"no2": (("time", "lat", "lon"), self.np.array([[[3.0]], [[6.0]], [[9.0]]]))},
+            coords={
+                "time": ["2024-01-01", "2024-01-02", "2024-01-03"],
+                "lat": [40.0], "lon": [-75.0],
+            },
+            attrs={"cadence": "daily"},
+        )
+
+        result = AggregationService().aggregate(ds, stat="mean", variable="no2", col_info=self.col_info)
+
+        self.assertAlmostEqual(float(result.ds["no2"].sel(lat=40.0, lon=-75.0)), 6.0)
+
     def test_all_stats_supported_and_invalid_stat_raises(self):
         from preprocessing.aggregation_service import AggregationService
 
@@ -303,6 +348,51 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertEqual(meta["start_date"], "2024-06-01")
         self.assertEqual(meta["end_date"], "2024-06-02")
         self.assertEqual(meta["granule_dates"], ["2024-06-01", "2024-06-02"])
+
+    def test_twelve_clustered_monthly_granules_are_not_labeled_annual(self):
+        """Finding #14: "Annual" is inferred from a granule *count* of 12, not
+        the date *span*. Twelve monthly-cadence granules clustered inside a
+        single month (reprocessed/overlapping) span days, not a year -- calling
+        that "Annual" is a false provenance claim. The label must reflect the
+        real span instead."""
+        from preprocessing.aggregation_service import AggregationService
+
+        clustered = [f"2024-01-{d:02d}" for d in range(1, 13)]  # 12 granules, 11-day span
+        da = self.xr.DataArray(
+            self.np.arange(12.0).reshape(12, 1, 1),
+            dims=("time", "lat", "lon"),
+            coords={"time": clustered, "lat": [40.0], "lon": [-75.0]},
+            name="no2",
+            attrs={"cadence": "monthly"},
+        )
+
+        meta = AggregationService().timeseries_aggregation_meta(
+            da, valid_indices=list(range(12)), stat="mean", time_dim="time", col_info=self.col_info,
+        )
+
+        self.assertNotIn("Annual", meta["aggregation_label"])
+        self.assertIn("2024-01-01 to 2024-01-12", meta["aggregation_label"])
+
+    def test_twelve_monthly_granules_spanning_a_year_are_labeled_annual(self):
+        """Finding #14 guard: a real year of monthly means (span ~a year) must
+        still read "Annual" -- the fix narrows the label to genuine spans, it
+        doesn't remove it."""
+        from preprocessing.aggregation_service import AggregationService
+
+        annual = [f"2023-{m:02d}-01" for m in range(6, 13)] + [f"2024-{m:02d}-01" for m in range(1, 6)]
+        da = self.xr.DataArray(
+            self.np.arange(12.0).reshape(12, 1, 1),
+            dims=("time", "lat", "lon"),
+            coords={"time": annual, "lat": [40.0], "lon": [-75.0]},
+            name="no2",
+            attrs={"cadence": "monthly"},
+        )
+
+        meta = AggregationService().timeseries_aggregation_meta(
+            da, valid_indices=list(range(12)), stat="mean", time_dim="time", col_info=self.col_info,
+        )
+
+        self.assertIn("Annual", meta["aggregation_label"])
 
     def test_to_dataarray_returns_the_single_data_var_with_no_choice_needed(self):
         from preprocessing.aggregation_service import AggregationService

@@ -86,7 +86,8 @@ class EvidenceComputationTests(unittest.TestCase):
         cloud = self._fact(facts, "radiative_cloud_frac")
         self.assertEqual(cloud["role"], "context")
         self.assertEqual(cloud["stat"], "mean")
-        self.assertAlmostEqual(cloud["value"], 0.1)  # mean of 0.0,0.1,0.2,0.1
+        # cos-lat area-weighted mean of 0.0,0.1 (lat 10) and 0.2,0.1 (lat 20).
+        self.assertAlmostEqual(cloud["value"], 0.098828, places=6)
         self.assertEqual(cloud["units"], "1")
         self.assertAlmostEqual(cloud["coverage"], 1.0)
 
@@ -96,6 +97,33 @@ class EvidenceComputationTests(unittest.TestCase):
         # good=[0]: 3 of 4 pixels flag==0 -> 0.75 pass rate, full coverage.
         self.assertAlmostEqual(qa["value"], 0.75)
         self.assertAlmostEqual(qa["coverage"], 1.0)
+
+    def test_context_band_mean_is_cos_latitude_area_weighted(self):
+        """Finding #13: the companion band mean must be cos(latitude)
+        area-weighted, the SAME regional-mean definition as the headline
+        science mean -- an unweighted grid-cell mean over-weights poleward
+        pixels. Over a band with 10.0 at the equator and 0.0 at 80N, the
+        unweighted mean is 5.0; the area-weighted mean is ~8.52 (the equatorial
+        cells carry ~5.8x the weight of the shrunken 80N cells)."""
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import _evidence
+
+        ds = _dataset(
+            xr,
+            {
+                "column_amount_o3": (("lat", "lon"), [[300.0, 300.0], [300.0, 300.0]], {"units": "DU"}),
+                "radiative_cloud_frac": (("lat", "lon"), [[10.0, 10.0], [0.0, 0.0]], {"units": "1"}),
+            },
+            lat=(0.0, 80.0),
+        )
+        da = ds["column_amount_o3"]
+        col_info = {"short_name": "TEMPO_O3TOT_L3", "primary_var": "column_amount_o3"}
+
+        facts = _evidence(ds, da, col_info, _global_region())
+        cloud = self._fact(facts, "radiative_cloud_frac")
+
+        self.assertIsNotNone(cloud)
+        self.assertAlmostEqual(cloud["value"], 8.52, places=2)
 
     def test_context_band_fill_lowers_coverage_and_is_excluded_from_the_mean(self):
         import xarray as xr
@@ -115,7 +143,9 @@ class EvidenceComputationTests(unittest.TestCase):
 
         cloud = self._fact(facts, "radiative_cloud_frac")
         self.assertIsNotNone(cloud)
-        self.assertAlmostEqual(cloud["value"], 0.2)   # fill excluded, not averaged in
+        # Fill excluded; area-weighted mean of the two real cells 0.1 (lat 10)
+        # and 0.3 (lat 20) -- weighting nudges it just below the plain 0.2.
+        self.assertAlmostEqual(cloud["value"], 0.197656, places=6)
         self.assertLess(cloud["coverage"], 1.0)
         self.assertAlmostEqual(cloud["coverage"], 0.5)
 
@@ -172,9 +202,13 @@ class EvidenceComputationTests(unittest.TestCase):
         unc = self._fact(facts, "vertical_column_troposphere_uncertainty")
         self.assertIsNotNone(unc)
         self.assertEqual(unc["role"], "quality")
-        self.assertAlmostEqual(unc["value"], 0.5)          # mean of 0.2,0.4,0.6,0.8
+        # Area-weighted mean of 0.2,0.4,0.6,0.8 over lat 10/20.
+        self.assertAlmostEqual(unc["value"], 0.495311, places=6)
         self.assertIn("pct_of_science", unc)
-        self.assertAlmostEqual(unc["pct_of_science"], 0.1)  # 0.5 / 5.0 (science mean)
+        # Weighted unc / weighted science (4.953115) -- both weighted the same
+        # way, so the ratio is exactly 0.1 (0.2:2, 0.4:4, ... uncertainty is a
+        # flat 10% of science in every cell).
+        self.assertAlmostEqual(unc["pct_of_science"], 0.1)
         # No context band exists -> none invented.
         self.assertFalse(any(f["role"] == "context" for f in facts))
 
@@ -241,11 +275,11 @@ class EvidenceComputationTests(unittest.TestCase):
         unc_fact = self._fact(facts, "vertical_column_troposphere_uncertainty")
         self.assertIsNotNone(unc_fact)
         # per-pixel time-mean: cell(0,0)=mean(2,10)=6, the rest=mean(2,NaN)=2;
-        # space-mean over the region = (6+2+2+2)/4 = 3.0 -- NOT the raw stack
-        # mean of 18/5 = 3.6.
-        self.assertAlmostEqual(unc_fact["value"], 3.0)
+        # cos-lat area-weighted space-mean over the region ~= 3.023 -- NOT the
+        # raw stack mean of 18/5 = 3.6, and (with weighting) just off a flat 3.0.
+        self.assertAlmostEqual(unc_fact["value"], 3.023443, places=6)
         # And pct-of-science divides that time-mean by the science time-mean 5.0.
-        self.assertAlmostEqual(unc_fact["pct_of_science"], 0.6)
+        self.assertAlmostEqual(unc_fact["pct_of_science"], 0.6047, places=4)
 
     def test_zero_science_mean_keeps_the_uncertainty_fact_without_pct(self):
         """An anomaly/difference-style science field can legitimately average
@@ -257,8 +291,10 @@ class EvidenceComputationTests(unittest.TestCase):
         from tools.satellite_tools.plot_tools import _evidence
 
         ds = _dataset(xr, {
+            # Symmetric within each latitude row so the area-weighted mean is
+            # exactly 0.0 regardless of the cos-lat weights (each row sums to 0).
             "vertical_column_troposphere": (
-                ("lat", "lon"), [[-2.0, -4.0], [2.0, 4.0]], {"units": "molecules/cm^2"},
+                ("lat", "lon"), [[-2.0, 2.0], [-4.0, 4.0]], {"units": "molecules/cm^2"},
             ),
             "vertical_column_troposphere_uncertainty": (
                 ("lat", "lon"), [[0.2, 0.4], [0.6, 0.8]], {"units": "molecules/cm^2"},
@@ -270,7 +306,7 @@ class EvidenceComputationTests(unittest.TestCase):
 
         unc = self._fact(facts, "vertical_column_troposphere_uncertainty")
         self.assertIsNotNone(unc)
-        self.assertAlmostEqual(unc["value"], 0.5)
+        self.assertAlmostEqual(unc["value"], 0.495311, places=6)  # area-weighted
         self.assertNotIn("pct_of_science", unc)
 
     def test_qa_pass_rate_reuses_the_same_flag_and_good_values_masking_resolves(self):

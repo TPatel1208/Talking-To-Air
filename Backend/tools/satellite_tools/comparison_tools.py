@@ -190,22 +190,32 @@ def _anomaly_stats(da_a, da_b, diff, threshold: float | None) -> dict:
     return stats
 
 
-def _region_stats(da) -> dict | None:
+def _region_stats(da, *, basis: str | None = None) -> dict | None:
     """Basic descriptive stats over da's valid cells, or None if none are
     valid. The mean is cos(latitude) area-weighted (``area_weighted_mean``);
     median/max/min are order statistics, which weighting doesn't move enough
-    to justify a weighted-quantile dependency."""
+    to justify a weighted-quantile dependency.
+
+    ``basis`` names the field these stats summarize (Finding #12). Compare
+    always time-means each side, so max/min are the extremes of the
+    *period-mean* map — below the instantaneous peak/trough. Disclosing the
+    basis lets the label read "Max (period-mean)" instead of a bare "Max" that
+    invites reading it as the true peak. Omitted (no key) when unnamed, so the
+    stats shape is unchanged for callers summarizing a plain snapshot."""
     values = np.asarray(da.values, dtype=float)
     valid = values[np.isfinite(values)]
     if valid.size == 0:
         return None
-    return {
+    stats = {
         "mean": area_weighted_mean(da),
         "median": float(np.median(valid)),
         "max": float(np.max(valid)),
         "min": float(np.min(valid)),
         "n_pixels": int(valid.size),
     }
+    if basis:
+        stats["basis"] = basis
+    return stats
 
 
 def _empty_overlap_error(da, label: str) -> str | None:
@@ -562,8 +572,11 @@ def _build_region_comparison(handle_a, handle_b, da_a, da_b, label_a, label_b, v
     prov_b = _compare_side_provenance(handle_b, da_b_2d, meta_b, variable_name, units)
     panel_a["provenance"] = prov_a
     panel_b["provenance"] = prov_b
-    stats_a = _region_stats(da_a_2d)
-    stats_b = _region_stats(da_b_2d)
+    # Both sides are period-mean maps (``_prepare_2d`` time-means), so disclose
+    # that basis on the extremes (Finding #12): a compare "Max" is the max of
+    # the averaged field, not the instantaneous peak.
+    stats_a = _region_stats(da_a_2d, basis="period-mean")
+    stats_b = _region_stats(da_b_2d, basis="period-mean")
 
     payload = {
         "type": "heatmap_multi",

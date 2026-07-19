@@ -877,6 +877,83 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("time", ds.coords)
         self.assertEqual(str(ds["time"].values[0])[:10], "2024-06-01")
 
+    def test_synthesis_preserves_a_real_datetime_coord_on_a_cased_time_dim(self):
+        """Finding #15: a differently-cased singleton ``Time`` dim can already
+        carry a *real* per-granule overpass time. Synthesis must rename it to
+        ``time`` and KEEP that coordinate -- overwriting it with the attr
+        date's (midnight) timestamp would flatten two same-day granules with
+        distinct overpass times to identical stamps, and the bundle dedup would
+        then drop one, halving a 'daily average'."""
+        import numpy as np
+        import xarray as xr
+        from services.open_handle import _synthesize_member_time_coord
+
+        ds = xr.Dataset(
+            {"no2": (("Time", "lat", "lon"), [[[1.0, 2.0], [3.0, 4.0]]])},
+            coords={
+                "Time": [np.datetime64("2024-06-01T13:30:00")],  # real overpass time
+                "lat": [40.0, 41.0],
+                "lon": [-75.0, -74.0],
+            },
+            attrs={"RangeBeginningDate": "2024-06-01"},  # date only -> would synth midnight
+        )
+
+        out = _synthesize_member_time_coord(ds)
+
+        self.assertIn("time", out.dims)
+        self.assertIn("time", out.coords)
+        self.assertEqual(out["time"].values[0], np.datetime64("2024-06-01T13:30:00"))
+
+    def test_synthesis_still_fills_a_cased_time_dim_that_carries_no_coordinate(self):
+        """The existing OMI_MINDS_NO2d shape -- a differently-cased singleton
+        ``Time`` dim with NO coordinate variable -- must still be renamed and
+        given the synthesized attr timestamp (Finding #15 preserves real
+        coords; it does not stop filling absent ones)."""
+        import xarray as xr
+        from services.open_handle import _synthesize_member_time_coord
+
+        ds = xr.Dataset(
+            {"no2": (("Time", "lat", "lon"), [[[1.0, 2.0], [3.0, 4.0]]])},
+            coords={"lat": [40.0, 41.0], "lon": [-75.0, -74.0]},  # Time dim has no coord
+            attrs={"RangeBeginningDate": "2024-06-01", "RangeBeginningTime": "00:00:00"},
+        )
+
+        out = _synthesize_member_time_coord(ds)
+
+        self.assertIn("time", out.coords)
+        self.assertEqual(str(out["time"].values[0])[:10], "2024-06-01")
+
+    async def test_same_day_granules_with_distinct_overpass_times_both_survive(self):
+        """Finding #15 end-to-end: two same-day granules whose real overpass
+        times live on a differently-cased ``Time`` dim must NOT be flattened to
+        one timestamp and deduped down to a single granule -- the daily mean
+        must see both observations."""
+        import numpy as np
+        import xarray as xr
+        from services.open_handle import open_handle
+
+        def _make(hour: int, minute: int):
+            def factory():
+                return xr.Dataset(
+                    {"no2": (("Time", "lat", "lon"), [[[1.0, 2.0], [3.0, 4.0]]])},
+                    coords={
+                        "Time": [np.datetime64(f"2024-06-01T{hour:02d}:{minute:02d}:00")],
+                        "lat": [40.0, 41.0],
+                        "lon": [-75.0, -74.0],
+                    },
+                    attrs={"RangeBeginningDate": "2024-06-01"},
+                )
+            return factory
+
+        self.volume.add_netcdf_bundle("obs_bundle_overpasses", {
+            "granule_am.nc4": {None: _make(13, 30)},
+            "granule_pm.nc4": {None: _make(18, 45)},
+        })
+
+        ds = await open_handle("obs_bundle_overpasses", self.tools)
+
+        self.assertEqual(ds.sizes["time"], 2)
+
     async def test_bundle_members_open_lazily_as_dask_chunks(self):
         """The memory contract behind the OOM fix: opening a bundle loads no
         member into RAM — each granule stays on disk as one dask chunk, so a

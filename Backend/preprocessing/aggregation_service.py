@@ -243,6 +243,7 @@ class AggregationService:
         # is still the one transparent auto-reduction, instead of surviving
         # into _normalize_to_2d as an unrecognized extra dimension.
         time_dim = identify_time(da)
+        cadence = self._cadence(data, collection_id, variable, col_info)
         if time_dim is None or time_dim not in da.dims:
             reduced = da
             valid_indices = [0]
@@ -254,13 +255,21 @@ class AggregationService:
                 valid_da = da.isel({time_dim: valid_indices})
                 if keep_time and valid_da.sizes.get(time_dim, 0) == 1:
                     reduced = valid_da
+                elif stat == "mean":
+                    # A temporal mean is "the average over the period", so each
+                    # cadence bucket must count equally -- not each granule
+                    # (Finding #11). Clustered sampling (20 granules on two days
+                    # plus one on a third) otherwise over-weights the dense days.
+                    # Evenly-cadenced series have one granule per bucket, so the
+                    # weights are uniform and the result is unchanged.
+                    reduced = self._cadence_weighted_mean(valid_da, time_dim, cadence)
                 else:
                     reduced = valid_da.reduce(self._STAT_FUNCS[stat], dim=time_dim)
 
         result_ds = reduced.to_dataset(name=da.name or variable or "value")
         result_ds.attrs.update(getattr(data, "attrs", {}))
         result_ds.attrs["n_granules"] = len(valid_indices)
-        result_ds.attrs["cadence"] = self._cadence(data, collection_id, variable, col_info)
+        result_ds.attrs["cadence"] = cadence
 
         # Global attrs are the temporal-fallback source for time-coordinate-less
         # granules; the tool layer's opened Dataset (source_ds) carries them
@@ -269,7 +278,7 @@ class AggregationService:
         for attr_source in (source_ds, data):
             source_attrs.update(getattr(attr_source, "attrs", None) or {})
         meta = self._build_meta(
-            data, len(valid_indices), self._cadence(data, collection_id, variable, col_info), stat, valid_indices, time_dim,
+            data, len(valid_indices), cadence, stat, valid_indices, time_dim,
             source_attrs=source_attrs,
         )
         meta["masking"] = masking_provenance
@@ -658,6 +667,42 @@ class AggregationService:
                 indices.append(i)
         return indices
 
+    # Cadence -> the pandas offset a timestamp is floored to when grouping
+    # granules into the buckets a temporal mean must weight equally (#11).
+    _CADENCE_FLOOR = {"hourly": "h", "daily": "D"}
+
+    def _cadence_weighted_mean(self, da: xr.DataArray, time_dim: str, cadence: str) -> xr.DataArray:
+        """Per-pixel temporal mean that weights each cadence bucket equally,
+        not each granule (Finding #11) -- so 'average over the period' is not
+        biased toward days sampled more densely than the cadence.
+
+        Each timestep's weight is ``1 / (granules in its cadence bucket)``, so
+        every bucket contributes weight 1 to the mean regardless of how many
+        granules landed in it. Buckets come from flooring the timestamp to the
+        product's cadence (hour/day/month). An unknown or unbucketable cadence
+        can't define a period, so it falls back to the plain unweighted mean --
+        as does an evenly-cadenced series, where every bucket holds exactly one
+        granule and the weights are already uniform.
+        """
+        if cadence not in ("hourly", "daily", "monthly"):
+            return da.reduce(np.nanmean, dim=time_dim)
+        try:
+            stamps = pd.to_datetime(np.asarray(da[time_dim].values))
+            if cadence == "monthly":
+                buckets = stamps.to_period("M")
+            else:
+                buckets = stamps.floor(self._CADENCE_FLOOR[cadence])
+            counts = pd.Series(1, index=buckets).groupby(level=0).transform("size")
+        except Exception:
+            # Non-datetime or otherwise unbucketable time axis -- never fatal.
+            return da.reduce(np.nanmean, dim=time_dim)
+        weights = xr.DataArray(
+            1.0 / np.asarray(counts.values, dtype=float),
+            dims=[time_dim],
+            coords={time_dim: da[time_dim]},
+        )
+        return da.weighted(weights).mean(dim=time_dim, skipna=True)
+
     def _collection_info(self, collection_id: str | None, variable: str | None) -> dict[str, Any]:
         registry = load_registry()
         if collection_id:
@@ -719,11 +764,18 @@ class AggregationService:
         else:
             granule_str = f"{n_granules} {cadence_label} granule{'s' if n_granules != 1 else ''}"
 
+        # A frequency period word ("Annual"/"Daily") is inferred from the
+        # granule *count*, but the count only implies a span under the assumed
+        # cadence -- reprocessed/overlapping granules break that assumption
+        # (Finding #14). Require the actual date span to match before applying
+        # the word, so 12 monthly granules clustered inside one month don't
+        # read "Annual", nor 10 hourly granules across a week read "Daily".
+        span_days = self._span_days(start, end)
         if n_granules <= 1:
             period = "Single Snapshot"
-        elif cadence == "monthly" and n_granules == 12:
+        elif cadence == "monthly" and n_granules == 12 and span_days is not None and span_days >= 300:
             period = "Annual"
-        elif cadence == "hourly" and n_granules >= 10:
+        elif cadence == "hourly" and n_granules >= 10 and span_days is not None and span_days <= 1:
             period = "Daily"
         elif start and end and start != end:
             period = f"{start} to {end}"
@@ -760,3 +812,16 @@ class AggregationService:
             return pd.Timestamp(value).isoformat()[:10]
         except Exception:
             return str(value)[:10]
+
+    @staticmethod
+    def _span_days(start: str, end: str) -> float | None:
+        """The calendar-day span between two ``_date_only`` strings, or None
+        when either is missing/unparseable (so a period-word guard falls back
+        to the explicit date range rather than a frequency word it can't
+        justify)."""
+        if not start or not end:
+            return None
+        try:
+            return (pd.Timestamp(end) - pd.Timestamp(start)).total_seconds() / 86400.0
+        except Exception:
+            return None

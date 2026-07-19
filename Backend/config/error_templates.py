@@ -113,6 +113,32 @@ def _requested_span(time_range: str | None) -> tuple[str | None, str | None]:
     return (start, end)
 
 
+def _place_key(name: str) -> str:
+    """The leading, casefolded locality of a place name — the part a geocoder
+    canonicalizes *around*, not the administrative suffix it appends. "Los
+    Angeles, CA" and "Los Angeles, California, United States" share the key
+    "los angeles"; "California" and "California, United States" share
+    "california". Whitespace is collapsed so spacing differences don't matter."""
+    leading = str(name).split(",", 1)[0]
+    return " ".join(leading.split()).casefold()
+
+
+def _same_place(requested: str, delivered: str) -> bool:
+    """Whether the delivered region is the same place the request named, only
+    canonicalized (Finding #10). Exact-string identity misfires on geocoder
+    canonicalization drift ("California" -> "California, United States") and on
+    abbreviation expansion inside the name ("Los Angeles, CA" -> "Los Angeles,
+    California, United States"), both of which fabricate a "substitution"
+    warning for the very place asked about. Matching on the leading locality
+    key treats those as the same place while a genuinely different region
+    (a different leading locality) still reads as a substitution."""
+    r_norm = " ".join(str(requested).split()).casefold()
+    d_norm = " ".join(str(delivered).split()).casefold()
+    if r_norm == d_norm:
+        return True
+    return _place_key(requested) == _place_key(delivered)
+
+
 def render_scope_note(requested_scope: dict | None, delivered_scope: dict | None) -> str | None:
     """A one-line disclosure when the delivered scope differs materially from
     the requested one, or ``None`` when they match (don't nag on an exact
@@ -145,7 +171,7 @@ def render_scope_note(requested_scope: dict | None, delivered_scope: dict | None
 
     requested_location = str(requested_scope.get("location") or "").strip()
     delivered_region = str(delivered_scope.get("region_name") or "").strip()
-    if requested_location and delivered_region and requested_location.lower() != delivered_region.lower():
+    if requested_location and delivered_region and not _same_place(requested_location, delivered_region):
         clauses.append(
             f"you asked about {requested_location}, but the data shown covers {delivered_region}"
         )
