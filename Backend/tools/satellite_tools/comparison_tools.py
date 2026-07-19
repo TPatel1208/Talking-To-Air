@@ -30,9 +30,12 @@ from preprocessing.aggregation_service import AggregationService, area_weighted_
 from services.open_handle import OpenHandleError, open_handle
 from tools.satellite_tools.plot_tools import (
     _da_to_heatmap_payload,
+    _delivered_scope,
     _normalize_longitudes,
     _percentile_bounds,
+    _requested_scope,
     _save_chart,
+    _time_range as _pt_time_range,
 )
 from utils.geo_utils import find_lat_coord, find_lon_coord
 from utils.plotting import _normalize_to_2d
@@ -288,13 +291,42 @@ def _mask_col_info(da, ds=None) -> dict:
 def _prepare_2d(da, variable_name: str, source_ds=None):
     """Apply quality masking and collapse to a single 2-D (lat, lon) snapshot
     (time-mean, matching plot_singular's default) so every side of a
-    comparison renders as one map."""
+    comparison renders as one map.
+
+    Returns ``(reduced_2d, agg_meta)``. The aggregation meta carries the
+    masking provenance ``aggregate()`` produced — including any QA-flag mask it
+    applied — so the comparison builders can *disclose* that masking instead of
+    silently swallowing it (T25/T46: compare must honor the same masking and
+    scope-echo doctrines the heatmap/timeseries paths do)."""
     col_info = _mask_col_info(da, source_ds)
     aggregation = _aggregation_service.aggregate(
         da, variable=variable_name, stat="mean", col_info=col_info, source_ds=source_ds,
     )
     reduced = next(iter(aggregation.ds.data_vars.values()))
-    return _normalize_to_2d(reduced)
+    return _normalize_to_2d(reduced), aggregation.meta
+
+
+def _compare_side_provenance(handle: str, da_2d, agg_meta: dict, variable_name: str, units: str) -> dict:
+    """Masking + T46 scope-echo provenance for one side of a comparison,
+    mirroring plot_tools._provenance's disclosure facts.
+
+    Carries the QA-flag ``masking`` ``aggregate()`` produced, the ``delivered_scope``
+    the data actually covers, and the ``requested_scope`` a composite recorded
+    for this handle (when one was recorded). The delivered scope's region name
+    is set from the recorded request rather than the panel label — compare never
+    re-geocodes, so the delivered region IS the requested one, and stamping the
+    period/panel label there would fire a spurious region-substitution note."""
+    requested = _requested_scope([handle])
+    start_date, end_date = _pt_time_range(da_2d, agg_meta)
+    region_name = str((requested or {}).get("location") or "")
+    return {
+        "variable": variable_name,
+        "units": units,
+        "source_handles": [handle],
+        "masking": agg_meta.get("masking"),
+        "delivered_scope": _delivered_scope(region_name, start_date, end_date, agg_meta),
+        "requested_scope": requested,
+    }
 
 
 def _bbox_from_da(da) -> list[float]:
@@ -501,12 +533,19 @@ def make_compare(mcp_tools: dict[str, BaseTool]):
 
 
 def _build_region_comparison(handle_a, handle_b, da_a, da_b, label_a, label_b, variable_name, units, ds_a=None, ds_b=None) -> str:
-    da_a_2d = _prepare_2d(da_a, variable_name, source_ds=ds_a)
-    da_b_2d = _prepare_2d(da_b, variable_name, source_ds=ds_b)
+    da_a_2d, meta_a = _prepare_2d(da_a, variable_name, source_ds=ds_a)
+    da_b_2d, meta_b = _prepare_2d(da_b, variable_name, source_ds=ds_b)
     vmin, vmax = _shared_bounds(da_a_2d, da_b_2d)
 
     panel_a = _region_panel(da_a_2d, handle_a, label_a, variable_name, units, vmin, vmax)
     panel_b = _region_panel(da_b_2d, handle_b, label_b, variable_name, units, vmin, vmax)
+    # Disclose each side's own masking + scope echo (T25/T46) on its panel, so a
+    # per-panel view stays honest; the top-level provenance mirrors side A for
+    # the dispatch-layer scope note (which reads a single chart.provenance).
+    prov_a = _compare_side_provenance(handle_a, da_a_2d, meta_a, variable_name, units)
+    prov_b = _compare_side_provenance(handle_b, da_b_2d, meta_b, variable_name, units)
+    panel_a["provenance"] = prov_a
+    panel_b["provenance"] = prov_b
     stats_a = _region_stats(da_a_2d)
     stats_b = _region_stats(da_b_2d)
 
@@ -518,6 +557,7 @@ def _build_region_comparison(handle_a, handle_b, da_a, da_b, label_a, label_b, v
         "units": units,
         "panels": [panel_a, panel_b],
         "stats": {label_a: stats_a, label_b: stats_b},
+        "provenance": prov_a,
         "metadata": {"source_handles": [handle_a, handle_b]},
     }
     return _save_chart(payload, f"{variable_name}_{label_a}_vs_{label_b}")
@@ -527,8 +567,8 @@ def _build_period_comparison(
     handle_a, handle_b, aligned_handle, aligned_a, aligned_b, label_a, label_b, variable_name, units, threshold,
     aligned_ds_a=None, aligned_ds_b=None,
 ) -> str:
-    da_a_2d = _prepare_2d(aligned_a, variable_name, source_ds=aligned_ds_a)
-    da_b_2d = _prepare_2d(aligned_b, variable_name, source_ds=aligned_ds_b)
+    da_a_2d, meta_a = _prepare_2d(aligned_a, variable_name, source_ds=aligned_ds_a)
+    da_b_2d, meta_b = _prepare_2d(aligned_b, variable_name, source_ds=aligned_ds_b)
     diff = _difference(da_a_2d, da_b_2d)
     stats = _anomaly_stats(da_a_2d, da_b_2d, diff, threshold)
 
@@ -539,6 +579,14 @@ def _build_period_comparison(
     )
     diff_payload["bounds"] = _bbox_from_da(diff)
 
+    # Disclose the masking aggregate() applied to each side, and the T46 scope
+    # echo, on the compare payload — the difference silently masked QA-flagged
+    # cells on both sides with zero provenance before. Both sides go through the
+    # same aligned product, so side A's masking is representative at top level;
+    # each period keeps its own on its panel.
+    prov_a = _compare_side_provenance(handle_a, da_a_2d, meta_a, variable_name, units)
+    prov_b = _compare_side_provenance(handle_b, da_b_2d, meta_b, variable_name, units)
+
     payload = {
         "type": "heatmap_multi",
         "mode": "difference",
@@ -546,11 +594,12 @@ def _build_period_comparison(
         "variable": variable_name,
         "units": units,
         "panels": [
-            {"title": label_a, "metadata": {"source_handles": [handle_a]}},
-            {"title": label_b, "metadata": {"source_handles": [handle_b]}},
+            {"title": label_a, "provenance": prov_a, "metadata": {"source_handles": [handle_a]}},
+            {"title": label_b, "provenance": prov_b, "metadata": {"source_handles": [handle_b]}},
         ],
         "difference": diff_payload,
         "stats": stats,
+        "provenance": prov_a,
         "sign_convention": f"{label_b} minus {label_a}",
         "metadata": {"source_handles": [handle_a, handle_b, aligned_handle]},
     }

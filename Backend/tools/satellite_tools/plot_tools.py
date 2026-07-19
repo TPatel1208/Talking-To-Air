@@ -133,6 +133,20 @@ def _percentile_bounds(arr: np.ndarray):
     return vmin, vmax
 
 
+def _half_cell(coords: np.ndarray) -> float:
+    """Half the (uniform) grid spacing of a 1-D coordinate axis, for extending
+    a pixel-center extent to its pixel-edge extent. Mirrors render_overlay_png's
+    resolution formula so overlay.bounds and the rendered raster agree: a
+    regular grid's step is (max - min) / (n - 1); a single-cell axis has no
+    spacing to measure, so it falls back to the 0.5° half-cell that
+    render_overlay_png assumes there (res default 1.0)."""
+    vals = np.asarray(coords, dtype=float)
+    finite = vals[np.isfinite(vals)]
+    if finite.size > 1:
+        return abs(float(finite.max()) - float(finite.min())) / (finite.size - 1) / 2.0
+    return 0.5
+
+
 _MAX_GRID_CELLS = 8_000   # match the frontend MAX_POINTS constant
 
 
@@ -246,10 +260,16 @@ def _da_to_heatmap_payload(
 
     # Full-native-resolution extent, captured before downsampling, for the
     # server-rendered overlay PNG (T23) — visual fidelity and interaction
-    # resolution are deliberately decoupled.
+    # resolution are deliberately decoupled. The bounds are pixel-EDGE, not
+    # pixel-center: render_overlay_png rasterizes edge-to-edge (left =
+    # lons[0] - res/2, …), so reporting center min/max here would pin an
+    # edge-to-edge PNG onto center-to-center bounds and misregister every
+    # pixel by up to half a cell (visible on coarse grids like GPM/MERRA-2).
+    lon_half = _half_cell(lons_out)
+    lat_half = _half_cell(lats_out)
     overlay_bounds = [
-        float(np.nanmin(lons_out)), float(np.nanmin(lats_out)),
-        float(np.nanmax(lons_out)), float(np.nanmax(lats_out)),
+        float(np.nanmin(lons_out)) - lon_half, float(np.nanmin(lats_out)) - lat_half,
+        float(np.nanmax(lons_out)) + lon_half, float(np.nanmax(lats_out)) + lat_half,
     ]
 
     colormap = resolve_colormap(variable, diverging=diverging)

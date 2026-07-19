@@ -110,7 +110,12 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         self.assertEqual(payload["colormap"]["name"], resolve("NO2", diverging=True).name)
         self.assertEqual(payload["colormap"]["name"], "RdBu_r")
 
-    def test_payload_attaches_overlay_bounds_from_the_full_resolution_extent(self):
+    def test_payload_attaches_edge_extended_overlay_bounds_matching_the_rendered_png(self):
+        # overlay.bounds must describe the raster's pixel-EDGE extent, because
+        # render_overlay_png rasterizes edge-to-edge (left = lons[0] - res/2,
+        # etc.). Reporting the pixel-CENTER min/max instead pins an edge-to-edge
+        # PNG onto center-to-center bounds, displacing every pixel up to half a
+        # cell on coarse grids and pushing edge rows outside the declared box.
         import numpy as np
         import xarray as xr
         from tools.satellite_tools.plot_tools import _da_to_heatmap_payload
@@ -123,7 +128,14 @@ class SatellitePlotPayloadTests(unittest.TestCase):
 
         payload = _da_to_heatmap_payload(da, "Extent", "NO2", "mol/m^2")
 
-        self.assertEqual(payload["overlay"]["bounds"], [-100.0, 10.0, -90.0, 20.0])
+        # lat step 5 -> half-cell 2.5 -> [7.5, 22.5]; lon step 10/3 -> half-cell
+        # 5/3 -> [-101.6667, -88.3333]. These are render_overlay_png's own
+        # left/bottom/right/top for this grid.
+        minx, miny, maxx, maxy = payload["overlay"]["bounds"]
+        self.assertAlmostEqual(minx, -100.0 - 5.0 / 3.0)
+        self.assertAlmostEqual(miny, 7.5)
+        self.assertAlmostEqual(maxx, -90.0 + 5.0 / 3.0)
+        self.assertAlmostEqual(maxy, 22.5)
         self.assertNotIn("_path", payload["overlay"])
 
     def test_value_range_override_drives_both_reported_bounds_and_overlay_colorization(self):

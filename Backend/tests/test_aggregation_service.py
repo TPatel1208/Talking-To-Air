@@ -916,6 +916,115 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertIn("2 granules", result.meta["aggregation_label"])
         self.assertNotIn("daily", result.meta["aggregation_label"])
 
+    def test_cf_valid_range_from_packed_attrs_is_scaled_before_masking_decoded_data(self):
+        """A scaled int product publishes ``valid_range`` in PACKED units, but
+        xarray's mask_and_scale decode leaves that attr untouched while decoding
+        the DATA to physical units and moving scale_factor/add_offset into
+        ``.encoding``. Comparing the physical field against the packed bound
+        (``da <= 30000``) wipes the entire real field. The CF bound must be
+        scaled to physical space first, so only genuinely out-of-range cells
+        drop."""
+        from preprocessing.aggregation_service import AggregationService
+
+        # scale_factor 2e13, valid_range packed [0, 30000] -> physical [0, 6e17].
+        da = self.xr.DataArray(
+            self.np.array([[2.0e13, 4.0e13], [6.0e13, 1.0e18]]),  # already decoded (physical)
+            dims=("lat", "lon"),
+            name="scaled_no2",
+            attrs={"valid_range": [0, 30000]},
+        )
+        da.encoding["scale_factor"] = 2.0e13
+        da.encoding["add_offset"] = 0.0
+
+        result = AggregationService().aggregate(da, variable="scaled_no2")
+        values = result.ds["scaled_no2"].values
+
+        # The three in-range physical values survive (packed bound scaled up).
+        self.assertEqual(values[0, 0], 2.0e13)
+        self.assertEqual(values[0, 1], 4.0e13)
+        self.assertEqual(values[1, 0], 6.0e13)
+        # Only the genuinely-too-large cell (> 6e17 physical) is masked.
+        self.assertTrue(self.np.isnan(values[1, 1]))
+
+    def test_cf_valid_range_scales_via_source_ds_encoding_when_the_working_array_lost_it(self):
+        """The real plot/stat path masks geometry with ``.where()`` *before*
+        aggregate, and ``.where()`` strips ``.encoding`` off the working array —
+        so scale_factor is only still reachable through the unmasked opened
+        Dataset (source_ds). resolve_and_mask must read the encoding from there,
+        or a decoded scaled product is wiped exactly where users plot it."""
+        from preprocessing.aggregation_service import AggregationService
+
+        source = self.xr.Dataset(
+            {"scaled_no2": (
+                ("lat", "lon"),
+                self.np.array([[2.0e13, 4.0e13], [6.0e13, 1.0e18]]),
+                {"valid_range": [0, 30000]},  # packed -> physical [0, 6e17]
+            )},
+            coords={"lat": [10.0, 20.0], "lon": [-100.0, -90.0]},
+        )
+        source["scaled_no2"].encoding["scale_factor"] = 2.0e13
+        source["scaled_no2"].encoding["add_offset"] = 0.0
+
+        # The working array is a .where()-derived view: same values, but its
+        # own .encoding has been dropped.
+        working = source["scaled_no2"].where(source["scaled_no2"].notnull())
+        self.assertNotIn("scale_factor", working.encoding)
+
+        masked, _ = AggregationService().resolve_and_mask(working, source_ds=source)
+        values = masked.values
+
+        self.assertEqual(values[0, 0], 2.0e13)  # survives — bound scaled to physical
+        self.assertTrue(self.np.isnan(values[1, 1]))  # 1e18 > 6e17
+
+    def test_apply_quality_mask_scales_packed_cf_valid_range_from_da_attrs(self):
+        """The direct apply_quality_mask fallback (no resolved col_info) reads
+        ``valid_range`` straight off ``da.attrs`` — also packed. It must scale
+        those bounds by the encoding's scale/offset too, or a decoded scaled
+        product is wiped."""
+        from preprocessing.aggregation_service import AggregationService
+
+        da = self.xr.DataArray(
+            self.np.array([[2.0e13, 6.0e13], [1.0e18, 4.0e13]]),  # decoded/physical
+            dims=("y", "x"),
+            name="scaled_v",
+            attrs={"valid_range": [0, 30000]},  # packed -> physical [0, 6e17]
+        )
+        da.encoding["scale_factor"] = 2.0e13
+        da.encoding["add_offset"] = 0.0
+
+        masked = AggregationService().apply_quality_mask(da, col_info={})
+        values = masked.values
+
+        self.assertEqual(values[0, 0], 2.0e13)
+        self.assertEqual(values[0, 1], 6.0e13)
+        self.assertEqual(values[1, 1], 4.0e13)
+        self.assertTrue(self.np.isnan(values[1, 0]))  # 1e18 > 6e17 physical
+
+    def test_apply_quality_mask_does_not_scale_physical_col_info_bounds(self):
+        """A scaled product can still carry a curated *physical* valid range in
+        col_info (registry/UMM-Var). Those bounds are already in the decoded
+        field's units — scaling them by the encoding would be a double-apply
+        that wrongly nukes the field. col_info bounds are used verbatim."""
+        from preprocessing.aggregation_service import AggregationService
+
+        da = self.xr.DataArray(
+            self.np.array([[2.0e13, 6.0e13], [8.0e17, 4.0e13]]),  # decoded/physical
+            dims=("y", "x"),
+            name="scaled_v",
+        )
+        da.encoding["scale_factor"] = 2.0e13
+        da.encoding["add_offset"] = 0.0
+
+        masked = AggregationService().apply_quality_mask(
+            da, col_info={"valid_min": 0.0, "valid_max": 6.0e17},  # already physical
+        )
+        values = masked.values
+
+        self.assertEqual(values[0, 0], 2.0e13)
+        self.assertEqual(values[0, 1], 6.0e13)
+        self.assertEqual(values[1, 1], 4.0e13)
+        self.assertTrue(self.np.isnan(values[1, 0]))  # 8e17 > physical valid_max
+
 
 if __name__ == "__main__":
     unittest.main()

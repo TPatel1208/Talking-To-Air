@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from datasets.mask_info import match_umm_var_variable, resolve_mask_info
+from datasets.mask_info import SOURCE_CF_ATTRS, match_umm_var_variable, resolve_mask_info
 from datasets.qa_flags import (
     QA_CF_DETERMINISTIC,
     QA_INFERRED,
@@ -79,6 +79,58 @@ def fill_match(values: Any, fill: Any) -> Any:
     if fill_f.is_integer():
         return values == fill_f
     return np.isclose(values, fill_f, rtol=1e-6, atol=1e-9)
+
+
+def _decode_encoding(da: xr.DataArray, source_ds: xr.Dataset | None = None) -> dict:
+    """The scale/offset encoding xarray recorded when it decoded ``da``.
+
+    Prefers the *unmasked* source Dataset's copy of the variable: in-place ops
+    the tool layer runs before masking — ``.where()`` (geometry mask), ``.sel()``
+    (crop) — strip ``.encoding`` off the working array, but the opened Dataset
+    (``source_ds``) still carries it. Falls back to the array's own encoding
+    (compare's aligned slices reach masking without a geometry ``.where``, so
+    theirs survives)."""
+    if source_ds is not None and hasattr(source_ds, "data_vars"):
+        var = source_ds.data_vars.get(da.name)
+        enc = getattr(var, "encoding", None) or {}
+        if "scale_factor" in enc or "add_offset" in enc:
+            return enc
+    return getattr(da, "encoding", None) or {}
+
+
+def _scale_cf_bounds_to_physical(
+    da: xr.DataArray, valid_min: Any, valid_max: Any, source_ds: xr.Dataset | None = None,
+) -> tuple[Any, Any]:
+    """Convert a variable's CF ``valid_min``/``valid_max`` from PACKED to
+    physical units when xarray has scale/offset-decoded the data.
+
+    CF publishes ``valid_range``/``valid_min``/``valid_max`` in the file's
+    stored (packed) integer units. xarray's default ``mask_and_scale`` decode
+    turns the DATA into physical units and moves ``scale_factor``/``add_offset``
+    out of ``.attrs`` into ``.encoding`` — but it leaves the valid-range attrs
+    packed. Masking the decoded field against a packed bound (``da <= 30000``
+    on a field that now runs ~0–6e17) silently wipes the entire real variable.
+
+    Scaling is keyed off ``.encoding`` presence, not ``.attrs``: encoding
+    carries scale/offset iff xarray actually decoded the data, so an undecoded
+    (still-packed) array — whose bounds are already commensurable — is left
+    untouched. A no-op when the variable was never scale/offset-decoded, so
+    registry/UMM-Var bounds (already physical) never reach this path.
+    """
+    encoding = _decode_encoding(da, source_ds)
+    scale = encoding.get("scale_factor")
+    offset = encoding.get("add_offset")
+    if scale is None and offset is None:
+        return valid_min, valid_max
+    s = float(scale) if scale is not None else 1.0
+    o = float(offset) if offset is not None else 0.0
+    lo = valid_min * s + o if valid_min is not None else None
+    hi = valid_max * s + o if valid_max is not None else None
+    # A negative scale_factor flips the ordering — a packed lower bound becomes
+    # the physical upper bound. Reorder so valid_min <= valid_max downstream.
+    if lo is not None and hi is not None and lo > hi:
+        lo, hi = hi, lo
+    return lo, hi
 
 
 def _sample_std(a: Any, **kwargs: Any) -> Any:
@@ -287,6 +339,21 @@ class AggregationService:
             yaml_info=yaml_info, umm_var_variable=umm_var_variable, cf_attrs=da.attrs,
         )
 
+        # CF valid-range bounds are packed; the decoded data is physical. When
+        # the CF-attrs tier supplied the bounds, scale them to physical before
+        # apply_quality_mask compares them against the decoded field (registry/
+        # UMM-Var tiers are already physical, so only the cf_attrs tier is
+        # rescaled).
+        if masking_provenance.get("valid_range_source") == SOURCE_CF_ATTRS:
+            scaled_min, scaled_max = _scale_cf_bounds_to_physical(
+                da, resolved_col_info.get("valid_min"), resolved_col_info.get("valid_max"),
+                source_ds=source_ds,
+            )
+            if scaled_min is not None:
+                resolved_col_info["valid_min"] = scaled_min
+            if scaled_max is not None:
+                resolved_col_info["valid_max"] = scaled_max
+
         # T25 Phase 3: three-tier QA masking (datasets/qa_flags.py) -- a
         # pinned collections.yaml rule, else the sibling flag variable's own
         # CF flag_values/flag_meanings parsed deterministically (falling
@@ -478,15 +545,24 @@ class AggregationService:
             umm_var_variable = match_umm_var_variable(umm_var_facts, variable or da.name)
             col_info, _ = resolve_mask_info(yaml_info=col_info, umm_var_variable=umm_var_variable, cf_attrs=da.attrs)
         actual_fill = col_info.get("fill_value", da.attrs.get("_FillValue"))
-        valid_min = col_info.get("valid_min", da.attrs.get("valid_min"))
-        valid_max = col_info.get("valid_max", da.attrs.get("valid_max"))
+        valid_min = col_info.get("valid_min")
+        valid_max = col_info.get("valid_max")
         if valid_min is None and valid_max is None:
-            # CF's combined ``valid_range: [min, max]`` spelling — published
-            # INSTEAD of valid_min/valid_max by plenty of NASA products, and
-            # not applied by xarray on decode (see mask_info's CF tier).
+            # No resolved (physical) bound from col_info — fall back to the
+            # file's own CF attrs: valid_min/valid_max, or the combined
+            # ``valid_range: [min, max]`` spelling plenty of NASA products
+            # publish instead (neither applied by xarray on decode). These are
+            # in PACKED units, so scale them to physical to match the decoded
+            # field before comparison (see _scale_cf_bounds_to_physical) —
+            # otherwise a scaled product's whole field is wiped. col_info
+            # bounds are already physical and are used verbatim above.
             from datasets.mask_info import _split_valid_range_attr
 
-            valid_min, valid_max = _split_valid_range_attr(da.attrs.get("valid_range"))
+            attr_min = da.attrs.get("valid_min")
+            attr_max = da.attrs.get("valid_max")
+            if attr_min is None and attr_max is None:
+                attr_min, attr_max = _split_valid_range_attr(da.attrs.get("valid_range"))
+            valid_min, valid_max = _scale_cf_bounds_to_physical(da, attr_min, attr_max, source_ds=ds)
 
         if actual_fill is not None:
             da = da.where(~fill_match(da, actual_fill))

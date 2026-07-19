@@ -463,6 +463,142 @@ class ComparisonScaleDisclosureTests(unittest.TestCase):
 
 
 @unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in _RENDER_REQUIRED_MODULES),
+    "comparison disclosure test dependencies are not installed",
+)
+class ComparisonDisclosureTests(unittest.TestCase):
+    """Finding #4: compare silently applied QA-flag masking (via
+    _prepare_2d -> aggregate) yet attached neither masking provenance nor the
+    T46 scope echo the heatmap/timeseries paths always attach. Both disclosure
+    doctrines must reach the compare payload — masking so the frontend's
+    resolveMasking finds it, scope so subagent_dispatch's scope note can fire."""
+
+    def _2d(self, values, name="no2"):
+        import numpy as np
+        import xarray as xr
+
+        arr = np.asarray(values, dtype=float)
+        n_lat, n_lon = arr.shape
+        return xr.DataArray(
+            arr,
+            dims=("lat", "lon"),
+            coords={"lat": np.linspace(10, 20, n_lat), "lon": np.linspace(-100, -90, n_lon)},
+            name=name,
+            attrs={"units": "mol/m^2"},
+        )
+
+    def _record_scope(self, handle, scope):
+        from services import scope_registry
+
+        scope_registry.record_pending(handle, scope)
+        scope_registry.finalize(handle, handle)
+        self.addCleanup(lambda: scope_registry._scopes.pop(handle, None))
+
+    def test_region_comparison_discloses_qa_masking_provenance(self):
+        from tools.satellite_tools.comparison_tools import _build_region_comparison
+
+        da_a = self._2d([[1.0, 2.0], [3.0, 4.0]])
+        da_b = self._2d([[2.0, 4.0], [6.0, 8.0]])
+
+        emitted = {}
+        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
+            _build_region_comparison("h_a", "h_b", da_a, da_b, "A", "B", "no2", "mol/m^2")
+
+        # The masking that aggregate() applied is disclosed on the payload where
+        # the frontend's resolveMasking (chart.provenance?.masking) can find it,
+        # instead of running silently.
+        masking = emitted["payload"]["provenance"]["masking"]
+        self.assertTrue(masking.get("qa_status"))
+        self.assertIn("valid_range_source", masking)
+
+    def test_period_difference_discloses_qa_masking_provenance(self):
+        from tools.satellite_tools.comparison_tools import _build_period_comparison
+
+        aligned_a = self._2d([[1.0, 2.0], [3.0, 4.0]])
+        aligned_b = self._2d([[2.0, 4.0], [6.0, 8.0]])
+
+        emitted = {}
+        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
+            _build_period_comparison(
+                "h_a", "h_b", "h_aligned", aligned_a, aligned_b, "A", "B", "no2", "mol/m^2", None,
+            )
+
+        masking = emitted["payload"]["provenance"]["masking"]
+        self.assertTrue(masking.get("qa_status"))
+
+    def test_region_comparison_surfaces_scope_echo_so_the_dispatch_note_fires(self):
+        import numpy as np
+        import xarray as xr
+        from config.error_templates import render_scope_note
+        from tools.satellite_tools.comparison_tools import _build_region_comparison
+
+        # Delivered data spans all of June; the recorded request was a single day
+        # — the T46 substitution the compare surface previously hid entirely.
+        da = xr.DataArray(
+            np.ones((3, 2, 2)),
+            dims=("time", "lat", "lon"),
+            coords={
+                "time": ["2026-06-01", "2026-06-15", "2026-06-30"],
+                "lat": [10.0, 20.0],
+                "lon": [-100.0, -90.0],
+            },
+            name="no2",
+            attrs={"units": "mol/m^2"},
+        )
+        self._record_scope("h_a", {"location": "California", "time_range": ["2026-06-15", "2026-06-15"]})
+
+        emitted = {}
+        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
+            _build_region_comparison("h_a", "h_b", da, da, "A", "B", "no2", "mol/m^2")
+
+        prov = emitted["payload"]["provenance"]
+        note = render_scope_note(prov.get("requested_scope"), prov.get("delivered_scope"))
+        self.assertIsNotNone(note)
+        self.assertIn("2026-06-15", note)  # the single day the user asked for
+        self.assertIn("2026-06-01", note)  # the wider span actually delivered
+
+    def test_period_comparison_surfaces_scope_echo(self):
+        from config.error_templates import render_scope_note
+        from tools.satellite_tools.comparison_tools import _build_period_comparison
+
+        # Aligned slices carry their coverage as global attrs (the timeless-L3
+        # fallback), spanning June; the recorded request was one day.
+        aligned_a = self._2d([[1.0, 2.0], [3.0, 4.0]])
+        aligned_a.attrs["time_coverage_start"] = "2026-06-01"
+        aligned_a.attrs["time_coverage_end"] = "2026-06-30"
+        aligned_b = self._2d([[2.0, 4.0], [6.0, 8.0]])
+        self._record_scope("h_a", {"location": "Texas", "time_range": ["2026-06-15", "2026-06-15"]})
+
+        emitted = {}
+        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
+            _build_period_comparison(
+                "h_a", "h_b", "h_aligned", aligned_a, aligned_b, "A", "B", "no2", "mol/m^2", None,
+            )
+
+        prov = emitted["payload"]["provenance"]
+        note = render_scope_note(prov.get("requested_scope"), prov.get("delivered_scope"))
+        self.assertIsNotNone(note)
+        self.assertIn("2026-06-15", note)
+
+    def test_no_scope_note_when_nothing_was_recorded_for_the_handles(self):
+        from config.error_templates import render_scope_note
+        from tools.satellite_tools.comparison_tools import _build_region_comparison
+
+        da_a = self._2d([[1.0, 2.0], [3.0, 4.0]])
+        da_b = self._2d([[2.0, 4.0], [6.0, 8.0]])
+
+        emitted = {}
+        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
+            _build_region_comparison("h_a", "h_b", da_a, da_b, "A", "B", "no2", "mol/m^2")
+
+        prov = emitted["payload"]["provenance"]
+        # requested_scope is None (nothing recorded) -> the note stays silent,
+        # never nagging on a comparison with no recorded request to check against.
+        self.assertIsNone(prov.get("requested_scope"))
+        self.assertIsNone(render_scope_note(prov.get("requested_scope"), prov.get("delivered_scope")))
+
+
+@unittest.skipIf(
     any(importlib.util.find_spec(name) is None for name in FULL_TOOL_REQUIRED_MODULES),
     "full compare tool test dependencies are not installed",
 )
@@ -561,6 +697,51 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ref["metadata"]["mode"], "n-panel")
         self.assertEqual([p["handle"] for p in ref["metadata"]["panels"]], ["obs_a", "obs_b"])
         self.assertEqual(ref["metadata"]["source_handles"], ["obs_a", "obs_b"])
+
+    async def test_region_mode_discloses_masking_and_scope_echo_end_to_end(self):
+        import numpy as np
+        import xarray as xr
+        from config.error_templates import render_scope_note
+        from services import scope_registry
+        from tools.satellite_tools import comparison_tools
+
+        def make_ds():
+            return xr.Dataset(
+                {"no2": (
+                    ("time", "lat", "lon"),
+                    [[[1.0, 2.0], [3.0, 4.0]], [[2.0, 3.0], [4.0, 5.0]]],
+                    {"units": "mol/m^2"},
+                )},
+                coords={
+                    "time": np.array(["2026-06-01", "2026-06-30"], dtype="datetime64[ns]"),
+                    "lat": [10.0, 20.0], "lon": [30.0, 40.0],
+                },
+            )
+
+        self.volume.add_zarr("obs_a", make_ds)
+        self.volume.add_zarr("obs_b", make_ds)
+        # The researcher asked about a single day for side A; the retrieval
+        # delivered the whole month — a T46 substitution compare used to hide.
+        scope_registry.record_pending("obs_a", {"location": "Newark", "time_range": ["2026-06-15", "2026-06-15"]})
+        scope_registry.finalize("obs_a", "obs_a")
+        self.addCleanup(lambda: scope_registry._scopes.pop("obs_a", None))
+
+        emitted = {}
+        compare = comparison_tools.make_compare(self.mcp_tools)
+        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
+            raw = await compare.ainvoke({
+                "handle_a": "obs_a", "handle_b": "obs_b", "mode": "region",
+                "label_a": "Newark", "label_b": "Philly",
+            })
+        self.assertNotIn("error", json.loads(raw))
+
+        prov = emitted["payload"]["provenance"]
+        # Masking is disclosed (never silent) ...
+        self.assertTrue(prov["masking"].get("qa_status"))
+        # ... and the scope substitution surfaces the way the dispatch layer reads it.
+        note = render_scope_note(prov.get("requested_scope"), prov.get("delivered_scope"))
+        self.assertIsNotNone(note)
+        self.assertIn("2026-06-15", note)
 
     async def test_period_mode_differences_b_minus_a_via_mcp_align(self):
         import xarray as xr
