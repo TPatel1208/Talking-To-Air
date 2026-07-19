@@ -192,6 +192,12 @@ def flag_pass_condition(qf: xr.DataArray, good_values: Any = None, bad_values: A
     return qf.notnull() & ~qf.isin(bad_values)
 
 
+# P1: cap on how many candidate variable names an ambiguous-variable refusal
+# renders. Keeps the error (and its re-feed cost to the model) bounded no matter
+# how wide the file; see _ambiguous_variable_error.
+_MAX_LISTED_CANDIDATES = 20
+
+
 class AggregationService:
     """Single entry point for satellite data validity filtering and reductions."""
 
@@ -527,16 +533,32 @@ class AggregationService:
         return science
 
     def _ambiguous_variable_error(self, data: xr.Dataset, data_vars: list[str]) -> MCPToolError:
+        # P1: the candidate list MUST be bounded in size. A Yori-aggregated L3
+        # whose groups all share Mean/Standard_Deviation/Pixel_Counts/
+        # Histogram_Counts leaves (AERDA_D3_VIIRS_MODIS,
+        # dataset_a88593edb7246c9b) merges to 432 data_vars -- listing every
+        # one produced a ~20 KB error that, re-fed to the model on every
+        # stat/plot call, drove a context explosion and whole-turn timeout
+        # (blank plot, no statistics; live 2026-07-19). Naming a capped sample
+        # plus the true total turns that O(N) blowup into O(1) while staying
+        # honest about how many candidates exist. Refining WHICH candidates
+        # surface (science-first ordering, empties last) is the VariableResolver
+        # (P2+); this tier only bounds the size.
+        total = len(data_vars)
+        shown = data_vars[:_MAX_LISTED_CANDIDATES]
         candidates = []
-        for name in data_vars:
+        for name in shown:
             attrs = data[name].attrs
             label = attrs.get("long_name") or attrs.get("standard_name")
             candidates.append(f"{name} ({label})" if label else name)
+        hidden = total - len(shown)
+        more = f" (and {hidden} more)" if hidden else ""
         return MCPToolError(
             CATEGORY_VARIABLE_CHOICE_REQUIRED,
-            f"This file has {len(data_vars)} science variables and no variable was chosen: "
-            f"{', '.join(candidates)}. Specify which one to analyze.",
-            suggestion=f"Pass variable=<name> from: {', '.join(data_vars)}.",
+            f"This file has {total} science variables and no variable was chosen. "
+            f"Showing {len(shown)} of {total}: {', '.join(candidates)}{more}. "
+            f"Specify which one to analyze.",
+            suggestion=f"Pass variable=<name>, e.g. one of: {', '.join(shown)}{more}.",
         )
 
     def apply_quality_mask(

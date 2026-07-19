@@ -423,6 +423,53 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertIn("Cloud_Fraction", ctx.exception.message)
         self.assertIn("Aerosol_Optical_Depth", ctx.exception.message)
 
+    def test_ambiguous_variable_error_is_bounded_for_a_pathologically_wide_file(self):
+        """P1 (AERDA_D3_VIIRS_MODIS, dataset_a88593edb7246c9b): a Yori-aggregated
+        L3 whose groups all share Mean/Standard_Deviation/Pixel_Counts/
+        Histogram_Counts leaves merges to 432 data_vars. The old refusal listed
+        every one -- a 20 KB error re-fed to the LLM on every stat/plot call,
+        driving a context explosion and whole-turn timeout (blank plot, no
+        stats). The refusal message must be bounded in size regardless of the
+        candidate count: name a capped sample, disclose the true total, and say
+        how many are hidden -- turning an O(N) context blowup into O(1)."""
+        from earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED, MCPToolError
+        from preprocessing.aggregation_service import AggregationService
+
+        data_vars = {f"group_{i:03d}/Mean": (("lat", "lon"), [[float(i)]]) for i in range(200)}
+        ds = self.xr.Dataset(data_vars)
+
+        with self.assertRaises(MCPToolError) as ctx:
+            AggregationService().to_dataarray(ds)
+
+        exc = ctx.exception
+        self.assertEqual(exc.category, CATEGORY_VARIABLE_CHOICE_REQUIRED)
+        # O(1) size: the whole point of P1 -- must not scale with 200 vars.
+        self.assertLess(len(exc.message), 4000)
+        self.assertLess(len(exc.to_tool_json()), 4000)
+        # Still honest about the true total and that candidates are hidden.
+        self.assertIn("200", exc.message)
+        self.assertIn("more", exc.message.lower())
+        # Still actionable: names at least a few real candidates.
+        self.assertIn("group_000/Mean", exc.message)
+
+    def test_ambiguous_variable_error_lists_all_candidates_when_few(self):
+        """Bounding must not truncate a small file: a 2-variable refusal still
+        names both candidates in full (no spurious 'and N more')."""
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset({
+            "Cloud_Fraction": (("lat", "lon"), [[1.0]]),
+            "Aerosol_Optical_Depth": (("lat", "lon"), [[2.0]]),
+        })
+
+        with self.assertRaises(Exception) as ctx:
+            AggregationService().to_dataarray(ds)
+
+        msg = ctx.exception.message
+        self.assertIn("Cloud_Fraction", msg)
+        self.assertIn("Aerosol_Optical_Depth", msg)
+        self.assertNotIn("more", msg.lower())
+
     def test_to_dataarray_resolves_a_registered_multi_var_file_to_its_pinned_primary_var(self):
         """AOD misrouting follow-up (2026-07-12): a registered collection's
         pinned collections.yaml primary_var is a curated choice, not the
