@@ -665,6 +665,23 @@ def _capture_chart_id(data: Any, captured: dict[str, str]) -> None:
     captured["last_chart_ids"] = ",".join(ids)
 
 
+_EXPLICIT_AREA_PATTERN = re.compile(
+    r"\b(?:bounding box|bbox|longitude|latitude|lon|lat)\b", re.I
+)
+
+
+def _task_specifies_new_area(task: str) -> bool:
+    """True when this turn's own task text spells out a location/bounding
+    box (lon/lat wording or numeric bounds). Live-testing bug: a follow-up
+    that named a brand-new bounding box was still handed the prior turn's
+    aoi_handle framed as 'reuse to skip re-searching', and the sub-agent
+    trusted the stale handle over the new numbers, silently re-rendering the
+    old AOI instead of calling define_area_of_interest again. Same principle
+    as the ground-monitor pollutant fix: the researcher's current wording is
+    always authoritative over carried-over context."""
+    return bool(_EXPLICIT_AREA_PATTERN.search(str(task or "")))
+
+
 def _inject_satellite_context(task: str, context: dict[str, str]) -> str:
     """Prepend prior retrieval context to a satellite task, framed as
     UNVERIFIED — the handles likely still exist in the researcher's workspace
@@ -673,15 +690,22 @@ def _inject_satellite_context(task: str, context: dict[str, str]) -> str:
     check_coverage/check_availability for the current request (its prompt's
     Availability-must-be-tool-grounded rule). Without this framing a follow-up
     that dropped to the supervisor path would re-derive everything from the
-    paraphrased prior answer and drift."""
+    paraphrased prior answer and drift.
+
+    The AOI (location/aoi_handle) bits are withheld when the task itself
+    names a new area — unlike the dataset, which stays valid across an entire
+    conversation, the AOI is exactly what a "wider box" / "different region"
+    follow-up is asking to change, so reuse must not be offered as an option
+    in that case."""
+    new_area = _task_specifies_new_area(task)
     bits = []
     if context.get("dataset_query"):
         bits.append(f"dataset={context['dataset_query']}")
     if context.get("dataset_handle"):
         bits.append(f"dataset_handle={context['dataset_handle']}")
-    if context.get("location"):
+    if context.get("location") and not new_area:
         bits.append(f"location={context['location']}")
-    if context.get("aoi_handle"):
+    if context.get("aoi_handle") and not new_area:
         bits.append(f"aoi_handle={context['aoi_handle']}")
     if context.get("last_time_range"):
         bits.append(f"previously_checked_range={context['last_time_range']}")

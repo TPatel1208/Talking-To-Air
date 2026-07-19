@@ -102,6 +102,45 @@ class HelperTests(unittest.TestCase):
 
         self.assertEqual(_inject_satellite_context("task", {}), "task")
 
+    def test_satellite_context_injection_withholds_stale_aoi_when_task_names_a_new_bbox(self):
+        """Live-testing bug: a follow-up turn that spells out its own new
+        bounding box ('bounding box: min longitude -84, max longitude -70,
+        min latitude 39, max latitude 48') was still handed the prior turn's
+        aoi_handle framed as 'reuse to skip re-searching' — the sub-agent
+        trusted the handle over the new numbers and silently re-rendered the
+        old AOI (single define_area_of_interest-free tool step, identical
+        map). The researcher's own current wording must win, exactly like the
+        ground-monitor pollutant fix above never carries a stale pollutant
+        across requests."""
+        from services.subagent_dispatch import _inject_satellite_context
+
+        enriched = _inject_satellite_context(
+            "Plot TEMPO NO2 for 2026-07-16, bounding box: min longitude -84, "
+            "max longitude -70, min latitude 39, max latitude 48.",
+            {
+                "dataset_query": "TEMPO_NO2",
+                "dataset_handle": "dataset_ab12",
+                "location": "New York/New Jersey",
+                "aoi_handle": "aoi_cd34",
+            },
+        )
+
+        # Dataset continuity is still safe to reuse — only the area is stale.
+        self.assertIn("dataset_handle=dataset_ab12", enriched)
+        self.assertNotIn("aoi_handle=aoi_cd34", enriched)
+        self.assertNotIn("location=New York/New Jersey", enriched)
+
+    def test_satellite_context_injection_reuses_aoi_when_task_names_no_new_area(self):
+        from services.subagent_dispatch import _inject_satellite_context
+
+        enriched = _inject_satellite_context(
+            "Pick an available date in that range.",
+            {"location": "New Jersey", "aoi_handle": "aoi_cd34"},
+        )
+
+        self.assertIn("location=New Jersey", enriched)
+        self.assertIn("aoi_handle=aoi_cd34", enriched)
+
     def test_satellite_context_injection_carries_the_most_recent_chart_id(self):
         """T36 P3: the satellite agent is stateless, so the chart id a follow-up
         reliability question must hand to explain_measurement is only reachable
