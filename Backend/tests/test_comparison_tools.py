@@ -396,6 +396,72 @@ class DisjointPeriodsTests(unittest.TestCase):
         self.assertIsNone(_disjoint_periods_error(da_a, da_b))
 
 
+_RENDER_REQUIRED_MODULES = REQUIRED_MODULES + [
+    "shapely", "rasterio", "cartopy", "affine", "zarr", "fastmcp", "uvicorn",
+    "langchain_mcp_adapters",
+]
+
+
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in _RENDER_REQUIRED_MODULES),
+    "comparison scale-disclosure test dependencies are not installed",
+)
+class ComparisonScaleDisclosureTests(unittest.TestCase):
+    """Issue #3: comparison panels use percentile clips (2/98 shared, 98th-pct
+    magnitude diverging) but passed them via ``value_range``, which stamped
+    scale={"method":"explicit"} -- so the legend's saturation warning the rest
+    of the app makes never fired for compare maps. The clip must be disclosed."""
+
+    def _2d(self, values):
+        import numpy as np
+        import xarray as xr
+
+        arr = np.asarray(values, dtype=float)
+        n_lat, n_lon = arr.shape
+        return xr.DataArray(
+            arr,
+            dims=("lat", "lon"),
+            coords={
+                "lat": np.linspace(10, 20, n_lat),
+                "lon": np.linspace(-100, -90, n_lon),
+            },
+            name="no2",
+            attrs={"units": "mol/m^2"},
+        )
+
+    def test_region_panels_disclose_the_shared_2_98_percentile_clip(self):
+        from unittest.mock import patch
+        from tools.satellite_tools.comparison_tools import _build_region_comparison
+
+        da_a = self._2d([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]])
+        da_b = self._2d([[2.0, 3.0, 4.0, 5.0], [6.0, 7.0, 8.0, 9.0]])
+
+        emitted = {}
+        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
+            _build_region_comparison("h_a", "h_b", da_a, da_b, "A", "B", "no2", "mol/m^2")
+
+        for panel in emitted["payload"]["panels"]:
+            self.assertEqual(panel["scale"], {"method": "percentile", "p": [2, 98]})
+
+    def test_period_difference_discloses_the_diverging_magnitude_percentile_clip(self):
+        from unittest.mock import patch
+        from tools.satellite_tools.comparison_tools import _build_period_comparison
+
+        aligned_a = self._2d([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]])
+        aligned_b = self._2d([[2.0, 4.0, 6.0, 8.0], [10.0, 12.0, 14.0, 16.0]])
+
+        emitted = {}
+        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
+            _build_period_comparison(
+                "h_a", "h_b", "h_aligned", aligned_a, aligned_b, "A", "B", "no2", "mol/m^2", None,
+            )
+
+        self.assertEqual(
+            emitted["payload"]["difference"]["scale"],
+            {"method": "percentile_magnitude", "p": 98},
+        )
+
+
 @unittest.skipIf(
     any(importlib.util.find_spec(name) is None for name in FULL_TOOL_REQUIRED_MODULES),
     "full compare tool test dependencies are not installed",

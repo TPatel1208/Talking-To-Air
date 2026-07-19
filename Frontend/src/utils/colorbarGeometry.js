@@ -29,9 +29,19 @@ function rgbaToCss([r, g, b, a = 255]) {
 // caller-imposed (explicit) scale — which is not a clip of this field — and
 // for older payloads carrying no `scale` at all.
 export function scaleClipNote(scale) {
-  if (!scale || scale.method !== 'percentile') return null
-  const p = Array.isArray(scale.p) && scale.p.length === 2 ? scale.p : [2, 98]
-  return `Color scale clipped at ${ordinal(p[0])}–${ordinal(p[1])} percentile`
+  if (!scale) return null
+  if (scale.method === 'percentile') {
+    const p = Array.isArray(scale.p) && scale.p.length === 2 ? scale.p : [2, 98]
+    return `Color scale clipped at ${ordinal(p[0])}–${ordinal(p[1])} percentile`
+  }
+  // A comparison difference map's symmetric, zero-centered scale saturates
+  // both tails beyond the diff's Nth-percentile magnitude -- still a clip the
+  // reader must not mistake for the true range.
+  if (scale.method === 'percentile_magnitude') {
+    const p = Number.isFinite(scale.p) ? scale.p : 98
+    return `Color scale clipped at ${ordinal(p)} percentile magnitude`
+  }
+  return null
 }
 
 function ordinal(n) {

@@ -111,6 +111,46 @@ class StatToolsLongitudeNormalizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["n_pixels"], 2)
         self.assertEqual(result["aggregation_meta"]["masking"]["qa_status"], "verified")
 
+    async def test_conduct_temporal_statistic_normalizes_0_360_longitudes_before_masking(self):
+        """The trend tool masked the raw 0..360 array directly, unlike its
+        sibling masking paths. On a global product stored 0..360 a western-
+        hemisphere region rasterized entirely outside the grid, so the tool
+        returned "No valid data found ... across any time step." for data that
+        plots fine — a user concludes the data doesn't exist."""
+        from unittest.mock import patch
+        from test_satellite_tools_masking_execution import _tempo_no2_dataset
+        from tools.satellite_tools.plot_tools import make_conduct_temporal_statistic
+        import xarray as xr
+
+        def make_ds():
+            return _tempo_no2_dataset(
+                xr,
+                values=[[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]],
+                flags=[[[0, 0], [0, 0]], [[0, 0], [0, 0]]],
+                lat=(38.0, 42.0),
+                lon=(258.0, 262.0),  # -102/-98 once normalized: CONUS interior
+                time=["2024-01-01T00:00:00", "2024-01-01T01:00:00"],
+            )
+
+        self.volume.add_zarr("obs_1", make_ds)
+
+        emitted = {}
+
+        def fake_emit_chart(full_payload):
+            emitted["payload"] = full_payload
+
+        conduct_temporal_statistic = make_conduct_temporal_statistic(self.mcp_tools)
+        with patch("tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
+            raw = await conduct_temporal_statistic.ainvoke({
+                "handle": "obs_1", "location": "usa", "stat": "mean",
+            })
+
+        result = json.loads(raw)
+        self.assertNotIn("error", result)
+        # Two timesteps of real data survive the polygon mask -- not the empty
+        # "No valid data found" a 0..360 grid produces without normalization.
+        self.assertEqual(len(emitted["payload"]["values"]), 2)
+
     async def test_find_daily_peak_normalizes_0_360_longitudes_before_masking(self):
         from tools.satellite_tools.stat_tools import make_find_daily_peak
 

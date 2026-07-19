@@ -298,11 +298,94 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("error", result)
 
         full = emitted["payload"]
-        # Good cells per step (flag=0): step0 -> [1.0, 3.0] mean=2.0;
-        # step1 -> [5.0, 7.0] mean=6.0. Unmasked means would be 2.5/6.5.
-        self.assertEqual(full["values"], [2.0, 6.0])
+        # Good cells per step (flag=0, lon=30 column at lat=10/20): step0 ->
+        # [1.0, 3.0]; step1 -> [5.0, 7.0]. The plotted mean is cos(latitude)
+        # area-weighted (area_weighted_mean), matching the stats tool -- an
+        # unweighted mean would be 2.0/6.0 and disagree with it.
+        import math
+
+        w10, w20 = math.cos(math.radians(10.0)), math.cos(math.radians(20.0))
+        step0 = round((1.0 * w10 + 3.0 * w20) / (w10 + w20), 6)
+        step1 = round((5.0 * w10 + 7.0 * w20) / (w10 + w20), 6)
+        self.assertEqual(full["values"], [step0, step1])
         self.assertEqual(full["masking"]["qa_status"], "verified")
         self.assertEqual(full["masking"]["qa_source"], "collections_yaml")
+
+    async def test_conduct_temporal_statistic_mean_is_area_weighted_and_agrees_with_stats_tool(self):
+        """The per-timestep regional mean must be the SAME cos(latitude)
+        area-weighted mean the stats tool computes (area_weighted_mean), not a
+        plain np.nanmean over grid cells. On a wide latitude band an unweighted
+        mean over-weights high-latitude cells (cells shrink by cos(lat) toward
+        the poles), so the trend line and the single-value stats mean for the
+        identical region would numerically disagree."""
+        import math
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import make_conduct_temporal_statistic
+        from tools.satellite_tools.stat_tools import make_compute_statistic_tool
+
+        # A wide latitude band (30..70N) where weighting bites hard, all cells
+        # good so masking doesn't confound the comparison.
+        def make_ds():
+            return _tempo_no2_dataset(
+                xr,
+                values=[[[10.0, 12.0], [30.0, 32.0]], [[20.0, 22.0], [40.0, 42.0]]],
+                flags=[[[0, 0], [0, 0]], [[0, 0], [0, 0]]],
+                lat=(30.0, 70.0),
+                lon=(30.0, 40.0),
+                time=["2024-01-01T00:00:00", "2024-01-01T01:00:00"],
+            )
+
+        self.volume.add_zarr("obs_trend", make_ds)
+        self.volume.add_zarr("obs_stat", make_ds)
+
+        emitted = {}
+
+        def fake_emit_chart(full_payload):
+            emitted["payload"] = full_payload
+
+        conduct_temporal_statistic = make_conduct_temporal_statistic(self.mcp_tools)
+        with patch("tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
+            raw = await conduct_temporal_statistic.ainvoke({
+                "handle": "obs_trend", "location": "global", "stat": "mean",
+            })
+        result = json.loads(raw)
+        self.assertNotIn("error", result)
+        trend_values = emitted["payload"]["values"]
+
+        w30, w70 = math.cos(math.radians(30.0)), math.cos(math.radians(70.0))
+        # Step0 cells: lat30 -> [10,12], lat70 -> [30,32].
+        step0 = ((10.0 + 12.0) * w30 + (30.0 + 32.0) * w70) / (2 * w30 + 2 * w70)
+        # Step1 cells: lat30 -> [20,22], lat70 -> [40,42].
+        step1 = ((20.0 + 22.0) * w30 + (40.0 + 42.0) * w70) / (2 * w30 + 2 * w70)
+        self.assertAlmostEqual(trend_values[0], round(step0, 6), places=5)
+        self.assertAlmostEqual(trend_values[1], round(step1, 6), places=5)
+
+        # Guard against regression to the unweighted mean, which would give a
+        # different (larger, high-lat-biased) number.
+        unweighted_step0 = (10.0 + 12.0 + 30.0 + 32.0) / 4
+        self.assertNotAlmostEqual(trend_values[0], unweighted_step0, places=3)
+
+        # The stats tool, over the same single-step-equivalent region, must
+        # return the SAME mean the trend plots for that step -- the two tools
+        # can no longer disagree about "the regional mean."
+        compute_statistic_tool = make_compute_statistic_tool(self.mcp_tools)
+
+        def make_single():
+            return _tempo_no2_dataset(
+                xr,
+                values=[[10.0, 12.0], [30.0, 32.0]],
+                flags=[[0, 0], [0, 0]],
+                lat=(30.0, 70.0),
+                lon=(30.0, 40.0),
+            )
+
+        self.volume.add_zarr("obs_single", make_single)
+        stat_raw = await compute_statistic_tool.ainvoke({
+            "handle": "obs_single", "location": "global", "stats": ["mean"],
+        })
+        stat_result = json.loads(stat_raw)
+        self.assertNotIn("error", stat_result)
+        self.assertAlmostEqual(trend_values[0], round(stat_result["mean"], 6), places=5)
 
     async def test_conduct_temporal_statistic_attaches_aggregation_meta_like_the_heatmap_path(self):
         """T32: the timeseries chart path never called _attach_reproducibility
@@ -386,10 +469,17 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("error", result)
 
         full = emitted["payload"]
-        # Chart is sorted chronologically: Jan 1 (mean=6.5) before Jan 2 (mean=2.5).
+        # Chart is sorted chronologically: Jan 1 (data [[5,6],[7,8]]) before
+        # Jan 2 (data [[1,2],[3,4]]). Means are cos(latitude) area-weighted
+        # (area_weighted_mean); the unweighted means would be 6.5/2.5.
+        import math
+
+        w10, w20 = math.cos(math.radians(10.0)), math.cos(math.radians(20.0))
+        jan1 = round(((5.0 + 6.0) * w10 + (7.0 + 8.0) * w20) / (2 * w10 + 2 * w20), 6)
+        jan2 = round(((1.0 + 2.0) * w10 + (3.0 + 4.0) * w20) / (2 * w10 + 2 * w20), 6)
         self.assertEqual(full["times"][0][:10], "2024-01-01")
         self.assertEqual(full["times"][1][:10], "2024-01-02")
-        self.assertEqual(full["values"], [6.5, 2.5])
+        self.assertEqual(full["values"], [jan1, jan2])
 
         agg_meta = full["aggregation_meta"]
         self.assertEqual(agg_meta["granule_dates"], ["2024-01-01", "2024-01-02"])

@@ -35,6 +35,14 @@ test('a percentile scale discloses the clip so saturated extremes are not read a
   assert.match(note, /98th/)
 })
 
+test('a diverging magnitude-percentile scale (compare diff maps) discloses its clip', () => {
+  const note = scaleClipNote({ method: 'percentile_magnitude', p: 98 })
+
+  assert.match(note, /clipped/i)
+  assert.match(note, /98th/)
+  assert.match(note, /magnitude/i)
+})
+
 test('an explicit (caller-imposed) scale has no clip to disclose', () => {
   assert.equal(scaleClipNote({ method: 'explicit' }), null)
 })

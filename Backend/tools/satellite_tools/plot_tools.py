@@ -71,7 +71,7 @@ from utils.colormaps import resolve as resolve_colormap
 from utils.overlay_render import render_overlay_png
 from utils.plotting import _normalize_to_2d, apply_mask_region_type, geometry_mask, mask_data_by_geometry, RegionResolver
 from utils.streaming import emit_chart, emit_status
-from preprocessing.aggregation_service import AggregationService, fill_match, flag_pass_condition
+from preprocessing.aggregation_service import AggregationService, area_weighted_mean, fill_match, flag_pass_condition
 
 logger = logging.getLogger(__name__)
 
@@ -208,6 +208,7 @@ def _render_and_store_overlay(lats: np.ndarray, lons: np.ndarray, arr: np.ndarra
 def _da_to_heatmap_payload(
     da, title: str, variable: str, units: str, *,
     diverging: bool = False, render_overlay: bool = False, value_range: tuple[float, float] | None = None,
+    scale_disclosure: dict | None = None,
 ) -> dict:
     lat_coord = find_lat_coord(da)
     lon_coord = find_lon_coord(da)
@@ -227,11 +228,17 @@ def _da_to_heatmap_payload(
     # what a color means (T23's anti-drift guarantee).
     vmin, vmax = value_range if value_range is not None else _percentile_bounds(arr)
     # Disclose how the color scale was set so the legend can be honest about
-    # saturation (T43): a percentile clip saturates the extreme 2%/98% tails,
-    # which a reader must not mistake for the data's true range. An explicitly
-    # passed range (a shared/diverging comparison scale) is the caller's own
-    # choice, not a clip of this array -> nothing to disclose.
-    scale = {"method": "explicit"} if value_range is not None else {"method": "percentile", "p": [2, 98]}
+    # saturation (T43): a percentile clip saturates the extreme tails, which a
+    # reader must not mistake for the data's true range. A caller imposing its
+    # own range (comparison's shared/diverging scale) says how that range was
+    # derived via ``scale_disclosure`` -- a shared 2/98 clip or a diverging
+    # 98th-percentile-magnitude clip is still a clip, just computed across
+    # panels, so the same saturation warning must fire. Absent a disclosure,
+    # an imposed range is a true fixed choice (nothing to clip).
+    if value_range is not None:
+        scale = scale_disclosure if scale_disclosure is not None else {"method": "explicit"}
+    else:
+        scale = {"method": "percentile", "p": [2, 98]}
 
     lats_out = da[lat_coord].values
     lons_out = da[lon_coord].values
@@ -1264,6 +1271,16 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
 
         try:
             ds = await open_handle(handle, mcp_tools)
+            # Normalize longitude on the whole opened Dataset before extraction
+            # -- the plot_singular/stat convention. A 0..360 global product
+            # otherwise rasterizes a western-hemisphere region entirely outside
+            # the grid ("No valid data found ... across any time step." for data
+            # that plots fine), and normalizing only the extracted array would
+            # leave ds's sibling QA-flag variable on 0..360 so QA alignment
+            # would hit an empty intersection.
+            ds_lon_coord = find_lon_coord(ds)
+            if ds_lon_coord:
+                ds = _normalize_longitudes(ds, ds_lon_coord)
             da = _open_dataarray(ds, handle=handle, variable=variable)
         except MCPToolError as e:
             return json.dumps({"error": e.to_dict()})
@@ -1333,9 +1350,20 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
 
             times, values, valid_time_indices = [], [], []
             for i in range(masked.sizes[time_dim]):
-                slice_2d = masked.isel({time_dim: i}).values
+                slice_da = masked.isel({time_dim: i})
                 try:
-                    value = _aggregation_service.compute_values_stat(slice_2d, stat)
+                    if stat == "mean":
+                        # The regional mean is the cos(latitude) area-weighted
+                        # mean (area_weighted_mean) -- the SAME definition the
+                        # stats tool uses -- so the trend line and the single-
+                        # value stats mean for the identical region can never
+                        # disagree. A plain np.nanmean over grid cells over-
+                        # weights high latitudes (cells shrink by cos(lat)
+                        # toward the poles), biasing continental/global trends.
+                        # median/std/max/min stay per-cell (compute_values_stat).
+                        value = area_weighted_mean(slice_da)
+                    else:
+                        value = _aggregation_service.compute_values_stat(slice_da.values, stat)
                 except ValueError:
                     continue
                 raw_time = masked[time_dim].values[i]

@@ -305,6 +305,14 @@ def _bbox_from_da(da) -> list[float]:
     return [float(np.nanmin(lons)), float(np.nanmin(lats)), float(np.nanmax(lons)), float(np.nanmax(lats))]
 
 
+# How each comparison scale was derived, disclosed to the frontend legend so
+# its saturation warning (T43) fires for compare maps exactly as it does for
+# single maps. A shared scale is a plain 2/98 percentile clip of the combined
+# panels; a diverging scale clips at the diff's 98th-percentile magnitude.
+_SHARED_SCALE_DISCLOSURE = {"method": "percentile", "p": [2, 98]}
+_DIVERGING_SCALE_DISCLOSURE = {"method": "percentile_magnitude", "p": 98}
+
+
 def _shared_bounds(da_a, da_b) -> tuple[float, float]:
     combined = np.concatenate([
         np.asarray(da_a.values, dtype=float).ravel(),
@@ -328,6 +336,7 @@ def _diverging_bounds(diff_da) -> tuple[float, float]:
 def _region_panel(da, handle: str, title: str, variable_name: str, units: str, vmin: float, vmax: float) -> dict:
     panel = _da_to_heatmap_payload(
         da, title, variable_name, units, render_overlay=True, value_range=(vmin, vmax),
+        scale_disclosure=_SHARED_SCALE_DISCLOSURE,
     )
     panel["bounds"] = _bbox_from_da(da)
     panel["metadata"] = {"source_handles": [handle]}
@@ -526,7 +535,7 @@ def _build_period_comparison(
     vmin, vmax = _diverging_bounds(diff)
     diff_payload = _da_to_heatmap_payload(
         diff, f"{variable_name}: {label_b} - {label_a}", variable_name, units, diverging=True,
-        render_overlay=True, value_range=(vmin, vmax),
+        render_overlay=True, value_range=(vmin, vmax), scale_disclosure=_DIVERGING_SCALE_DISCLOSURE,
     )
     diff_payload["bounds"] = _bbox_from_da(diff)
 

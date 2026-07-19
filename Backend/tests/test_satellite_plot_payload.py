@@ -186,11 +186,36 @@ class SatellitePlotPayloadTests(unittest.TestCase):
             coords={"lat": np.linspace(10, 20, 6), "lon": np.linspace(-100, -90, 8)},
         )
 
-        # A caller-imposed shared/diverging scale (comparison panels) is not a
-        # percentile clip of this array -> no clip disclosure.
+        # A truly fixed range with no disclosure of how it was derived is not a
+        # clip of this array -> no clip disclosure.
         payload = _da_to_heatmap_payload(da, "Shared", "NO2", "mol/m^2", value_range=(0.0, 10.0))
 
         self.assertEqual(payload["scale"], {"method": "explicit"})
+
+    def test_value_range_with_a_scale_disclosure_stamps_that_disclosure_not_explicit(self):
+        import numpy as np
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import _da_to_heatmap_payload
+
+        da = xr.DataArray(
+            np.full((6, 8), 5.0),
+            dims=("lat", "lon"),
+            coords={"lat": np.linspace(10, 20, 6), "lon": np.linspace(-100, -90, 8)},
+        )
+
+        # A comparison caller imposes a shared/diverging range that IS a
+        # percentile clip (just computed across panels). Passing the method
+        # through keeps the legend's saturation warning honest instead of
+        # collapsing every imposed range to "explicit" (nothing to disclose).
+        payload = _da_to_heatmap_payload(
+            da, "Comparison panel", "NO2", "mol/m^2", value_range=(0.0, 10.0),
+            scale_disclosure={"method": "percentile", "p": [2, 98]},
+        )
+
+        self.assertEqual(payload["scale"], {"method": "percentile", "p": [2, 98]})
+        # The imposed range is still what colorizes the map.
+        self.assertEqual(payload["vmin"], 0.0)
+        self.assertEqual(payload["vmax"], 10.0)
 
     def test_render_overlay_true_persists_a_png_and_records_its_path(self):
         import os
