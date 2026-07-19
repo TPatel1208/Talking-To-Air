@@ -203,6 +203,50 @@ class EvidenceComputationTests(unittest.TestCase):
         self.assertIsNotNone(weight)
         self.assertEqual(weight["role"], "context")
 
+    def test_time_dimensioned_companion_band_is_reduced_over_the_plotted_window(self):
+        """The plotted science field is a per-pixel time-mean 2-D map; an
+        evidence fact must summarize the SAME time-reduced field, not the raw
+        space-time stack. ``_crop_band_to_region`` only crops spatially, so a
+        band that still carries a time dimension would be space-time-averaged
+        and (for uncertainty) divided by the science *time-mean* -- two
+        incommensurable aggregations. The two answers diverge whenever valid
+        coverage varies across time, which is exactly this fixture."""
+        import numpy as np
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import _evidence
+
+        unc = np.array([
+            [[2.0, 2.0], [2.0, 2.0]],             # t0: all four cells valid
+            [[10.0, np.nan], [np.nan, np.nan]],   # t1: only one cell valid
+        ])
+        sci = np.array([
+            [[5.0, 5.0], [5.0, 5.0]],
+            [[5.0, 5.0], [5.0, 5.0]],
+        ])
+        ds = xr.Dataset(
+            {
+                "vertical_column_troposphere": (
+                    ("time", "lat", "lon"), sci, {"units": "molecules/cm^2"},
+                ),
+                "vertical_column_troposphere_uncertainty": (
+                    ("time", "lat", "lon"), unc, {"units": "molecules/cm^2"},
+                ),
+            },
+            coords={"time": [0, 1], "lat": [10.0, 20.0], "lon": [30.0, 40.0]},
+        )
+        da = ds["vertical_column_troposphere"].mean("time")  # the plotted 2-D field
+        col_info = {"short_name": "TEMPO_NO2_L3", "primary_var": "vertical_column_troposphere"}
+
+        facts = _evidence(ds, da, col_info, _global_region())
+        unc_fact = self._fact(facts, "vertical_column_troposphere_uncertainty")
+        self.assertIsNotNone(unc_fact)
+        # per-pixel time-mean: cell(0,0)=mean(2,10)=6, the rest=mean(2,NaN)=2;
+        # space-mean over the region = (6+2+2+2)/4 = 3.0 -- NOT the raw stack
+        # mean of 18/5 = 3.6.
+        self.assertAlmostEqual(unc_fact["value"], 3.0)
+        # And pct-of-science divides that time-mean by the science time-mean 5.0.
+        self.assertAlmostEqual(unc_fact["pct_of_science"], 0.6)
+
     def test_zero_science_mean_keeps_the_uncertainty_fact_without_pct(self):
         """An anomaly/difference-style science field can legitimately average
         exactly 0.0 — the pct-of-science ratio is then undefined (division by

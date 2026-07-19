@@ -577,8 +577,32 @@ class AggregationService:
             good_values = col_info.get("qa_good_values")
             bad_values = col_info.get("qa_bad_values")
             if good_values is not None or bad_values is not None:
+                qf = self._decode_flag_fill(qf)
                 da = da.where(flag_pass_condition(qf, good_values, bad_values))
         return da
+
+    @staticmethod
+    def _decode_flag_fill(qf: xr.DataArray) -> xr.DataArray:
+        """Null the QA-flag variable's OWN fill/out-of-range sentinels before
+        the good/bad pass test. A flag stored as an undecoded integer sentinel
+        (255, -1) that xarray never turned to NaN would otherwise satisfy
+        ``flag_pass_condition``'s ``notnull() & ~isin(bad_values)`` and let its
+        science pixel through as a real 'good' observation. Resolves the flag's
+        own ``_FillValue``/``valid_range`` from its CF attrs (the same
+        ``resolve_mask_info`` discipline the science variable gets) and masks
+        those cells to NaN, so an unknown-quality pixel reads as absent, not
+        good. A no-op when the flag declares no fill/valid bounds."""
+        resolved, _ = resolve_mask_info(cf_attrs=dict(qf.attrs))
+        fill = resolved.get("fill_value")
+        valid_min = resolved.get("valid_min")
+        valid_max = resolved.get("valid_max")
+        if fill is not None:
+            qf = qf.where(~fill_match(qf, fill))
+        if valid_min is not None:
+            qf = qf.where(qf >= valid_min)
+        if valid_max is not None:
+            qf = qf.where(qf <= valid_max)
+        return qf
 
     def _resolve_qa_flag_var(
         self, ds: xr.Dataset | None, da: xr.DataArray, yaml_info: dict[str, Any],

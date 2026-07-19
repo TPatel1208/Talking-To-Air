@@ -263,14 +263,30 @@ def _units_mismatch_error(da_a, da_b) -> str | None:
     vs mol/m^2 would otherwise be differenced as if commensurable, under a
     single (wrong) unit label. No unit conversion is attempted here (out of
     scope) -- naming both units is the actionable answer, mirroring
-    ``_variable_mismatch_error``. Absent units on either side can't be checked
-    and are not treated as a mismatch."""
+    ``_variable_mismatch_error``.
+
+    Absent units on ONLY ONE side is the more dangerous case, not a safe one:
+    the difference would still be differenced and stamped with the side that
+    *does* declare units (see the caller's ``units = da_a.attrs...`` label),
+    presenting an unverifiable-commensurability comparison as a real number
+    under a confident label -- so it is a hard stop too. Only when *neither*
+    side declares units is there nothing to mislabel (same variable, no unit
+    label emitted), and the comparison proceeds."""
     units_a = str(da_a.attrs.get("units", "") or "").strip()
     units_b = str(da_b.attrs.get("units", "") or "").strip()
-    if units_a and units_b and units_a != units_b:
+    if units_a and units_b:
+        if units_a != units_b:
+            return (
+                f"Cannot compare values in different units: '{units_a}' (A) vs '{units_b}' (B). "
+                "compare does not convert units — retrieve both sides in the same units to difference them."
+            )
+        return None
+    if units_a or units_b:
+        declared, missing_side = (units_a, "B") if units_a else (units_b, "A")
         return (
-            f"Cannot compare values in different units: '{units_a}' (A) vs '{units_b}' (B). "
-            "compare does not convert units — retrieve both sides in the same units to difference them."
+            f"Cannot compare: one side declares units ('{declared}') and the other ({missing_side}) "
+            "has none, so the two cannot be confirmed commensurable before differencing. "
+            "Retrieve both sides with matching units to difference them."
         )
     return None
 

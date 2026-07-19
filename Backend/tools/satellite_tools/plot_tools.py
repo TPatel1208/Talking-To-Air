@@ -666,19 +666,55 @@ def _crop_band_to_region(band, region):
     return cropped, in_region
 
 
+def _band_time_mean(band, resolved):
+    """Mask the band's own fill/out-of-range cells, then collapse its time
+    dimension to a per-pixel mean, so an evidence fact describes the SAME
+    time-reduced field the science variable is plotted as -- not a
+    space-time-mean that, for uncertainty, would be divided by the science
+    *time-mean* (two incommensurable aggregations; T36 evidence honesty).
+
+    Fill/range masking happens BEFORE the time reduction so a fill sentinel
+    (e.g. -9999) is never averaged into the per-pixel mean; the time collapse
+    is skipna, matching the science field's own ``reduce(mean, skipna)`` over
+    valid timesteps. A no-op time collapse when the band carries no time
+    dimension (every current L3-snapshot fixture)."""
+    from utils.geo_utils import identify_time
+
+    fill = resolved.get("fill_value")
+    valid_min = resolved.get("valid_min")
+    valid_max = resolved.get("valid_max")
+    if fill is not None:
+        try:
+            band = band.where(~fill_match(band, fill))
+        except (TypeError, ValueError):
+            pass
+    if valid_min is not None:
+        band = band.where(band >= valid_min)
+    if valid_max is not None:
+        band = band.where(band <= valid_max)
+    time_dim = identify_time(band)
+    if time_dim is not None and time_dim in band.dims:
+        band = band.mean(dim=time_dim, skipna=True)
+    return band
+
+
 def _band_mean_fact(band, leaf, role, region, *, pct_of_science=None):
     """A deterministic mean-over-valid-pixels evidence fact for a context or
     uncertainty band, in the band's own units, carrying an honest coverage
     valid-fraction. ``pct_of_science`` (the masked science mean) adds the
-    uncertainty as a fraction of the science value when available."""
+    uncertainty as a fraction of the science value when available.
+
+    The band is masked to its own valid cells and collapsed to a per-pixel
+    time-mean (``_band_time_mean``) before the region crop, so the fact
+    summarizes the same time-reduced field the science variable is plotted as
+    -- coverage and the pct-of-science ratio then compare like with like."""
+    resolved, _ = resolve_mask_info(cf_attrs=dict(band.attrs))
+    band = _band_time_mean(band, resolved)
     cropped, in_region = _crop_band_to_region(band, region)
     if cropped is None or in_region == 0:
         return None
     vals = np.asarray(cropped.values, dtype="float64")
-    resolved, _ = resolve_mask_info(cf_attrs=dict(band.attrs))
-    valid = _band_valid_mask(
-        vals, resolved.get("fill_value"), resolved.get("valid_min"), resolved.get("valid_max"),
-    )
+    valid = np.isfinite(vals)
     valid_count = int(valid.sum())
     if valid_count == 0:
         return None

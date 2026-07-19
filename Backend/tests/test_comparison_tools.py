@@ -70,14 +70,35 @@ class UnitsMismatchTests(unittest.TestCase):
 
         self.assertIsNone(_units_mismatch_error(da_a, da_b))
 
-    def test_absent_units_on_either_side_are_not_a_mismatch(self):
+    def test_absent_units_on_both_sides_are_not_a_mismatch(self):
         import xarray as xr
         from tools.satellite_tools.comparison_tools import _units_mismatch_error
 
+        # Same variable, neither side publishes a units attr: no confident unit
+        # label is stamped on the difference, so there is nothing to mislabel.
+        da_a = xr.DataArray([1.0], name="no2")
+        da_b = xr.DataArray([2.0], name="no2")
+
+        self.assertIsNone(_units_mismatch_error(da_a, da_b))
+
+    def test_units_on_only_one_side_is_rejected_naming_the_declared_unit(self):
+        import xarray as xr
+        from tools.satellite_tools.comparison_tools import _units_mismatch_error
+
+        # One side declares units, the other has none: the difference would be
+        # differenced and stamped with the declared label, presenting an
+        # unverifiable-commensurability comparison as a real number.
         da_a = xr.DataArray([1.0], name="no2", attrs={"units": "mol/m^2"})
         da_b = xr.DataArray([2.0], name="no2")  # no units attr at all
 
-        self.assertIsNone(_units_mismatch_error(da_a, da_b))
+        error = _units_mismatch_error(da_a, da_b)
+        self.assertIsNotNone(error)
+        self.assertIn("mol/m^2", error)
+
+        # Symmetric: the missing side being A is just as unverifiable.
+        error_swapped = _units_mismatch_error(da_b, da_a)
+        self.assertIsNotNone(error_swapped)
+        self.assertIn("mol/m^2", error_swapped)
 
     def test_different_units_are_rejected_naming_both(self):
         import xarray as xr

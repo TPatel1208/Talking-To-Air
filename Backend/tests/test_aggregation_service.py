@@ -852,6 +852,31 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertTrue(self.np.isnan(values[0, 1]))  # flag 2 -> bad -> masked
         self.assertTrue(self.np.isnan(values[0, 2]))  # flag NaN -> unknown -> masked
 
+    def test_apply_quality_mask_drops_flag_own_integer_fill_sentinel_pixels(self):
+        """The QA-flag variable's OWN fill sentinel must be honored before the
+        good/bad test. A flag stored as an undecoded integer sentinel (255)
+        that xarray never turned to NaN would otherwise satisfy
+        ``notnull() & ~isin(bad)`` and let its science pixel through as a real
+        'good' observation. Only the already-NaN-flag case was covered before."""
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset({
+            "hcho": (("lat", "lon"), self.np.array([[1.0, 2.0, 3.0]])),
+            # flag 0 = good, 2 = bad, 255 = fill sentinel (quality not computed),
+            # declared via the flag var's own _FillValue -- never decoded to NaN.
+            "qa": (("lat", "lon"), self.np.array([[0, 2, 255]], dtype="int16")),
+        })
+        ds["qa"].attrs["_FillValue"] = 255
+
+        masked = AggregationService().apply_quality_mask(
+            ds["hcho"], ds=ds, col_info={"quality_flag_var": "qa", "qa_bad_values": [2]},
+        )
+
+        values = masked.values
+        self.assertEqual(values[0, 0], 1.0)  # flag 0 -> good -> kept
+        self.assertTrue(self.np.isnan(values[0, 1]))  # flag 2 -> bad -> masked
+        self.assertTrue(self.np.isnan(values[0, 2]))  # flag 255 fill -> unknown -> masked
+
     def test_apply_quality_mask_honors_a_combined_cf_valid_range_attr(self):
         """CF allows ``valid_range: [min, max]`` INSTEAD of valid_min/
         valid_max, and xarray does not apply it on decode — ignoring it meant
