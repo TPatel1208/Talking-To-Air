@@ -7,6 +7,7 @@ import rehypeKatex from 'rehype-katex'
 import { starterMessage } from '../utils/starterPrompts'
 import { compareBadgeLabel, isChartComparable, isSelectionFull, slotIndexOf } from '../utils/compareMode'
 import { reachableArtifacts } from '../utils/artifactReachability'
+import VariableChoicePicker from './VariableChoicePicker'
 
 const TYPE_LABEL = { map: 'Map', comparison: 'Comparison', timeseries: 'Time series', table: 'Table' }
 
@@ -549,6 +550,13 @@ function MessageBubble({
               />
             ))}
           </div>
+        )}
+
+        {/* T49: the deterministic variable-choice picker — shown when the
+            resolver couldn't confidently choose. Clicking a candidate sends
+            its reconstructed prompt through the same path as a typed message. */}
+        {!isUser && !msg.isLoading && (
+          <VariableChoicePicker variableChoice={msg.variableChoice} onSend={onFollowupClick} />
         )}
 
         {/* T22: follow-up suggestions grounded in this turn's answer —

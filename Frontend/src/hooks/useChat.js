@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { createSseParser } from '../utils/sseParser'
 import { applyWorkflowEvent, INITIAL_WORKFLOW_STATE } from '../utils/workflowStage'
 import { extractSuggestedFollowups } from '../utils/followups'
+import { extractVariableChoice } from '../utils/variableChoice'
 import { TERMINAL_STATUSES as TERMINAL_JOB_STATUSES } from '../utils/jobCard'
 import { classifyHistoryFetchFailure, historyStateReducer } from '../utils/historyLoad'
 
@@ -273,6 +274,7 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
         charts: [],
         artifacts: [],
         suggestedFollowups: [],
+        variableChoice: null,
         isLoading: true,
         streamId,
       },
@@ -380,6 +382,9 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
             charts: msg.charts || [],
             artifacts: msg.artifacts?.length ? msg.artifacts : (data.artifacts || []),
             suggestedFollowups: extractSuggestedFollowups(data),
+            // T49: the deterministic variable-choice picker, when the resolver
+            // couldn't confidently choose. null the vast majority of turns.
+            variableChoice: extractVariableChoice(data),
             statusMessage: '',
             workflowStage: INITIAL_WORKFLOW_STATE,
             isLoading: false,
