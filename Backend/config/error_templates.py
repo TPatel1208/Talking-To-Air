@@ -139,6 +139,41 @@ def _same_place(requested: str, delivered: str) -> bool:
     return _place_key(requested) == _place_key(delivered)
 
 
+# T48: universal variable resolver disclosure. When a wide, unregistered,
+# group-structured product has no single obvious variable, the resolver scores
+# and ranks the candidates and auto-picks the top populated science field --
+# but when the choice is among scientifically-distinct products (different
+# sensor/algorithm/overpass/wavelength), that fork must be disclosed in the
+# chat answer, not buried. Like the T46 scope note above, this is a
+# deterministic template filled only from the resolver's own facts (the chosen
+# label + the ranked alternatives) -- never model prose -- so the model can't
+# paraphrase away a scientific choice it made on the researcher's behalf.
+
+
+def render_variable_note(
+    chosen_label: str | None,
+    alternatives: list[str] | None = None,
+    *,
+    ambiguous: bool = True,
+) -> str | None:
+    """The one-line disclosure of an auto-picked variable. ``ambiguous`` (the
+    high-scientific-ambiguity case) lists the alternative products so the
+    researcher can redirect; otherwise (a medium-confidence pick with no real
+    fork) it is a brief note naming only the chosen field. Returns None when
+    there is no chosen label to disclose."""
+    label = (chosen_label or "").strip()
+    if not label:
+        return None
+    alts = [a for a in (alternatives or []) if a and a != label]
+    if ambiguous and alts:
+        return (
+            f"Note: this product has several distinct variables; showing "
+            f"{label} (highest-ranked populated field). Other products "
+            f"available: {', '.join(alts)}."
+        )
+    return f"Note: showing {label} (highest-ranked populated field)."
+
+
 def render_scope_note(requested_scope: dict | None, delivered_scope: dict | None) -> str | None:
     """A one-line disclosure when the delivered scope differs materially from
     the requested one, or ``None`` when they match (don't nag on an exact

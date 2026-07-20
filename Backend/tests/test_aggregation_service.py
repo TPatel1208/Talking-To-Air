@@ -403,39 +403,60 @@ class AggregationServiceTests(unittest.TestCase):
 
         self.assertEqual(da.name, "no2")
 
-    def test_to_dataarray_raises_a_candidate_listing_error_for_a_multi_var_file_with_no_choice(self):
-        """T25: the next(iter(data.data_vars)) silent-first-var fallback is
-        deleted -- MOD08_D3-style multi-variable files with no explicit
-        variable, and no retrieval-recorded choice, must refuse with a
-        structured error naming the candidates rather than guess."""
-        from earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED, MCPToolError
-        from preprocessing.aggregation_service import AggregationService
+    def test_to_dataarray_picks_the_science_var_over_plumbing_in_a_multi_var_file(self):
+        """T48: the VariableResolver replaces the old blanket refusal. A
+        MOD08_D3-style file pairs a geophysical field with plumbing
+        (Cloud_Fraction is a category-1 implementation variable) -- so instead
+        of refusing and dumping both, the resolver excludes the plumbing and
+        auto-picks the single populated science field. The choice rides out on
+        the returned array's resolution attrs."""
+        from preprocessing.aggregation_service import VARIABLE_RESOLUTION_ATTR, AggregationService
 
         ds = self.xr.Dataset({
-            "Cloud_Fraction": (("lat", "lon"), [[1.0]]),
-            "Aerosol_Optical_Depth": (("lat", "lon"), [[2.0]]),
+            "Cloud_Fraction": (("lat", "lon"), [[0.5]]),
+            "Aerosol_Optical_Depth": (("lat", "lon"), [[0.2]]),
         })
 
-        with self.assertRaises(MCPToolError) as ctx:
-            AggregationService().to_dataarray(ds)
+        da = AggregationService().to_dataarray(ds)
 
-        self.assertEqual(ctx.exception.category, CATEGORY_VARIABLE_CHOICE_REQUIRED)
-        self.assertIn("Cloud_Fraction", ctx.exception.message)
-        self.assertIn("Aerosol_Optical_Depth", ctx.exception.message)
+        self.assertEqual(da.name, "Aerosol_Optical_Depth")
+        facts = da.attrs[VARIABLE_RESOLUTION_ATTR]
+        self.assertEqual(facts["chosen"], "Aerosol_Optical_Depth")
 
-    def test_ambiguous_variable_error_is_bounded_for_a_pathologically_wide_file(self):
-        """P1 (AERDA_D3_VIIRS_MODIS, dataset_a88593edb7246c9b): a Yori-aggregated
-        L3 whose groups all share Mean/Standard_Deviation/Pixel_Counts/
-        Histogram_Counts leaves merges to 432 data_vars. The old refusal listed
-        every one -- a 20 KB error re-fed to the LLM on every stat/plot call,
-        driving a context explosion and whole-turn timeout (blank plot, no
-        stats). The refusal message must be bounded in size regardless of the
-        candidate count: name a capped sample, disclose the true total, and say
-        how many are hidden -- turning an O(N) context blowup into O(1)."""
+    def test_to_dataarray_resolves_a_wide_unregistered_mean_file_to_a_populated_field(self):
+        """P2 win (AERDA_D3_VIIRS_MODIS, dataset_a88593edb7246c9b): a
+        Yori-aggregated L3 merges to hundreds of ``group/Mean`` data_vars with
+        no registry default. The old tail refused with an unusable candidate
+        dump; the resolver now scores the Mean fields, drops empties, ranks, and
+        auto-picks a populated one -- a real map on the first try instead of a
+        refusal. The resolution facts (chosen + disclosure) ride out on attrs."""
+        from preprocessing.aggregation_service import VARIABLE_RESOLUTION_ATTR, AggregationService
+
+        data_vars = {
+            f"group_{i:03d}/Mean": (("lat", "lon"), [[float(i) / 100.0]], {"units": "1"})
+            for i in range(200)
+        }
+        ds = self.xr.Dataset(data_vars)
+
+        da = AggregationService().to_dataarray(ds)
+
+        self.assertEqual(da.attrs[VARIABLE_RESOLUTION_ATTR]["chosen"], da.name)
+        self.assertTrue(da.name.endswith("/Mean"))
+        # A wide distinct-product fork must disclose (never silently guess).
+        self.assertIsNotNone(da.attrs[VARIABLE_RESOLUTION_ATTR]["disclosure"])
+
+    def test_ambiguous_variable_error_is_bounded_for_a_pathologically_wide_unresolvable_file(self):
+        """P1 bound, still load-bearing for the files that genuinely refuse: a
+        wide file whose candidates carry no strong disambiguating signal (no
+        units, no Mean leaf, no CF metadata) is a real fork the resolver won't
+        guess -- it refuses. That refusal message must be bounded in size
+        regardless of candidate count: name a capped sample, disclose the true
+        total, and say how many are hidden -- an O(1) error, never the 20 KB
+        O(N) dump that drove the original context blowup."""
         from earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED, MCPToolError
         from preprocessing.aggregation_service import AggregationService
 
-        data_vars = {f"group_{i:03d}/Mean": (("lat", "lon"), [[float(i)]]) for i in range(200)}
+        data_vars = {f"field_{i:03d}": (("lat", "lon"), [[float(i)]]) for i in range(200)}
         ds = self.xr.Dataset(data_vars)
 
         with self.assertRaises(MCPToolError) as ctx:
@@ -450,24 +471,26 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertIn("200", exc.message)
         self.assertIn("more", exc.message.lower())
         # Still actionable: names at least a few real candidates.
-        self.assertIn("group_000/Mean", exc.message)
+        self.assertIn("field_000", exc.message)
 
     def test_ambiguous_variable_error_lists_all_candidates_when_few(self):
-        """Bounding must not truncate a small file: a 2-variable refusal still
-        names both candidates in full (no spurious 'and N more')."""
+        """Bounding must not truncate a small refusal: two weak, name-only
+        distinct products (no units, no Mean leaf) are a genuine fork the
+        resolver refuses -- and the refusal names both candidates in full (no
+        spurious 'and N more')."""
         from preprocessing.aggregation_service import AggregationService
 
         ds = self.xr.Dataset({
-            "Cloud_Fraction": (("lat", "lon"), [[1.0]]),
-            "Aerosol_Optical_Depth": (("lat", "lon"), [[2.0]]),
+            "DT_AOD_550_AVG": (("lat", "lon"), [[0.1]]),
+            "COMBINE_AOD_550_AVG": (("lat", "lon"), [[0.3]]),
         })
 
         with self.assertRaises(Exception) as ctx:
             AggregationService().to_dataarray(ds)
 
         msg = ctx.exception.message
-        self.assertIn("Cloud_Fraction", msg)
-        self.assertIn("Aerosol_Optical_Depth", msg)
+        self.assertIn("DT_AOD_550_AVG", msg)
+        self.assertIn("COMBINE_AOD_550_AVG", msg)
         self.assertNotIn("more", msg.lower())
 
     def test_to_dataarray_resolves_a_registered_multi_var_file_to_its_pinned_primary_var(self):
@@ -508,6 +531,45 @@ class AggregationServiceTests(unittest.TestCase):
             AggregationService().to_dataarray(ds)
 
         self.assertEqual(ctx.exception.category, CATEGORY_VARIABLE_CHOICE_REQUIRED)
+
+    def test_aggregate_surfaces_the_variable_resolution_disclosure_in_meta(self):
+        """T48 disclosure plumbing: when aggregate() resolves an ambiguous
+        multi-product file itself (Dataset input), the resolver's chosen
+        variable and its disclosure must ride out in meta -- the channel the
+        tool layer copies into chart provenance and the dispatch layer appends
+        to the answer. A silent auto-pick of a genuine sensor fork would hide
+        the choice."""
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset({
+            "Terra_MODIS_DarkTarget_AOD_550/Mean": (
+                ("lat", "lon"), [[0.19, 0.2]], {"units": "1", "long_name": "Terra MODIS Dark Target AOD 550"},
+            ),
+            "Aqua_MODIS_DarkTarget_AOD_550/Mean": (
+                ("lat", "lon"), [[0.21, 0.22]], {"units": "1", "long_name": "Aqua MODIS Dark Target AOD 550"},
+            ),
+        })
+
+        meta = AggregationService().aggregate(ds, stat="mean").meta
+
+        self.assertIn("variable_resolution", meta)
+        self.assertEqual(meta["variable_resolution"]["chosen"], "Terra_MODIS_DarkTarget_AOD_550/Mean")
+        self.assertIsNotNone(meta["variable_resolution"]["disclosure"])
+        self.assertIn("Aqua MODIS Dark Target AOD 550", meta["variable_resolution"]["disclosure"])
+
+    def test_aggregate_omits_variable_resolution_when_no_resolver_choice_was_made(self):
+        """A single-variable file (or an explicit/registry pick) never runs the
+        resolver, so meta carries no variable_resolution -- no note to nag with."""
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset(
+            {"no2": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]])},
+            coords={"lat": [40.0, 41.0], "lon": [-75.0, -74.0]},
+        )
+
+        meta = AggregationService().aggregate(ds, stat="mean", variable="no2").meta
+
+        self.assertNotIn("variable_resolution", meta)
 
     def test_to_dataarray_explicit_variable_param_wins_on_a_multi_var_file(self):
         from preprocessing.aggregation_service import AggregationService

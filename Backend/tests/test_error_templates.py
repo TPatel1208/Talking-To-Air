@@ -167,6 +167,38 @@ class RenderScopeNoteTests(unittest.TestCase):
         self.assertIn("California", note)
         self.assertIn("Nevada", note)
 
+    def test_variable_note_names_the_chosen_field_and_alternatives_when_ambiguous(self):
+        """T48: a high-ambiguity auto-pick discloses the chosen product AND the
+        ranked alternatives, deterministically (no model prose), so a sensor
+        fork is transparent and redirectable."""
+        from config.error_templates import render_variable_note
+
+        note = render_variable_note(
+            "Terra MODIS Dark Target AOD 550",
+            ["Aqua MODIS Dark Target AOD 550", "SNPP VIIRS Deep Blue AOD 550"],
+        )
+
+        self.assertIsNotNone(note)
+        self.assertIn("Terra MODIS Dark Target AOD 550", note)
+        self.assertIn("Aqua MODIS Dark Target AOD 550", note)
+        self.assertIn("SNPP VIIRS Deep Blue AOD 550", note)
+
+    def test_variable_note_is_a_brief_note_without_alternatives(self):
+        """A medium-confidence lone pick gets a brief note naming only the
+        chosen field -- no fork to list."""
+        from config.error_templates import render_variable_note
+
+        note = render_variable_note("Aerosol Optical Depth", [], ambiguous=False)
+
+        self.assertIsNotNone(note)
+        self.assertIn("Aerosol Optical Depth", note)
+        self.assertNotIn("Other products available", note)
+
+    def test_variable_note_is_none_without_a_chosen_label(self):
+        from config.error_templates import render_variable_note
+
+        self.assertIsNone(render_variable_note(None, ["a", "b"]))
+
 
 if __name__ == "__main__":
     unittest.main()

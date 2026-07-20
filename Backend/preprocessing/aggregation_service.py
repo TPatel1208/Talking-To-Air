@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import warnings
 from dataclasses import dataclass
 from typing import Any
@@ -16,10 +17,21 @@ from datasets.qa_flags import (
     QA_VERIFIED,
     resolve_qa_info,
 )
-from datasets.registry import known_quality_flag_vars, load_registry
+from datasets.registry import load_registry
 from earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED, MCPToolError
+from preprocessing.variable_resolver import Resolution, resolve
 from services import variable_choice_registry
 from utils.geo_utils import identify_time
+
+logger = logging.getLogger(__name__)
+
+# Key under which to_dataarray stashes the VariableResolver's facts on the
+# returned DataArray's attrs, so aggregate()/the tool layer can lift the
+# disclosure + chosen-variable provenance into the answer without any change
+# to to_dataarray's signature (the single chokepoint all 8 tools funnel
+# through). Set via assign_attrs, so the source Dataset's variable attrs are
+# never mutated.
+VARIABLE_RESOLUTION_ATTR = "_variable_resolution"
 
 
 @dataclass(frozen=True)
@@ -228,6 +240,13 @@ class AggregationService:
 
         da = self.to_dataarray(data, variable=variable, handle=handle)
 
+        # T48: when to_dataarray resolved the variable itself (a wide,
+        # unregistered, multi-product file), it stashed the chosen name + a
+        # disclosure on the array attrs. Capture it now, before masking's
+        # ``.where`` strips attrs, so the disclosure can ride out in meta to the
+        # tool layer's provenance and the chat answer.
+        variable_resolution = da.attrs.get(VARIABLE_RESOLUTION_ATTR)
+
         # ``data`` itself carries the sibling QA-flag variable when a caller
         # still passes a full Dataset (every existing unit test); otherwise
         # ``source_ds`` is the tool layer's separately-threaded opened
@@ -288,6 +307,8 @@ class AggregationService:
             source_attrs=source_attrs,
         )
         meta["masking"] = masking_provenance
+        if variable_resolution:
+            meta["variable_resolution"] = variable_resolution
 
         return AggregatedResult(ds=result_ds, meta=meta)
 
@@ -429,16 +450,23 @@ class AggregationService:
     ) -> xr.DataArray:
         """Resolve ``data`` to a single science-variable DataArray.
 
-        Resolution never invents a scientific choice (T25): explicit
+        The exact intent/curation tiers come first and are unchanged: explicit
         ``variable`` -> the choice recorded for ``handle`` at retrieval time
         (services.variable_choice_registry) -> the file's only data
         variable -> the collection's pinned ``primary_var`` (collections.yaml,
         matched via the file's ``short_name`` attr -- a curated choice, not a
-        guess) -> its only *science* variable once QA-flag vars are set aside
-        -> a structured, candidate-listing error. The previous
-        ``next(iter(data.data_vars))`` silent-first-variable fallback is
-        deleted, not softened -- a multi-science-variable file with no choice
-        made anywhere in that chain must refuse, not guess.
+        guess). The previous ``next(iter(data.data_vars))`` silent-first-variable
+        fallback stays deleted.
+
+        When all of those miss on a multi-variable file, the VariableResolver
+        (T48) takes over: it classifies each variable (implementation plumbing
+        vs distinct product), scores the weak signals, drops empties, ranks, and
+        either auto-picks a populated science field -- stashing its facts and a
+        disclosure on the returned array's ``_variable_resolution`` attrs -- or,
+        for a genuinely low-confidence file, returns no name and this raises the
+        P1-bounded, ranked candidate error so the researcher chooses. It never
+        invents a scientific choice (T25): a genuine sensor/algorithm fork is
+        disclosed, not silently guessed.
 
         ``variable`` and the recorded choice are matched by exact name or by
         bare leaf name: registry variable lists and recorded choices are HDF
@@ -461,6 +489,7 @@ class AggregationService:
         name = self._match_var(variable, data_vars)
         if name is None and handle:
             name = self._match_var(variable_choice_registry.get(handle), data_vars)
+        resolution: Resolution | None = None
         if name is None:
             if len(data_vars) == 1:
                 name = data_vars[0]
@@ -473,19 +502,66 @@ class AggregationService:
                 # intended variable instead of a spurious refusal.
                 name = self._registry_primary_var(data, data_vars)
             if name is None:
-                # A QA flag is never a science-variable candidate (T25): a
-                # TEMPO science+main_data_quality_flag pair still resolves to
-                # the single science variable without a spurious refusal.
-                science_vars = self._science_vars(data, data_vars)
-                if len(science_vars) == 1:
-                    name = science_vars[0]
-                else:
-                    raise self._ambiguous_variable_error(data, science_vars or data_vars)
+                # T48: the VariableResolver replaces the old
+                # _science_vars->refuse tail. It classifies (implementation vs
+                # distinct product), scores, drops empties, ranks, and decides
+                # -- auto-picking a populated science field (with a disclosure
+                # when the choice is a genuine sensor/algorithm fork) instead of
+                # dumping 432 opaque candidates. A genuinely low-confidence file
+                # still refuses, now with the resolver's RANKED, bounded list.
+                resolution = resolve(data, requested=variable)
+                self._log_resolution(resolution)
+                if resolution.name is None:
+                    ranked = [c.name for c in resolution.candidates] or data_vars
+                    raise self._ambiguous_variable_error(data, ranked)
+                name = resolution.name
 
         da = data[name]
         if variable:
             da.name = variable
+        if resolution is not None:
+            # assign_attrs returns a fresh DataArray (copied attrs) -- the
+            # source Dataset's variable attrs are never mutated.
+            da = da.assign_attrs(**{VARIABLE_RESOLUTION_ATTR: self._resolution_facts(resolution)})
         return da
+
+    @staticmethod
+    def _resolution_facts(resolution: Resolution) -> dict[str, Any]:
+        """The VariableResolver's decision, flattened for provenance/logging:
+        the chosen variable, both decision axes, the ranked alternatives, the
+        reasons behind the pick, and the deterministic disclosure line (T48).
+        Carried out of to_dataarray on the returned array's attrs."""
+        chosen = next((c for c in resolution.candidates if c.name == resolution.name), None)
+        return {
+            "chosen": resolution.name,
+            "resolution_confidence": resolution.resolution_confidence,
+            "scientific_ambiguity": resolution.scientific_ambiguity,
+            "disclosure": resolution.disclosure,
+            "reasons": list(chosen.reasons) if chosen else [],
+            "alternatives": [
+                c.name for c in resolution.candidates if c.name != resolution.name
+            ][:_MAX_LISTED_CANDIDATES],
+        }
+
+    @staticmethod
+    def _log_resolution(resolution: Resolution) -> None:
+        """Operator diagnosability (user story 6): a wrong pick must be
+        traceable from logs -- the chosen name, both axes, and the ranked
+        candidate scores."""
+        logger.info(
+            "variable_resolution",
+            extra={
+                "_event": "variable_resolution",
+                "_chosen": resolution.name,
+                "_confidence": resolution.resolution_confidence,
+                "_ambiguity": resolution.scientific_ambiguity,
+                "_candidates": [
+                    {"name": c.name, "category": c.category, "score": c.score,
+                     "valid_fraction": c.valid_fraction}
+                    for c in resolution.candidates[:_MAX_LISTED_CANDIDATES]
+                ],
+            },
+        )
 
     @staticmethod
     def _match_var(requested: str | None, data_vars: list[str]) -> str | None:
@@ -515,23 +591,6 @@ class AggregationService:
         primary = col_info_for_short_name(str(short_name).upper()).get("primary_var")
         return self._match_var(primary, data_vars) if primary else None
 
-    @staticmethod
-    def _science_vars(data: xr.Dataset, data_vars: list[str]) -> list[str]:
-        """``data_vars`` with QA-flag variables removed. A var is a flag if
-        its bare leaf name is a pinned ``quality_flag_var`` in the registry,
-        or it carries CF ``flag_values`` and ``flag_meanings`` attrs -- the
-        same signal ``_resolve_qa_flag_var`` uses to find the sibling flag."""
-        flag_names = known_quality_flag_vars()
-        science = []
-        for name in data_vars:
-            attrs = data[name].attrs
-            is_flag = name.rsplit("/", 1)[-1] in flag_names or (
-                "flag_values" in attrs and "flag_meanings" in attrs
-            )
-            if not is_flag:
-                science.append(name)
-        return science
-
     def _ambiguous_variable_error(self, data: xr.Dataset, data_vars: list[str]) -> MCPToolError:
         # P1: the candidate list MUST be bounded in size. A Yori-aggregated L3
         # whose groups all share Mean/Standard_Deviation/Pixel_Counts/
@@ -541,9 +600,10 @@ class AggregationService:
         # stat/plot call, drove a context explosion and whole-turn timeout
         # (blank plot, no statistics; live 2026-07-19). Naming a capped sample
         # plus the true total turns that O(N) blowup into O(1) while staying
-        # honest about how many candidates exist. Refining WHICH candidates
-        # surface (science-first ordering, empties last) is the VariableResolver
-        # (P2+); this tier only bounds the size.
+        # honest about how many candidates exist. WHICH candidates surface is
+        # now the VariableResolver's job (T48): ``data_vars`` arrives already
+        # ranked (distinct products first, empties dropped), so the capped
+        # sample is the most relevant few. This tier only bounds the size.
         total = len(data_vars)
         shown = data_vars[:_MAX_LISTED_CANDIDATES]
         candidates = []
