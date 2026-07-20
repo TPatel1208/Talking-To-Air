@@ -48,7 +48,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Awaitable, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 from langchain_core.tools import BaseTool
 
@@ -56,7 +57,7 @@ from config.settings import Settings
 from earthdata_mcp.client import (
     REQUIRED_TOOL_PARAMS,
     EarthdataMCPUnavailableError,
-    load_raw_mcp_tools,
+    open_earthdata_session,
     probe_mcp_tools,
 )
 from earthdata_mcp.workspace import EdlCredentialInjector, bind_workspace
@@ -68,10 +69,30 @@ STATE_READY = "ready"
 STATE_UNAVAILABLE = "unavailable"
 STATE_INCOMPATIBLE = "incompatible"
 
+# A plain, non-session-held loader (the legacy test seam): connect, list, and
+# return the tools, holding nothing open. Wrapped into a SessionScope below.
 Loader = Callable[[Settings], Awaitable[dict[str, BaseTool]]]
+# The production seam (default ``open_earthdata_session``): an async context
+# manager that opens ONE MCP session, yields the session-bound tools, and
+# holds the session open for the whole ``async with`` body — so the tools the
+# manager hands out reuse that one connection instead of reconnecting per call.
+SessionScope = Callable[[Settings], AbstractAsyncContextManager[dict[str, BaseTool]]]
 Probe = Callable[[Settings], Awaitable[Any]]
 OnReady = Callable[[dict[str, BaseTool]], Awaitable[None]]
 Sleeper = Callable[[float], Awaitable[None]]
+
+
+def _loader_as_scope(loader: Loader) -> SessionScope:
+    """Adapt a plain ``loader`` (legacy test seam) into a ``SessionScope`` that
+    holds nothing open — it just loads once and yields. Lets every existing
+    hermetic connection test keep injecting a plain ``async def loader`` while
+    the production path uses a real session-holding scope."""
+
+    @asynccontextmanager
+    async def _scope(settings: Settings) -> AsyncIterator[dict[str, BaseTool]]:
+        yield await loader(settings)
+
+    return _scope
 
 
 class EarthdataMCPNotReadyError(RuntimeError):
@@ -83,8 +104,9 @@ def check_tool_schemas(tools: dict[str, BaseTool]) -> dict[str, list[str]]:
     whose advertised input schema (``tool.args``) is missing a parameter this
     backend sends (``REQUIRED_TOOL_PARAMS``). Empty when every present
     required tool's contract holds. A tool absent from ``tools`` entirely is
-    not reported here — presence is the separate missing-tools verdict
-    ``load_raw_mcp_tools`` already raises on.
+    not reported here — presence is the separate missing-tools verdict the
+    session scope (``open_earthdata_session``, via ``_require_all_present``)
+    already raises on.
     """
     mismatches: dict[str, list[str]] = {}
     for name, sent_params in REQUIRED_TOOL_PARAMS.items():
@@ -101,11 +123,18 @@ def check_tool_schemas(tools: dict[str, BaseTool]) -> dict[str, list[str]]:
 class EarthdataMCPConnectionManager:
     """Background connect/reconnect loop for the earthdata-retrieval MCP.
 
-    ``loader``/``probe``/``sleep`` are injectable seams for tests (a fake
-    client that fails N times then succeeds, a fake steady-state probe, and
-    a no-op sleep so retry tests don't actually wait out the backoff) —
-    production callers rely on the defaults (``load_raw_mcp_tools``,
-    ``probe_mcp_tools``, ``asyncio.sleep``).
+    ``session_scope``/``loader``/``probe``/``sleep`` are injectable seams for
+    tests (a fake client that fails N times then succeeds, a fake steady-state
+    probe, and a no-op sleep so retry tests don't actually wait out the
+    backoff) — production callers rely on the defaults
+    (``open_earthdata_session``, ``probe_mcp_tools``, ``asyncio.sleep``).
+
+    ``session_scope`` is the session-holding seam the production path uses; a
+    plain ``loader`` (legacy) is accepted too and wrapped into a scope that
+    holds nothing open, so every existing hermetic test keeps working. Passing
+    neither uses the real ``open_earthdata_session`` — the whole point of this
+    module now is to keep one MCP session alive so the tools it hands out
+    reuse it instead of reconnecting on every ``ainvoke``.
     """
 
     def __init__(
@@ -114,7 +143,8 @@ class EarthdataMCPConnectionManager:
         user_id_getter: Callable[[], str],
         *,
         on_ready: OnReady | None = None,
-        loader: Loader = load_raw_mcp_tools,
+        session_scope: SessionScope | None = None,
+        loader: Loader | None = None,
         probe: Probe = probe_mcp_tools,
         sleep: Sleeper = asyncio.sleep,
         initial_backoff_seconds: float = 1.0,
@@ -127,7 +157,12 @@ class EarthdataMCPConnectionManager:
         self._settings = settings
         self._user_id_getter = user_id_getter
         self._on_ready = on_ready
-        self._loader = loader
+        if session_scope is not None:
+            self._session_scope = session_scope
+        elif loader is not None:
+            self._session_scope = _loader_as_scope(loader)
+        else:
+            self._session_scope = open_earthdata_session
         self._probe = probe
         self._sleep = sleep
         self._initial_backoff = initial_backoff_seconds
@@ -195,36 +230,12 @@ class EarthdataMCPConnectionManager:
         backoff = self._initial_backoff
         while True:
             try:
-                raw = await self._loader(self._settings)
-
-                mismatches = check_tool_schemas(raw)
-                if mismatches:
-                    self._transition(STATE_INCOMPATIBLE, detail=mismatches)
-                    await self._sleep(backoff)
-                    backoff = min(backoff * 2, self._max_backoff)
-                    continue
-
-                tools = bind_workspace(raw, self._user_id_getter, edl_injector=self._edl_injector)
-                # on_ready runs BEFORE the state flips to ready, so no caller can
-                # ever observe state == ready with a stale/empty consumer (e.g.
-                # api.py's satellite agent) still in place. It fires only on a
-                # genuine transition into ready (boot or recovery) — not on a
-                # heartbeat that finds an already-ready MCP still healthy.
-                if self._state != STATE_READY and self._on_ready is not None:
-                    await self._on_ready(tools)
-                self._tools = tools
-                self._transition(STATE_READY)
-                backoff = self._initial_backoff
-                # Stays here (probing, not reconnecting) until N consecutive
-                # misses -- see _heartbeat_while_ready's docstring. Returning
-                # falls through to the top of this loop, which re-runs the
-                # full connect path (on_ready fires again on recovery, since
-                # _heartbeat_while_ready already demoted the state below).
-                await self._heartbeat_while_ready()
+                reached_ready = await self._connect_once()
             except EarthdataMCPUnavailableError as exc:
                 self._transition(STATE_UNAVAILABLE, detail=str(exc))
                 await self._sleep(backoff)
                 backoff = min(backoff * 2, self._max_backoff)
+                continue
             except Exception:
                 # Anything the specific branch above didn't classify — a
                 # bind_workspace/schema-check bug, an on_ready (satellite
@@ -232,7 +243,9 @@ class EarthdataMCPConnectionManager:
                 # wrap. Before this catch, any such exception killed the task
                 # silently and froze the state forever (a dead watchdog:
                 # /health lies, no reconnect ever runs). CancelledError is a
-                # BaseException, so stop() still cancels cleanly through here.
+                # BaseException, so stop() still cancels cleanly through here
+                # — and unwinds ``_connect_once``'s ``async with`` on the way
+                # out, closing the live session (clean teardown on stop()).
                 logger.exception(
                     "earthdata_mcp_connect_loop_error",
                     extra={"_event": "earthdata_mcp_connect_loop_error", "_state": self._state},
@@ -240,6 +253,56 @@ class EarthdataMCPConnectionManager:
                 self._transition(STATE_UNAVAILABLE, detail="unexpected connect-loop error")
                 await self._sleep(backoff)
                 backoff = min(backoff * 2, self._max_backoff)
+                continue
+
+            if reached_ready:
+                # We held a live session, reached ready, and the heartbeat has
+                # now demoted us (the session closed as ``_connect_once``'s
+                # ``async with`` exited). Reconnect from the initial backoff —
+                # a working connection a moment ago means no long wait is
+                # warranted before re-establishing one.
+                backoff = self._initial_backoff
+            else:
+                # Incompatible schema (session already closed). Retry with
+                # backoff — a redeploy may fix the mismatch.
+                await self._sleep(backoff)
+                backoff = min(backoff * 2, self._max_backoff)
+
+    async def _connect_once(self) -> bool:
+        """Open the session scope, verify the tool contract, bind the
+        workspace, and — on success — stay inside the scope heartbeating until
+        demotion. Holding the scope open for the whole ready phase is what
+        keeps the one MCP session alive so the bound tools reuse it.
+
+        Returns ``True`` if it reached ready (and the heartbeat later demoted
+        it), ``False`` if the advertised schema was incompatible. Raises
+        ``EarthdataMCPUnavailableError`` (unreachable / missing tool) or any
+        other exception up to ``_connect_loop`` to classify, exactly as the
+        pre-session loop did — but now the ``async with`` guarantees the
+        session is closed on every exit path, including cancellation."""
+        async with self._session_scope(self._settings) as raw:
+            mismatches = check_tool_schemas(raw)
+            if mismatches:
+                self._transition(STATE_INCOMPATIBLE, detail=mismatches)
+                return False
+
+            tools = bind_workspace(raw, self._user_id_getter, edl_injector=self._edl_injector)
+            # on_ready runs BEFORE the state flips to ready, so no caller can
+            # ever observe state == ready with a stale/empty consumer (e.g.
+            # api.py's satellite agent) still in place. It fires only on a
+            # genuine transition into ready (boot or recovery) — not on a
+            # heartbeat that finds an already-ready MCP still healthy.
+            if self._state != STATE_READY and self._on_ready is not None:
+                await self._on_ready(tools)
+            self._tools = tools
+            self._transition(STATE_READY)
+            # Stays here (probing, not reconnecting) until N consecutive
+            # misses -- see _heartbeat_while_ready's docstring. When it
+            # returns, the state has already been demoted; falling out of this
+            # ``async with`` closes the session, and _connect_loop re-runs the
+            # full connect path (on_ready fires again on recovery).
+            await self._heartbeat_while_ready()
+            return True
 
     async def _heartbeat_while_ready(self) -> None:
         """PRD T40: while ready, probe on the heartbeat interval. A single

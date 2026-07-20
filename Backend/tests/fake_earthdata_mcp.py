@@ -415,11 +415,64 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
-class FakeEarthdataMCPServer:
-    """Starts/stops a real FastMCP streamable-HTTP server in a background thread."""
+class InitializeCountingMiddleware:
+    """ASGI middleware that counts MCP ``initialize`` requests reaching the
+    server — i.e. how many distinct streamable-HTTP sessions were opened.
 
-    def __init__(self, mcp: FastMCP):
+    One session opened and reused for N tool calls hits ``initialize`` once;
+    the per-call-reconnect path (``get_tools()``, ``session=None``) hits it
+    once per ``ainvoke``. Buffers each HTTP request body, peeks for the
+    ``initialize`` method, then replays the untouched body downstream so the
+    real FastMCP handling is unaffected. Non-HTTP scopes (lifespan) pass
+    straight through."""
+
+    def __init__(self, app):
+        self.app = app
+        self.initialize_count = 0
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        chunks = []
+        more = True
+        while more:
+            message = await receive()
+            if message["type"] == "http.request":
+                chunks.append(message.get("body", b""))
+                more = message.get("more_body", False)
+            else:
+                more = False
+        body = b"".join(chunks)
+        # The JSON-RPC initialize request carries ``"method":"initialize"``;
+        # notifications/initialized is a different token ("initialized") and
+        # never matches the quoted value here.
+        if b'"initialize"' in body:
+            self.initialize_count += 1
+
+        replayed = False
+
+        async def _replay():
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return await receive()
+
+        await self.app(scope, _replay, send)
+
+
+class FakeEarthdataMCPServer:
+    """Starts/stops a real FastMCP streamable-HTTP server in a background thread.
+
+    ``app_wrapper`` (optional) wraps the built ASGI app before serving — used
+    by the session-reuse regression test to slip an
+    ``InitializeCountingMiddleware`` in front of the real FastMCP handling."""
+
+    def __init__(self, mcp: FastMCP, app_wrapper: Callable[[Any], Any] | None = None):
         self.mcp = mcp
+        self._app_wrapper = app_wrapper
         self.port = _free_port()
         self.url = f"http://127.0.0.1:{self.port}/mcp"
         self._server: uvicorn.Server | None = None
@@ -427,6 +480,8 @@ class FakeEarthdataMCPServer:
 
     def start(self, timeout: float = 5.0) -> None:
         app = self.mcp.http_app(path="/mcp")
+        if self._app_wrapper is not None:
+            app = self._app_wrapper(app)
         config = uvicorn.Config(app, host="127.0.0.1", port=self.port, log_level="warning", lifespan="on")
         self._server = uvicorn.Server(config)
 
