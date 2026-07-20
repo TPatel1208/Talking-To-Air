@@ -102,6 +102,31 @@ class HelperTests(unittest.TestCase):
 
         self.assertEqual(_inject_satellite_context("task", {}), "task")
 
+    def test_current_date_preamble_states_the_date_authoritatively(self):
+        """Root cause A: a bare '[Current UTC time: ...]' banner let the fast
+        sub-agent model refuse present dates as future. The banner must assert
+        the date is authoritative ground truth and forbid a future-refusal from
+        the model's prior."""
+        from datetime import datetime, timezone
+
+        from services.subagent_dispatch import _current_date_preamble
+
+        text = _current_date_preamble(datetime(2026, 7, 19, 12, 0, tzinfo=timezone.utc))
+        lowered = text.lower()
+
+        self.assertIn("2026-07-19", text)
+        self.assertIn("authoritative", lowered)
+        # Explicitly disarms the observed refusal wording.
+        self.assertIn("in the future", lowered)
+        # Ends with the paragraph break the task text is appended after.
+        self.assertTrue(text.endswith("\n\n"))
+
+    def test_current_date_preamble_defaults_to_now_when_unset(self):
+        from services.subagent_dispatch import _current_date_preamble
+
+        # No argument → uses the real clock; just assert it produces a banner.
+        self.assertIn("authoritative", _current_date_preamble().lower())
+
     def test_satellite_context_injection_withholds_stale_aoi_when_task_names_a_new_bbox(self):
         """Live-testing bug: a follow-up turn that spells out its own new
         bounding box ('bounding box: min longitude -84, max longitude -70,
@@ -879,6 +904,131 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(result.text, clarifying)
+
+    async def test_run_satellite_captures_an_emitted_variable_choice_and_fills_prompts(self):
+        """T49: a tool that emits a variable_choice out-of-band (the low-
+        confidence deterministic short-circuit) has its picker captured onto
+        the finalized AgentResult, with each candidate's prompt reconstructed
+        from the ORIGINAL user request -- not the date/context-enriched task the
+        sub-agent actually ran, and never composed by the model."""
+        from services import subagent_dispatch
+        from utils.streaming import emit_variable_choice
+
+        envelope = json.dumps({"summary": "I've shown a variable picker.", "artifact_ids": [], "handles": []})
+
+        class FakeSatelliteAgent:
+            async def astream(self, input_, config, stream_mode):
+                # A real tool would do this on catching VariableChoiceRequired.
+                emit_variable_choice({
+                    "message": "This dataset has 2 candidate variables I can't confidently narrow down — pick one:",
+                    "candidates": [
+                        {"name": "DT_AOD_550_AVG", "category": "distinct", "units": "1",
+                         "valid_fraction": 0.8, "reasons": ["geophysical quantity"], "prompt": ""},
+                        {"name": "COMBINE_AOD_550_AVG", "category": "distinct", "units": "1",
+                         "valid_fraction": 0.9, "reasons": ["geophysical quantity"], "prompt": ""},
+                    ],
+                })
+                await asyncio.sleep(0)
+                yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
+
+        subagent_dispatch.get_call_budget().clear()
+        result = await subagent_dispatch.run_satellite(
+            FakeSatelliteAgent(), "plot AOD over New Jersey last week", "thread-1",
+        )
+
+        self.assertIsNotNone(result.variable_choice)
+        self.assertEqual(len(result.variable_choice.candidates), 2)
+        prompts = {c.name: c.prompt for c in result.variable_choice.candidates}
+        self.assertEqual(
+            prompts["DT_AOD_550_AVG"],
+            "plot AOD over New Jersey last week using DT_AOD_550_AVG",
+        )
+        # The prompt reconstructs the ORIGINAL request, not the enriched task
+        # (no injected [Current date/time ...] preamble leaks into it).
+        self.assertNotIn("Current date", prompts["COMBINE_AOD_550_AVG"])
+
+    async def test_run_satellite_multi_part_delivers_the_resolved_chart_and_one_picker(self):
+        """T49 multi-part partial delivery: a request touching two variables
+        where one resolves cleanly (a chart) and the other is ambiguous (a tool
+        emits a picker) returns BOTH — the good work is never discarded because
+        one part was unclear."""
+        from services import subagent_dispatch
+        from utils.streaming import emit_chart, emit_variable_choice
+
+        envelope = json.dumps({"summary": "Plotted NO2; AOD needs a choice.", "artifact_ids": [], "handles": []})
+
+        class MultiPartSatelliteAgent:
+            async def astream(self, input_, config, stream_mode):
+                # Part A resolved -> a chart.
+                emit_chart({"type": "heatmap", "chart_id": "chart_no2"})
+                # Part B ambiguous -> a picker.
+                emit_variable_choice({
+                    "message": "This dataset has 2 candidate variables I can't confidently narrow down — pick one:",
+                    "candidates": [
+                        {"name": "DT_AOD_550_AVG", "category": "distinct", "units": "1",
+                         "valid_fraction": 0.8, "reasons": [], "prompt": ""},
+                        {"name": "COMBINE_AOD_550_AVG", "category": "distinct", "units": "1",
+                         "valid_fraction": 0.9, "reasons": [], "prompt": ""},
+                    ],
+                })
+                await asyncio.sleep(0)
+                yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
+
+        subagent_dispatch.get_call_budget().clear()
+        result = await subagent_dispatch.run_satellite(
+            MultiPartSatelliteAgent(), "plot NO2 and AOD over New Jersey", "thread-1",
+        )
+
+        self.assertEqual(len(result.charts), 1)  # the resolved part survived
+        self.assertIsNotNone(result.variable_choice)  # the ambiguous part got a picker
+        self.assertEqual(len(result.variable_choice.candidates), 2)
+
+    async def test_run_satellite_medium_confidence_delivers_the_chart_and_the_override_picker(self):
+        """T49 medium-confidence non-blocking: an auto-picked answer arrives
+        with its chart AND an override picker (lifted from the chart's
+        provenance), never one instead of the other. Prompts come from the
+        original request."""
+        from services import subagent_dispatch
+        from utils.streaming import emit_chart
+
+        envelope = json.dumps({"summary": "Plotted AOD over NJ.", "artifact_ids": [], "handles": []})
+        chart = {
+            "type": "heatmap",
+            "chart_id": "chart_1",
+            "provenance": {
+                "variable_resolution": {
+                    "chosen": "aerosol_optical_depth_average",
+                    "resolution_confidence": "medium",
+                    "variable_choice": {
+                        "message": "Showing aerosol_optical_depth_average — pick another if not:",
+                        "candidates": [
+                            {"name": "aerosol_optical_depth_average", "category": "distinct",
+                             "units": "1", "valid_fraction": 0.9, "reasons": ["geophysical quantity"],
+                             "prompt": ""},
+                        ],
+                    },
+                },
+            },
+        }
+
+        class FakeSatelliteAgent:
+            async def astream(self, input_, config, stream_mode):
+                emit_chart(chart)
+                await asyncio.sleep(0)
+                yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
+
+        subagent_dispatch.get_call_budget().clear()
+        result = await subagent_dispatch.run_satellite(
+            FakeSatelliteAgent(), "plot AOD over New Jersey last week", "thread-1",
+        )
+
+        # Chart still delivered — the picker is an addition, not a replacement.
+        self.assertEqual(len(result.charts), 1)
+        self.assertIsNotNone(result.variable_choice)
+        self.assertEqual(
+            result.variable_choice.candidates[0].prompt,
+            "plot AOD over New Jersey last week using aerosol_optical_depth_average",
+        )
 
     async def test_run_satellite_second_call_in_the_same_task_is_budget_blocked(self):
         from services import subagent_dispatch

@@ -26,7 +26,12 @@ from langchain_core.tools import BaseTool
 from config.workflow_stages import STAGE_RENDER
 from datasets.mask_info import col_info_for_short_name, short_name_from_attrs
 from earthdata_mcp.results import MCPToolError, parse_tool_result
-from preprocessing.aggregation_service import AggregationService, area_weighted_mean
+from preprocessing.aggregation_service import (
+    AggregationService,
+    VariableChoiceRequired,
+    area_weighted_mean,
+)
+from preprocessing.variable_choice_builder import emit_variable_choice_payload
 from services.open_handle import OpenHandleError, open_handle
 from tools.satellite_tools.plot_tools import (
     _da_to_heatmap_payload,
@@ -464,6 +469,13 @@ def make_compare(mcp_tools: dict[str, BaseTool]):
             if lon_coord_a:
                 ds_a = _normalize_longitudes(ds_a, lon_coord_a)
             da_a = _aggregation_service.to_dataarray(ds_a, handle=handle_a, variable=variable)
+        except VariableChoiceRequired as e:
+            # T49: side A of the compare is ambiguous — deliver a deterministic
+            # picker (multi-part partial delivery is per-side: this side yields
+            # a picker instead of a panel; a resolvable side still renders).
+            emit_variable_choice_payload(e.resolution, ds_a)
+            emit_status("Waiting for a variable choice.", stage=STAGE_RENDER)
+            return json.dumps({"error": e.mcp_error.to_dict()})
         except MCPToolError as e:
             return json.dumps({"error": e.to_dict()})
         except OpenHandleError as e:
@@ -474,6 +486,10 @@ def make_compare(mcp_tools: dict[str, BaseTool]):
             if lon_coord_b:
                 ds_b = _normalize_longitudes(ds_b, lon_coord_b)
             da_b = _aggregation_service.to_dataarray(ds_b, handle=handle_b, variable=variable)
+        except VariableChoiceRequired as e:
+            emit_variable_choice_payload(e.resolution, ds_b)
+            emit_status("Waiting for a variable choice.", stage=STAGE_RENDER)
+            return json.dumps({"error": e.mcp_error.to_dict()})
         except MCPToolError as e:
             return json.dumps({"error": e.to_dict()})
         except OpenHandleError as e:

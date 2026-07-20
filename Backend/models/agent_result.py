@@ -13,6 +13,32 @@ class ChartPayload(BaseModel, extra="allow"):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class VariableChoiceOption(BaseModel):
+    """One candidate the researcher may pick when the variable resolver (T48)
+    couldn't confidently choose. Every field is a fact the resolver computed
+    (name/category/units/valid_fraction/reasons) plus the pre-composed
+    ``prompt`` the dispatch layer builds by templating the original request
+    with this variable substituted in — clicking it auto-sends that prompt."""
+
+    name: str
+    category: str
+    units: str | None = None
+    valid_fraction: float | None = None
+    reasons: list[str] = Field(default_factory=list)
+    prompt: str
+
+
+class VariableChoice(BaseModel):
+    """T49: the deterministic, LLM-free picker payload for a variable-choice
+    turn. ``message`` is a template filled only from resolver facts (candidate
+    count, excluded-empty count); ``candidates`` is the resolver's own ranked
+    list, never capped and never paraphrased by the model. Rendered as inline
+    chips (<=6) or a searchable, grouped modal (>6) by the frontend."""
+
+    message: str
+    candidates: list[VariableChoiceOption] = Field(default_factory=list)
+
+
 class AgentResult(BaseModel):
     text: str
     charts: list[ChartPayload] = Field(default_factory=list)
@@ -27,6 +53,13 @@ class AgentResult(BaseModel):
     # (services/subagent_dispatch.py) never sets this, so a malformed
     # envelope never carries invented suggestions.
     suggested_followups: list[str] | None = Field(default=None, max_length=2)
+    # T49: when the T48 resolver's confidence was medium or low, the
+    # deterministic variable picker attached alongside (medium) or in place of
+    # (low) a chart. Populated by run_satellite from the out-of-band
+    # variable_choice event — never by the sub-agent's envelope — so the
+    # candidate list is a guarantee of what the resolver computed, not a hope
+    # about model paraphrasing (mirrors how charts are collected, not enveloped).
+    variable_choice: VariableChoice | None = None
 
 
 class SubAgentEnvelope(BaseModel):

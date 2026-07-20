@@ -8,6 +8,7 @@ Yields:
     ("text", str)
     ("job_progress", {"job_handle": str, "status": str, "progress": Any, "phase": Any, "message": str | None})
     ("chart_payload", dict)  # full render payload — see utils.streaming.emit_chart
+    ("variable_choice", dict)  # deterministic picker — see utils.streaming.emit_variable_choice
 """
 
 import asyncio
@@ -39,6 +40,10 @@ _job_progress_emitter: ContextVar[Optional[Callable[[dict], None]]] = ContextVar
 )
 _chart_emitter: ContextVar[Optional[Callable[[dict], None]]] = ContextVar(
     "chart_emitter",
+    default=None,
+)
+_variable_choice_emitter: ContextVar[Optional[Callable[[dict], None]]] = ContextVar(
+    "variable_choice_emitter",
     default=None,
 )
 _current_thread_id: ContextVar[Optional[str]] = ContextVar("current_thread_id", default=None)
@@ -107,6 +112,19 @@ def emit_chart(payload: dict) -> None:
     model gets a compact summary, the frontend gets this full payload via the
     existing chart/artifact pipeline)."""
     emitter = _chart_emitter.get()
+    if emitter:
+        emitter(payload)
+
+
+def emit_variable_choice(payload: dict) -> None:
+    """T49: emit the deterministic variable-choice picker for the active SSE
+    stream, out-of-band from the tool's model-facing return value -- the same
+    two-audience split as emit_chart. The model gets a compact, P1-bounded 'a
+    picker was shown' tool result; the frontend gets THIS full, uncapped
+    candidate list, guaranteed to be exactly what the T48 resolver computed
+    (never narrated or truncated by the model). run_satellite captures it and
+    fills each candidate's auto-send prompt from the original request."""
+    emitter = _variable_choice_emitter.get()
     if emitter:
         emitter(payload)
 
@@ -206,6 +224,7 @@ async def stream_response(
     parent_emitter = _status_emitter.get()
     parent_job_progress_emitter = _job_progress_emitter.get()
     parent_chart_emitter = _chart_emitter.get()
+    parent_variable_choice_emitter = _variable_choice_emitter.get()
     # Last-activity clock the heartbeat watchdog polls (below) — touched by
     # every real event this turn publishes, including a bubbled event from a
     # nested stream_response call, so the heartbeat only ever fires during
@@ -237,6 +256,12 @@ async def stream_response(
         if parent_chart_emitter:
             parent_chart_emitter(data)
         loop.call_soon_threadsafe(queue.put_nowait, ("chart_payload", data))
+
+    def publish_variable_choice(data: dict) -> None:
+        _touch()
+        if parent_variable_choice_emitter:
+            parent_variable_choice_emitter(data)
+        loop.call_soon_threadsafe(queue.put_nowait, ("variable_choice", data))
 
     async def publish(event_type: str, data) -> None:
         _touch()
@@ -324,6 +349,7 @@ async def stream_response(
     token = _status_emitter.set(publish_status)
     job_progress_token = _job_progress_emitter.set(publish_job_progress)
     chart_token = _chart_emitter.set(publish_chart_payload)
+    variable_choice_token = _variable_choice_emitter.set(publish_variable_choice)
     thread_token = _current_thread_id.set(thread_id)
     # Same "set once, outermost wins" pattern as call_budget/turn_started_at
     # below: a nested stream_response call (run_ground/run_satellite's own
@@ -363,6 +389,7 @@ async def stream_response(
         _status_emitter.reset(token)
         _job_progress_emitter.reset(job_progress_token)
         _chart_emitter.reset(chart_token)
+        _variable_choice_emitter.reset(variable_choice_token)
         _current_thread_id.reset(thread_token)
         if user_token is not None:
             _current_user_id.reset(user_token)

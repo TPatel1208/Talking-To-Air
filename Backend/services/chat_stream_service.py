@@ -109,6 +109,11 @@ class ChatStreamService:
             # event — a plain dict (not a bare variable) so the nested helper
             # methods below can update it by reference.
             suggestions_box: dict[str, list[str]] = {}
+            # T49: the deterministic variable picker off a sub-agent's
+            # AgentResult tool_result (run_satellite already filled its
+            # prompts) — carried straight through, never synthesized here, the
+            # same discipline as suggestions_box.
+            variable_choice_box: dict[str, dict] = {}
             # T38: last-seen status per job_handle, from every job_progress
             # event this turn — read only if the turn deadline fires, to name
             # anything still running server-side in the timeout answer.
@@ -147,6 +152,7 @@ class ChatStreamService:
                                 artifacts,
                                 emitted_chart_ids,
                                 suggestions_box,
+                                variable_choice_box,
                             ):
                                 yield event
                         elif event_type == "image":
@@ -157,6 +163,7 @@ class ChatStreamService:
                         elif event_type == "text":
                             text, events = await self._text_events(
                                 data, thread_id, user_id, emitted_chart_ids, suggestions_box,
+                                variable_choice_box,
                             )
                             response_text += text
                             if text:
@@ -173,6 +180,8 @@ class ChatStreamService:
                     }
                     if "value" in suggestions_box:
                         done_payload["suggested_followups"] = suggestions_box["value"]
+                    if "value" in variable_choice_box:
+                        done_payload["variable_choice"] = variable_choice_box["value"]
                     yield self.sse("done", done_payload)
                     self._log_request_complete(request_id, thread_id, started)
             except Exception as exc:
@@ -322,6 +331,10 @@ class ChatStreamService:
         # the supervisor path's suggestions_box.
         if result.suggested_followups is not None:
             done_payload["suggested_followups"] = result.suggested_followups
+        # T49: the deterministic variable picker, likewise read straight off
+        # the finalized result (run_satellite already filled its prompts).
+        if result.variable_choice is not None:
+            done_payload["variable_choice"] = result.variable_choice.model_dump(exclude_none=True)
         yield self.sse("done", done_payload)
         self._log_request_complete(request_id, thread_id, started)
 
@@ -444,6 +457,7 @@ class ChatStreamService:
         artifacts: list[dict[str, Any]] | None = None,
         emitted_chart_ids: set[str] | None = None,
         suggestions_box: dict[str, list[str]] | None = None,
+        variable_choice_box: dict[str, dict] | None = None,
     ) -> AsyncIterator[str]:
         if emitted_chart_ids is None:
             emitted_chart_ids = set()
@@ -467,6 +481,9 @@ class ChatStreamService:
             # through untouched (never synthesized here, story #12).
             if suggestions_box is not None and agent_result.suggested_followups is not None:
                 suggestions_box["value"] = agent_result.suggested_followups
+            # T49: same discipline for the deterministic variable picker.
+            if variable_choice_box is not None and agent_result.variable_choice is not None:
+                variable_choice_box["value"] = agent_result.variable_choice.model_dump(exclude_none=True)
             return
 
         artifact_refs = self._artifact_refs(content)
@@ -538,6 +555,7 @@ class ChatStreamService:
         user_id: str,
         emitted_chart_ids: set[str] | None = None,
         suggestions_box: dict[str, list[str]] | None = None,
+        variable_choice_box: dict[str, dict] | None = None,
     ) -> tuple[str, list[str]]:
         if emitted_chart_ids is None:
             emitted_chart_ids = set()
@@ -558,6 +576,8 @@ class ChatStreamService:
                     events.append(self.sse("artifact", payload))
                 if suggestions_box is not None and structured_result.suggested_followups is not None:
                     suggestions_box["value"] = structured_result.suggested_followups
+                if variable_choice_box is not None and structured_result.variable_choice is not None:
+                    variable_choice_box["value"] = structured_result.variable_choice.model_dump(exclude_none=True)
                 return structured_result.text or "", events
 
             text, charts = self.chart_service.parse_charts(data)

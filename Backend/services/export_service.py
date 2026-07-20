@@ -278,7 +278,7 @@ class ExportService:
         raise RuntimeError("Chart data export requires the async export path.")
 
     async def _export_data_array_async(self, export: dict[str, Any], tools: dict[str, Any], collapse_to_2d: bool = True):
-        from preprocessing.aggregation_service import AggregationService
+        from preprocessing.aggregation_service import AggregationService, VariableChoiceRequired
         from tools.satellite_tools.plot_tools import _normalize_longitudes, _sel_bounds
         from services.open_handle import open_handle
         from utils.plotting import RegionResolver, mask_data_by_geometry
@@ -301,6 +301,12 @@ class ExportService:
             da = AggregationService().to_dataarray(
                 ds, variable=export.get("variable"), handle=source_handles[0],
             )
+        except VariableChoiceRequired as exc:
+            # T49's interactive picker is a chat-turn affordance; a raw export
+            # download has no chat surface to attach it to, so this path keeps
+            # the pre-T49 behavior -- surface the bounded refusal as the export's
+            # own clean 422 ValueError.
+            raise ValueError(exc.mcp_error.message) from exc
         except MCPToolError as exc:
             raise ValueError(exc.message) from exc
         lat_coord, lon_coord = self._export_lat_lon_names(da)

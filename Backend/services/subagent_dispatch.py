@@ -197,7 +197,6 @@ async def run_satellite(
         ))
     budget["satellite"] = count + 1
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     # Cross-turn retrieval context (dataset/AOI/handles the last satellite turn
     # on this thread worked with). The fast path writes only the prose answer
     # back into the supervisor's thread, so a follow-up that drops to the
@@ -207,13 +206,18 @@ async def run_satellite(
     # as UNVERIFIED context (never an availability verdict) so the agent reuses
     # the handles but still re-checks coverage.
     satellite_context = await _load_satellite_context(conversation_thread_id)
-    enriched_task = _inject_satellite_context(f"[Current UTC time: {now}]\n\n{task}", satellite_context)
+    enriched_task = _inject_satellite_context(_current_date_preamble() + task, satellite_context)
     captured_context: dict[str, str] = {}
     # T46: the first define_area_of_interest user_input rejection seen this
     # turn. Its presence alongside a delivered chart means the agent improvised
     # a substitute region instead of relaying the rejection — the no-
     # substitution guard below refuses that answer deterministically.
     aoi_rejection: dict[str, MCPToolError] = {}
+    # T49: the deterministic variable-choice picker a tool emitted out-of-band
+    # (emit_variable_choice) when the T48 resolver couldn't confidently choose.
+    # Kept last-wins; attached to the finalized answer below with each
+    # candidate's auto-send prompt filled from the ORIGINAL request (task).
+    variable_choice_box: dict[str, dict] = {}
 
     async def _invoke(task_text: str) -> AgentResult:
         charts = []
@@ -230,6 +234,13 @@ async def run_satellite(
                     await on_event(event_type, data)
                 if event_type == "tool_call":
                     _capture_satellite_context(data.get("name"), data.get("args"), captured_context)
+                    continue
+                if event_type == "variable_choice":
+                    # T49: the deterministic picker rides out-of-band, exactly
+                    # like a chart_payload — captured here, never parsed from the
+                    # model's prose, so the candidate list is a guarantee.
+                    if isinstance(data, dict):
+                        variable_choice_box["value"] = data
                     continue
                 if event_type == "chart_payload":
                     # T13: plot/statistics tools emit the full render
@@ -304,6 +315,7 @@ async def run_satellite(
 
     finalized = _finalize_sub_agent_result(result, "earthdata")
     finalized = _guard_aoi_substitution(finalized, aoi_rejection.get("error"))
+    finalized = _attach_variable_choice(finalized, variable_choice_box.get("value"), task)
     if captured_context and conversation_thread_id:
         await _persist_satellite_context(
             conversation_thread_id, {**satellite_context, **captured_context}
@@ -435,6 +447,54 @@ def _chart_provenance(chart: Any) -> dict:
     else:
         prov = getattr(chart, "provenance", None)
     return prov if isinstance(prov, dict) else {}
+
+
+def _attach_variable_choice(
+    result: AgentResult, payload: dict | None, original_request: str,
+) -> AgentResult:
+    """T49: attach the deterministic variable-choice picker to the finalized
+    answer, reconstructing each candidate's auto-send prompt from the ORIGINAL
+    request text (never the date/context-enriched task the sub-agent actually
+    ran, so no injected preamble leaks into the message a click would resend).
+
+    Two sources feed one attach point:
+    - LOW confidence: ``payload`` is the picker a tool emitted out-of-band
+      (emit_variable_choice) in place of a chart.
+    - MEDIUM confidence: the answer arrived WITH a chart; its provenance
+      carries the picker (stashed by AggregationService._resolution_facts) so
+      the guess can be overridden in one click, without blocking the answer.
+
+    The out-of-band payload wins when both exist. A no-op when neither source
+    has a picker. Failure to parse is non-fatal — the answer still stands."""
+    if result.variable_choice is not None:
+        return result
+    payload = payload or _medium_variable_choice_from_charts(result)
+    if not payload:
+        return result
+    from models import VariableChoice
+    from preprocessing.variable_choice_builder import fill_prompts
+
+    try:
+        choice = VariableChoice.model_validate(payload)
+    except Exception:
+        logger.warning("variable_choice_parse_failed", exc_info=True)
+        return result
+    result.variable_choice = fill_prompts(choice, original_request)
+    return result
+
+
+def _medium_variable_choice_from_charts(result: AgentResult) -> dict | None:
+    """The medium-confidence picker stashed in a delivered chart's provenance
+    (variable_resolution.variable_choice), or None. This is how a medium
+    auto-pick attaches its override picker without a separate out-of-band
+    emit — the resolver already rode its facts out on the chart."""
+    for chart in result.charts:
+        resolution = _chart_provenance(chart).get("variable_resolution")
+        if isinstance(resolution, dict):
+            picker = resolution.get("variable_choice")
+            if isinstance(picker, dict) and picker.get("candidates"):
+                return picker
+    return None
 
 
 def _append_variable_note(result: AgentResult) -> AgentResult:
@@ -706,6 +766,31 @@ def _task_specifies_new_area(task: str) -> bool:
     as the ground-monitor pollutant fix: the researcher's current wording is
     always authoritative over carried-over context."""
     return bool(_EXPLICIT_AREA_PATTERN.search(str(task or "")))
+
+
+def _current_date_preamble(now: datetime | None = None) -> str:
+    """Authoritative current-date banner prepended to every satellite task.
+
+    Root cause A (live 2026-07-19): the sub-agent runs on a fast model whose
+    training prior can trail the real clock by years. Shown only a bare
+    ``[Current UTC time: ...]`` stamp, it was observed refusing valid
+    present-day dates outright — "those dates are in the future, no
+    observations exist" — for L3 AOD requested in the current week. So the
+    date is stated as authoritative ground truth, with the future-refusal
+    wording explicitly disarmed and doubt routed to a tool check, not a
+    refusal from memory. The system prompt (earthdata_agent_prompt) reinforces
+    the same rule; this banner is what makes the concrete date available."""
+    now = now or datetime.now(timezone.utc)
+    stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return (
+        f"[Current date/time: {stamp} (AUTHORITATIVE — this is the real current "
+        "date; trust it over any assumption you hold about what year it is). Any "
+        "date on or before it is a valid past/present date: NEVER tell the "
+        "researcher a requested date is \"in the future\" or that \"no "
+        "observations exist yet\" from your own prior — if you doubt a date has "
+        "data, check with check_availability/check_coverage and report what the "
+        "tool returns.]\n\n"
+    )
 
 
 def _inject_satellite_context(task: str, context: dict[str, str]) -> str:

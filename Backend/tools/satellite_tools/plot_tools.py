@@ -74,10 +74,12 @@ from utils.streaming import emit_chart, emit_status
 from preprocessing.aggregation_service import (
     VARIABLE_RESOLUTION_ATTR,
     AggregationService,
+    VariableChoiceRequired,
     area_weighted_mean,
     fill_match,
     flag_pass_condition,
 )
+from preprocessing.variable_choice_builder import emit_variable_choice_payload
 
 logger = logging.getLogger(__name__)
 
@@ -1054,6 +1056,14 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
             if ds_lon_coord:
                 ds = _normalize_longitudes(ds, ds_lon_coord)
             da = _open_dataarray(ds, handle=handle, variable=variable)
+        except VariableChoiceRequired as e:
+            # T49: the file is genuinely ambiguous. Hand the choice to the
+            # researcher as a deterministic, uncapped picker (out-of-band), and
+            # return the compact P1-bounded refusal to the model as this call's
+            # terminal result — the model never sees or re-feeds the full list.
+            emit_variable_choice_payload(e.resolution, ds)
+            emit_status("Waiting for a variable choice.", stage=STAGE_RENDER)
+            return json.dumps({"error": e.mcp_error.to_dict()})
         except MCPToolError as e:
             emit_status("Visualization failed while opening data.", stage=STAGE_RENDER)
             return json.dumps({"error": e.to_dict()})
@@ -1205,6 +1215,10 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
                 if ds_lon_coord:
                     ds = _normalize_longitudes(ds, ds_lon_coord)
                 da = _open_dataarray(ds, handle=handle, variable=variable)
+            except VariableChoiceRequired as e:
+                emit_variable_choice_payload(e.resolution, ds)
+                emit_status("Waiting for a variable choice.", stage=STAGE_RENDER)
+                return json.dumps({"error": e.mcp_error.to_dict()})
             except MCPToolError as e:
                 emit_status("Visualization failed while opening data.", stage=STAGE_RENDER)
                 return json.dumps({"error": e.to_dict()})
@@ -1365,6 +1379,10 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
             if ds_lon_coord:
                 ds = _normalize_longitudes(ds, ds_lon_coord)
             da = _open_dataarray(ds, handle=handle, variable=variable)
+        except VariableChoiceRequired as e:
+            emit_variable_choice_payload(e.resolution, ds)
+            emit_status("Waiting for a variable choice.", stage=STAGE_RENDER)
+            return json.dumps({"error": e.mcp_error.to_dict()})
         except MCPToolError as e:
             return json.dumps({"error": e.to_dict()})
         except OpenHandleError as e:

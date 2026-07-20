@@ -210,6 +210,30 @@ def flag_pass_condition(qf: xr.DataArray, good_values: Any = None, bad_values: A
 _MAX_LISTED_CANDIDATES = 20
 
 
+class VariableChoiceRequired(Exception):
+    """T49 deterministic short-circuit. When ``to_dataarray`` reaches its
+    low-confidence tail -- a genuinely ambiguous file the T48 resolver won't
+    guess -- it raises THIS instead of a bare ``MCPToolError``, so the choice
+    reaches the researcher as a clickable picker built deterministically from
+    the resolver's own candidates, never narrated (and possibly truncated) by
+    the LLM.
+
+    It carries two things:
+    - ``resolution``: the resolver's full ``Resolution`` (every ranked
+      candidate), from which the tool layer builds the uncapped
+      ``VariableChoice`` picker and emits it out-of-band (emit_variable_choice).
+    - ``mcp_error``: the SAME P1-bounded ``MCPToolError`` the low tier used to
+      raise -- the tool returns this compact, capped payload to the model as the
+      sub-task's terminal tool result, so the model can write a one-line "I've
+      shown you a picker" without ever seeing (or re-feeding) the full list.
+    """
+
+    def __init__(self, resolution: Resolution, mcp_error: MCPToolError):
+        super().__init__(mcp_error.message)
+        self.resolution = resolution
+        self.mcp_error = mcp_error
+
+
 class AggregationService:
     """Single entry point for satellite data validity filtering and reductions."""
 
@@ -512,8 +536,15 @@ class AggregationService:
                 resolution = resolve(data, requested=variable)
                 self._log_resolution(resolution)
                 if resolution.name is None:
+                    # T49: hand the low-confidence refusal to the researcher as
+                    # a deterministic picker, not LLM prose. The signal carries
+                    # the full Resolution (for the uncapped out-of-band picker)
+                    # plus the P1-bounded MCPToolError (the compact terminal
+                    # tool result the model still needs).
                     ranked = [c.name for c in resolution.candidates] or data_vars
-                    raise self._ambiguous_variable_error(data, ranked)
+                    raise VariableChoiceRequired(
+                        resolution, self._ambiguous_variable_error(data, ranked),
+                    )
                 name = resolution.name
 
         da = data[name]
@@ -522,17 +553,24 @@ class AggregationService:
         if resolution is not None:
             # assign_attrs returns a fresh DataArray (copied attrs) -- the
             # source Dataset's variable attrs are never mutated.
-            da = da.assign_attrs(**{VARIABLE_RESOLUTION_ATTR: self._resolution_facts(resolution)})
+            da = da.assign_attrs(**{VARIABLE_RESOLUTION_ATTR: self._resolution_facts(resolution, data)})
         return da
 
     @staticmethod
-    def _resolution_facts(resolution: Resolution) -> dict[str, Any]:
+    def _resolution_facts(resolution: Resolution, ds: xr.Dataset) -> dict[str, Any]:
         """The VariableResolver's decision, flattened for provenance/logging:
         the chosen variable, both decision axes, the ranked alternatives, the
         reasons behind the pick, and the deterministic disclosure line (T48).
-        Carried out of to_dataarray on the returned array's attrs."""
+        Carried out of to_dataarray on the returned array's attrs.
+
+        For a MEDIUM-confidence auto-pick (T49), the full deterministic picker
+        is stashed too -- the answer is delivered with its chart, but the
+        dispatch layer lifts this into ``AgentResult.variable_choice`` so the
+        researcher can override the guess in one click. Built here (where the
+        Dataset is in hand for per-candidate units); the auto-send prompts are
+        left blank for run_satellite to fill from the original request."""
         chosen = next((c for c in resolution.candidates if c.name == resolution.name), None)
-        return {
+        facts: dict[str, Any] = {
             "chosen": resolution.name,
             "resolution_confidence": resolution.resolution_confidence,
             "scientific_ambiguity": resolution.scientific_ambiguity,
@@ -542,6 +580,11 @@ class AggregationService:
                 c.name for c in resolution.candidates if c.name != resolution.name
             ][:_MAX_LISTED_CANDIDATES],
         }
+        if resolution.resolution_confidence == "medium":
+            from preprocessing.variable_choice_builder import build_variable_choice
+
+            facts["variable_choice"] = build_variable_choice(resolution, ds).model_dump()
+        return facts
 
     @staticmethod
     def _log_resolution(resolution: Resolution) -> None:

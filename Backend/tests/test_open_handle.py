@@ -420,8 +420,7 @@ class OpenHandleGroupedNetcdfTests(unittest.IsolatedAsyncioTestCase):
         refused with candidates (T25 doctrine), never guessed."""
         import xarray as xr
 
-        from earthdata_mcp.results import MCPToolError
-        from preprocessing.aggregation_service import AggregationService
+        from preprocessing.aggregation_service import AggregationService, VariableChoiceRequired
         from services.open_handle import open_handle
 
         def make_root():
@@ -455,11 +454,13 @@ class OpenHandleGroupedNetcdfTests(unittest.IsolatedAsyncioTestCase):
         da = service.to_dataarray(ds, variable="product/vertical_column")
         self.assertEqual(float(da.values[0][0]), 1.0)
 
-        # A bare ambiguous request refuses with candidates, never guesses.
-        with self.assertRaises(MCPToolError) as ctx:
+        # A bare ambiguous request refuses with candidates, never guesses --
+        # T49: as the deterministic picker short-circuit, whose compact
+        # tool-result still names the qualified candidates.
+        with self.assertRaises(VariableChoiceRequired) as ctx:
             service.to_dataarray(ds, variable=None)
-        self.assertIn("product/vertical_column", ctx.exception.message)
-        self.assertIn("support_data/vertical_column", ctx.exception.message)
+        self.assertIn("product/vertical_column", ctx.exception.mcp_error.message)
+        self.assertIn("support_data/vertical_column", ctx.exception.mcp_error.message)
 
     async def test_open_handle_leaves_a_genuinely_flat_netcdf_dataset_untouched(self):
         import xarray as xr

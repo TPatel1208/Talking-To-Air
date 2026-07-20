@@ -143,6 +143,13 @@ class Resolution:
     resolution_confidence: str
     scientific_ambiguity: str
     disclosure: str | None = None
+    # T49: how many data variables were dropped for being entirely empty over
+    # the requested range (resolve() drops them before scoring). The picker
+    # (build_variable_choice) discloses this count so a researcher understands
+    # the candidate list is the populated subset, not the whole file. Additive
+    # telemetry of a decision resolve() already makes -- it does not change the
+    # scoring/ranking/classification T48 owns.
+    excluded_empty_count: int = 0
 
 
 def _leaf(name: str) -> str:
@@ -286,6 +293,7 @@ def _label(name: str, var: xr.DataArray) -> str:
 def resolve(ds: xr.Dataset, *, requested: str | None = None, handle: str | None = None) -> Resolution:
     """Choose one science variable out of ``ds``. Pure and I/O-free."""
     candidates: list[Candidate] = []
+    excluded_empty = 0
     for name in ds.data_vars:
         name = str(name)
         var = ds[name]
@@ -301,6 +309,9 @@ def resolve(ds: xr.Dataset, *, requested: str | None = None, handle: str | None 
         # named it, so an honest "no valid data" beats silently dropping it.
         valid_fraction = _valid_fraction(var)
         if valid_fraction <= 0.0 and not requested_here:
+            # A science candidate (not plumbing) dropped only for having no
+            # data over this range -- counted so the picker can disclose it.
+            excluded_empty += 1
             continue
         score, reasons = _score(name, var, category)
         if requested_here:
@@ -332,6 +343,7 @@ def resolve(ds: xr.Dataset, *, requested: str | None = None, handle: str | None 
             candidates=candidates,
             resolution_confidence="high",
             scientific_ambiguity="low",
+            excluded_empty_count=excluded_empty,
         )
 
     # Decide over the candidates that actually have coverage worth plotting.
@@ -354,6 +366,7 @@ def resolve(ds: xr.Dataset, *, requested: str | None = None, handle: str | None 
         return Resolution(
             name=None, candidates=candidates,
             resolution_confidence="low", scientific_ambiguity="low",
+            excluded_empty_count=excluded_empty,
         )
 
     if _is_strong(top):
@@ -372,6 +385,7 @@ def resolve(ds: xr.Dataset, *, requested: str | None = None, handle: str | None 
         return Resolution(
             name=None, candidates=candidates,
             resolution_confidence="low", scientific_ambiguity="low",
+            excluded_empty_count=excluded_empty,
         )
 
     disclosure = None
@@ -390,4 +404,5 @@ def resolve(ds: xr.Dataset, *, requested: str | None = None, handle: str | None 
         resolution_confidence=confidence,
         scientific_ambiguity=ambiguity,
         disclosure=disclosure,
+        excluded_empty_count=excluded_empty,
     )

@@ -453,16 +453,19 @@ class AggregationServiceTests(unittest.TestCase):
         regardless of candidate count: name a capped sample, disclose the true
         total, and say how many are hidden -- an O(1) error, never the 20 KB
         O(N) dump that drove the original context blowup."""
-        from earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED, MCPToolError
-        from preprocessing.aggregation_service import AggregationService
+        from earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED
+        from preprocessing.aggregation_service import AggregationService, VariableChoiceRequired
 
         data_vars = {f"field_{i:03d}": (("lat", "lon"), [[float(i)]]) for i in range(200)}
         ds = self.xr.Dataset(data_vars)
 
-        with self.assertRaises(MCPToolError) as ctx:
+        with self.assertRaises(VariableChoiceRequired) as ctx:
             AggregationService().to_dataarray(ds)
 
-        exc = ctx.exception
+        # T49: the LLM-facing compact tool result the signal carries is still
+        # P1-bounded (the full, uncapped candidate list rides out-of-band to
+        # the picker instead of being re-fed to the model).
+        exc = ctx.exception.mcp_error
         self.assertEqual(exc.category, CATEGORY_VARIABLE_CHOICE_REQUIRED)
         # O(1) size: the whole point of P1 -- must not scale with 200 vars.
         self.assertLess(len(exc.message), 4000)
@@ -478,20 +481,24 @@ class AggregationServiceTests(unittest.TestCase):
         distinct products (no units, no Mean leaf) are a genuine fork the
         resolver refuses -- and the refusal names both candidates in full (no
         spurious 'and N more')."""
-        from preprocessing.aggregation_service import AggregationService
+        from preprocessing.aggregation_service import AggregationService, VariableChoiceRequired
 
         ds = self.xr.Dataset({
             "DT_AOD_550_AVG": (("lat", "lon"), [[0.1]]),
             "COMBINE_AOD_550_AVG": (("lat", "lon"), [[0.3]]),
         })
 
-        with self.assertRaises(Exception) as ctx:
+        with self.assertRaises(VariableChoiceRequired) as ctx:
             AggregationService().to_dataarray(ds)
 
-        msg = ctx.exception.message
+        msg = ctx.exception.mcp_error.message
         self.assertIn("DT_AOD_550_AVG", msg)
         self.assertIn("COMBINE_AOD_550_AVG", msg)
         self.assertNotIn("more", msg.lower())
+        # The signal carries the resolver's full Resolution so the tool can
+        # build the (uncapped) picker from it.
+        names = {c.name for c in ctx.exception.resolution.candidates}
+        self.assertEqual(names, {"DT_AOD_550_AVG", "COMBINE_AOD_550_AVG"})
 
     def test_to_dataarray_resolves_a_registered_multi_var_file_to_its_pinned_primary_var(self):
         """AOD misrouting follow-up (2026-07-12): a registered collection's
@@ -518,8 +525,8 @@ class AggregationServiceTests(unittest.TestCase):
         """The primary_var tier is registry-gated: the same shape whose
         short_name matches no registered collection must still refuse, so the
         never-guess doctrine holds for genuinely unknown files."""
-        from earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED, MCPToolError
-        from preprocessing.aggregation_service import AggregationService
+        from earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED
+        from preprocessing.aggregation_service import AggregationService, VariableChoiceRequired
 
         ds = self.xr.Dataset({
             "DT_AOD_550_AVG": (("lat", "lon"), [[1.0]]),
@@ -527,10 +534,10 @@ class AggregationServiceTests(unittest.TestCase):
         })
         ds.attrs["ShortName"] = "NOT_A_REGISTERED_COLLECTION"
 
-        with self.assertRaises(MCPToolError) as ctx:
+        with self.assertRaises(VariableChoiceRequired) as ctx:
             AggregationService().to_dataarray(ds)
 
-        self.assertEqual(ctx.exception.category, CATEGORY_VARIABLE_CHOICE_REQUIRED)
+        self.assertEqual(ctx.exception.mcp_error.category, CATEGORY_VARIABLE_CHOICE_REQUIRED)
 
     def test_aggregate_surfaces_the_variable_resolution_disclosure_in_meta(self):
         """T48 disclosure plumbing: when aggregate() resolves an ambiguous
@@ -690,8 +697,8 @@ class AggregationServiceTests(unittest.TestCase):
         """Even when a real choice is still required (2+ science vars), the QA
         flag riding along is excluded from the candidate list -- offering
         main_data_quality_flag as a 'science variable' to pick would be wrong."""
-        from earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED, MCPToolError
-        from preprocessing.aggregation_service import AggregationService
+        from earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED
+        from preprocessing.aggregation_service import AggregationService, VariableChoiceRequired
 
         ds = self.xr.Dataset({
             "vertical_column_troposphere": (("lat", "lon"), [[1.0]]),
@@ -699,13 +706,18 @@ class AggregationServiceTests(unittest.TestCase):
             "main_data_quality_flag": (("lat", "lon"), [[0]]),
         })
 
-        with self.assertRaises(MCPToolError) as ctx:
+        with self.assertRaises(VariableChoiceRequired) as ctx:
             AggregationService().to_dataarray(ds)
 
-        self.assertEqual(ctx.exception.category, CATEGORY_VARIABLE_CHOICE_REQUIRED)
-        self.assertIn("vertical_column_troposphere", ctx.exception.message)
-        self.assertIn("vertical_column_stratosphere", ctx.exception.message)
-        self.assertNotIn("main_data_quality_flag", ctx.exception.message)
+        exc = ctx.exception.mcp_error
+        self.assertEqual(exc.category, CATEGORY_VARIABLE_CHOICE_REQUIRED)
+        self.assertIn("vertical_column_troposphere", exc.message)
+        self.assertIn("vertical_column_stratosphere", exc.message)
+        self.assertNotIn("main_data_quality_flag", exc.message)
+        # The QA flag is excluded from the picker candidates too, not just the
+        # bounded message.
+        cand_names = {c.name for c in ctx.exception.resolution.candidates}
+        self.assertNotIn("main_data_quality_flag", cand_names)
 
     def test_aggregate_recognizes_a_valid_time_dim_as_time(self):
         """T25: a MERRA-2-style `valid_time` dim (no CF standard_name, just

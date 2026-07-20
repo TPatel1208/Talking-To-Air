@@ -18,8 +18,10 @@ from utils.streaming import emit_status
 from preprocessing.aggregation_service import (
     VARIABLE_RESOLUTION_ATTR,
     AggregationService,
+    VariableChoiceRequired,
     area_weighted_mean,
 )
+from preprocessing.variable_choice_builder import emit_variable_choice_payload
 
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "outputs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -94,6 +96,10 @@ def make_compute_statistic_tool(mcp_tools: dict[str, BaseTool]):
             if ds_lon_coord:
                 ds = _normalize_longitudes(ds, ds_lon_coord)
             da = _aggregation_service.to_dataarray(ds, handle=handle, variable=variable)
+        except VariableChoiceRequired as e:
+            emit_variable_choice_payload(e.resolution, ds)
+            emit_status("Waiting for a variable choice.", stage=STAGE_RENDER)
+            return json.dumps({"error": e.mcp_error.to_dict()})
         except MCPToolError as e:
             return json.dumps({"error": e.to_dict()})
         except OpenHandleError as e:
@@ -248,6 +254,10 @@ def make_find_daily_peak(mcp_tools: dict[str, BaseTool]):
             if ds_lon_coord:
                 ds = _normalize_longitudes(ds, ds_lon_coord)
             da = _aggregation_service.to_dataarray(ds, handle=handle, variable=variable)
+        except VariableChoiceRequired as e:
+            emit_variable_choice_payload(e.resolution, ds)
+            emit_status("Waiting for a variable choice.", stage=STAGE_RENDER)
+            return json.dumps({"error": e.mcp_error.to_dict()})
         except MCPToolError as e:
             return json.dumps({"error": e.to_dict()})
         except OpenHandleError as e:
