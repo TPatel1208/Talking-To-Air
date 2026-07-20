@@ -243,6 +243,52 @@ class HelperTests(unittest.TestCase):
         self.assertIn("2024-07-15", finalized.text)
         self.assertIn("monthly", finalized.text.lower())
 
+    def test_finalize_appends_a_variable_note_when_a_chart_discloses_a_resolver_pick(self):
+        """T48: when the VariableResolver auto-picked a variable from a wide,
+        ambiguous product, its deterministic disclosure is stamped in the
+        chart's provenance -- and the chat answer must carry it, so the choice
+        among distinct sensors/products is transparent and redirectable, not
+        buried in the Metadata tab."""
+        from services.subagent_dispatch import _finalize_sub_agent_result
+        from models import AgentResult, ChartPayload
+
+        disclosure = (
+            "Note: this product has several distinct variables; showing "
+            "Terra MODIS Dark Target AOD 550 (highest-ranked populated field). "
+            "Other products available: Aqua MODIS Dark Target AOD 550."
+        )
+        chart = ChartPayload(type="heatmap", title="AOD", provenance={
+            "variable_resolution": {
+                "chosen": "Terra_MODIS_DarkTarget_AOD_550/Mean",
+                "disclosure": disclosure,
+            },
+        })
+        raw = AgentResult(
+            text=json.dumps({"summary": "Here is the AOD map.", "artifact_ids": [], "handles": []}),
+            charts=[chart],
+        )
+
+        finalized = _finalize_sub_agent_result(raw, "earthdata")
+
+        self.assertIn("Here is the AOD map.", finalized.text)
+        self.assertIn("Aqua MODIS Dark Target AOD 550", finalized.text)
+
+    def test_finalize_adds_no_variable_note_when_no_resolver_disclosure(self):
+        """A single-variable file (no resolver disclosure) must not be nagged
+        with a variable note."""
+        from services.subagent_dispatch import _finalize_sub_agent_result
+        from models import AgentResult, ChartPayload
+
+        chart = ChartPayload(type="heatmap", title="NO2", provenance={"variable": "no2"})
+        raw = AgentResult(
+            text=json.dumps({"summary": "Here is the NO2 map.", "artifact_ids": [], "handles": []}),
+            charts=[chart],
+        )
+
+        finalized = _finalize_sub_agent_result(raw, "earthdata")
+
+        self.assertEqual(finalized.text, "Here is the NO2 map.")
+
     def test_finalize_adds_no_scope_note_when_a_charts_scopes_match(self):
         """Regression: an exact request must not be nagged with a note."""
         from services.subagent_dispatch import _finalize_sub_agent_result

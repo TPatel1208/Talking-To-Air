@@ -367,16 +367,24 @@ def _finalize_sub_agent_result(result: AgentResult, agent_label: str) -> AgentRe
     """
     envelope = parse_sub_agent_envelope(result.text)
     if envelope is None:
-        return _append_scope_note(_salvage_sub_agent_result(result, agent_label))
+        return _append_disclosures(_salvage_sub_agent_result(result, agent_label))
     discovered = {ref.id: ref for ref in result.artifacts}
     artifacts = [discovered[artifact_id] for artifact_id in envelope.artifact_ids if artifact_id in discovered]
-    return _append_scope_note(AgentResult(
+    return _append_disclosures(AgentResult(
         text=truncate_text(envelope.summary, 2000, agent_name=agent_label),
         charts=result.charts,
         artifacts=artifacts,
         handles=envelope.handles,
         suggested_followups=envelope.suggested_followups,
     ))
+
+
+def _append_disclosures(result: AgentResult) -> AgentResult:
+    """Apply every deterministic, provenance-driven disclosure the answer owes
+    the researcher: the T48 variable-resolution note (which product was picked)
+    and the T46 scope-substitution note (what scope was actually served). Both
+    are templated from chart provenance, never model prose."""
+    return _append_scope_note(_append_variable_note(result))
 
 
 def _capture_aoi_rejection(name: Any, content: Any, into: dict[str, MCPToolError]) -> None:
@@ -427,6 +435,24 @@ def _chart_provenance(chart: Any) -> dict:
     else:
         prov = getattr(chart, "provenance", None)
     return prov if isinstance(prov, dict) else {}
+
+
+def _append_variable_note(result: AgentResult) -> AgentResult:
+    """T48: append the VariableResolver's deterministic disclosure to a
+    finalized answer when a chart's provenance records that the resolver
+    auto-picked a variable from a wide, ambiguous product. The disclosure is
+    built by the resolver from its own facts (chosen field + ranked
+    alternatives) -- never model prose -- so a scientific choice made on the
+    researcher's behalf can't be paraphrased away. A no-op when no resolver
+    disclosure was recorded (an explicit/registry/single-var pick)."""
+    for chart in result.charts:
+        provenance = _chart_provenance(chart)
+        resolution = provenance.get("variable_resolution")
+        note = (resolution or {}).get("disclosure") if isinstance(resolution, dict) else None
+        if note:
+            result.text = f"{result.text}\n\n{note}" if result.text else note
+            return result
+    return result
 
 
 def _append_scope_note(result: AgentResult) -> AgentResult:

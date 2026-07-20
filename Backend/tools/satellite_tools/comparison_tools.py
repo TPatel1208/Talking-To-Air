@@ -345,7 +345,7 @@ def _compare_side_provenance(handle: str, da_2d, agg_meta: dict, variable_name: 
     requested = _requested_scope([handle])
     start_date, end_date = _pt_time_range(da_2d, agg_meta)
     region_name = str((requested or {}).get("location") or "")
-    return {
+    provenance = {
         "variable": variable_name,
         "units": units,
         "source_handles": [handle],
@@ -353,6 +353,12 @@ def _compare_side_provenance(handle: str, da_2d, agg_meta: dict, variable_name: 
         "delivered_scope": _delivered_scope(region_name, start_date, end_date, agg_meta),
         "requested_scope": requested,
     }
+    if agg_meta.get("variable_resolution"):
+        # T48: if the resolver auto-picked this side's variable, disclose it --
+        # same channel and note as the heatmap path (one resolver, one
+        # disclosure, no drift between tools).
+        provenance["variable_resolution"] = agg_meta["variable_resolution"]
+    return provenance
 
 
 def _bbox_from_da(da) -> list[float]:

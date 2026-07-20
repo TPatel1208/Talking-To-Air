@@ -71,7 +71,13 @@ from utils.colormaps import resolve as resolve_colormap
 from utils.overlay_render import render_overlay_png
 from utils.plotting import _normalize_to_2d, apply_mask_region_type, geometry_mask, mask_data_by_geometry, RegionResolver
 from utils.streaming import emit_chart, emit_status
-from preprocessing.aggregation_service import AggregationService, area_weighted_mean, fill_match, flag_pass_condition
+from preprocessing.aggregation_service import (
+    VARIABLE_RESOLUTION_ATTR,
+    AggregationService,
+    area_weighted_mean,
+    fill_match,
+    flag_pass_condition,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -950,6 +956,11 @@ def _provenance(
             # not just internal meta -- an inferred QA mask must be a
             # disclosed fact, never a silent guess.
             provenance["masking"] = agg_meta["masking"]
+        if agg_meta.get("variable_resolution"):
+            # T48: which variable the resolver auto-picked (and its disclosure)
+            # rides into provenance, so the dispatch layer can append the
+            # deterministic note naming the chosen product + alternatives.
+            provenance["variable_resolution"] = agg_meta["variable_resolution"]
     return provenance
 
 
@@ -1091,6 +1102,12 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
             except MCPToolError as e:
                 return "resolve", None, None, e.to_dict()
             agg_meta = aggregation.meta
+            # T48: the variable-resolution disclosure was stashed on ``da`` by
+            # to_dataarray, but masking's ``.where`` above stripped it before
+            # aggregate() saw ``masked`` -- so carry it across from the
+            # pre-mask array into the meta the provenance is built from.
+            if da.attrs.get(VARIABLE_RESOLUTION_ATTR):
+                agg_meta["variable_resolution"] = da.attrs[VARIABLE_RESOLUTION_ATTR]
             is_aggregated = agg_meta["n_granules"] > 1
             if title:
                 resolved_title = title
@@ -1237,6 +1254,8 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
 
                 try:
                     agg_meta = aggregation.meta
+                    if da.attrs.get(VARIABLE_RESOLUTION_ATTR):
+                        agg_meta["variable_resolution"] = da.attrs[VARIABLE_RESOLUTION_ATTR]
                     panel = _da_to_heatmap_payload(reduced, region["name"], resolved_variable_name, units, render_overlay=True)
                     panel["cmap"]   = cmap or "Spectral_r"
                     panel["bounds"] = list(region["bounds"])

@@ -15,7 +15,11 @@ from tools.satellite_tools.plot_tools import _normalize_longitudes
 from utils.geo_utils import find_lat_coord, find_lon_coord
 from utils.plotting import _normalize_to_2d, apply_mask_region_type, mask_data_by_geometry, RegionResolver
 from utils.streaming import emit_status
-from preprocessing.aggregation_service import AggregationService, area_weighted_mean
+from preprocessing.aggregation_service import (
+    VARIABLE_RESOLUTION_ATTR,
+    AggregationService,
+    area_weighted_mean,
+)
 
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "outputs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -134,6 +138,12 @@ def make_compute_statistic_tool(mcp_tools: dict[str, BaseTool]):
 
             try:
                 aggregation, mean_field = _reduced_field("mean")
+                # T48: masking stripped the resolver's stash off ``masked``
+                # before aggregate saw it -- carry it from the pre-mask ``da``
+                # into meta so the chosen-variable disclosure isn't lost on the
+                # stat path (one resolver, disclosed identically everywhere).
+                if da.attrs.get(VARIABLE_RESOLUTION_ATTR):
+                    aggregation.meta["variable_resolution"] = da.attrs[VARIABLE_RESOLUTION_ATTR]
 
                 values = mean_field.values
                 valid = values[np.isfinite(values)]
@@ -279,6 +289,11 @@ def make_find_daily_peak(mcp_tools: dict[str, BaseTool]):
                 return "error", str(e)
             except MCPToolError as e:
                 return "error", e.to_dict()
+
+            # T48: carry the resolver's chosen-variable disclosure across the
+            # attr-stripping mask (see compute_statistic_tool).
+            if da.attrs.get(VARIABLE_RESOLUTION_ATTR):
+                aggregation.meta["variable_resolution"] = da.attrs[VARIABLE_RESOLUTION_ATTR]
 
             # Resolve dim names via the canonical CF-metadata identifier
             # (T24), so an axis named 'row'/'y' is found by its metadata, not
