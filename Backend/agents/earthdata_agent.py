@@ -53,6 +53,30 @@ class LazySatelliteAgent:
         return getattr(real, name)
 
 
+def refresh_live_tools(live: dict[str, Any], fresh: dict[str, Any]) -> None:
+    """Update ``live`` in place to hold exactly ``fresh``'s entries, preserving
+    the dict object's identity.
+
+    In-flight recovery (2026-07-21): the earthdata MCP *server* crash-restarts,
+    which kills the one long-lived client session and forces the connection
+    manager to reconnect with a brand-new session's bound tools. The satellite
+    agent's tools all index their ``mcp_tools`` dict at *call* time (never
+    capture an individual tool at build time), so updating that dict in place —
+    rather than swapping the reference — lets tool closures already built
+    against it, *including those mid-execution in an in-progress chat turn*, read
+    the reconnected session's tools on their next call. A compare's transient
+    retry then re-reads ``mcp_tools['align']`` and gets the live tool instead of
+    a dead one, so the turn recovers instead of failing with "temporary service
+    interruption".
+
+    Entries are added/overwritten first (so no key a concurrent reader might be
+    indexing ever momentarily disappears), then any that vanished are dropped.
+    """
+    live.update(fresh)
+    for stale in [key for key in live if key not in fresh]:
+        del live[stale]
+
+
 def build_earthdata_agent(
     model: str | None = None,
     provider: str | None = None,

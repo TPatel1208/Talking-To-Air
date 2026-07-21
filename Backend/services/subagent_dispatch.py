@@ -20,7 +20,12 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any
 
-from config.error_templates import render_error_answer, render_scope_note
+from config.error_templates import (
+    CATEGORY_RATE_LIMITED,
+    CATEGORY_RECURSION_EXHAUSTED,
+    render_error_answer,
+    render_scope_note,
+)
 from config.model_factory import structured_output
 from earthdata_mcp.connection import STATE_READY
 from earthdata_mcp.results import (
@@ -348,20 +353,53 @@ _GROUND_RETRY_TOOL_GUIDANCE = (
 )
 
 
+# Message-shape signals for a language-model provider rate-limit/quota failure
+# (Gemini free-tier: "429 Too Many Requests" / "RESOURCE_EXHAUSTED" / quota
+# prose). Matched on text, not a provider-specific exception class, so this
+# stays correct across providers (google/groq/openai) and across the wrapping
+# layers (langchain re-raises the provider error under its own class) without
+# importing any of them. Live-observed in the 2026-07-20 AOD session logs.
+_RATE_LIMIT_SIGNALS: tuple[str, ...] = (
+    "429",
+    "too many requests",
+    "resource_exhausted",
+    "rate limit",
+    "ratelimit",
+    "quota",
+)
+
+
+def _classify_escaped_exception(exc: Exception) -> str:
+    """Category for a non-MCPToolError exception that escaped a sub-agent turn.
+    Two LLM/graph-layer failures get their own honest answer instead of the
+    generic contract "internal error": a LangGraph recursion-limit stop
+    (matched by class name, mirroring the HarmonyTimeoutError pattern above, so
+    langgraph need not be imported here) and a provider rate-limit/quota
+    (matched by message shape). Everything else stays ``contract``."""
+    if exc.__class__.__name__ == "GraphRecursionError":
+        return CATEGORY_RECURSION_EXHAUSTED
+    text = f"{exc.__class__.__name__}: {exc}".lower()
+    if any(signal in text for signal in _RATE_LIMIT_SIGNALS):
+        return CATEGORY_RATE_LIMITED
+    return CATEGORY_CONTRACT
+
+
 def _render_unexpected_exception(exc: Exception, stage: str) -> str:
     """T37: the honest taxonomy answer for an exception that escaped a
     sub-agent turn. A classified MCPToolError keeps its own category and
-    message; anything else is a contract failure whose text (possibly
-    empty, possibly an internal path) never reaches the researcher — the
-    real exception goes to the logs here."""
+    message; a recursion-limit stop or a provider rate-limit gets its own
+    actionable category; anything else is a contract failure whose text
+    (possibly empty, possibly an internal path) never reaches the researcher —
+    the real exception goes to the logs here."""
     if isinstance(exc, MCPToolError):
         return render_error_answer(exc.category, stage, exc.message)
+    category = _classify_escaped_exception(exc)
     logger.exception(
         "subagent_unexpected_exception",
-        extra={"_event": "subagent_unexpected_exception", "_stage": stage},
+        extra={"_event": "subagent_unexpected_exception", "_stage": stage, "_category": category},
         exc_info=exc,
     )
-    return render_error_answer(CATEGORY_CONTRACT, stage)
+    return render_error_answer(category, stage)
 
 
 def _finalize_sub_agent_result(result: AgentResult, agent_label: str) -> AgentResult:

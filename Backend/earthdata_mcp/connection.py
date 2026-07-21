@@ -57,6 +57,7 @@ from config.settings import Settings
 from earthdata_mcp.client import (
     REQUIRED_TOOL_PARAMS,
     EarthdataMCPUnavailableError,
+    HeldSession,
     open_earthdata_session,
     probe_mcp_tools,
 )
@@ -73,10 +74,11 @@ STATE_INCOMPATIBLE = "incompatible"
 # return the tools, holding nothing open. Wrapped into a SessionScope below.
 Loader = Callable[[Settings], Awaitable[dict[str, BaseTool]]]
 # The production seam (default ``open_earthdata_session``): an async context
-# manager that opens ONE MCP session, yields the session-bound tools, and
-# holds the session open for the whole ``async with`` body — so the tools the
-# manager hands out reuse that one connection instead of reconnecting per call.
-SessionScope = Callable[[Settings], AbstractAsyncContextManager[dict[str, BaseTool]]]
+# manager that opens ONE MCP session, yields a ``HeldSession`` (its bound tools
+# + a liveness probe on that session), and holds the session open for the whole
+# ``async with`` body — so the tools the manager hands out reuse that one
+# connection instead of reconnecting per call.
+SessionScope = Callable[[Settings], AbstractAsyncContextManager[HeldSession]]
 Probe = Callable[[Settings], Awaitable[Any]]
 OnReady = Callable[[dict[str, BaseTool]], Awaitable[None]]
 Sleeper = Callable[[float], Awaitable[None]]
@@ -84,13 +86,15 @@ Sleeper = Callable[[float], Awaitable[None]]
 
 def _loader_as_scope(loader: Loader) -> SessionScope:
     """Adapt a plain ``loader`` (legacy test seam) into a ``SessionScope`` that
-    holds nothing open — it just loads once and yields. Lets every existing
-    hermetic connection test keep injecting a plain ``async def loader`` while
-    the production path uses a real session-holding scope."""
+    holds nothing open — it just loads once and yields a ``HeldSession`` with no
+    liveness probe (``probe=None``), so the manager falls back to its injected
+    fresh-session probe. Lets every existing hermetic connection test keep
+    injecting a plain ``async def loader`` while the production path uses a real
+    session-holding scope with a held-session probe."""
 
     @asynccontextmanager
-    async def _scope(settings: Settings) -> AsyncIterator[dict[str, BaseTool]]:
-        yield await loader(settings)
+    async def _scope(settings: Settings) -> AsyncIterator[HeldSession]:
+        yield HeldSession(await loader(settings), probe=None)
 
     return _scope
 
@@ -280,7 +284,8 @@ class EarthdataMCPConnectionManager:
         other exception up to ``_connect_loop`` to classify, exactly as the
         pre-session loop did — but now the ``async with`` guarantees the
         session is closed on every exit path, including cancellation."""
-        async with self._session_scope(self._settings) as raw:
+        async with self._session_scope(self._settings) as held:
+            raw = held.tools
             mismatches = check_tool_schemas(raw)
             if mismatches:
                 self._transition(STATE_INCOMPATIBLE, detail=mismatches)
@@ -301,10 +306,10 @@ class EarthdataMCPConnectionManager:
             # returns, the state has already been demoted; falling out of this
             # ``async with`` closes the session, and _connect_loop re-runs the
             # full connect path (on_ready fires again on recovery).
-            await self._heartbeat_while_ready()
+            await self._heartbeat_while_ready(held.probe)
             return True
 
-    async def _heartbeat_while_ready(self) -> None:
+    async def _heartbeat_while_ready(self, held_probe: Callable[[], Awaitable[Any]] | None = None) -> None:
         """PRD T40: while ready, probe on the heartbeat interval. A single
         miss doesn't demote -- it logs and re-probes after a short retry
         delay instead of transitioning, so a transient blip stays invisible
@@ -312,12 +317,23 @@ class EarthdataMCPConnectionManager:
         ``heartbeat_failure_threshold`` *consecutive* misses transitions to
         unavailable, at which point this returns so the outer connect loop
         re-runs the full connect path. A probe that succeeds at any point
-        (including between failures) resets the count."""
+        (including between failures) resets the count.
+
+        ``held_probe`` (2026-07-21) pings the HELD session — the one the bound
+        tools actually use — so a 404-zombie session (alive-looking after a
+        server restart, but every request on its lost session id 404s) is
+        detected and healed by a reconnect, instead of masked by a fresh
+        throwaway probe that reconnects cleanly while the tool surface stays
+        wedged. When absent (the legacy plain-loader test seam) it falls back to
+        the injected fresh-session ``self._probe``."""
         consecutive_failures = 0
         await self._sleep(self._heartbeat_interval)
         while True:
             try:
-                await self._probe(self._settings)
+                if held_probe is not None:
+                    await held_probe()
+                else:
+                    await self._probe(self._settings)
             except Exception as exc:
                 consecutive_failures += 1
                 logger.warning(

@@ -49,6 +49,12 @@ _variable_choice_emitter: ContextVar[Optional[Callable[[dict], None]]] = Context
 _current_thread_id: ContextVar[Optional[str]] = ContextVar("current_thread_id", default=None)
 _current_user_id: ContextVar[Optional[str]] = ContextVar("current_user_id", default=None)
 _call_budget: ContextVar[Optional[dict]] = ContextVar("call_budget", default=None)
+# Per-turn MCP transport-failure circuit breaker state (storm containment,
+# 2026-07-20). A mutable dict {"consecutive": int, "tripped": bool} bound once
+# per turn — mutated in place, never re-``set()``, so it survives the ToolNode
+# gather-Task context copy exactly like _call_budget does (see
+# get_mcp_failure_state / get_call_budget).
+_mcp_failure_state: ContextVar[Optional[dict]] = ContextVar("mcp_failure_state", default=None)
 
 
 def emit_status(message: str, *, stage: str | None = None, detail: Any = None) -> None:
@@ -149,6 +155,24 @@ def get_call_budget() -> dict:
     return budget
 
 
+def get_mcp_failure_state() -> dict | None:
+    """The active turn's MCP transport-failure circuit-breaker state, or None
+    when called outside a chat turn.
+
+    ``earthdata_mcp.results.call_tool`` reads this: on a transport/timeout
+    failure it increments ``consecutive`` and, once that crosses
+    ``settings.mcp_transport_failure_ceiling``, sets ``tripped`` so every later
+    MCP call this turn short-circuits instead of opening another doomed,
+    reconnect-storming session. A ``None`` return (the jobs/discovery endpoints,
+    which call MCP tools with a user id bound but no stream_response turn) means
+    the breaker is inert — those callers are never broken by a chat turn's storm.
+
+    Unlike ``get_call_budget`` this never lazily creates the dict: an unbound
+    caller must read as inert, not silently start its own breaker in a context
+    that will be discarded."""
+    return _mcp_failure_state.get()
+
+
 def current_thread_id() -> str | None:
     return _current_thread_id.get()
 
@@ -217,7 +241,16 @@ async def stream_response(
     if thread_ref is not None:
         thread_ref["id"] = thread_id
 
-    config = {"configurable": {"thread_id": thread_id}}
+    # recursion_limit is stated explicitly (not left to LangGraph's implicit
+    # default) so the graph's superstep budget is an intentional, tunable
+    # ceiling — a runaway ReAct loop stops here rather than silently at
+    # whatever the library's default happens to be (storm diagnosis 2026-07-20).
+    from config.settings import get_settings
+
+    config = {
+        "configurable": {"thread_id": thread_id},
+        "recursion_limit": get_settings().agent_recursion_limit,
+    }
     queue: asyncio.Queue = asyncio.Queue()
     done = object()
     loop = asyncio.get_running_loop()
@@ -367,6 +400,13 @@ async def stream_response(
     call_budget_token = None
     if _call_budget.get() is None:
         call_budget_token = _call_budget.set({})
+    # Same "set once, outermost wins, mutate in place" contract as call_budget
+    # above — bound here (before produce()'s Task exists) so every ToolNode
+    # gather-Task copies a context already referencing this same dict, and
+    # call_tool's in-place increments/short-circuit are visible across them.
+    mcp_failure_token = None
+    if _mcp_failure_state.get() is None:
+        mcp_failure_token = _mcp_failure_state.set({"consecutive": 0, "tripped": False})
     # Same "set once, outermost wins" pattern as call_budget above — a
     # nested stream_response call (run_satellite's inner stream) reuses the
     # outer turn's start time, so stage_reached's elapsed is measured
@@ -395,6 +435,8 @@ async def stream_response(
             _current_user_id.reset(user_token)
         if call_budget_token is not None:
             _call_budget.reset(call_budget_token)
+        if mcp_failure_token is not None:
+            _mcp_failure_state.reset(mcp_failure_token)
         if turn_started_token is not None:
             _turn_started_at.reset(turn_started_token)
         if not producer.done():

@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.routing import Match
 
-from agents.earthdata_agent import LazySatelliteAgent, build_earthdata_agent
+from agents.earthdata_agent import LazySatelliteAgent, build_earthdata_agent, refresh_live_tools
 from agents.ground_sensor_agent import build_ground_agent
 from agents.supervisor_agent import build_agent
 from config.connectors import CONNECTOR_REGISTRY, CONNECTOR_REGISTRY_BY_TYPE
@@ -93,17 +93,27 @@ session_repository = SessionRepository()
 
 
 async def _on_earthdata_mcp_ready(tools: dict) -> None:
-    """earthdata_mcp_manager's on_ready hook (T17): populates the legacy
-    app.state.earthdata_mcp_tools mirror (still read directly by the
-    unmigrated chart export.png endpoint; export.csv/.nc moved to the
-    readiness gate in T37) and rebuilds the real
-    satellite agent into whatever LazySatelliteAgent the current lifespan
-    cycle assigned to app.state.satellite_agent — see
-    agents/earthdata_agent.py for why a mutable placeholder, not a
-    reassigned reference, is what makes this visible to the supervisor's
-    already-built ask_earthdata_agent tool closure."""
-    app.state.earthdata_mcp_tools = tools
-    app.state.satellite_agent.set_real(build_earthdata_agent(mcp_tools=tools))
+    """earthdata_mcp_manager's on_ready hook (T17): refreshes the persistent
+    app.state.earthdata_mcp_tools dict (read directly by the unmigrated chart
+    export.png endpoint; export.csv/.nc moved to the readiness gate in T37) and
+    rebuilds the real satellite agent into whatever LazySatelliteAgent the
+    current lifespan cycle assigned to app.state.satellite_agent — see
+    agents/earthdata_agent.py for why a mutable placeholder, not a reassigned
+    reference, is what makes this visible to the supervisor's already-built
+    ask_earthdata_agent tool closure.
+
+    In-flight recovery (2026-07-21): the MCP server crash-restarts, killing the
+    long-lived session; the manager reconnects and re-fires this hook with a new
+    session's bound tools. Refresh the tools dict IN PLACE (refresh_live_tools)
+    and rebuild the agent bound to that SAME dict — so a chat turn compiled
+    against it before the restart (an in-flight compare mid-retry) reads the
+    reconnected tools on its next call instead of retrying the dead session. See
+    refresh_live_tools for the call-time-indexing contract this relies on."""
+    live = app.state.earthdata_mcp_tools
+    if live is None:  # a late callback racing lifespan shutdown — nothing to refresh
+        return
+    refresh_live_tools(live, tools)
+    app.state.satellite_agent.set_real(build_earthdata_agent(mcp_tools=live))
     logger.info("earthdata_mcp_satellite_agent_ready", extra={"_event": "earthdata_mcp_satellite_agent_ready"})
 
 

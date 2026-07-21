@@ -31,7 +31,13 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
         from earthdata_mcp.toolset import load_earthdata_tools
         from config.settings import Settings
         from models.user import User
+        from services.jobs_service import clear_terminal_status_cache
         from utils.streaming import current_user_id
+
+        # list_jobs caches terminal statuses process-globally; clear it between
+        # tests so a job_handle reused across methods with different status
+        # content isn't served from a prior test's cached row.
+        clear_terminal_status_cache()
 
         self.httpx = httpx
         self.api = api
@@ -212,6 +218,79 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["upstream"], "requested")
         self.assertEqual(cancel_calls, [("job_1", "user-user-1")])
+
+    async def test_cancel_nonexistent_job_answers_200_with_an_honest_not_found_body(self):
+        """T47 finding #3: cancelling a handle the workspace never had must
+        not read as success. The MCP's own "a missing job is a valid answer"
+        philosophy says surface it as data, not an HTTP error — so the
+        endpoint answers 200 with an explicit ``status: "not_found"`` the
+        panel can render honestly, never a ``cancelled``-looking body.
+
+        Here the MCP signals the miss the clean way (a not_found error
+        envelope); without normalization that propagates to the shared
+        taxonomy handler as a 404, so the panel gets a generic error instead
+        of the honest, refetchable not-found row."""
+        from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
+        from earthdata_mcp.toolset import load_earthdata_tools
+        from config.settings import Settings
+        from utils.streaming import current_user_id
+
+        async def cancel_retrieval(job_handle, workspace_id):
+            return {"error": {"category": "not_found", "message": "No retrieval named job_ghost in this workspace."}}
+
+        server = FakeEarthdataMCPServer(build_fake_mcp({"cancel_retrieval": cancel_retrieval}))
+        server.start()
+        self.addCleanup(server.stop)
+        settings = Settings(earthdata_mcp_url=server.url, earthdata_mcp_token=None)
+        tools = await load_earthdata_tools(settings, current_user_id)
+
+        original_manager = self.api.app.state.earthdata_mcp_manager
+        self.api.app.state.earthdata_mcp_manager = SimpleNamespace(state="ready", tools=tools)
+        self.addCleanup(setattr, self.api.app.state, "earthdata_mcp_manager", original_manager)
+
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        auth_patches = self._auth_patch()
+        with auth_patches[0], auth_patches[1]:
+            async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                response = await client.post("/jobs/job_ghost/cancel", headers=self.auth_headers1)
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["status"], "not_found")
+        self.assertEqual(body["job_handle"], "job_ghost")
+        self.assertNotIn("cancelled", {k: v for k, v in body.items() if v is True})
+
+    async def test_cancel_job_passes_through_the_mcps_structured_not_found_status(self):
+        """The MCP may instead answer a missing handle as a structured
+        passthrough (``{status: "not_found"}``, a first-class result, not an
+        error). That already-honest signal must reach the panel verbatim at
+        200 — the normalization must not mangle it into something else."""
+        from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
+        from earthdata_mcp.toolset import load_earthdata_tools
+        from config.settings import Settings
+        from utils.streaming import current_user_id
+
+        async def cancel_retrieval(job_handle, workspace_id):
+            return {"job_handle": job_handle, "status": "not_found"}
+
+        server = FakeEarthdataMCPServer(build_fake_mcp({"cancel_retrieval": cancel_retrieval}))
+        server.start()
+        self.addCleanup(server.stop)
+        settings = Settings(earthdata_mcp_url=server.url, earthdata_mcp_token=None)
+        tools = await load_earthdata_tools(settings, current_user_id)
+
+        original_manager = self.api.app.state.earthdata_mcp_manager
+        self.api.app.state.earthdata_mcp_manager = SimpleNamespace(state="ready", tools=tools)
+        self.addCleanup(setattr, self.api.app.state, "earthdata_mcp_manager", original_manager)
+
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        auth_patches = self._auth_patch()
+        with auth_patches[0], auth_patches[1]:
+            async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                response = await client.post("/jobs/job_ghost/cancel", headers=self.auth_headers1)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "not_found")
 
     async def test_jobs_fails_honestly_when_the_mcp_is_not_ready(self):
         original_manager = self.api.app.state.earthdata_mcp_manager

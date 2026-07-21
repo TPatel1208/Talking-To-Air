@@ -7,7 +7,8 @@ import { useDiscovery } from './hooks/useDiscovery'
 import { useJobs } from './hooks/useJobs'
 import { createEmptySelection, toggleSlot } from './utils/compareMode'
 import { reachableArtifacts } from './utils/artifactReachability'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { sessionExpiryReducer, authTransition } from './utils/sessionExpiry'
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 
 // Thin clickable rail standing in for a side column while it's manually
 // collapsed -- keeps a one-click way back rather than the column just
@@ -37,7 +38,7 @@ const API_BASE = '/api'
 const AUTH_STORAGE_KEY = 'tta.accessToken'
 const ACTIVE_THREAD_STORAGE_KEY = 'tta.activeThreadId'
 
-function AuthScreen({ onAuthenticated }) {
+function LoginForm({ onAuthenticated, allowRegister = true, heading = 'Talking to Air', subtitle = null }) {
   const [mode, setMode] = useState('login')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -82,30 +83,22 @@ function AuthScreen({ onAuthenticated }) {
   }
 
   return (
-    <div style={{
-      minHeight: '100%',
-      display: 'grid',
-      placeItems: 'center',
-      background: 'var(--bg-primary)',
-      color: 'var(--text-primary)',
-      padding: '24px',
+    <form onSubmit={submit} style={{
+      width: 'min(100%, 360px)',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: '14px',
+      padding: '22px',
+      border: '1px solid var(--border)',
+      borderRadius: '8px',
+      background: 'var(--bg-card)',
     }}>
-      <form onSubmit={submit} style={{
-        width: 'min(100%, 360px)',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '14px',
-        padding: '22px',
-        border: '1px solid var(--border)',
-        borderRadius: '8px',
-        background: 'var(--bg-card)',
-      }}>
-        <div>
-          <h1 style={{ margin: '0 0 6px', fontSize: '22px', letterSpacing: 0 }}>Talking to Air</h1>
-          <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '13px' }}>
-            {mode === 'login' ? 'Sign in to continue.' : 'Create an account to continue.'}
-          </p>
-        </div>
+      <div>
+        <h1 style={{ margin: '0 0 6px', fontSize: '22px', letterSpacing: 0 }}>{heading}</h1>
+        <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '13px' }}>
+          {subtitle || (mode === 'login' ? 'Sign in to continue.' : 'Create an account to continue.')}
+        </p>
+      </div>
 
         <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '12px', color: 'var(--text-muted)' }}>
           Username
@@ -162,24 +155,73 @@ function AuthScreen({ onAuthenticated }) {
           {loading ? 'Please wait...' : mode === 'login' ? 'Sign in' : 'Register'}
         </button>
 
-        <button
-          type="button"
-          onClick={() => {
-            setMode(mode === 'login' ? 'register' : 'login')
-            setError(null)
-          }}
-          style={{
-            height: '34px',
-            border: '1px solid var(--border)',
-            borderRadius: '6px',
-            background: 'transparent',
-            color: 'var(--text-primary)',
-            cursor: 'pointer',
-          }}
-        >
-          {mode === 'login' ? 'Create account' : 'Use existing account'}
-        </button>
-      </form>
+        {allowRegister && (
+          <button
+            type="button"
+            onClick={() => {
+              setMode(mode === 'login' ? 'register' : 'login')
+              setError(null)
+            }}
+            style={{
+              height: '34px',
+              border: '1px solid var(--border)',
+              borderRadius: '6px',
+              background: 'transparent',
+              color: 'var(--text-primary)',
+              cursor: 'pointer',
+            }}
+          >
+            {mode === 'login' ? 'Create account' : 'Use existing account'}
+          </button>
+        )}
+    </form>
+  )
+}
+
+// Full-screen sign-in shown when there's no session at all.
+function AuthScreen({ onAuthenticated }) {
+  return (
+    <div style={{
+      minHeight: '100%',
+      display: 'grid',
+      placeItems: 'center',
+      background: 'var(--bg-primary)',
+      color: 'var(--text-primary)',
+      padding: '24px',
+    }}>
+      <LoginForm onAuthenticated={onAuthenticated} />
+    </div>
+  )
+}
+
+// T47: an auth failure mid-analysis raises this over the preserved view rather
+// than dropping the researcher to a blank login screen. Re-login resumes the
+// same thread in place (the active thread id is deliberately not cleared), so
+// a 40-minute session survives a lapsed token. Register is disabled here — the
+// only sane action on an expired session is to sign back into the same account.
+function SessionExpiredModal({ onReauthenticated }) {
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Session expired"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        display: 'grid',
+        placeItems: 'center',
+        background: 'rgba(0, 0, 0, 0.55)',
+        backdropFilter: 'blur(2px)',
+        padding: '24px',
+        zIndex: 1000,
+      }}
+    >
+      <LoginForm
+        onAuthenticated={onReauthenticated}
+        allowRegister={false}
+        heading="Session expired"
+        subtitle="Sign in to continue — your work is right where you left it."
+      />
     </div>
   )
 }
@@ -440,6 +482,7 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
 
 export default function App() {
   const [accessToken, setAccessToken] = useState(() => window.localStorage.getItem(AUTH_STORAGE_KEY))
+  const [{ sessionExpired }, dispatchSession] = useReducer(sessionExpiryReducer, { sessionExpired: false })
 
   const clearAuthState = useCallback(() => {
     window.localStorage.removeItem(AUTH_STORAGE_KEY)
@@ -447,22 +490,41 @@ export default function App() {
     setAccessToken(null)
   }, [])
 
-  const handleAuthenticated = useCallback((token) => {
+  const applyToken = useCallback((token, kind) => {
     window.localStorage.setItem(AUTH_STORAGE_KEY, token)
-    window.localStorage.removeItem(ACTIVE_THREAD_STORAGE_KEY)
+    // A fresh login starts clean; a re-auth preserves the active thread so the
+    // researcher resumes the exact conversation they were in (T47).
+    if (authTransition(kind).clearActiveThread) {
+      window.localStorage.removeItem(ACTIVE_THREAD_STORAGE_KEY)
+    }
     setAccessToken(token)
   }, [])
+
+  const handleAuthenticated = useCallback((token) => applyToken(token, 'login'), [applyToken])
+
+  // T47: a 401 during an active session raises the re-auth modal instead of
+  // wiping the token and dumping the user to the login screen. The rug-pull is
+  // exactly the failure this replaces.
+  const handleSessionExpired = useCallback(() => dispatchSession({ type: 'unauthorized' }), [])
+
+  const handleReauthenticated = useCallback((token) => {
+    dispatchSession({ type: 'reauthenticated' })
+    applyToken(token, 'reauth')
+  }, [applyToken])
 
   if (!accessToken) {
     return <AuthScreen onAuthenticated={handleAuthenticated} />
   }
 
   return (
-    <AuthenticatedApp
-      key={accessToken}
-      accessToken={accessToken}
-      onLogout={clearAuthState}
-      onUnauthorized={clearAuthState}
-    />
+    <>
+      <AuthenticatedApp
+        key={accessToken}
+        accessToken={accessToken}
+        onLogout={clearAuthState}
+        onUnauthorized={handleSessionExpired}
+      />
+      {sessionExpired && <SessionExpiredModal onReauthenticated={handleReauthenticated} />}
+    </>
   )
 }

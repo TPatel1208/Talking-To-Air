@@ -67,6 +67,30 @@ class ConfigLoggingTests(unittest.TestCase):
         self.assertEqual(loaded.earthdata_mcp_url, "http://mcp:8765/mcp")
         self.assertIsNone(loaded.earthdata_mcp_token)
 
+    def test_agent_recursion_limit_default_has_headroom_for_a_multi_period_workflow(self):
+        """Regression guard (2026-07-20 AOD wildfire session): the default was
+        25, but a legitimate two-period, multi-day plot workflow (search → AOI →
+        coverage → retrieve → poll → plot, ×2 periods) is ~two supersteps per
+        tool call and runs right into that ceiling, surfacing as an opaque
+        GraphRecursionError. The default must leave room for that real workflow;
+        it stays tunable so a runaway loop can still be capped lower/higher."""
+        from config.settings import get_settings
+
+        with patch.dict(os.environ, {}, clear=True):
+            get_settings.cache_clear()
+            loaded = get_settings()
+
+        self.assertGreaterEqual(loaded.agent_recursion_limit, 40)
+
+    def test_agent_recursion_limit_is_overridable(self):
+        from config.settings import get_settings
+
+        with patch.dict(os.environ, {"AGENT_RECURSION_LIMIT": "60"}, clear=True):
+            get_settings.cache_clear()
+            loaded = get_settings()
+
+        self.assertEqual(loaded.agent_recursion_limit, 60)
+
         with patch.dict(
             os.environ,
             {"EARTHDATA_MCP_URL": "http://mcp:9000/mcp", "EARTHDATA_MCP_TOKEN": "secret"},

@@ -671,6 +671,54 @@ class RunGroundTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("secret path leak", result.text)
         self.assertEqual(result.text, render_error_answer("contract", "ground sensor agent"))
 
+    def test_render_unexpected_exception_classifies_a_recursion_limit_stop(self):
+        # The satellite agent hitting LangGraph's recursion_limit (a long, real
+        # multi-period workflow running out of step budget) escaped as a bare
+        # GraphRecursionError caught by the blanket handler and rendered as the
+        # generic "internal error" — indistinguishable from a genuine crash.
+        from services import subagent_dispatch
+        from config.error_templates import CATEGORY_RECURSION_EXHAUSTED, render_error_answer
+
+        class GraphRecursionError(Exception):
+            pass
+
+        exc = GraphRecursionError("Recursion limit of 25 reached without hitting a stop condition.")
+        text = subagent_dispatch._render_unexpected_exception(exc, "earthdata agent")
+
+        self.assertEqual(text, render_error_answer(CATEGORY_RECURSION_EXHAUSTED, "earthdata agent"))
+
+    def test_render_unexpected_exception_classifies_a_provider_rate_limit(self):
+        # A Gemini free-tier 429/RESOURCE_EXHAUSTED escaping the turn is a
+        # "wait and retry" condition, not a contract crash. Match on the message
+        # shape (429/quota/rate limit) so it works across providers without
+        # importing any provider-specific exception class.
+        from services import subagent_dispatch
+        from config.error_templates import CATEGORY_RATE_LIMITED, render_error_answer
+
+        class ChatGoogleGenerativeAIError(Exception):
+            pass
+
+        exc = ChatGoogleGenerativeAIError(
+            "Error calling model 'gemini-3-flash-preview' (Too Many Requests): 429 "
+            "Too Many Requests. RESOURCE_EXHAUSTED: quota exceeded"
+        )
+        text = subagent_dispatch._render_unexpected_exception(exc, "earthdata agent")
+
+        self.assertEqual(text, render_error_answer(CATEGORY_RATE_LIMITED, "earthdata agent"))
+
+    def test_render_unexpected_exception_leaves_an_ordinary_crash_as_contract(self):
+        # Anything that is neither a recursion stop nor a rate limit stays a
+        # contract failure, and its raw text never reaches the researcher.
+        from services import subagent_dispatch
+        from config.error_templates import render_error_answer
+
+        text = subagent_dispatch._render_unexpected_exception(
+            RuntimeError("secret path leak /opt/creds"), "earthdata agent"
+        )
+
+        self.assertNotIn("secret path leak", text)
+        self.assertEqual(text, render_error_answer("contract", "earthdata agent"))
+
     async def test_run_ground_second_call_in_the_same_task_is_budget_blocked(self):
         from services import subagent_dispatch
 

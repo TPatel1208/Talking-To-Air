@@ -30,6 +30,14 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+def _float_env(name: str, default: float) -> float:
+    raw = os.getenv(name, str(default))
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass(frozen=True)
 class Settings:
     """Application settings loaded once from environment at startup/import."""
@@ -111,6 +119,42 @@ class Settings:
     # legitimate long retrieval poll is never misread as a hung turn.
     chat_turn_timeout_seconds: int = field(
         default_factory=lambda: max(1, _int_env("CHAT_TURN_TIMEOUT_SECONDS", 1800))
+    )
+    # Storm containment (2026-07-20): every MCP tool opens a fresh streamable-
+    # HTTP session per ainvoke (no persistent session), so a wedged call can
+    # churn reconnect requests for its whole mcp_call_timeout window and the
+    # ReAct loop retries it up to the graph budget — observed as 600+ MCP
+    # requests/15s for 20+ minutes without ever reaching the plot step. The
+    # call_tool circuit breaker (earthdata_mcp/results.py) short-circuits every
+    # remaining MCP call in a turn once this many *consecutive* transport
+    # failures accrue; one success resets the count.
+    mcp_transport_failure_ceiling: int = field(
+        default_factory=lambda: max(1, _int_env("MCP_TRANSPORT_FAILURE_CEILING", 3))
+    )
+    # Half-open recovery for the breaker above (2026-07-20). The MCP *server*
+    # (earthdata-mcp) crash-restarts intermittently (~10-15s outage windows);
+    # the heaviest MCP caller — compare, 4+ sequential calls — reliably lands in
+    # one and trips the breaker. A permanently-sticky trip then fails the whole
+    # (up to 30-min) turn for a 12-second blip. Once tripped, the breaker waits
+    # this cooldown, then lets ONE call through as a half-open probe: success
+    # closes it (the turn continues), failure re-arms the cooldown. So a brief
+    # restart self-heals within ~cooldown of the server coming back, while a
+    # genuine sustained storm still admits at most one (bounded) probe per
+    # cooldown — never the 600-calls/15s churn the breaker exists to stop.
+    mcp_transport_recovery_cooldown_seconds: float = field(
+        default_factory=lambda: max(1.0, _float_env("MCP_TRANSPORT_RECOVERY_COOLDOWN_SECONDS", 5.0))
+    )
+    # The LangGraph superstep budget every agent's astream runs under. Raised
+    # from LangGraph's historical default (25) to 40 after the 2026-07-20 AOD
+    # wildfire session: a legitimate two-period, multi-day plot workflow (search
+    # → AOI → coverage → retrieve → poll → plot, ×2 periods) is ~two supersteps
+    # per tool call and hit the 25 ceiling as an opaque GraphRecursionError,
+    # not a runaway loop. 40 (~18 tool round-trips) leaves room for that real
+    # workflow while still capping a genuine loop. Kept explicit and tunable so
+    # the ceiling stays an intentional choice (the storm diagnosis called out
+    # that it must never be an accidental default).
+    agent_recursion_limit: int = field(
+        default_factory=lambda: max(1, _int_env("AGENT_RECURSION_LIMIT", 40))
     )
     retrieval_max_timeseries_days: int = field(
         default_factory=lambda: max(1, _int_env("RETRIEVAL_MAX_TIMESERIES_DAYS", 366))

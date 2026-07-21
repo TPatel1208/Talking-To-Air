@@ -54,6 +54,32 @@ class RenderErrorAnswerTests(unittest.TestCase):
             text = render_error_answer(category, "stage", "detail")
             self.assertTrue(text)
 
+    def test_rate_limited_answer_tells_the_user_to_wait_not_to_shrink_the_request(self):
+        """A language-model quota/429 is a 'wait and retry' condition, not an
+        'internal error' or a data-size problem — its answer must say so, so a
+        researcher does not respond by needlessly shrinking a request that was
+        never too large (the June 2023 AOD wildfire session, where every failure
+        rendered the generic contract text and the agent kept suggesting a
+        smaller region)."""
+        from config.error_templates import CATEGORY_RATE_LIMITED, render_error_answer
+
+        text = render_error_answer(CATEGORY_RATE_LIMITED, "earthdata agent")
+
+        self.assertNotIn("internal error", text)
+        self.assertIn("rate", text.lower())
+        self.assertIn("try again", text.lower())
+
+    def test_recursion_exhausted_answer_points_at_splitting_the_request(self):
+        """A recursion-limit stop means the workflow ran out of step budget, not
+        that the data or the question was bad — the answer must suggest fewer
+        periods/regions per request rather than 'internal error'."""
+        from config.error_templates import CATEGORY_RECURSION_EXHAUSTED, render_error_answer
+
+        text = render_error_answer(CATEGORY_RECURSION_EXHAUSTED, "earthdata agent")
+
+        self.assertNotIn("internal error", text)
+        self.assertIn("step", text.lower())
+
 
 class RenderTurnTimeoutAnswerTests(unittest.TestCase):
     def test_names_no_running_jobs_when_none_were_seen(self):

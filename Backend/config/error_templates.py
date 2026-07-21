@@ -25,6 +25,18 @@ from earthdata_mcp.results import (
     CATEGORY_USER_INPUT,
 )
 
+# Chat-level failure categories that are NOT MCP tool errors (so they don't
+# live in earthdata_mcp.results' taxonomy): an exception escaping a sub-agent
+# turn from the *language model* layer, not the data layer. Before these, a
+# provider rate-limit (Gemini free-tier 429/RESOURCE_EXHAUSTED) and a LangGraph
+# recursion-limit stop both collapsed into the generic CONTRACT "internal
+# error" text — indistinguishable from a real crash and from each other. That
+# is exactly what made the June 2023 AOD wildfire session un-actionable: the
+# agent kept advising a smaller region when the real cause was a spent LLM
+# quota (wait and retry) or a step-budget ceiling (split the request).
+CATEGORY_RATE_LIMITED = "rate_limited"
+CATEGORY_RECURSION_EXHAUSTED = "recursion_exhausted"
+
 _TEMPLATES: dict[str, str] = {
     CATEGORY_USER_INPUT: "The {stage} could not proceed: {detail}",
     CATEGORY_NO_DATA: "The {stage} found no data: {detail}",
@@ -33,6 +45,16 @@ _TEMPLATES: dict[str, str] = {
     CATEGORY_PROVIDER_UNAVAILABLE: (
         "The {stage} is temporarily unavailable. {detail} "
         "This was not a problem with your question — try again in a moment."
+    ),
+    CATEGORY_RATE_LIMITED: (
+        "The {stage} was rate-limited by the language-model provider and could "
+        "not finish. {detail} This was not a problem with your question and not "
+        "a data-size issue — wait a minute and try again."
+    ),
+    CATEGORY_RECURSION_EXHAUSTED: (
+        "The {stage} needed more steps than its budget allows and stopped before "
+        "finishing. {detail} This was not a problem with your data — try one plot "
+        "at a time, or split the request into fewer periods or regions."
     ),
     CATEGORY_CONTRACT: (
         "The {stage} hit an internal error and could not complete. {detail} "

@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from 'react'
-import { sortJobs, TERMINAL_STATUSES } from '../utils/jobCard.js'
+import { sortJobs, hasProgressingJob } from '../utils/jobCard.js'
 
 const API_BASE = '/api'
 
@@ -45,8 +45,10 @@ export function useJobs(accessToken) {
 
   // Keep in-flight rows live even when no chat stream is feeding
   // job_progress events (stopped request, reloaded page, job started in
-  // another session). Stops itself once every job is terminal.
-  const hasActiveJobs = jobs.some(job => !TERMINAL_STATUSES.has(job.status))
+  // another session). Stops itself once no job is still progressing — a
+  // paused job (needs user action) or a terminal one never keeps it running,
+  // so a stuck workspace can't poll (and re-fan-out to the MCP) forever.
+  const hasActiveJobs = hasProgressingJob(jobs)
   useEffect(() => {
     if (!accessToken || !hasActiveJobs) return undefined
     const id = setInterval(() => { fetchJobs() }, ACTIVE_JOB_POLL_MS)

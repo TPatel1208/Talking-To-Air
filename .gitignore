@@ -93,3 +93,6 @@ dist-ssr
 *.sw?
 AGENTS.md
 /prds/
+CLAUDE.md
+docs/prds/
+.claude/

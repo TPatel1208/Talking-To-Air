@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Optional
+import logging
+from typing import Awaitable, Callable, Optional, TypeVar
 
 import numpy as np
 from langchain.tools import tool
@@ -25,7 +26,7 @@ from langchain_core.tools import BaseTool
 
 from config.workflow_stages import STAGE_RENDER
 from datasets.mask_info import col_info_for_short_name, short_name_from_attrs
-from earthdata_mcp.results import MCPToolError, parse_tool_result
+from earthdata_mcp.results import CATEGORY_PROVIDER_UNAVAILABLE, MCPToolError, parse_tool_result
 from preprocessing.aggregation_service import (
     AggregationService,
     VariableChoiceRequired,
@@ -46,7 +47,51 @@ from utils.geo_utils import find_lat_coord, find_lon_coord
 from utils.plotting import _normalize_to_2d
 from utils.streaming import emit_status
 
+logger = logging.getLogger(__name__)
+
 _aggregation_service = AggregationService()
+
+# Ride a compare through a transient MCP outage instead of failing on the first
+# blip. compare is the heaviest MCP caller (open A + open B + align + open
+# aligned), so it disproportionately lands in the earthdata-mcp server's
+# crash-restart windows (~10-15s, diagnosed 2026-07-20) — the single biggest
+# source of its "temporary service interruption" flakiness. Five tries with
+# exponential backoff span ~20s of retrying, covering an observed restart with
+# margin; the backoff sleeps also let call_tool's circuit-breaker recovery
+# cooldown elapse so a half-open probe can re-close the breaker mid-compare.
+_TRANSIENT_RETRY_ATTEMPTS = 5
+_TRANSIENT_RETRY_BASE_DELAY_SECONDS = 1.5
+_TRANSIENT_RETRY_MAX_DELAY_SECONDS = 10.0
+
+_T = TypeVar("_T")
+
+
+async def _retry_transient(op: Callable[[], Awaitable[_T]], *, label: str) -> _T:
+    """Await ``op()``, retrying only a transient ``provider_unavailable``
+    MCPToolError (a transport blip / the MCP server restarting) up to
+    ``_TRANSIENT_RETRY_ATTEMPTS`` times with exponential backoff. Any other
+    MCPToolError category (user_input / contract / too_large / …) is a real,
+    non-retryable answer and re-raises immediately, as does the last transient
+    attempt. Mirrors await_retrieval's poll-retry loop (services.retrieval_composites)."""
+    delay = _TRANSIENT_RETRY_BASE_DELAY_SECONDS
+    for attempt in range(_TRANSIENT_RETRY_ATTEMPTS):
+        try:
+            return await op()
+        except MCPToolError as exc:
+            if exc.category != CATEGORY_PROVIDER_UNAVAILABLE or attempt == _TRANSIENT_RETRY_ATTEMPTS - 1:
+                raise
+            logger.warning(
+                "compare_transient_retry",
+                extra={
+                    "_event": "compare_transient_retry",
+                    "_label": label,
+                    "_attempt": attempt + 1,
+                    "_attempts": _TRANSIENT_RETRY_ATTEMPTS,
+                },
+            )
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, _TRANSIENT_RETRY_MAX_DELAY_SECONDS)
+    raise AssertionError("unreachable: retry loop exited without returning or raising")
 
 # Percent change is suppressed when period A's mean is smaller than this
 # fraction of A's own 2–98th-percentile magnitude range — i.e. the baseline is
@@ -460,7 +505,7 @@ def make_compare(mcp_tools: dict[str, BaseTool]):
             return json.dumps({"error": f"Unknown mode '{mode}'. Use 'region' or 'period'."})
 
         try:
-            ds_a = await open_handle(handle_a, mcp_tools)
+            ds_a = await _retry_transient(lambda: open_handle(handle_a, mcp_tools), label="open A")
             # Normalize longitude on the whole opened Dataset before
             # extraction, so the science DataArray and its sibling QA-flag
             # variable (still reachable through ds_a) share one coordinate
@@ -481,7 +526,7 @@ def make_compare(mcp_tools: dict[str, BaseTool]):
         except OpenHandleError as e:
             return json.dumps({"error": f"Failed to open handle '{handle_a}' (A): {e}"})
         try:
-            ds_b = await open_handle(handle_b, mcp_tools)
+            ds_b = await _retry_transient(lambda: open_handle(handle_b, mcp_tools), label="open B")
             lon_coord_b = find_lon_coord(ds_b)
             if lon_coord_b:
                 ds_b = _normalize_longitudes(ds_b, lon_coord_b)
@@ -527,7 +572,10 @@ def make_compare(mcp_tools: dict[str, BaseTool]):
             )
 
         try:
-            align_raw = await mcp_tools["align"].ainvoke({"source_handles": [handle_a, handle_b]})
+            align_raw = await _retry_transient(
+                lambda: mcp_tools["align"].ainvoke({"source_handles": [handle_a, handle_b]}),
+                label="align",
+            )
             align_result = parse_tool_result(align_raw)
         except MCPToolError as e:
             return json.dumps({"error": e.to_dict()})
@@ -539,7 +587,9 @@ def make_compare(mcp_tools: dict[str, BaseTool]):
             })
 
         try:
-            aligned_ds = await open_handle(aligned_handle, mcp_tools)
+            aligned_ds = await _retry_transient(
+                lambda: open_handle(aligned_handle, mcp_tools), label="open aligned"
+            )
             aligned_lon_coord = find_lon_coord(aligned_ds)
             if aligned_lon_coord:
                 aligned_ds = _normalize_longitudes(aligned_ds, aligned_lon_coord)

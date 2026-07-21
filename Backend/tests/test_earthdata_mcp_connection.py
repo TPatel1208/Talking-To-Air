@@ -252,6 +252,57 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(on_ready_calls), 1)
 
+    async def test_heartbeat_probes_the_held_session_not_a_fresh_one(self):
+        # The 404-zombie fix (2026-07-21): after a server restart the HELD
+        # session's lost id makes every request on it 404, while a FRESH probe
+        # connects cleanly and masks the death — wedging the whole tool surface
+        # until a process restart. The heartbeat must probe the HELD session:
+        # here its probe fails while the fresh self._probe succeeds, and the
+        # manager must STILL demote (then, finding the scope down, stay
+        # unavailable) rather than reporting ready off the fresh probe.
+        from contextlib import asynccontextmanager
+
+        from earthdata_mcp.client import EarthdataMCPUnavailableError, HeldSession
+        from earthdata_mcp.connection import (
+            EarthdataMCPConnectionManager,
+            STATE_READY,
+            STATE_UNAVAILABLE,
+        )
+
+        tools = {"search_datasets": _fake_tool("search_datasets", ("query", "filters", "workspace_id"))}
+        held_probe_calls = {"n": 0}
+        scope_calls = {"n": 0}
+
+        async def dead_held_probe():
+            held_probe_calls["n"] += 1
+            raise RuntimeError("held session is a 404 zombie")
+
+        @asynccontextmanager
+        async def session_scope(_settings):
+            scope_calls["n"] += 1
+            if scope_calls["n"] >= 2:
+                # After the first demotion the manager reconnects; keep it down
+                # so the final state is stably unavailable for the assertion.
+                raise EarthdataMCPUnavailableError("stays down after the first demotion")
+            yield HeldSession(tools, probe=dead_held_probe)
+
+        manager = EarthdataMCPConnectionManager(
+            settings=object(), user_id_getter=lambda: "1", session_scope=session_scope,
+            probe=_probe_ok,  # a FRESH probe that would (wrongly) keep saying "healthy"
+            heartbeat_failure_threshold=1, sleep=_yielding_sleep,
+        )
+
+        manager.start()
+        try:
+            await asyncio.wait_for(_wait_for_state(manager, STATE_READY), timeout=1)
+            # The held probe fails -> the manager demotes, even though the fresh
+            # probe never failed. That is the whole fix.
+            await asyncio.wait_for(_wait_for_state(manager, STATE_UNAVAILABLE), timeout=1)
+        finally:
+            await manager.stop()
+
+        self.assertGreaterEqual(held_probe_calls["n"], 1, "heartbeat never probed the held session")
+
     async def test_detects_a_later_outage_and_recovers_without_a_restart(self):
         # T17 story #5/#6: the manager must keep watching after boot — a
         # mid-session MCP outage (not just a down-at-boot one) has to flip

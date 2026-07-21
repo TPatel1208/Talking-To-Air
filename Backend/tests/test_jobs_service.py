@@ -19,6 +19,13 @@ REQUIRED_MODULES = ["langchain_mcp_adapters", "fastmcp", "uvicorn"]
     "MCP client test dependencies are not installed",
 )
 class ListJobsTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        # The terminal-status cache is process-global; clear it between tests
+        # so one test's cached rows never leak into another's fan-out count.
+        from services.jobs_service import clear_terminal_status_cache
+
+        clear_terminal_status_cache()
+
     async def _tools(self, handlers):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
         from earthdata_mcp.client import load_raw_mcp_tools
@@ -255,6 +262,118 @@ class ListJobsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(jobs), 2)
         self.assertEqual(by_handle["job_ok"]["status"], "running")
         self.assertEqual(by_handle["job_bad"]["status"], "error")
+
+    async def test_list_jobs_caches_terminal_status_and_skips_the_repeat_mcp_call(self):
+        """A terminal job's status is immutable, so re-polling the panel must
+        not re-issue get_retrieval_status for it — that per-job fan-out, run on
+        the frontend's 15s poll, drove hundreds of MCP round-trips/min on a
+        large workspace for data that can't have changed. Only non-terminal
+        jobs incur a status call on subsequent polls."""
+        from services.jobs_service import list_jobs
+
+        async def list_workspace(workspace_id):
+            return {
+                "handles": [
+                    {"handle": "job_done", "type": "job", "created_at": "2026-07-01T00:00:00Z", "summary": {}},
+                    {"handle": "job_running", "type": "job", "created_at": "2026-07-02T00:00:00Z", "summary": {}},
+                ]
+            }
+
+        calls = {"job_done": 0, "job_running": 0}
+
+        async def get_retrieval_status(job_handle, workspace_id):
+            calls[job_handle] += 1
+            if job_handle == "job_done":
+                return {"job_handle": "job_done", "status": "ready", "progress": 100, "obs_handle": "obs_done"}
+            return {"job_handle": "job_running", "status": "running", "progress": 40, "phase": "processing"}
+
+        tools = await self._tools({
+            "list_workspace": list_workspace,
+            "get_retrieval_status": get_retrieval_status,
+        })
+
+        await list_jobs(tools)
+        second = await list_jobs(tools)
+
+        # Terminal job: fetched exactly once, then served from the cache.
+        self.assertEqual(calls["job_done"], 1)
+        # Active job: re-fetched every poll — its status can still change.
+        self.assertEqual(calls["job_running"], 2)
+
+        # The cached terminal row is still present and correct on the 2nd poll.
+        by_handle = {job["job_handle"]: job for job in second}
+        self.assertEqual(set(by_handle), {"job_done", "job_running"})
+        self.assertEqual(by_handle["job_done"]["status"], "ready")
+        self.assertEqual(by_handle["job_done"]["progress"], 100)
+        self.assertEqual(by_handle["job_done"]["obs_handle"], "obs_done")
+
+    async def test_list_jobs_caches_a_not_found_dead_handle_and_stops_re_polling_it(self):
+        """A handle list_workspace still lists but get_retrieval_status reports
+        as not_found is a dead, evicted job — permanently. On a long-lived
+        workspace these dominate (live repro: 134 not_found vs 46 real jobs),
+        so re-polling them every 15s was the bulk of the fan-out. They must be
+        cached like a terminal status: fetched once, then served from cache."""
+        from services.jobs_service import list_jobs
+
+        async def list_workspace(workspace_id):
+            return {
+                "handles": [
+                    {"handle": "job_dead", "type": "job", "created_at": "2026-01-01T00:00:00Z", "summary": {}},
+                ]
+            }
+
+        calls = {"job_dead": 0}
+
+        async def get_retrieval_status(job_handle, workspace_id):
+            calls["job_dead"] += 1
+            # The MCP models a purged handle as a structured passthrough, not
+            # an error (results._STRUCTURED_PASSTHROUGH_STATUSES).
+            return {"job_handle": "job_dead", "status": "not_found", "message": "Unknown handle."}
+
+        tools = await self._tools({
+            "list_workspace": list_workspace,
+            "get_retrieval_status": get_retrieval_status,
+        })
+
+        first = await list_jobs(tools)
+        await list_jobs(tools)
+
+        self.assertEqual(first[0]["status"], "not_found")
+        self.assertEqual(calls["job_dead"], 1)
+
+    async def test_list_jobs_does_not_cache_a_nonterminal_or_paused_status(self):
+        """Paused and still-running jobs are not immutable — they must stay on
+        the per-poll fan-out so a resume/completion is picked up, and an
+        errored status read must be retried, not frozen."""
+        from services.jobs_service import list_jobs
+
+        async def list_workspace(workspace_id):
+            return {
+                "handles": [
+                    {"handle": "job_paused", "type": "job", "created_at": "2026-07-01T00:00:00Z", "summary": {}},
+                ]
+            }
+
+        calls = {"job_paused": 0}
+
+        async def get_retrieval_status(job_handle, workspace_id):
+            calls["job_paused"] += 1
+            return {
+                "job_handle": "job_paused", "status": "running", "progress": 0, "phase": "processing",
+                "message": "The job is paused and may be resumed using the provided link",
+            }
+
+        tools = await self._tools({
+            "list_workspace": list_workspace,
+            "get_retrieval_status": get_retrieval_status,
+        })
+
+        first = await list_jobs(tools)
+        await list_jobs(tools)
+
+        # annotate_paused surfaces it as "paused" (non-terminal) — never cached.
+        self.assertEqual(first[0]["status"], "paused")
+        self.assertEqual(calls["job_paused"], 2)
 
     async def test_list_jobs_degrades_one_raw_exception_instead_of_failing_the_panel(self):
         """Fault isolation must hold for *any* failure mode a status call

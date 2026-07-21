@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import {
   statusBadge, primaryAction, upstreamLine,
   formatVariables, formatBbox, formatOutputFormat, formatTimeRange,
-  sortJobs, TERMINAL_STATUSES,
+  sortJobs, TERMINAL_STATUSES, hasProgressingJob,
 } from '../src/utils/jobCard.js'
 
 test('statusBadge prefers phase for the label but status for the color', () => {
@@ -144,4 +144,32 @@ test('sortJobs moves a job that just went terminal out of the active group witho
   const sorted = sortJobs(justFinished).map(job => job.job_handle)
 
   assert.deepEqual(sorted, ['a', 'b'])
+})
+
+test('hasProgressingJob keeps the poll alive only for genuinely-advancing jobs', () => {
+  // The live poller (hooks/useJobs.js) runs while this is true. A running or
+  // pending job legitimately keeps it alive — it will reach a terminal state
+  // on its own, at which point polling stops.
+  assert.equal(hasProgressingJob([{ status: 'running' }]), true)
+  assert.equal(hasProgressingJob([{ status: 'pending' }, { status: 'ready' }]), true)
+})
+
+test('hasProgressingJob does not keep polling for paused or terminal jobs', () => {
+  // The runaway: a Harmony-auto-paused job reports non-terminal ("paused")
+  // forever, so treating it as active kept the 15s poll — and its per-job
+  // get_retrieval_status fan-out — running indefinitely. Paused needs user
+  // action (resume/cancel), never advances on its own, so it must NOT keep
+  // the poller alive. Terminal jobs never keep it alive either.
+  assert.equal(hasProgressingJob([{ status: 'paused' }]), false)
+  assert.equal(hasProgressingJob([{ status: 'ready' }, { status: 'failed' }]), false)
+  assert.equal(hasProgressingJob([{ status: 'paused' }, { status: 'cancelled' }]), false)
+  assert.equal(hasProgressingJob([]), false)
+})
+
+test('hasProgressingJob does not poll a workspace of only dead (not_found) handles', () => {
+  // The live repro: 134 not_found handles (evicted jobs list_workspace still
+  // lists) and no running job. Treated as progressing, they kept the poller —
+  // and its ~180-call per-poll fan-out — alive forever on an idle panel.
+  assert.equal(hasProgressingJob([{ status: 'not_found' }, { status: 'ready' }]), false)
+  assert.equal(hasProgressingJob([{ status: 'not_found' }, { status: 'running' }]), true)
 })

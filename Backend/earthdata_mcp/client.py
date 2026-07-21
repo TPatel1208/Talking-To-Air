@@ -12,13 +12,32 @@ earthdata_mcp.toolset; this module only deals with the raw connection.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from dataclasses import dataclass
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 from langchain_core.tools import BaseTool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_mcp_adapters.tools import load_mcp_tools
 
 from config.settings import Settings
+
+
+@dataclass
+class HeldSession:
+    """The tool surface of one long-lived MCP session, plus a liveness ``probe``
+    bound to THAT session.
+
+    ``probe`` (the session's own ``send_ping``) lets the connection manager's
+    heartbeat check the session its bound tools actually use — instead of a
+    fresh throwaway session, which stays reachable even while the held one is a
+    404 zombie after a server restart (server lost the session id; every request
+    on it 404s, but a brand-new session connects fine). Probing the fresh one
+    masked that death and left the whole tool surface wedged until a process
+    restart. ``probe`` is ``None`` only for the legacy plain-loader test seam,
+    where the manager falls back to its injected fresh-session probe."""
+
+    tools: dict[str, BaseTool]
+    probe: Callable[[], Awaitable[Any]] | None = None
 
 # Model-facing curated surface (T11 decision record: MCP-first minimal
 # toolset): discovery, AOI, coverage. Retrieval, citation, and provenance
@@ -153,7 +172,7 @@ async def _list_mcp_tools(settings: Settings) -> list[BaseTool]:
 
 
 @asynccontextmanager
-async def open_earthdata_session(settings: Settings) -> AsyncIterator[dict[str, BaseTool]]:
+async def open_earthdata_session(settings: Settings) -> AsyncIterator[HeldSession]:
     """Open **one** long-lived streamable-HTTP session to the earthdata-
     retrieval MCP and yield every tool it exposes, by name, bound to that
     session.
@@ -191,7 +210,10 @@ async def open_earthdata_session(settings: Settings) -> AsyncIterator[dict[str, 
             by_name = {tool.name: tool for tool in tools}
             _require_all_present(set(by_name.keys()), settings.earthdata_mcp_url)
             connected = True
-            yield by_name
+            # Hand the manager a probe bound to THIS session (send_ping over the
+            # held connection) so its heartbeat detects a 404-zombie session the
+            # bound tools would otherwise keep failing on — see HeldSession.
+            yield HeldSession(by_name, probe=session.send_ping)
     except EarthdataMCPUnavailableError:
         raise
     except Exception as exc:
