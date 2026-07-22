@@ -65,6 +65,21 @@ test('a job whose status read itself failed (synthesized "error") is terminal, n
   assert.equal(statusBadge({ status: 'error' }).color, 'var(--error)')
 })
 
+test('a not_found (dead/evicted) job is terminal, not a live running job', () => {
+  // list_workspace still lists handles for jobs the MCP has evicted
+  // (get_retrieval_status returns status: "not_found"). On a long-lived
+  // workspace these dominate (live repro: 134 not_found vs 46 real jobs).
+  // Without "not_found" in TERMINAL_STATUSES every one of those dead rows
+  // rendered as running (progress bar + live Cancel button) and sorted into
+  // the active group ahead of/mixed with genuinely current tasks.
+  assert.equal(TERMINAL_STATUSES.has('not_found'), true)
+  assert.equal(primaryAction({ status: 'not_found' }), null)
+})
+
+test('statusBadge reads a multi-word status label with spaces, not a literal underscore', () => {
+  assert.equal(statusBadge({ status: 'not_found' }).label, 'Not found')
+})
+
 test('a provider-paused job renders as a warning badge with Cancel still available', () => {
   // The backend derives status "paused" (annotate_paused) from a Harmony
   // auto-pause the MCP reports as "running" forever. It must not be
@@ -129,6 +144,19 @@ test('sortJobs puts active jobs before terminal ones, newest first within each g
   const sorted = sortJobs(jobs).map(job => job.job_handle)
 
   assert.deepEqual(sorted, ['new-active', 'old-active', 'new-terminal', 'old-terminal'])
+})
+
+test('sortJobs pushes not_found (dead) jobs into the terminal group, never ahead of real active jobs', () => {
+  const jobs = [
+    { job_handle: 'dead-1', status: 'not_found', created_at: '2026-01-03T00:00:00Z' },
+    { job_handle: 'dead-2', status: 'not_found', created_at: '2026-01-02T12:00:00Z' },
+    { job_handle: 'real-active', status: 'running', created_at: '2026-01-01T00:00:00Z' },
+    { job_handle: 'real-terminal', status: 'ready', created_at: '2026-01-02T00:00:00Z' },
+  ]
+
+  const sorted = sortJobs(jobs).map(job => job.job_handle)
+
+  assert.deepEqual(sorted, ['real-active', 'dead-1', 'dead-2', 'real-terminal'])
 })
 
 test('sortJobs moves a job that just went terminal out of the active group without a manual refresh', () => {

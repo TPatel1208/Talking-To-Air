@@ -31,7 +31,15 @@ from utils.streaming import emit_job_progress, emit_status
 
 logger = logging.getLogger(__name__)
 
-TERMINAL_STATUSES = {"ready", "failed", "expired", "cancelled"}
+# "not_found" is a dead handle list_workspace still lists after the MCP has
+# evicted the job (get_retrieval_status has no record of it) -- terminal
+# because it never changes again and there's no live job a cancel could
+# reach. On a long-lived workspace these can vastly outnumber real jobs
+# (live repro: 134 not_found vs 46 real jobs); leaving it out sorted every
+# dead row into the "active" group ahead of genuinely current tasks (see
+# list_jobs' sort below and jobs_service._CACHEABLE_STATUSES, which already
+# treated it as immutable).
+TERMINAL_STATUSES = {"ready", "failed", "expired", "cancelled", "not_found"}
 
 # await_retrieval keeps polling through this many CONSECUTIVE transient
 # (provider_unavailable) status-poll failures before surfacing the error. A

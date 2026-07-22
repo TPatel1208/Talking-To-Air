@@ -156,6 +156,47 @@ class ListJobsTests(unittest.IsolatedAsyncioTestCase):
             ["job_newest_active", "job_older_active", "job_old_terminal"],
         )
 
+    async def test_list_jobs_sorts_not_found_dead_handles_into_the_terminal_group(self):
+        """not_found is a dead, evicted handle (see the caching test below) --
+        it must sort like a terminal job, never ahead of or mixed in with a
+        genuinely active one. On a long-lived workspace not_found rows can
+        vastly outnumber real jobs (live repro: 134 vs 46), so leaving
+        "not_found" out of TERMINAL_STATUSES buried current tasks under a
+        wall of dead rows sorted as if they were still running."""
+        from services.jobs_service import list_jobs
+
+        async def list_workspace(workspace_id):
+            return {
+                "handles": [
+                    {"handle": "job_dead_1", "type": "job", "created_at": "2026-01-03T00:00:00Z", "summary": {}},
+                    {"handle": "job_dead_2", "type": "job", "created_at": "2026-01-02T12:00:00Z", "summary": {}},
+                    {"handle": "job_real_active", "type": "job", "created_at": "2026-01-01T00:00:00Z", "summary": {}},
+                    {"handle": "job_real_terminal", "type": "job", "created_at": "2026-01-02T00:00:00Z", "summary": {}},
+                ]
+            }
+
+        statuses = {
+            "job_dead_1": {"job_handle": "job_dead_1", "status": "not_found"},
+            "job_dead_2": {"job_handle": "job_dead_2", "status": "not_found"},
+            "job_real_active": {"job_handle": "job_real_active", "status": "running"},
+            "job_real_terminal": {"job_handle": "job_real_terminal", "status": "ready"},
+        }
+
+        async def get_retrieval_status(job_handle, workspace_id):
+            return statuses[job_handle]
+
+        tools = await self._tools({
+            "list_workspace": list_workspace,
+            "get_retrieval_status": get_retrieval_status,
+        })
+
+        jobs = await list_jobs(tools)
+
+        self.assertEqual(
+            [job["job_handle"] for job in jobs],
+            ["job_real_active", "job_dead_1", "job_dead_2", "job_real_terminal"],
+        )
+
     async def test_list_jobs_passes_through_the_mcps_failed_status_message_verbatim(self):
         from services.jobs_service import list_jobs
 

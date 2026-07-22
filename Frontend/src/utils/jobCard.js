@@ -15,7 +15,15 @@
 // status fan-out (a single handle's get_retrieval_status call failed) --
 // terminal because the backend has nothing further to report and there's
 // no live job underneath a cancel could reach.
-export const TERMINAL_STATUSES = new Set(['ready', 'failed', 'expired', 'cancelled', 'error'])
+// "not_found" is a dead handle list_workspace still lists after the job was
+// evicted (get_retrieval_status no longer has a record of it) -- terminal
+// for the same reason as "error": nothing further to report, no live job a
+// cancel could reach. On a long-lived workspace these can outnumber real
+// jobs many times over (live repro: 134 not_found vs 46 real jobs), so
+// leaving this out of TERMINAL_STATUSES rendered a floor of dead rows as if
+// they were actively running (progress bar, live Cancel button) and sorted
+// them ahead of genuinely current tasks.
+export const TERMINAL_STATUSES = new Set(['ready', 'failed', 'expired', 'cancelled', 'error', 'not_found'])
 
 const STATUS_COLORS = {
   ready: 'var(--teal-text)',
@@ -61,7 +69,8 @@ export function hasProgressingJob(jobs) {
 
 export function titleCase(value) {
   if (!value) return ''
-  return value.charAt(0).toUpperCase() + value.slice(1)
+  const spaced = value.replace(/_/g, ' ')
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1)
 }
 
 export function statusBadge(job) {

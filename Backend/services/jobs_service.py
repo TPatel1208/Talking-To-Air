@@ -24,17 +24,16 @@ from services.retrieval_composites import TERMINAL_STATUSES, annotate_paused
 # at once. 8 keeps the panel responsive without stampeding the MCP/worker.
 _STATUS_FANOUT_LIMIT = 8
 
-# Statuses whose row is immutable, so it's cached and never re-fetched:
-#   * TERMINAL_STATUSES (ready/failed/expired/cancelled) — a finished job's
-#     status never changes again.
-#   * "not_found" — a handle list_workspace still lists but get_retrieval_status
-#     no longer has a record of (an old evicted job). It is a dead handle that
-#     never reappears, and on a long-lived workspace these dominate: the live
-#     repro had 134 not_found handles vs 46 real jobs, so re-polling them every
-#     15s *was* the fan-out (a 180-job workspace = ~180 MCP round-trips/poll).
-# parse_tool_result surfaces not_found as a structured passthrough
-# ({status: "not_found"}), so it arrives here as an ordinary status string.
-_CACHEABLE_STATUSES = TERMINAL_STATUSES | {"not_found"}
+# Statuses whose row is immutable, so it's cached and never re-fetched.
+# TERMINAL_STATUSES includes "not_found" — a handle list_workspace still
+# lists but get_retrieval_status no longer has a record of (an old evicted
+# job). It is a dead handle that never reappears, and on a long-lived
+# workspace these dominate: the live repro had 134 not_found handles vs 46
+# real jobs, so re-polling them every 15s *was* the fan-out (a 180-job
+# workspace = ~180 MCP round-trips/poll). parse_tool_result surfaces
+# not_found as a structured passthrough ({status: "not_found"}), so it
+# arrives here as an ordinary status string.
+_CACHEABLE_STATUSES = TERMINAL_STATUSES
 
 # The panel refetches the whole workspace on the frontend's live poll
 # (hooks/useJobs.js). Without this cache, list_jobs re-issued
