@@ -907,6 +907,145 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("no2", result["error"])
         self.assertIn("hcho", result["error"])
 
+    async def test_compare_opens_both_sides_concurrently(self):
+        """Opening handle A and handle B are independent MCP round trips
+        (export -> download/open); compare must gather them instead of
+        awaiting one after another, so the wall-clock wait is close to the
+        slower side alone, not the sum of both."""
+        import asyncio
+        import time
+        from unittest.mock import AsyncMock
+
+        import xarray as xr
+        from tools.satellite_tools import comparison_tools
+
+        def make_ds(value):
+            return xr.Dataset(
+                {"no2": (("lat", "lon"), [[value, value], [value, value]], {"units": "mol/m^2"})},
+                coords={"lat": [10.0, 20.0], "lon": [30.0, 40.0]},
+            )
+
+        async def slow_open(handle, tools):
+            await asyncio.sleep(0.3)
+            return make_ds(1.0 if handle == "obs_a" else 2.0)
+
+        compare = comparison_tools.make_compare(self.mcp_tools)
+        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda p: None), \
+             patch.object(comparison_tools, "open_handle", AsyncMock(side_effect=slow_open)):
+            start = time.monotonic()
+            raw = await compare.ainvoke({"handle_a": "obs_a", "handle_b": "obs_b", "mode": "region"})
+            elapsed = time.monotonic() - start
+
+        result = json.loads(raw)
+        self.assertNotIn("error", result)
+        # Sequential opens would take >=0.6s; concurrent should land near 0.3s.
+        self.assertLess(elapsed, 0.5)
+
+    async def test_compare_does_not_emit_a_picker_for_a_side_discarded_after_the_other_fails(self):
+        """Both sides now run concurrently via asyncio.gather, so side B still
+        runs to completion even when side A has already failed outright.
+        Only A's error is returned (make_compare checks err_a first) — B's
+        variable-choice picker (an out-of-band, irreversible emission) must
+        NOT fire in that case, since the caller discards B's result
+        entirely and the picker would have no matching returned state for a
+        client to act on."""
+        from unittest.mock import AsyncMock, patch
+
+        import xarray as xr
+        from earthdata_mcp.results import MCPToolError
+        from preprocessing.aggregation_service import VariableChoiceRequired
+        from services.open_handle import OpenHandleError
+        from tools.satellite_tools import comparison_tools
+
+        def make_ds():
+            return xr.Dataset(
+                {"no2": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]], {"units": "mol/m^2"})},
+                coords={"lat": [10.0, 20.0], "lon": [30.0, 40.0]},
+            )
+
+        async def open_side(handle, tools):
+            if handle == "obs_bad":
+                raise OpenHandleError("simulated open failure")
+            return make_ds()
+
+        fake_resolution = object()
+        fake_mcp_error = MCPToolError("contract", "ambiguous variable")
+
+        def fake_to_dataarray(ds, *, handle=None, variable=None):
+            if handle == "obs_ambiguous":
+                raise VariableChoiceRequired(fake_resolution, fake_mcp_error)
+            return ds["no2"]
+
+        emitted = []
+
+        compare = comparison_tools.make_compare(self.mcp_tools)
+        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda p: None), \
+             patch.object(comparison_tools, "open_handle", AsyncMock(side_effect=open_side)), \
+             patch.object(
+                 comparison_tools._aggregation_service, "to_dataarray", side_effect=fake_to_dataarray
+             ), \
+             patch.object(
+                 comparison_tools, "emit_variable_choice_payload",
+                 lambda resolution, ds: emitted.append(resolution),
+             ):
+            raw = await compare.ainvoke({
+                "handle_a": "obs_bad", "handle_b": "obs_ambiguous", "mode": "region",
+            })
+
+        result = json.loads(raw)
+        self.assertIn("error", result)
+        self.assertIn("obs_bad", result["error"])
+        # B's picker must never have fired -- its result was discarded.
+        self.assertEqual(emitted, [])
+
+    async def test_compare_still_emits_a_picker_when_that_side_is_the_one_returned(self):
+        """The deferred-emission fix must not suppress a picker that IS the
+        winning (returned) error -- only a discarded side's picker should be
+        skipped."""
+        from unittest.mock import AsyncMock, patch
+
+        import xarray as xr
+        from earthdata_mcp.results import MCPToolError
+        from preprocessing.aggregation_service import VariableChoiceRequired
+        from tools.satellite_tools import comparison_tools
+
+        def make_ds():
+            return xr.Dataset(
+                {"no2": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]], {"units": "mol/m^2"})},
+                coords={"lat": [10.0, 20.0], "lon": [30.0, 40.0]},
+            )
+
+        async def open_side(handle, tools):
+            return make_ds()
+
+        fake_resolution = object()
+        fake_mcp_error = MCPToolError("contract", "ambiguous variable")
+
+        def fake_to_dataarray(ds, *, handle=None, variable=None):
+            if handle == "obs_ambiguous":
+                raise VariableChoiceRequired(fake_resolution, fake_mcp_error)
+            return ds["no2"]
+
+        emitted = []
+
+        compare = comparison_tools.make_compare(self.mcp_tools)
+        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda p: None), \
+             patch.object(comparison_tools, "open_handle", AsyncMock(side_effect=open_side)), \
+             patch.object(
+                 comparison_tools._aggregation_service, "to_dataarray", side_effect=fake_to_dataarray
+             ), \
+             patch.object(
+                 comparison_tools, "emit_variable_choice_payload",
+                 lambda resolution, ds: emitted.append(resolution),
+             ):
+            raw = await compare.ainvoke({
+                "handle_a": "obs_ok", "handle_b": "obs_ambiguous", "mode": "region",
+            })
+
+        result = json.loads(raw)
+        self.assertIn("error", result)
+        self.assertEqual(emitted, [fake_resolution])
+
     async def test_an_unknown_mode_is_rejected(self):
         import xarray as xr
         from tools.satellite_tools import comparison_tools

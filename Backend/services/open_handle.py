@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 from typing import Any
 from urllib.parse import urlparse
 from urllib.request import url2pathname
@@ -46,6 +47,21 @@ except ImportError:  # pragma: no cover — dask is a declared dependency
 _EXTRACT_CACHE_DIR_NAME = "tta_bundle_extract"
 _EXTRACT_CACHE_TTL_SECONDS = 3600.0
 _EXTRACT_COMPLETE_MARKER = ".complete"
+
+# Serializes the actual HDF5/netCDF-C-library call inside a concurrent bundle
+# member open (_open_bundle_members_concurrently). h5netcdf/netCDF4 release
+# the GIL for their I/O, so Python threads genuinely overlap *inside* the C
+# extension — but that's a different guarantee from the underlying HDF5 C
+# library itself being safe for concurrent calls across different file
+# handles, which the reference HDF5 build only provides with a special
+# --enable-threadsafe compile flag (and even then by serializing everything
+# behind one global lock, not truly parallelizing it). Nothing in this
+# deployment establishes that guarantee, so this lock takes the same
+# "serialize the actual library call" stance HDF5's own thread-safe build
+# would — the surrounding thread-pool structure still overlaps the pure-Python
+# per-member work (path handling, group merging, time-coord synthesis) that
+# doesn't touch the C library.
+_hdf5_open_lock = threading.Lock()
 
 
 class OpenHandleError(RuntimeError):
@@ -338,12 +354,20 @@ def _open_netcdf_bundle(path: str) -> Any:
         _gate_bundle_size(zf, path)
         extract_dir = _extract_bundle_cached(zf, path, names)
 
+    # Deliberately NOT pipelined with the open step below (i.e. opening
+    # member 1 while member 2 is still extracting), even though both phases
+    # are already I/O-bound and bounded by the same setting. _extract_bundle_
+    # cached's caching is all-or-nothing (marks the whole directory
+    # ``.complete`` and renames it atomically only once every member has
+    # extracted); if extraction failed partway *after* some members had
+    # already been lazily opened, this function's own cleanup would
+    # shutil.rmtree the staging directory while a caller's already-returned,
+    # lazy (chunks={}) Dataset still points at files inside it -- a
+    # since-deleted-file read failing silently downstream instead of a clean
+    # bundle-open error. Extraction completing in full before any open
+    # starts is what keeps that failure path safe.
     chunks = _lazy_chunks()
-    members: list[Any] = []
-    for name in names:
-        member_path = os.path.join(extract_dir, *name.split("/"))
-        ds = _open_netcdf(member_path, chunks=chunks)
-        members.append(_synthesize_member_time_coord(ds))
+    members = _open_bundle_members_concurrently(extract_dir, names, chunks)
 
     if len(members) == 1:
         return members[0]
@@ -356,6 +380,64 @@ def _open_netcdf_bundle(path: str) -> Any:
             f"shared time axis: {exc}"
         )
     return _order_bundle_time(combined, path)
+
+
+def _run_bounded_failfast(items: list, fn: Any, workers: int) -> list:
+    """Run ``fn(item)`` for every item in ``items``, bounded to ``workers``
+    concurrent threads, preserving ``items`` order in the returned list.
+
+    Fails fast: once any item raises, every not-yet-started item is cancelled
+    rather than left to run to completion — a plain ``ThreadPoolExecutor.map``/
+    ``submit`` would submit everything up front and (via ``shutdown(wait=True)``
+    on exit) still run every already-queued item before the exception could
+    propagate, silently doing the full amount of work anyway on a mid-bundle
+    failure and, for an "open" workload, leaking however many file handles
+    those extra opens created until the next GC. The first failure (in
+    ``items`` order) is what propagates, matching a plain sequential loop's
+    behavior. Falls back to a plain sequential loop at ``workers<=1``."""
+    from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
+
+    if workers <= 1:
+        return [fn(item) for item in items]
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(fn, item) for item in items]
+        done, not_done = wait(futures, return_when=FIRST_EXCEPTION)
+        for future in not_done:
+            future.cancel()  # best-effort: only removes not-yet-started work
+        for future in futures:
+            if future in done:
+                future.result()  # raises on the first failure, in items order
+        return [future.result() for future in futures]
+
+
+def _open_bundle_members_concurrently(extract_dir: str, names: list[str], chunks: dict | None) -> list[Any]:
+    """Open every bundle member and synthesize its time coordinate, using a
+    small bounded thread pool instead of one file at a time.
+
+    Members open *lazily* (``chunks``, see :func:`_lazy_chunks`), so this
+    parallelizes only the metadata/header read each open performs — the
+    h5netcdf/netCDF4 engines release the GIL for their file I/O, letting
+    Python threads overlap the surrounding pure-Python per-member work — not
+    any array materialization. RAM stays flat (no more data is pulled into
+    memory than the sequential loop pulled) while wall-clock time on a bundle
+    with many members drops. The HDF5-touching call itself is still
+    serialized through :data:`_hdf5_open_lock` (see its own comment): GIL
+    release doesn't establish that the underlying HDF5 C library is safe for
+    concurrent calls across file handles, and nothing in this deployment
+    proves that build property. Bounded by ``granule_concurrency`` (the same
+    setting used for extraction below) so a 50+ granule bundle doesn't spin
+    up 50 threads at once; ``names`` order is preserved in the result
+    regardless of completion order, so the duplicate-timestamp keep-first
+    logic in :func:`_order_bundle_time` stays deterministic."""
+
+    def _open_one(name: str) -> Any:
+        member_path = os.path.join(extract_dir, *name.split("/"))
+        with _hdf5_open_lock:
+            ds = _open_netcdf(member_path, chunks=chunks)
+        return _synthesize_member_time_coord(ds)
+
+    workers = min(get_settings().granule_concurrency, len(names))
+    return _run_bounded_failfast(names, _open_one, workers)
 
 
 def _gate_bundle_size(zf: Any, path: str) -> None:
@@ -422,8 +504,7 @@ def _extract_bundle_cached(zf: Any, path: str, names: list[str]) -> str:
 
     staging = tempfile.mkdtemp(prefix=f"staging-{key}-", dir=root)
     try:
-        for name in names:
-            zf.extract(name, staging)
+        _extract_members_concurrently(zf, names, staging)
         with open(os.path.join(staging, _EXTRACT_COMPLETE_MARKER), "w"):
             pass
         os.rename(staging, final_dir)
@@ -438,6 +519,24 @@ def _extract_bundle_cached(zf: Any, path: str, names: list[str]) -> str:
         shutil.rmtree(staging, ignore_errors=True)
         raise
     return final_dir
+
+
+def _extract_members_concurrently(zf: Any, names: list[str], dest: str) -> None:
+    """Extract every member of ``zf`` into ``dest`` using a small bounded
+    thread pool instead of one file at a time.
+
+    ``zipfile.ZipFile`` serializes reads of the shared archive file through
+    its own internal lock (``ZipFile._lock``, thread-safe since Python 3.6),
+    so concurrent ``extract()`` calls from multiple threads decompress
+    correctly — each only contends briefly for that lock rather than the
+    whole extraction happening sequentially. Bounded by the same
+    ``granule_concurrency`` setting as the per-member open above, so a 50+
+    granule bundle doesn't spin up 50 threads at once. Fails fast (see
+    :func:`_run_bounded_failfast`): a bad member's failure stops any
+    not-yet-started extraction rather than extracting every remaining member
+    anyway before the caller's cleanup path gets to run."""
+    workers = min(get_settings().granule_concurrency, len(names))
+    _run_bounded_failfast(names, lambda name: zf.extract(name, dest), workers)
 
 
 def _prune_extract_cache(root: str, ttl_seconds: float = _EXTRACT_CACHE_TTL_SECONDS) -> None:

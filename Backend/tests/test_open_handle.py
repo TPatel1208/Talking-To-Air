@@ -1109,6 +1109,251 @@ class BundleExtractionCacheTests(unittest.TestCase):
                 gc.collect()
 
 
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
+    "bundle concurrency test dependencies are not installed",
+)
+class BundleExtractionConcurrencyTests(unittest.TestCase):
+    """_extract_members_concurrently must actually run extractions in
+    parallel (bounded by granule_concurrency), not just accept a thread pool
+    argument that never overlaps anything."""
+
+    def test_extracts_every_member_and_overlaps_io_when_concurrency_allows(self):
+        import time
+        from unittest.mock import patch
+
+        from config.settings import Settings
+        from services.open_handle import _extract_members_concurrently
+
+        calls = []
+
+        class FakeZip:
+            def extract(self, name, dest):
+                calls.append((name, dest))
+                time.sleep(0.2)
+
+        names = [f"g{i}.nc4" for i in range(4)]
+        settings = Settings(granule_concurrency=4)
+        with patch("services.open_handle.get_settings", return_value=settings):
+            start = time.monotonic()
+            _extract_members_concurrently(FakeZip(), names, "/fake/dest")
+            elapsed = time.monotonic() - start
+
+        self.assertEqual(sorted(name for name, _dest in calls), sorted(names))
+        # 4 members x 0.2s would be 0.8s sequential; 4 workers should overlap
+        # them down to close to a single 0.2s slot.
+        self.assertLess(elapsed, 0.5)
+
+    def test_bounded_by_granule_concurrency_setting(self):
+        import time
+        from unittest.mock import patch
+
+        from config.settings import Settings
+        from services.open_handle import _extract_members_concurrently
+
+        class FakeZip:
+            def extract(self, name, dest):
+                time.sleep(0.15)
+
+        names = [f"g{i}.nc4" for i in range(4)]
+        settings = Settings(granule_concurrency=1)
+        with patch("services.open_handle.get_settings", return_value=settings):
+            start = time.monotonic()
+            _extract_members_concurrently(FakeZip(), names, "/fake/dest")
+            elapsed = time.monotonic() - start
+
+        # concurrency=1 falls back to the plain sequential loop -> ~4*0.15s.
+        self.assertGreaterEqual(elapsed, 0.55)
+
+    def test_fails_fast_instead_of_extracting_every_remaining_member(self):
+        """A bad member's extraction failure must cancel not-yet-started
+        extractions, not let the thread pool quietly extract every other
+        queued member anyway before the exception surfaces -- the old
+        ThreadPoolExecutor.submit + shutdown(wait=True) behavior this
+        replaces would do exactly that wasted work on a mid-bundle failure."""
+        import threading
+        import time
+        from unittest.mock import patch
+
+        from config.settings import Settings
+        from services.open_handle import _extract_members_concurrently
+
+        calls: list[str] = []
+        call_lock = threading.Lock()
+
+        class FakeZip:
+            def extract(self, name, dest):
+                with call_lock:
+                    calls.append(name)
+                if name == "bad.nc4":
+                    raise OSError("simulated corrupt member")
+                time.sleep(0.5)
+
+        # workers=2: "bad.nc4" and one "hold" member start immediately; the
+        # other nine "hold" members stay queued -- exactly the not-yet-
+        # started work a fail-fast cancel should prevent from ever running.
+        # A freed worker can grab one more queued item before the main
+        # thread's wait() notices the failure and cancels the rest, so the
+        # exact count has some scheduling slack -- the assertion only needs
+        # to show it's nowhere near "every member ran anyway".
+        names = ["bad.nc4"] + [f"hold_{i}.nc4" for i in range(10)]
+        settings = Settings(granule_concurrency=2)
+        with patch("services.open_handle.get_settings", return_value=settings):
+            with self.assertRaises(OSError):
+                _extract_members_concurrently(FakeZip(), names, "/fake/dest")
+
+        self.assertLessEqual(len(calls), 5)
+        self.assertIn("bad.nc4", calls)
+
+
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
+    "bundle concurrency test dependencies are not installed",
+)
+class BundleMemberOpenConcurrencyTests(unittest.TestCase):
+    """_open_bundle_members_concurrently must preserve ``names`` order in its
+    result (concat/dedup downstream depend on it) while actually opening
+    members in parallel."""
+
+    def test_preserves_name_order_regardless_of_completion_order(self):
+        import random
+        import time
+        from unittest.mock import patch
+
+        from config.settings import Settings
+        import services.open_handle as open_handle_module
+        from services.open_handle import _open_bundle_members_concurrently
+
+        def fake_open_netcdf(path, chunks=None):
+            time.sleep(random.uniform(0.0, 0.05))
+            return path  # stand-in "dataset" -- identity is enough to check order
+
+        names = [f"z_{i}.nc4" for i in range(6)]
+        settings = Settings(granule_concurrency=3)
+        with patch("services.open_handle.get_settings", return_value=settings), \
+             patch.object(open_handle_module, "_open_netcdf", side_effect=fake_open_netcdf), \
+             patch.object(open_handle_module, "_synthesize_member_time_coord", side_effect=lambda ds: ds):
+            results = _open_bundle_members_concurrently("/extract/dir", names, {})
+
+        expected = [os.path.join("/extract/dir", n) for n in names]
+        self.assertEqual(results, expected)
+
+    def test_the_hdf5_touching_open_call_is_serialized_for_thread_safety(self):
+        """h5netcdf/netCDF4 release the GIL for their I/O, but that doesn't
+        establish that the underlying HDF5 C library is safe for concurrent
+        calls across different file handles -- most HDF5 builds aren't,
+        without a special --enable-threadsafe compile flag this deployment
+        makes no guarantee about. _open_netcdf itself must therefore never
+        run concurrently across threads, regardless of granule_concurrency."""
+        import threading
+        import time
+        from unittest.mock import patch
+
+        from config.settings import Settings
+        import services.open_handle as open_handle_module
+        from services.open_handle import _open_bundle_members_concurrently
+
+        active = 0
+        peak = 0
+        lock = threading.Lock()
+
+        def fake_open_netcdf(path, chunks=None):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            time.sleep(0.05)
+            with lock:
+                active -= 1
+            return path
+
+        names = [f"z_{i}.nc4" for i in range(4)]
+        settings = Settings(granule_concurrency=4)
+        with patch("services.open_handle.get_settings", return_value=settings), \
+             patch.object(open_handle_module, "_open_netcdf", side_effect=fake_open_netcdf), \
+             patch.object(open_handle_module, "_synthesize_member_time_coord", side_effect=lambda ds: ds):
+            _open_bundle_members_concurrently("/extract/dir", names, {})
+
+        self.assertEqual(peak, 1)  # never more than one thread inside _open_netcdf at a time
+
+    def test_pure_python_per_member_work_still_overlaps_around_the_serialized_open(self):
+        """Only the HDF5-touching open call itself is safety-gated -- the
+        thread-pool structure must still let each member's other work (time-
+        coord synthesis here, standing in for group merging / coordinate
+        promotion in the real path) proceed concurrently, or the whole point
+        of the thread pool is lost."""
+        import time
+        from unittest.mock import patch
+
+        from config.settings import Settings
+        import services.open_handle as open_handle_module
+        from services.open_handle import _open_bundle_members_concurrently
+
+        def fake_open_netcdf(path, chunks=None):
+            return path  # instant -- isolates the "outside the lock" work below
+
+        def fake_synthesize(ds):
+            time.sleep(0.2)
+            return ds
+
+        names = [f"z_{i}.nc4" for i in range(4)]
+        settings = Settings(granule_concurrency=4)
+        with patch("services.open_handle.get_settings", return_value=settings), \
+             patch.object(open_handle_module, "_open_netcdf", side_effect=fake_open_netcdf), \
+             patch.object(open_handle_module, "_synthesize_member_time_coord", side_effect=fake_synthesize):
+            start = time.monotonic()
+            _open_bundle_members_concurrently("/extract/dir", names, {})
+            elapsed = time.monotonic() - start
+
+        # 4 members x 0.2s of non-HDF5 work would be 0.8s sequential;
+        # concurrent should land close to a single 0.2s slot even with the
+        # open call itself serialized (made instant here to isolate this).
+        self.assertLess(elapsed, 0.5)
+
+    def test_open_fails_fast_instead_of_opening_every_remaining_member(self):
+        """A bad member's open failure must cancel not-yet-started opens,
+        not let the thread pool quietly open every other queued member
+        anyway -- which would leak an open file handle/dataset per extra
+        member (until the next GC) on a large bundle's error path."""
+        import threading
+        import time
+        from unittest.mock import patch
+
+        from config.settings import Settings
+        import services.open_handle as open_handle_module
+        from services.open_handle import _open_bundle_members_concurrently
+
+        calls: list[str] = []
+        call_lock = threading.Lock()
+
+        def fake_open_netcdf(path, chunks=None):
+            name = os.path.basename(path)
+            with call_lock:
+                calls.append(name)
+            if name == "bad.nc4":
+                raise ValueError("simulated corrupt member")
+            time.sleep(0.5)
+            return path
+
+        # workers=2: "bad.nc4" and one "hold" member start immediately; the
+        # other nine "hold" members stay queued -- exactly the not-yet-
+        # started work a fail-fast cancel should prevent from ever running.
+        # A freed worker can grab one more queued item before the main
+        # thread's wait() notices the failure and cancels the rest, so the
+        # exact count has some scheduling slack -- the assertion only needs
+        # to show it's nowhere near "every member opened anyway".
+        names = ["bad.nc4"] + [f"hold_{i}.nc4" for i in range(10)]
+        settings = Settings(granule_concurrency=2)
+        with patch("services.open_handle.get_settings", return_value=settings), \
+             patch.object(open_handle_module, "_open_netcdf", side_effect=fake_open_netcdf), \
+             patch.object(open_handle_module, "_synthesize_member_time_coord", side_effect=lambda ds: ds):
+            with self.assertRaises(ValueError):
+                _open_bundle_members_concurrently("/extract/dir", names, {})
+
+        self.assertLessEqual(len(calls), 5)
+        self.assertIn("bad.nc4", calls)
+
+
 class OpenNativeFormatMediaTypeTests(unittest.TestCase):
     """HDF4 / native-archive exports (e.g. MODIS MAIAC) have no local reader,
     and re-retrieving returns the same bytes — the error must say "pick a

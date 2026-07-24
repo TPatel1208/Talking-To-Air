@@ -447,6 +447,59 @@ def _diverging_bounds(diff_da) -> tuple[float, float]:
     return -max_abs, max_abs
 
 
+async def _open_and_prepare_side(
+    handle: str, mcp_tools: dict[str, BaseTool], variable: Optional[str], label: str
+):
+    """Open one side of a compare (export -> open -> normalize -> select
+    variable) and return ``(ds, da, error_json, emit_side_effect)`` — exactly
+    one of ``(ds, da)`` or ``error_json`` is populated, never both.
+
+    Both sides run concurrently via asyncio.gather (opening A and B are
+    independent MCP round trips, so running them together halves the
+    wall-clock wait on the slower side instead of paying for both in
+    sequence) — but only ONE side's error is ever returned to the caller
+    (make_compare checks err_a before err_b). An ambiguous-variable side's
+    UI side effect (emit_variable_choice_payload/emit_status) is therefore
+    NOT fired here: firing it unconditionally would broadcast a picker for
+    a side whose result the caller may end up discarding entirely (e.g. A
+    fails outright while B is merely ambiguous — the caller returns A's
+    error, but B's picker would already be on the wire with nothing to
+    follow up on). Instead the side effect is returned as a zero-arg
+    callable the caller invokes only for whichever side's error actually
+    gets returned."""
+    try:
+        ds = await _retry_transient(lambda: open_handle(handle, mcp_tools), label=f"open {label}")
+        # Normalize longitude on the whole opened Dataset before extraction,
+        # so the science DataArray and its sibling QA-flag variable (still
+        # reachable through ds) share one coordinate convention (T25
+        # masking-execution fix; see plot_tools).
+        lon_coord = find_lon_coord(ds)
+        if lon_coord:
+            ds = _normalize_longitudes(ds, lon_coord)
+        da = _aggregation_service.to_dataarray(ds, handle=handle, variable=variable)
+        return ds, da, None, None
+    except VariableChoiceRequired as e:
+        # T49: this side of the compare is ambiguous — deliver a
+        # deterministic picker (multi-part partial delivery is per-side: this
+        # side yields a picker instead of a panel; a resolvable side still
+        # renders) — but only if this side's error is the one actually
+        # returned; see the emit_side_effect docstring note above.
+        def _emit_side_effect(ds=ds, e=e) -> None:
+            emit_variable_choice_payload(e.resolution, ds)
+            emit_status("Waiting for a variable choice.", stage=STAGE_RENDER)
+
+        return None, None, json.dumps({"error": e.mcp_error.to_dict()}), _emit_side_effect
+    except MCPToolError as e:
+        return None, None, json.dumps({"error": e.to_dict()}), None
+    except OpenHandleError as e:
+        return (
+            None,
+            None,
+            json.dumps({"error": f"Failed to open handle '{handle}' ({label}): {e}"}),
+            None,
+        )
+
+
 def _region_panel(da, handle: str, title: str, variable_name: str, units: str, vmin: float, vmax: float) -> dict:
     panel = _da_to_heatmap_payload(
         da, title, variable_name, units, render_overlay=True, value_range=(vmin, vmax),
@@ -504,41 +557,24 @@ def make_compare(mcp_tools: dict[str, BaseTool]):
         if mode not in ("region", "period"):
             return json.dumps({"error": f"Unknown mode '{mode}'. Use 'region' or 'period'."})
 
-        try:
-            ds_a = await _retry_transient(lambda: open_handle(handle_a, mcp_tools), label="open A")
-            # Normalize longitude on the whole opened Dataset before
-            # extraction, so the science DataArray and its sibling QA-flag
-            # variable (still reachable through ds_a) share one coordinate
-            # convention (T25 masking-execution fix; see plot_tools).
-            lon_coord_a = find_lon_coord(ds_a)
-            if lon_coord_a:
-                ds_a = _normalize_longitudes(ds_a, lon_coord_a)
-            da_a = _aggregation_service.to_dataarray(ds_a, handle=handle_a, variable=variable)
-        except VariableChoiceRequired as e:
-            # T49: side A of the compare is ambiguous — deliver a deterministic
-            # picker (multi-part partial delivery is per-side: this side yields
-            # a picker instead of a panel; a resolvable side still renders).
-            emit_variable_choice_payload(e.resolution, ds_a)
-            emit_status("Waiting for a variable choice.", stage=STAGE_RENDER)
-            return json.dumps({"error": e.mcp_error.to_dict()})
-        except MCPToolError as e:
-            return json.dumps({"error": e.to_dict()})
-        except OpenHandleError as e:
-            return json.dumps({"error": f"Failed to open handle '{handle_a}' (A): {e}"})
-        try:
-            ds_b = await _retry_transient(lambda: open_handle(handle_b, mcp_tools), label="open B")
-            lon_coord_b = find_lon_coord(ds_b)
-            if lon_coord_b:
-                ds_b = _normalize_longitudes(ds_b, lon_coord_b)
-            da_b = _aggregation_service.to_dataarray(ds_b, handle=handle_b, variable=variable)
-        except VariableChoiceRequired as e:
-            emit_variable_choice_payload(e.resolution, ds_b)
-            emit_status("Waiting for a variable choice.", stage=STAGE_RENDER)
-            return json.dumps({"error": e.mcp_error.to_dict()})
-        except MCPToolError as e:
-            return json.dumps({"error": e.to_dict()})
-        except OpenHandleError as e:
-            return json.dumps({"error": f"Failed to open handle '{handle_b}' (B): {e}"})
+        # Open both sides concurrently — independent MCP round trips (export +
+        # download/open), so gathering them halves the wall-clock wait on the
+        # slower side instead of paying for both one after another.
+        (ds_a, da_a, err_a, emit_a), (ds_b, da_b, err_b, emit_b) = await asyncio.gather(
+            _open_and_prepare_side(handle_a, mcp_tools, variable, "A"),
+            _open_and_prepare_side(handle_b, mcp_tools, variable, "B"),
+        )
+        # Only the winning side's deferred UI side effect (if any) fires —
+        # the discarded side's ambiguous-variable picker must never reach
+        # the client when its result isn't the one being returned.
+        if err_a:
+            if emit_a:
+                emit_a()
+            return err_a
+        if err_b:
+            if emit_b:
+                emit_b()
+            return err_b
 
         mismatch = _variable_mismatch_error(da_a, da_b)
         if mismatch:
