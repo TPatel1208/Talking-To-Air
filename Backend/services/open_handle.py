@@ -23,6 +23,7 @@ from config.settings import get_settings
 from config.workflow_stages import STAGE_OPEN
 from earthdata_mcp.results import CATEGORY_TOO_LARGE, MCPToolError, parse_tool_result
 from services.retrieval_composites import await_retrieval
+from utils.phase_timing import phase_timer
 from utils.streaming import emit_status
 
 logger = logging.getLogger(__name__)
@@ -108,8 +109,15 @@ async def open_handle(handle: str, tools: dict[str, BaseTool]) -> Any:
 
 
 async def _export(handle: str, tools: dict[str, BaseTool]) -> dict:
-    raw = await tools["export_result"].ainvoke({"handle": handle})
-    return parse_tool_result(raw)
+    # T51: the MCP round-trip is its own phase — a turn that felt slow "opening
+    # data" may have spent all of it here, waiting on the MCP, and never
+    # touched a byte of the file.
+    async with phase_timer("export", handle=handle) as timing:
+        raw = await tools["export_result"].ainvoke({"handle": handle})
+        export = parse_tool_result(raw)
+        timing["status"] = export.get("status")
+        timing["size_bytes"] = export.get("size_bytes")
+    return export
 
 
 async def _recover(handle: str, tools: dict[str, BaseTool]) -> dict:
@@ -134,6 +142,21 @@ async def _recover(handle: str, tools: dict[str, BaseTool]) -> dict:
 
 
 def _open(storage_uri: str, media_type: str) -> Any:
+    """Time the read as the ``open`` phase and dispatch by media type (T51).
+
+    Timed here rather than inside each per-format branch so a Zarr, a bare
+    NetCDF and a bundle all land in one comparable distribution. A bundle's
+    ``extract`` phase nests *inside* this one: ``open`` is the whole
+    file-to-Dataset span, and ``open - extract`` is the per-member open cost.
+    """
+    # ``members`` defaults to the single-file answer; the bundle path below
+    # overwrites it with its own member count, which it already knows -- far
+    # cheaper than re-reading the archive here just to count.
+    with phase_timer("open", media_type=media_type, members=1) as timing:
+        return _open_by_media_type(storage_uri, media_type, timing)
+
+
+def _open_by_media_type(storage_uri: str, media_type: str, timing: dict | None = None) -> Any:
     parsed = urlparse(storage_uri)
     if parsed.scheme != "file":
         raise OpenHandleError(
@@ -174,13 +197,13 @@ def _open(storage_uri: str, media_type: str) -> Any:
             "suggest a different collection for this variable (an L3/L4 NetCDF product) instead."
         )
     if "bundle" in mt:
-        return _open_netcdf_bundle(path)
+        return _open_netcdf_bundle(path, timing)
     if "netcdf" in mt:
-        return _open_netcdf(path)
+        return _open_netcdf(path, timing=timing)
     raise OpenHandleError(f"Unsupported media_type '{media_type}' for exported handle.")
 
 
-def _open_netcdf(path: str, chunks: dict | None = None) -> Any:
+def _open_netcdf(path: str, chunks: dict | None = None, *, timing: dict | None = None) -> Any:
     """Open a NetCDF file, descending into HDF5 subgroups when the root
     group carries no data variables.
 
@@ -213,7 +236,7 @@ def _open_netcdf(path: str, chunks: dict | None = None) -> Any:
     # UnreadableExportError path below misreads as a failed retrieval and
     # sends callers into pointless retries. Route by the bytes instead.
     if _is_zipfile(path):
-        return _open_netcdf_bundle(path)
+        return _open_netcdf_bundle(path, timing)
 
     groups = _open_all_groups(path, chunks)
     # GPM-style products (IMERG) carry no netCDF dimension scales, so both
@@ -299,7 +322,7 @@ def _is_zipfile(path: str) -> bool:
     return zipfile.is_zipfile(path)
 
 
-def _open_netcdf_bundle(path: str) -> Any:
+def _open_netcdf_bundle(path: str, timing: dict | None = None) -> Any:
     """Open a ``application/netcdf-bundle+zip`` export — a zip of NetCDF
     granule subsets — into one Dataset, concatenated on ``time``.
 
@@ -352,7 +375,15 @@ def _open_netcdf_bundle(path: str) -> Any:
                 "a failed retrieval; retrying the retrieval typically resolves it."
             )
         _gate_bundle_size(zf, path)
-        extract_dir = _extract_bundle_cached(zf, path, names)
+        if timing is not None:
+            # The caller's ``open`` phase context defaults to the single-file
+            # answer; this is the one place that knows the real member count.
+            timing["members"] = len(names)
+        # T51: the unzip is its own phase nested inside ``open``, with a
+        # hit/miss flag -- the extract cache makes a repeat open skip it
+        # entirely, which one merged distribution would hide.
+        with phase_timer("extract", members=len(names)) as extract_timing:
+            extract_dir, extract_timing["cached"] = _extract_bundle_cached(zf, path, names)
 
     # Deliberately NOT pipelined with the open step below (i.e. opening
     # member 1 while member 2 is still extracting), even though both phases
@@ -473,9 +504,14 @@ def _lazy_chunks() -> dict | None:
     return None if dask is None else {}
 
 
-def _extract_bundle_cached(zf: Any, path: str, names: list[str]) -> str:
+def _extract_bundle_cached(zf: Any, path: str, names: list[str]) -> tuple[str, bool]:
     """Extract ``zf``'s members into a cache entry that outlives this call
-    and return its directory.
+    and return ``(directory, was_already_cached)``.
+
+    The hit/miss flag is reported by this function rather than probed by the
+    caller because only this function knows which branch it actually took --
+    a caller-side check would have to re-derive the cache key and could still
+    race the pruner between the check and the extraction (T51).
 
     Lazily-opened members read these files long after the bundle open
     returns — any compute up to the end of the tool call — and derived
@@ -500,7 +536,7 @@ def _extract_bundle_cached(zf: Any, path: str, names: list[str]) -> str:
     marker = os.path.join(final_dir, _EXTRACT_COMPLETE_MARKER)
     if os.path.exists(marker):
         os.utime(final_dir, None)  # keep a hot entry out of the pruner's reach
-        return final_dir
+        return final_dir, True
 
     staging = tempfile.mkdtemp(prefix=f"staging-{key}-", dir=root)
     try:
@@ -513,12 +549,12 @@ def _extract_bundle_cached(zf: Any, path: str, names: list[str]) -> str:
         if os.path.exists(marker):
             # Lost the race: a concurrent open of this bundle finished
             # extracting between the marker check and the rename.
-            return final_dir
+            return final_dir, True
         raise
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
         raise
-    return final_dir
+    return final_dir, False
 
 
 def _extract_members_concurrently(zf: Any, names: list[str], dest: str) -> None:

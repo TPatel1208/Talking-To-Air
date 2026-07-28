@@ -69,6 +69,7 @@ from services.open_handle import OpenHandleError, open_handle
 from utils.geo_utils import find_lat_coord, find_lon_coord
 from utils.colormaps import resolve as resolve_colormap
 from utils.overlay_render import render_overlay_png
+from utils.phase_timing import phase_timer
 from utils.plotting import (
     _normalize_to_2d,
     apply_mask_region_type,
@@ -195,6 +196,27 @@ def _render_and_store_overlay(lats: np.ndarray, lons: np.ndarray, arr: np.ndarra
 
 
 def _da_to_heatmap_payload(
+    da, title: str, variable: str, units: str, *,
+    diverging: bool = False, render_overlay: bool = False, value_range: tuple[float, float] | None = None,
+    scale_disclosure: dict | None = None,
+) -> dict:
+    # T51: the overlay PNG rasterization and grid downsampling are pure CPU on
+    # the plot path, and are where a "the chart took forever" turn actually
+    # spends its time once the data is in memory. Timed at this one seam so
+    # every caller (singular/multiple/compare panels) is covered.
+    with phase_timer(
+        "render",
+        cells_in=int(getattr(da, "size", 0)),
+        overlay=render_overlay,
+    ):
+        return _build_heatmap_payload(
+            da, title, variable, units,
+            diverging=diverging, render_overlay=render_overlay,
+            value_range=value_range, scale_disclosure=scale_disclosure,
+        )
+
+
+def _build_heatmap_payload(
     da, title: str, variable: str, units: str, *,
     diverging: bool = False, render_overlay: bool = False, value_range: tuple[float, float] | None = None,
     scale_disclosure: dict | None = None,

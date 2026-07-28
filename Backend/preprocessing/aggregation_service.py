@@ -22,6 +22,7 @@ from earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED, MCPToolErro
 from preprocessing.variable_resolver import Resolution, resolve
 from services import variable_choice_registry
 from utils.geo_utils import identify_time
+from utils.phase_timing import phase_timer
 
 logger = logging.getLogger(__name__)
 
@@ -239,6 +240,18 @@ class VariableChoiceRequired(Exception):
         self.mcp_error = mcp_error
 
 
+def _cell_count(data: xr.Dataset | xr.DataArray) -> int:
+    """Cells entering an aggregation, for the phase-timing size context (T51):
+    duration alone can't tell an I/O-bound phase from a CPU-bound one. Nothing
+    to report for an unexpected shape -- this is telemetry, never a failure."""
+    try:
+        if isinstance(data, xr.Dataset):
+            return int(sum(int(var.size) for var in data.data_vars.values()))
+        return int(data.size)
+    except Exception:  # pragma: no cover -- defensive
+        return 0
+
+
 class AggregationService:
     """Single entry point for satellite data validity filtering and reductions."""
 
@@ -267,6 +280,38 @@ class AggregationService:
         if stat not in self._STAT_FUNCS:
             raise ValueError(f"Unsupported aggregation stat '{stat}'. Valid: {sorted(self._STAT_FUNCS)}")
 
+        # T51: one phase for the whole variable-resolve -> QA-mask -> temporal-
+        # reduce chain. It's the compute that a lazily-opened bundle actually
+        # pays for -- the reduction is what forces the dask graph, so this
+        # phase's duration is where a slow multi-granule open shows up.
+        with phase_timer("aggregate", stat=stat, cells_in=_cell_count(data)):
+            return self._aggregate(
+                data,
+                collection_id,
+                stat,
+                variable=variable,
+                col_info=col_info,
+                umm_var_facts=umm_var_facts,
+                keep_time=keep_time,
+                handle=handle,
+                qa_good_tokens=qa_good_tokens,
+                source_ds=source_ds,
+            )
+
+    def _aggregate(
+        self,
+        data: xr.Dataset | xr.DataArray,
+        collection_id: str | None = None,
+        stat: str = "mean",
+        *,
+        variable: str | None = None,
+        col_info: dict[str, Any] | None = None,
+        umm_var_facts: Any = None,
+        keep_time: bool = False,
+        handle: str | None = None,
+        qa_good_tokens: list[str] | None = None,
+        source_ds: xr.Dataset | None = None,
+    ) -> AggregatedResult:
         da = self.to_dataarray(data, variable=variable, handle=handle)
 
         # T48: when to_dataarray resolved the variable itself (a wide,

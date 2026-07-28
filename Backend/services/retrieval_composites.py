@@ -27,6 +27,7 @@ from earthdata_mcp.results import (
     parse_tool_result,
 )
 from services import scope_registry, variable_choice_registry
+from utils.metrics import observe_harmony_fetch
 from utils.streaming import emit_job_progress, emit_status
 
 logger = logging.getLogger(__name__)
@@ -222,6 +223,12 @@ async def await_retrieval(
         emit_status(f"Retrieving data — {status}...", stage=STAGE_PROGRESS, detail=progress)
         if status in TERMINAL_STATUSES:
             if status == "ready":
+                # T51: the one place that knows a retrieval's full span. Only
+                # on ``ready``: the histogram describes a job that actually
+                # downloaded something, and folding failures/cancellations in
+                # would make its percentiles describe a different population
+                # than they claim.
+                observe_harmony_fetch(loop.time() - started)
                 # T25: promote this job's recorded variable choice (if any)
                 # onto the handle it resolved to, so a later plot/stat/
                 # compare call inherits it instead of AggregationService.

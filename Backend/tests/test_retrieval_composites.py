@@ -14,6 +14,18 @@ if TESTS_DIR not in sys.path:
 REQUIRED_MODULES = ["langchain_mcp_adapters", "fastmcp", "uvicorn"]
 
 
+def _harmony_fetch_count() -> float:
+    """Observations currently recorded on the harmony_fetch_duration_seconds
+    histogram. Process-wide state, so callers assert on a delta."""
+    from utils.metrics import HARMONY_FETCH_DURATION_SECONDS
+
+    for metric in HARMONY_FETCH_DURATION_SECONDS.collect():
+        for sample in metric.samples:
+            if sample.name.endswith("_count"):
+                return sample.value
+    return 0.0
+
+
 @unittest.skipIf(
     any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
     "MCP client test dependencies are not installed",
@@ -332,6 +344,51 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(RetrievalTimeoutError):
             await await_retrieval("job_3", tools, settings=settings)
+
+    async def test_a_completed_await_observes_exactly_one_harmony_fetch_duration(self):
+        """T51 regression guard. ``observe_harmony_fetch`` and its histogram
+        shipped with no call site at all and sat dead across three releases --
+        the metrics module advertising a capability the system didn't have.
+        This is the assertion that notices if it goes dead again."""
+        from services.retrieval_composites import await_retrieval
+
+        responses = [
+            {"job_handle": "job_h", "status": "processing", "progress": 40},
+            {"job_handle": "job_h", "status": "ready", "obs_handle": "obs_h"},
+        ]
+        calls = {"n": 0}
+
+        async def get_retrieval_status(job_handle, workspace_id):
+            data = responses[min(calls["n"], len(responses) - 1)]
+            calls["n"] += 1
+            return data
+
+        tools, settings = await self._tools({"get_retrieval_status": get_retrieval_status})
+        settings = self._fast_settings(settings)
+
+        before = _harmony_fetch_count()
+        await await_retrieval("job_h", tools, settings=settings)
+
+        # Exactly one: the whole submission-through-download span, observed
+        # once at completion -- not once per poll.
+        self.assertEqual(_harmony_fetch_count() - before, 1)
+
+    async def test_a_failed_await_does_not_observe_a_harmony_fetch_duration(self):
+        """The histogram is documented as "job duration ... through download
+        completion". Feeding it jobs that never downloaded anything would make
+        its percentiles describe a different population than they claim."""
+        from services.retrieval_composites import await_retrieval
+
+        async def get_retrieval_status(job_handle, workspace_id):
+            return {"job_handle": "job_hf", "status": "failed", "message": "boom"}
+
+        tools, settings = await self._tools({"get_retrieval_status": get_retrieval_status})
+        settings = self._fast_settings(settings)
+
+        before = _harmony_fetch_count()
+        await await_retrieval("job_hf", tools, settings=settings)
+
+        self.assertEqual(_harmony_fetch_count() - before, 0)
 
     def _fast_settings(self, settings):
         from dataclasses import replace

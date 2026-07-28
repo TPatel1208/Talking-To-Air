@@ -31,7 +31,10 @@ ENVELOPE_SALVAGED_TOTAL = Counter(
 )
 HARMONY_FETCH_DURATION_SECONDS = Histogram(
     "harmony_fetch_duration_seconds",
-    "Harmony job duration from submission through download completion.",
+    "Retrieval job duration, from the start of the backend-side await through "
+    "the job reaching 'ready'. Ready jobs only -- a failed or cancelled job "
+    "downloaded nothing, and folding those in would make these percentiles "
+    "describe a different population than the name claims.",
 )
 HARMONY_TIMEOUTS_TOTAL = Counter(
     "harmony_timeouts_total",
@@ -62,6 +65,19 @@ BUNDLE_EXTRACT_CACHE_BYTES = Gauge(
     "bundle_extract_cache_bytes",
     "Total on-disk size of the bundle-extract TTL cache in bytes.",
 )
+PIPELINE_PHASE_DURATION_SECONDS = Histogram(
+    "pipeline_phase_duration_seconds",
+    "Wall-clock duration of one retrieval/visualization pipeline phase in seconds.",
+    ["phase"],
+)
+
+# The closed vocabulary of phases, kept here (not in utils.phase_timing) with
+# the other labelsets this module pre-declares. Deliberately NOT the same
+# vocabulary as config.workflow_stages.ALL_STAGES: that one is a user-facing
+# narration contract the frontend's workflow strip and the eval's stage-
+# sequence assertions key off, and its ``stage_reached`` events carry
+# *cumulative* elapsed since turn start rather than a phase's own span.
+PIPELINE_PHASES = ("export", "extract", "open", "crop", "mask", "aggregate", "render")
 
 _PROMETHEUS_COUNTER_ALIASES = {
     "harmony_jobs_timed_out": HARMONY_TIMEOUTS_TOTAL,
@@ -120,6 +136,10 @@ def record_envelope_salvaged(agent_type: str) -> None:
 
 def observe_harmony_fetch(duration_seconds: float) -> None:
     HARMONY_FETCH_DURATION_SECONDS.observe(duration_seconds)
+
+
+def observe_phase_duration(phase: str, duration_seconds: float) -> None:
+    PIPELINE_PHASE_DURATION_SECONDS.labels(phase=phase).observe(duration_seconds)
 
 
 def record_cache_hit(cache_level: str) -> None:
@@ -189,6 +209,8 @@ def initialize_labelsets() -> None:
         ENVELOPE_SALVAGED_TOTAL.labels(agent_type=agent_type)
     for cache_level in ("memory", "zarr", "postgis"):
         CACHE_HITS_TOTAL.labels(cache_level=cache_level)
+    for phase in PIPELINE_PHASES:
+        PIPELINE_PHASE_DURATION_SECONDS.labels(phase=phase)
 
 
 initialize_labelsets()

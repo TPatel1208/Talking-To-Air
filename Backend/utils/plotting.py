@@ -36,6 +36,7 @@ from utils.geo_utils import (
     find_lon_coord,
     identify_time,
 )
+from utils.phase_timing import phase_timer
 
 logger = logging.getLogger(__name__)
 _geocoding_service = None
@@ -669,14 +670,20 @@ def mask_data_by_geometry(
     mask_da = geometry_mask(data_array, geometry)
 
     if crop:
-        data_array, mask_da = _crop_to_mask_footprint(data_array, mask_da)
+        # T51: the crop and the .where are timed separately because the whole
+        # point of T50 was to move work from the second into the first -- one
+        # combined number could not show that trade.
+        with phase_timer("crop", cells_in=int(data_array.size)) as timing:
+            data_array, mask_da = _crop_to_mask_footprint(data_array, mask_da)
+            timing["cells_out"] = int(data_array.size)
 
     if data_array.ndim not in (2, 3):
         raise ValueError(f"Unsupported array dimension: {data_array.ndim}D")
 
     # xarray aligns by dimension name, so this works for both (lat, lon)
     # and Harmony-reformatted grids ordered as (time, lon, lat).
-    masked = data_array.where(mask_da)
+    with phase_timer("mask", cells_in=int(data_array.size), cropped=crop):
+        masked = data_array.where(mask_da)
     # Carry the mask's fidelity signal (T42): when geometry_mask self-healed
     # an empty mask to boundary cells, surface that here (``.where`` doesn't
     # keep the mask's attrs) so the tool can disclose region_type.
