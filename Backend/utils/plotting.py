@@ -532,9 +532,117 @@ def geometry_mask(
     return mask_da
 
 
+def half_cell(coords: np.ndarray) -> float:
+    """Half the (uniform) grid spacing of a 1-D coordinate axis, for extending
+    a pixel-center extent to its pixel-edge extent. Mirrors render_overlay_png's
+    resolution formula so overlay.bounds and the rendered raster agree: a
+    regular grid's step is (max - min) / (n - 1); a single-cell axis has no
+    spacing to measure, so it falls back to the 0.5° half-cell that
+    render_overlay_png assumes there (res default 1.0)."""
+    vals = np.asarray(coords, dtype=float)
+    finite = vals[np.isfinite(vals)]
+    if finite.size > 1:
+        return abs(float(finite.max()) - float(finite.min())) / (finite.size - 1) / 2.0
+    return 0.5
+
+
+def sel_bounds(da, lat_coord, lon_coord, bounds):
+    """
+    Crop a DataArray to (minx, miny, maxx, maxy) bounds in a coordinate-order-
+    safe way.  xarray slice() requires start <= stop when coords are increasing
+    and start >= stop when decreasing.  We detect the direction and swap if needed
+    so the crop never silently returns an empty array.
+    """
+    lat_vals = da[lat_coord].values
+    lon_vals = da[lon_coord].values
+
+    lat_min, lat_max = bounds[1], bounds[3]   # miny, maxy
+    lon_min, lon_max = bounds[0], bounds[2]   # minx, maxx
+
+    # If latitude is stored N→S (decreasing), slice must be (max, min)
+    if len(lat_vals) > 1 and lat_vals[0] > lat_vals[-1]:
+        lat_slice = slice(lat_max, lat_min)
+    else:
+        lat_slice = slice(lat_min, lat_max)
+
+    # Longitude is almost always W→E (increasing), but handle both
+    if len(lon_vals) > 1 and lon_vals[0] > lon_vals[-1]:
+        lon_slice = slice(lon_max, lon_min)
+    else:
+        lon_slice = slice(lon_min, lon_max)
+
+    return da.sel({lat_coord: lat_slice, lon_coord: lon_slice})
+
+
+def _crop_to_mask_footprint(
+    data_array: xr.DataArray,
+    mask_da: xr.DataArray,
+) -> Tuple[xr.DataArray, xr.DataArray]:
+    """Narrow ``data_array`` and its already-rasterized ``mask_da`` to the
+    smallest window containing every cell the mask keeps (T50).
+
+    "Mean NO2 over New Jersey" against a continental grid otherwise applies a
+    continental ``.where`` and reduces over an array that is >99% NaN by
+    construction. Rasterization stays on the FULL grid -- it costs ~10% of the
+    call and reads no data -- and both the data and that same mask are then
+    sliced by index. The kept cells are therefore *identical* to the uncropped
+    path's by construction, rather than by an argument about grid steps: a
+    window re-rasterized from cropped axes derives a step differing in the 8th
+    digit on the float32 axes real granules ship, which flips cell centers
+    lying on the geometry's boundary (measured live: a 2% move on a small AOI).
+
+    Returns the pair unchanged whenever the crop can't be taken -- an empty
+    mask (the honest no-data answer), a mask riding dims the data doesn't
+    have, or a region already spanning the granule. It is an optimization,
+    and must never be the reason a turn fails or a number moves.
+    """
+    try:
+        lat_dim, lon_dim = mask_da.dims
+        if lat_dim not in data_array.dims or lon_dim not in data_array.dims:
+            return data_array, mask_da
+
+        rows = np.flatnonzero(mask_da.any(dim=lon_dim).values)
+        cols = np.flatnonzero(mask_da.any(dim=lat_dim).values)
+        if rows.size == 0 or cols.size == 0:
+            # Nothing kept anywhere: leave today's empty result exactly as is.
+            return data_array, mask_da
+
+        window = {
+            lat_dim: slice(int(rows[0]), int(rows[-1]) + 1),
+            lon_dim: slice(int(cols[0]), int(cols[-1]) + 1),
+        }
+        cropped = data_array.isel(window)
+        if cropped.size == data_array.size:
+            # A region covering the whole granule has nothing to crop: hand
+            # back the original, so the event below counts savings not
+            # attempts.
+            return data_array, mask_da
+
+        cropped_mask = mask_da.isel(window)
+        logger.info(
+            "aoi_crop_applied",
+            extra={
+                "_event": "aoi_crop_applied",
+                "_cells_before": int(data_array.size),
+                "_cells_after": int(cropped.size),
+                "_crop_bounds": [
+                    float(np.nanmin(cropped_mask[lon_dim].values)),
+                    float(np.nanmin(cropped_mask[lat_dim].values)),
+                    float(np.nanmax(cropped_mask[lon_dim].values)),
+                    float(np.nanmax(cropped_mask[lat_dim].values)),
+                ],
+            },
+        )
+        return cropped, cropped_mask
+    except Exception:  # pragma: no cover - defensive: never fail a turn to crop
+        logger.warning("aoi_crop_skipped", exc_info=True)
+        return data_array, mask_da
+
+
 def mask_data_by_geometry(
     data_array: xr.DataArray,
-    geometry: Union[Polygon, MultiPolygon]
+    geometry: Union[Polygon, MultiPolygon],
+    crop: bool = True,
 ) -> xr.DataArray:
     """
     Mask xarray data to only show values within a geometry boundary.
@@ -547,6 +655,11 @@ def mask_data_by_geometry(
         Handles common coord names: 'lat'/'latitude', 'lon'/'longitude'
     geometry : Polygon or MultiPolygon
         Boundary geometry from RegionResult
+    crop : bool, optional
+        Narrow the data (and the mask) to the mask's footprint before the
+        ``.where``, so the reduction doesn't run over a grid that is almost
+        entirely NaN by construction (T50). Pass ``False`` for the pre-T50
+        full-grid behavior; the values kept are identical either way.
 
     Returns
     -------
@@ -554,6 +667,9 @@ def mask_data_by_geometry(
         Masked data array (copy, original unchanged)
     """
     mask_da = geometry_mask(data_array, geometry)
+
+    if crop:
+        data_array, mask_da = _crop_to_mask_footprint(data_array, mask_da)
 
     if data_array.ndim not in (2, 3):
         raise ValueError(f"Unsupported array dimension: {data_array.ndim}D")

@@ -491,7 +491,13 @@ class EvidenceComputationTests(unittest.TestCase):
         geometry = box(25.0, 5.0, 36.0, 16.0)  # covers only the lower-left cell
 
         mask = geometry_mask(band, geometry)
-        xr.testing.assert_identical(band.where(mask), mask_data_by_geometry(band, geometry))
+        xr.testing.assert_identical(
+            band.where(mask), mask_data_by_geometry(band, geometry, crop=False)
+        )
+        # With T50's crop the seam returns that same array narrowed to the
+        # mask's footprint -- the same rasterization, fewer cells carried.
+        cropped = mask_data_by_geometry(band, geometry)
+        xr.testing.assert_identical(band.where(mask).sel(cropped.coords), cropped)
         # The footprint count is readable straight off the mask.
         self.assertEqual(int(mask.sum()), 1)
 

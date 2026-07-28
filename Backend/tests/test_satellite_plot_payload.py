@@ -31,11 +31,19 @@ class SatellitePlotPayloadTests(unittest.TestCase):
             },
         )
 
-        masked = mask_data_by_geometry(da, box(-99.5, 30.5, -96.5, 32.5))
+        geometry = box(-99.5, 30.5, -96.5, 32.5)
+        masked = mask_data_by_geometry(da, geometry)
+        uncropped = mask_data_by_geometry(da, geometry, crop=False)
 
         self.assertEqual(masked.dims, ("time", "Longitude", "Latitude"))
         self.assertTrue(np.isfinite(masked.values).any())
-        self.assertTrue(np.isnan(masked.values).any())
+        # Cells outside the geometry are gone -- dropped by the T50 crop where
+        # they used to survive as NaN. Same kept values either way.
+        self.assertLess(masked.size, da.size)
+        np.testing.assert_array_equal(
+            np.sort(masked.values[np.isfinite(masked.values)]),
+            np.sort(uncropped.values[np.isfinite(uncropped.values)]),
+        )
 
     def test_payload_preserves_sparse_valid_points(self):
         import numpy as np

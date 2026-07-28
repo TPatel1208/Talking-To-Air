@@ -181,7 +181,12 @@ def area_weighted_mean(da: xr.DataArray) -> float:
     if lat_name is None or lat_name not in da.dims:
         return float(np.nanmean(values[np.isfinite(values)]))
 
-    weights = np.cos(np.deg2rad(da[lat_name]))
+    # float64 weights regardless of how the granule stores its latitude axis:
+    # real products publish float32 lat, and accumulating float32 weights makes
+    # the answer depend on how many zero-weight (masked-out) cells happen to be
+    # summed -- the same region answered ~5e-7 differently from a continental
+    # granule than from a tight crop of it.
+    weights = np.cos(np.deg2rad(da[lat_name].astype("float64")))
     result = float(da.weighted(weights).mean(skipna=True))
     if not np.isfinite(result):
         raise ValueError("No finite values available for statistic.")

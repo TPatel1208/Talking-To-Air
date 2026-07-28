@@ -69,7 +69,15 @@ from services.open_handle import OpenHandleError, open_handle
 from utils.geo_utils import find_lat_coord, find_lon_coord
 from utils.colormaps import resolve as resolve_colormap
 from utils.overlay_render import render_overlay_png
-from utils.plotting import _normalize_to_2d, apply_mask_region_type, geometry_mask, mask_data_by_geometry, RegionResolver
+from utils.plotting import (
+    _normalize_to_2d,
+    apply_mask_region_type,
+    geometry_mask,
+    half_cell as _half_cell,
+    mask_data_by_geometry,
+    RegionResolver,
+    sel_bounds as _sel_bounds,
+)
 from utils.streaming import emit_chart, emit_status
 from preprocessing.aggregation_service import (
     VARIABLE_RESOLUTION_ATTR,
@@ -88,33 +96,6 @@ _RENDER_TYPE_TO_ARTIFACT_PREFIX = {"heatmap": "map", "heatmap_multi": "cmp", "ti
 _resolver = RegionResolver()
 _aggregation_service = AggregationService()
 
-
-def _sel_bounds(da, lat_coord, lon_coord, bounds):
-    """
-    Crop a DataArray to (minx, miny, maxx, maxy) bounds in a coordinate-order-
-    safe way.  xarray slice() requires start <= stop when coords are increasing
-    and start >= stop when decreasing.  We detect the direction and swap if needed
-    so the crop never silently returns an empty array.
-    """
-    lat_vals = da[lat_coord].values
-    lon_vals = da[lon_coord].values
-
-    lat_min, lat_max = bounds[1], bounds[3]   # miny, maxy
-    lon_min, lon_max = bounds[0], bounds[2]   # minx, maxx
-
-    # If latitude is stored N→S (decreasing), slice must be (max, min)
-    if len(lat_vals) > 1 and lat_vals[0] > lat_vals[-1]:
-        lat_slice = slice(lat_max, lat_min)
-    else:
-        lat_slice = slice(lat_min, lat_max)
-
-    # Longitude is almost always W→E (increasing), but handle both
-    if len(lon_vals) > 1 and lon_vals[0] > lon_vals[-1]:
-        lon_slice = slice(lon_max, lon_min)
-    else:
-        lon_slice = slice(lon_min, lon_max)
-
-    return da.sel({lat_coord: lat_slice, lon_coord: lon_slice})
 
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "outputs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -139,20 +120,6 @@ def _percentile_bounds(arr: np.ndarray):
         delta = abs(vmin) * 0.01 or 1.0
         return vmin - delta, vmax + delta
     return vmin, vmax
-
-
-def _half_cell(coords: np.ndarray) -> float:
-    """Half the (uniform) grid spacing of a 1-D coordinate axis, for extending
-    a pixel-center extent to its pixel-edge extent. Mirrors render_overlay_png's
-    resolution formula so overlay.bounds and the rendered raster agree: a
-    regular grid's step is (max - min) / (n - 1); a single-cell axis has no
-    spacing to measure, so it falls back to the 0.5° half-cell that
-    render_overlay_png assumes there (res default 1.0)."""
-    vals = np.asarray(coords, dtype=float)
-    finite = vals[np.isfinite(vals)]
-    if finite.size > 1:
-        return abs(float(finite.max()) - float(finite.min())) / (finite.size - 1) / 2.0
-    return 0.5
 
 
 _MAX_GRID_CELLS = 8_000   # match the frontend MAX_POINTS constant
