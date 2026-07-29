@@ -40,8 +40,8 @@ class ConfigLoggingTests(unittest.TestCase):
             get_settings.cache_clear()
             loaded = get_settings()
 
-        self.assertEqual(loaded.llm_model, "gemini-2.5-flash")
-        self.assertEqual(loaded.ground_agent_model, "openai/gpt-oss-20b")
+        self.assertEqual(loaded.llm_model, "gemma-4-31b-it")
+        self.assertEqual(loaded.ground_agent_model, "gemini-3.1-flash-lite")
         self.assertEqual(loaded.data_fetch_mode, "auto")
         self.assertEqual(loaded.harmony_processing_timeout_seconds, 600)
         loaded = Settings(db_password=None, google_api_key=None)
@@ -194,7 +194,7 @@ class ConfigLoggingTests(unittest.TestCase):
 
         self.assertEqual(loaded.supervisor_model_provider, "google")
         self.assertEqual(loaded.earthdata_agent_provider, "google")
-        self.assertEqual(loaded.ground_agent_provider, "groq")
+        self.assertEqual(loaded.ground_agent_provider, "google")
 
     def test_settings_loads_agent_provider_overrides(self):
         from config.settings import Settings
@@ -217,7 +217,7 @@ class ConfigLoggingTests(unittest.TestCase):
     def test_validate_startup_requires_google_key_only_when_a_google_agent_is_configured(self):
         from config.settings import Settings
 
-        # Default posture: supervisor and earthdata agent on google, ground agent on groq.
+        # Default posture: supervisor, earthdata, and ground agent all on google.
         loaded = Settings(db_password="x", jwt_secret_key="x", google_api_key=None, groq_api_key="x")
         with self.assertRaisesRegex(RuntimeError, "GOOGLE_API_KEY"):
             loaded.validate_startup()
@@ -230,26 +230,26 @@ class ConfigLoggingTests(unittest.TestCase):
             groq_api_key="x",
             supervisor_model_provider="groq",
             earthdata_agent_provider="groq",
+            ground_agent_provider="groq",
         )
         loaded.validate_startup()
 
     def test_validate_startup_requires_groq_key_only_when_a_groq_agent_is_configured(self):
         from config.settings import Settings
 
-        # Default posture: both subagents resolve to groq.
-        loaded = Settings(db_password="x", jwt_secret_key="x", google_api_key="x", groq_api_key=None)
-        with self.assertRaisesRegex(RuntimeError, "GROQ_API_KEY"):
-            loaded.validate_startup()
-
-        # No agent resolves to groq -> GROQ_API_KEY is not required.
+        # A groq-configured subagent requires GROQ_API_KEY.
         loaded = Settings(
             db_password="x",
             jwt_secret_key="x",
             google_api_key="x",
             groq_api_key=None,
-            earthdata_agent_provider="google",
-            ground_agent_provider="google",
+            ground_agent_provider="groq",
         )
+        with self.assertRaisesRegex(RuntimeError, "GROQ_API_KEY"):
+            loaded.validate_startup()
+
+        # Default posture: no agent resolves to groq -> GROQ_API_KEY is not required.
+        loaded = Settings(db_password="x", jwt_secret_key="x", google_api_key="x", groq_api_key=None)
         loaded.validate_startup()
 
     def test_validate_startup_rejects_a_malformed_earthdata_mcp_url(self):
