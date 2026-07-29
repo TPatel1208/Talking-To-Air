@@ -139,7 +139,7 @@ class SaveArtifactNonFiniteSanitisationTests(unittest.IsolatedAsyncioTestCase):
             )
 
         args = conn.execute.await_args.args[1]
-        columns_arg, rows_arg, metadata_arg = args[4], args[5], args[6]
+        rows_arg, metadata_arg = args[5], args[6]
         import json as _json
         _json.dumps(rows_arg.obj, allow_nan=False)
         _json.dumps(metadata_arg.obj, allow_nan=False)

@@ -39,8 +39,10 @@ class ProcessMetricsTests(unittest.TestCase):
 
         plt.close("all")
         try:
-            fig1 = plt.figure()
-            fig2 = plt.figure()
+            # Opened for the side effect only — the gauge counts what pyplot
+            # is holding, not what this test holds a name for.
+            plt.figure()
+            plt.figure()
             refresh_process_gauges()
             self.assertEqual(_gauge_value(MATPLOTLIB_OPEN_FIGURES), 2)
         finally:

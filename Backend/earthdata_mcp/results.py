@@ -357,7 +357,6 @@ async def call_tool(tool: Any, kwargs: dict, timeout: float | None = None) -> An
     # re-arms the cooldown (`_note_transport_failure`), so a still-down server
     # sees at most one bounded probe per cooldown — never the reconnect storm.
     state = get_mcp_failure_state()
-    half_open = False
     if state is not None and state.get("tripped"):
         elapsed = _monotonic() - state.get("tripped_at", 0.0)
         if elapsed < settings.mcp_transport_recovery_cooldown_seconds:
@@ -367,7 +366,12 @@ async def call_tool(tool: Any, kwargs: dict, timeout: float | None = None) -> An
                 suggestion="Try again in a moment.",
                 raw_preview="mcp transport circuit breaker tripped",
             ))
-        half_open = True
+        # Falling through here IS the half-open probe. No separate flag: the
+        # probe is identified by ``state["tripped"]`` still being set, which is
+        # exactly what the success (`else`) and failure (`_note_transport_
+        # failure`) paths below already read. Bound it tighter than the normal
+        # budget so a probe against a still-down server can't burn a full
+        # mcp_call_timeout.
         timeout = min(timeout, _HALF_OPEN_PROBE_TIMEOUT_SECONDS)
 
     try:

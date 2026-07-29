@@ -39,8 +39,6 @@ class RegionResolverFidelityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(region["display_name"], "Northeast US")
 
     def test_geocoded_polygon_discloses_polygon_type_and_display_name(self):
-        from utils.plotting import GeocodingService
-
         geo = {
             "latitude": 40.0,
             "longitude": -75.0,

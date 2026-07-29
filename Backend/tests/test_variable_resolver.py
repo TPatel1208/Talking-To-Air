@@ -40,7 +40,7 @@ class VariableResolverTests(unittest.TestCase):
         """A QA flag carries CF flag_values + flag_meanings -- the metadata
         signal (before any name heuristic) marks it category 1, so it is never
         offered as a science variable even when its name looks innocuous."""
-        from preprocessing.variable_resolver import CATEGORY_IMPLEMENTATION, resolve
+        from preprocessing.variable_resolver import resolve
 
         ds = self.xr.Dataset({
             "aod_550/Mean": self._var([[0.1, 0.2]], {"units": "1"}),
