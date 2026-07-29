@@ -192,6 +192,19 @@ class Settings:
     cube_write_max_bytes: int = field(
         default_factory=lambda: max(1, _int_env("CUBE_WRITE_MAX_BYTES", 1024 ** 3))
     )
+    # T53: the discovery-metadata cache at the bind_workspace seam
+    # (earthdata_mcp/tool_cache.py). Collection metadata changes on the order
+    # of never and AOI resolution from a location string is deterministic, so
+    # the TTL is a safety net rather than a freshness mechanism — freshness is
+    # handled by keeping coverage/availability off the allowlist entirely.
+    mcp_metadata_cache_ttl_seconds: int = field(
+        default_factory=lambda: max(1, _int_env("MCP_METADATA_CACHE_TTL_SECONDS", 3600))
+    )
+    # An entry cap so a long-running process cannot grow unbounded on
+    # search-query variety (search_datasets keys on a free-text query).
+    mcp_metadata_cache_max_entries: int = field(
+        default_factory=lambda: max(1, _int_env("MCP_METADATA_CACHE_MAX_ENTRIES", 512))
+    )
     aqs_api_email: str = field(default_factory=lambda: os.getenv("AQS_API_EMAIL", "your_email@example.com"))
     aqs_api_key: str = field(default_factory=lambda: os.getenv("AQS_API_KEY", "your_aqs_key"))
 

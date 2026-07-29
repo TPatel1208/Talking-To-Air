@@ -17,6 +17,8 @@ where PROJ resolves correctly on its own, is never touched.
 import importlib.util
 import os
 
+import pytest
+
 
 def _has_proj_db(path: str | None) -> bool:
     return bool(path) and os.path.isfile(os.path.join(path, "proj.db"))
@@ -40,3 +42,18 @@ def _wire_proj_data() -> None:
 
 
 _wire_proj_data()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_tool_cache():
+    """T53's discovery-metadata cache is process-global by design, so without
+    this one test's ``search_datasets(query="no2")`` would be served to the
+    next test's identical call and its handler would never run — a shared-state
+    leak, not a behavior change. Cleared between tests so every test still
+    starts on a cold cache, exactly as it did before T53.
+    """
+    from earthdata_mcp.tool_cache import clear_tool_cache
+
+    clear_tool_cache()
+    yield
+    clear_tool_cache()

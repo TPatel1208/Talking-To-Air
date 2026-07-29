@@ -17,6 +17,7 @@ from typing import Any, Callable, Protocol
 from langchain_core.tools import BaseTool, StructuredTool
 
 from config.workflow_stages import STAGE_AOI, STAGE_COVERAGE, STAGE_SEARCH
+from earthdata_mcp import tool_cache
 from earthdata_mcp.results import (
     CATEGORY_CONTRACT,
     CATEGORY_TOKEN_INVALID,
@@ -123,6 +124,17 @@ def _bind_one(
         if stage_info is not None:
             emit_status(stage_info[1], stage=stage_info[0])
 
+        # T53: the discovery-metadata cache, read here — after workspace_id is
+        # known (it is part of the key) and *before* both the credential
+        # resolve and the call_tool round-trip, so a hit costs neither a
+        # decrypt nor a network call. No credential was used on a hit, so
+        # mark_used deliberately never fires for one.
+        cacheable = tool_cache.is_cacheable(tool.name)
+        if cacheable:
+            hit = tool_cache.lookup(tool.name, kwargs["workspace_id"], kwargs)
+            if hit is not None:
+                return hit
+
         # T31 injection policy: connected ∧ unexpired ∧ advertising: send
         # nothing otherwise and let the MCP fall back to its shared env
         # credential. edl_injector.resolve() owns the connected/unexpired
@@ -183,6 +195,13 @@ def _bind_one(
         if tool.name == "check_coverage" and isinstance(result, dict) and "granule_count" in result:
             granule_count = result["granule_count"]
             emit_status(f"Checking coverage — {granule_count} granules...", stage=STAGE_COVERAGE, detail=granule_count)
+        # Only reached on success: every classified failure returned above, so
+        # a transient provider_unavailable is retried on the next attempt
+        # rather than replayed for the rest of the TTL. The **raw** result is
+        # what is stored, so parse_tool_result and model_view_describe_dataset
+        # behave byte-identically on hit and miss.
+        if cacheable:
+            tool_cache.store(tool.name, kwargs["workspace_id"], kwargs, raw)
         return raw
 
     return StructuredTool.from_function(
