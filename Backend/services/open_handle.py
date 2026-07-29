@@ -86,13 +86,16 @@ async def open_handle(handle: str, tools: dict[str, BaseTool]) -> Any:
     structured message verbatim.
     """
     emit_status("Opening retrieved data...", stage=STAGE_OPEN)
+    cached = _serve_from_index(handle)
+    if cached is not None:
+        return cached
     export = await _export(handle, tools)
     recovered = False
     if export.get("status") != "ready":
         export = await _recover(handle, tools)
         recovered = True
     try:
-        ds = await asyncio.to_thread(_open, export["storage_uri"], export["media_type"])
+        ds = await _open_export(export)
         _consider_cube(export, ds)
         return ds
     except UnreadableExportError:
@@ -108,12 +111,54 @@ async def open_handle(handle: str, tools: dict[str, BaseTool]) -> Any:
             raise
         emit_status("Retrieved file was unreadable; re-materializing...", stage=STAGE_OPEN)
         export = await _recover(handle, tools)
-        ds = await asyncio.to_thread(_open, export["storage_uri"], export["media_type"])
+        ds = await _open_export(export)
         _consider_cube(export, ds)
         return ds
 
 
-def _cube_identity(storage_uri: str, media_type: str) -> tuple[str, str, str] | None:
+async def _open_export(export: dict) -> Any:
+    """Open a ready export off the event loop, carrying the whole response.
+
+    The delivered-content fields (``content_digest``/``partial``, upstream PRD
+    023) are what the cube key is derived from (T54), so the reader needs the
+    response rather than just the two fields the URI-and-media-type call used
+    to pass down.
+    """
+    return await asyncio.to_thread(
+        _open, export["storage_uri"], export["media_type"], export=export
+    )
+
+
+def _serve_from_index(handle: str) -> Any | None:
+    """T54: the cube for ``handle``, before the MCP is asked anything.
+
+    T52 put the cache *behind* ``export_result``, so the key could not be
+    computed until the round-trip it was meant to shield you from had already
+    completed. The round-trip is cheap; its failure modes are not — an evicted
+    source sends ``open_handle`` into ``rematerialize`` -> ``await_retrieval``,
+    *minutes* of rebuilding the input to an answer already sitting on local
+    disk, and a crash-restarting MCP makes that cube unreachable outright.
+
+    Never raises: this is a shortcut, and a shortcut that can fail a turn is
+    worse than no shortcut. Any trouble falls through to the ordinary
+    verify-first path below.
+    """
+    from services import cube_cache
+
+    # Deliberately *not* wrapped in a ``phase_timer`` (T51). A miss here is
+    # followed by the real open, and emitting an ``open`` sample for both would
+    # put a near-zero duration into that histogram on every single miss —
+    # corrupting the distribution T51 exists to make trustworthy, and breaking
+    # its one-open-phase-per-open_handle contract. The dedicated
+    # ``cube_index_hits/misses`` counters are what make this path measurable.
+    try:
+        return cube_cache.lookup_by_handle(handle)
+    except Exception:  # noqa: BLE001 — best-effort, see docstring
+        logger.debug("cube_index_lookup_failed", exc_info=True)
+        return None
+
+
+def _cube_identity(export: dict) -> tuple[str, str, str] | None:
     """``(cache_key, source_identity, local_path)`` for a cubeable export.
 
     None for anything the interpretation pipeline doesn't touch: a Zarr export
@@ -121,18 +166,29 @@ def _cube_identity(storage_uri: str, media_type: str) -> tuple[str, str, str] | 
     never opens at all. Cheap enough (one ``stat`` plus a hash) to recompute at
     both the read and the write call site rather than threading it through
     ``asyncio.to_thread``.
+
+    T54: the identity now prefers what the export says it *delivered*
+    (``content_digest``, upstream PRD 023) over the file's mtime and size, so a
+    replay that re-fetched the same granules keeps its cube instead of
+    rebuilding it — and one that genuinely drifted moves the key and misses.
     """
     from services.cube_cache import cache_key, netcdf_engine_signature, source_identity
 
-    mt = (media_type or "").lower()
+    media_type = export.get("media_type") or ""
+    mt = media_type.lower()
     if "bundle" not in mt and "netcdf" not in mt:
         return None
-    parsed = urlparse(storage_uri or "")
+    parsed = urlparse(export.get("storage_uri") or "")
     if parsed.scheme != "file":
         return None
     path = url2pathname(parsed.path)
     try:
-        source = source_identity(path)
+        source = source_identity(
+            path,
+            handle=export.get("handle") or "",
+            content_digest=export.get("content_digest"),
+            partial=bool(export.get("partial")),
+        )
     except OSError:
         return None
     return cache_key(source, OPEN_PIPELINE_VERSION, netcdf_engine_signature()), source, path
@@ -149,7 +205,7 @@ def _consider_cube(export: dict, ds: Any) -> None:
     from services import cube_cache
 
     try:
-        identity = _cube_identity(export.get("storage_uri", ""), export.get("media_type", ""))
+        identity = _cube_identity(export)
         if identity is None:
             return
         key, source, path = identity
@@ -159,6 +215,10 @@ def _consider_cube(export: dict, ds: Any) -> None:
             source=source,
             pipeline_version=OPEN_PIPELINE_VERSION,
             engine=cube_cache.netcdf_engine_signature(),
+            # T54: recorded in the manifest and indexed once the cube lands, so
+            # the next question about this handle can find it without asking
+            # the MCP where its bytes are.
+            handle=export.get("handle") or "",
             # The cube is written from a *lazy* Dataset still reading out of
             # the bundle-extract cache, whose pruner sweeps by mtime on a
             # 1-hour TTL and never sees those reads. Pin it for the write.
@@ -175,6 +235,10 @@ async def _export(handle: str, tools: dict[str, BaseTool]) -> dict:
     async with phase_timer("export", handle=handle) as timing:
         raw = await tools["export_result"].ainvoke({"handle": handle})
         export = parse_tool_result(raw)
+        # The MCP echoes the handle, but the cube key and the index are both
+        # derived from it (T54), so pin it to the handle we actually asked
+        # about rather than trusting the echo to be the same string.
+        export["handle"] = handle
         timing["status"] = export.get("status")
         timing["size_bytes"] = export.get("size_bytes")
     return export
@@ -201,22 +265,29 @@ async def _recover(handle: str, tools: dict[str, BaseTool]) -> dict:
     return second_export
 
 
-def _open(storage_uri: str, media_type: str) -> Any:
+def _open(storage_uri: str, media_type: str, *, export: dict | None = None) -> Any:
     """Time the read as the ``open`` phase and dispatch by media type (T51).
 
     Timed here rather than inside each per-format branch so a Zarr, a bare
     NetCDF and a bundle all land in one comparable distribution. A bundle's
     ``extract`` phase nests *inside* this one: ``open`` is the whole
     file-to-Dataset span, and ``open - extract`` is the per-member open cost.
+
+    ``export`` is the full ready response, carrying the delivered-content
+    fields the cube key is derived from (T54). Optional so the direct callers
+    that only ever hold a URI and a media type (the live-smoke contract checks)
+    keep working — they simply key on filesystem identity, exactly as T52 did.
     """
     # ``members`` defaults to the single-file answer; the bundle path below
     # overwrites it with its own member count, which it already knows -- far
     # cheaper than re-reading the archive here just to count.
     with phase_timer("open", media_type=media_type, members=1) as timing:
-        return _open_by_media_type(storage_uri, media_type, timing)
+        return _open_by_media_type(storage_uri, media_type, timing, export=export)
 
 
-def _open_by_media_type(storage_uri: str, media_type: str, timing: dict | None = None) -> Any:
+def _open_by_media_type(
+    storage_uri: str, media_type: str, timing: dict | None = None, *, export: dict | None = None
+) -> Any:
     parsed = urlparse(storage_uri)
     if parsed.scheme != "file":
         raise OpenHandleError(
@@ -256,14 +327,24 @@ def _open_by_media_type(storage_uri: str, media_type: str, timing: dict | None =
             "visualization pipeline cannot open. Retrying the retrieval will not help — "
             "suggest a different collection for this variable (an L3/L4 NetCDF product) instead."
         )
+    export = _export_or_synthetic(export, storage_uri, media_type)
     if "bundle" in mt:
-        return _serve_from_cube_or_open(storage_uri, media_type, timing, lambda: _open_netcdf_bundle(path, timing))
+        return _serve_from_cube_or_open(export, timing, lambda: _open_netcdf_bundle(path, timing))
     if "netcdf" in mt:
-        return _serve_from_cube_or_open(storage_uri, media_type, timing, lambda: _open_netcdf(path, timing=timing))
+        return _serve_from_cube_or_open(export, timing, lambda: _open_netcdf(path, timing=timing))
     raise OpenHandleError(f"Unsupported media_type '{media_type}' for exported handle.")
 
 
-def _serve_from_cube_or_open(storage_uri: str, media_type: str, timing: dict | None, opener: Any) -> Any:
+def _export_or_synthetic(export: dict | None, storage_uri: str, media_type: str) -> dict:
+    """The ready export, or the minimum a direct ``_open`` caller implies.
+
+    A synthetic one carries no ``content_digest``, so it keys on filesystem
+    identity and is never index-servable — the honest answer for a caller that
+    never held a delivered-content record in the first place."""
+    return export if export is not None else {"storage_uri": storage_uri, "media_type": media_type}
+
+
+def _serve_from_cube_or_open(export: dict, timing: dict | None, opener: Any) -> Any:
     """Return the cached cube for this export if there is a good one, else run
     the open pipeline (T52).
 
@@ -271,20 +352,33 @@ def _serve_from_cube_or_open(storage_uri: str, media_type: str, timing: dict | N
     :func:`pipeline_source_fingerprint` tracks interpretation only and cache
     plumbing changes don't spuriously invalidate every cube.
     """
-    from services.cube_cache import lookup
+    from services.cube_cache import lookup, note_handle, reconcile_handle
     from utils.metrics import record_cache_hit, record_cache_miss
 
-    identity = _cube_identity(storage_uri, media_type)
-    cached = lookup(identity[0]) if identity is not None else None
+    identity = _cube_identity(export)
+    if identity is None:
+        return opener()
+    key, _source, _path = identity
+    handle = export.get("handle") or ""
+    # We are on the verified path: an ``export_result`` for this handle has
+    # just told us what it currently delivers. If the index still points at a
+    # cube built from *different* delivered content, that cube is stale — and
+    # because the key is derived from content rather than from a file's mtime,
+    # "different" here means the data genuinely changed. Drop it (T54).
+    reconcile_handle(handle, key)
+    cached = lookup(key)
     if cached is not None:
         record_cache_hit("zarr")
         if timing is not None:
             timing["cube"] = "hit"
+        # A cube written before the index existed earns its entry here, on an
+        # ordinary verified hit — no migration to run, and the *next* question
+        # about it skips the round-trip.
+        note_handle(handle, key)
         return cached
-    if identity is not None:
-        record_cache_miss()
-        if timing is not None:
-            timing["cube"] = "miss"
+    record_cache_miss()
+    if timing is not None:
+        timing["cube"] = "miss"
     return opener()
 
 

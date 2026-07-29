@@ -121,6 +121,46 @@ class CacheKeyTests(unittest.TestCase):
     def test_source_identity_changes_when_the_file_contents_change(self):
         self.assertNotEqual(self._identity(b"a" * 16), self._identity(b"b" * 32))
 
+    def test_source_identity_survives_a_replay_that_delivered_the_same_content(self):
+        """T54's re-key, stated as the thing it fixes.
+
+        A rematerialize rewrites the export file: new mtime, new size, so a new
+        *filesystem* identity — while delivering the very same granules through
+        the very same service chain. Keyed on filesystem metadata that cube
+        misses and rebuilds for nothing, which is precisely the rebuild-the-
+        input-to-an-answer-you-already-hold failure T54 exists to end."""
+        from services.cube_cache import source_identity
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "bundle.zip")
+            with open(path, "wb") as f:
+                f.write(b"a" * 16)
+            before = source_identity(path, handle="obs_1", content_digest="sha-abc")
+            with open(path, "wb") as f:
+                f.write(b"a" * 32)  # the replay rewrote the file
+            after = source_identity(path, handle="obs_1", content_digest="sha-abc")
+
+        self.assertEqual(before, after)
+
+    def test_a_cube_written_under_the_old_identity_misses_rather_than_false_hitting(self):
+        """The re-key changes what a key *means*, so every cube written before
+        it is describing its source in a different language. Those must become
+        unreachable, not reinterpreted — a filesystem identity that happened to
+        collide with a content identity would serve one retrieval's cube for
+        another's."""
+        from services.cube_cache import cache_key, source_identity
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "bundle.zip")
+            with open(path, "wb") as f:
+                f.write(b"a" * 16)
+            old = source_identity(path)
+            new = source_identity(path, handle="obs_1", content_digest="sha-abc")
+
+        self.assertNotEqual(
+            cache_key(old, "1", "h5netcdf"), cache_key(new, "1", "h5netcdf")
+        )
+
 
 @requires_stack
 class RoundTripTests(StoreTestCase):
@@ -264,9 +304,14 @@ class IntegrityTests(StoreTestCase):
     can never cost a turn."""
 
     def _entry_dirs(self):
+        # Cube entries only. The store root also holds T54's handle index, a
+        # plain file beside them, which is not an entry and is never swept.
         if not os.path.isdir(self.store_root):
             return []
-        return sorted(os.listdir(self.store_root))
+        return sorted(
+            name for name in os.listdir(self.store_root)
+            if os.path.isdir(os.path.join(self.store_root, name))
+        )
 
     def test_a_write_interrupted_before_the_manifest_leaves_no_visible_cube(self):
         """The manifest is written last and is the completion marker, so a

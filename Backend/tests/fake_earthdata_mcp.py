@@ -252,6 +252,12 @@ class HandleVolume:
         self.root = pathlib.Path(root)
         self._factories: dict[str, tuple[str, Callable[[], Any]]] = {}
         self.rematerialize_calls: dict[str, int] = {}
+        self.export_calls: dict[str, int] = {}
+        # Handles with no entry here are *legacy* handles: materialized before
+        # upstream PRD 023, so their ready export carries no content_digest at
+        # all. That is the default on purpose — it keeps every pre-T54 test
+        # exercising T52's verify-first ordering unchanged.
+        self._delivered: dict[str, dict] = {}
 
     def _path(self, handle: str) -> pathlib.Path:
         media_type, _ = self._factories[handle]
@@ -380,7 +386,18 @@ class HandleVolume:
             shutil.rmtree(path)
         path.write_bytes(contents)
 
+    def set_delivered_content(self, handle: str, content_digest: str, *, partial: bool = False) -> None:
+        """Declare what the job behind ``handle`` actually delivered (PRD 023).
+
+        Calling this again with a different digest models real upstream drift —
+        a late-arriving NRT granule, an unpinned Harmony submit that picked a
+        different service chain, an OPeNDAP fallback on replay — all of which
+        leave the handle and its request spec identical while changing the
+        bytes."""
+        self._delivered[handle] = {"content_digest": content_digest, "partial": partial}
+
     async def export_result(self, handle: str, workspace_id: str = "default") -> dict:
+        self.export_calls[handle] = self.export_calls.get(handle, 0) + 1
         if handle not in self._factories:
             return {"handle": handle, "status": "not_found", "message": f"Unknown handle '{handle}'."}
         path = self._path(handle)
@@ -395,6 +412,9 @@ class HandleVolume:
             "media_type": media_type,
             "size_bytes": size,
             "rematerialize_hint": None,
+            # Absent, not null, for a handle with no record — exactly as the
+            # real export_result omits the field rather than fabricating one.
+            **self._delivered.get(handle, {}),
         }
 
     async def rematerialize(self, handle: str, workspace_id: str = "default") -> dict:

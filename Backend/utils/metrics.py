@@ -73,6 +73,22 @@ CUBE_EVICTIONS_TOTAL = Counter(
     "cube_evictions_total",
     "Cubes evicted from the cube store to stay under CUBE_STORE_MAX_BYTES.",
 )
+# T54, counted separately from cube_hits/cube_misses on purpose: a cube hit
+# says the cache saved the open pipeline, an *index* hit says it also saved the
+# MCP round-trip that used to gate the lookup. Those are different wins, and
+# collapsing them would make the reorder's own contribution unmeasurable.
+CUBE_INDEX_HITS_TOTAL = Counter(
+    "cube_index_hits_total",
+    "Cubes served straight from the handle index, with no export_result round-trip.",
+)
+CUBE_INDEX_MISSES_TOTAL = Counter(
+    "cube_index_misses_total",
+    "Handle-index lookups that fell through to the verify-first path.",
+)
+CUBE_INDEX_INVALIDATIONS_TOTAL = Counter(
+    "cube_index_invalidations_total",
+    "Indexed cubes dropped because a verified export delivered different content.",
+)
 PIPELINE_PHASE_DURATION_SECONDS = Histogram(
     "pipeline_phase_duration_seconds",
     "Wall-clock duration of one retrieval/visualization pipeline phase in seconds.",
@@ -160,6 +176,18 @@ def record_cache_miss() -> None:
 
 def record_cube_eviction() -> None:
     CUBE_EVICTIONS_TOTAL.inc()
+
+
+def record_cube_index_hit() -> None:
+    CUBE_INDEX_HITS_TOTAL.inc()
+
+
+def record_cube_index_miss() -> None:
+    CUBE_INDEX_MISSES_TOTAL.inc()
+
+
+def record_cube_index_invalidation() -> None:
+    CUBE_INDEX_INVALIDATIONS_TOTAL.inc()
 
 
 def set_db_pool_connections_active(value: int | float | None) -> None:

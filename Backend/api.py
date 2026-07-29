@@ -143,7 +143,10 @@ async def lifespan(app: FastAPI):
 
     # T52: reclaim staging dirs and manifest-less entries a crash mid-write
     # left behind. Neither is ever served (the manifest is the completion
-    # marker), so this is space, not correctness.
+    # marker), so this is space, not correctness. T54: this also rebuilds the
+    # handle->cube index from the surviving manifests, which is what makes that
+    # index derived state — losing the file costs a boot's scan, never an
+    # answer.
     cube_cache.sweep_store()
 
     logger.info("startup_begin", extra={"_model": settings.llm_model})

@@ -192,6 +192,16 @@ class Settings:
     cube_write_max_bytes: int = field(
         default_factory=lambda: max(1, _int_env("CUBE_WRITE_MAX_BYTES", 1024 ** 3))
     )
+    # T54: serve a cube straight off the handle->cube index, skipping the
+    # export_result round-trip entirely. Defaults ON — that skip is the whole
+    # point, and it is what makes an upstream eviction or a crash-restart cost
+    # a local Zarr read instead of minutes of rematerializing. Set to 0 to
+    # restore T52's unconditional verify-first ordering without a redeploy, so
+    # the optimization can be switched off in production if it is ever
+    # implicated in a bad answer.
+    cube_skip_export_verify: bool = field(
+        default_factory=lambda: os.getenv("CUBE_SKIP_EXPORT_VERIFY", "1").strip() != "0"
+    )
     # T53: the discovery-metadata cache at the bind_workspace seam
     # (earthdata_mcp/tool_cache.py). Collection metadata changes on the order
     # of never and AOI resolution from a location string is deterministic, so

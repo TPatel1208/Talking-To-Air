@@ -49,21 +49,64 @@ _SLASH_ESCAPE = "﹨"  # SMALL REVERSE SOLIDUS — not a legal char in CF names
 _PERSISTED_ENCODING_KEYS = ("scale_factor", "add_offset", "_FillValue")
 
 
-def source_identity(path: str) -> str:
-    """A cheap identity for the exported file at ``path``.
+_DIGEST_PREFIX = "digest:"
 
-    Filesystem metadata only — path, size, mtime — mirroring the extract
-    cache's existing key (``_extract_bundle_cached``). Full content hashing is
-    deliberately rejected: reading a 2 GiB bundle to decide whether to read the
-    bundle defeats the lookup.
 
-    Defined as a *function*, not an inlined tuple, so that when the MCP grows a
-    stronger identifier (an artifact digest, an export UUID, a retrieval
-    manifest) adoption is a one-line change here and every caller keeps
-    working.
+def source_identity(
+    path: str,
+    *,
+    handle: str = "",
+    content_digest: str | None = None,
+    partial: bool = False,
+) -> str:
+    """The identity of the bytes a cube was built from.
+
+    T52 defined this as filesystem metadata — path, size, mtime — mirroring the
+    extract cache's key, and noted that defining it as a *function* rather than
+    an inlined tuple was so that adopting a stronger identifier from the MCP
+    would be a one-line change with every caller left working. T54 is that
+    change: it collects the payoff of that abstraction, and ``cache_key``, the
+    manifest, eviction, integrity and the round-trip contract are all untouched.
+
+    **Why the handle is part of the content identity, and not just the digest.**
+    Upstream's ``content_digest`` (PRD 023) hashes
+    ``{granule_ids, provider_used, service_chain, output_format}`` — what the
+    job *delivered* — and is explicitly the complement of
+    ``compute_request_signature``, which is what carries the *intent*: bbox,
+    time range, variables. So the digest alone does not separate two handles
+    that resolve the same granules through the same chain but subset them
+    differently: one day of TEMPO L3 over Newark and over Houston share every
+    hashed component and differ in every delivered byte. Keying on the digest
+    alone would serve the Newark cube for the Houston question — a silently
+    wrong scientific answer carrying correct-looking provenance. The ``obs_``
+    handle *is* the request identity (one handle, one durable request spec), so
+    composing the two gives an identity that means "this ask, as actually
+    delivered": a replay that drifts moves the digest and misses, and two
+    different asks never collide. The cross-handle dedupe this gives up is
+    already handled upstream by PRD 020, which reuses one handle for a repeat
+    ask.
+
+    Falls back to filesystem identity — byte-for-byte T52's behaviour — for a
+    handle materialized before PRD 023, and for a ``partial`` digest: upstream
+    marks a digest partial when the provider named no granules (an AppEEARS
+    point sample), and a digest that cannot see granules cannot detect granule
+    drift.
     """
+    if content_digest and not partial:
+        return f"{handle}|{_DIGEST_PREFIX}{content_digest}"
     stat = os.stat(path)
     return f"{path}|{stat.st_size}|{stat.st_mtime_ns}"
+
+
+def is_content_identity(source: str) -> bool:
+    """Whether ``source`` was derived from what the MCP said it delivered,
+    rather than from filesystem metadata.
+
+    This is the predicate that licenses skipping ``export_result`` (T54): a
+    filesystem identity only says a file with these bytes sits at this path,
+    which is knowledge you can only have by asking upstream in the first place.
+    """
+    return f"|{_DIGEST_PREFIX}" in source
 
 
 def cache_key(source: str, pipeline_version: str, engine: str) -> str:
@@ -184,7 +227,15 @@ def _stat_sweep(cube_dir: str) -> tuple[int, int]:
     return files, total
 
 
-def write_cube(ds: Any, key: str, *, source: str = "", pipeline_version: str = "", engine: str = "") -> bool:
+def write_cube(
+    ds: Any,
+    key: str,
+    *,
+    source: str = "",
+    pipeline_version: str = "",
+    engine: str = "",
+    handle: str = "",
+) -> bool:
     """Write ``ds`` to the store under ``key``. Returns whether a cube landed.
 
     Staging dir -> fsync -> atomic rename -> manifest, adapting
@@ -196,6 +247,7 @@ def write_cube(ds: Any, key: str, *, source: str = "", pipeline_version: str = "
     os.makedirs(root, exist_ok=True)
     final_dir = _entry_dir(key)
     if os.path.exists(_manifest_path(key)):
+        note_handle(handle, key)  # the winner's cube is this handle's cube too
         return True  # already cubed by a concurrent writer
     if is_refused(key):
         return False  # known-unsafe under this pipeline version; don't retry
@@ -231,6 +283,11 @@ def write_cube(ds: Any, key: str, *, source: str = "", pipeline_version: str = "
         files, total = _stat_sweep(cube_dir)
         manifest = {
             "source_identity": source,
+            # T54: the handle this cube was built for. The index below is
+            # derived state; this is what makes it *rebuildable* — a lost or
+            # corrupt index is reconstructed by scanning manifests, and
+            # degrades to T52's ordering meanwhile rather than to an error.
+            "handle": handle,
             "pipeline_version": pipeline_version,
             "engine": engine,
             "variables": sorted(str(n) for n in ds.data_vars),
@@ -255,6 +312,9 @@ def write_cube(ds: Any, key: str, *, source: str = "", pipeline_version: str = "
         shutil.rmtree(staging, ignore_errors=True)
         _refuse(key, f"{type(exc).__name__}: {exc}")
         return False
+    # After the rename, never inside it: the cube is the record, the index is
+    # derived from it, so the index may only ever describe a cube that landed.
+    note_handle(handle, key)
     return True
 
 
@@ -434,6 +494,195 @@ def _invalidate(key: str, reason: str) -> None:
     shutil.rmtree(_entry_dir(key), ignore_errors=True)
 
 
+# ---------------------------------------------------------------------------
+# T54: the handle -> cache_key index
+# ---------------------------------------------------------------------------
+# One JSON file beside the cubes. It is **derived state, never the system of
+# record**: every mapping in it is also recorded in the cube's own manifest, so
+# a lost, truncated or unparseable index costs a rebuild, never a wrong answer.
+# Any failure to read or write it degrades to T52's ordering exactly — the
+# lookup happens after ``export_result``, correct and merely slower.
+
+_INDEX_NAME = "handle_index.json"
+
+
+def _index_path() -> str:
+    return os.path.join(_store_root(), _INDEX_NAME)
+
+
+def _read_index() -> dict[str, str]:
+    try:
+        with open(_index_path(), "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+
+
+def _write_index(index: dict[str, str]) -> None:
+    """Replace the index atomically. Best-effort: a failure here leaves the
+    previous index in place and costs, at worst, a round-trip we could have
+    skipped."""
+    root = _store_root()
+    try:
+        os.makedirs(root, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=".index-", dir=root)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(index, f)
+            os.replace(tmp, _index_path())
+        except OSError:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
+    except OSError:
+        logger.debug("cube_index_write_failed", exc_info=True)
+
+
+def note_handle(handle: str, key: str) -> None:
+    """Record that ``handle``'s cube lives at ``key``.
+
+    Called both when a cube lands and on a *verified* hit, so a cube written
+    before this index existed earns its index entry the next time the ordinary
+    T52 path serves it, with no migration to run.
+    """
+    if not handle or not key:
+        return
+    index = _read_index()
+    if index.get(handle) == key:
+        return
+    index[handle] = key
+    _write_index(index)
+
+
+def key_for_handle(handle: str) -> str | None:
+    return _read_index().get(handle) if handle else None
+
+
+def _forget_handle(handle: str) -> None:
+    index = _read_index()
+    if index.pop(handle, None) is not None:
+        _write_index(index)
+
+
+def lookup_by_handle(handle: str) -> Any | None:
+    """Serve ``handle``'s cube **without asking the MCP anything**, or None.
+
+    This is the reorder. It answers the question ``open_handle`` previously
+    could not ask until an ``export_result`` round-trip had completed — and in
+    the two cases that matter most (the source was evicted upstream; the MCP is
+    mid-crash-restart) that round-trip is exactly what was standing between a
+    researcher and a cube already on their disk.
+
+    Serving without upstream verification is licensed by *content* identity and
+    nothing else (:func:`is_content_identity`): a filesystem identity only
+    records that a file with these bytes sat at this path, which is knowledge
+    obtainable only by asking upstream in the first place. Local verification is
+    **not** relaxed in exchange — the same per-hit integrity sweep T52 runs on
+    every hit runs here too, via :func:`lookup`.
+    """
+    from utils.metrics import record_cache_hit, record_cube_index_hit, record_cube_index_miss
+
+    if not handle or not get_settings().cube_skip_export_verify:
+        return None
+    key = key_for_handle(handle)
+    if key is None:
+        record_cube_index_miss()
+        return None
+    manifest = _read_manifest(key)
+    if manifest is None:
+        # The cube was evicted or invalidated out from under the index. Derived
+        # state catching up, not an error.
+        _forget_handle(handle)
+        record_cube_index_miss()
+        return None
+    if not is_content_identity(str(manifest.get("source_identity") or "")):
+        # A legacy handle (materialized before upstream PRD 023) or a partial
+        # digest. Its cube is perfectly good — it just has to be reached the
+        # T52 way, after a round-trip that confirms the file is still there.
+        record_cube_index_miss()
+        return None
+    ds = lookup(key)  # validates integrity, self-heals, never raises
+    if ds is None:
+        record_cube_index_miss()
+        return None
+    # Both counters, deliberately. ``cache_hits_total`` has meant "the open
+    # pipeline was skipped" since T52 and that is just as true here, so letting
+    # this path bypass it would have made T52's hit rate appear to collapse on
+    # the day T54 shipped. The index counter records the *additional* win this
+    # path alone delivers: the round-trip was skipped too.
+    record_cache_hit("zarr")
+    record_cube_index_hit()
+    return ds
+
+
+def reconcile_handle(handle: str, key: str) -> None:
+    """Reconcile the index against a *verified* export for ``handle``.
+
+    Whenever ``export_result`` does run and yields a different key than the one
+    indexed, the indexed cube describes content this handle no longer delivers —
+    a late-arriving NRT granule, a different service chain, an OPeNDAP fallback
+    on replay. Because the key is derived from delivered content, "different
+    key" now means *the data actually changed*, so the honest move is to drop
+    both the entry and the cube rather than keep serving it.
+
+    **Why catching drift here is sufficient, given that an index hit never gets
+    here at all.** A handle's delivered content changes only when a *new
+    materialization completes*, and the only thing that starts one for an
+    existing handle is ``rematerialize``. In this backend that has exactly one
+    caller — ``open_handle._recover`` — which is reachable only from the verify
+    path, and which re-exports through :func:`~services.open_handle._export`
+    immediately afterwards. So drift is created and detected inside the same
+    call, and an index hit cannot be serving across a drift because an index hit
+    is precisely the case where nothing replayed the job. What this does *not*
+    cover is another process rematerializing the same handle behind this one's
+    back; ``--workers 1`` and per-workspace handles make that narrow today, and
+    ``CUBE_SKIP_EXPORT_VERIFY=0`` is the escape hatch if it ever stops being.
+    """
+    from utils.metrics import record_cube_index_invalidation
+
+    if not handle or not key:
+        return
+    indexed = key_for_handle(handle)
+    if indexed is None or indexed == key:
+        return
+    logger.info(
+        "cube_index_invalidated",
+        extra={
+            "_event": "cube_index_invalidated",
+            "_handle": handle,
+            "_stale_key": indexed,
+            "_current_key": key,
+        },
+    )
+    shutil.rmtree(_entry_dir(indexed), ignore_errors=True)
+    _forget_handle(handle)
+    record_cube_index_invalidation()
+
+
+def rebuild_index() -> None:
+    """Reconstruct the index by scanning cube manifests.
+
+    Run at startup, after :func:`sweep_store`. This is what makes the index
+    genuinely derived: delete the file and the only thing lost is speed, until
+    the next boot puts it back from the manifests that were the record all
+    along.
+    """
+    index: dict[str, str] = {}
+    try:
+        scanned = list(os.scandir(_store_root()))
+    except OSError:
+        return
+    for entry in scanned:
+        if not entry.is_dir(follow_symlinks=False) or entry.name.startswith(_STAGING_PREFIX):
+            continue
+        manifest = _read_manifest(entry.name)
+        handle = str((manifest or {}).get("handle") or "")
+        if handle:
+            index[handle] = entry.name
+    _write_index(index)
+
+
 def sweep_store() -> None:
     """Remove orphaned staging directories and manifest-less entries.
 
@@ -441,6 +690,11 @@ def sweep_store() -> None:
     entry whose manifest never landed is by definition incomplete. Neither is
     ever served (the manifest is the completion marker), so this reclaims
     space rather than fixing correctness.
+
+    T54: rebuilds the handle index on the way out, rather than leaving that to
+    a second call at the startup site. The rebuild has to run *after* the sweep
+    or it would index entries this function is about to delete, and coupling
+    the two is what makes that ordering impossible to get wrong from outside.
     """
     root = _store_root()
     try:
@@ -457,6 +711,7 @@ def sweep_store() -> None:
         refused = os.path.exists(os.path.join(entry.path, _REFUSED_NAME))
         if entry.name.startswith(_STAGING_PREFIX) or not (complete or refused):
             shutil.rmtree(entry.path, ignore_errors=True)
+    rebuild_index()
 
 
 def _entries() -> list[tuple[float, int, str]]:
@@ -600,6 +855,7 @@ def consider_write(
     pipeline_version: str = "",
     engine: str = "",
     pin: str | None = None,
+    handle: str = "",
 ) -> Any | None:
     """Schedule a background cube write if this source has earned one.
 
@@ -622,7 +878,10 @@ def consider_write(
             return None
         _writes_in_flight.add(key)
         return asyncio.create_task(
-            _write_task(ds, key, source=source, pipeline_version=pipeline_version, engine=engine, pin=pin)
+            _write_task(
+                ds, key, source=source, pipeline_version=pipeline_version,
+                engine=engine, pin=pin, handle=handle,
+            )
         )
     except RuntimeError:
         # No running loop (a sync call site). Caching is best-effort.
@@ -638,6 +897,7 @@ async def _write_task(
     pipeline_version: str,
     engine: str,
     pin: str | None,
+    handle: str = "",
 ) -> None:
     import asyncio
 
@@ -653,7 +913,8 @@ async def _write_task(
                 return
             with pin_path(pin):
                 await asyncio.to_thread(
-                    write_cube, ds, key, source=source, pipeline_version=pipeline_version, engine=engine
+                    write_cube, ds, key, source=source, pipeline_version=pipeline_version,
+                    engine=engine, handle=handle,
                 )
     except Exception as exc:  # noqa: BLE001 — a background task must never surface
         logger.warning(
