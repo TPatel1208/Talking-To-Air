@@ -173,6 +173,25 @@ class Settings:
     bundle_open_max_uncompressed_bytes: int = field(
         default_factory=lambda: max(1, _int_env("BUNDLE_OPEN_MAX_UNCOMPRESSED_BYTES", 2 * 1024 ** 3))
     )
+    # T52: the L4 Zarr cube cache (services/cube_cache.py). A backend-only
+    # Docker named volume, NOT a tempdir — cubes cost minutes to build and
+    # `tta-backend` is rebuilt constantly, so a tempdir store would be empty
+    # every time you looked and would surface as "the cache doesn't help"
+    # (the overlay_store failure mode exactly).
+    cube_store_dir: str = field(default_factory=lambda: os.getenv("CUBE_STORE_DIR", "/app/cube_store"))
+    # A fixed byte cap, deliberately not a percentage of free space — that
+    # silently expands to fill any disk, which is how docker_data.vhdx reached
+    # 296 GB against ~12 GB live. Eviction is LRU by last access, run before
+    # each write.
+    cube_store_max_bytes: int = field(
+        default_factory=lambda: max(1, _int_env("CUBE_STORE_MAX_BYTES", 4 * 1024 ** 3))
+    )
+    # The per-cube write cap, deliberately BELOW bundle_open_max_uncompressed_
+    # bytes: writing a cube reads, compresses and writes the whole dataset,
+    # which is heavier than the lazy open the bundle cap gates.
+    cube_write_max_bytes: int = field(
+        default_factory=lambda: max(1, _int_env("CUBE_WRITE_MAX_BYTES", 1024 ** 3))
+    )
     aqs_api_email: str = field(default_factory=lambda: os.getenv("AQS_API_EMAIL", "your_email@example.com"))
     aqs_api_key: str = field(default_factory=lambda: os.getenv("AQS_API_KEY", "your_aqs_key"))
 

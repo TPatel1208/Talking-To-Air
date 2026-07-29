@@ -50,6 +50,7 @@ from repositories.user_connector_repository import (
 )
 from repositories.user_repository import create_user, ensure_user_table, get_user_by_username
 from repositories.artifact_repository import ensure_artifact_table
+from services import cube_cache
 from services.auth_service import authenticate_request, create_access_token, hash_password, verify_password
 from services.connector_credential_service import EdlCredentialInjector
 from services.connector_token_service import TokenValidationError, decode_token_expiry
@@ -139,6 +140,11 @@ async def lifespan(app: FastAPI):
     await ensure_session_metadata_table()
     await ensure_user_connector_table()
     await ensure_artifact_table()
+
+    # T52: reclaim staging dirs and manifest-less entries a crash mid-write
+    # left behind. Neither is ever served (the manifest is the completion
+    # marker), so this is space, not correctness.
+    cube_cache.sweep_store()
 
     logger.info("startup_begin", extra={"_model": settings.llm_model})
     # T17: the backend boots without the earthdata-retrieval MCP — ground/EPA

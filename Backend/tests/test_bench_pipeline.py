@@ -100,13 +100,26 @@ class BenchPipelineTests(unittest.TestCase):
 
         self.assertAlmostEqual(report.case(1).value, report.case(2).value, places=10)
 
-    def test_case_three_skips_with_an_explanation_naming_its_blocker(self):
+    def test_case_three_runs_against_a_real_cube_and_agrees_on_the_answer(self):
+        """T52 landed, so case 3 is no longer a stub: it cubes the opened
+        Dataset through the shipped writer and reduces over what a cache *hit*
+        serves. Agreeing with cases 1 and 2 to full precision is the guard that
+        matters -- a cache that changed a scientific result would be worse than
+        no cache, and a benchmark that didn't check would report it as a win."""
         report = self._report()
 
         case3 = report.case(3)
-        self.assertIsNotNone(case3.skipped_reason)
-        self.assertIn("T52", case3.skipped_reason)
-        self.assertIsNone(case3.median_seconds)
+        self.assertIsNone(case3.skipped_reason, f"case 3 unexpectedly skipped: {case3.skipped_reason}")
+        self.assertGreater(case3.median_seconds, 0.0)
+        self.assertAlmostEqual(report.case(1).value, case3.value, places=10)
+
+    def test_case_three_reduces_over_the_same_cells_as_the_crop_case(self):
+        """The cube is a faithful mirror, so cropping it must select the same
+        window cropping the uncubed open selects. A different cell count would
+        mean the round-trip moved the grid."""
+        report = self._report()
+
+        self.assertEqual(report.case(3).cells_reduced, report.case(2).cells_reduced)
 
     def test_the_report_names_the_product_and_grid_it_ran_against(self):
         """Story 6: a result nobody can reproduce, against a product nobody

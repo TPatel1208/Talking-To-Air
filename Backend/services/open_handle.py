@@ -10,6 +10,7 @@ either an opened Dataset/Table or a clear error — never a missing file.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import threading
@@ -91,7 +92,9 @@ async def open_handle(handle: str, tools: dict[str, BaseTool]) -> Any:
         export = await _recover(handle, tools)
         recovered = True
     try:
-        return await asyncio.to_thread(_open, export["storage_uri"], export["media_type"])
+        ds = await asyncio.to_thread(_open, export["storage_uri"], export["media_type"])
+        _consider_cube(export, ds)
+        return ds
     except UnreadableExportError:
         # A "ready" export whose file won't open is almost always a transient
         # bad retrieval (an error-response body or an incomplete/empty file
@@ -105,7 +108,64 @@ async def open_handle(handle: str, tools: dict[str, BaseTool]) -> Any:
             raise
         emit_status("Retrieved file was unreadable; re-materializing...", stage=STAGE_OPEN)
         export = await _recover(handle, tools)
-        return await asyncio.to_thread(_open, export["storage_uri"], export["media_type"])
+        ds = await asyncio.to_thread(_open, export["storage_uri"], export["media_type"])
+        _consider_cube(export, ds)
+        return ds
+
+
+def _cube_identity(storage_uri: str, media_type: str) -> tuple[str, str, str] | None:
+    """``(cache_key, source_identity, local_path)`` for a cubeable export.
+
+    None for anything the interpretation pipeline doesn't touch: a Zarr export
+    is already a cube, a Parquet export is a table, and a native-archive export
+    never opens at all. Cheap enough (one ``stat`` plus a hash) to recompute at
+    both the read and the write call site rather than threading it through
+    ``asyncio.to_thread``.
+    """
+    from services.cube_cache import cache_key, netcdf_engine_signature, source_identity
+
+    mt = (media_type or "").lower()
+    if "bundle" not in mt and "netcdf" not in mt:
+        return None
+    parsed = urlparse(storage_uri or "")
+    if parsed.scheme != "file":
+        return None
+    path = url2pathname(parsed.path)
+    try:
+        source = source_identity(path)
+    except OSError:
+        return None
+    return cache_key(source, OPEN_PIPELINE_VERSION, netcdf_engine_signature()), source, path
+
+
+def _consider_cube(export: dict, ds: Any) -> None:
+    """Let the cube cache earn a write off this open (T52).
+
+    Scheduled here, in the async caller, rather than inside ``_open``: that
+    runs on a worker thread via ``asyncio.to_thread``, where there is no
+    running event loop to attach a background task to. Never raises — a caller
+    is mid-answer, and nothing about caching may cost them that.
+    """
+    from services import cube_cache
+
+    try:
+        identity = _cube_identity(export.get("storage_uri", ""), export.get("media_type", ""))
+        if identity is None:
+            return
+        key, source, path = identity
+        cube_cache.consider_write(
+            ds,
+            key,
+            source=source,
+            pipeline_version=OPEN_PIPELINE_VERSION,
+            engine=cube_cache.netcdf_engine_signature(),
+            # The cube is written from a *lazy* Dataset still reading out of
+            # the bundle-extract cache, whose pruner sweeps by mtime on a
+            # 1-hour TTL and never sees those reads. Pin it for the write.
+            pin=extract_cache_dir_for(path),
+        )
+    except Exception:  # noqa: BLE001 — best-effort, see docstring
+        logger.debug("cube_consider_failed", exc_info=True)
 
 
 async def _export(handle: str, tools: dict[str, BaseTool]) -> dict:
@@ -197,10 +257,35 @@ def _open_by_media_type(storage_uri: str, media_type: str, timing: dict | None =
             "suggest a different collection for this variable (an L3/L4 NetCDF product) instead."
         )
     if "bundle" in mt:
-        return _open_netcdf_bundle(path, timing)
+        return _serve_from_cube_or_open(storage_uri, media_type, timing, lambda: _open_netcdf_bundle(path, timing))
     if "netcdf" in mt:
-        return _open_netcdf(path, timing=timing)
+        return _serve_from_cube_or_open(storage_uri, media_type, timing, lambda: _open_netcdf(path, timing=timing))
     raise OpenHandleError(f"Unsupported media_type '{media_type}' for exported handle.")
+
+
+def _serve_from_cube_or_open(storage_uri: str, media_type: str, timing: dict | None, opener: Any) -> Any:
+    """Return the cached cube for this export if there is a good one, else run
+    the open pipeline (T52).
+
+    Deliberately *outside* the interpreting functions themselves, so
+    :func:`pipeline_source_fingerprint` tracks interpretation only and cache
+    plumbing changes don't spuriously invalidate every cube.
+    """
+    from services.cube_cache import lookup
+    from utils.metrics import record_cache_hit, record_cache_miss
+
+    identity = _cube_identity(storage_uri, media_type)
+    cached = lookup(identity[0]) if identity is not None else None
+    if cached is not None:
+        record_cache_hit("zarr")
+        if timing is not None:
+            timing["cube"] = "hit"
+        return cached
+    if identity is not None:
+        record_cache_miss()
+        if timing is not None:
+            timing["cube"] = "miss"
+    return opener()
 
 
 def _open_netcdf(path: str, chunks: dict | None = None, *, timing: dict | None = None) -> Any:
@@ -522,7 +607,6 @@ def _extract_bundle_cached(zf: Any, path: str, names: list[str]) -> tuple[str, b
     (:func:`_prune_extract_cache`). Extraction goes into a staging dir
     renamed atomically into place, so a concurrent open of the same bundle
     either wins the rename or adopts the winner's completed entry."""
-    import hashlib
     import shutil
     import tempfile
 
@@ -530,8 +614,7 @@ def _extract_bundle_cached(zf: Any, path: str, names: list[str]) -> tuple[str, b
     os.makedirs(root, exist_ok=True)
     _prune_extract_cache(root)
 
-    stat = os.stat(path)
-    key = hashlib.sha256(f"{path}|{stat.st_size}|{stat.st_mtime_ns}".encode()).hexdigest()[:24]
+    key = _extract_cache_key(path)
     final_dir = os.path.join(root, key)
     marker = os.path.join(final_dir, _EXTRACT_COMPLETE_MARKER)
     if os.path.exists(marker):
@@ -557,6 +640,22 @@ def _extract_bundle_cached(zf: Any, path: str, names: list[str]) -> tuple[str, b
     return final_dir, False
 
 
+def _extract_cache_key(path: str) -> str:
+    stat = os.stat(path)
+    return hashlib.sha256(f"{path}|{stat.st_size}|{stat.st_mtime_ns}".encode()).hexdigest()[:24]
+
+
+def extract_cache_dir_for(path: str) -> str:
+    """Where :func:`_extract_bundle_cached` would put this bundle's members.
+
+    Derived from the same bundle identity, without opening the archive, so a
+    caller that only needs the *location* (T52's cube writer, which pins the
+    directory it is lazily reading from) doesn't have to re-derive the key."""
+    import tempfile
+
+    return os.path.join(tempfile.gettempdir(), _EXTRACT_CACHE_DIR_NAME, _extract_cache_key(path))
+
+
 def _extract_members_concurrently(zf: Any, names: list[str], dest: str) -> None:
     """Extract every member of ``zf`` into ``dest`` using a small bounded
     thread pool instead of one file at a time.
@@ -579,9 +678,16 @@ def _prune_extract_cache(root: str, ttl_seconds: float = _EXTRACT_CACHE_TTL_SECO
     """Sweep cache entries (completed or abandoned staging dirs) untouched
     for longer than the TTL. Reuse touches an entry's mtime, so only bundles
     nothing has opened for a full TTL are removed — far longer than any
-    single tool call keeps lazy readers on them."""
+    single tool call keeps lazy readers on them.
+
+    T52: an entry a cube write is currently reading from is pinned and skipped.
+    That writer holds a *lazy* Dataset pointing into this directory, and its
+    reads don't touch mtime — so without the pin a long enough write can have
+    its own source files deleted underneath it."""
     import shutil
     import time
+
+    from services.cube_cache import is_pinned
 
     cutoff = time.time() - ttl_seconds
     try:
@@ -590,8 +696,11 @@ def _prune_extract_cache(root: str, ttl_seconds: float = _EXTRACT_CACHE_TTL_SECO
         return
     for entry in entries:
         try:
-            if entry.is_dir(follow_symlinks=False) and entry.stat(follow_symlinks=False).st_mtime < cutoff:
-                shutil.rmtree(entry.path, ignore_errors=True)
+            if not entry.is_dir(follow_symlinks=False):
+                continue
+            if entry.stat(follow_symlinks=False).st_mtime >= cutoff or is_pinned(entry.path):
+                continue
+            shutil.rmtree(entry.path, ignore_errors=True)
         except OSError:
             continue
 
@@ -836,6 +945,27 @@ def _apply_declared_dimension_names(ds: Any) -> Any:
     return ds
 
 
+def pipeline_source_fingerprint() -> str:
+    """A hash of the source of every function that *interprets* an opened file.
+
+    ``_open_netcdf`` and its collaborators do not merely read files: they
+    rename declared dimensions, qualify collided leaves, merge groups,
+    synthesize time coordinates and promote lat/lon. Each of those has been
+    wrong and then fixed, and a cube written before a fix reproduces the old
+    interpretation forever with nothing in its output to reveal it.
+
+    :data:`OPEN_PIPELINE_SOURCE_FINGERPRINT` pins this value so that editing
+    any of them without bumping :data:`OPEN_PIPELINE_VERSION` fails CI rather
+    than silently leaving stale cubes servable.
+    """
+    import inspect
+
+    digest = hashlib.sha256()
+    for fn in _PIPELINE_SOURCE_FUNCTIONS:
+        digest.update(inspect.getsource(fn).encode())
+    return digest.hexdigest()
+
+
 def _promote_lat_lon_coords(ds: Any) -> Any:
     """Mark lat/lon-like data variables as coordinates instead of ordinary
     data variables, so they survive variable selection (e.g.
@@ -851,3 +981,36 @@ def _promote_lat_lon_coords(ds: Any) -> Any:
     identified = [identify_lat(ds), identify_lon(ds)]
     to_promote = [name for name in identified if name in ds.data_vars]
     return ds.set_coords(to_promote) if to_promote else ds
+
+
+# ---------------------------------------------------------------------------
+# T52: the open pipeline's interpretation version
+# ---------------------------------------------------------------------------
+# Participates in every cube cache key (services/cube_cache.py). BUMP THIS
+# whenever any function in _PIPELINE_SOURCE_FUNCTIONS below changes the
+# *interpretation* of a file -- which, in practice, means any time you touch
+# one at all. Every cube built by the old logic is then unreachable by
+# construction, including the negative-cache entries that recorded which
+# sources the old logic could not cube. The pinned fingerprint below makes
+# that enforcement rather than convention: test_cube_cache.py fails if the
+# source moves and this doesn't.
+OPEN_PIPELINE_VERSION = "1"
+
+_PIPELINE_SOURCE_FUNCTIONS = (
+    _open_netcdf,
+    _open_netcdf_bundle,
+    _apply_declared_dimension_names,
+    _promote_lat_lon_coords,
+    _synthesize_member_time_coord,
+    _order_bundle_time,
+    _strip_concat_unsafe_coord_attrs,
+)
+
+# Regenerate with:
+#   docker compose --profile test run --build --rm backend-test \
+#     python -c "from services.open_handle import pipeline_source_fingerprint; print(pipeline_source_fingerprint())"
+# and bump OPEN_PIPELINE_VERSION in the same edit. The cube-cache *wiring*
+# deliberately lives outside these functions (in _open_by_media_type) so this
+# fingerprint tracks interpretation only, and cache plumbing changes don't
+# spuriously invalidate every cube.
+OPEN_PIPELINE_SOURCE_FINGERPRINT = "525c237310b7d20b7aa16bd5f7e7f8bfdfc27afce06b8fab4074484ed21763d4"

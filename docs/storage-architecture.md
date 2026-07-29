@@ -1,6 +1,6 @@
 # Talking to Air — Storage Architecture
 
-Everything this stack persists data to: one PostgreSQL database, three Docker
+Everything this stack persists data to: one PostgreSQL database, four Docker
 named volumes, and one ephemeral OS-tempdir cache. No Redis, no queue, no
 second database — Postgres is the only database in the stack.
 
@@ -145,6 +145,31 @@ against the requesting user before streaming bytes. Holds server-rendered
 MapLibre heatmap overlay PNGs (T23). Kept out of `plot_outputs` on purpose —
 see the difference table below.
 
+### `cube_store` — private, backend-only
+Backend writes to `/app/cube_store`
+([Backend/services/cube_cache.py](../Backend/services/cube_cache.py), path from
+`CUBE_STORE_DIR`). **Not** mounted into the frontend and not served by any
+route — nothing outside the backend reads it. Holds the T52 Zarr cube cache:
+one Zarr store per cached retrieval, each with a sidecar `manifest.json`
+written last as its completion marker, plus `refused.json` negative-cache
+entries for sources that cannot round-trip.
+
+A named volume rather than a tempdir on purpose. A cube costs minutes to build
+(the full open pipeline plus a read/compress/write of the whole dataset) and
+`tta-backend` is rebuilt constantly, so a tempdir store would be empty every
+time anyone looked — the `overlay_store` failure mode exactly, except it would
+present as "the cache doesn't help" rather than as a broken deployment.
+[test_cube_store_persistence.py](../Backend/tests/test_cube_store_persistence.py)
+guards the mount.
+
+Bounded by `CUBE_STORE_MAX_BYTES` (default 4 GiB), evicted LRU by last access
+before each write. A fixed byte cap, not a share of free space: a percentage
+silently expands to fill any disk. Per-cube writes are separately capped by
+`CUBE_WRITE_MAX_BYTES` (default 1 GiB), which must stay below
+`BUNDLE_OPEN_MAX_UNCOMPRESSED_BYTES`. Every entry is disposable — a cube that
+fails its per-hit integrity sweep is deleted and the answer comes from the
+lazy path instead.
+
 ### `earthdata_data` — external, read-only
 Declared `external: true` in [docker-compose.yml:154](../docker-compose.yml).
 Owned and written by the separate `harmony-retrieval-mcp` stack; this repo
@@ -190,7 +215,7 @@ designer — they can't read the code, so this spells out every fact needed:
 > bidirectional arrow: "Frontend (React/Vite, nginx)" and "Backend (FastAPI +
 > LangGraph)".
 >
-> **Tier 2 — Persistent storage** (Docker named volumes), four boxes below
+> **Tier 2 — Persistent storage** (Docker named volumes), five boxes below
 > tier 1, each with an arrow up to Backend:
 > 1. **PostgreSQL + PostGIS** (volume `pg_data`) — list inside: `users`,
 >    `session_metadata`, `agent_charts`, `agent_artifacts`, `revoked_tokens`, and LangGraph's own
@@ -201,7 +226,9 @@ designer — they can't read the code, so this spells out every fact needed:
 > 3. **overlay_store** volume — server-rendered map overlay PNGs; Backend-only,
 >    reachable solely via an authenticated route, deliberately separate from
 >    `plot_outputs` because that one is public.
-> 4. **earthdata_data** volume — dotted/foreign-styled box, "external,
+> 4. **cube_store** volume — cached Zarr cubes of opened datasets; Backend-only,
+>    served by no route at all, size-capped and LRU-evicted.
+> 5. **earthdata_data** volume — dotted/foreign-styled box, "external,
 >    read-only, owned by a different repo/stack (harmony-retrieval-mcp)";
 >    mounted read-only at `/data`.
 >

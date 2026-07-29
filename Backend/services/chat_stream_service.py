@@ -13,6 +13,7 @@ from config.error_templates import render_error_answer, render_turn_timeout_answ
 from config.settings import get_settings
 from earthdata_mcp.results import CATEGORY_CONTRACT
 from models import AgentResult, agent_result_to_json, parse_agent_result, parse_chart_payload
+from services import cube_cache
 from services.artifact_store import artifact_store
 from services.chart_service import ChartService
 from services.intent_router import route_intent
@@ -77,7 +78,15 @@ class ChatStreamService:
         # real user id — the fast path calls run_satellite/run_ground
         # directly, bypassing stream_response's own binding entirely, which
         # is what left every fast-pathed retrieval scoped to "user-None".
-        with user_id_context(user_id):
+        #
+        # T52: also the turn-activity boundary the cube writer holds off
+        # against. The process runs --workers 1, so a background cube write
+        # competes directly with this turn for dask's two workers, the HDF5
+        # open lock and RSS — and the turn is the one the researcher is
+        # actually watching. Wrapping both routes here (the fast path is
+        # dispatched from inside this block) is what makes "never start a cube
+        # during a turn" true rather than aspirational.
+        with user_id_context(user_id), cube_cache.active_turn():
             intent = route_intent(message)
             route = "fast_path" if intent in _AGENT_CONSULTED_HEADERS else "supervisor"
             logger.info(

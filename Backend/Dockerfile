@@ -45,8 +45,13 @@ ENV PATH="/opt/venv/bin:$PATH"
 COPY . .
 RUN rm -rf tests .pytest_cache
 
-# Pre-create volume mount points with correct ownership
-RUN mkdir -p /app/data /app/outputs
+# Pre-create volume mount points with correct ownership. This must stay ABOVE
+# the chown below: Docker initializes a fresh named volume from whatever the
+# image has at that path, so a mount point that doesn't exist here produces a
+# root-owned volume that uid 1001 cannot write to. For cube_store that failure
+# is silent — the background writer catches the PermissionError and the cache
+# appears to work while never storing a cube.
+RUN mkdir -p /app/data /app/outputs /app/overlay_store /app/cube_store
 
 RUN useradd -m -u 1001 appuser && chown -R appuser:appuser /app
 USER appuser

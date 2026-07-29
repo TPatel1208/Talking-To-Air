@@ -54,11 +54,10 @@ CASES = {
     3: "crop-before-mask + Zarr cube    [T52]",
 }
 
-CASE_3_PENDING = (
-    "not implemented yet -- lands with T52 (the L4 Zarr cube). This row is "
-    "the slot its numbers go in; the harness is written once here and "
-    "extended once there."
-)
+# Case 3 lands with T52 and is no longer a stub. It still *can* skip -- a
+# dataset the cube writer refuses (or a cube that fails its own integrity
+# check) has no case-3 number to report, and saying so is more useful than a
+# fabricated row.
 
 
 @dataclass
@@ -249,11 +248,32 @@ def _time_one_run(da, geometry, crop: bool) -> tuple[float, int, int, int | None
     return elapsed, cells_in, int(masked.size), bytes_read, value
 
 
-def _run_case(number: int, da, geometry, runs: int) -> CaseResult:
-    if number == 3:
-        return CaseResult(number=3, description=CASES[3], skipped_reason=CASE_3_PENDING)
+def _cube_and_reopen(ds, variable: str | None):
+    """Write ``ds`` through the real cube writer and hand back the DataArray a
+    cache *hit* would serve — same code path a third question takes, so case 3
+    measures the shipped cache rather than a stand-in."""
+    import tempfile
+    import unittest.mock
 
-    crop = number == 2
+    from config.settings import get_settings
+    from services import cube_cache
+
+    store = tempfile.mkdtemp(prefix="bench-cube-store-")
+    with unittest.mock.patch.dict(os.environ, {"CUBE_STORE_DIR": store, "CUBE_WRITE_MAX_BYTES": str(64 * 1024 ** 3)}):
+        get_settings.cache_clear()
+        try:
+            if not cube_cache.write_cube(ds, "bench"):
+                return None, "the cube writer refused this dataset (see the cube_write_refused log event)"
+            cached = cube_cache.lookup("bench")
+            if cached is None:
+                return None, "the cube did not survive its own integrity check"
+            return _select_variable(cached, variable), None
+        finally:
+            get_settings.cache_clear()
+
+
+def _run_case(number: int, da, geometry, runs: int) -> CaseResult:
+    crop = number in (2, 3)
     samples = [_time_one_run(da, geometry, crop) for _ in range(runs)]
     return CaseResult(
         number=number,
@@ -288,7 +308,16 @@ def run_benchmark(bundle: str | None = None, *, variable: str | None = None, aoi
         runs=runs,
         products=_products(ds),
     )
-    report.cases = [_run_case(number, da, geometry, runs) for number in sorted(CASES)]
+    cases = []
+    for number in sorted(CASES):
+        case_da = da
+        if number == 3:
+            case_da, reason = _cube_and_reopen(ds, variable)
+            if case_da is None:
+                cases.append(CaseResult(number=3, description=CASES[3], skipped_reason=reason))
+                continue
+        cases.append(_run_case(number, case_da, geometry, runs))
+    report.cases = cases
     return report
 
 
@@ -328,6 +357,17 @@ def format_report(report: BenchmarkReport) -> str:
                 else "read push-down: NO -- the same bytes were read either way, so the whole "
                 "chunk materializes and the crop only trims in memory (the cube needs "
                 "spatial chunking)"
+            )
+
+    cubed = report.case(3)
+    if cropped.median_seconds and cubed.median_seconds:
+        lines.append(f"cube speedup over crop: {cropped.median_seconds / cubed.median_seconds:.2f}x")
+        if cropped.bytes_read is not None and cubed.bytes_read is not None:
+            saved = 1 - (cubed.bytes_read / cropped.bytes_read) if cropped.bytes_read else 0.0
+            lines.append(
+                f"cube read reduction: {saved * 100:.0f}% "
+                f"({cropped.bytes_read / 1048576:.1f} -> {cubed.bytes_read / 1048576:.1f} MiB) "
+                "-- this, not the wall clock, is the number T52 exists to move"
             )
     return "\n".join(lines)
 

@@ -65,6 +65,14 @@ BUNDLE_EXTRACT_CACHE_BYTES = Gauge(
     "bundle_extract_cache_bytes",
     "Total on-disk size of the bundle-extract TTL cache in bytes.",
 )
+CUBE_STORE_BYTES = Gauge(
+    "cube_store_bytes",
+    "Total on-disk size of the T52 Zarr cube cache in bytes.",
+)
+CUBE_EVICTIONS_TOTAL = Counter(
+    "cube_evictions_total",
+    "Cubes evicted from the cube store to stay under CUBE_STORE_MAX_BYTES.",
+)
 PIPELINE_PHASE_DURATION_SECONDS = Histogram(
     "pipeline_phase_duration_seconds",
     "Wall-clock duration of one retrieval/visualization pipeline phase in seconds.",
@@ -150,6 +158,10 @@ def record_cache_miss() -> None:
     CACHE_MISSES_TOTAL.inc()
 
 
+def record_cube_eviction() -> None:
+    CUBE_EVICTIONS_TOTAL.inc()
+
+
 def set_db_pool_connections_active(value: int | float | None) -> None:
     if value is not None:
         DB_POOL_CONNECTIONS_ACTIVE.set(value)
@@ -192,6 +204,13 @@ def refresh_process_gauges() -> None:
         from services.open_handle import extract_cache_size_bytes
 
         BUNDLE_EXTRACT_CACHE_BYTES.set(extract_cache_size_bytes())
+    except ImportError:
+        pass
+
+    try:
+        from services.cube_cache import store_size_bytes
+
+        CUBE_STORE_BYTES.set(store_size_bytes())
     except ImportError:
         pass
 

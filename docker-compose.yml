@@ -54,6 +54,14 @@ services:
       # overlay while its chart payload persists in Postgres, and the map
       # silently degrades to the canvas fallback ("quality lowered on restart").
       - overlay_store:/app/overlay_store
+      # T52 Zarr cube cache — the open pipeline's output, keyed so it self-
+      # invalidates. Backend-only and read-write, same posture as
+      # overlay_store. Deliberately NOT a tempdir: a cube costs minutes to
+      # build and this image is rebuilt constantly, so a tempdir store would
+      # be empty every time you looked and would read as "the cache doesn't
+      # help" rather than as a missing volume. Bounded by CUBE_STORE_MAX_BYTES,
+      # not by free space.
+      - cube_store:/app/cube_store
       # earthdata-retrieval MCP's materialization volume, read-only, mounted
       # at the same absolute path (/data) the MCP stack uses internally so
       # `export_result`'s file:// URIs resolve as a plain filesystem read.
@@ -149,6 +157,8 @@ volumes:
   plot_outputs:
     driver: local
   overlay_store:
+    driver: local
+  cube_store:
     driver: local
   # Owned by the harmony-retrieval-mcp stack (its `data` volume, fixed name
   # `earthdata_data`); joined here as external, read-only, so this stack is
