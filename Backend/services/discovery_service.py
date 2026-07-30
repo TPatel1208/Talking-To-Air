@@ -58,7 +58,11 @@ def _registry_entry_for(result: dict[str, Any]) -> tuple[str | None, CollectionC
     concept_id. Returns ``(None, None)`` for an unregistered collection (the
     classifier still runs name-only, without the registry's primary/qa hints)."""
     concept_id = result.get("concept_id")
-    metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+    # Bound to a name before the isinstance check: narrowing applies to
+    # variables, not to a repeated ``result.get(...)`` call expression, so the
+    # inline form left ``None`` in the type and cost a second lookup.
+    raw_metadata = result.get("metadata")
+    metadata: dict[Any, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
     short_name = metadata.get("short_name") or result.get("short_name")
     registry = load_registry()
     if concept_id:
