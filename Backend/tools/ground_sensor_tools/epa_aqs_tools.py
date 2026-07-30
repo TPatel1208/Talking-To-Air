@@ -99,7 +99,13 @@ async def _aqs_get(endpoint: str, params: Dict[str, Any]) -> Dict[str, Any]:
     )
     # "No data matched your selection" is a valid empty result, not an error
     if status not in ("success", "no data matched your selection", ""):
-        raise RuntimeError(f"AQS API error: {header[0]}")
+        # Surface only AQS's own human-readable error text — the full header
+        # dict is an internal dump that a model would relay verbatim.
+        detail = header[0].get("error") or header[0].get("status") or "unexpected response"
+        if isinstance(detail, (list, tuple)):
+            detail = "; ".join(str(item) for item in detail)
+        logger.warning("aqs_error endpoint=%s header=%r", endpoint, header[0])
+        raise RuntimeError(f"EPA AQS request failed: {detail}")
     cache[cache_key] = data
     return data
 
@@ -162,6 +168,46 @@ def _resolve_dates(bdate: Optional[str], edate: Optional[str]):
     if bdate_obj > edate_obj:
         raise ValueError(f"bdate ({bdate_obj}) must be <= edate ({edate_obj})")
     return bdate_obj, edate_obj, bdate_obj.strftime("%Y%m%d"), edate_obj.strftime("%Y%m%d")
+
+
+# An empty result whose window ends within this many days of today is almost
+# always "EPA hasn't published it yet" (AQS releases data with a lag of
+# roughly two months), not "no monitor measured it" — wide enough to cover
+# the lag's real-world variance.
+_RECENT_DATA_WINDOW_DAYS = 90
+
+# API endpoint prefix -> the plain-English name a researcher should read.
+_SUMMARY_KINDS = {
+    "dailyData": "daily summary",
+    "quarterlyData": "quarterly summary",
+    "annualData": "annual summary",
+}
+
+
+def _no_data_message(kind: str, param_code: str, bdate_obj: date, edate_obj: date) -> str:
+    """Plain-language empty-result explanation for a researcher.
+
+    Never an internal endpoint/params dump — those go to the log, not the
+    chat (live 2026-07-16: "No dailyData data found for param 42602 ...
+    using dailyData/bySite with {'state': '34', ...}" surfaced verbatim for
+    a yesterday-dated query EPA simply hadn't published yet).
+    """
+    window = (
+        bdate_obj.isoformat()
+        if bdate_obj == edate_obj
+        else f"{bdate_obj.isoformat()} to {edate_obj.isoformat()}"
+    )
+    if edate_obj >= date.today() - timedelta(days=_RECENT_DATA_WINDOW_DAYS):
+        return (
+            f"EPA has not published {kind} data for {window} yet — AQS "
+            "measurements are typically released with a lag of about two "
+            "months. Try a date at least three months in the past."
+        )
+    return (
+        f"No EPA {kind} measurements were found for parameter {param_code} "
+        f"for {window} in the requested area. Try a wider area, a "
+        "different date range, or a different pollutant."
+    )
 
 
 async def _fetch_active_monitors(bbox, param_code, bdate_str, edate_str, k=1):
@@ -456,11 +502,14 @@ async def _fetch_summary(
         records = [r for r in records if r.get("pollutant_standard") == pollutant_standard]
 
     if not records:
+        # Internals (endpoint, filter params) belong in the log, never in the
+        # chat-facing error text a model will relay verbatim.
+        logger.info(
+            "aqs_no_data endpoint=%s params=%r pollutant_standard=%r",
+            endpoint, filter_params, pollutant_standard,
+        )
         raise RuntimeError(
-            f"No {prefix} data found for param {param_code} "
-            f"between {bdate_obj.isoformat()} and {edate_obj.isoformat()} "
-            f"using {endpoint} with {filter_params}"
-            + (f" and pollutant_standard='{pollutant_standard}'." if pollutant_standard else ".")
+            _no_data_message(_SUMMARY_KINDS.get(prefix, prefix), param_code, bdate_obj, edate_obj)
         )
     return records, endpoint, filter_params
 
@@ -500,7 +549,12 @@ def _artifact_table_response(
         title=title,
         columns=_table_columns(body),
         rows=body,
-        metadata=metadata or {},
+        # Every table this module produces comes from the EPA AQS API; stamp
+        # the source dataset at this single artifact boundary so the frontend
+        # Metadata tab's "Source dataset" field (tableOverviewFields reads
+        # metadata.dataset) has a fact to show instead of "Not available".
+        # Callers' own metadata still wins if they ever name it themselves.
+        metadata={"dataset": "EPA AQS", **(metadata or {})},
     )
     header[0]["artifact_count"] = 1
     header[0]["table_artifact_id"] = artifact_ref.id
@@ -568,14 +622,15 @@ def _aggregate_summary_records(
         site_records = site_period_records[(site_id, period_id)]
         first = site_records[0]
         means = [v for v in (_float_or_none(r.get("arithmetic_mean")) for r in site_records) if v is not None]
+        # min/max must come from real API statistics — never fall back to the
+        # arithmetic_mean, which fabricates min == max == mean. The dailyData
+        # endpoint supplies no minimum_value/maximum_value at all; its
+        # first_max_value IS the period's highest sample (per AQS docs), so it
+        # is a genuine max fallback. There is no minimum counterpart: when the
+        # API only supplies a mean, min (or max) stays null.
         minima = [
             v
-            for v in (
-                _float_or_none(r.get("minimum_value"))
-                if r.get("minimum_value") is not None
-                else _float_or_none(r.get("arithmetic_mean"))
-                for r in site_records
-            )
+            for v in (_float_or_none(r.get("minimum_value")) for r in site_records)
             if v is not None
         ]
         maxima = [
@@ -583,7 +638,7 @@ def _aggregate_summary_records(
             for v in (
                 _float_or_none(r.get("maximum_value"))
                 if r.get("maximum_value") is not None
-                else _float_or_none(r.get("arithmetic_mean"))
+                else _float_or_none(r.get("first_max_value"))
                 for r in site_records
             )
             if v is not None
@@ -1001,10 +1056,9 @@ async def get_sample_data(
     records = data.get("Data", data.get("Body", []))
 
     if not records:
+        logger.info("aqs_no_data endpoint=%s params=%r", endpoint, filter_params)
         raise RuntimeError(
-            f"No sample data found for param {param_code} "
-            f"between {bdate_obj.isoformat()} and {edate_obj.isoformat()} "
-            f"using {endpoint} with {filter_params}."
+            _no_data_message("hourly sample", param_code, bdate_obj, edate_obj)
         )
 
     body = [

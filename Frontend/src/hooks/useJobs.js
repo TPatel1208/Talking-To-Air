@@ -1,7 +1,13 @@
 import { useState, useCallback, useEffect } from 'react'
-import { sortJobs } from '../utils/jobCard.js'
+import { sortJobs, hasProgressingJob } from '../utils/jobCard.js'
 
 const API_BASE = '/api'
+
+// While any job is non-terminal the panel re-fetches on this cadence. Its
+// only other live update channel is the chat stream's job_progress events —
+// once that stream ends (or the user hits Stop) a row would otherwise freeze
+// at its last-seen status ("Processing — 0%") until a manual Refresh.
+const ACTIVE_JOB_POLL_MS = 15000
 
 export function useJobs(accessToken) {
   const [jobs, setJobs] = useState([])
@@ -36,6 +42,18 @@ export function useJobs(accessToken) {
   // changes) so reloading the page never loses running jobs — the panel
   // never relies on chat history to know what's in flight.
   useEffect(() => { fetchJobs() }, [fetchJobs])
+
+  // Keep in-flight rows live even when no chat stream is feeding
+  // job_progress events (stopped request, reloaded page, job started in
+  // another session). Stops itself once no job is still progressing — a
+  // paused job (needs user action) or a terminal one never keeps it running,
+  // so a stuck workspace can't poll (and re-fan-out to the MCP) forever.
+  const hasActiveJobs = hasProgressingJob(jobs)
+  useEffect(() => {
+    if (!accessToken || !hasActiveJobs) return undefined
+    const id = setInterval(() => { fetchJobs() }, ACTIVE_JOB_POLL_MS)
+    return () => clearInterval(id)
+  }, [accessToken, hasActiveJobs, fetchJobs])
 
   const applyJobProgress = useCallback((data) => {
     if (!data || !data.job_handle) return

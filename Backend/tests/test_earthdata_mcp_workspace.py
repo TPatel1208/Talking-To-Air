@@ -11,6 +11,8 @@ TESTS_DIR = os.path.dirname(__file__)
 if TESTS_DIR not in sys.path:
     sys.path.insert(0, TESTS_DIR)
 
+from cache_isolation import ProcessCacheIsolation  # noqa: E402
+
 REQUIRED_MODULES = ["langchain_mcp_adapters", "fastmcp", "uvicorn"]
 
 
@@ -18,7 +20,7 @@ REQUIRED_MODULES = ["langchain_mcp_adapters", "fastmcp", "uvicorn"]
     any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
     "MCP client test dependencies are not installed",
 )
-class WorkspaceBindingTests(unittest.IsolatedAsyncioTestCase):
+class WorkspaceBindingTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
 
@@ -199,12 +201,28 @@ class WorkspaceBindingClassifiedErrorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(ctx.exception.category, "user_input")
 
+    async def test_a_rejected_aoi_input_leaves_a_greppable_log_event(self):
+        """T46 story #4: the live silent-substitution incident (2026-07-17)
+        left NOTHING to grep for. A user_input rejection from
+        define_area_of_interest must fire a named log event carrying the
+        offending input, so the regression is discoverable from logs."""
+        from earthdata_mcp.workspace import bind_workspace
+
+        bound = bind_workspace(self.tools, lambda: "17")
+
+        with self.assertLogs("earthdata_mcp.workspace", level="WARNING") as cm:
+            await bound["define_area_of_interest"].ainvoke({"location": "zzzzqqqq nowhere"})
+
+        rejection_lines = [r for r in cm.records if getattr(r, "_event", None) == "aoi_user_input_rejected"]
+        self.assertEqual(len(rejection_lines), 1)
+        self.assertEqual(rejection_lines[0]._location, "zzzzqqqq nowhere")
+
 
 @unittest.skipIf(
     any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
     "MCP client test dependencies are not installed",
 )
-class WorkspaceMissingUserContextTests(unittest.IsolatedAsyncioTestCase):
+class WorkspaceMissingUserContextTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCase):
     """T26: a None user id must never mint a shared "user-None" workspace —
     that pooled every caller's retrievals together (113 orphaned rows found
     live). bind_workspace refuses instead, raising a typed error the model
@@ -229,14 +247,21 @@ class WorkspaceMissingUserContextTests(unittest.IsolatedAsyncioTestCase):
 
         self.tools = await load_raw_mcp_tools(Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None))
 
-    async def test_a_none_user_id_raises_instead_of_minting_user_none(self):
-        from earthdata_mcp.workspace import MissingUserContextError, bind_workspace
+    async def test_a_none_user_id_returns_a_contract_error_instead_of_minting_user_none(self):
+        # T37: the refusal is still loud, but it now classifies as a T18
+        # contract error envelope — legible like every other failure —
+        # instead of surfacing as an unclassified traceback string.
+        import json
+
+        from earthdata_mcp.workspace import bind_workspace
 
         bound = bind_workspace(self.tools, lambda: None)
 
-        with self.assertRaises(MissingUserContextError):
-            await bound["search_datasets"].ainvoke({"query": "no2"})
+        raw = await bound["search_datasets"].ainvoke({"query": "no2"})
+        body = json.loads(raw)["error"]
 
+        self.assertEqual(body["category"], "contract")
+        self.assertIn("No user context", body["message"])
         # The MCP itself must never have been reached — the guard fires
         # before workspace_id is ever constructed, let alone with "None".
         self.assertNotIn("workspace_id", self.received)

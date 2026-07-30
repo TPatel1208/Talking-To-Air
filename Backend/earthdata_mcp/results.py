@@ -14,12 +14,31 @@ point: a dict back, or ``MCPToolError`` with a category a caller can act on.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+import time
 from typing import Any
 
+from config.settings import get_settings
+
 logger = logging.getLogger(__name__)
+
+
+def _monotonic() -> float:
+    """Wall-independent clock for the circuit-breaker cooldown, wrapped in a
+    module function so tests can patch it deterministically."""
+    return time.monotonic()
+
+
+# A half-open probe (a single call admitted after the recovery cooldown) runs
+# under this bound instead of the full ``mcp_call_timeout_seconds`` — while the
+# breaker is open we only want to *cheaply* test liveness, never let one probe
+# burn a whole 120s of reconnect churn against a still-down server (the exact
+# cost the breaker exists to prevent). A healthy server answers a probe well
+# inside this; a still-down one fails fast and re-arms the cooldown.
+_HALF_OPEN_PROBE_TIMEOUT_SECONDS = 15.0
 
 CATEGORY_USER_INPUT = "user_input"
 CATEGORY_NO_DATA = "no_data"
@@ -130,6 +149,14 @@ _USER_INPUT_PATTERNS: tuple[tuple[str, str], ...] = (
     # prefix this backend never anchors against.
     ("results for location", "Try a more specific location name."),
     ("location must be provided", "Provide a location."),
+    # T46 live repro (2026-07-17): define_area_of_interest rejects an inverted
+    # bounding box (south >= north). A researcher-fixable input — classifying
+    # it as contract replaced the clear message with the generic dead-end and
+    # let the agent improvise a substitute region ("North America") with no
+    # disclosure. Matched on the invariant clause of both the latitude and
+    # longitude inversion messages.
+    ("latitude exceeds north latitude", "Check the bounding box: south latitude must be less than north latitude."),
+    ("longitude exceeds east longitude", "Check the bounding box: west longitude must be less than east longitude."),
     (
         "Ambiguous location",
         "Use the HUC or FIPS prefix to disambiguate (e.g. 'HUC 0204' or 'FIPS 34023').",
@@ -271,10 +298,10 @@ def _log(exc: MCPToolError) -> MCPToolError:
     return exc
 
 
-async def call_tool(tool: Any, kwargs: dict) -> Any:
+async def call_tool(tool: Any, kwargs: dict, timeout: float | None = None) -> Any:
     """Invoke ``tool.ainvoke(kwargs)`` and return its raw, unclassified
     result — or raise ``MCPToolError`` (category ``provider_unavailable``)
-    for a transport/session-level failure.
+    for a transport/session-level failure or a call that exceeds its budget.
 
     A connection failure is *raised* by langchain_mcp_adapters, never
     returned as tool content (content only carries MCP-side ``isError``
@@ -287,14 +314,79 @@ async def call_tool(tool: Any, kwargs: dict) -> Any:
     ``httpx.ConnectError``/``httpcore.ConnectError`` in a ``BaseExceptionGroup``
     rather than raising it bare — ``except*`` unwraps that regardless of
     whether the underlying exception arrived grouped or not (PEP 654).
+
+    The net is the transport *base* classes, not an enumerated list of
+    connect-phase types: a call that dies AFTER connecting (MCP restarted
+    mid-call, network blip during a long response) raises read/write-phase
+    errors (``httpx.ReadTimeout``/``ReadError``/``RemoteProtocolError``,
+    ``httpcore.ReadError``, an ``anyio`` resource error) that the old
+    connect-only tuple let escape unclassified.
+
+    T38: ``call_tool`` is the one seam every model-facing MCP call passes
+    through (bind_workspace wraps every tool with it), so a per-call budget
+    here bounds a wedged ``tool.ainvoke`` — a stuck MCP call — without the
+    caller having to know anything about timeouts. ``timeout`` defaults to
+    ``settings.mcp_call_timeout_seconds`` (generous — retrieve_subset
+    submissions and large export_result calls are legitimately slow) but a
+    composite may pass a tighter one (e.g. an individual await_retrieval
+    status poll, whose own loop already bounds the whole wait).
     """
+    import anyio
     import httpcore
     import httpx
     from mcp.shared.exceptions import McpError
 
+    from utils.streaming import get_mcp_failure_state
+
+    settings = get_settings()
+    if timeout is None:
+        timeout = settings.mcp_call_timeout_seconds
+
+    # Storm containment (2026-07-20): once a turn has seen enough consecutive
+    # transport failures, stop opening more doomed streamable-HTTP sessions —
+    # each one can reconnect-storm for its whole timeout window. Short-circuit
+    # BEFORE touching the transport so a tripped turn fails instantly instead
+    # of burning another mcp_call_timeout of reconnect churn. Inert outside a
+    # chat turn (state is None on the jobs/discovery endpoints).
+    #
+    # Half-open recovery (2026-07-20): the MCP *server* crash-restarts in ~10-15s
+    # windows, so a permanently-sticky trip would fail a whole turn for a brief
+    # blip. Once tripped, keep fast-failing until the recovery cooldown elapses,
+    # then admit exactly ONE call as a half-open probe (bounded, below). A
+    # successful probe closes the breaker (the `else` branch); a failed one
+    # re-arms the cooldown (`_note_transport_failure`), so a still-down server
+    # sees at most one bounded probe per cooldown — never the reconnect storm.
+    state = get_mcp_failure_state()
+    if state is not None and state.get("tripped"):
+        elapsed = _monotonic() - state.get("tripped_at", 0.0)
+        if elapsed < settings.mcp_transport_recovery_cooldown_seconds:
+            raise _log(MCPToolError(
+                CATEGORY_PROVIDER_UNAVAILABLE,
+                "The satellite data layer has been unavailable repeatedly this turn.",
+                suggestion="Try again in a moment.",
+                raw_preview="mcp transport circuit breaker tripped",
+            ))
+        # Falling through here IS the half-open probe. No separate flag: the
+        # probe is identified by ``state["tripped"]`` still being set, which is
+        # exactly what the success (`else`) and failure (`_note_transport_
+        # failure`) paths below already read. Bound it tighter than the normal
+        # budget so a probe against a still-down server can't burn a full
+        # mcp_call_timeout.
+        timeout = min(timeout, _HALF_OPEN_PROBE_TIMEOUT_SECONDS)
+
     try:
-        return await tool.ainvoke(kwargs)
-    except* (httpcore.ConnectError, httpx.ConnectError, httpx.ConnectTimeout, McpError) as eg:
+        result = await asyncio.wait_for(tool.ainvoke(kwargs), timeout=timeout)
+    except* (
+        httpx.TransportError,
+        httpcore.NetworkError,
+        httpcore.TimeoutException,
+        httpcore.ProtocolError,
+        anyio.ClosedResourceError,
+        anyio.BrokenResourceError,
+        anyio.EndOfStream,
+        McpError,
+    ) as eg:
+        _note_transport_failure(state, settings.mcp_transport_failure_ceiling)
         detail = eg.exceptions[0] if eg.exceptions else eg
         raise _log(MCPToolError(
             CATEGORY_PROVIDER_UNAVAILABLE,
@@ -302,3 +394,54 @@ async def call_tool(tool: Any, kwargs: dict) -> Any:
             suggestion="Try again in a moment.",
             raw_preview=str(detail)[:300],
         )) from eg
+    except* TimeoutError:
+        _note_transport_failure(state, settings.mcp_transport_failure_ceiling)
+        raise _log(MCPToolError(
+            CATEGORY_PROVIDER_UNAVAILABLE,
+            "The data service stopped responding.",
+            suggestion="Try again in a moment.",
+            raw_preview=f"tool call exceeded {timeout}s",
+        )) from None
+    else:
+        # A clean transport round trip resets the streak — the breaker trips
+        # only on *consecutive* failures, so a lone blip between good calls
+        # never counts toward it (same dampening philosophy as the T40
+        # connection heartbeat). A success while tripped is a half-open probe
+        # that found the server back: close the breaker so the rest of the turn
+        # proceeds instead of staying poisoned by an outage that has passed.
+        if state is not None:
+            state["consecutive"] = 0
+            if state.get("tripped"):
+                state["tripped"] = False
+                state["tripped_at"] = 0.0
+                logger.warning(
+                    "mcp_transport_circuit_breaker_recovered",
+                    extra={"_event": "mcp_transport_circuit_breaker_recovered"},
+                )
+        return result
+
+
+def _note_transport_failure(state: dict | None, ceiling: int) -> None:
+    """Record one transport/timeout failure against the turn's circuit-breaker
+    state and trip it once ``ceiling`` consecutive failures accrue. A no-op
+    when there is no turn context bound (state is None).
+
+    ``tripped_at`` is stamped every time we're at/over the ceiling — both on the
+    initial trip and when a half-open probe fails — so the recovery cooldown
+    re-arms from the *latest* failure. That keeps a still-down server to at most
+    one probe per cooldown instead of one probe per call."""
+    if state is None:
+        return
+    state["consecutive"] = state.get("consecutive", 0) + 1
+    if state["consecutive"] >= ceiling:
+        if not state.get("tripped"):
+            logger.warning(
+                "mcp_transport_circuit_breaker_tripped",
+                extra={
+                    "_event": "mcp_transport_circuit_breaker_tripped",
+                    "_consecutive_failures": state["consecutive"],
+                    "_ceiling": ceiling,
+                },
+            )
+        state["tripped"] = True
+        state["tripped_at"] = _monotonic()

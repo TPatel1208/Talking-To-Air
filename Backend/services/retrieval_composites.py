@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -18,13 +19,73 @@ from langchain_core.tools import BaseTool
 from config.settings import Settings, get_settings
 from config.workflow_stages import STAGE_ESTIMATE, STAGE_PROGRESS, STAGE_SUBMIT
 from datasets.registry import known_quality_flag_vars, load_registry
-from earthdata_mcp.results import CATEGORY_TOO_LARGE, MCPToolError, parse_tool_result
-from services import variable_choice_registry
+from earthdata_mcp.results import (
+    CATEGORY_CONTRACT,
+    CATEGORY_PROVIDER_UNAVAILABLE,
+    CATEGORY_TOO_LARGE,
+    MCPToolError,
+    parse_tool_result,
+)
+from services import scope_registry, variable_choice_registry
+from utils.metrics import observe_harmony_fetch
 from utils.streaming import emit_job_progress, emit_status
 
 logger = logging.getLogger(__name__)
 
-TERMINAL_STATUSES = {"ready", "failed", "expired", "cancelled"}
+# "not_found" is a dead handle list_workspace still lists after the MCP has
+# evicted the job (get_retrieval_status has no record of it) -- terminal
+# because it never changes again and there's no live job a cancel could
+# reach. On a long-lived workspace these can vastly outnumber real jobs
+# (live repro: 134 not_found vs 46 real jobs); leaving it out sorted every
+# dead row into the "active" group ahead of genuinely current tasks (see
+# list_jobs' sort below and jobs_service._CACHEABLE_STATUSES, which already
+# treated it as immutable).
+TERMINAL_STATUSES = {"ready", "failed", "expired", "cancelled", "not_found"}
+
+# await_retrieval keeps polling through this many CONSECUTIVE transient
+# (provider_unavailable) status-poll failures before surfacing the error. A
+# single network blip during a 15-minute Harmony job used to abandon the
+# whole await — the agent reported failure while the job completed
+# unobserved at the provider. One successful poll resets the count.
+POLL_TRANSIENT_FAILURE_LIMIT = 3
+
+# Harmony auto-pauses jobs it considers too large to run unattended (its
+# previewing -> paused flow). The MCP's status mapper reports a paused job as
+# status "running" (harmony-retrieval-mcp providers/harmony.py maps "paused"
+# -> RUNNING), so the only paused signal that reaches this backend is the
+# provider's own status text relayed in ``message`` ("The job is paused and
+# may be resumed using the provided link", live-observed 2026-07-16 on
+# job_142cbb2faa6aecc0). Without this detection a paused job polls as
+# "running" until the await timeout — an ever-climbing chat timer over a job
+# that will never finish on its own, and a jobs-panel row stuck at
+# "Processing" forever.
+PAUSED_STATUS = "paused"
+
+_PAUSED_MESSAGE_RE = re.compile(r"\bpaused\b", re.IGNORECASE)
+
+PAUSED_NOTE = (
+    "The data provider paused this job — usually because the request was too "
+    "large to process automatically. It will not finish on its own: cancel "
+    "it, then narrow the time range or area and try again."
+)
+
+
+def annotate_paused(status_data: dict[str, Any]) -> dict[str, Any]:
+    """Surface a provider-paused job honestly: a non-terminal status whose
+    provider message says the job is paused becomes status ``"paused"`` (with
+    a ``"paused at provider"`` phase and a plain-language ``note``) instead of
+    masquerading as running forever. Terminal statuses and messages that never
+    mention pausing pass through untouched."""
+    status = status_data.get("status", "")
+    message = status_data.get("message") or ""
+    if status in TERMINAL_STATUSES or not _PAUSED_MESSAGE_RE.search(message):
+        return status_data
+    return {
+        **status_data,
+        "status": PAUSED_STATUS,
+        "phase": "paused at provider",
+        "note": PAUSED_NOTE,
+    }
 
 
 def _supports_variable_subsetting(variables: list[str]) -> bool:
@@ -100,6 +161,11 @@ async def await_retrieval(
     and returns the terminal status dict (including obs_handle on success).
     A failed/cancelled job is returned, not raised — the MCP's own stage/
     provider-prefixed error string is the caller's answer, verbatim.
+
+    A provider-paused job (see :func:`annotate_paused`) is also returned
+    immediately, with status ``"paused"`` and a plain-language ``note`` —
+    polling it to the timeout would just narrate a job that cannot finish
+    on its own.
     """
     settings = settings or get_settings()
     status_tool = tools["get_retrieval_status"]
@@ -108,9 +174,35 @@ async def await_retrieval(
     started = loop.time()
     deadline = started + settings.await_retrieval_timeout_seconds
 
+    consecutive_poll_failures = 0
     while True:
-        raw = await status_tool.ainvoke({"job_handle": job_handle})
-        data = parse_tool_result(raw)
+        try:
+            raw = await status_tool.ainvoke({"job_handle": job_handle})
+            data = annotate_paused(parse_tool_result(raw))
+        except MCPToolError as exc:
+            # Transient outages (the MCP's upstream call dying, a network
+            # blip) are retried up to POLL_TRANSIENT_FAILURE_LIMIT
+            # consecutive times — the job itself is still running at the
+            # provider, so abandoning the await on the first blip throws
+            # away real work. Anything non-transient (contract/user_input)
+            # is a bug or a bad request and fails loud on the first poll.
+            if exc.category != CATEGORY_PROVIDER_UNAVAILABLE:
+                raise
+            consecutive_poll_failures += 1
+            if consecutive_poll_failures > POLL_TRANSIENT_FAILURE_LIMIT:
+                raise
+            logger.warning(
+                "await_retrieval_poll_retry",
+                extra={
+                    "_event": "await_retrieval_poll_retry",
+                    "_job_handle": job_handle,
+                    "_consecutive_failures": consecutive_poll_failures,
+                },
+            )
+            await asyncio.sleep(interval)
+            interval = min(interval * 2, settings.await_retrieval_poll_max_seconds)
+            continue
+        consecutive_poll_failures = 0
         status = data.get("status", "")
         progress = data.get("progress")
         emit_job_progress(
@@ -119,16 +211,34 @@ async def await_retrieval(
             progress,
             data.get("phase"),
             data.get("message"),
+            note=data.get("note"),
         )
+        if status == PAUSED_STATUS:
+            emit_status(
+                "Retrieval paused by the data provider — the request may be too large.",
+                stage=STAGE_PROGRESS,
+                detail=progress,
+            )
+            return data
         emit_status(f"Retrieving data — {status}...", stage=STAGE_PROGRESS, detail=progress)
         if status in TERMINAL_STATUSES:
             if status == "ready":
+                # T51: the one place that knows a retrieval's full span. Only
+                # on ``ready``: the histogram describes a job that actually
+                # downloaded something, and folding failures/cancellations in
+                # would make its percentiles describe a different population
+                # than they claim.
+                observe_harmony_fetch(loop.time() - started)
                 # T25: promote this job's recorded variable choice (if any)
                 # onto the handle it resolved to, so a later plot/stat/
                 # compare call inherits it instead of AggregationService.
                 # to_dataarray refusing a multi-variable file all over again.
                 handle = data.get("obs_handle") or data.get("cube_handle")
                 variable_choice_registry.finalize(job_handle, handle)
+                # T46: promote the requested scope (recorded at submission) onto
+                # the resolved handle, so a later plot/stat can disclose any
+                # silent substitution between requested and delivered scope.
+                scope_registry.finalize(job_handle, handle)
             return data
 
         if loop.time() >= deadline:
@@ -175,9 +285,26 @@ async def safe_retrieve(
         "time_range": time_range,
     })
     estimate = parse_tool_result(estimate_raw)
-    estimated_bytes = estimate.get("estimated_bytes", 0)
+    estimated_bytes = estimate.get("estimated_bytes")
 
-    if estimated_bytes > settings.retrieval_hard_cap_bytes:
+    # An absent estimate must not sail past the caps as if it were zero
+    # bytes — "couldn't price it" is not "free". Treat it like the
+    # between-caps case: pause for confirmation, saying honestly that the
+    # size is unknown (the bundle-open size gate still backstops at open
+    # time, but only after the provider has already done the work).
+    if estimated_bytes is None:
+        if not confirmed:
+            return {
+                "status": "needs_confirmation",
+                "estimated_bytes": None,
+                "message": (
+                    "The provider could not estimate this retrieval's size, so the "
+                    "size guardrail cannot vet it. Reply to confirm proceeding "
+                    "anyway, or narrow the area of interest, time range, or "
+                    "variable list first."
+                ),
+            }
+    elif estimated_bytes > settings.retrieval_hard_cap_bytes:
         return {
             "status": "refused",
             "estimated_bytes": estimated_bytes,
@@ -188,7 +315,7 @@ async def safe_retrieve(
             ),
         }
 
-    if estimated_bytes > settings.retrieval_soft_cap_bytes and not confirmed:
+    if estimated_bytes is not None and estimated_bytes > settings.retrieval_soft_cap_bytes and not confirmed:
         return {
             "status": "needs_confirmation",
             "estimated_bytes": estimated_bytes,
@@ -226,6 +353,12 @@ async def safe_retrieve(
     science_variables = [v for v in variables if v.rsplit("/", 1)[-1] not in flag_vars]
     if len(science_variables) == 1:
         variable_choice_registry.record_pending(subset.get("job_handle"), science_variables[0])
+
+    # T46: safe_retrieve only sees an opaque aoi_handle (not a place name), so
+    # it records just the requested time_range — enough to disclose a single-
+    # day request served by a monthly mean. Region substitution on this path
+    # is caught by the dispatch-layer AOI guard instead.
+    scope_registry.record_pending(subset.get("job_handle"), {"time_range": time_range})
 
     return {"status": "submitted", "estimated_bytes": estimated_bytes, **subset}
 
@@ -279,6 +412,17 @@ async def point_timeseries(
     aoi_raw = await tools["define_area_of_interest"].ainvoke({"location": location})
     aoi = parse_tool_result(aoi_raw)
     aoi_handle = aoi.get("handle") or aoi.get("aoi_handle")
+    # An AOI response with no handle used to flow on as None and submit a
+    # retrieval against a null area; off-taxonomy that's a contract violation
+    # the agent should be able to explain, not a silent wrong request.
+    if not aoi_handle:
+        raise MCPToolError(
+            CATEGORY_CONTRACT,
+            "define_area_of_interest returned no area-of-interest handle "
+            "(expected a 'handle' or 'aoi_handle' field), so the point-timeseries "
+            "retrieval can't be located.",
+            suggestion="Try a different phrasing of the location, or a nearby named place.",
+        )
 
     emit_status("Submitting point timeseries retrieval...", stage=STAGE_SUBMIT)
     submit_raw = await tools["retrieve_timeseries"].ainvoke({
@@ -289,6 +433,22 @@ async def point_timeseries(
         "point_sample": True,
     })
     submit = parse_tool_result(submit_raw)
+    # A submit response with no job_handle used to KeyError below off-taxonomy;
+    # classify it so the failure reads as a contract violation naming the tool
+    # and the absent field rather than an opaque traceback.
+    job_handle = submit.get("job_handle")
+    if not job_handle:
+        raise MCPToolError(
+            CATEGORY_CONTRACT,
+            "retrieve_timeseries returned no 'job_handle', so the submitted "
+            "point-timeseries retrieval can't be awaited.",
+            suggestion="Retry the retrieval; if it persists, the product may not support point sampling.",
+        )
 
-    status = await await_retrieval(submit["job_handle"], tools, settings=settings)
+    # T46: point_timeseries knows both the place name and the time range, so it
+    # records the full requested scope for the job — promoted onto the cube
+    # handle by await_retrieval's finalize.
+    scope_registry.record_pending(job_handle, {"location": location, "time_range": time_range})
+
+    status = await await_retrieval(job_handle, tools, settings=settings)
     return {"aoi_handle": aoi_handle, **status}

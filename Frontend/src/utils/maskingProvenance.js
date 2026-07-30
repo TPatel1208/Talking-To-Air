@@ -28,3 +28,22 @@ export function resolveMasking(chart) {
     qaNote: masking.qa_note || '',
   }
 }
+
+// Region fidelity (T42): the backend discloses *what kind* of region it
+// masked -- region_type is 'polygon' (the named place's real boundary),
+// 'bounding_box' (a rectangle that averages in whatever it spans),
+// 'point_buffer' (a 0.1° box around a geocoded point with no boundary), or
+// 'boundary_cells' (a sub-cell region rescued from an empty mask). Only the
+// last three are worth a disclosure line -- a real polygon is the faithful
+// case and needs no caveat. display_name is the place the geocoder actually
+// resolved, so a wrong-place answer is catchable. Rides on chart.provenance.
+export function resolveRegionFidelity(chart) {
+  if (!chart || typeof chart !== 'object') return null
+  const provenance = chart.provenance || {}
+  const regionType = provenance.region_type || chart.region_type
+  if (!regionType || regionType === 'polygon') return null
+  return {
+    regionType,
+    displayName: provenance.display_name || chart.display_name || provenance.region_name || '',
+  }
+}

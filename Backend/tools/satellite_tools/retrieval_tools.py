@@ -16,12 +16,14 @@ from langchain.tools import tool
 from langchain_core.tools import BaseTool
 
 from earthdata_mcp.results import MCPToolError
+from services.measurement_explanation import explain_measurement as _explain_measurement
 from services.open_handle import OpenHandleError, open_handle
 from services.retrieval_composites import RetrievalTimeoutError
 from services.retrieval_composites import await_retrieval as _await_retrieval
 from services.retrieval_composites import point_timeseries as _point_timeseries
 from services.retrieval_composites import safe_retrieve as _safe_retrieve
 from tools.satellite_tools.plot_tools import _save_chart
+from utils.streaming import current_user_id
 
 
 def make_safe_retrieve(mcp_tools: dict[str, BaseTool]):
@@ -81,6 +83,12 @@ def make_await_retrieval(mcp_tools: dict[str, BaseTool]):
         yourself. Returns the terminal status, including the obs_/cube_
         handle on success. A failed/cancelled job is returned, not raised —
         report its message to the researcher verbatim.
+
+        A status of "paused" means the data provider paused the job (usually
+        because the request was too large) and it will NOT finish on its own.
+        Do not call await_retrieval on it again — relay the returned note to
+        the researcher and suggest narrowing the time range or area (they can
+        cancel the paused job from the Jobs panel).
 
         Args:
             job_handle : job_ handle returned by safe_retrieve.
@@ -216,3 +224,40 @@ def make_point_timeseries(mcp_tools: dict[str, BaseTool]):
         return _save_chart(payload, f"{variable}_{location}_point_timeseries")
 
     return point_timeseries
+
+
+def make_explain_measurement():
+    @tool
+    async def explain_measurement(chart_id: str) -> str:
+        """
+        Retrieve the already-computed reliability evidence for a chart you (or
+        a recent turn) produced — call this, and only this, when the researcher
+        asks how reliable / trustworthy / confident a measurement is. It reads
+        the persisted chart's deterministic facts; it never recomputes or
+        retrieves anything.
+
+        Returns a JSON object:
+          - has_evidence: whether any companion evidence was retrieved for this
+            chart. If false, no QA/uncertainty/context facts exist yet — say so
+            plainly and offer to retrieve the QA flag / cloud fraction; never
+            invent a confidence claim.
+          - evidence: (when has_evidence) the list of {name, role, stat, value,
+            units, coverage} facts — QA pass rate, uncertainty, cloud fraction,
+            aerosol index. Explain STRICTLY from these; never cite a factor
+            that isn't here, and present each as evidence, not a verdict.
+          - masking: the qa_status/qa_source disclosure for the plotted variable.
+          - variable / units: what was plotted.
+          - reason: (when has_evidence is false) why there is nothing to explain.
+
+        Args:
+            chart_id : the artifact/chart id of the measurement in question,
+                        from this or a recent turn's envelope artifact_ids.
+        """
+        # Scope the lookup to the session's bound user (the same
+        # current_user_id() context every user-scoped tool path uses) so a
+        # chart_id belonging to someone else reads as not-found, mirroring
+        # api.py's _get_owned_chart.
+        result = await _explain_measurement(chart_id, user_id=current_user_id())
+        return json.dumps(result)
+
+    return explain_measurement

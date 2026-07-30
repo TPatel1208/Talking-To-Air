@@ -55,6 +55,30 @@ class OpenHandleZarrTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(ds, xr.Dataset)
         self.assertIn("no2", ds.data_vars)
 
+    async def test_open_handle_opens_zipped_zarr_transform_export(self):
+        """The MCP's transform tools (compare/regrid) export derived cubes as
+        a *zipped* Zarr store (``cube.zarr.zip``, media_type
+        ``application/zarr``) — never a directory store. zarr-python 3
+        dropped v2's ZipStore-from-suffix inference, so a plain
+        ``xr.open_zarr(path)`` reads the zip file as an empty directory and
+        every compare dies with "No group found in store ... at path ''"
+        (live TEMPO NO2 Texas compare, 2026-07-16)."""
+        import xarray as xr
+
+        from services.open_handle import open_handle
+
+        def make_dataset():
+            return xr.Dataset(
+                {"product__vertical_column_troposphere": (("time", "y", "x"), [[[1.0, 2.0], [3.0, 4.0]]])}
+            )
+
+        self.volume.add_zarr_zip("cube_transform_1", make_dataset)
+
+        ds = await open_handle("cube_transform_1", self.tools)
+
+        self.assertIsInstance(ds, xr.Dataset)
+        self.assertIn("product__vertical_column_troposphere", ds.data_vars)
+
     async def test_open_handle_opens_parquet_handle_into_arrow_table(self):
         import pyarrow as pa
 
@@ -353,6 +377,91 @@ class OpenHandleGroupedNetcdfTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("vertical_column_troposphere", ds.data_vars)
         self.assertIn("qa_value", ds.data_vars)
 
+    async def test_open_handle_stamps_each_variables_source_group(self):
+        """Merging groups by bare name destroys group membership, which is
+        classification evidence (variable_roles' qa_statistics/geolocation/
+        product priors). Each merged variable must carry its source group as
+        a ``group_path`` attr so post-open classification (T36 evidence) sees
+        the same group a describe_dataset inventory name would."""
+        import xarray as xr
+
+        from services.open_handle import open_handle
+
+        def make_root():
+            return xr.Dataset()
+
+        def make_product_group():
+            return xr.Dataset({
+                "vertical_column_troposphere": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]]),
+            })
+
+        def make_qa_group():
+            return xr.Dataset({
+                "max_vertical_column_sample": (("lat", "lon"), [[0.0, 0.0], [0.0, 0.0]]),
+            })
+
+        self.volume.add_netcdf("obs_tempo_stamped", {
+            None: make_root,
+            "product": make_product_group,
+            "qa_statistics": make_qa_group,
+        })
+
+        ds = await open_handle("obs_tempo_stamped", self.tools)
+
+        self.assertEqual(ds["vertical_column_troposphere"].attrs.get("group_path"), "product")
+        self.assertEqual(ds["max_vertical_column_sample"].attrs.get("group_path"), "qa_statistics")
+
+    async def test_open_handle_qualifies_leaf_name_collisions_instead_of_silently_overriding(self):
+        """The same leaf name in two groups used to merge with
+        compat="override" — whichever group iterated first silently won, so
+        a plausible number could come from the wrong variable. Colliding
+        variables must keep their group-qualified names, so an explicit
+        qualified request resolves exactly and a bare ambiguous one is
+        refused with candidates (T25 doctrine), never guessed."""
+        import xarray as xr
+
+        from preprocessing.aggregation_service import AggregationService, VariableChoiceRequired
+        from services.open_handle import open_handle
+
+        def make_root():
+            return xr.Dataset()
+
+        def make_product_group():
+            return xr.Dataset({
+                "vertical_column": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]]),
+            })
+
+        def make_support_group():
+            return xr.Dataset({
+                "vertical_column": (("lat", "lon"), [[100.0, 200.0], [300.0, 400.0]]),
+            })
+
+        self.volume.add_netcdf("obs_collide", {
+            None: make_root,
+            "product": make_product_group,
+            "support_data": make_support_group,
+        })
+
+        ds = await open_handle("obs_collide", self.tools)
+
+        # Both survive, group-qualified — neither silently shadowed.
+        self.assertIn("product/vertical_column", ds.data_vars)
+        self.assertIn("support_data/vertical_column", ds.data_vars)
+        self.assertNotIn("vertical_column", ds.data_vars)
+
+        # An explicit qualified request resolves to exactly that group's data.
+        service = AggregationService()
+        da = service.to_dataarray(ds, variable="product/vertical_column")
+        self.assertEqual(float(da.values[0][0]), 1.0)
+
+        # A bare ambiguous request refuses with candidates, never guesses --
+        # T49: as the deterministic picker short-circuit, whose compact
+        # tool-result still names the qualified candidates.
+        with self.assertRaises(VariableChoiceRequired) as ctx:
+            service.to_dataarray(ds, variable=None)
+        self.assertIn("product/vertical_column", ctx.exception.mcp_error.message)
+        self.assertIn("support_data/vertical_column", ctx.exception.mcp_error.message)
+
     async def test_open_handle_leaves_a_genuinely_flat_netcdf_dataset_untouched(self):
         import xarray as xr
 
@@ -577,6 +686,55 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("latitude", ds.coords)
         self.assertIn("longitude", ds.coords)
 
+    async def test_open_handle_orders_bundle_by_time_not_filename(self):
+        """T44 story #2: the MCP concatenates bundle members in filename order
+        ('names sort chronologically'). A provider whose names don't sort
+        against their dates would yield a non-monotonic time axis, and a later
+        sel(time=slice(...)) would silently return the wrong subset. The open
+        must order by the decoded timestamps, not the alphabetics."""
+        import numpy as np
+
+        from services.open_handle import open_handle
+
+        # Alphabetical order (a_ < z_) is the OPPOSITE of date order (9 < 10).
+        self.volume.add_netcdf_bundle("obs_bundle_misordered", {
+            "z_earliest.nc4": {None: self._make_granule(9)},
+            "a_latest.nc4": {None: self._make_granule(10)},
+        })
+
+        ds = await open_handle("obs_bundle_misordered", self.tools)
+
+        times = ds["time"].values
+        self.assertEqual(ds.sizes["time"], 2)
+        self.assertTrue(np.all(np.diff(times) > np.timedelta64(0)))  # strictly increasing
+        self.assertEqual(str(times[0])[:10], "2026-07-09")
+
+    async def test_open_handle_dedupes_duplicate_bundle_timestamps_keep_first(self):
+        """T44 story #2: overlapping orbits and reprocessed granules can carry
+        identical timestamps. Left in, they double-count that granule in a mean
+        and break later sel(time=...) with an opaque non-unique-index error.
+        Keep the first occurrence, disclose the drop in a log event, and never
+        crash."""
+        from services.open_handle import open_handle
+
+        self.volume.add_netcdf_bundle("obs_bundle_dupes", {
+            "granule_a.nc4": {None: self._make_granule(9)},
+            "granule_b.nc4": {None: self._make_granule(9)},  # same timestamp
+            "granule_c.nc4": {None: self._make_granule(10)},
+        })
+
+        with self.assertLogs("services.open_handle", level="INFO") as logs:
+            ds = await open_handle("obs_bundle_dupes", self.tools)
+
+        self.assertEqual(ds.sizes["time"], 2)  # the duplicate collapsed to one
+        # sel on the previously-duplicated timestamp resolves cleanly.
+        picked = ds.sel(time="2026-07-09")
+        self.assertEqual(float(picked["no2"].sum()), 18.0)  # 9+2+3+4 — one granule, not doubled to 36
+        self.assertTrue(
+            any("bundle_duplicate_timestamps" in msg for msg in logs.output),
+            f"expected a bundle_duplicate_timestamps event, got: {logs.output}",
+        )
+
     async def test_open_handle_opens_a_single_member_bundle(self):
         """OPeNDAP subsets arrive as a bundle even for one granule
         (subset.nc.zip with a single member)."""
@@ -661,6 +819,141 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(ctx.exception.category, CATEGORY_TOO_LARGE)
         self.assertIn("Narrow", ctx.exception.suggestion or "")
+
+    @staticmethod
+    def _make_attr_dated_granule(month: int):
+        """HAQ TROPOMI monthly L3 shape (live 2026-07-16): no time dimension
+        at all — 2D (Latitude, Longitude) only, the month living solely in
+        the RangeBeginningDate/RangeBeginningTime global attrs."""
+        import xarray as xr
+
+        def factory():
+            return xr.Dataset(
+                {"Tropospheric_NO2": (("Latitude", "Longitude"), [[1.0 * month, 2.0], [3.0, 4.0]])},
+                coords={"Latitude": [40.0, 41.0], "Longitude": [-75.0, -74.0]},
+                attrs={
+                    "RangeBeginningDate": f"2024-{month:02d}-01",
+                    "RangeBeginningTime": "00:00:00.000000Z",
+                },
+            )
+
+        return factory
+
+    async def test_bundle_members_with_no_time_dim_get_an_indexed_time_coord(self):
+        """Members with no time dim at all (attr-dated monthly L3, e.g. HAQ
+        TROPOMI NO2) must gain a synthesized, *indexed* time coordinate
+        before concat. Left alone, xr.concat(dim="time") fabricates a bare
+        index-less dim, and every downstream time selection dies with
+        xarray's "no associated coordinate or index" (live 2026-07-16)."""
+        from services.open_handle import open_handle
+
+        self.volume.add_netcdf_bundle("obs_bundle_attr_dated", {
+            "tropomi_202406.nc4": {None: self._make_attr_dated_granule(6)},
+            "tropomi_202407.nc4": {None: self._make_attr_dated_granule(7)},
+        })
+
+        ds = await open_handle("obs_bundle_attr_dated", self.tools)
+
+        self.assertEqual(ds.sizes["time"], 2)
+        self.assertIn("time", ds.coords)  # indexed coordinate, not a bare stacking dim
+        self.assertIn("time", ds.indexes)
+        self.assertEqual(
+            [str(t)[:10] for t in ds["time"].values],
+            ["2024-06-01", "2024-07-01"],
+        )
+
+    async def test_single_member_bundle_with_no_time_dim_also_gains_time(self):
+        """The synthesis applies uniformly, so single-month opens of the same
+        product carry the same shape (a size-1 indexed time) as multi-month
+        opens — downstream squeezing already handles time=1 cleanly."""
+        from services.open_handle import open_handle
+
+        self.volume.add_netcdf_bundle("obs_bundle_attr_dated_single", {
+            "tropomi_202406.nc4": {None: self._make_attr_dated_granule(6)},
+        })
+
+        ds = await open_handle("obs_bundle_attr_dated_single", self.tools)
+
+        self.assertEqual(ds.sizes["time"], 1)
+        self.assertIn("time", ds.coords)
+        self.assertEqual(str(ds["time"].values[0])[:10], "2024-06-01")
+
+    def test_synthesis_preserves_a_real_datetime_coord_on_a_cased_time_dim(self):
+        """Finding #15: a differently-cased singleton ``Time`` dim can already
+        carry a *real* per-granule overpass time. Synthesis must rename it to
+        ``time`` and KEEP that coordinate -- overwriting it with the attr
+        date's (midnight) timestamp would flatten two same-day granules with
+        distinct overpass times to identical stamps, and the bundle dedup would
+        then drop one, halving a 'daily average'."""
+        import numpy as np
+        import xarray as xr
+        from services.open_handle import _synthesize_member_time_coord
+
+        ds = xr.Dataset(
+            {"no2": (("Time", "lat", "lon"), [[[1.0, 2.0], [3.0, 4.0]]])},
+            coords={
+                "Time": [np.datetime64("2024-06-01T13:30:00")],  # real overpass time
+                "lat": [40.0, 41.0],
+                "lon": [-75.0, -74.0],
+            },
+            attrs={"RangeBeginningDate": "2024-06-01"},  # date only -> would synth midnight
+        )
+
+        out = _synthesize_member_time_coord(ds)
+
+        self.assertIn("time", out.dims)
+        self.assertIn("time", out.coords)
+        self.assertEqual(out["time"].values[0], np.datetime64("2024-06-01T13:30:00"))
+
+    def test_synthesis_still_fills_a_cased_time_dim_that_carries_no_coordinate(self):
+        """The existing OMI_MINDS_NO2d shape -- a differently-cased singleton
+        ``Time`` dim with NO coordinate variable -- must still be renamed and
+        given the synthesized attr timestamp (Finding #15 preserves real
+        coords; it does not stop filling absent ones)."""
+        import xarray as xr
+        from services.open_handle import _synthesize_member_time_coord
+
+        ds = xr.Dataset(
+            {"no2": (("Time", "lat", "lon"), [[[1.0, 2.0], [3.0, 4.0]]])},
+            coords={"lat": [40.0, 41.0], "lon": [-75.0, -74.0]},  # Time dim has no coord
+            attrs={"RangeBeginningDate": "2024-06-01", "RangeBeginningTime": "00:00:00"},
+        )
+
+        out = _synthesize_member_time_coord(ds)
+
+        self.assertIn("time", out.coords)
+        self.assertEqual(str(out["time"].values[0])[:10], "2024-06-01")
+
+    async def test_same_day_granules_with_distinct_overpass_times_both_survive(self):
+        """Finding #15 end-to-end: two same-day granules whose real overpass
+        times live on a differently-cased ``Time`` dim must NOT be flattened to
+        one timestamp and deduped down to a single granule -- the daily mean
+        must see both observations."""
+        import numpy as np
+        import xarray as xr
+        from services.open_handle import open_handle
+
+        def _make(hour: int, minute: int):
+            def factory():
+                return xr.Dataset(
+                    {"no2": (("Time", "lat", "lon"), [[[1.0, 2.0], [3.0, 4.0]]])},
+                    coords={
+                        "Time": [np.datetime64(f"2024-06-01T{hour:02d}:{minute:02d}:00")],
+                        "lat": [40.0, 41.0],
+                        "lon": [-75.0, -74.0],
+                    },
+                    attrs={"RangeBeginningDate": "2024-06-01"},
+                )
+            return factory
+
+        self.volume.add_netcdf_bundle("obs_bundle_overpasses", {
+            "granule_am.nc4": {None: _make(13, 30)},
+            "granule_pm.nc4": {None: _make(18, 45)},
+        })
+
+        ds = await open_handle("obs_bundle_overpasses", self.tools)
+
+        self.assertEqual(ds.sizes["time"], 2)
 
     async def test_bundle_members_open_lazily_as_dask_chunks(self):
         """The memory contract behind the OOM fix: opening a bundle loads no
@@ -807,6 +1100,259 @@ class BundleExtractionCacheTests(unittest.TestCase):
                 self.assertEqual(len(remaining), 1)
                 self.assertNotEqual(remaining, first_entries)
 
+                # Release ds_b's own open file handle on its extracted member
+                # before the tempdir (which contains the patched cache_home)
+                # tears down below -- on Windows an open handle makes that
+                # cleanup raise PermissionError; POSIX allows unlinking an
+                # open file, so this only bites on a Windows host run.
+                del ds_b
+                gc.collect()
+
+
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
+    "bundle concurrency test dependencies are not installed",
+)
+class BundleExtractionConcurrencyTests(unittest.TestCase):
+    """_extract_members_concurrently must actually run extractions in
+    parallel (bounded by granule_concurrency), not just accept a thread pool
+    argument that never overlaps anything."""
+
+    def test_extracts_every_member_and_overlaps_io_when_concurrency_allows(self):
+        import time
+        from unittest.mock import patch
+
+        from config.settings import Settings
+        from services.open_handle import _extract_members_concurrently
+
+        calls = []
+
+        class FakeZip:
+            def extract(self, name, dest):
+                calls.append((name, dest))
+                time.sleep(0.2)
+
+        names = [f"g{i}.nc4" for i in range(4)]
+        settings = Settings(granule_concurrency=4)
+        with patch("services.open_handle.get_settings", return_value=settings):
+            start = time.monotonic()
+            _extract_members_concurrently(FakeZip(), names, "/fake/dest")
+            elapsed = time.monotonic() - start
+
+        self.assertEqual(sorted(name for name, _dest in calls), sorted(names))
+        # 4 members x 0.2s would be 0.8s sequential; 4 workers should overlap
+        # them down to close to a single 0.2s slot.
+        self.assertLess(elapsed, 0.5)
+
+    def test_bounded_by_granule_concurrency_setting(self):
+        import time
+        from unittest.mock import patch
+
+        from config.settings import Settings
+        from services.open_handle import _extract_members_concurrently
+
+        class FakeZip:
+            def extract(self, name, dest):
+                time.sleep(0.15)
+
+        names = [f"g{i}.nc4" for i in range(4)]
+        settings = Settings(granule_concurrency=1)
+        with patch("services.open_handle.get_settings", return_value=settings):
+            start = time.monotonic()
+            _extract_members_concurrently(FakeZip(), names, "/fake/dest")
+            elapsed = time.monotonic() - start
+
+        # concurrency=1 falls back to the plain sequential loop -> ~4*0.15s.
+        self.assertGreaterEqual(elapsed, 0.55)
+
+    def test_fails_fast_instead_of_extracting_every_remaining_member(self):
+        """A bad member's extraction failure must cancel not-yet-started
+        extractions, not let the thread pool quietly extract every other
+        queued member anyway before the exception surfaces -- the old
+        ThreadPoolExecutor.submit + shutdown(wait=True) behavior this
+        replaces would do exactly that wasted work on a mid-bundle failure."""
+        import threading
+        import time
+        from unittest.mock import patch
+
+        from config.settings import Settings
+        from services.open_handle import _extract_members_concurrently
+
+        calls: list[str] = []
+        call_lock = threading.Lock()
+
+        class FakeZip:
+            def extract(self, name, dest):
+                with call_lock:
+                    calls.append(name)
+                if name == "bad.nc4":
+                    raise OSError("simulated corrupt member")
+                time.sleep(0.5)
+
+        # workers=2: "bad.nc4" and one "hold" member start immediately; the
+        # other nine "hold" members stay queued -- exactly the not-yet-
+        # started work a fail-fast cancel should prevent from ever running.
+        # A freed worker can grab one more queued item before the main
+        # thread's wait() notices the failure and cancels the rest, so the
+        # exact count has some scheduling slack -- the assertion only needs
+        # to show it's nowhere near "every member ran anyway".
+        names = ["bad.nc4"] + [f"hold_{i}.nc4" for i in range(10)]
+        settings = Settings(granule_concurrency=2)
+        with patch("services.open_handle.get_settings", return_value=settings):
+            with self.assertRaises(OSError):
+                _extract_members_concurrently(FakeZip(), names, "/fake/dest")
+
+        self.assertLessEqual(len(calls), 5)
+        self.assertIn("bad.nc4", calls)
+
+
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
+    "bundle concurrency test dependencies are not installed",
+)
+class BundleMemberOpenConcurrencyTests(unittest.TestCase):
+    """_open_bundle_members_concurrently must preserve ``names`` order in its
+    result (concat/dedup downstream depend on it) while actually opening
+    members in parallel."""
+
+    def test_preserves_name_order_regardless_of_completion_order(self):
+        import random
+        import time
+        from unittest.mock import patch
+
+        from config.settings import Settings
+        import services.open_handle as open_handle_module
+        from services.open_handle import _open_bundle_members_concurrently
+
+        def fake_open_netcdf(path, chunks=None):
+            time.sleep(random.uniform(0.0, 0.05))
+            return path  # stand-in "dataset" -- identity is enough to check order
+
+        names = [f"z_{i}.nc4" for i in range(6)]
+        settings = Settings(granule_concurrency=3)
+        with patch("services.open_handle.get_settings", return_value=settings), \
+             patch.object(open_handle_module, "_open_netcdf", side_effect=fake_open_netcdf), \
+             patch.object(open_handle_module, "_synthesize_member_time_coord", side_effect=lambda ds: ds):
+            results = _open_bundle_members_concurrently("/extract/dir", names, {})
+
+        expected = [os.path.join("/extract/dir", n) for n in names]
+        self.assertEqual(results, expected)
+
+    def test_the_hdf5_touching_open_call_is_serialized_for_thread_safety(self):
+        """h5netcdf/netCDF4 release the GIL for their I/O, but that doesn't
+        establish that the underlying HDF5 C library is safe for concurrent
+        calls across different file handles -- most HDF5 builds aren't,
+        without a special --enable-threadsafe compile flag this deployment
+        makes no guarantee about. _open_netcdf itself must therefore never
+        run concurrently across threads, regardless of granule_concurrency."""
+        import threading
+        import time
+        from unittest.mock import patch
+
+        from config.settings import Settings
+        import services.open_handle as open_handle_module
+        from services.open_handle import _open_bundle_members_concurrently
+
+        active = 0
+        peak = 0
+        lock = threading.Lock()
+
+        def fake_open_netcdf(path, chunks=None):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            time.sleep(0.05)
+            with lock:
+                active -= 1
+            return path
+
+        names = [f"z_{i}.nc4" for i in range(4)]
+        settings = Settings(granule_concurrency=4)
+        with patch("services.open_handle.get_settings", return_value=settings), \
+             patch.object(open_handle_module, "_open_netcdf", side_effect=fake_open_netcdf), \
+             patch.object(open_handle_module, "_synthesize_member_time_coord", side_effect=lambda ds: ds):
+            _open_bundle_members_concurrently("/extract/dir", names, {})
+
+        self.assertEqual(peak, 1)  # never more than one thread inside _open_netcdf at a time
+
+    def test_pure_python_per_member_work_still_overlaps_around_the_serialized_open(self):
+        """Only the HDF5-touching open call itself is safety-gated -- the
+        thread-pool structure must still let each member's other work (time-
+        coord synthesis here, standing in for group merging / coordinate
+        promotion in the real path) proceed concurrently, or the whole point
+        of the thread pool is lost."""
+        import time
+        from unittest.mock import patch
+
+        from config.settings import Settings
+        import services.open_handle as open_handle_module
+        from services.open_handle import _open_bundle_members_concurrently
+
+        def fake_open_netcdf(path, chunks=None):
+            return path  # instant -- isolates the "outside the lock" work below
+
+        def fake_synthesize(ds):
+            time.sleep(0.2)
+            return ds
+
+        names = [f"z_{i}.nc4" for i in range(4)]
+        settings = Settings(granule_concurrency=4)
+        with patch("services.open_handle.get_settings", return_value=settings), \
+             patch.object(open_handle_module, "_open_netcdf", side_effect=fake_open_netcdf), \
+             patch.object(open_handle_module, "_synthesize_member_time_coord", side_effect=fake_synthesize):
+            start = time.monotonic()
+            _open_bundle_members_concurrently("/extract/dir", names, {})
+            elapsed = time.monotonic() - start
+
+        # 4 members x 0.2s of non-HDF5 work would be 0.8s sequential;
+        # concurrent should land close to a single 0.2s slot even with the
+        # open call itself serialized (made instant here to isolate this).
+        self.assertLess(elapsed, 0.5)
+
+    def test_open_fails_fast_instead_of_opening_every_remaining_member(self):
+        """A bad member's open failure must cancel not-yet-started opens,
+        not let the thread pool quietly open every other queued member
+        anyway -- which would leak an open file handle/dataset per extra
+        member (until the next GC) on a large bundle's error path."""
+        import threading
+        import time
+        from unittest.mock import patch
+
+        from config.settings import Settings
+        import services.open_handle as open_handle_module
+        from services.open_handle import _open_bundle_members_concurrently
+
+        calls: list[str] = []
+        call_lock = threading.Lock()
+
+        def fake_open_netcdf(path, chunks=None):
+            name = os.path.basename(path)
+            with call_lock:
+                calls.append(name)
+            if name == "bad.nc4":
+                raise ValueError("simulated corrupt member")
+            time.sleep(0.5)
+            return path
+
+        # workers=2: "bad.nc4" and one "hold" member start immediately; the
+        # other nine "hold" members stay queued -- exactly the not-yet-
+        # started work a fail-fast cancel should prevent from ever running.
+        # A freed worker can grab one more queued item before the main
+        # thread's wait() notices the failure and cancels the rest, so the
+        # exact count has some scheduling slack -- the assertion only needs
+        # to show it's nowhere near "every member opened anyway".
+        names = ["bad.nc4"] + [f"hold_{i}.nc4" for i in range(10)]
+        settings = Settings(granule_concurrency=2)
+        with patch("services.open_handle.get_settings", return_value=settings), \
+             patch.object(open_handle_module, "_open_netcdf", side_effect=fake_open_netcdf), \
+             patch.object(open_handle_module, "_synthesize_member_time_coord", side_effect=lambda ds: ds):
+            with self.assertRaises(ValueError):
+                _open_bundle_members_concurrently("/extract/dir", names, {})
+
+        self.assertLessEqual(len(calls), 5)
+        self.assertIn("bad.nc4", calls)
+
 
 class OpenNativeFormatMediaTypeTests(unittest.TestCase):
     """HDF4 / native-archive exports (e.g. MODIS MAIAC) have no local reader,
@@ -859,6 +1405,74 @@ class OpenNetcdfUnreadableFileTests(unittest.TestCase):
                 msg = str(ctx.exception)
                 self.assertIn("incomplete or failed retrieval", msg)
                 self.assertNotIn("did not find a match in any of xarray", msg)
+
+
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES)
+    or (importlib.util.find_spec("netCDF4") is None and importlib.util.find_spec("h5netcdf") is None),
+    "open_handle lazy/eager equivalence test dependencies are not installed",
+)
+class OpenNetcdfLazyVsEagerEquivalenceTests(unittest.TestCase):
+    """T45: a bare (non-bundle) export opens via _open_netcdf(path) eagerly,
+    while a bundle member opens via _open_netcdf(path, chunks={}) with dask
+    chunks. Nothing pinned that the two paths mask/aggregate identically --
+    a dask-related regression in one path could silently diverge from the
+    other, surfacing as a subtly different mean rather than a test failure."""
+
+    def setUp(self):
+        import tempfile
+
+        import numpy as np
+        import xarray as xr
+
+        self.np = np
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+
+        ds = xr.Dataset(
+            {
+                "no2": (
+                    ("time", "lat", "lon"),
+                    np.array([
+                        [[1.0, 2.0], [3.0, 4.0]],
+                        [[-999.0, -999.0], [-999.0, -999.0]],
+                        [[5.0, 6.0], [7.0, 8.0]],
+                    ]),
+                )
+            },
+            coords={
+                "time": np.array(["2024-01-01", "2024-01-02", "2024-01-03"], dtype="datetime64[ns]"),
+                "lat": [40.0, 41.0],
+                "lon": [-75.0, -74.0],
+            },
+            attrs={"cadence": "daily"},
+        )
+        self.path = os.path.join(self._tmpdir.name, "eager_vs_lazy.nc")
+        ds.to_netcdf(self.path)
+        self.col_info = {
+            "primary_var": "no2",
+            "cadence": "daily",
+            "fill_value": -999.0,
+            "valid_min": 0.0,
+            "valid_max": 100.0,
+        }
+
+    def test_eager_and_dask_backed_opens_aggregate_identically(self):
+        from preprocessing.aggregation_service import AggregationService
+        from services.open_handle import _open_netcdf
+
+        eager_ds = _open_netcdf(self.path)
+        lazy_ds = _open_netcdf(self.path, chunks={})
+
+        service = AggregationService()
+        eager_result = service.aggregate(eager_ds, stat="mean", variable="no2", col_info=self.col_info)
+        lazy_result = service.aggregate(lazy_ds, stat="mean", variable="no2", col_info=self.col_info)
+
+        self.assertEqual(eager_result.meta["n_granules"], lazy_result.meta["n_granules"])
+        self.assertEqual(eager_result.meta["granule_dates"], lazy_result.meta["granule_dates"])
+        self.np.testing.assert_array_equal(
+            eager_result.ds["no2"].values, lazy_result.ds["no2"].values,
+        )
 
 
 if __name__ == "__main__":

@@ -15,7 +15,15 @@
 // status fan-out (a single handle's get_retrieval_status call failed) --
 // terminal because the backend has nothing further to report and there's
 // no live job underneath a cancel could reach.
-export const TERMINAL_STATUSES = new Set(['ready', 'failed', 'expired', 'cancelled', 'error'])
+// "not_found" is a dead handle list_workspace still lists after the job was
+// evicted (get_retrieval_status no longer has a record of it) -- terminal
+// for the same reason as "error": nothing further to report, no live job a
+// cancel could reach. On a long-lived workspace these can outnumber real
+// jobs many times over (live repro: 134 not_found vs 46 real jobs), so
+// leaving this out of TERMINAL_STATUSES rendered a floor of dead rows as if
+// they were actively running (progress bar, live Cancel button) and sorted
+// them ahead of genuinely current tasks.
+export const TERMINAL_STATUSES = new Set(['ready', 'failed', 'expired', 'cancelled', 'error', 'not_found'])
 
 const STATUS_COLORS = {
   ready: 'var(--teal-text)',
@@ -23,6 +31,11 @@ const STATUS_COLORS = {
   expired: 'var(--warning)',
   cancelled: 'var(--text-muted)',
   error: 'var(--error)',
+  // "paused" is derived by the backend (services/retrieval_composites.
+  // annotate_paused) from a Harmony auto-pause the MCP would otherwise
+  // report as "running" forever. Non-terminal on purpose: the row keeps its
+  // Cancel button, and the paused guidance arrives as `note`.
+  paused: 'var(--warning)',
 }
 
 // PRD 021's `upstream` outcomes on a cancel response. "unsupported" (OPeNDAP,
@@ -35,9 +48,29 @@ const UPSTREAM_LINES = {
   error: 'Provider stop failed',
 }
 
+// Statuses that don't advance on their own, so live-polling them just re-runs
+// the backend's per-job get_retrieval_status fan-out (services/jobs_service.
+// list_jobs) forever. Terminal states never change; "paused" (a Harmony
+// auto-pause the MCP would otherwise report as "running" indefinitely) needs
+// user action to resume or cancel — polling never moves it; "not_found" is a
+// dead handle list_workspace still lists after the job was evicted, and on a
+// long-lived workspace these dominate (the live repro had 134 of them). The
+// live poller (hooks/useJobs.js) must stop once every job is one of these, or
+// a workspace with no running job keeps hundreds of MCP calls/min flowing
+// while the panel sits idle.
+export const NON_PROGRESSING_STATUSES = new Set([...TERMINAL_STATUSES, 'paused', 'not_found'])
+
+// True while at least one job is still genuinely advancing toward a terminal
+// state (running/pending/submitted/materializing/...). Drives whether the
+// panel keeps its 15s live poll open.
+export function hasProgressingJob(jobs) {
+  return (jobs || []).some(job => !NON_PROGRESSING_STATUSES.has(job.status))
+}
+
 export function titleCase(value) {
   if (!value) return ''
-  return value.charAt(0).toUpperCase() + value.slice(1)
+  const spaced = value.replace(/_/g, ' ')
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1)
 }
 
 export function statusBadge(job) {

@@ -2,6 +2,9 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { createSseParser } from '../utils/sseParser'
 import { applyWorkflowEvent, INITIAL_WORKFLOW_STATE } from '../utils/workflowStage'
 import { extractSuggestedFollowups } from '../utils/followups'
+import { extractVariableChoice } from '../utils/variableChoice'
+import { TERMINAL_STATUSES as TERMINAL_JOB_STATUSES } from '../utils/jobCard'
+import { classifyHistoryFetchFailure, historyStateReducer } from '../utils/historyLoad'
 
 const API_BASE = '/api'
 const ACTIVE_THREAD_STORAGE_KEY = 'tta.activeThreadId'
@@ -12,6 +15,7 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
   const [sessions, setSessions] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [historyError, setHistoryError] = useState(null)
 
   const abortControllerRef = useRef(null)
   const activeRequestIdRef = useRef(0)
@@ -21,6 +25,12 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
   const pendingAssistantUpdatesRef = useRef([])
   const threadIdRef = useRef(null)
   const didRestoreRef = useRef(false)
+  // Retrieval jobs the active stream has reported as still in flight
+  // (via job_progress events). "Stop request" returns these from
+  // abortActiveRequest so the caller can cancel them — stopping the chat
+  // turn alone leaves the job running at the provider and the jobs panel
+  // stuck on a row nothing will ever finish.
+  const activeJobHandlesRef = useRef(new Set())
 
   useEffect(() => {
     loadingRef.current = loading
@@ -105,6 +115,8 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
   const abortActiveRequest = useCallback((markCancelled = false) => {
     const controller = abortControllerRef.current
     const streamId = activeStreamIdRef.current
+    const inFlightJobHandles = Array.from(activeJobHandlesRef.current)
+    activeJobHandlesRef.current = new Set()
 
     if (controller && !controller.signal.aborted) {
       controller.abort()
@@ -131,6 +143,8 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
           : msg
       )))
     }
+
+    return inFlightJobHandles
   }, [])
 
   useEffect(() => {
@@ -140,31 +154,44 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
     }
   }, [abortActiveRequest, cancelScheduledFlush])
 
+  // Returns 'loaded' | 'not-found' | 'failed'. On a transient failure the
+  // current messages are left in place (T41) -- a blip in the connection
+  // must not read as "your conversation was deleted." Only a genuine 404
+  // (the session doesn't exist) clears the view.
   const loadHistory = useCallback(async (id) => {
-    if (!accessToken) return false
+    if (!accessToken) return 'failed'
+    let action
     try {
       const res = await fetch(`${API_BASE}/session/${id}/history`, {
         headers: authHeaders(),
       })
       if (!res.ok) {
         handleUnauthorized(res)
-        throw new Error(`HTTP ${res.status}`)
+        action = classifyHistoryFetchFailure(res.status) === 'not-found'
+          ? { type: 'not-found' }
+          : { type: 'failed' }
+      } else {
+        const data = await res.json()
+        const hydrated = (data.messages || []).map(m => ({
+          ...m,
+          artifacts: m.artifacts || [],
+          imageUrls: (m.imageUrls || []).map(u =>
+            u.startsWith('http') ? u : `${API_BASE}${u}`
+          ),
+        }))
+        action = { type: 'loaded', messages: hydrated }
       }
-      const data = await res.json()
-      const hydrated = (data.messages || []).map(m => ({
-        ...m,
-        artifacts: m.artifacts || [],
-        imageUrls: (m.imageUrls || []).map(u =>
-          u.startsWith('http') ? u : `${API_BASE}${u}`
-        ),
-      }))
-      setMessages(hydrated)
-      return true
     } catch {
-      setMessages([])
-      return false
+      action = { type: 'failed' }
     }
+
+    setMessages(prev => historyStateReducer({ messages: prev, historyError: null }, action).messages)
+    setHistoryError(historyStateReducer({ messages: [], historyError: null }, action).historyError)
+
+    return action.type === 'loaded' ? 'loaded' : action.type
   }, [accessToken, authHeaders, handleUnauthorized])
+
+  const retryHistory = useCallback(() => loadHistory(threadIdRef.current), [loadHistory])
 
   const fetchSessions = useCallback(async () => {
     if (!accessToken) {
@@ -188,7 +215,7 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
           setThreadId(storedThreadId)
           threadIdRef.current = storedThreadId
           const loaded = await loadHistory(storedThreadId)
-          if (!loaded) persistActiveThread(null)
+          if (loaded === 'not-found') persistActiveThread(null)
         } else if (storedThreadId) {
           persistActiveThread(null)
         }
@@ -202,7 +229,7 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
           setThreadId(storedThreadId)
           threadIdRef.current = storedThreadId
           const loaded = await loadHistory(storedThreadId)
-          if (!loaded) persistActiveThread(null)
+          if (loaded === 'not-found') persistActiveThread(null)
         }
       }
     }
@@ -229,6 +256,9 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
     activeRequestIdRef.current = requestId
     activeStreamIdRef.current = streamId
     abortControllerRef.current = controller
+    // Fresh turn, fresh in-flight-job tracking: handles from a completed
+    // earlier stream must not be cancelled by a later Stop click.
+    activeJobHandlesRef.current = new Set()
 
     setMessages(prev => [
       ...prev,
@@ -244,6 +274,7 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
         charts: [],
         artifacts: [],
         suggestedFollowups: [],
+        variableChoice: null,
         isLoading: true,
         streamId,
       },
@@ -267,6 +298,11 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
 
       const decoder = new TextDecoder()
       const reader = res.body.getReader()
+      // The stream must end with a `done` (or `error`) event. If it ends
+      // without one — backend killed mid-turn, proxy idle timeout, container
+      // restart — reader.read() completes cleanly, nothing throws, and the
+      // assistant bubble would stay isLoading forever.
+      let sawDone = false
       const parser = createSseParser(({ event, data: rawData }) => {
         if (!isCurrentRequest(requestId)) return
 
@@ -312,6 +348,13 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
             }))
           }
         } else if (event === 'job_progress') {
+          if (data && data.job_handle) {
+            if (TERMINAL_JOB_STATUSES.has(data.status)) {
+              activeJobHandlesRef.current.delete(data.job_handle)
+            } else {
+              activeJobHandlesRef.current.add(data.job_handle)
+            }
+          }
           if (onJobProgress) onJobProgress(data)
           queueAssistantUpdate(streamId, msg => ({
             workflowStage: applyWorkflowEvent(msg.workflowStage || INITIAL_WORKFLOW_STATE, 'job_progress', data),
@@ -328,6 +371,7 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
             }))
           }
         } else if (event === 'done') {
+          sawDone = true
           const newId = data.thread_id
           setThreadId(newId)
           threadIdRef.current = newId
@@ -338,6 +382,9 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
             charts: msg.charts || [],
             artifacts: msg.artifacts?.length ? msg.artifacts : (data.artifacts || []),
             suggestedFollowups: extractSuggestedFollowups(data),
+            // T49: the deterministic variable-choice picker, when the resolver
+            // couldn't confidently choose. null the vast majority of turns.
+            variableChoice: extractVariableChoice(data),
             statusMessage: '',
             workflowStage: INITIAL_WORKFLOW_STATE,
             isLoading: false,
@@ -361,6 +408,23 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
       const finalChunk = decoder.decode()
       if (finalChunk) parser.feed(finalChunk)
       parser.end()
+
+      if (!sawDone && isCurrentRequest(requestId)) {
+        // Stream ended without a terminal event: surface it instead of
+        // leaving the bubble spinning. Keep any partial text — the backend
+        // may still be working server-side, and its results (charts, jobs)
+        // land in history/the Jobs panel.
+        const note = 'Connection lost before the response finished. The backend may still be working — reload this session to see any results.'
+        setError('Connection lost before the response finished.')
+        queueAssistantUpdate(streamId, prevMsg => ({
+          content: prevMsg.content ? `${prevMsg.content}\n\n${note}` : note,
+          isError: true,
+          isConnectionLost: true,
+          isLoading: false,
+          statusMessage: '',
+          workflowStage: applyWorkflowEvent(prevMsg.workflowStage || INITIAL_WORKFLOW_STATE, 'error', {}),
+        }))
+      }
     } catch (err) {
       if (err.name === 'AbortError') return
       if (!isCurrentRequest(requestId)) return
@@ -381,6 +445,7 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
       if (isCurrentRequest(requestId)) {
         abortControllerRef.current = null
         activeStreamIdRef.current = null
+        activeJobHandlesRef.current = new Set()
         loadingRef.current = false
         setLoading(false)
       }
@@ -396,6 +461,7 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
     threadIdRef.current = null
     persistActiveThread(null)
     setError(null)
+    setHistoryError(null)
   }, [abortActiveRequest, cancelScheduledFlush, persistActiveThread])
 
   const switchSession = useCallback(async (id) => {
@@ -406,8 +472,14 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
     setThreadId(id)
     threadIdRef.current = id
     persistActiveThread(id)
-    await loadHistory(id)
+    const loaded = await loadHistory(id)
+    if (loaded === 'not-found') persistActiveThread(null)
   }, [abortActiveRequest, cancelScheduledFlush, loadHistory, persistActiveThread])
+
+  // The reload affordance on a connection-lost message (T41): reuses
+  // switchSession on the same thread so there's exactly one
+  // history-hydration code path, rather than a second bespoke reload.
+  const reloadSession = useCallback(() => switchSession(threadIdRef.current), [switchSession])
 
   const deleteSession = useCallback(async (id) => {
     try {
@@ -430,17 +502,25 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
     setError(null)
   }, [])
 
+  const clearHistoryError = useCallback(() => {
+    setHistoryError(null)
+  }, [])
+
   return {
     messages,
     loading,
     error,
+    historyError,
     threadId,
     sessions,
     sendMessage,
     newSession,
     switchSession,
+    reloadSession,
+    retryHistory,
     deleteSession,
     abortActiveRequest,
     clearError,
+    clearHistoryError,
   }
 }

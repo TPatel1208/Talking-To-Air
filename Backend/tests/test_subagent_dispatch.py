@@ -102,6 +102,125 @@ class HelperTests(unittest.TestCase):
 
         self.assertEqual(_inject_satellite_context("task", {}), "task")
 
+    def test_current_date_preamble_states_the_date_authoritatively(self):
+        """Root cause A: a bare '[Current UTC time: ...]' banner let the fast
+        sub-agent model refuse present dates as future. The banner must assert
+        the date is authoritative ground truth and forbid a future-refusal from
+        the model's prior."""
+        from datetime import datetime, timezone
+
+        from services.subagent_dispatch import _current_date_preamble
+
+        text = _current_date_preamble(datetime(2026, 7, 19, 12, 0, tzinfo=timezone.utc))
+        lowered = text.lower()
+
+        self.assertIn("2026-07-19", text)
+        self.assertIn("authoritative", lowered)
+        # Explicitly disarms the observed refusal wording.
+        self.assertIn("in the future", lowered)
+        # Ends with the paragraph break the task text is appended after.
+        self.assertTrue(text.endswith("\n\n"))
+
+    def test_current_date_preamble_defaults_to_now_when_unset(self):
+        from services.subagent_dispatch import _current_date_preamble
+
+        # No argument → uses the real clock; just assert it produces a banner.
+        self.assertIn("authoritative", _current_date_preamble().lower())
+
+    def test_satellite_context_injection_withholds_stale_aoi_when_task_names_a_new_bbox(self):
+        """Live-testing bug: a follow-up turn that spells out its own new
+        bounding box ('bounding box: min longitude -84, max longitude -70,
+        min latitude 39, max latitude 48') was still handed the prior turn's
+        aoi_handle framed as 'reuse to skip re-searching' — the sub-agent
+        trusted the handle over the new numbers and silently re-rendered the
+        old AOI (single define_area_of_interest-free tool step, identical
+        map). The researcher's own current wording must win, exactly like the
+        ground-monitor pollutant fix above never carries a stale pollutant
+        across requests."""
+        from services.subagent_dispatch import _inject_satellite_context
+
+        enriched = _inject_satellite_context(
+            "Plot TEMPO NO2 for 2026-07-16, bounding box: min longitude -84, "
+            "max longitude -70, min latitude 39, max latitude 48.",
+            {
+                "dataset_query": "TEMPO_NO2",
+                "dataset_handle": "dataset_ab12",
+                "location": "New York/New Jersey",
+                "aoi_handle": "aoi_cd34",
+            },
+        )
+
+        # Dataset continuity is still safe to reuse — only the area is stale.
+        self.assertIn("dataset_handle=dataset_ab12", enriched)
+        self.assertNotIn("aoi_handle=aoi_cd34", enriched)
+        self.assertNotIn("location=New York/New Jersey", enriched)
+
+    def test_satellite_context_injection_reuses_aoi_when_task_names_no_new_area(self):
+        from services.subagent_dispatch import _inject_satellite_context
+
+        enriched = _inject_satellite_context(
+            "Pick an available date in that range.",
+            {"location": "New Jersey", "aoi_handle": "aoi_cd34"},
+        )
+
+        self.assertIn("location=New Jersey", enriched)
+        self.assertIn("aoi_handle=aoi_cd34", enriched)
+
+    def test_satellite_context_injection_carries_the_most_recent_chart_id(self):
+        """T36 P3: the satellite agent is stateless, so the chart id a follow-up
+        reliability question must hand to explain_measurement is only reachable
+        if it's injected as prior-retrieval context."""
+        from services.subagent_dispatch import _inject_satellite_context
+
+        enriched = _inject_satellite_context(
+            "How reliable is this measurement?",
+            {"last_chart_id": "map_c5e747d00b29"},
+        )
+
+        self.assertIn("most_recent_chart_id=map_c5e747d00b29", enriched)
+        self.assertTrue(enriched.endswith("How reliable is this measurement?"))
+
+    def test_capture_chart_id_accumulates_every_chart_of_a_turn(self):
+        """A single turn can mint several distinct charts ("plot AOD and also
+        NO2"). Last-write-wins would silently misattribute a follow-up
+        reliability question to whichever chart streamed last — every id must
+        survive, ordered, most recent last."""
+        from services.subagent_dispatch import _capture_chart_id
+
+        captured: dict[str, str] = {}
+        _capture_chart_id({"chart_id": "map_aod"}, captured)
+        _capture_chart_id({"chart_id": "map_no2"}, captured)
+        # A re-emitted id moves to the most-recent slot, never duplicates.
+        _capture_chart_id({"chart_id": "map_aod"}, captured)
+        _capture_chart_id({"no_chart": True}, captured)
+        _capture_chart_id("not a dict", captured)
+
+        self.assertEqual(captured["last_chart_ids"], "map_no2,map_aod")
+
+    def test_injection_of_a_single_chart_id_stays_unambiguous(self):
+        from services.subagent_dispatch import _inject_satellite_context
+
+        enriched = _inject_satellite_context(
+            "How reliable is this measurement?",
+            {"last_chart_ids": "map_only"},
+        )
+        self.assertIn("most_recent_chart_id=map_only", enriched)
+
+    def test_injection_of_multiple_chart_ids_asks_for_disambiguation(self):
+        """When the prior turn produced several charts, the stateless satellite
+        agent must see all of them plus an instruction to ask which chart is
+        meant — a bare single id would confidently explain the wrong one."""
+        from services.subagent_dispatch import _inject_satellite_context
+
+        enriched = _inject_satellite_context(
+            "Why should I trust this?",
+            {"last_chart_ids": "map_aod,map_no2"},
+        )
+        self.assertIn("map_aod", enriched)
+        self.assertIn("map_no2", enriched)
+        self.assertIn("ask which chart", enriched)
+        self.assertNotIn("most_recent_chart_id=", enriched)
+
     def test_finalize_sub_agent_result_resolves_matching_artifact_ids_and_handles(self):
         from services.subagent_dispatch import _finalize_sub_agent_result
         from models import AgentResult
@@ -120,6 +239,103 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(finalized.text, "Found the closest monitor.")
         self.assertEqual([a.id for a in finalized.artifacts], ["art_1"])
         self.assertEqual(finalized.handles, ["obs_1"])
+
+    def test_finalize_appends_a_scope_note_when_a_chart_discloses_a_substitution(self):
+        """T46 story #2/#5: a single-day request served by the monthly mean —
+        the substitution is stamped in the chart's provenance, and the chat
+        answer the researcher reads carries the deterministic disclosure, not
+        just the Metadata tab."""
+        from services.subagent_dispatch import _finalize_sub_agent_result
+        from models import AgentResult, ChartPayload
+
+        chart = ChartPayload(type="heatmap", title="NO2", provenance={
+            "requested_scope": {"location": "California", "time_range": "2024-07-15/2024-07-15"},
+            "delivered_scope": {
+                "region_name": "California",
+                "start_date": "2024-07-01T00:00:00",
+                "end_date": "2024-07-31T23:59:59",
+                "cadence": "monthly",
+            },
+        })
+        raw = AgentResult(
+            text=json.dumps({"summary": "Here is the NO2 map.", "artifact_ids": [], "handles": []}),
+            charts=[chart],
+        )
+
+        finalized = _finalize_sub_agent_result(raw, "earthdata")
+
+        self.assertIn("Here is the NO2 map.", finalized.text)
+        self.assertIn("2024-07-15", finalized.text)
+        self.assertIn("monthly", finalized.text.lower())
+
+    def test_finalize_appends_a_variable_note_when_a_chart_discloses_a_resolver_pick(self):
+        """T48: when the VariableResolver auto-picked a variable from a wide,
+        ambiguous product, its deterministic disclosure is stamped in the
+        chart's provenance -- and the chat answer must carry it, so the choice
+        among distinct sensors/products is transparent and redirectable, not
+        buried in the Metadata tab."""
+        from services.subagent_dispatch import _finalize_sub_agent_result
+        from models import AgentResult, ChartPayload
+
+        disclosure = (
+            "Note: this product has several distinct variables; showing "
+            "Terra MODIS Dark Target AOD 550 (highest-ranked populated field). "
+            "Other products available: Aqua MODIS Dark Target AOD 550."
+        )
+        chart = ChartPayload(type="heatmap", title="AOD", provenance={
+            "variable_resolution": {
+                "chosen": "Terra_MODIS_DarkTarget_AOD_550/Mean",
+                "disclosure": disclosure,
+            },
+        })
+        raw = AgentResult(
+            text=json.dumps({"summary": "Here is the AOD map.", "artifact_ids": [], "handles": []}),
+            charts=[chart],
+        )
+
+        finalized = _finalize_sub_agent_result(raw, "earthdata")
+
+        self.assertIn("Here is the AOD map.", finalized.text)
+        self.assertIn("Aqua MODIS Dark Target AOD 550", finalized.text)
+
+    def test_finalize_adds_no_variable_note_when_no_resolver_disclosure(self):
+        """A single-variable file (no resolver disclosure) must not be nagged
+        with a variable note."""
+        from services.subagent_dispatch import _finalize_sub_agent_result
+        from models import AgentResult, ChartPayload
+
+        chart = ChartPayload(type="heatmap", title="NO2", provenance={"variable": "no2"})
+        raw = AgentResult(
+            text=json.dumps({"summary": "Here is the NO2 map.", "artifact_ids": [], "handles": []}),
+            charts=[chart],
+        )
+
+        finalized = _finalize_sub_agent_result(raw, "earthdata")
+
+        self.assertEqual(finalized.text, "Here is the NO2 map.")
+
+    def test_finalize_adds_no_scope_note_when_a_charts_scopes_match(self):
+        """Regression: an exact request must not be nagged with a note."""
+        from services.subagent_dispatch import _finalize_sub_agent_result
+        from models import AgentResult, ChartPayload
+
+        chart = ChartPayload(type="heatmap", title="NO2", provenance={
+            "requested_scope": {"location": "California", "time_range": "2024-07-01/2024-07-31"},
+            "delivered_scope": {
+                "region_name": "California",
+                "start_date": "2024-07-01T00:00:00",
+                "end_date": "2024-07-31T00:00:00",
+                "cadence": "monthly",
+            },
+        })
+        raw = AgentResult(
+            text=json.dumps({"summary": "Here is the NO2 map.", "artifact_ids": [], "handles": []}),
+            charts=[chart],
+        )
+
+        finalized = _finalize_sub_agent_result(raw, "earthdata")
+
+        self.assertEqual(finalized.text, "Here is the NO2 map.")
 
     def test_finalize_sub_agent_result_drops_unknown_artifact_ids(self):
         from services.subagent_dispatch import _finalize_sub_agent_result
@@ -436,6 +652,73 @@ class RunGroundTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved_thread_id, "thread-1")
         self.assertEqual(saved_context["site_id"], "34-023-0011")
 
+    async def test_run_ground_renders_an_unexpected_exception_through_the_taxonomy(self):
+        # T37: a bare exception string (possibly empty: KeyError('x') →
+        # "'x'") must never become the ground agent's "answer".
+        from services import subagent_dispatch
+        from config.error_templates import render_error_answer
+
+        class ExplodingGroundAgent:
+            async def ainvoke(self, input_, config):
+                raise RuntimeError("secret path leak /opt/creds")
+
+        subagent_dispatch.get_call_budget().clear()
+
+        with patch.object(subagent_dispatch, "get_ground_monitor_context", AsyncMock(return_value={})), \
+             patch.object(subagent_dispatch, "save_ground_monitor_context", AsyncMock()):
+            result = await subagent_dispatch.run_ground(ExplodingGroundAgent(), "task", "thread-1")
+
+        self.assertNotIn("secret path leak", result.text)
+        self.assertEqual(result.text, render_error_answer("contract", "ground sensor agent"))
+
+    def test_render_unexpected_exception_classifies_a_recursion_limit_stop(self):
+        # The satellite agent hitting LangGraph's recursion_limit (a long, real
+        # multi-period workflow running out of step budget) escaped as a bare
+        # GraphRecursionError caught by the blanket handler and rendered as the
+        # generic "internal error" — indistinguishable from a genuine crash.
+        from services import subagent_dispatch
+        from config.error_templates import CATEGORY_RECURSION_EXHAUSTED, render_error_answer
+
+        class GraphRecursionError(Exception):
+            pass
+
+        exc = GraphRecursionError("Recursion limit of 25 reached without hitting a stop condition.")
+        text = subagent_dispatch._render_unexpected_exception(exc, "earthdata agent")
+
+        self.assertEqual(text, render_error_answer(CATEGORY_RECURSION_EXHAUSTED, "earthdata agent"))
+
+    def test_render_unexpected_exception_classifies_a_provider_rate_limit(self):
+        # A Gemini free-tier 429/RESOURCE_EXHAUSTED escaping the turn is a
+        # "wait and retry" condition, not a contract crash. Match on the message
+        # shape (429/quota/rate limit) so it works across providers without
+        # importing any provider-specific exception class.
+        from services import subagent_dispatch
+        from config.error_templates import CATEGORY_RATE_LIMITED, render_error_answer
+
+        class ChatGoogleGenerativeAIError(Exception):
+            pass
+
+        exc = ChatGoogleGenerativeAIError(
+            "Error calling model 'gemini-3-flash-preview' (Too Many Requests): 429 "
+            "Too Many Requests. RESOURCE_EXHAUSTED: quota exceeded"
+        )
+        text = subagent_dispatch._render_unexpected_exception(exc, "earthdata agent")
+
+        self.assertEqual(text, render_error_answer(CATEGORY_RATE_LIMITED, "earthdata agent"))
+
+    def test_render_unexpected_exception_leaves_an_ordinary_crash_as_contract(self):
+        # Anything that is neither a recursion stop nor a rate limit stays a
+        # contract failure, and its raw text never reaches the researcher.
+        from services import subagent_dispatch
+        from config.error_templates import render_error_answer
+
+        text = subagent_dispatch._render_unexpected_exception(
+            RuntimeError("secret path leak /opt/creds"), "earthdata agent"
+        )
+
+        self.assertNotIn("secret path leak", text)
+        self.assertEqual(text, render_error_answer("contract", "earthdata agent"))
+
     async def test_run_ground_second_call_in_the_same_task_is_budget_blocked(self):
         from services import subagent_dispatch
 
@@ -598,6 +881,203 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved_context["dataset_handle"], "dataset_ab12")
         self.assertEqual(saved_context["last_time_range"], "2024-06-05/2024-06-05")
 
+    async def test_run_satellite_refuses_a_region_substituted_after_an_aoi_user_input_rejection(self):
+        """T46 live repro (2026-07-17): an impossible bbox (south > north) was
+        answered with a confident 'Tropospheric_NO2 over North America' map.
+        The AOI rejection + a delivered chart for a substituted region ⇒ the
+        answer becomes the deterministic T18 error relay, and the wrong-region
+        map is dropped (story #1: never a confident map of a region I didn't
+        ask about)."""
+        from services import subagent_dispatch
+
+        error_env = json.dumps({"error": {
+            "category": "user_input",
+            "message": "Invalid bounding box: south latitude exceeds north latitude.",
+            "suggestion": "Check the bounding box: south latitude must be less than north latitude.",
+        }})
+        plot_result = json.dumps({"text": "", "charts": [{"type": "heatmap", "title": "NO2 over North America"}]})
+        envelope = json.dumps({
+            "summary": "Here is Tropospheric NO2 over North America.",
+            "artifact_ids": [], "handles": [],
+        })
+
+        class FakeSatelliteAgent:
+            async def astream(self, input_, config, stream_mode):
+                yield "updates", {"agent": {"messages": [
+                    SimpleNamespace(name="define_area_of_interest", content=error_env, tool_calls=None),
+                ]}}
+                await asyncio.sleep(0)
+                yield "updates", {"tools": {"messages": [
+                    SimpleNamespace(name="plot_singular", content=plot_result, tool_calls=None),
+                ]}}
+                await asyncio.sleep(0)
+                yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
+
+        subagent_dispatch.get_call_budget().clear()
+        result = await subagent_dispatch.run_satellite(
+            FakeSatelliteAgent(), "Plot NO2 for bbox north=10 south=40 east=-70 west=-60", "thread-1",
+        )
+
+        self.assertNotIn("North America", result.text)
+        self.assertIn("could not proceed", result.text)
+        self.assertIn("south latitude", result.text)
+        self.assertEqual(result.charts, [])
+
+    async def test_run_satellite_leaves_a_clarifying_answer_when_no_region_was_substituted(self):
+        """Regression / no over-fire: when the agent relays the rejection and
+        asks a clarifying question instead of substituting a region (no chart
+        delivered), its answer stands — the guard only replaces a *substituted*
+        answer."""
+        from services import subagent_dispatch
+
+        error_env = json.dumps({"error": {
+            "category": "user_input",
+            "message": "Invalid bounding box: south latitude exceeds north latitude.",
+            "suggestion": "Check the bounding box: south latitude must be less than north latitude.",
+        }})
+        clarifying = "That bounding box is invalid — south is north of north. Which region did you mean?"
+        envelope = json.dumps({"summary": clarifying, "artifact_ids": [], "handles": []})
+
+        class FakeSatelliteAgent:
+            async def astream(self, input_, config, stream_mode):
+                yield "updates", {"agent": {"messages": [
+                    SimpleNamespace(name="define_area_of_interest", content=error_env, tool_calls=None),
+                ]}}
+                await asyncio.sleep(0)
+                yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
+
+        subagent_dispatch.get_call_budget().clear()
+        result = await subagent_dispatch.run_satellite(
+            FakeSatelliteAgent(), "Plot NO2 for bbox north=10 south=40 east=-70 west=-60", "thread-1",
+        )
+
+        self.assertEqual(result.text, clarifying)
+
+    async def test_run_satellite_captures_an_emitted_variable_choice_and_fills_prompts(self):
+        """T49: a tool that emits a variable_choice out-of-band (the low-
+        confidence deterministic short-circuit) has its picker captured onto
+        the finalized AgentResult, with each candidate's prompt reconstructed
+        from the ORIGINAL user request -- not the date/context-enriched task the
+        sub-agent actually ran, and never composed by the model."""
+        from services import subagent_dispatch
+        from utils.streaming import emit_variable_choice
+
+        envelope = json.dumps({"summary": "I've shown a variable picker.", "artifact_ids": [], "handles": []})
+
+        class FakeSatelliteAgent:
+            async def astream(self, input_, config, stream_mode):
+                # A real tool would do this on catching VariableChoiceRequired.
+                emit_variable_choice({
+                    "message": "This dataset has 2 candidate variables I can't confidently narrow down — pick one:",
+                    "candidates": [
+                        {"name": "DT_AOD_550_AVG", "category": "distinct", "units": "1",
+                         "valid_fraction": 0.8, "reasons": ["geophysical quantity"], "prompt": ""},
+                        {"name": "COMBINE_AOD_550_AVG", "category": "distinct", "units": "1",
+                         "valid_fraction": 0.9, "reasons": ["geophysical quantity"], "prompt": ""},
+                    ],
+                })
+                await asyncio.sleep(0)
+                yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
+
+        subagent_dispatch.get_call_budget().clear()
+        result = await subagent_dispatch.run_satellite(
+            FakeSatelliteAgent(), "plot AOD over New Jersey last week", "thread-1",
+        )
+
+        self.assertIsNotNone(result.variable_choice)
+        self.assertEqual(len(result.variable_choice.candidates), 2)
+        prompts = {c.name: c.prompt for c in result.variable_choice.candidates}
+        self.assertEqual(
+            prompts["DT_AOD_550_AVG"],
+            "plot AOD over New Jersey last week using DT_AOD_550_AVG",
+        )
+        # The prompt reconstructs the ORIGINAL request, not the enriched task
+        # (no injected [Current date/time ...] preamble leaks into it).
+        self.assertNotIn("Current date", prompts["COMBINE_AOD_550_AVG"])
+
+    async def test_run_satellite_multi_part_delivers_the_resolved_chart_and_one_picker(self):
+        """T49 multi-part partial delivery: a request touching two variables
+        where one resolves cleanly (a chart) and the other is ambiguous (a tool
+        emits a picker) returns BOTH — the good work is never discarded because
+        one part was unclear."""
+        from services import subagent_dispatch
+        from utils.streaming import emit_chart, emit_variable_choice
+
+        envelope = json.dumps({"summary": "Plotted NO2; AOD needs a choice.", "artifact_ids": [], "handles": []})
+
+        class MultiPartSatelliteAgent:
+            async def astream(self, input_, config, stream_mode):
+                # Part A resolved -> a chart.
+                emit_chart({"type": "heatmap", "chart_id": "chart_no2"})
+                # Part B ambiguous -> a picker.
+                emit_variable_choice({
+                    "message": "This dataset has 2 candidate variables I can't confidently narrow down — pick one:",
+                    "candidates": [
+                        {"name": "DT_AOD_550_AVG", "category": "distinct", "units": "1",
+                         "valid_fraction": 0.8, "reasons": [], "prompt": ""},
+                        {"name": "COMBINE_AOD_550_AVG", "category": "distinct", "units": "1",
+                         "valid_fraction": 0.9, "reasons": [], "prompt": ""},
+                    ],
+                })
+                await asyncio.sleep(0)
+                yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
+
+        subagent_dispatch.get_call_budget().clear()
+        result = await subagent_dispatch.run_satellite(
+            MultiPartSatelliteAgent(), "plot NO2 and AOD over New Jersey", "thread-1",
+        )
+
+        self.assertEqual(len(result.charts), 1)  # the resolved part survived
+        self.assertIsNotNone(result.variable_choice)  # the ambiguous part got a picker
+        self.assertEqual(len(result.variable_choice.candidates), 2)
+
+    async def test_run_satellite_medium_confidence_delivers_the_chart_and_the_override_picker(self):
+        """T49 medium-confidence non-blocking: an auto-picked answer arrives
+        with its chart AND an override picker (lifted from the chart's
+        provenance), never one instead of the other. Prompts come from the
+        original request."""
+        from services import subagent_dispatch
+        from utils.streaming import emit_chart
+
+        envelope = json.dumps({"summary": "Plotted AOD over NJ.", "artifact_ids": [], "handles": []})
+        chart = {
+            "type": "heatmap",
+            "chart_id": "chart_1",
+            "provenance": {
+                "variable_resolution": {
+                    "chosen": "aerosol_optical_depth_average",
+                    "resolution_confidence": "medium",
+                    "variable_choice": {
+                        "message": "Showing aerosol_optical_depth_average — pick another if not:",
+                        "candidates": [
+                            {"name": "aerosol_optical_depth_average", "category": "distinct",
+                             "units": "1", "valid_fraction": 0.9, "reasons": ["geophysical quantity"],
+                             "prompt": ""},
+                        ],
+                    },
+                },
+            },
+        }
+
+        class FakeSatelliteAgent:
+            async def astream(self, input_, config, stream_mode):
+                emit_chart(chart)
+                await asyncio.sleep(0)
+                yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
+
+        subagent_dispatch.get_call_budget().clear()
+        result = await subagent_dispatch.run_satellite(
+            FakeSatelliteAgent(), "plot AOD over New Jersey last week", "thread-1",
+        )
+
+        # Chart still delivered — the picker is an addition, not a replacement.
+        self.assertEqual(len(result.charts), 1)
+        self.assertIsNotNone(result.variable_choice)
+        self.assertEqual(
+            result.variable_choice.candidates[0].prompt,
+            "plot AOD over New Jersey last week using aerosol_optical_depth_average",
+        )
+
     async def test_run_satellite_second_call_in_the_same_task_is_budget_blocked(self):
         from services import subagent_dispatch
 
@@ -662,6 +1142,48 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(result.text, "Plotted NO2 over NJ.")
+
+    async def test_run_satellite_renders_an_unexpected_exception_through_the_taxonomy(self):
+        # T37: an arbitrary exception string must never become the
+        # sub-agent's "answer" the supervisor can dress up — it renders as
+        # the taxonomy's honest contract answer, real exception in the logs.
+        from services import subagent_dispatch
+        from config.error_templates import render_error_answer
+
+        class ExplodingSatelliteAgent:
+            async def astream(self, input_, config, stream_mode):
+                raise RuntimeError("secret path leak /opt/creds")
+                yield  # pragma: no cover — makes this an async generator
+
+        subagent_dispatch.get_call_budget().clear()
+        result = await subagent_dispatch.run_satellite(ExplodingSatelliteAgent(), "task", "thread-1")
+
+        self.assertNotIn("secret path leak", result.text)
+        self.assertEqual(result.text, render_error_answer("contract", "earthdata agent"))
+
+    async def test_run_satellite_renders_a_classified_mcp_error_with_its_own_category(self):
+        from services import subagent_dispatch
+        from config.error_templates import render_error_answer
+        from earthdata_mcp.results import CATEGORY_PROVIDER_UNAVAILABLE, MCPToolError
+
+        class ExplodingSatelliteAgent:
+            async def astream(self, input_, config, stream_mode):
+                raise MCPToolError(
+                    CATEGORY_PROVIDER_UNAVAILABLE, "The satellite data layer is temporarily unavailable.",
+                )
+                yield  # pragma: no cover
+
+        subagent_dispatch.get_call_budget().clear()
+        result = await subagent_dispatch.run_satellite(ExplodingSatelliteAgent(), "task", "thread-1")
+
+        self.assertEqual(
+            result.text,
+            render_error_answer(
+                CATEGORY_PROVIDER_UNAVAILABLE,
+                "earthdata agent",
+                "The satellite data layer is temporarily unavailable.",
+            ),
+        )
 
     async def test_run_satellite_without_a_manager_dispatches_normally(self):
         # Default (no mcp_manager passed) preserves today's behavior for

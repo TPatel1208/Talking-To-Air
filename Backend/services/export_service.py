@@ -5,7 +5,45 @@ import io
 import re
 from typing import Any, AsyncIterator, Iterable
 
+import logging
+
 from utils.colormaps import resolve as resolve_colormap
+
+logger = logging.getLogger(__name__)
+
+
+async def materialize_first_chunk(chunks: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+    """Await ``chunks``' first chunk before the caller commits to a response
+    (T37): the common export failures (not-ready tools, missing handle,
+    evicted export) surface while producing that first chunk, and letting
+    them raise *here* — before any 200 header is sent — turns a silently
+    truncated download into a clean 4xx/5xx. Returns an iterator that
+    replays the materialized chunk and then streams the rest."""
+    try:
+        first = await chunks.__anext__()
+    except StopAsyncIteration:
+        first = None
+    return _replay_then_stream(first, chunks)
+
+
+async def _replay_then_stream(first: bytes | None, rest: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+    from earthdata_mcp.results import CATEGORY_CONTRACT, MCPToolError
+
+    if first is not None:
+        yield first
+    try:
+        async for chunk in rest:
+            yield chunk
+    except MCPToolError as exc:
+        # The 200 is already committed — the honest remaining move is a
+        # clearly marked trailer so the file self-identifies as truncated
+        # (T37 story #2). Category only, never the message: the trailer is
+        # file content a researcher may share onward.
+        logger.exception("export_stream_failed_mid_stream", extra={"_category": exc.category})
+        yield f"\n# EXPORT INCOMPLETE — {exc.category}\n".encode("utf-8")
+    except Exception:
+        logger.exception("export_stream_failed_mid_stream", extra={"_category": CATEGORY_CONTRACT})
+        yield f"\n# EXPORT INCOMPLETE — {CATEGORY_CONTRACT}\n".encode("utf-8")
 
 
 class ExportService:
@@ -240,7 +278,7 @@ class ExportService:
         raise RuntimeError("Chart data export requires the async export path.")
 
     async def _export_data_array_async(self, export: dict[str, Any], tools: dict[str, Any], collapse_to_2d: bool = True):
-        from preprocessing.aggregation_service import AggregationService
+        from preprocessing.aggregation_service import AggregationService, VariableChoiceRequired
         from tools.satellite_tools.plot_tools import _normalize_longitudes, _sel_bounds
         from services.open_handle import open_handle
         from utils.plotting import RegionResolver, mask_data_by_geometry
@@ -263,6 +301,12 @@ class ExportService:
             da = AggregationService().to_dataarray(
                 ds, variable=export.get("variable"), handle=source_handles[0],
             )
+        except VariableChoiceRequired as exc:
+            # T49's interactive picker is a chat-turn affordance; a raw export
+            # download has no chat surface to attach it to, so this path keeps
+            # the pre-T49 behavior -- surface the bounded refusal as the export's
+            # own clean 422 ValueError.
+            raise ValueError(exc.mcp_error.message) from exc
         except MCPToolError as exc:
             raise ValueError(exc.message) from exc
         lat_coord, lon_coord = self._export_lat_lon_names(da)

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import sys
@@ -191,21 +192,23 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         content = json.dumps({"Header": [{"rows": 1}], "Body": [], "_artifact_refs": [ref.model_dump()]})
         service = ChatStreamService(ChartService(), long_request_seconds=999)
 
-        events = [
-            event
-            async for event in service._tool_result_events(
-                content,
-                "thread-1",
-                "user-1",
-                [],
-                [],
-            )
-        ]
+        with patch("services.artifact_store.artifact_repository.save_artifact", AsyncMock()), \
+             patch("services.artifact_store.artifact_repository.delete_expired_unclaimed", AsyncMock()):
+            events = [
+                event
+                async for event in service._tool_result_events(
+                    content,
+                    "thread-1",
+                    "user-1",
+                    [],
+                    [],
+                )
+            ]
 
         self.assertEqual(len(events), 1)
         self.assertIn("event: artifact", events[0])
         self.assertIn(ref.id, events[0])
-        page = artifact_store.get_page(ref.id, "user-1")
+        page = await artifact_store.get_page(ref.id, "user-1")
         self.assertEqual(page["rows"], [{"date": "2024-01-01", "value": 10}])
 
     async def test_chat_stream_service_emits_both_chart_and_artifact_for_a_map_payload(self):
@@ -327,6 +330,66 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
 
         chart_events = [e for e in events if e.startswith("event: chart")]
         self.assertEqual(len(chart_events), 1)
+
+    async def test_chat_stream_service_ends_the_turn_with_a_timeout_error_then_done_when_the_budget_expires(self):
+        """T38: a wedged model stream must not hang the turn forever — once
+        chat_turn_timeout_seconds elapses, the SSE sequence ends with the
+        timeout `error` (naming no in-flight jobs here) then `done`, and the
+        underlying agent stream is actually cancelled, not just abandoned."""
+        from services.chat_stream_service import ChatStreamService
+        from services.chart_service import ChartService
+
+        class HangingAgent:
+            def __init__(self):
+                self.cancelled = False
+
+            async def astream(self, input_, config, stream_mode):
+                try:
+                    await asyncio.sleep(999)
+                    yield "messages", (SimpleNamespace(content="unreachable", type="ai", tool_calls=None), {})
+                except asyncio.CancelledError:
+                    self.cancelled = True
+                    raise
+
+        agent = HangingAgent()
+        service = ChatStreamService(ChartService(), long_request_seconds=999, chat_turn_timeout_seconds=0.05)
+
+        events = [
+            event
+            async for event in service.stream_chat_events(agent, None, None, "hi", "thread-1", "user-1", "req-1")
+        ]
+        # The generator's own finally block only *schedules* the producer
+        # task's cancellation (Task.cancel()) — give the loop one tick to
+        # actually deliver it before checking the fake's flag.
+        await asyncio.sleep(0)
+
+        joined = "".join(events)
+        self.assertIn("event: error", joined)
+        self.assertIn("event: done", joined)
+        self.assertLess(joined.index("event: error"), joined.index("event: done"))
+        self.assertIn("ran out of time", joined)
+        self.assertTrue(agent.cancelled, "the hanging astream must actually be cancelled, not just abandoned")
+
+    async def test_chat_stream_service_completes_normally_when_slowness_is_within_the_turn_budget(self):
+        """A turn whose only slowness is legitimate work that finishes under
+        the turn budget must not be misread as a hang."""
+        from services.chat_stream_service import ChatStreamService
+        from services.chart_service import ChartService
+
+        async def fake_stream_response(agent, message, thread_id, **kwargs):
+            await asyncio.sleep(0.01)
+            yield "text", "hello"
+
+        service = ChatStreamService(ChartService(), long_request_seconds=999, chat_turn_timeout_seconds=5)
+        with patch("services.chat_stream_service.stream_response", fake_stream_response):
+            events = [
+                event
+                async for event in service.stream_chat_events(object(), None, None, "hi", "thread-1", "user-1", "req-1")
+            ]
+
+        joined = "".join(events)
+        self.assertNotIn("event: error", joined)
+        self.assertIn("event: done", joined)
 
     async def test_find_closest_monitor_accepts_string_k(self):
         from tools.ground_sensor_tools import epa_aqs_tools
@@ -553,11 +616,13 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["Body"][0]["monitor_name"], "Site 0")
         self.assertEqual(result["Body"][0]["n_periods"], 1)
         self.assertEqual(result["Body"][0]["mean"], 1.0)
-        self.assertEqual(result["Body"][0]["min"], 1.0)
+        # dailyData supplies no minimum_value; min must be null, never a
+        # copy of the mean (fabricated-stats regression).
+        self.assertIsNone(result["Body"][0]["min"])
         self.assertEqual(result["Body"][0]["max"], 2.0)
         self.assertEqual(result["Body"][0]["peak"], {"value": 2.5, "date": "2024-01-01", "first_max_hour": 13})
         artifact_id = result["_artifact_refs"][0]["id"]
-        page = epa_aqs_tools.artifact_store.get_page(artifact_id, "user-1")
+        page = await epa_aqs_tools.artifact_store.get_page(artifact_id, "user-1")
         self.assertEqual(page["total_rows"], 25)
 
     async def test_daily_summary_returns_one_row_per_day_for_site(self):

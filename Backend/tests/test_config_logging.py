@@ -15,6 +15,18 @@ class ConfigLoggingTests(unittest.TestCase):
         from config import settings
 
         settings.get_settings.cache_clear()
+        # get_settings() calls load_dotenv() on every cache miss, which reads
+        # this checkout's real .env (repo root) straight into os.environ --
+        # bypassing patch.dict(..., clear=True) below and leaking real
+        # secrets/config into what these tests assert are un-set defaults.
+        # Docker's backend-test image has no .env in its build context, so
+        # this only bites on a host run with a real .env present (see
+        # CLAUDE.md's "Optional deps / .env bleed" note). Neutralize it here
+        # so these tests assert Settings' own defaults, not the developer's
+        # local file.
+        self._load_dotenv_patcher = patch("config.settings.load_dotenv")
+        self._load_dotenv_patcher.start()
+        self.addCleanup(self._load_dotenv_patcher.stop)
 
     def tearDown(self):
         from config import settings
@@ -28,8 +40,8 @@ class ConfigLoggingTests(unittest.TestCase):
             get_settings.cache_clear()
             loaded = get_settings()
 
-        self.assertEqual(loaded.llm_model, "gemini-2.5-flash")
-        self.assertEqual(loaded.ground_agent_model, "openai/gpt-oss-20b")
+        self.assertEqual(loaded.llm_model, "gemma-4-31b-it")
+        self.assertEqual(loaded.ground_agent_model, "gemini-3.1-flash-lite")
         self.assertEqual(loaded.data_fetch_mode, "auto")
         self.assertEqual(loaded.harmony_processing_timeout_seconds, 600)
         loaded = Settings(db_password=None, google_api_key=None)
@@ -54,6 +66,30 @@ class ConfigLoggingTests(unittest.TestCase):
 
         self.assertEqual(loaded.earthdata_mcp_url, "http://mcp:8765/mcp")
         self.assertIsNone(loaded.earthdata_mcp_token)
+
+    def test_agent_recursion_limit_default_has_headroom_for_a_multi_period_workflow(self):
+        """Regression guard (2026-07-20 AOD wildfire session): the default was
+        25, but a legitimate two-period, multi-day plot workflow (search → AOI →
+        coverage → retrieve → poll → plot, ×2 periods) is ~two supersteps per
+        tool call and runs right into that ceiling, surfacing as an opaque
+        GraphRecursionError. The default must leave room for that real workflow;
+        it stays tunable so a runaway loop can still be capped lower/higher."""
+        from config.settings import get_settings
+
+        with patch.dict(os.environ, {}, clear=True):
+            get_settings.cache_clear()
+            loaded = get_settings()
+
+        self.assertGreaterEqual(loaded.agent_recursion_limit, 40)
+
+    def test_agent_recursion_limit_is_overridable(self):
+        from config.settings import get_settings
+
+        with patch.dict(os.environ, {"AGENT_RECURSION_LIMIT": "60"}, clear=True):
+            get_settings.cache_clear()
+            loaded = get_settings()
+
+        self.assertEqual(loaded.agent_recursion_limit, 60)
 
         with patch.dict(
             os.environ,
@@ -158,7 +194,7 @@ class ConfigLoggingTests(unittest.TestCase):
 
         self.assertEqual(loaded.supervisor_model_provider, "google")
         self.assertEqual(loaded.earthdata_agent_provider, "google")
-        self.assertEqual(loaded.ground_agent_provider, "groq")
+        self.assertEqual(loaded.ground_agent_provider, "google")
 
     def test_settings_loads_agent_provider_overrides(self):
         from config.settings import Settings
@@ -181,7 +217,7 @@ class ConfigLoggingTests(unittest.TestCase):
     def test_validate_startup_requires_google_key_only_when_a_google_agent_is_configured(self):
         from config.settings import Settings
 
-        # Default posture: supervisor and earthdata agent on google, ground agent on groq.
+        # Default posture: supervisor, earthdata, and ground agent all on google.
         loaded = Settings(db_password="x", jwt_secret_key="x", google_api_key=None, groq_api_key="x")
         with self.assertRaisesRegex(RuntimeError, "GOOGLE_API_KEY"):
             loaded.validate_startup()
@@ -194,26 +230,26 @@ class ConfigLoggingTests(unittest.TestCase):
             groq_api_key="x",
             supervisor_model_provider="groq",
             earthdata_agent_provider="groq",
+            ground_agent_provider="groq",
         )
         loaded.validate_startup()
 
     def test_validate_startup_requires_groq_key_only_when_a_groq_agent_is_configured(self):
         from config.settings import Settings
 
-        # Default posture: both subagents resolve to groq.
-        loaded = Settings(db_password="x", jwt_secret_key="x", google_api_key="x", groq_api_key=None)
-        with self.assertRaisesRegex(RuntimeError, "GROQ_API_KEY"):
-            loaded.validate_startup()
-
-        # No agent resolves to groq -> GROQ_API_KEY is not required.
+        # A groq-configured subagent requires GROQ_API_KEY.
         loaded = Settings(
             db_password="x",
             jwt_secret_key="x",
             google_api_key="x",
             groq_api_key=None,
-            earthdata_agent_provider="google",
-            ground_agent_provider="google",
+            ground_agent_provider="groq",
         )
+        with self.assertRaisesRegex(RuntimeError, "GROQ_API_KEY"):
+            loaded.validate_startup()
+
+        # Default posture: no agent resolves to groq -> GROQ_API_KEY is not required.
+        loaded = Settings(db_password="x", jwt_secret_key="x", google_api_key="x", groq_api_key=None)
         loaded.validate_startup()
 
     def test_validate_startup_rejects_a_malformed_earthdata_mcp_url(self):
@@ -237,6 +273,68 @@ class ConfigLoggingTests(unittest.TestCase):
         )
         loaded.validate_startup()  # must not raise
 
+    def test_settings_loads_debug_heap_profiling_flag_default_and_override(self):
+        from config.settings import get_settings
+
+        with patch.dict(os.environ, {}, clear=True):
+            get_settings.cache_clear()
+            loaded = get_settings()
+
+        self.assertFalse(loaded.debug_heap_profiling_enabled)
+
+        with patch.dict(os.environ, {"DEBUG_HEAP_PROFILING_ENABLED": "1"}, clear=True):
+            get_settings.cache_clear()
+            loaded = get_settings()
+
+        self.assertTrue(loaded.debug_heap_profiling_enabled)
+
+    def test_settings_loads_mcp_call_timeout_and_chat_turn_timeout_defaults(self):
+        from config.settings import get_settings
+
+        with patch.dict(os.environ, {}, clear=True):
+            get_settings.cache_clear()
+            loaded = get_settings()
+
+        self.assertEqual(loaded.mcp_call_timeout_seconds, 120)
+        self.assertEqual(loaded.chat_turn_timeout_seconds, 1800)
+
+    def test_settings_loads_mcp_call_timeout_and_chat_turn_timeout_from_env(self):
+        from config.settings import get_settings
+
+        with patch.dict(
+            os.environ,
+            {"MCP_CALL_TIMEOUT_SECONDS": "45", "CHAT_TURN_TIMEOUT_SECONDS": "600"},
+            clear=True,
+        ):
+            get_settings.cache_clear()
+            loaded = get_settings()
+
+        self.assertEqual(loaded.mcp_call_timeout_seconds, 45)
+        self.assertEqual(loaded.chat_turn_timeout_seconds, 600)
+
+    def test_validate_startup_rejects_a_chat_turn_timeout_not_greater_than_await_retrieval_timeout(self):
+        from config.settings import ConfigurationError, Settings
+
+        # A misconfiguration here would make every retrieval that runs the
+        # full await_retrieval_timeout_seconds a guaranteed turn timeout.
+        loaded = Settings(
+            db_password="x", jwt_secret_key="x", google_api_key="x", groq_api_key="x",
+            await_retrieval_timeout_seconds=900,
+            chat_turn_timeout_seconds=900,
+        )
+        with self.assertRaisesRegex(ConfigurationError, "CHAT_TURN_TIMEOUT_SECONDS"):
+            loaded.validate_startup()
+
+    def test_validate_startup_accepts_a_chat_turn_timeout_greater_than_await_retrieval_timeout(self):
+        from config.settings import Settings
+
+        loaded = Settings(
+            db_password="x", jwt_secret_key="x", google_api_key="x", groq_api_key="x",
+            await_retrieval_timeout_seconds=900,
+            chat_turn_timeout_seconds=1800,
+        )
+        loaded.validate_startup()  # must not raise
+
     def test_settings_normalizes_invalid_modes(self):
         from config.settings import get_settings
 
@@ -246,6 +344,23 @@ class ConfigLoggingTests(unittest.TestCase):
 
         self.assertEqual(loaded.data_fetch_mode, "auto")
         self.assertEqual(loaded.log_format, "text")
+
+    def test_configure_logging_silences_the_benign_langchain_google_genai_schema_warning(self):
+        """T45: langchain_google_genai._function_utils logs
+        "Key '...' is not supported in schema, ignoring" at WARNING for
+        every unrecognized JSON-schema keyword in a tool's pydantic model —
+        known-benign, but noisy enough to drown real WARNING/ERROR events in
+        the log auditor's correlation (QA note, 2026-07-17). Silenced at
+        logger config rather than at each call site."""
+        from utils.logging import configure_logging
+
+        noisy_logger = logging.getLogger("langchain_google_genai._function_utils")
+        unrelated_logger = logging.getLogger("api")
+
+        configure_logging()
+
+        self.assertFalse(noisy_logger.isEnabledFor(logging.WARNING))
+        self.assertTrue(unrelated_logger.isEnabledFor(logging.WARNING))
 
     def test_json_formatter_outputs_expected_fields_and_extra_values(self):
         from utils.logging import JsonFormatter

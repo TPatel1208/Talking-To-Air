@@ -14,11 +14,16 @@ via ``define_area_of_interest`` on every call, the same tool the agent uses.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from langchain_core.tools import BaseTool
 
+from datasets.registry import CollectionConfig, load_registry
+from datasets.variable_roles import ROLE_DISPLAY_ORDER, classify_inventory
 from earthdata_mcp.results import CATEGORY_NO_DATA, parse_tool_result
+
+logger = logging.getLogger(__name__)
 
 # Mirrors the MCP's own inspect_granules contract (harmony-retrieval-mcp's
 # server.py/tools/coverage.py): a modest default so a first look stays cheap,
@@ -35,7 +40,83 @@ async def search_datasets(query: str, filters: dict | None, tools: dict[str, Bas
 
 async def describe_dataset(dataset_handle: str, tools: dict[str, BaseTool]) -> dict[str, Any]:
     raw = await tools["describe_dataset"].ainvoke({"dataset_handle": dataset_handle, "detail": False})
-    return parse_tool_result(raw)
+    result = parse_tool_result(raw)
+    return _attach_inventory(result)
+
+
+def _registry_entry_for(result: dict[str, Any]) -> tuple[str | None, CollectionConfig | None]:
+    """The registered ``(key, config)`` this describe_dataset result belongs
+    to, matched on the ``concept_id`` (== registry ``collection_id``) or
+    ``short_name`` the result carries — the same identity markers a real
+    granule/CMR record uses. ``dataset_handle`` itself is opaque, so identity
+    comes from the payload, not the handle.
+
+    concept_id is checked across ALL entries before any short_name fallback:
+    registry entries can share a short_name across versions (TEMPO_HCHO vs
+    TEMPO_HCHO_V03, both TEMPO_HCHO_L3), so an interleaved per-entry check
+    would let an earlier entry's short_name beat a later entry's exact
+    concept_id. Returns ``(None, None)`` for an unregistered collection (the
+    classifier still runs name-only, without the registry's primary/qa hints)."""
+    concept_id = result.get("concept_id")
+    # Bound to a name before the isinstance check: narrowing applies to
+    # variables, not to a repeated ``result.get(...)`` call expression, so the
+    # inline form left ``None`` in the type and cost a second lookup.
+    raw_metadata = result.get("metadata")
+    metadata: dict[Any, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
+    short_name = metadata.get("short_name") or result.get("short_name")
+    registry = load_registry()
+    if concept_id:
+        for key, cfg in registry.items():
+            if cfg.collection_id == concept_id:
+                return key, cfg
+    if short_name:
+        normalized = str(short_name).upper()
+        for key, cfg in registry.items():
+            if cfg.short_name and cfg.short_name.upper() == normalized:
+                return key, cfg
+    return None, None
+
+
+def _attach_inventory(result: dict[str, Any]) -> dict[str, Any]:
+    """Attach a classified, role-annotated ``inventory`` to a describe_dataset
+    result (PRD T35). Additive — existing callers ignoring the new key are
+    unaffected; the semantic classification lives backend-side next to its
+    consumers, exactly as masking semantics live in ``datasets/mask_info.py``
+    rather than the MCP. A result with no ``variables`` list is returned
+    untouched (no inventory key), so an empty/thin UMM-Var view (e.g. MODIS AOD)
+    honestly shows nothing rather than an invented one.
+
+    Best-effort like plot_tools' evidence path: a malformed live variable
+    record (e.g. a non-string name) degrades to the bare, inventory-less
+    result instead of becoming an unhandled 500 — api.py has no generic
+    exception handler, only the structured MCPToolError one (T18)."""
+    variables = result.get("variables")
+    if not isinstance(variables, list) or not variables:
+        return result
+
+    try:
+        key, cfg = _registry_entry_for(result)
+        classified = classify_inventory(
+            variables,
+            groups=cfg.groups if cfg else None,
+            primary_var=cfg.primary_var if cfg else None,
+            quality_flag_var=cfg.quality_flag_var if cfg else None,
+        )
+    except Exception:
+        logger.warning("inventory_classification_failed", exc_info=True)
+        return result
+
+    counts: dict[str, int] = {}
+    for entry in classified:
+        counts[entry["role"]] = counts.get(entry["role"], 0) + 1
+
+    result["inventory"] = {
+        "variables": classified,
+        "counts": counts,
+        "roles_present": [role for role in ROLE_DISPLAY_ORDER if counts.get(role)],
+        "collection_key": key,
+    }
+    return result
 
 
 async def preview_dataset(

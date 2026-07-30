@@ -81,10 +81,12 @@ export default function RightPanel({ discovery, jobs, jobsError, onCancelJob, on
           previews={discovery.previews}
           coverages={discovery.coverages}
           granules={discovery.granules}
+          inventories={discovery.inventories}
           onSearch={discovery.search}
           onPreview={discovery.preview}
           onCoverage={discovery.checkCoverage}
           onGranules={discovery.inspectGranules}
+          onInspect={discovery.inspectVariables}
           onRetrieve={onRetrieve}
         />
       )}

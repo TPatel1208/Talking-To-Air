@@ -42,10 +42,22 @@ jobs:
       - name: Type check selected backend packages
         run: python -m mypy Backend/services/ Backend/repositories/ Backend/models/ --ignore-missing-imports --config-file Backend/mypy.ini
 
+      # pytest, not `unittest discover`: the suite's bootstrap lives in
+      # Backend/conftest.py, which only pytest loads. Under unittest CI ran
+      # without it and paid for it three ways:
+      #   * no `_isolate_tool_cache` — T53's tool cache is process-global, so one
+      #     test's search_datasets(query="no2") was served to the next test's
+      #     identical call and that test's handler never ran;
+      #   * no marker exclusions — pyproject's `-m "not eval and not live_mcp"`
+      #     is pytest config, so CI had no idea eval/live_mcp tests exist;
+      #   * no plain pytest-style tests — unittest only collects TestCase
+      #     subclasses, so the two persistence-contract modules were invisible.
+      # This is also the runner CLAUDE.md documents for the local gate, so CI and
+      # `docker compose --profile test run backend-test` now check the same suite.
       - name: Run unit and integration tests with coverage
         env:
           PYTHONPATH: Backend
-        run: coverage run -m unittest discover -s Backend/tests -p "test_*.py"
+        run: coverage run -m pytest Backend/tests
 
       - name: Coverage report
         env:

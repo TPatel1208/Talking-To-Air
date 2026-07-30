@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 
 class PresetCollectionsTests(unittest.TestCase):
@@ -56,6 +57,44 @@ class PresetCollectionsTests(unittest.TestCase):
         self.assertIn("concept_id", prompt)
         for entry in PRESET_COLLECTIONS:
             self.assertIn(entry["concept_id"], prompt)
+
+
+    def test_a_missing_registry_key_raises_an_error_naming_it(self):
+        """T44 story #5: collections.yaml is the file whose header promises
+        'no code changes needed'. A typo there used to take the backend down
+        with a bare KeyError at import, naming nothing useful. It must instead
+        raise a clear error that names the missing preset key(s) so onboarding
+        is as safe as the header claims."""
+        from datasets import preset_collections
+        from datasets.registry import load_registry
+
+        real = load_registry()
+        missing_key = preset_collections._PRESETS[0][0]
+        broken = {k: v for k, v in real.items() if k != missing_key}
+
+        with patch.object(preset_collections, "load_registry", return_value=broken):
+            with self.assertRaises(Exception) as ctx:
+                preset_collections.get_preset_collections()
+
+        self.assertNotIsInstance(ctx.exception, KeyError)  # not the bare boot-killer
+        self.assertIn(missing_key, str(ctx.exception))
+
+    def test_preset_collections_constant_is_resolved_lazily_not_frozen_at_import(self):
+        """The constant moved behind a lazy accessor so import order can't turn
+        a data error into an ImportError cascade — a broken registry surfaces
+        the same named error on *access*, not at module import time."""
+        from datasets import preset_collections
+        from datasets.registry import load_registry
+
+        real = load_registry()
+        missing_key = preset_collections._PRESETS[0][0]
+        broken = {k: v for k, v in real.items() if k != missing_key}
+
+        with patch.object(preset_collections, "load_registry", return_value=broken):
+            with self.assertRaises(Exception) as ctx:
+                _ = preset_collections.PRESET_COLLECTIONS
+
+        self.assertIn(missing_key, str(ctx.exception))
 
 
 if __name__ == "__main__":

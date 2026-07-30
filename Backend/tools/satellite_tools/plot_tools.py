@@ -59,16 +59,36 @@ from typing import Annotated, List, Optional
 from pydantic import Field
 
 from config.workflow_stages import STAGE_RENDER
-from datasets.mask_info import col_info_for_short_name, short_name_from_attrs
+from datasets.mask_info import col_info_for_short_name, resolve_mask_info, short_name_from_attrs
+from datasets.qa_flags import resolve_qa_info
+from datasets.variable_roles import classify_inventory, related_variables
 from earthdata_mcp.results import MCPToolError
+from services import scope_registry
 from services.artifact_registry import build_artifact_reference
 from services.open_handle import OpenHandleError, open_handle
 from utils.geo_utils import find_lat_coord, find_lon_coord
 from utils.colormaps import resolve as resolve_colormap
 from utils.overlay_render import render_overlay_png
-from utils.plotting import _normalize_to_2d, mask_data_by_geometry, RegionResolver
+from utils.phase_timing import phase_timer
+from utils.plotting import (
+    _normalize_to_2d,
+    apply_mask_region_type,
+    geometry_mask,
+    half_cell as _half_cell,
+    mask_data_by_geometry,
+    RegionResolver,
+    sel_bounds as _sel_bounds,
+)
 from utils.streaming import emit_chart, emit_status
-from preprocessing.aggregation_service import AggregationService
+from preprocessing.aggregation_service import (
+    VARIABLE_RESOLUTION_ATTR,
+    AggregationService,
+    VariableChoiceRequired,
+    area_weighted_mean,
+    fill_match,
+    flag_pass_condition,
+)
+from preprocessing.variable_choice_builder import emit_variable_choice_payload
 
 logger = logging.getLogger(__name__)
 
@@ -77,33 +97,6 @@ _RENDER_TYPE_TO_ARTIFACT_PREFIX = {"heatmap": "map", "heatmap_multi": "cmp", "ti
 _resolver = RegionResolver()
 _aggregation_service = AggregationService()
 
-
-def _sel_bounds(da, lat_coord, lon_coord, bounds):
-    """
-    Crop a DataArray to (minx, miny, maxx, maxy) bounds in a coordinate-order-
-    safe way.  xarray slice() requires start <= stop when coords are increasing
-    and start >= stop when decreasing.  We detect the direction and swap if needed
-    so the crop never silently returns an empty array.
-    """
-    lat_vals = da[lat_coord].values
-    lon_vals = da[lon_coord].values
-
-    lat_min, lat_max = bounds[1], bounds[3]   # miny, maxy
-    lon_min, lon_max = bounds[0], bounds[2]   # minx, maxx
-
-    # If latitude is stored N→S (decreasing), slice must be (max, min)
-    if len(lat_vals) > 1 and lat_vals[0] > lat_vals[-1]:
-        lat_slice = slice(lat_max, lat_min)
-    else:
-        lat_slice = slice(lat_min, lat_max)
-
-    # Longitude is almost always W→E (increasing), but handle both
-    if len(lon_vals) > 1 and lon_vals[0] > lon_vals[-1]:
-        lon_slice = slice(lon_max, lon_min)
-    else:
-        lon_slice = slice(lon_min, lon_max)
-
-    return da.sel({lat_coord: lat_slice, lon_coord: lon_slice})
 
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "outputs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -205,6 +198,28 @@ def _render_and_store_overlay(lats: np.ndarray, lons: np.ndarray, arr: np.ndarra
 def _da_to_heatmap_payload(
     da, title: str, variable: str, units: str, *,
     diverging: bool = False, render_overlay: bool = False, value_range: tuple[float, float] | None = None,
+    scale_disclosure: dict | None = None,
+) -> dict:
+    # T51: the overlay PNG rasterization and grid downsampling are pure CPU on
+    # the plot path, and are where a "the chart took forever" turn actually
+    # spends its time once the data is in memory. Timed at this one seam so
+    # every caller (singular/multiple/compare panels) is covered.
+    with phase_timer(
+        "render",
+        cells_in=int(getattr(da, "size", 0)),
+        overlay=render_overlay,
+    ):
+        return _build_heatmap_payload(
+            da, title, variable, units,
+            diverging=diverging, render_overlay=render_overlay,
+            value_range=value_range, scale_disclosure=scale_disclosure,
+        )
+
+
+def _build_heatmap_payload(
+    da, title: str, variable: str, units: str, *,
+    diverging: bool = False, render_overlay: bool = False, value_range: tuple[float, float] | None = None,
+    scale_disclosure: dict | None = None,
 ) -> dict:
     lat_coord = find_lat_coord(da)
     lon_coord = find_lon_coord(da)
@@ -223,6 +238,18 @@ def _da_to_heatmap_payload(
     # same range, or the rendered map and its legend would disagree about
     # what a color means (T23's anti-drift guarantee).
     vmin, vmax = value_range if value_range is not None else _percentile_bounds(arr)
+    # Disclose how the color scale was set so the legend can be honest about
+    # saturation (T43): a percentile clip saturates the extreme tails, which a
+    # reader must not mistake for the data's true range. A caller imposing its
+    # own range (comparison's shared/diverging scale) says how that range was
+    # derived via ``scale_disclosure`` -- a shared 2/98 clip or a diverging
+    # 98th-percentile-magnitude clip is still a clip, just computed across
+    # panels, so the same saturation warning must fire. Absent a disclosure,
+    # an imposed range is a true fixed choice (nothing to clip).
+    if value_range is not None:
+        scale = scale_disclosure if scale_disclosure is not None else {"method": "explicit"}
+    else:
+        scale = {"method": "percentile", "p": [2, 98]}
 
     lats_out = da[lat_coord].values
     lons_out = da[lon_coord].values
@@ -230,10 +257,16 @@ def _da_to_heatmap_payload(
 
     # Full-native-resolution extent, captured before downsampling, for the
     # server-rendered overlay PNG (T23) — visual fidelity and interaction
-    # resolution are deliberately decoupled.
+    # resolution are deliberately decoupled. The bounds are pixel-EDGE, not
+    # pixel-center: render_overlay_png rasterizes edge-to-edge (left =
+    # lons[0] - res/2, …), so reporting center min/max here would pin an
+    # edge-to-edge PNG onto center-to-center bounds and misregister every
+    # pixel by up to half a cell (visible on coarse grids like GPM/MERRA-2).
+    lon_half = _half_cell(lons_out)
+    lat_half = _half_cell(lats_out)
     overlay_bounds = [
-        float(np.nanmin(lons_out)), float(np.nanmin(lats_out)),
-        float(np.nanmax(lons_out)), float(np.nanmax(lats_out)),
+        float(np.nanmin(lons_out)) - lon_half, float(np.nanmin(lats_out)) - lat_half,
+        float(np.nanmax(lons_out)) + lon_half, float(np.nanmax(lats_out)) + lat_half,
     ]
 
     colormap = resolve_colormap(variable, diverging=diverging)
@@ -266,6 +299,7 @@ def _da_to_heatmap_payload(
         "points":   points,
         "vmin": float(f"{vmin:.6e}"),
         "vmax": float(f"{vmax:.6e}"),
+        "scale": scale,
         "colormap": {"name": colormap.name, "lut": colormap.lut},
         "overlay": overlay,
     }
@@ -432,17 +466,27 @@ def _mask_col_info(da, ds=None) -> dict:
     return col_info_for_short_name(str(short_name).upper())
 
 
-def _time_range(da) -> tuple[str, str]:
-    if "time" not in da.coords:
-        return "", ""
-    times = sorted(str(t) for t in np.atleast_1d(da["time"].values))
-    if not times:
-        return "", ""
-    return times[0], times[-1]
+def _time_range(da, agg_meta: dict | None = None) -> tuple[str, str]:
+    """Temporal range of ``da`` -- from its time coordinate when it still has
+    one, else from the aggregation meta. The fallback matters twice over: the
+    array reaching provenance/query builders is the *reduced* one (time dim
+    already collapsed away by the aggregation), and some granules (monthly L3
+    means) never had a time coordinate at all -- their coverage lives in global
+    attrs, which aggregation meta now captures (``_build_meta``)."""
+    if "time" in da.coords:
+        times = sorted(str(t) for t in np.atleast_1d(da["time"].values))
+        if times:
+            return times[0], times[-1]
+    if agg_meta:
+        start = agg_meta.get("start_date") or ""
+        end = agg_meta.get("end_date") or ""
+        dates = agg_meta.get("granule_dates") or []
+        return start or (dates[0] if dates else ""), end or (dates[-1] if dates else "")
+    return "", ""
 
 
-def _query_definition(da, region: dict | None, aggregation: str, chart_parameters: dict | None = None) -> dict:
-    start_date, end_date = _time_range(da)
+def _query_definition(da, region: dict | None, aggregation: str, chart_parameters: dict | None = None, agg_meta: dict | None = None) -> dict:
+    start_date, end_date = _time_range(da, agg_meta)
     query = {
         "dataset": da.name or "",
         "start_date": start_date,
@@ -520,22 +564,377 @@ def _qa_methodology(col_info: dict | None) -> dict:
     return {k: v for k, v in methodology.items() if v is not None}
 
 
+def _inventory_records(ds) -> list[dict]:
+    """The opened Dataset's bands as ``classify_inventory`` records. Names
+    here are bare leaves (open_handle merges groups without prefixing), so
+    each record carries the ``group_path`` attr open_handle stamped — the
+    only way the classifier's group priors can fire post-open."""
+    return [
+        {
+            "name": name,
+            "group": var.attrs.get("group_path"),
+            "standard_name": var.attrs.get("standard_name"),
+            "long_name": var.attrs.get("long_name"),
+            "units": var.attrs.get("units"),
+        }
+        for name, var in ds.data_vars.items()
+    ]
+
+
+def _related_variables(da, col_info: dict | None, ds=None) -> dict:
+    """A lightweight related-variables view for the chart page (PRD T35): the
+    plotted variable's role plus its QA/uncertainty/context siblings. Built
+    from the opened Dataset's actual bands when it travels — the SAME source
+    ``_evidence`` reads, so the related-variables panel and the evidence facts
+    can never contradict each other (the registry's curated ``variables``
+    subset can be far narrower than the retrieved file). Falls back to that
+    curated subset when no source Dataset is available. The plotted variable
+    is the opened DataArray's (leaf) name."""
+    col_info = col_info or {}
+    variables = col_info.get("variables")
+    if ds is not None and getattr(ds, "data_vars", None):
+        variables = _inventory_records(ds)
+    return related_variables(
+        variables,
+        groups=col_info.get("groups"),
+        primary_var=col_info.get("primary_var"),
+        quality_flag_var=col_info.get("quality_flag_var"),
+        plotted_variable=da.name or "",
+    )
+
+
+def _evi_leaf(name) -> str:
+    """The bare, lowercased leaf name of a (possibly group-qualified) variable
+    -- for comparing a classified inventory entry against the plotted science
+    variable / QA-flag variable without importing variable_roles' internals."""
+    return str(name or "").rsplit("/", 1)[-1].lower()
+
+
+def _band_valid_mask(values, fill_value, valid_min, valid_max):
+    """Boolean array of finite, non-fill, in-valid-range cells -- the same
+    fill/valid discipline ``AggregationService.apply_quality_mask`` applies to
+    the science variable, applied here to a companion band so an evidence stat
+    is computed only over real data. Fill matching is the shared
+    ``aggregation_service.fill_match`` — one definition, so a tolerance fix
+    there can never diverge from this path. This is what keeps ``coverage``
+    honest and guards the valid-pct-computed-after-null-stripping trap fixed
+    once already in this repo: fill cells are excluded from the numerator,
+    never silently averaged in."""
+    valid = np.isfinite(values)
+    if fill_value is not None:
+        try:
+            valid &= ~np.asarray(fill_match(values, fill_value))
+        except (TypeError, ValueError):
+            pass
+    if valid_min is not None:
+        valid &= values >= valid_min
+    if valid_max is not None:
+        valid &= values <= valid_max
+    return valid
+
+
+def _crop_band_to_region(band, region):
+    """Crop a companion band to the plotted science variable's region footprint
+    -- the same geometry mask + ``_sel_bounds`` crop the science variable
+    received, so the band is co-located pixel-for-pixel (companions share the
+    science grid, so this is xarray's inner-join alignment, no reprojection).
+    Returns ``(cropped_band, in_region_cell_count)`` where the count is the
+    region footprint measured off the geometry mask broadcast over an all-ones
+    twin -- independent of the band's own fill/NaN, so ``coverage`` counts
+    fill cells against the total rather than dropping them (the valid-pct
+    trap). The geometry is rasterized ONCE (``geometry_mask``): the mask
+    depends only on grid and geometry, so crop and footprint both derive from
+    it. Returns ``(None, 0)`` when the band has no usable lat/lon grid to
+    co-locate on."""
+    import xarray as xr
+
+    lon_coord = find_lon_coord(band)
+    if lon_coord:
+        band = _normalize_longitudes(band, lon_coord)  # keeps the coord's name
+    lat_coord = find_lat_coord(band)
+    if lat_coord is None or lon_coord is None:
+        return None, 0
+
+    mask = geometry_mask(band, region["geometry"])
+    cropped = _sel_bounds(band.where(mask), lat_coord, lon_coord, region["bounds"])
+
+    footprint = _sel_bounds(xr.ones_like(band).where(mask), lat_coord, lon_coord, region["bounds"])
+    in_region = int(np.isfinite(np.asarray(footprint.values)).sum())
+    return cropped, in_region
+
+
+def _band_time_mean(band, resolved):
+    """Mask the band's own fill/out-of-range cells, then collapse its time
+    dimension to a per-pixel mean, so an evidence fact describes the SAME
+    time-reduced field the science variable is plotted as -- not a
+    space-time-mean that, for uncertainty, would be divided by the science
+    *time-mean* (two incommensurable aggregations; T36 evidence honesty).
+
+    Fill/range masking happens BEFORE the time reduction so a fill sentinel
+    (e.g. -9999) is never averaged into the per-pixel mean; the time collapse
+    is skipna, matching the science field's own ``reduce(mean, skipna)`` over
+    valid timesteps. A no-op time collapse when the band carries no time
+    dimension (every current L3-snapshot fixture)."""
+    from utils.geo_utils import identify_time
+
+    fill = resolved.get("fill_value")
+    valid_min = resolved.get("valid_min")
+    valid_max = resolved.get("valid_max")
+    if fill is not None:
+        try:
+            band = band.where(~fill_match(band, fill))
+        except (TypeError, ValueError):
+            pass
+    if valid_min is not None:
+        band = band.where(band >= valid_min)
+    if valid_max is not None:
+        band = band.where(band <= valid_max)
+    time_dim = identify_time(band)
+    if time_dim is not None and time_dim in band.dims:
+        band = band.mean(dim=time_dim, skipna=True)
+    return band
+
+
+def _band_mean_fact(band, leaf, role, region, *, pct_of_science=None):
+    """A deterministic mean-over-valid-pixels evidence fact for a context or
+    uncertainty band, in the band's own units, carrying an honest coverage
+    valid-fraction. ``pct_of_science`` (the masked science mean) adds the
+    uncertainty as a fraction of the science value when available.
+
+    The band is masked to its own valid cells and collapsed to a per-pixel
+    time-mean (``_band_time_mean``) before the region crop, so the fact
+    summarizes the same time-reduced field the science variable is plotted as
+    -- coverage and the pct-of-science ratio then compare like with like."""
+    resolved, _ = resolve_mask_info(cf_attrs=dict(band.attrs))
+    band = _band_time_mean(band, resolved)
+    cropped, in_region = _crop_band_to_region(band, region)
+    if cropped is None or in_region == 0:
+        return None
+    vals = np.asarray(cropped.values, dtype="float64")
+    valid = np.isfinite(vals)
+    valid_count = int(valid.sum())
+    if valid_count == 0:
+        return None
+    # Cos(latitude) area-weighted, the SAME regional-mean definition as the
+    # headline science mean (Finding #13) -- an unweighted grid-cell mean
+    # over-weights poleward pixels, so context/uncertainty evidence over a
+    # continental region would silently disagree with the value it qualifies.
+    # Falls back to the unweighted mean when the band has no latitude dim.
+    mean_val = area_weighted_mean(cropped)
+    fact = {
+        "name": leaf,
+        "role": role,
+        "stat": "mean",
+        "value": round(mean_val, 6),
+        "units": band.attrs.get("units", "") or "",
+        "coverage": round(valid_count / in_region, 4),
+    }
+    # A 0.0 science mean (a legitimate value for anomaly-style fields) makes
+    # the ratio undefined — omit the key rather than divide by zero, which
+    # would lose the whole fact to the caller's best-effort except.
+    if pct_of_science is not None and pct_of_science != 0:
+        fact["pct_of_science"] = round(abs(mean_val / pct_of_science), 4)
+    return fact
+
+
+def _qa_pass_rate_fact(flag_band, qf_var, good_values, bad_values, region):
+    """A deterministic QA-pass-rate fact from the co-located flag band, using
+    the SAME good/bad flag values AND the same pass condition
+    (``aggregation_service.flag_pass_condition``) ``resolve_and_mask`` masks
+    with -- never a second QA doctrine. ``value`` is the fraction of valid
+    flag pixels passing over the region/time; ``coverage`` is the fraction of
+    the region footprint where a valid (non-fill) flag exists at all."""
+    cropped, in_region = _crop_band_to_region(flag_band, region)
+    if cropped is None or in_region == 0:
+        return None
+    vals = np.asarray(cropped.values, dtype="float64")
+    resolved, _ = resolve_mask_info(cf_attrs=dict(flag_band.attrs))
+    valid = _band_valid_mask(
+        vals, resolved.get("fill_value"), resolved.get("valid_min"), resolved.get("valid_max"),
+    )
+    valid_count = int(valid.sum())
+    if valid_count == 0:
+        return None
+    passing = np.asarray(flag_pass_condition(cropped, good_values, bad_values).values)[valid]
+    return {
+        "name": str(qf_var).rsplit("/", 1)[-1],
+        "role": "quality",
+        "stat": "pass_rate",
+        "value": round(float(passing.sum()) / valid_count, 4),
+        "units": "",
+        "coverage": round(valid_count / in_region, 4),
+    }
+
+
+def _evidence(ds, da, col_info: dict | None, region: dict | None) -> list[dict]:
+    """Deterministic companion-evidence facts (PRD T36 Phase 2): the quality
+    and context bands sitting unused beside the plotted science variable in the
+    same opened Dataset, summarized as co-located facts a scientist can use to
+    judge *this* measurement -- QA pass rate, retrieval uncertainty, cloud
+    fraction, aerosol index -- each with honest coverage. No LLM, no narrative;
+    this is the facts layer P3 will later explain.
+
+    Driven entirely by T35's ``classify_inventory`` over ``ds.data_vars`` (the
+    High-confidence CF ``standard_name`` tier is reachable here, post-open) so
+    an evidence band is never invented -- a product with no context siblings
+    (e.g. MODIS AOD) yields ``[]``. Only bands already present in ``ds`` are
+    read; fetching a companion the file lacks is out of scope (Phase 3+).
+
+    Returns a list of ``{name, role, stat, value, units, coverage}`` facts
+    (uncertainty facts may add ``pct_of_science``). Best-effort: a band that
+    fails to co-locate is skipped, and any failure yields ``[]`` rather than
+    disturbing the chart's provenance -- evidence is purely additive.
+    """
+    if ds is None or not hasattr(ds, "data_vars") or region is None:
+        return []
+    col_info = col_info or {}
+    facts: list[dict] = []
+    science_leaf = _evi_leaf(da.name)
+
+    # The masked science mean, for uncertainty-as-percent-of-science. Cos-lat
+    # area-weighted (Finding #13) so the pct-of-science ratio divides a
+    # weighted band mean by a weighted science mean -- like by like -- rather
+    # than mixing a weighted numerator with an unweighted denominator.
+    try:
+        finite = np.asarray(da.values, dtype="float64")
+        finite = finite[np.isfinite(finite)]
+        science_mean = area_weighted_mean(da) if finite.size else None
+    except Exception:
+        science_mean = None
+
+    # QA pass rate -- reuse the exact flag var + good/bad values resolution
+    # ``resolve_and_mask`` uses, so the pass rate reports the one QA doctrine
+    # applied to the data, not a forked second one.
+    qf_leaf = None
+    try:
+        qf_var, flag_attrs = _aggregation_service._resolve_qa_flag_var(ds, da, col_info)
+        if qf_var and qf_var in ds.data_vars:
+            qf_leaf = _evi_leaf(qf_var)
+            qa_col_info, _ = resolve_qa_info(
+                yaml_info=col_info, flag_attrs=flag_attrs, short_name=col_info.get("short_name"),
+            )
+            good = qa_col_info.get("qa_good_values")
+            bad = qa_col_info.get("qa_bad_values")
+            if good is not None or bad is not None:
+                fact = _qa_pass_rate_fact(ds[qf_var], qf_var, good, bad, region)
+                if fact:
+                    facts.append(fact)
+    except Exception:
+        pass
+
+    # Context / uncertainty means -- classify the opened Dataset's bands and
+    # keep only High/Medium-confidence quality (uncertainty) and context bands,
+    # never the plotted science var, its science siblings, the QA flag (handled
+    # above), or unclassified bands.
+    try:
+        classified = classify_inventory(
+            _inventory_records(ds),
+            primary_var=col_info.get("primary_var"),
+            quality_flag_var=col_info.get("quality_flag_var"),
+        )
+    except Exception:
+        return facts
+
+    for entry in classified:
+        role, confidence, name = entry["role"], entry["confidence"], entry["name"]
+        leaf, norm = entry["leaf"], _evi_leaf(entry["leaf"])
+        if confidence not in ("high", "medium"):
+            continue
+        if role not in ("quality", "context"):
+            continue
+        if norm == science_leaf or norm == qf_leaf:
+            continue
+        if name not in ds.data_vars:
+            continue
+        is_uncertainty = "uncertainty" in norm
+        # Non-uncertainty quality bands (precision, std, sample counts) have no
+        # defined summary -- omit rather than invent one.
+        if role == "quality" and not is_uncertainty:
+            continue
+        try:
+            fact = _band_mean_fact(
+                ds[name], leaf, role, region,
+                pct_of_science=science_mean if is_uncertainty else None,
+            )
+        except Exception:
+            fact = None
+        if fact:
+            facts.append(fact)
+
+    return facts
+
+
+def _merged_multi_provenance(panels: list[dict]) -> dict:
+    """Top-level provenance for a heatmap_multi payload: panel 0's provenance
+    with the region names joined across panels — the pre-existing merge shape
+    — minus the per-panel ``evidence``/``related_variables`` sections. Those
+    are region-specific facts (QA pass rate, cloud fraction); presenting one
+    panel's as the whole comparison's would mislead exactly the trust
+    judgment they exist to support (T36). Each panel keeps its own."""
+    merged = dict(panels[0].get("provenance", {}))
+    merged.pop("evidence", None)
+    merged.pop("related_variables", None)
+    merged["region_name"] = ", ".join(
+        panel.get("provenance", {}).get("region_name", "") for panel in panels
+    )
+    merged["aggregation"] = "single snapshot comparison"
+    return merged
+
+
+def _delivered_scope(region_name: str, start_date: str, end_date: str, agg_meta: dict | None) -> dict:
+    """The scope the retrieval actually delivered — region and the data's own
+    date span and cadence. Compared against the recorded requested scope by
+    the T46 disclosure template."""
+    return {
+        "region_name": region_name,
+        "start_date": start_date,
+        "end_date": end_date,
+        "cadence": (agg_meta or {}).get("cadence"),
+    }
+
+
+def _requested_scope(handles: list[str]) -> dict | None:
+    """The requested scope a composite recorded for any of this chart's source
+    handles (T46), or None if none was recorded (a plot over a handle minted
+    outside safe_retrieve/point_timeseries — nothing to disclose against)."""
+    for handle in handles:
+        recorded = scope_registry.get(handle)
+        if recorded:
+            return recorded
+    return None
+
+
 def _provenance(
     handles: list[str], da, region_name: str, aggregation: str,
     agg_meta: dict | None = None, col_info: dict | None = None,
+    ds=None, region: dict | None = None,
 ) -> dict:
-    start_date, end_date = _time_range(da)
+    start_date, end_date = _time_range(da, agg_meta)
     provenance = {
         "variable": da.name or "",
         "start_date": start_date,
         "end_date": end_date,
         "region_name": region_name,
+        # T46 silent scope substitution: the delivered scope (always) and the
+        # requested scope the composite recorded for this handle (when one was
+        # recorded) travel together, so the dispatch layer can disclose a
+        # single-day request served by a monthly mean, or a clamped range, in
+        # the chat answer -- not just the Metadata tab's fine print.
+        "delivered_scope": _delivered_scope(region_name, start_date, end_date, agg_meta),
+        "requested_scope": _requested_scope(handles),
+        # T42 region fidelity: what kind of region was masked, and the
+        # display_name it resolved to -- so a bounding-box "US" or a
+        # wrong-place geocode is checkable in the answer, not just the title.
+        "region_type": (region or {}).get("region_type"),
+        "display_name": (region or {}).get("display_name") or region_name,
         "aggregation": aggregation,
         "units": da.attrs.get("units", ""),
         "source_handles": list(handles),
         **_dataset_facts(col_info),
         "variable_definition": _variable_definition(da, col_info),
         "qa_methodology": _qa_methodology(col_info),
+        "related_variables": _related_variables(da, col_info, ds=ds),
+        "evidence": _evidence(ds, da, col_info, region),
     }
     if agg_meta:
         provenance["aggregation"] = agg_meta["aggregation_label"]
@@ -548,6 +947,11 @@ def _provenance(
             # not just internal meta -- an inferred QA mask must be a
             # disclosed fact, never a silent guess.
             provenance["masking"] = agg_meta["masking"]
+        if agg_meta.get("variable_resolution"):
+            # T48: which variable the resolver auto-picked (and its disclosure)
+            # rides into provenance, so the dispatch layer can append the
+            # deterministic note naming the chosen product + alternatives.
+            provenance["variable_resolution"] = agg_meta["variable_resolution"]
     return provenance
 
 
@@ -561,10 +965,13 @@ def _attach_reproducibility(
     agg_meta: dict | None = None,
     region: dict | None = None,
     col_info: dict | None = None,
+    ds=None,
 ) -> dict:
     aggregation_label = agg_meta["aggregation_label"] if agg_meta else aggregation
-    payload["provenance"] = _provenance(handles, da, region_name, aggregation_label, agg_meta, col_info)
-    payload["query"] = _query_definition(da, region, aggregation_label, chart_parameters)
+    payload["provenance"] = _provenance(
+        handles, da, region_name, aggregation_label, agg_meta, col_info, ds=ds, region=region,
+    )
+    payload["query"] = _query_definition(da, region, aggregation_label, chart_parameters, agg_meta)
     payload["export"] = {
         "type": payload.get("type"),
         "variable": da.name or "",
@@ -638,6 +1045,14 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
             if ds_lon_coord:
                 ds = _normalize_longitudes(ds, ds_lon_coord)
             da = _open_dataarray(ds, handle=handle, variable=variable)
+        except VariableChoiceRequired as e:
+            # T49: the file is genuinely ambiguous. Hand the choice to the
+            # researcher as a deterministic, uncapped picker (out-of-band), and
+            # return the compact P1-bounded refusal to the model as this call's
+            # terminal result — the model never sees or re-feeds the full list.
+            emit_variable_choice_payload(e.resolution, ds)
+            emit_status("Waiting for a variable choice.", stage=STAGE_RENDER)
+            return json.dumps({"error": e.mcp_error.to_dict()})
         except MCPToolError as e:
             emit_status("Visualization failed while opening data.", stage=STAGE_RENDER)
             return json.dumps({"error": e.to_dict()})
@@ -664,6 +1079,7 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
                     raise ValueError(f"Cannot find lat/lon coords. Available: {list(da.coords)}")
                 masked = _normalize_longitudes(da, lon_coord)
                 masked = mask_data_by_geometry(masked, region["geometry"])
+                apply_mask_region_type(masked, region)  # T42: disclose boundary_cells self-heal
                 bounds = region["bounds"]  # (minx, miny, maxx, maxy)
                 masked = _sel_bounds(masked, lat_coord, lon_coord, bounds)
             except Exception as e:
@@ -685,6 +1101,12 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
             except MCPToolError as e:
                 return "resolve", None, None, e.to_dict()
             agg_meta = aggregation.meta
+            # T48: the variable-resolution disclosure was stashed on ``da`` by
+            # to_dataarray, but masking's ``.where`` above stripped it before
+            # aggregate() saw ``masked`` -- so carry it across from the
+            # pre-mask array into the meta the provenance is built from.
+            if da.attrs.get(VARIABLE_RESOLUTION_ATTR):
+                agg_meta["variable_resolution"] = da.attrs[VARIABLE_RESOLUTION_ATTR]
             is_aggregated = agg_meta["n_granules"] > 1
             if title:
                 resolved_title = title
@@ -709,6 +1131,7 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
                     agg_meta,
                     region,
                     col_info,
+                    ds=ds,
                 )
             except Exception as e:
                 return "payload", None, None, f"Failed to build chart payload: {e}"
@@ -781,6 +1204,10 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
                 if ds_lon_coord:
                     ds = _normalize_longitudes(ds, ds_lon_coord)
                 da = _open_dataarray(ds, handle=handle, variable=variable)
+            except VariableChoiceRequired as e:
+                emit_variable_choice_payload(e.resolution, ds)
+                emit_status("Waiting for a variable choice.", stage=STAGE_RENDER)
+                return json.dumps({"error": e.mcp_error.to_dict()})
             except MCPToolError as e:
                 emit_status("Visualization failed while opening data.", stage=STAGE_RENDER)
                 return json.dumps({"error": e.to_dict()})
@@ -804,6 +1231,7 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
                         raise ValueError(f"Cannot find lat/lon coords. Available: {list(da.coords)}")
                     masked = _normalize_longitudes(da, lon_coord)
                     masked = mask_data_by_geometry(masked, region["geometry"])
+                    apply_mask_region_type(masked, region)  # T42: disclose boundary_cells self-heal
                 except Exception as e:
                     return "mask", None, None, f"Masking failed for '{location}': {e}"
 
@@ -829,6 +1257,8 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
 
                 try:
                     agg_meta = aggregation.meta
+                    if da.attrs.get(VARIABLE_RESOLUTION_ATTR):
+                        agg_meta["variable_resolution"] = da.attrs[VARIABLE_RESOLUTION_ATTR]
                     panel = _da_to_heatmap_payload(reduced, region["name"], resolved_variable_name, units, render_overlay=True)
                     panel["cmap"]   = cmap or "Spectral_r"
                     panel["bounds"] = list(region["bounds"])
@@ -844,6 +1274,7 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
                         agg_meta,
                         region,
                         col_info,
+                        ds=ds,
                     )
                 except Exception as e:
                     return "payload", None, None, f"Failed to build panel for '{location}': {e}"
@@ -866,11 +1297,7 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
 
         multi_payload = {"type": "heatmap_multi", "title": title or f"{variable_name} Comparison", "panels": panels}
         if panels:
-            multi_payload["provenance"] = {
-                **panels[0].get("provenance", {}),
-                "region_name": ", ".join(panel.get("provenance", {}).get("region_name", "") for panel in panels),
-                "aggregation": "single snapshot comparison",
-            }
+            multi_payload["provenance"] = _merged_multi_provenance(panels)
             multi_payload["query"] = {
                 "dataset": variable_name,
                 "aggregation": "single snapshot comparison",
@@ -930,7 +1357,21 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
 
         try:
             ds = await open_handle(handle, mcp_tools)
+            # Normalize longitude on the whole opened Dataset before extraction
+            # -- the plot_singular/stat convention. A 0..360 global product
+            # otherwise rasterizes a western-hemisphere region entirely outside
+            # the grid ("No valid data found ... across any time step." for data
+            # that plots fine), and normalizing only the extracted array would
+            # leave ds's sibling QA-flag variable on 0..360 so QA alignment
+            # would hit an empty intersection.
+            ds_lon_coord = find_lon_coord(ds)
+            if ds_lon_coord:
+                ds = _normalize_longitudes(ds, ds_lon_coord)
             da = _open_dataarray(ds, handle=handle, variable=variable)
+        except VariableChoiceRequired as e:
+            emit_variable_choice_payload(e.resolution, ds)
+            emit_status("Waiting for a variable choice.", stage=STAGE_RENDER)
+            return json.dumps({"error": e.mcp_error.to_dict()})
         except MCPToolError as e:
             return json.dumps({"error": e.to_dict()})
         except OpenHandleError as e:
@@ -951,6 +1392,7 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
             # CPU-bound mask -> per-timestep aggregate -> payload chain
             # (T16), run off the event loop via asyncio.to_thread below.
             masked = mask_data_by_geometry(da, region["geometry"])
+            apply_mask_region_type(masked, region)  # T42: disclose boundary_cells self-heal
 
             lat_coord = find_lat_coord(masked)
             lon_coord = find_lon_coord(masked)
@@ -965,9 +1407,18 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
 
             dim_selector = _build_dim_selector(dimension, dimension_value)
             if dim_selector:
+                # Same selection seam as _normalize_to_2d: nearest-match on a
+                # real coordinate, positional on a coordinate-less dim, and a
+                # structured refusal (never an xarray internals crash) on a
+                # bad value.
+                from utils.plotting import _select_dim_nearest
+
                 for dim_name, value in dim_selector.items():
                     if dim_name in masked.dims:
-                        masked = masked.sel({dim_name: value}, method="nearest")
+                        try:
+                            masked = _select_dim_nearest(masked, dim_name, value)
+                        except MCPToolError as e:
+                            return "dimension_choice_required", e.to_dict()
             extra_dims = [d for d in masked.dims if d not in (lat_coord, lon_coord, time_dim)]
             if extra_dims:
                 from utils.plotting import _dimension_choice_error
@@ -989,9 +1440,20 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
 
             times, values, valid_time_indices = [], [], []
             for i in range(masked.sizes[time_dim]):
-                slice_2d = masked.isel({time_dim: i}).values
+                slice_da = masked.isel({time_dim: i})
                 try:
-                    value = _aggregation_service.compute_values_stat(slice_2d, stat)
+                    if stat == "mean":
+                        # The regional mean is the cos(latitude) area-weighted
+                        # mean (area_weighted_mean) -- the SAME definition the
+                        # stats tool uses -- so the trend line and the single-
+                        # value stats mean for the identical region can never
+                        # disagree. A plain np.nanmean over grid cells over-
+                        # weights high latitudes (cells shrink by cos(lat)
+                        # toward the poles), biasing continental/global trends.
+                        # median/std/max/min stay per-cell (compute_values_stat).
+                        value = area_weighted_mean(slice_da)
+                    else:
+                        value = _aggregation_service.compute_values_stat(slice_da.values, stat)
                 except ValueError:
                     continue
                 raw_time = masked[time_dim].values[i]
@@ -1041,6 +1503,7 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
                 agg_meta,
                 region,
                 col_info,
+                ds=ds,
             )
             return None, (ts_payload, variable_name)
 

@@ -132,6 +132,48 @@ class NormalizeTo2dTests(unittest.TestCase):
         self.assertEqual(result.dims, ("lat", "lon"))
         self.assertEqual(result.values.tolist(), [[5.0, 6.0], [7.0, 8.0]])
 
+    def test_dim_selector_on_a_coordinate_less_dim_selects_by_position(self):
+        """A dim with no coordinate at all (e.g. the bare 'time' xr.concat
+        fabricates when bundle members carry no time dim — live HAQ TROPOMI
+        monthly L3, 2026-07-16). _dimension_choice_error advertises
+        positional indices 0..n-1 for exactly this case, so the selector
+        must honor them positionally instead of crashing inside xarray with
+        "cannot supply selection options {'method': 'nearest', ...} for
+        dimension ... that has no associated coordinate or index"."""
+        from utils.plotting import _normalize_to_2d
+
+        da = self.xr.DataArray(
+            self.np.array([[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]]),
+            dims=("layer", "lat", "lon"),
+            coords={"lat": [40.0, 41.0], "lon": [-75.0, -74.0]},
+            name="no2",
+        )
+
+        result = _normalize_to_2d(da, dim_selector={"layer": 1})
+
+        self.assertEqual(result.dims, ("lat", "lon"))
+        self.assertEqual(result.values.tolist(), [[5.0, 6.0], [7.0, 8.0]])
+
+    def test_dim_selector_on_a_coordinate_less_dim_rejects_out_of_range_index(self):
+        """Positional selection keeps the same refuse-don't-snap contract as
+        coordinate selection: an index past the dim's size is a structured
+        error, not a clamp to the last slice."""
+        from earthdata_mcp.results import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
+        from utils.plotting import _normalize_to_2d
+
+        da = self.xr.DataArray(
+            self.np.ones((2, 2, 2)),
+            dims=("layer", "lat", "lon"),
+            coords={"lat": [40.0, 41.0], "lon": [-75.0, -74.0]},
+            name="no2",
+        )
+
+        with self.assertRaises(MCPToolError) as ctx:
+            _normalize_to_2d(da, dim_selector={"layer": 5})
+
+        self.assertEqual(ctx.exception.category, CATEGORY_DIMENSION_CHOICE_REQUIRED)
+        self.assertIn("layer", ctx.exception.message)
+
     def test_time_like_dim_still_auto_reduces_without_a_selector(self):
         """Time is the one transparent auto-reduction (PRD T25) -- a
         surviving time-identified dim must not raise, even without a

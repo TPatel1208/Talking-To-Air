@@ -314,6 +314,88 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(done_line.split("data: ", 1)[1])
         self.assertEqual(payload["suggested_followups"], ["How does that compare to satellite data?"])
 
+    async def test_fast_path_done_event_carries_the_variable_choice_picker(self):
+        """T49: a satellite turn whose tool emitted a variable_choice picker
+        (the deterministic short-circuit) surfaces it on the done event, with
+        each candidate's auto-send prompt filled from the original request."""
+        from services.chat_stream_service import ChatStreamService
+        from services.chart_service import ChartService
+        from utils.streaming import emit_variable_choice
+
+        class PickerSatelliteAgent:
+            async def astream(self, input_, config, stream_mode):
+                emit_variable_choice({
+                    "message": "This dataset has 2 candidate variables I can't confidently narrow down — pick one:",
+                    "candidates": [
+                        {"name": "DT_AOD_550_AVG", "category": "distinct", "units": "1",
+                         "valid_fraction": 0.8, "reasons": [], "prompt": ""},
+                        {"name": "COMBINE_AOD_550_AVG", "category": "distinct", "units": "1",
+                         "valid_fraction": 0.9, "reasons": [], "prompt": ""},
+                    ],
+                })
+                await asyncio.sleep(0)
+                yield "messages", (SimpleNamespace(
+                    content=json.dumps({"summary": "I've shown a variable picker.", "artifact_ids": [], "handles": []}),
+                    type="ai", tool_calls=None,
+                ), {})
+
+        service = ChatStreamService(ChartService(), long_request_seconds=999)
+        message = "Plot TROPOMI AOD over New Jersey for 2024-01-15"
+        events = [
+            event
+            async for event in service.stream_chat_events(
+                AsyncMock(), UntouchedAgent(), PickerSatelliteAgent(),
+                message, "thread-1", "user-1", "req-1",
+            )
+        ]
+
+        done_line = next(line for line in "".join(events).split("\n\n") if line.startswith("event: done"))
+        payload = json.loads(done_line.split("data: ", 1)[1])
+        self.assertIn("variable_choice", payload)
+        names = {c["name"] for c in payload["variable_choice"]["candidates"]}
+        self.assertEqual(names, {"DT_AOD_550_AVG", "COMBINE_AOD_550_AVG"})
+        prompts = {c["name"]: c["prompt"] for c in payload["variable_choice"]["candidates"]}
+        self.assertEqual(prompts["DT_AOD_550_AVG"], f"{message} using DT_AOD_550_AVG")
+
+    async def test_supervisor_path_done_event_carries_the_variable_choice_picker(self):
+        """T49: on the supervisor path the picker rides in the sub-agent's
+        AgentResult tool_result, and must survive the supervisor's synthesis
+        onto the done event exactly like suggested_followups does."""
+        from services.chat_stream_service import ChatStreamService
+        from services.chart_service import ChartService
+        from models import AgentResult, VariableChoice, VariableChoiceOption, agent_result_to_json
+
+        sub_agent_result = agent_result_to_json(AgentResult(
+            text="I've shown a variable picker.",
+            variable_choice=VariableChoice(
+                message="This dataset has 1 candidate variable — pick one:",
+                candidates=[VariableChoiceOption(
+                    name="DT_AOD_550_AVG", category="distinct", units="1",
+                    valid_fraction=0.8, reasons=[],
+                    prompt="plot AOD over New Jersey using DT_AOD_550_AVG",
+                )],
+            ),
+        ))
+
+        async def fake_stream_response(agent, message, thread_id, **kwargs):
+            yield "tool_result", {"content": sub_agent_result}
+            yield "text", "Agent consulted: SATELLITE\n\nHere is the synthesis."
+
+        service = ChatStreamService(ChartService(), long_request_seconds=999)
+        with patch("services.chat_stream_service.stream_response", fake_stream_response):
+            events = [
+                event
+                async for event in service.stream_chat_events(
+                    object(), UntouchedAgent(), UntouchedAgent(),
+                    "plot AOD over New Jersey", "thread-1", "user-1", "req-1",
+                )
+            ]
+
+        done_line = next(line for line in "".join(events).split("\n\n") if line.startswith("event: done"))
+        payload = json.loads(done_line.split("data: ", 1)[1])
+        self.assertIn("variable_choice", payload)
+        self.assertEqual(payload["variable_choice"]["candidates"][0]["name"], "DT_AOD_550_AVG")
+
     async def test_sub_agent_failure_yields_error_and_does_not_write_back(self):
         from services.chat_stream_service import ChatStreamService
         from services.chart_service import ChartService
@@ -335,6 +417,54 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         joined = "".join(events)
         self.assertIn("event: error", joined)
         self.assertNotIn("event: done", joined)
+        supervisor_agent.aupdate_state.assert_not_called()
+
+    async def test_fast_path_turn_deadline_ends_with_timeout_error_then_done_and_cancels_the_sub_agent(self):
+        """T38: the fast path owns its own cancellable task (run() via
+        asyncio.create_task) — a wedged satellite tool call must not hang
+        the turn forever, and the sub-agent's own stream must actually be
+        cancelled once the deadline fires."""
+        from services.chat_stream_service import ChatStreamService
+        from services.chart_service import ChartService
+
+        class HangingSatelliteAgent:
+            def __init__(self):
+                self.cancelled = False
+
+            async def astream(self, input_, config, stream_mode):
+                try:
+                    await asyncio.sleep(999)
+                    yield "messages", (SimpleNamespace(content="unreachable", type="ai", tool_calls=None), {})
+                except asyncio.CancelledError:
+                    self.cancelled = True
+                    raise
+
+        ground_agent = UntouchedAgent()
+        satellite_agent = HangingSatelliteAgent()
+        supervisor_agent = AsyncMock()
+        service = ChatStreamService(ChartService(), long_request_seconds=999, chat_turn_timeout_seconds=0.05)
+
+        events = [
+            event
+            async for event in service.stream_chat_events(
+                supervisor_agent, ground_agent, satellite_agent,
+                "Plot TROPOMI NO2 over New Jersey for 2024-01-15", "thread-1", "user-1", "req-1",
+            )
+        ]
+        # Cancellation is scheduled (Task.cancel()), not delivered
+        # synchronously, and here it must propagate through run_satellite's
+        # own nested stream_response layer too — give the loop a few ticks.
+        for _ in range(10):
+            if satellite_agent.cancelled:
+                break
+            await asyncio.sleep(0)
+
+        joined = "".join(events)
+        self.assertIn("event: error", joined)
+        self.assertIn("event: done", joined)
+        self.assertLess(joined.index("event: error"), joined.index("event: done"))
+        self.assertIn("ran out of time", joined)
+        self.assertTrue(satellite_agent.cancelled)
         supervisor_agent.aupdate_state.assert_not_called()
 
     async def test_fast_pathed_turn_is_written_back_and_visible_to_the_next_supervisor_turn(self):

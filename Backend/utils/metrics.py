@@ -31,7 +31,10 @@ ENVELOPE_SALVAGED_TOTAL = Counter(
 )
 HARMONY_FETCH_DURATION_SECONDS = Histogram(
     "harmony_fetch_duration_seconds",
-    "Harmony job duration from submission through download completion.",
+    "Retrieval job duration, from the start of the backend-side await through "
+    "the job reaching 'ready'. Ready jobs only -- a failed or cancelled job "
+    "downloaded nothing, and folding those in would make these percentiles "
+    "describe a different population than the name claims.",
 )
 HARMONY_TIMEOUTS_TOTAL = Counter(
     "harmony_timeouts_total",
@@ -50,6 +53,55 @@ DB_POOL_CONNECTIONS_ACTIVE = Gauge(
     "db_pool_connections_active",
     "Current active PostgreSQL pool connections.",
 )
+PROCESS_RSS_BYTES = Gauge(
+    "process_rss_bytes",
+    "Resident set size of the backend process in bytes.",
+)
+MATPLOTLIB_OPEN_FIGURES = Gauge(
+    "matplotlib_open_figures",
+    "Number of matplotlib figures currently open (created but not yet closed).",
+)
+BUNDLE_EXTRACT_CACHE_BYTES = Gauge(
+    "bundle_extract_cache_bytes",
+    "Total on-disk size of the bundle-extract TTL cache in bytes.",
+)
+CUBE_STORE_BYTES = Gauge(
+    "cube_store_bytes",
+    "Total on-disk size of the T52 Zarr cube cache in bytes.",
+)
+CUBE_EVICTIONS_TOTAL = Counter(
+    "cube_evictions_total",
+    "Cubes evicted from the cube store to stay under CUBE_STORE_MAX_BYTES.",
+)
+# T54, counted separately from cube_hits/cube_misses on purpose: a cube hit
+# says the cache saved the open pipeline, an *index* hit says it also saved the
+# MCP round-trip that used to gate the lookup. Those are different wins, and
+# collapsing them would make the reorder's own contribution unmeasurable.
+CUBE_INDEX_HITS_TOTAL = Counter(
+    "cube_index_hits_total",
+    "Cubes served straight from the handle index, with no export_result round-trip.",
+)
+CUBE_INDEX_MISSES_TOTAL = Counter(
+    "cube_index_misses_total",
+    "Handle-index lookups that fell through to the verify-first path.",
+)
+CUBE_INDEX_INVALIDATIONS_TOTAL = Counter(
+    "cube_index_invalidations_total",
+    "Indexed cubes dropped because a verified export delivered different content.",
+)
+PIPELINE_PHASE_DURATION_SECONDS = Histogram(
+    "pipeline_phase_duration_seconds",
+    "Wall-clock duration of one retrieval/visualization pipeline phase in seconds.",
+    ["phase"],
+)
+
+# The closed vocabulary of phases, kept here (not in utils.phase_timing) with
+# the other labelsets this module pre-declares. Deliberately NOT the same
+# vocabulary as config.workflow_stages.ALL_STAGES: that one is a user-facing
+# narration contract the frontend's workflow strip and the eval's stage-
+# sequence assertions key off, and its ``stage_reached`` events carry
+# *cumulative* elapsed since turn start rather than a phase's own span.
+PIPELINE_PHASES = ("export", "extract", "open", "crop", "mask", "aggregate", "render")
 
 _PROMETHEUS_COUNTER_ALIASES = {
     "harmony_jobs_timed_out": HARMONY_TIMEOUTS_TOTAL,
@@ -110,6 +162,10 @@ def observe_harmony_fetch(duration_seconds: float) -> None:
     HARMONY_FETCH_DURATION_SECONDS.observe(duration_seconds)
 
 
+def observe_phase_duration(phase: str, duration_seconds: float) -> None:
+    PIPELINE_PHASE_DURATION_SECONDS.labels(phase=phase).observe(duration_seconds)
+
+
 def record_cache_hit(cache_level: str) -> None:
     CACHE_HITS_TOTAL.labels(cache_level=cache_level).inc()
 
@@ -118,9 +174,73 @@ def record_cache_miss() -> None:
     CACHE_MISSES_TOTAL.inc()
 
 
+def record_cube_eviction() -> None:
+    CUBE_EVICTIONS_TOTAL.inc()
+
+
+def record_cube_index_hit() -> None:
+    CUBE_INDEX_HITS_TOTAL.inc()
+
+
+def record_cube_index_miss() -> None:
+    CUBE_INDEX_MISSES_TOTAL.inc()
+
+
+def record_cube_index_invalidation() -> None:
+    CUBE_INDEX_INVALIDATIONS_TOTAL.inc()
+
+
 def set_db_pool_connections_active(value: int | float | None) -> None:
     if value is not None:
         DB_POOL_CONNECTIONS_ACTIVE.set(value)
+
+
+def _current_process_rss_bytes() -> int | None:
+    """Current (not peak) resident set size, read from /proc/self/status --
+    ru_maxrss is a high-water mark that only ever climbs, which would hide a
+    plateau-then-shrink shape; VmRSS reflects the process's actual current
+    footprint. None on a non-Linux host (this deploys via Docker/Linux; a
+    host run just skips the gauge instead of raising)."""
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) * 1024
+    except OSError:
+        return None
+    return None
+
+
+def refresh_process_gauges() -> None:
+    """Refresh the process-health gauges (RSS, open matplotlib figures,
+    bundle extract-cache size) -- called on each /metrics scrape rather than
+    a timer, so idle time costs nothing and every scrape is current as of
+    itself. Each source is best-effort: a missing/uninstalled dependency
+    skips that one gauge rather than failing the whole scrape."""
+    rss = _current_process_rss_bytes()
+    if rss is not None:
+        PROCESS_RSS_BYTES.set(rss)
+
+    try:
+        import matplotlib.pyplot as plt
+
+        MATPLOTLIB_OPEN_FIGURES.set(len(plt.get_fignums()))
+    except ImportError:
+        pass
+
+    try:
+        from services.open_handle import extract_cache_size_bytes
+
+        BUNDLE_EXTRACT_CACHE_BYTES.set(extract_cache_size_bytes())
+    except ImportError:
+        pass
+
+    try:
+        from services.cube_cache import store_size_bytes
+
+        CUBE_STORE_BYTES.set(store_size_bytes())
+    except ImportError:
+        pass
 
 
 def initialize_labelsets() -> None:
@@ -136,6 +256,8 @@ def initialize_labelsets() -> None:
         ENVELOPE_SALVAGED_TOTAL.labels(agent_type=agent_type)
     for cache_level in ("memory", "zarr", "postgis"):
         CACHE_HITS_TOTAL.labels(cache_level=cache_level)
+    for phase in PIPELINE_PHASES:
+        PIPELINE_PHASE_DURATION_SECONDS.labels(phase=phase)
 
 
 initialize_labelsets()

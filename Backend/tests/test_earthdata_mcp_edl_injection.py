@@ -27,6 +27,8 @@ TESTS_DIR = os.path.dirname(__file__)
 if TESTS_DIR not in sys.path:
     sys.path.insert(0, TESTS_DIR)
 
+from cache_isolation import ProcessCacheIsolation  # noqa: E402
+
 REQUIRED_MODULES = ["langchain_mcp_adapters", "fastmcp", "uvicorn"]
 
 
@@ -76,7 +78,7 @@ def _build_mcp_with_edl_advertising_search(handler):
     any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
     "MCP client test dependencies are not installed",
 )
-class EdlTokenInjectionMatrixTests(unittest.IsolatedAsyncioTestCase):
+class EdlTokenInjectionMatrixTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from fake_earthdata_mcp import FakeEarthdataMCPServer
 
@@ -156,14 +158,18 @@ class EdlTokenInjectionMatrixTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("query", properties)
 
     async def test_missing_user_context_fails_loud_regardless_of_the_injector(self):
-        from earthdata_mcp.workspace import MissingUserContextError, bind_workspace
+        # T37: the refusal answers as a classified contract error envelope;
+        # the injector must never have been consulted (no token to leak).
+        import json
+
+        from earthdata_mcp.workspace import bind_workspace
 
         injector = _FakeInjector(token="decrypted-token-abc")
         bound = bind_workspace(self.tools, lambda: None, edl_injector=injector)
 
-        with self.assertRaises(MissingUserContextError):
-            await bound["search_datasets"].ainvoke({"query": "no2"})
+        raw = await bound["search_datasets"].ainvoke({"query": "no2"})
 
+        self.assertEqual(json.loads(raw)["error"]["category"], "contract")
         self.assertNotIn("edl_token", self.received)
 
     async def test_contract_check_still_reaches_ready_with_no_edl_token_in_the_required_param_contract(self):
@@ -181,7 +187,7 @@ class EdlTokenInjectionMatrixTests(unittest.IsolatedAsyncioTestCase):
     any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
     "MCP client test dependencies are not installed",
 )
-class EdlTokenErrorClassificationTests(unittest.IsolatedAsyncioTestCase):
+class EdlTokenErrorClassificationTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCase):
     """PRD-022 (soft dependency): the three per-user credential error
     classes route through the existing structured-error pipeline
     (earthdata_mcp/results.py's category-generic _classify_dict) with fixed,

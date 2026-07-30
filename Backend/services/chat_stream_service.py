@@ -9,12 +9,15 @@ from typing import Any, AsyncIterator
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from config.error_templates import render_error_answer
+from config.error_templates import render_error_answer, render_turn_timeout_answer
+from config.settings import get_settings
 from earthdata_mcp.results import CATEGORY_CONTRACT
 from models import AgentResult, agent_result_to_json, parse_agent_result, parse_chart_payload
+from services import cube_cache
 from services.artifact_store import artifact_store
 from services.chart_service import ChartService
 from services.intent_router import route_intent
+from services.retrieval_composites import TERMINAL_STATUSES
 from services.subagent_dispatch import run_ground, run_satellite
 from utils.message_utils import flatten_text_content, normalize_image_url
 from utils.streaming import stream_response, user_id_context
@@ -37,7 +40,13 @@ _INTENT_TOOL_NAMES = {
 
 
 class ChatStreamService:
-    def __init__(self, chart_service: ChartService, long_request_seconds: float, mcp_manager: Any = None):
+    def __init__(
+        self,
+        chart_service: ChartService,
+        long_request_seconds: float,
+        mcp_manager: Any = None,
+        chat_turn_timeout_seconds: float | None = None,
+    ):
         self.chart_service = chart_service
         self.long_request_seconds = long_request_seconds
         # T17: passed through to run_satellite so the fast path returns the
@@ -45,6 +54,14 @@ class ChatStreamService:
         # earthdata-retrieval MCP isn't ready. None (the default) preserves
         # prior behavior for every existing caller that doesn't pass one.
         self.mcp_manager = mcp_manager
+        # T38: whole-turn deadline around stream_chat_events/_fast_path_events'
+        # event loop. None (the default) reads settings at construction time
+        # rather than baking in a literal, so every existing caller that
+        # doesn't pass one gets the configured production default.
+        self.chat_turn_timeout_seconds = (
+            chat_turn_timeout_seconds if chat_turn_timeout_seconds is not None
+            else get_settings().chat_turn_timeout_seconds
+        )
 
     async def stream_chat_events(
         self,
@@ -61,7 +78,15 @@ class ChatStreamService:
         # real user id — the fast path calls run_satellite/run_ground
         # directly, bypassing stream_response's own binding entirely, which
         # is what left every fast-pathed retrieval scoped to "user-None".
-        with user_id_context(user_id):
+        #
+        # T52: also the turn-activity boundary the cube writer holds off
+        # against. The process runs --workers 1, so a background cube write
+        # competes directly with this turn for dask's two workers, the HDF5
+        # open lock and RSS — and the turn is the one the researcher is
+        # actually watching. Wrapping both routes here (the fast path is
+        # dispatched from inside this block) is what makes "never start a cube
+        # during a turn" true rather than aspirational.
+        with user_id_context(user_id), cube_cache.active_turn():
             intent = route_intent(message)
             route = "fast_path" if intent in _AGENT_CONSULTED_HEADERS else "supervisor"
             logger.info(
@@ -93,67 +118,95 @@ class ChatStreamService:
             # event — a plain dict (not a bare variable) so the nested helper
             # methods below can update it by reference.
             suggestions_box: dict[str, list[str]] = {}
+            # T49: the deterministic variable picker off a sub-agent's
+            # AgentResult tool_result (run_satellite already filled its
+            # prompts) — carried straight through, never synthesized here, the
+            # same discipline as suggestions_box.
+            variable_choice_box: dict[str, dict] = {}
+            # T38: last-seen status per job_handle, from every job_progress
+            # event this turn — read only if the turn deadline fires, to name
+            # anything still running server-side in the timeout answer.
+            job_statuses: dict[str, str] = {}
             started = time.monotonic()
+            turn_timeout = asyncio.timeout(self.chat_turn_timeout_seconds)
             try:
-                async for event_type, data in stream_response(agent, message, thread_id, user_id=user_id):
-                    if event_type == "tool_call":
-                        tool_calls.append({"name": data["name"], "args": data["args"]})
-                        response_text = ""
-                        yield self.sse("tool_call", {"name": data["name"], "args": data["args"]})
-                    elif event_type == "status":
-                        # T19: forward the whole payload, not just message —
-                        # stage/detail are additive fields emit_status may set;
-                        # rebuilding a message-only dict here silently dropped
-                        # them before they ever reached the SSE wire.
-                        yield self.sse("status", data)
-                    elif event_type == "job_progress":
-                        yield self.sse("job_progress", data)
-                    elif event_type == "chart_payload":
-                        chart = parse_chart_payload(data)
-                        if chart is not None:
-                            event = await self._emit_chart_once(thread_id, chart, user_id, emitted_chart_ids)
-                            if event is not None:
+                async with turn_timeout:
+                    async for event_type, data in stream_response(agent, message, thread_id, user_id=user_id):
+                        if event_type == "tool_call":
+                            tool_calls.append({"name": data["name"], "args": data["args"]})
+                            response_text = ""
+                            yield self.sse("tool_call", {"name": data["name"], "args": data["args"]})
+                        elif event_type == "status":
+                            # T19: forward the whole payload, not just message —
+                            # stage/detail are additive fields emit_status may set;
+                            # rebuilding a message-only dict here silently dropped
+                            # them before they ever reached the SSE wire.
+                            yield self.sse("status", data)
+                        elif event_type == "job_progress":
+                            if data.get("job_handle"):
+                                job_statuses[data["job_handle"]] = data.get("status", "")
+                            yield self.sse("job_progress", data)
+                        elif event_type == "chart_payload":
+                            chart = parse_chart_payload(data)
+                            if chart is not None:
+                                event = await self._emit_chart_once(thread_id, chart, user_id, emitted_chart_ids)
+                                if event is not None:
+                                    yield event
+                        elif event_type == "tool_result":
+                            async for event in self._tool_result_events(
+                                data.get("content", ""),
+                                thread_id,
+                                user_id,
+                                image_urls,
+                                artifacts,
+                                emitted_chart_ids,
+                                suggestions_box,
+                                variable_choice_box,
+                            ):
                                 yield event
-                    elif event_type == "tool_result":
-                        async for event in self._tool_result_events(
-                            data.get("content", ""),
-                            thread_id,
-                            user_id,
-                            image_urls,
-                            artifacts,
-                            emitted_chart_ids,
-                            suggestions_box,
-                        ):
-                            yield event
-                    elif event_type == "image":
-                        url = normalize_image_url(data.get("path", ""))
-                        if url:
-                            image_urls.append(url)
-                            yield self.sse("image", {"url": url})
-                    elif event_type == "text":
-                        text, events = await self._text_events(
-                            data, thread_id, user_id, emitted_chart_ids, suggestions_box,
-                        )
-                        response_text += text
-                        if text:
-                            yield self.sse("text", {"content": text})
-                        for event in events:
-                            yield event
+                        elif event_type == "image":
+                            url = normalize_image_url(data.get("path", ""))
+                            if url:
+                                image_urls.append(url)
+                                yield self.sse("image", {"url": url})
+                        elif event_type == "text":
+                            text, events = await self._text_events(
+                                data, thread_id, user_id, emitted_chart_ids, suggestions_box,
+                                variable_choice_box,
+                            )
+                            response_text += text
+                            if text:
+                                yield self.sse("text", {"content": text})
+                            for event in events:
+                                yield event
 
-                done_payload = {
-                    "thread_id": thread_id,
-                    "response": self._strip_supervisor_preamble(response_text),
-                    "image_urls": image_urls,
-                    "artifacts": artifacts,
-                    "tool_calls": tool_calls,
-                }
-                if "value" in suggestions_box:
-                    done_payload["suggested_followups"] = suggestions_box["value"]
-                yield self.sse("done", done_payload)
-                self._log_request_complete(request_id, thread_id, started)
-            except Exception:
-                logger.exception("agent_failure", extra={"_request_id": request_id, "_thread_id": thread_id})
-                yield self.sse("error", {"detail": render_error_answer(CATEGORY_CONTRACT, "request")})
+                    done_payload = {
+                        "thread_id": thread_id,
+                        "response": self._strip_supervisor_preamble(response_text),
+                        "image_urls": image_urls,
+                        "artifacts": artifacts,
+                        "tool_calls": tool_calls,
+                    }
+                    if "value" in suggestions_box:
+                        done_payload["suggested_followups"] = suggestions_box["value"]
+                    if "value" in variable_choice_box:
+                        done_payload["variable_choice"] = variable_choice_box["value"]
+                    yield self.sse("done", done_payload)
+                    self._log_request_complete(request_id, thread_id, started)
+            except Exception as exc:
+                # T38: asyncio.TimeoutError and a plain built-in TimeoutError
+                # are the same class since 3.11 — a sub-agent that legitimately
+                # raises TimeoutError (an AQS/provider timeout, unrelated to
+                # this turn's own deadline) must still classify as a generic
+                # failure, not our timeout answer. turn_timeout.expired() is
+                # the only reliable way to tell "this deadline actually fired"
+                # from "something downstream happened to raise TimeoutError".
+                if isinstance(exc, TimeoutError) and turn_timeout.expired():
+                    for event in self._turn_timeout_events(request_id, thread_id, job_statuses):
+                        yield event
+                else:
+                    logger.exception("agent_failure", extra={"_request_id": request_id, "_thread_id": thread_id})
+                    yield self.sse("error", {"detail": render_error_answer(CATEGORY_CONTRACT, "request")})
 
     async def _fast_path_events(
         self,
@@ -199,40 +252,53 @@ class ChatStreamService:
 
         task = asyncio.create_task(run())
         result = None
+        job_statuses: dict[str, str] = {}
+        turn_timeout = asyncio.timeout(self.chat_turn_timeout_seconds)
         try:
-            while True:
-                event_type, data = await queue.get()
-                if event_type == "__task_done__":
-                    break
-                if event_type == "__error__":
-                    raise data
-                if event_type == "__result__":
-                    result = data
-                    continue
-                if event_type == "tool_call":
-                    tool_calls.append({"name": data["name"], "args": data["args"]})
-                    yield self.sse("tool_call", {"name": data["name"], "args": data["args"]})
-                elif event_type == "status":
-                    # T19: forward the whole payload, not just message —
-                    # stage/detail are additive fields emit_status may set;
-                    # rebuilding a message-only dict here silently dropped
-                    # them before they ever reached the SSE wire.
-                    yield self.sse("status", data)
-                elif event_type == "job_progress":
-                    yield self.sse("job_progress", data)
-                elif event_type == "chart_payload":
-                    chart = parse_chart_payload(data)
-                    if chart is not None:
-                        event = await self._emit_chart_once(thread_id, chart, user_id, emitted_chart_ids)
-                        if event is not None:
-                            yield event
-                # tool_result/text/done from the sub-agent's own stream are
-                # intentionally not forwarded — the finalized envelope below
-                # becomes the one synthesized answer (T14 Out of Scope: no
-                # sub-agent token streaming through this path either).
-        except Exception:
-            logger.exception("agent_failure", extra={"_request_id": request_id, "_thread_id": thread_id})
-            yield self.sse("error", {"detail": render_error_answer(CATEGORY_CONTRACT, "request")})
+            async with turn_timeout:
+                while True:
+                    event_type, data = await queue.get()
+                    if event_type == "__task_done__":
+                        break
+                    if event_type == "__error__":
+                        raise data
+                    if event_type == "__result__":
+                        result = data
+                        continue
+                    if event_type == "tool_call":
+                        tool_calls.append({"name": data["name"], "args": data["args"]})
+                        yield self.sse("tool_call", {"name": data["name"], "args": data["args"]})
+                    elif event_type == "status":
+                        # T19: forward the whole payload, not just message —
+                        # stage/detail are additive fields emit_status may set;
+                        # rebuilding a message-only dict here silently dropped
+                        # them before they ever reached the SSE wire.
+                        yield self.sse("status", data)
+                    elif event_type == "job_progress":
+                        if data.get("job_handle"):
+                            job_statuses[data["job_handle"]] = data.get("status", "")
+                        yield self.sse("job_progress", data)
+                    elif event_type == "chart_payload":
+                        chart = parse_chart_payload(data)
+                        if chart is not None:
+                            event = await self._emit_chart_once(thread_id, chart, user_id, emitted_chart_ids)
+                            if event is not None:
+                                yield event
+                    # tool_result/text/done from the sub-agent's own stream are
+                    # intentionally not forwarded — the finalized envelope below
+                    # becomes the one synthesized answer (T14 Out of Scope: no
+                    # sub-agent token streaming through this path either).
+        except Exception as exc:
+            # T38: see the matching comment in stream_chat_events — a
+            # sub-agent that legitimately raises TimeoutError (surfaced here
+            # via the __error__ queue item) must not be misread as this
+            # turn's own deadline firing.
+            if isinstance(exc, TimeoutError) and turn_timeout.expired():
+                for event in self._turn_timeout_events(request_id, thread_id, job_statuses):
+                    yield event
+            else:
+                logger.exception("agent_failure", extra={"_request_id": request_id, "_thread_id": thread_id})
+                yield self.sse("error", {"detail": render_error_answer(CATEGORY_CONTRACT, "request")})
             return
         finally:
             if not task.done():
@@ -247,7 +313,7 @@ class ChatStreamService:
             if event is not None:
                 yield event
         for artifact_ref in result.artifacts:
-            payload = self._resolve_artifact_payload(
+            payload = await self._resolve_artifact_payload(
                 artifact_ref.model_dump(exclude_none=True), user_id, thread_id,
             )
             if payload is None:
@@ -274,6 +340,10 @@ class ChatStreamService:
         # the supervisor path's suggestions_box.
         if result.suggested_followups is not None:
             done_payload["suggested_followups"] = result.suggested_followups
+        # T49: the deterministic variable picker, likewise read straight off
+        # the finalized result (run_satellite already filled its prompts).
+        if result.variable_choice is not None:
+            done_payload["variable_choice"] = result.variable_choice.model_dump(exclude_none=True)
         yield self.sse("done", done_payload)
         self._log_request_complete(request_id, thread_id, started)
 
@@ -353,6 +423,35 @@ class ChatStreamService:
     def sse(self, event: str, data: dict[str, Any]) -> str:
         return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
+    def _turn_timeout_events(
+        self, request_id: str, thread_id: str, job_statuses: dict[str, str],
+    ) -> list[str]:
+        """T38: the whole-turn deadline expired. Logs the structured
+        ``chat_turn_timeout`` event (the metric that tells us whether the
+        budget is right) and returns the ``error`` + ``done`` SSE pair naming
+        any job_handle whose last-seen status this turn wasn't terminal, so
+        the Jobs panel story stays coherent with the honest answer."""
+        in_flight = [handle for handle, status in job_statuses.items() if status not in TERMINAL_STATUSES]
+        logger.warning(
+            "chat_turn_timeout",
+            extra={
+                "_event": "chat_turn_timeout",
+                "_request_id": request_id,
+                "_thread_id": thread_id,
+                "_in_flight_jobs": in_flight,
+            },
+        )
+        return [
+            self.sse("error", {"detail": render_turn_timeout_answer(in_flight)}),
+            self.sse("done", {
+                "thread_id": thread_id,
+                "response": render_turn_timeout_answer(in_flight),
+                "image_urls": [],
+                "artifacts": [],
+                "tool_calls": [],
+            }),
+        ]
+
     def _strip_supervisor_preamble(self, text: str) -> str:
         marker = "Agent consulted:"
         idx = text.find(marker)
@@ -367,13 +466,14 @@ class ChatStreamService:
         artifacts: list[dict[str, Any]] | None = None,
         emitted_chart_ids: set[str] | None = None,
         suggestions_box: dict[str, list[str]] | None = None,
+        variable_choice_box: dict[str, dict] | None = None,
     ) -> AsyncIterator[str]:
         if emitted_chart_ids is None:
             emitted_chart_ids = set()
         agent_result = parse_agent_result(content)
         if agent_result is not None:
             for artifact_ref in agent_result.artifacts:
-                payload = self._resolve_artifact_payload(
+                payload = await self._resolve_artifact_payload(
                     artifact_ref.model_dump(exclude_none=True), user_id, thread_id,
                 )
                 if payload is None:
@@ -390,6 +490,9 @@ class ChatStreamService:
             # through untouched (never synthesized here, story #12).
             if suggestions_box is not None and agent_result.suggested_followups is not None:
                 suggestions_box["value"] = agent_result.suggested_followups
+            # T49: same discipline for the deterministic variable picker.
+            if variable_choice_box is not None and agent_result.variable_choice is not None:
+                variable_choice_box["value"] = agent_result.variable_choice.model_dump(exclude_none=True)
             return
 
         artifact_refs = self._artifact_refs(content)
@@ -410,7 +513,7 @@ class ChatStreamService:
 
         if artifact_refs:
             for ref in artifact_refs:
-                payload = self._resolve_artifact_payload(ref, user_id, thread_id)
+                payload = await self._resolve_artifact_payload(ref, user_id, thread_id)
                 if payload is None:
                     continue
                 if artifacts is not None and payload not in artifacts:
@@ -431,21 +534,21 @@ class ChatStreamService:
                 },
             )
 
-    def _resolve_artifact_payload(
+    async def _resolve_artifact_payload(
         self,
         ref: dict[str, Any],
         user_id: str,
         thread_id: str,
     ) -> dict[str, Any] | None:
-        """Table artifacts live in the ephemeral in-memory artifact_store and
-        need ownership claimed on first sight. Chart-backed artifact types
+        """Table artifacts are claimed (and, per T39, durably persisted to
+        Postgres) on first sight here. Chart-backed artifact types
         (map/comparison/timeseries) are already fully formed by
         artifact_registry and persisted durably alongside the chart payload
         that carries them — pass them through as-is."""
         if ref.get("type") != "table":
             return ref
         try:
-            claimed = artifact_store.claim(ref["id"], user_id, thread_id)
+            claimed = await artifact_store.claim(ref["id"], user_id, thread_id)
         except KeyError:
             logger.warning(
                 "artifact_ref_missing",
@@ -461,6 +564,7 @@ class ChatStreamService:
         user_id: str,
         emitted_chart_ids: set[str] | None = None,
         suggestions_box: dict[str, list[str]] | None = None,
+        variable_choice_box: dict[str, dict] | None = None,
     ) -> tuple[str, list[str]]:
         if emitted_chart_ids is None:
             emitted_chart_ids = set()
@@ -473,7 +577,7 @@ class ChatStreamService:
                     if event is not None:
                         events.append(event)
                 for artifact in structured_result.artifacts:
-                    payload = self._resolve_artifact_payload(
+                    payload = await self._resolve_artifact_payload(
                         artifact.model_dump(exclude_none=True), user_id, thread_id,
                     )
                     if payload is None:
@@ -481,6 +585,8 @@ class ChatStreamService:
                     events.append(self.sse("artifact", payload))
                 if suggestions_box is not None and structured_result.suggested_followups is not None:
                     suggestions_box["value"] = structured_result.suggested_followups
+                if variable_choice_box is not None and structured_result.variable_choice is not None:
+                    variable_choice_box["value"] = structured_result.variable_choice.model_dump(exclude_none=True)
                 return structured_result.text or "", events
 
             text, charts = self.chart_service.parse_charts(data)

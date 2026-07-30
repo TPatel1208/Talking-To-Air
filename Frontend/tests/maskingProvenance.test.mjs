@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { resolveMasking } from '../src/utils/maskingProvenance.js'
+import { resolveMasking, resolveRegionFidelity } from '../src/utils/maskingProvenance.js'
 
 // Timeseries payloads carry masking at the top level
 // (plot_tools ts_payload["masking"]).
@@ -72,6 +72,45 @@ test('returns null when qa_status missing', () => {
 test('returns null for nullish or non-object chart', () => {
   assert.equal(resolveMasking(null), null)
   assert.equal(resolveMasking(undefined), null)
+})
+
+// ── Region fidelity (T42): region_type / display_name disclosure ──────────
+
+// A bounding-box region is worth disclosing: the "region" was a rectangle,
+// not the named place's real boundary.
+test('resolveRegionFidelity surfaces a bounding_box region', () => {
+  const chart = {
+    type: 'heatmap',
+    provenance: { region_type: 'bounding_box', display_name: 'United States' },
+  }
+  assert.deepEqual(resolveRegionFidelity(chart), {
+    regionType: 'bounding_box',
+    displayName: 'United States',
+  })
+})
+
+// A real polygon is the faithful case -> nothing to warn about, render nothing.
+test('resolveRegionFidelity returns null for a polygon region', () => {
+  const chart = { type: 'heatmap', provenance: { region_type: 'polygon', display_name: 'Paris, France' } }
+  assert.equal(resolveRegionFidelity(chart), null)
+})
+
+// point_buffer and boundary_cells are the other disclose-worthy kinds.
+test('resolveRegionFidelity surfaces point_buffer and boundary_cells', () => {
+  assert.equal(
+    resolveRegionFidelity({ provenance: { region_type: 'point_buffer', display_name: 'X' } }).regionType,
+    'point_buffer',
+  )
+  assert.equal(
+    resolveRegionFidelity({ provenance: { region_type: 'boundary_cells', display_name: 'Y' } }).regionType,
+    'boundary_cells',
+  )
+})
+
+// No region_type -> null, so nothing renders for older/plain payloads.
+test('resolveRegionFidelity returns null when region_type absent', () => {
+  assert.equal(resolveRegionFidelity({ type: 'heatmap', provenance: {} }), null)
+  assert.equal(resolveRegionFidelity(null), null)
 })
 
 // Top-level masking wins over provenance when both exist.

@@ -20,10 +20,21 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any
 
-from config.error_templates import render_error_answer
+from config.error_templates import (
+    CATEGORY_RATE_LIMITED,
+    CATEGORY_RECURSION_EXHAUSTED,
+    render_error_answer,
+    render_scope_note,
+)
 from config.model_factory import structured_output
 from earthdata_mcp.connection import STATE_READY
-from earthdata_mcp.results import CATEGORY_CONTRACT, CATEGORY_PROVIDER_UNAVAILABLE
+from earthdata_mcp.results import (
+    CATEGORY_CONTRACT,
+    CATEGORY_PROVIDER_UNAVAILABLE,
+    CATEGORY_USER_INPUT,
+    MCPToolError,
+    parse_tool_result,
+)
 from models import AgentResult, SubAgentEnvelope, parse_agent_result, parse_chart_payload, parse_sub_agent_envelope
 from models.artifact import ArtifactReference
 from repositories.session_metadata_repository import (
@@ -103,7 +114,9 @@ async def run_ground(
             raise
         except Exception as exc:
             outcome = "failure"
-            text = str(exc)
+            # T37: taxonomy answer, never a bare exception string (see
+            # _render_unexpected_exception).
+            text = _render_unexpected_exception(exc, "ground sensor agent")
             artifact_refs = []
         finally:
             record_agent_request("ground_sensor", outcome)
@@ -189,7 +202,6 @@ async def run_satellite(
         ))
     budget["satellite"] = count + 1
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     # Cross-turn retrieval context (dataset/AOI/handles the last satellite turn
     # on this thread worked with). The fast path writes only the prose answer
     # back into the supervisor's thread, so a follow-up that drops to the
@@ -199,8 +211,18 @@ async def run_satellite(
     # as UNVERIFIED context (never an availability verdict) so the agent reuses
     # the handles but still re-checks coverage.
     satellite_context = await _load_satellite_context(conversation_thread_id)
-    enriched_task = _inject_satellite_context(f"[Current UTC time: {now}]\n\n{task}", satellite_context)
+    enriched_task = _inject_satellite_context(_current_date_preamble() + task, satellite_context)
     captured_context: dict[str, str] = {}
+    # T46: the first define_area_of_interest user_input rejection seen this
+    # turn. Its presence alongside a delivered chart means the agent improvised
+    # a substitute region instead of relaying the rejection — the no-
+    # substitution guard below refuses that answer deterministically.
+    aoi_rejection: dict[str, MCPToolError] = {}
+    # T49: the deterministic variable-choice picker a tool emitted out-of-band
+    # (emit_variable_choice) when the T48 resolver couldn't confidently choose.
+    # Kept last-wins; attached to the finalized answer below with each
+    # candidate's auto-send prompt filled from the ORIGINAL request (task).
+    variable_choice_box: dict[str, dict] = {}
 
     async def _invoke(task_text: str) -> AgentResult:
         charts = []
@@ -218,6 +240,13 @@ async def run_satellite(
                 if event_type == "tool_call":
                     _capture_satellite_context(data.get("name"), data.get("args"), captured_context)
                     continue
+                if event_type == "variable_choice":
+                    # T49: the deterministic picker rides out-of-band, exactly
+                    # like a chart_payload — captured here, never parsed from the
+                    # model's prose, so the candidate list is a guarantee.
+                    if isinstance(data, dict):
+                        variable_choice_box["value"] = data
+                    continue
                 if event_type == "chart_payload":
                     # T13: plot/statistics tools emit the full render
                     # payload out-of-band via emit_chart and return the
@@ -226,9 +255,16 @@ async def run_satellite(
                     chart = parse_chart_payload(data)
                     if chart is not None:
                         charts.append(chart)
+                    # Carry every chart id across turns so a later reliability
+                    # question ("why trust this?") can name one to
+                    # explain_measurement — the satellite agent is stateless
+                    # (fresh thread each dispatch), so without this the chart ids
+                    # from a prior turn are unrecoverable and P3 can't ground.
+                    _capture_chart_id(data, captured_context)
                     continue
                 if event_type == "tool_result":
                     content = data.get("content", "")
+                    _capture_aoi_rejection(data.get("name"), content, aoi_rejection)
                     artifacts.extend(_artifact_refs_from_content(content))
                     nested = parse_agent_result(content)
                     if nested is not None:
@@ -246,7 +282,12 @@ async def run_satellite(
             outcome = "failure"
             if exc.__class__.__name__ == "HarmonyTimeoutError":
                 outcome = "timeout"
-            text_parts = [str(exc)]
+            # T37: an arbitrary exception string must never become the
+            # sub-agent's "answer" the supervisor may dress up — render the
+            # taxonomy's honest error answer instead (classified category
+            # when it's an MCPToolError, contract otherwise); the real
+            # exception goes to the logs.
+            text_parts = [_render_unexpected_exception(exc, "earthdata agent")]
         finally:
             record_agent_request("satellite", outcome)
 
@@ -278,6 +319,8 @@ async def run_satellite(
         result = await _reprompt_final_envelope(satellite_agent, _satellite_retry_task(enriched_task), "satellite")
 
     finalized = _finalize_sub_agent_result(result, "earthdata")
+    finalized = _guard_aoi_substitution(finalized, aoi_rejection.get("error"))
+    finalized = _attach_variable_choice(finalized, variable_choice_box.get("value"), task)
     if captured_context and conversation_thread_id:
         await _persist_satellite_context(
             conversation_thread_id, {**satellite_context, **captured_context}
@@ -310,6 +353,55 @@ _GROUND_RETRY_TOOL_GUIDANCE = (
 )
 
 
+# Message-shape signals for a language-model provider rate-limit/quota failure
+# (Gemini free-tier: "429 Too Many Requests" / "RESOURCE_EXHAUSTED" / quota
+# prose). Matched on text, not a provider-specific exception class, so this
+# stays correct across providers (google/groq/openai) and across the wrapping
+# layers (langchain re-raises the provider error under its own class) without
+# importing any of them. Live-observed in the 2026-07-20 AOD session logs.
+_RATE_LIMIT_SIGNALS: tuple[str, ...] = (
+    "429",
+    "too many requests",
+    "resource_exhausted",
+    "rate limit",
+    "ratelimit",
+    "quota",
+)
+
+
+def _classify_escaped_exception(exc: Exception) -> str:
+    """Category for a non-MCPToolError exception that escaped a sub-agent turn.
+    Two LLM/graph-layer failures get their own honest answer instead of the
+    generic contract "internal error": a LangGraph recursion-limit stop
+    (matched by class name, mirroring the HarmonyTimeoutError pattern above, so
+    langgraph need not be imported here) and a provider rate-limit/quota
+    (matched by message shape). Everything else stays ``contract``."""
+    if exc.__class__.__name__ == "GraphRecursionError":
+        return CATEGORY_RECURSION_EXHAUSTED
+    text = f"{exc.__class__.__name__}: {exc}".lower()
+    if any(signal in text for signal in _RATE_LIMIT_SIGNALS):
+        return CATEGORY_RATE_LIMITED
+    return CATEGORY_CONTRACT
+
+
+def _render_unexpected_exception(exc: Exception, stage: str) -> str:
+    """T37: the honest taxonomy answer for an exception that escaped a
+    sub-agent turn. A classified MCPToolError keeps its own category and
+    message; a recursion-limit stop or a provider rate-limit gets its own
+    actionable category; anything else is a contract failure whose text
+    (possibly empty, possibly an internal path) never reaches the researcher —
+    the real exception goes to the logs here."""
+    if isinstance(exc, MCPToolError):
+        return render_error_answer(exc.category, stage, exc.message)
+    category = _classify_escaped_exception(exc)
+    logger.exception(
+        "subagent_unexpected_exception",
+        extra={"_event": "subagent_unexpected_exception", "_stage": stage, "_category": category},
+        exc_info=exc,
+    )
+    return render_error_answer(category, stage)
+
+
 def _finalize_sub_agent_result(result: AgentResult, agent_label: str) -> AgentResult:
     """
     Validate a sub-agent's final message against the {summary, artifact_ids,
@@ -325,16 +417,156 @@ def _finalize_sub_agent_result(result: AgentResult, agent_label: str) -> AgentRe
     """
     envelope = parse_sub_agent_envelope(result.text)
     if envelope is None:
-        return _salvage_sub_agent_result(result, agent_label)
+        return _append_disclosures(_salvage_sub_agent_result(result, agent_label))
     discovered = {ref.id: ref for ref in result.artifacts}
     artifacts = [discovered[artifact_id] for artifact_id in envelope.artifact_ids if artifact_id in discovered]
-    return AgentResult(
+    return _append_disclosures(AgentResult(
         text=truncate_text(envelope.summary, 2000, agent_name=agent_label),
         charts=result.charts,
         artifacts=artifacts,
         handles=envelope.handles,
         suggested_followups=envelope.suggested_followups,
+    ))
+
+
+def _append_disclosures(result: AgentResult) -> AgentResult:
+    """Apply every deterministic, provenance-driven disclosure the answer owes
+    the researcher: the T48 variable-resolution note (which product was picked)
+    and the T46 scope-substitution note (what scope was actually served). Both
+    are templated from chart provenance, never model prose."""
+    return _append_scope_note(_append_variable_note(result))
+
+
+def _capture_aoi_rejection(name: Any, content: Any, into: dict[str, MCPToolError]) -> None:
+    """Record the first define_area_of_interest user_input rejection seen in a
+    turn's tool stream (T46). The rejection travels as bind_workspace's own
+    error envelope in the tool_result content, which parse_tool_result
+    re-raises as a typed MCPToolError. Non-AOI tools, non-error results, and
+    non-user_input errors (a transient provider outage isn't the researcher's
+    fault) are ignored; only the first rejection is kept."""
+    if name != "define_area_of_interest" or into.get("error") is not None:
+        return
+    try:
+        parse_tool_result(content)
+    except MCPToolError as exc:
+        if exc.category == CATEGORY_USER_INPUT:
+            into["error"] = exc
+    except Exception:
+        pass
+
+
+def _guard_aoi_substitution(result: AgentResult, rejection: MCPToolError | None) -> AgentResult:
+    """T46 story #1: when define_area_of_interest rejected the requested area
+    with a user_input error but the turn still delivered a chart, the agent
+    improvised a substitute region instead of relaying the rejection — the
+    live 2026-07-17 incident answered an impossible bbox with a confident
+    'North America' map. Replace the answer with the deterministic T18 error
+    relay (the exact mechanism as salvage — no model in the loop) and drop the
+    wrong-region chart, so a researcher never receives a confident map of a
+    region they did not ask about. A rejection with no delivered chart (the
+    agent relayed it and asked a clarifying question) is left untouched."""
+    if rejection is None or not result.charts:
+        return result
+    detail = rejection.message
+    if rejection.suggestion:
+        detail = f"{detail.rstrip('.')}. {rejection.suggestion}"
+    return AgentResult(
+        text=render_error_answer(CATEGORY_USER_INPUT, "area-of-interest request", detail),
+        metadata={"aoi_substitution_refused": True},
     )
+
+
+def _chart_provenance(chart: Any) -> dict:
+    """The provenance dict off a finalized chart, whether it survived as a
+    ChartPayload (extra='allow', provenance is an attribute) or a plain
+    dict."""
+    if isinstance(chart, dict):
+        prov = chart.get("provenance")
+    else:
+        prov = getattr(chart, "provenance", None)
+    return prov if isinstance(prov, dict) else {}
+
+
+def _attach_variable_choice(
+    result: AgentResult, payload: dict | None, original_request: str,
+) -> AgentResult:
+    """T49: attach the deterministic variable-choice picker to the finalized
+    answer, reconstructing each candidate's auto-send prompt from the ORIGINAL
+    request text (never the date/context-enriched task the sub-agent actually
+    ran, so no injected preamble leaks into the message a click would resend).
+
+    Two sources feed one attach point:
+    - LOW confidence: ``payload`` is the picker a tool emitted out-of-band
+      (emit_variable_choice) in place of a chart.
+    - MEDIUM confidence: the answer arrived WITH a chart; its provenance
+      carries the picker (stashed by AggregationService._resolution_facts) so
+      the guess can be overridden in one click, without blocking the answer.
+
+    The out-of-band payload wins when both exist. A no-op when neither source
+    has a picker. Failure to parse is non-fatal — the answer still stands."""
+    if result.variable_choice is not None:
+        return result
+    payload = payload or _medium_variable_choice_from_charts(result)
+    if not payload:
+        return result
+    from models import VariableChoice
+    from preprocessing.variable_choice_builder import fill_prompts
+
+    try:
+        choice = VariableChoice.model_validate(payload)
+    except Exception:
+        logger.warning("variable_choice_parse_failed", exc_info=True)
+        return result
+    result.variable_choice = fill_prompts(choice, original_request)
+    return result
+
+
+def _medium_variable_choice_from_charts(result: AgentResult) -> dict | None:
+    """The medium-confidence picker stashed in a delivered chart's provenance
+    (variable_resolution.variable_choice), or None. This is how a medium
+    auto-pick attaches its override picker without a separate out-of-band
+    emit — the resolver already rode its facts out on the chart."""
+    for chart in result.charts:
+        resolution = _chart_provenance(chart).get("variable_resolution")
+        if isinstance(resolution, dict):
+            picker = resolution.get("variable_choice")
+            if isinstance(picker, dict) and picker.get("candidates"):
+                return picker
+    return None
+
+
+def _append_variable_note(result: AgentResult) -> AgentResult:
+    """T48: append the VariableResolver's deterministic disclosure to a
+    finalized answer when a chart's provenance records that the resolver
+    auto-picked a variable from a wide, ambiguous product. The disclosure is
+    built by the resolver from its own facts (chosen field + ranked
+    alternatives) -- never model prose -- so a scientific choice made on the
+    researcher's behalf can't be paraphrased away. A no-op when no resolver
+    disclosure was recorded (an explicit/registry/single-var pick)."""
+    for chart in result.charts:
+        provenance = _chart_provenance(chart)
+        resolution = provenance.get("variable_resolution")
+        note = (resolution or {}).get("disclosure") if isinstance(resolution, dict) else None
+        if note:
+            result.text = f"{result.text}\n\n{note}" if result.text else note
+            return result
+    return result
+
+
+def _append_scope_note(result: AgentResult) -> AgentResult:
+    """T46: append the deterministic scope-substitution disclosure to a
+    finalized answer when any chart's provenance records a requested scope
+    that differs materially from what was delivered. Rendered by the T18/T37
+    template machinery (render_scope_note) from provenance facts — never
+    composed by the model, so an inconvenient correction can't be paraphrased
+    away. A no-op when nothing was substituted (don't nag on exact matches)."""
+    for chart in result.charts:
+        provenance = _chart_provenance(chart)
+        note = render_scope_note(provenance.get("requested_scope"), provenance.get("delivered_scope"))
+        if note:
+            result.text = f"{result.text}\n\n{note}" if result.text else note
+            return result
+    return result
 
 
 def _salvage_sub_agent_result(result: AgentResult, agent_label: str) -> AgentResult:
@@ -541,6 +773,64 @@ def _capture_satellite_context(name: Any, args: Any, captured: dict[str, str]) -
         captured["last_time_range"] = str(args["time_range"])
 
 
+def _capture_chart_id(data: Any, captured: dict[str, str]) -> None:
+    """Accumulate every chart id one dispatch streams, ordered, most recent
+    last, comma-joined (the persisted satellite context is a flat str->str
+    map). A single last-write-wins slot would misattribute a follow-up
+    reliability question whenever one turn mints several distinct charts
+    ("plot AOD and also NO2") — the streaming order of chart events is an
+    implementation artifact, not the chart the researcher means. A re-emitted
+    id moves to the most-recent slot rather than duplicating."""
+    if not isinstance(data, dict) or not data.get("chart_id"):
+        return
+    chart_id = str(data["chart_id"])
+    ids = [i for i in captured.get("last_chart_ids", "").split(",") if i and i != chart_id]
+    ids.append(chart_id)
+    captured["last_chart_ids"] = ",".join(ids)
+
+
+_EXPLICIT_AREA_PATTERN = re.compile(
+    r"\b(?:bounding box|bbox|longitude|latitude|lon|lat)\b", re.I
+)
+
+
+def _task_specifies_new_area(task: str) -> bool:
+    """True when this turn's own task text spells out a location/bounding
+    box (lon/lat wording or numeric bounds). Live-testing bug: a follow-up
+    that named a brand-new bounding box was still handed the prior turn's
+    aoi_handle framed as 'reuse to skip re-searching', and the sub-agent
+    trusted the stale handle over the new numbers, silently re-rendering the
+    old AOI instead of calling define_area_of_interest again. Same principle
+    as the ground-monitor pollutant fix: the researcher's current wording is
+    always authoritative over carried-over context."""
+    return bool(_EXPLICIT_AREA_PATTERN.search(str(task or "")))
+
+
+def _current_date_preamble(now: datetime | None = None) -> str:
+    """Authoritative current-date banner prepended to every satellite task.
+
+    Root cause A (live 2026-07-19): the sub-agent runs on a fast model whose
+    training prior can trail the real clock by years. Shown only a bare
+    ``[Current UTC time: ...]`` stamp, it was observed refusing valid
+    present-day dates outright — "those dates are in the future, no
+    observations exist" — for L3 AOD requested in the current week. So the
+    date is stated as authoritative ground truth, with the future-refusal
+    wording explicitly disarmed and doubt routed to a tool check, not a
+    refusal from memory. The system prompt (earthdata_agent_prompt) reinforces
+    the same rule; this banner is what makes the concrete date available."""
+    now = now or datetime.now(timezone.utc)
+    stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return (
+        f"[Current date/time: {stamp} (AUTHORITATIVE — this is the real current "
+        "date; trust it over any assumption you hold about what year it is). Any "
+        "date on or before it is a valid past/present date: NEVER tell the "
+        "researcher a requested date is \"in the future\" or that \"no "
+        "observations exist yet\" from your own prior — if you doubt a date has "
+        "data, check with check_availability/check_coverage and report what the "
+        "tool returns.]\n\n"
+    )
+
+
 def _inject_satellite_context(task: str, context: dict[str, str]) -> str:
     """Prepend prior retrieval context to a satellite task, framed as
     UNVERIFIED — the handles likely still exist in the researcher's workspace
@@ -549,18 +839,39 @@ def _inject_satellite_context(task: str, context: dict[str, str]) -> str:
     check_coverage/check_availability for the current request (its prompt's
     Availability-must-be-tool-grounded rule). Without this framing a follow-up
     that dropped to the supervisor path would re-derive everything from the
-    paraphrased prior answer and drift."""
+    paraphrased prior answer and drift.
+
+    The AOI (location/aoi_handle) bits are withheld when the task itself
+    names a new area — unlike the dataset, which stays valid across an entire
+    conversation, the AOI is exactly what a "wider box" / "different region"
+    follow-up is asking to change, so reuse must not be offered as an option
+    in that case."""
+    new_area = _task_specifies_new_area(task)
     bits = []
     if context.get("dataset_query"):
         bits.append(f"dataset={context['dataset_query']}")
     if context.get("dataset_handle"):
         bits.append(f"dataset_handle={context['dataset_handle']}")
-    if context.get("location"):
+    if context.get("location") and not new_area:
         bits.append(f"location={context['location']}")
-    if context.get("aoi_handle"):
+    if context.get("aoi_handle") and not new_area:
         bits.append(f"aoi_handle={context['aoi_handle']}")
     if context.get("last_time_range"):
         bits.append(f"previously_checked_range={context['last_time_range']}")
+    chart_ids = [i for i in context.get("last_chart_ids", "").split(",") if i]
+    if not chart_ids and context.get("last_chart_id"):
+        chart_ids = [context["last_chart_id"]]  # context persisted before the multi-id capture
+    if len(chart_ids) == 1:
+        bits.append(f"most_recent_chart_id={chart_ids[0]}")
+    elif chart_ids:
+        # Several charts in play: the stateless agent has no other signal that
+        # ambiguity exists, so the disambiguation instruction must travel with
+        # the ids — a bare single id would confidently explain the wrong chart.
+        bits.append(
+            f"chart_ids_from_previous_turns={','.join(chart_ids)} (most recent last; "
+            "if the researcher's question could refer to more than one of these "
+            "charts, ask which chart is meant before calling explain_measurement)"
+        )
     if not bits:
         return task
     preamble = (

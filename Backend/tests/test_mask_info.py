@@ -110,6 +110,37 @@ class ResolveMaskInfoPrecedenceTests(unittest.TestCase):
         self.assertEqual(provenance["valid_range_source"], "cf_attrs")
         self.assertTrue(provenance["applied"])
 
+    def test_cf_combined_valid_range_attr_is_honored_when_min_max_are_absent(self):
+        # CF also allows ``valid_range: [min, max]`` INSTEAD of valid_min/
+        # valid_max — xarray does not apply it on decode, so ignoring it
+        # meant no range mask at all for products publishing only that
+        # spelling.
+        from datasets.mask_info import resolve_mask_info
+
+        resolved, provenance = resolve_mask_info(
+            yaml_info=None,
+            umm_var_variable=None,
+            cf_attrs={"valid_range": [0.0, 100.0]},
+        )
+
+        self.assertEqual(resolved["valid_min"], 0.0)
+        self.assertEqual(resolved["valid_max"], 100.0)
+        self.assertEqual(provenance["valid_range_source"], "cf_attrs")
+        self.assertTrue(provenance["applied"])
+
+    def test_a_malformed_valid_range_attr_masks_nothing_rather_than_guessing(self):
+        from datasets.mask_info import resolve_mask_info
+
+        resolved, provenance = resolve_mask_info(
+            yaml_info=None,
+            umm_var_variable=None,
+            cf_attrs={"valid_range": [1.0, 2.0, 3.0]},
+        )
+
+        self.assertNotIn("valid_min", resolved)
+        self.assertNotIn("valid_max", resolved)
+        self.assertEqual(provenance["valid_range_source"], "none")
+
     def test_umm_var_facts_win_over_cf_attrs_when_no_yaml_override(self):
         from datasets.mask_info import resolve_mask_info
 

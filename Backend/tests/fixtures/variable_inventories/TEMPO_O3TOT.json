@@ -1,0 +1,148 @@
+{
+  "registry_key": "TEMPO_O3TOT",
+  "collection_id": "C3685896625-LARC_CLOUD",
+  "short_name": "TEMPO_O3TOT_L3",
+  "source": "describe_dataset detail=True",
+  "primary_var": "column_amount_o3",
+  "quality_flag_var": null,
+  "groups": [
+    "product"
+  ],
+  "variables": [
+    {
+      "name": "geolocation/relative_azimuth_angle",
+      "long_name": "geolocation/relative_azimuth_angle",
+      "units": "degrees",
+      "standard_name": null
+    },
+    {
+      "name": "geolocation/solar_zenith_angle",
+      "long_name": "geolocation/solar_zenith_angle",
+      "units": "degrees",
+      "standard_name": null
+    },
+    {
+      "name": "geolocation/viewing_zenith_angle",
+      "long_name": "geolocation/viewing_zenith_angle",
+      "units": "degrees",
+      "standard_name": null
+    },
+    {
+      "name": "latitude",
+      "long_name": "latitude",
+      "units": "degrees_north",
+      "standard_name": "latitude"
+    },
+    {
+      "name": "longitude",
+      "long_name": "longitude",
+      "units": "degrees_east",
+      "standard_name": "longitude"
+    },
+    {
+      "name": "product/column_amount_o3",
+      "long_name": "product/column_amount_o3",
+      "units": "DU",
+      "standard_name": null
+    },
+    {
+      "name": "product/fc",
+      "long_name": "product/fc",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "product/o3_below_cloud",
+      "long_name": "product/o3_below_cloud",
+      "units": "DU",
+      "standard_name": null
+    },
+    {
+      "name": "product/radiative_cloud_frac",
+      "long_name": "product/radiative_cloud_frac",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "product/so2_index",
+      "long_name": "product/so2_index",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "product/uv_aerosol_index",
+      "long_name": "product/uv_aerosol_index",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "qa_statistics/max_column_sample",
+      "long_name": "qa_statistics/max_column_sample",
+      "units": "DU",
+      "standard_name": null
+    },
+    {
+      "name": "qa_statistics/min_column_sample",
+      "long_name": "qa_statistics/min_column_sample",
+      "units": "DU",
+      "standard_name": null
+    },
+    {
+      "name": "qa_statistics/num_column_samples",
+      "long_name": "qa_statistics/num_column_samples",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "support_data/cloud_pressure",
+      "long_name": "support_data/cloud_pressure",
+      "units": "hPA",
+      "standard_name": null
+    },
+    {
+      "name": "support_data/terrain_height",
+      "long_name": "support_data/terrain_height",
+      "units": "m",
+      "standard_name": null
+    },
+    {
+      "name": "support_data/terrain_pressure",
+      "long_name": "support_data/terrain_pressure",
+      "units": "hPA",
+      "standard_name": null
+    },
+    {
+      "name": "time",
+      "long_name": "scan start time",
+      "units": "seconds since 1980-01-06T00:00:00Z",
+      "standard_name": "time"
+    },
+    {
+      "name": "weight",
+      "long_name": "sum of area weights",
+      "units": "km^2",
+      "standard_name": null
+    }
+  ],
+  "expected_roles": {
+    "geolocation/relative_azimuth_angle": "context",
+    "geolocation/solar_zenith_angle": "context",
+    "geolocation/viewing_zenith_angle": "context",
+    "latitude": "context",
+    "longitude": "context",
+    "product/column_amount_o3": "science",
+    "product/fc": "science",
+    "product/o3_below_cloud": "retrieval-metadata",
+    "product/radiative_cloud_frac": "context",
+    "product/so2_index": "science",
+    "product/uv_aerosol_index": "context",
+    "qa_statistics/max_column_sample": "quality",
+    "qa_statistics/min_column_sample": "quality",
+    "qa_statistics/num_column_samples": "quality",
+    "support_data/cloud_pressure": "context",
+    "support_data/terrain_height": "context",
+    "support_data/terrain_pressure": "context",
+    "time": "context",
+    "weight": "unclassified"
+  }
+}

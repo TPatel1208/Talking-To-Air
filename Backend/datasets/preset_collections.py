@@ -42,17 +42,36 @@ def get_preset_collections() -> list[dict[str, str]]:
     """Build the preset suggestion list from the registry, so every row's
     ``concept_id``/``short_name`` is exactly the registered collection's — a
     preset can never again point at a label that resolves to nothing (or to
-    the wrong product)."""
+    the wrong product).
+
+    collections.yaml is the file whose header promises "no code changes
+    needed", so a typo in a preset's key must not fail as a bare ``KeyError``
+    that names nothing useful. Validate every key up front and raise one clear
+    error naming *all* the missing keys, so dataset onboarding is as safe as
+    the header claims (T44)."""
     reg = load_registry()
-    presets: list[dict[str, str]] = []
-    for key, description in _PRESETS:
-        cfg = reg[key]
-        presets.append({
-            "concept_id": cfg.collection_id,
-            "short_name": cfg.short_name,
+    missing = [key for key, _ in _PRESETS if key not in reg]
+    if missing:
+        raise ValueError(
+            "preset_collections references registry key(s) that collections.yaml "
+            f"does not define: {', '.join(missing)}. Fix the key(s) in "
+            "datasets/preset_collections.py or add the collection(s) to collections.yaml."
+        )
+    return [
+        {
+            "concept_id": reg[key].collection_id,
+            "short_name": reg[key].short_name,
             "description": description,
-        })
-    return presets
+        }
+        for key, description in _PRESETS
+    ]
 
 
-PRESET_COLLECTIONS: list[dict[str, str]] = get_preset_collections()
+def __getattr__(name: str):
+    """Resolve ``PRESET_COLLECTIONS`` lazily (PEP 562), so importing this
+    module can never turn a collections.yaml data error into an import-time
+    cascade — the named validation error above surfaces on first *access*
+    instead, where a caller can catch and report it."""
+    if name == "PRESET_COLLECTIONS":
+        return get_preset_collections()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

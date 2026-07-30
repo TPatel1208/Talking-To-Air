@@ -13,8 +13,11 @@ await_retrieval reaches a terminal "ready" status -- so recording is a two-
 step handoff: ``record_pending`` at submission time (keyed by job_handle),
 ``finalize`` once the job's handle is known.
 
-In-memory, per-process, TTL-bounded -- mirrors the existing ArtifactStore/
-GeocodingService caches (services/artifact_store.py, utils/plotting.py).
+In-memory, per-process, TTL-bounded -- mirrors GeocodingService's cache
+(utils/plotting.py). ArtifactStore (services/artifact_store.py) used to be
+the same shape but became write-through to Postgres in T39; this registry
+stays intentionally simpler because losing it is harmless (see below), so
+it hasn't needed that upgrade.
 Nothing here is a system of record: the same handle is round-trippable
 through the MCP's own export/rematerialize cycle at any time, so losing a
 recorded choice on a process restart only means a later call falls through

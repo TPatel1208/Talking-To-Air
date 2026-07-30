@@ -1,7 +1,9 @@
+import asyncio
 import json
 import logging
 import os
 import time
+import tracemalloc
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -16,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.routing import Match
 
-from agents.earthdata_agent import LazySatelliteAgent, build_earthdata_agent
+from agents.earthdata_agent import LazySatelliteAgent, build_earthdata_agent, refresh_live_tools
 from agents.ground_sensor_agent import build_ground_agent
 from agents.supervisor_agent import build_agent
 from config.connectors import CONNECTOR_REGISTRY, CONNECTOR_REGISTRY_BY_TYPE
@@ -47,13 +49,15 @@ from repositories.user_connector_repository import (
     upsert_connector,
 )
 from repositories.user_repository import create_user, ensure_user_table, get_user_by_username
+from repositories.artifact_repository import ensure_artifact_table
+from services import cube_cache
 from services.auth_service import authenticate_request, create_access_token, hash_password, verify_password
 from services.connector_credential_service import EdlCredentialInjector
 from services.connector_token_service import TokenValidationError, decode_token_expiry
 from services.artifact_store import artifact_store
 from services.chat_stream_service import ChatStreamService
 from services.chart_service import ChartService
-from services.export_service import ExportService
+from services.export_service import ExportService, materialize_first_chunk
 from services.history_service import HistoryService
 from services.data_download_service import DataDownloadError, export_converted, iter_file_chunks
 from services.discovery_service import (
@@ -72,6 +76,7 @@ from utils.logging import configure_logging
 from utils.metrics import (
     observe_http_request,
     prometheus_content_type,
+    refresh_process_gauges,
     render_prometheus_metrics,
     set_db_pool_connections_active,
 )
@@ -89,16 +94,27 @@ session_repository = SessionRepository()
 
 
 async def _on_earthdata_mcp_ready(tools: dict) -> None:
-    """earthdata_mcp_manager's on_ready hook (T17): populates the legacy
-    app.state.earthdata_mcp_tools mirror (still read directly by the
-    unmigrated chart export.csv/.png/.nc endpoints) and rebuilds the real
-    satellite agent into whatever LazySatelliteAgent the current lifespan
-    cycle assigned to app.state.satellite_agent — see
-    agents/earthdata_agent.py for why a mutable placeholder, not a
-    reassigned reference, is what makes this visible to the supervisor's
-    already-built ask_earthdata_agent tool closure."""
-    app.state.earthdata_mcp_tools = tools
-    app.state.satellite_agent.set_real(build_earthdata_agent(mcp_tools=tools))
+    """earthdata_mcp_manager's on_ready hook (T17): refreshes the persistent
+    app.state.earthdata_mcp_tools dict (read directly by the unmigrated chart
+    export.png endpoint; export.csv/.nc moved to the readiness gate in T37) and
+    rebuilds the real satellite agent into whatever LazySatelliteAgent the
+    current lifespan cycle assigned to app.state.satellite_agent — see
+    agents/earthdata_agent.py for why a mutable placeholder, not a reassigned
+    reference, is what makes this visible to the supervisor's already-built
+    ask_earthdata_agent tool closure.
+
+    In-flight recovery (2026-07-21): the MCP server crash-restarts, killing the
+    long-lived session; the manager reconnects and re-fires this hook with a new
+    session's bound tools. Refresh the tools dict IN PLACE (refresh_live_tools)
+    and rebuild the agent bound to that SAME dict — so a chat turn compiled
+    against it before the restart (an in-flight compare mid-retry) reads the
+    reconnected tools on its next call instead of retrying the dead session. See
+    refresh_live_tools for the call-time-indexing contract this relies on."""
+    live = app.state.earthdata_mcp_tools
+    if live is None:  # a late callback racing lifespan shutdown — nothing to refresh
+        return
+    refresh_live_tools(live, tools)
+    app.state.satellite_agent.set_real(build_earthdata_agent(mcp_tools=live))
     logger.info("earthdata_mcp_satellite_agent_ready", extra={"_event": "earthdata_mcp_satellite_agent_ready"})
 
 
@@ -109,7 +125,9 @@ edl_credential_injector = EdlCredentialInjector(settings)
 earthdata_mcp_manager = EarthdataMCPConnectionManager(
     settings, current_user_id, on_ready=_on_earthdata_mcp_ready, edl_injector=edl_credential_injector,
 )
-chat_stream_service = ChatStreamService(chart_service, settings.long_request_seconds, earthdata_mcp_manager)
+chat_stream_service = ChatStreamService(
+    chart_service, settings.long_request_seconds, earthdata_mcp_manager, settings.chat_turn_timeout_seconds,
+)
 
 
 @asynccontextmanager
@@ -121,6 +139,15 @@ async def lifespan(app: FastAPI):
     await ensure_revoked_token_table()
     await ensure_session_metadata_table()
     await ensure_user_connector_table()
+    await ensure_artifact_table()
+
+    # T52: reclaim staging dirs and manifest-less entries a crash mid-write
+    # left behind. Neither is ever served (the manifest is the completion
+    # marker), so this is space, not correctness. T54: this also rebuilds the
+    # handle->cube index from the surviving manifests, which is what makes that
+    # index derived state — losing the file costs a boot's scan, never an
+    # answer.
+    cube_cache.sweep_store()
 
     logger.info("startup_begin", extra={"_model": settings.llm_model})
     # T17: the backend boots without the earthdata-retrieval MCP — ground/EPA
@@ -205,14 +232,38 @@ async def record_request_metrics(request: Request, call_next):
     started = time.perf_counter()
     status_code = 500
     path = _route_path(request)
+    response = None
     try:
         response = await call_next(request)
         status_code = response.status_code
         return response
     finally:
-        duration = time.perf_counter() - started
         set_db_pool_connections_active(active_pool_connections())
-        observe_http_request(request.method, path, status_code, duration)
+        # A streaming response (StreamingResponse, or the equivalent
+        # call_next builds when another BaseHTTPMiddleware wraps this one)
+        # exposes body_iterator; call_next already returned by the time
+        # headers exist, well before an SSE stream's slow work runs, so
+        # observing here would put every /chat turn at ~0ms. Defer to the
+        # iterator's own close instead; non-streaming routes are unaffected.
+        if response is not None and hasattr(response, "body_iterator"):
+            _observe_request_metrics_at_stream_close(response, request.method, path, status_code, started)
+        else:
+            observe_http_request(request.method, path, status_code, time.perf_counter() - started)
+
+
+def _observe_request_metrics_at_stream_close(
+    response, method: str, path: str, status_code: int, started: float,
+) -> None:
+    original_iterator = response.body_iterator
+
+    async def _timed_iterator():
+        try:
+            async for chunk in original_iterator:
+                yield chunk
+        finally:
+            observe_http_request(method, path, status_code, time.perf_counter() - started)
+
+    response.body_iterator = _timed_iterator()
 
 
 @app.middleware("http")
@@ -433,7 +484,35 @@ async def health():
 
 @app.get("/metrics")
 def metrics():
+    refresh_process_gauges()
     return Response(content=render_prometheus_metrics(), media_type=prometheus_content_type())
+
+
+@app.get("/debug/heap-snapshot")
+async def heap_snapshot(limit: int = 25):
+    """T45: tracemalloc top-allocations snapshot for chasing a specific
+    memory incident (the 2026-07-17 QA jump-and-plateau) -- gated behind
+    DEBUG_HEAP_PROFILING_ENABLED, off by default, since tracemalloc adds
+    per-allocation overhead this deployment shouldn't pay standingly.
+    Requires auth like every other route (not in PUBLIC_ENDPOINTS)."""
+    if not settings.debug_heap_profiling_enabled:
+        raise HTTPException(status_code=404, detail="Not found")
+    if not tracemalloc.is_tracing():
+        tracemalloc.start()
+        return {"top": [], "note": "tracemalloc just started; call again after some traffic for history."}
+    snapshot = tracemalloc.take_snapshot()
+    top_stats = snapshot.statistics("lineno")[:limit]
+    return {
+        "top": [
+            {
+                "file": stat.traceback[0].filename,
+                "line": stat.traceback[0].lineno,
+                "size_bytes": stat.size,
+                "count": stat.count,
+            }
+            for stat in top_stats
+        ],
+    }
 
 
 @app.get("/config/map-tiles")
@@ -504,15 +583,28 @@ def _earthdata_tools(request: Request) -> dict:
 
 @app.get("/chart/{chart_id}/export.csv")
 async def export_chart_csv(chart_id: str, request: Request):
+    # T37: resolved through the T17 readiness gate (shared structured 503),
+    # never app.state.earthdata_mcp_tools directly — a not-ready MCP must
+    # fail here, before any 200 header is committed, not inside the
+    # StreamingResponse generator.
+    tools = _earthdata_tools(request)
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
+    if not payload.get("export"):
+        raise HTTPException(status_code=422, detail="This chart does not include full-resolution export metadata.")
+
+    # T37: materialize the first chunk before committing to a 200 — the
+    # common failures (missing handle, evicted export) raise here as a clean
+    # 4xx/5xx instead of truncating the download mid-stream. An MCPToolError
+    # propagates to the shared taxonomy handler.
     try:
-        if not payload.get("export"):
-            raise ValueError("This chart does not include full-resolution export metadata.")
-    except Exception as e:
+        stream = await materialize_first_chunk(
+            export_service.iter_chart_csv_chunks_async(payload, tools)
+        )
+    except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
     return StreamingResponse(
-        export_service.iter_chart_csv_chunks_async(payload, request.app.state.earthdata_mcp_tools),
+        stream,
         media_type="text/csv; charset=utf-8",
         headers={
             "Content-Disposition": f'attachment; filename="{export_service.safe_export_name(payload, "csv")}"',
@@ -549,14 +641,18 @@ def _chart_overlay_path(payload: dict, panel: int | None) -> str | None:
     return (payload.get("overlay") or {}).get("_path")
 
 
+def _read_overlay_bytes(path: str) -> bytes:
+    with open(path, "rb") as f:
+        return f.read()
+
+
 @app.get("/chart/{chart_id}/overlay.png")
 async def chart_overlay_png(chart_id: str, request: Request, panel: int | None = None):
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
     overlay_path = _chart_overlay_path(payload, panel)
     if not overlay_path or not os.path.isfile(overlay_path):
         raise HTTPException(status_code=404, detail="This chart has no rendered overlay.")
-    with open(overlay_path, "rb") as f:
-        content = f.read()
+    content = await asyncio.to_thread(_read_overlay_bytes, overlay_path)
     return Response(content=content, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
@@ -588,13 +684,28 @@ async def chart_methods_endpoint(chart_id: str, request: Request):
         citations = await get_citations(source_handles, tools)
 
     provenance = payload.get("provenance") or {}
-    markdown = build_methods_markdown(
-        artifact_title=payload.get("title") or "Untitled artifact",
-        aoi_description=provenance.get("region_name") or "the study area",
-        time_window=_methods_time_window(provenance),
-        lineage=lineage,
-        citations=citations,
-    )
+    try:
+        markdown = build_methods_markdown(
+            artifact_title=payload.get("title") or "Untitled artifact",
+            aoi_description=provenance.get("region_name") or "the study area",
+            time_window=_methods_time_window(provenance),
+            lineage=lineage,
+            citations=citations,
+        )
+    except MCPToolError:
+        raise
+    except Exception:
+        # Any surprise inside the methods assembly (e.g. a KeyError on a
+        # shifted provenance shape) is a contract failure, not a stack trace
+        # to leak: classify it through the shared taxonomy handler with a
+        # generic message — the raw exception text stays in the logs. Without
+        # this the KeyError escaped as a bare ExceptionGroup 500 (QA
+        # 2026-07-17 blocker).
+        logger.exception("methods_markdown_assembly_failed", extra={"_chart_id": chart_id})
+        raise MCPToolError(
+            CATEGORY_CONTRACT,
+            "The methods document could not be assembled for this chart.",
+        )
     return Response(
         content=markdown,
         media_type="text/markdown; charset=utf-8",
@@ -604,9 +715,9 @@ async def chart_methods_endpoint(chart_id: str, request: Request):
 
 @app.get("/chart/{chart_id}/export.nc")
 async def export_chart_netcdf(chart_id: str, request: Request):
-    tools = request.app.state.earthdata_mcp_tools
-    if not tools:
-        raise HTTPException(status_code=503, detail="Earthdata MCP is not ready")
+    # T37: same readiness gate (shared structured 503) as every other
+    # MCP-backed endpoint, instead of a bespoke bare-detail 503.
+    tools = _earthdata_tools(request)
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
     source_handles = _chart_source_handles(payload)
     if not source_handles:
@@ -618,8 +729,17 @@ async def export_chart_netcdf(chart_id: str, request: Request):
     except DataDownloadError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
+    # T37: materialize the first chunk before committing to a 200 — an
+    # evicted/vanished converted file raises here instead of streaming a
+    # truncated "successful" download.
+    try:
+        stream = await materialize_first_chunk(iter_file_chunks(export["storage_uri"]))
+    except OSError:
+        logger.exception("export_netcdf_file_unreadable", extra={"_chart_id": chart_id})
+        raise HTTPException(status_code=422, detail="The converted export is no longer available. Please retry the export.")
+
     return StreamingResponse(
-        iter_file_chunks(export["storage_uri"]),
+        stream,
         media_type="application/x-netcdf",
         headers={
             "Content-Disposition": f'attachment; filename="{export_service.safe_export_name(payload, "nc")}"',
@@ -637,7 +757,7 @@ async def get_artifact(
     limit: int = Query(default=100, ge=1, le=1000),
 ):
     try:
-        return artifact_store.get_page(artifact_id, request.state.current_user.id, offset, limit)
+        return await artifact_store.get_page(artifact_id, request.state.current_user.id, offset, limit)
     except KeyError:
         raise HTTPException(status_code=404, detail="Artifact not found")
 
@@ -645,8 +765,8 @@ async def get_artifact(
 @app.get("/artifacts/{artifact_id}/csv")
 async def export_artifact_csv(artifact_id: str, request: Request):
     try:
-        artifact = artifact_store.reference(artifact_id)
-        artifact_store.get_page(artifact_id, request.state.current_user.id, 0, 1)
+        artifact = await artifact_store.reference(artifact_id)
+        await artifact_store.get_page(artifact_id, request.state.current_user.id, 0, 1)
     except KeyError:
         raise HTTPException(status_code=404, detail="Artifact not found")
 
@@ -771,14 +891,20 @@ async def _save_session_metadata(thread_id: str, message: str, user_id: str, req
     except Exception:
         logger.exception("session_metadata_save_failed", extra={"_request_id": request_id, "_thread_id": thread_id})
 
+# T37: session endpoint catch-alls answer with a fixed generic detail — the
+# real exception goes to the logs with request context, never to the client.
+_INTERNAL_ERROR_DETAIL = "Internal server error"
+
+
 @app.get("/sessions")
 async def get_sessions(request: Request):
     try:
         return {"sessions": await session_repository.list_sessions(request.state.current_user.id)}
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("sessions_list_failed", extra={"_user_id": request.state.current_user.id})
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
 
 @app.get("/session/{thread_id}/history")
 async def get_history(thread_id: ThreadId, request: Request):
@@ -792,8 +918,9 @@ async def get_history(thread_id: ThreadId, request: Request):
         return {"messages": await history_service.build_history(active_agent, thread_id, user_id)}
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("session_history_failed", extra={"_thread_id": thread_id})
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
 
 
 @app.delete("/session/{thread_id}")
@@ -805,5 +932,6 @@ async def remove_session(thread_id: ThreadId, request: Request):
         return {"deleted": thread_id}
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("session_delete_failed", extra={"_thread_id": thread_id})
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)

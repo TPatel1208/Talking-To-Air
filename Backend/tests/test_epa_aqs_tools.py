@@ -66,6 +66,7 @@ _epa = _load_epa_module()
 _normalise_numeric_filter = _epa._normalise_numeric_filter
 _normalise_site_filter = _epa._normalise_site_filter
 _resolve_filter = _epa._resolve_filter
+_aggregate_summary_records = _epa._aggregate_summary_records
 
 
 class NormaliseNumericFilterTests(unittest.TestCase):
@@ -209,6 +210,145 @@ class ResolveFilterTests(unittest.TestCase):
             _resolve_filter(
                 "dailyData", None, None, None, None, None, None, None, None
             )
+
+
+class AggregateSummaryMinMaxTests(unittest.TestCase):
+    """min/max must come from real API statistics, never be fabricated.
+
+    Regression for the ground-monitor table showing min == max == mean for
+    every row: the EPA AQS dailyData endpoint returns no minimum_value or
+    maximum_value fields, and the aggregator silently substituted the
+    arithmetic_mean for both — fabricating stats. dailyData DOES supply
+    first_max_value (the highest sample of the day per AQS docs), which is a
+    genuine max; there is no per-day minimum at all, so min must be null.
+    """
+
+    @staticmethod
+    def _daily_record(**overrides):
+        # Shaped like a real dailyData response row: note there is NO
+        # minimum_value / maximum_value field on this endpoint.
+        record = {
+            "state_code": "34",
+            "county_code": "019",
+            "site_number": "0007",
+            "date_local": "2024-01-01",
+            "arithmetic_mean": 8.970833,
+            "first_max_value": 21.3,
+            "first_max_hour": 8,
+            "units_of_measure": "ppb",
+            "sample_duration": "1 HOUR",
+            "pollutant_standard": "NO2 1-hour 2010",
+            "observation_count": 24,
+            "observation_percent": 100,
+            "local_site_name": "Downtown",
+        }
+        record.update(overrides)
+        return record
+
+    def test_daily_min_is_null_and_max_uses_first_max_value(self):
+        body, _, _ = _aggregate_summary_records([self._daily_record()], "daily")
+        row = body[0]
+        self.assertEqual(row["mean"], 8.970833)
+        self.assertEqual(row["observation_count"], 24)
+        # The API supplies no per-day minimum: never echo the mean as min.
+        self.assertIsNone(row["min"])
+        # first_max_value IS the day's true sample maximum.
+        self.assertEqual(row["max"], 21.3)
+
+    def test_min_max_taken_from_api_fields_when_present(self):
+        record = self._daily_record(minimum_value=2.1, maximum_value=19.4)
+        body, _, _ = _aggregate_summary_records([record], "daily")
+        row = body[0]
+        self.assertEqual(row["min"], 2.1)
+        self.assertEqual(row["max"], 19.4)
+
+    def test_min_and_max_are_null_when_only_a_mean_is_supplied(self):
+        record = self._daily_record()
+        del record["first_max_value"]
+        del record["first_max_hour"]
+        body, _, _ = _aggregate_summary_records([record], "daily")
+        row = body[0]
+        self.assertEqual(row["mean"], 8.970833)
+        self.assertIsNone(row["min"])
+        self.assertIsNone(row["max"])
+
+
+class NoDataMessageTests(unittest.IsolatedAsyncioTestCase):
+    """Empty-result errors must read as plain language for a researcher.
+
+    Regression for the live 2026-07-16 chat leak: asking for "NO2 in Newark
+    yesterday" (a date EPA hadn't published yet) surfaced the internal dump
+    "No dailyData data found for param 42602 between 2026-07-15 and
+    2026-07-15 using dailyData/bySite with {'state': '34', 'county': '013',
+    'site': '0017'}" verbatim. The message must explain EPA's ~2-month
+    publication lag instead, and never include endpoint/params internals.
+    """
+
+    def test_recent_window_explains_the_publication_lag(self):
+        from datetime import date, timedelta
+
+        yesterday = date.today() - timedelta(days=1)
+        message = _epa._no_data_message("daily summary", "42602", yesterday, yesterday)
+
+        self.assertIn("has not published", message)
+        self.assertIn("two months", message)
+        self.assertIn(yesterday.isoformat(), message)
+
+    def test_old_window_reads_as_plain_no_data_guidance(self):
+        from datetime import date
+
+        message = _epa._no_data_message(
+            "daily summary", "42602", date(2020, 1, 1), date(2020, 1, 31)
+        )
+
+        self.assertIn("No EPA daily summary measurements", message)
+        self.assertIn("2020-01-01", message)
+        self.assertNotIn("has not published", message)
+
+    async def test_fetch_summary_empty_result_never_leaks_endpoint_or_params(self):
+        from datetime import date, timedelta
+        from unittest.mock import AsyncMock, patch
+
+        yesterday = date.today() - timedelta(days=1)
+
+        with patch.object(_epa, "_aqs_get", AsyncMock(return_value={"Data": []})):
+            with self.assertRaises(RuntimeError) as ctx:
+                await _epa._fetch_summary(
+                    "dailyData", "42602",
+                    yesterday, yesterday,
+                    yesterday.strftime("%Y%m%d"), yesterday.strftime("%Y%m%d"),
+                    "34", "013", "0017",
+                    None, None, None, None, None,
+                    None, None, None,
+                )
+
+        text = str(ctx.exception)
+        self.assertNotIn("dailyData/bySite", text)
+        self.assertNotIn("{'state'", text)
+        self.assertNotIn("param 42602", text)
+        self.assertIn("two months", text)
+
+    async def test_fetch_summary_empty_result_for_an_old_range_stays_plain_language(self):
+        from datetime import date
+        from unittest.mock import AsyncMock, patch
+
+        bdate, edate = date(2020, 1, 1), date(2020, 1, 31)
+
+        with patch.object(_epa, "_aqs_get", AsyncMock(return_value={"Data": []})):
+            with self.assertRaises(RuntimeError) as ctx:
+                await _epa._fetch_summary(
+                    "dailyData", "42602",
+                    bdate, edate,
+                    bdate.strftime("%Y%m%d"), edate.strftime("%Y%m%d"),
+                    "34", "013", "0017",
+                    None, None, None, None, None,
+                    None, None, None,
+                )
+
+        text = str(ctx.exception)
+        self.assertNotIn("dailyData/bySite", text)
+        self.assertNotIn("{'state'", text)
+        self.assertIn("daily summary", text)
 
 
 if __name__ == "__main__":

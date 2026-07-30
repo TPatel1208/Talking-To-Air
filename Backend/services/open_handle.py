@@ -10,8 +10,10 @@ either an opened Dataset/Table or a clear error — never a missing file.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
+import threading
 from typing import Any
 from urllib.parse import urlparse
 from urllib.request import url2pathname
@@ -22,6 +24,7 @@ from config.settings import get_settings
 from config.workflow_stages import STAGE_OPEN
 from earthdata_mcp.results import CATEGORY_TOO_LARGE, MCPToolError, parse_tool_result
 from services.retrieval_composites import await_retrieval
+from utils.phase_timing import phase_timer
 from utils.streaming import emit_status
 
 logger = logging.getLogger(__name__)
@@ -47,6 +50,21 @@ _EXTRACT_CACHE_DIR_NAME = "tta_bundle_extract"
 _EXTRACT_CACHE_TTL_SECONDS = 3600.0
 _EXTRACT_COMPLETE_MARKER = ".complete"
 
+# Serializes the actual HDF5/netCDF-C-library call inside a concurrent bundle
+# member open (_open_bundle_members_concurrently). h5netcdf/netCDF4 release
+# the GIL for their I/O, so Python threads genuinely overlap *inside* the C
+# extension — but that's a different guarantee from the underlying HDF5 C
+# library itself being safe for concurrent calls across different file
+# handles, which the reference HDF5 build only provides with a special
+# --enable-threadsafe compile flag (and even then by serializing everything
+# behind one global lock, not truly parallelizing it). Nothing in this
+# deployment establishes that guarantee, so this lock takes the same
+# "serialize the actual library call" stance HDF5's own thread-safe build
+# would — the surrounding thread-pool structure still overlaps the pure-Python
+# per-member work (path handling, group merging, time-coord synthesis) that
+# doesn't touch the C library.
+_hdf5_open_lock = threading.Lock()
+
 
 class OpenHandleError(RuntimeError):
     """Raised when a handle cannot be opened, even after one rematerialize attempt."""
@@ -68,13 +86,18 @@ async def open_handle(handle: str, tools: dict[str, BaseTool]) -> Any:
     structured message verbatim.
     """
     emit_status("Opening retrieved data...", stage=STAGE_OPEN)
+    cached = _serve_from_index(handle)
+    if cached is not None:
+        return cached
     export = await _export(handle, tools)
     recovered = False
     if export.get("status") != "ready":
         export = await _recover(handle, tools)
         recovered = True
     try:
-        return await asyncio.to_thread(_open, export["storage_uri"], export["media_type"])
+        ds = await _open_export(export)
+        _consider_cube(export, ds)
+        return ds
     except UnreadableExportError:
         # A "ready" export whose file won't open is almost always a transient
         # bad retrieval (an error-response body or an incomplete/empty file
@@ -88,12 +111,137 @@ async def open_handle(handle: str, tools: dict[str, BaseTool]) -> Any:
             raise
         emit_status("Retrieved file was unreadable; re-materializing...", stage=STAGE_OPEN)
         export = await _recover(handle, tools)
-        return await asyncio.to_thread(_open, export["storage_uri"], export["media_type"])
+        ds = await _open_export(export)
+        _consider_cube(export, ds)
+        return ds
+
+
+async def _open_export(export: dict) -> Any:
+    """Open a ready export off the event loop, carrying the whole response.
+
+    The delivered-content fields (``content_digest``/``partial``, upstream PRD
+    023) are what the cube key is derived from (T54), so the reader needs the
+    response rather than just the two fields the URI-and-media-type call used
+    to pass down.
+    """
+    return await asyncio.to_thread(
+        _open, export["storage_uri"], export["media_type"], export=export
+    )
+
+
+def _serve_from_index(handle: str) -> Any | None:
+    """T54: the cube for ``handle``, before the MCP is asked anything.
+
+    T52 put the cache *behind* ``export_result``, so the key could not be
+    computed until the round-trip it was meant to shield you from had already
+    completed. The round-trip is cheap; its failure modes are not — an evicted
+    source sends ``open_handle`` into ``rematerialize`` -> ``await_retrieval``,
+    *minutes* of rebuilding the input to an answer already sitting on local
+    disk, and a crash-restarting MCP makes that cube unreachable outright.
+
+    Never raises: this is a shortcut, and a shortcut that can fail a turn is
+    worse than no shortcut. Any trouble falls through to the ordinary
+    verify-first path below.
+    """
+    from services import cube_cache
+
+    # Deliberately *not* wrapped in a ``phase_timer`` (T51). A miss here is
+    # followed by the real open, and emitting an ``open`` sample for both would
+    # put a near-zero duration into that histogram on every single miss —
+    # corrupting the distribution T51 exists to make trustworthy, and breaking
+    # its one-open-phase-per-open_handle contract. The dedicated
+    # ``cube_index_hits/misses`` counters are what make this path measurable.
+    try:
+        return cube_cache.lookup_by_handle(handle)
+    except Exception:  # noqa: BLE001 — best-effort, see docstring
+        logger.debug("cube_index_lookup_failed", exc_info=True)
+        return None
+
+
+def _cube_identity(export: dict) -> tuple[str, str, str] | None:
+    """``(cache_key, source_identity, local_path)`` for a cubeable export.
+
+    None for anything the interpretation pipeline doesn't touch: a Zarr export
+    is already a cube, a Parquet export is a table, and a native-archive export
+    never opens at all. Cheap enough (one ``stat`` plus a hash) to recompute at
+    both the read and the write call site rather than threading it through
+    ``asyncio.to_thread``.
+
+    T54: the identity now prefers what the export says it *delivered*
+    (``content_digest``, upstream PRD 023) over the file's mtime and size, so a
+    replay that re-fetched the same granules keeps its cube instead of
+    rebuilding it — and one that genuinely drifted moves the key and misses.
+    """
+    from services.cube_cache import cache_key, netcdf_engine_signature, source_identity
+
+    media_type = export.get("media_type") or ""
+    mt = media_type.lower()
+    if "bundle" not in mt and "netcdf" not in mt:
+        return None
+    parsed = urlparse(export.get("storage_uri") or "")
+    if parsed.scheme != "file":
+        return None
+    path = url2pathname(parsed.path)
+    try:
+        source = source_identity(
+            path,
+            handle=export.get("handle") or "",
+            content_digest=export.get("content_digest"),
+            partial=bool(export.get("partial")),
+        )
+    except OSError:
+        return None
+    return cache_key(source, OPEN_PIPELINE_VERSION, netcdf_engine_signature()), source, path
+
+
+def _consider_cube(export: dict, ds: Any) -> None:
+    """Let the cube cache earn a write off this open (T52).
+
+    Scheduled here, in the async caller, rather than inside ``_open``: that
+    runs on a worker thread via ``asyncio.to_thread``, where there is no
+    running event loop to attach a background task to. Never raises — a caller
+    is mid-answer, and nothing about caching may cost them that.
+    """
+    from services import cube_cache
+
+    try:
+        identity = _cube_identity(export)
+        if identity is None:
+            return
+        key, source, path = identity
+        cube_cache.consider_write(
+            ds,
+            key,
+            source=source,
+            pipeline_version=OPEN_PIPELINE_VERSION,
+            engine=cube_cache.netcdf_engine_signature(),
+            # T54: recorded in the manifest and indexed once the cube lands, so
+            # the next question about this handle can find it without asking
+            # the MCP where its bytes are.
+            handle=export.get("handle") or "",
+            # The cube is written from a *lazy* Dataset still reading out of
+            # the bundle-extract cache, whose pruner sweeps by mtime on a
+            # 1-hour TTL and never sees those reads. Pin it for the write.
+            pin=extract_cache_dir_for(path),
+        )
+    except Exception:  # noqa: BLE001 — best-effort, see docstring
+        logger.debug("cube_consider_failed", exc_info=True)
 
 
 async def _export(handle: str, tools: dict[str, BaseTool]) -> dict:
-    raw = await tools["export_result"].ainvoke({"handle": handle})
-    return parse_tool_result(raw)
+    # T51: the MCP round-trip is its own phase — a turn that felt slow "opening
+    # data" may have spent all of it here, waiting on the MCP, and never
+    # touched a byte of the file.
+    async with phase_timer("export", handle=handle) as timing:
+        raw = await tools["export_result"].ainvoke({"handle": handle})
+        export = parse_tool_result(raw)
+        # The MCP echoes the handle, but the cube key and the index are both
+        # derived from it (T54), so pin it to the handle we actually asked
+        # about rather than trusting the echo to be the same string.
+        export["handle"] = handle
+        timing["status"] = export.get("status")
+        timing["size_bytes"] = export.get("size_bytes")
+    return export
 
 
 async def _recover(handle: str, tools: dict[str, BaseTool]) -> dict:
@@ -117,7 +265,29 @@ async def _recover(handle: str, tools: dict[str, BaseTool]) -> dict:
     return second_export
 
 
-def _open(storage_uri: str, media_type: str) -> Any:
+def _open(storage_uri: str, media_type: str, *, export: dict | None = None) -> Any:
+    """Time the read as the ``open`` phase and dispatch by media type (T51).
+
+    Timed here rather than inside each per-format branch so a Zarr, a bare
+    NetCDF and a bundle all land in one comparable distribution. A bundle's
+    ``extract`` phase nests *inside* this one: ``open`` is the whole
+    file-to-Dataset span, and ``open - extract`` is the per-member open cost.
+
+    ``export`` is the full ready response, carrying the delivered-content
+    fields the cube key is derived from (T54). Optional so the direct callers
+    that only ever hold a URI and a media type (the live-smoke contract checks)
+    keep working — they simply key on filesystem identity, exactly as T52 did.
+    """
+    # ``members`` defaults to the single-file answer; the bundle path below
+    # overwrites it with its own member count, which it already knows -- far
+    # cheaper than re-reading the archive here just to count.
+    with phase_timer("open", media_type=media_type, members=1) as timing:
+        return _open_by_media_type(storage_uri, media_type, timing, export=export)
+
+
+def _open_by_media_type(
+    storage_uri: str, media_type: str, timing: dict | None = None, *, export: dict | None = None
+) -> Any:
     parsed = urlparse(storage_uri)
     if parsed.scheme != "file":
         raise OpenHandleError(
@@ -129,6 +299,19 @@ def _open(storage_uri: str, media_type: str) -> Any:
     if "zarr" in mt:
         import xarray as xr
 
+        # The MCP's transform tools (compare/regrid) ship derived cubes as a
+        # *zipped* Zarr store (cube.zarr.zip) under the same "application/zarr"
+        # media type as a directory store, so route by the bytes. zarr-python 3
+        # dropped v2's ZipStore-from-".zip"-suffix inference: a plain
+        # xr.open_zarr(path) treats the zip file as an empty directory and
+        # raises "No group found in store ... at path ''" (live TEMPO NO2
+        # compare, 2026-07-16). Mirrors the MCP's own reader
+        # (tools/_dataio.py): ZipStore reads chunk blobs on demand, and the
+        # store is written consolidated=False.
+        if _is_zipfile(path):
+            import zarr
+
+            return xr.open_zarr(zarr.storage.ZipStore(path, mode="r"), consolidated=False)
         return xr.open_zarr(path)
     if "parquet" in mt:
         import pyarrow.parquet as pq
@@ -144,14 +327,62 @@ def _open(storage_uri: str, media_type: str) -> Any:
             "visualization pipeline cannot open. Retrying the retrieval will not help — "
             "suggest a different collection for this variable (an L3/L4 NetCDF product) instead."
         )
+    export = _export_or_synthetic(export, storage_uri, media_type)
     if "bundle" in mt:
-        return _open_netcdf_bundle(path)
+        return _serve_from_cube_or_open(export, timing, lambda: _open_netcdf_bundle(path, timing))
     if "netcdf" in mt:
-        return _open_netcdf(path)
+        return _serve_from_cube_or_open(export, timing, lambda: _open_netcdf(path, timing=timing))
     raise OpenHandleError(f"Unsupported media_type '{media_type}' for exported handle.")
 
 
-def _open_netcdf(path: str, chunks: dict | None = None) -> Any:
+def _export_or_synthetic(export: dict | None, storage_uri: str, media_type: str) -> dict:
+    """The ready export, or the minimum a direct ``_open`` caller implies.
+
+    A synthetic one carries no ``content_digest``, so it keys on filesystem
+    identity and is never index-servable — the honest answer for a caller that
+    never held a delivered-content record in the first place."""
+    return export if export is not None else {"storage_uri": storage_uri, "media_type": media_type}
+
+
+def _serve_from_cube_or_open(export: dict, timing: dict | None, opener: Any) -> Any:
+    """Return the cached cube for this export if there is a good one, else run
+    the open pipeline (T52).
+
+    Deliberately *outside* the interpreting functions themselves, so
+    :func:`pipeline_source_fingerprint` tracks interpretation only and cache
+    plumbing changes don't spuriously invalidate every cube.
+    """
+    from services.cube_cache import lookup, note_handle, reconcile_handle
+    from utils.metrics import record_cache_hit, record_cache_miss
+
+    identity = _cube_identity(export)
+    if identity is None:
+        return opener()
+    key, _source, _path = identity
+    handle = export.get("handle") or ""
+    # We are on the verified path: an ``export_result`` for this handle has
+    # just told us what it currently delivers. If the index still points at a
+    # cube built from *different* delivered content, that cube is stale — and
+    # because the key is derived from content rather than from a file's mtime,
+    # "different" here means the data genuinely changed. Drop it (T54).
+    reconcile_handle(handle, key)
+    cached = lookup(key)
+    if cached is not None:
+        record_cache_hit("zarr")
+        if timing is not None:
+            timing["cube"] = "hit"
+        # A cube written before the index existed earns its entry here, on an
+        # ordinary verified hit — no migration to run, and the *next* question
+        # about it skips the round-trip.
+        note_handle(handle, key)
+        return cached
+    record_cache_miss()
+    if timing is not None:
+        timing["cube"] = "miss"
+    return opener()
+
+
+def _open_netcdf(path: str, chunks: dict | None = None, *, timing: dict | None = None) -> Any:
     """Open a NetCDF file, descending into HDF5 subgroups when the root
     group carries no data variables.
 
@@ -184,16 +415,69 @@ def _open_netcdf(path: str, chunks: dict | None = None) -> Any:
     # UnreadableExportError path below misreads as a failed retrieval and
     # sends callers into pointless retries. Route by the bytes instead.
     if _is_zipfile(path):
-        return _open_netcdf_bundle(path)
+        return _open_netcdf_bundle(path, timing)
 
     groups = _open_all_groups(path, chunks)
+    # GPM-style products (IMERG) carry no netCDF dimension scales, so both
+    # engines invent placeholder dims (phony_dim_N) and the science variable
+    # opens with no lat/lon identity at all. The files DO declare the real
+    # dims per variable (GPM's DimensionNames attr) — honor that before any
+    # merging/promotion, same coordinate-discovery doctrine as T24.
+    groups = {key: _apply_declared_dimension_names(gds) for key, gds in groups.items()}
     root = groups.pop("/", None)
-    if root is not None and root.data_vars:
-        return root  # genuinely flat file; nothing nested to merge
+    if root is not None and root.data_vars and not any(gds.data_vars for gds in groups.values()):
+        # Genuinely flat file; nothing nested to merge. (Root data_vars alone
+        # don't qualify: GPM 3CMB puts header strings in the root and ALL its
+        # science data in nested /Grids groups — the old root-only return
+        # silently discarded every science variable, live 2026-07-17.)
+        return root
 
-    group_datasets = [g for g in groups.values() if g.data_vars]
+    # Merging by bare name destroys group membership, which is classification
+    # evidence (datasets/variable_roles' qa_statistics/geolocation/product
+    # priors). Stamp each variable's source group as a ``group_path`` attr so
+    # post-open classification sees the same group a describe_dataset
+    # inventory's slash-qualified name carries.
+    group_datasets = []
+    for group_key, gds in groups.items():
+        if not gds.data_vars:
+            continue
+        group_path = group_key.strip("/")
+        if group_path:
+            for var in gds.data_vars.values():
+                var.attrs.setdefault("group_path", group_path)
+        group_datasets.append((group_path, gds))
     if not group_datasets:
         return root if root is not None else xr.Dataset()
+
+    # A leaf name that appears in MORE than one group must not be merged by
+    # bare name: xr.merge(compat="override") silently keeps whichever group
+    # iterates first — plausible numbers from possibly the wrong variable, on
+    # exactly the unregistered products this dynamic path exists to support.
+    # Colliding variables keep their group-qualified name ("product/foo",
+    # "support_data/foo") instead: an explicit qualified request still
+    # resolves exactly, and a bare ambiguous one falls through to
+    # AggregationService.to_dataarray's refuse-with-candidates error rather
+    # than a silent pick (the T25 doctrine).
+    leaf_counts: dict[str, int] = {}
+    for _, gds in group_datasets:
+        for name in gds.data_vars:
+            leaf_counts[name] = leaf_counts.get(name, 0) + 1
+    collided = {name for name, count in leaf_counts.items() if count > 1}
+    if collided:
+        logger.warning(
+            "netcdf_group_leaf_name_collision",
+            extra={"_event": "netcdf_group_leaf_name_collision", "_names": sorted(collided), "_path": path},
+        )
+        group_datasets = [
+            (
+                group_path,
+                gds.rename({n: f"{group_path}/{n}" for n in gds.data_vars if n in collided})
+                if group_path and collided.intersection(gds.data_vars)
+                else gds,
+            )
+            for group_path, gds in group_datasets
+        ]
+    group_datasets = [gds for _, gds in group_datasets]
 
     # The root group can carry the shared grid coordinates (lat/lon/time)
     # with no data_vars of its own -- a TEMPO L3 single-variable subset
@@ -217,7 +501,7 @@ def _is_zipfile(path: str) -> bool:
     return zipfile.is_zipfile(path)
 
 
-def _open_netcdf_bundle(path: str) -> Any:
+def _open_netcdf_bundle(path: str, timing: dict | None = None) -> Any:
     """Open a ``application/netcdf-bundle+zip`` export — a zip of NetCDF
     granule subsets — into one Dataset, concatenated on ``time``.
 
@@ -270,25 +554,100 @@ def _open_netcdf_bundle(path: str) -> Any:
                 "a failed retrieval; retrying the retrieval typically resolves it."
             )
         _gate_bundle_size(zf, path)
-        extract_dir = _extract_bundle_cached(zf, path, names)
+        if timing is not None:
+            # The caller's ``open`` phase context defaults to the single-file
+            # answer; this is the one place that knows the real member count.
+            timing["members"] = len(names)
+        # T51: the unzip is its own phase nested inside ``open``, with a
+        # hit/miss flag -- the extract cache makes a repeat open skip it
+        # entirely, which one merged distribution would hide.
+        with phase_timer("extract", members=len(names)) as extract_timing:
+            extract_dir, extract_timing["cached"] = _extract_bundle_cached(zf, path, names)
 
+    # Deliberately NOT pipelined with the open step below (i.e. opening
+    # member 1 while member 2 is still extracting), even though both phases
+    # are already I/O-bound and bounded by the same setting. _extract_bundle_
+    # cached's caching is all-or-nothing (marks the whole directory
+    # ``.complete`` and renames it atomically only once every member has
+    # extracted); if extraction failed partway *after* some members had
+    # already been lazily opened, this function's own cleanup would
+    # shutil.rmtree the staging directory while a caller's already-returned,
+    # lazy (chunks={}) Dataset still points at files inside it -- a
+    # since-deleted-file read failing silently downstream instead of a clean
+    # bundle-open error. Extraction completing in full before any open
+    # starts is what keeps that failure path safe.
     chunks = _lazy_chunks()
-    members: list[Any] = []
-    for name in names:
-        member_path = os.path.join(extract_dir, *name.split("/"))
-        ds = _open_netcdf(member_path, chunks=chunks)
-        members.append(_synthesize_member_time_coord(ds))
+    members = _open_bundle_members_concurrently(extract_dir, names, chunks)
 
     if len(members) == 1:
         return members[0]
     normalized = [_strip_concat_unsafe_coord_attrs(ds) for ds in members]
     try:
-        return xr.concat(normalized, dim="time")
+        combined = xr.concat(normalized, dim="time")
     except Exception as exc:
         raise OpenHandleError(
             f"Could not combine the {len(members)} granules in bundle '{path}' onto a "
             f"shared time axis: {exc}"
         )
+    return _order_bundle_time(combined, path)
+
+
+def _run_bounded_failfast(items: list, fn: Any, workers: int) -> list:
+    """Run ``fn(item)`` for every item in ``items``, bounded to ``workers``
+    concurrent threads, preserving ``items`` order in the returned list.
+
+    Fails fast: once any item raises, every not-yet-started item is cancelled
+    rather than left to run to completion — a plain ``ThreadPoolExecutor.map``/
+    ``submit`` would submit everything up front and (via ``shutdown(wait=True)``
+    on exit) still run every already-queued item before the exception could
+    propagate, silently doing the full amount of work anyway on a mid-bundle
+    failure and, for an "open" workload, leaking however many file handles
+    those extra opens created until the next GC. The first failure (in
+    ``items`` order) is what propagates, matching a plain sequential loop's
+    behavior. Falls back to a plain sequential loop at ``workers<=1``."""
+    from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
+
+    if workers <= 1:
+        return [fn(item) for item in items]
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(fn, item) for item in items]
+        done, not_done = wait(futures, return_when=FIRST_EXCEPTION)
+        for future in not_done:
+            future.cancel()  # best-effort: only removes not-yet-started work
+        for future in futures:
+            if future in done:
+                future.result()  # raises on the first failure, in items order
+        return [future.result() for future in futures]
+
+
+def _open_bundle_members_concurrently(extract_dir: str, names: list[str], chunks: dict | None) -> list[Any]:
+    """Open every bundle member and synthesize its time coordinate, using a
+    small bounded thread pool instead of one file at a time.
+
+    Members open *lazily* (``chunks``, see :func:`_lazy_chunks`), so this
+    parallelizes only the metadata/header read each open performs — the
+    h5netcdf/netCDF4 engines release the GIL for their file I/O, letting
+    Python threads overlap the surrounding pure-Python per-member work — not
+    any array materialization. RAM stays flat (no more data is pulled into
+    memory than the sequential loop pulled) while wall-clock time on a bundle
+    with many members drops. The HDF5-touching call itself is still
+    serialized through :data:`_hdf5_open_lock` (see its own comment): GIL
+    release doesn't establish that the underlying HDF5 C library is safe for
+    concurrent calls across file handles, and nothing in this deployment
+    proves that build property. Bounded by ``granule_concurrency`` (the same
+    setting used for extraction below) so a 50+ granule bundle doesn't spin
+    up 50 threads at once; ``names`` order is preserved in the result
+    regardless of completion order, so the duplicate-timestamp keep-first
+    logic in :func:`_order_bundle_time` stays deterministic."""
+
+    def _open_one(name: str) -> Any:
+        member_path = os.path.join(extract_dir, *name.split("/"))
+        with _hdf5_open_lock:
+            ds = _open_netcdf(member_path, chunks=chunks)
+        return _synthesize_member_time_coord(ds)
+
+    workers = min(get_settings().granule_concurrency, len(names))
+    return _run_bounded_failfast(names, _open_one, workers)
 
 
 def _gate_bundle_size(zf: Any, path: str) -> None:
@@ -324,9 +683,14 @@ def _lazy_chunks() -> dict | None:
     return None if dask is None else {}
 
 
-def _extract_bundle_cached(zf: Any, path: str, names: list[str]) -> str:
+def _extract_bundle_cached(zf: Any, path: str, names: list[str]) -> tuple[str, bool]:
     """Extract ``zf``'s members into a cache entry that outlives this call
-    and return its directory.
+    and return ``(directory, was_already_cached)``.
+
+    The hit/miss flag is reported by this function rather than probed by the
+    caller because only this function knows which branch it actually took --
+    a caller-side check would have to re-derive the cache key and could still
+    race the pruner between the check and the extraction (T51).
 
     Lazily-opened members read these files long after the bundle open
     returns — any compute up to the end of the tool call — and derived
@@ -337,7 +701,6 @@ def _extract_bundle_cached(zf: Any, path: str, names: list[str]) -> str:
     (:func:`_prune_extract_cache`). Extraction goes into a staging dir
     renamed atomically into place, so a concurrent open of the same bundle
     either wins the rename or adopts the winner's completed entry."""
-    import hashlib
     import shutil
     import tempfile
 
@@ -345,18 +708,16 @@ def _extract_bundle_cached(zf: Any, path: str, names: list[str]) -> str:
     os.makedirs(root, exist_ok=True)
     _prune_extract_cache(root)
 
-    stat = os.stat(path)
-    key = hashlib.sha256(f"{path}|{stat.st_size}|{stat.st_mtime_ns}".encode()).hexdigest()[:24]
+    key = _extract_cache_key(path)
     final_dir = os.path.join(root, key)
     marker = os.path.join(final_dir, _EXTRACT_COMPLETE_MARKER)
     if os.path.exists(marker):
         os.utime(final_dir, None)  # keep a hot entry out of the pruner's reach
-        return final_dir
+        return final_dir, True
 
     staging = tempfile.mkdtemp(prefix=f"staging-{key}-", dir=root)
     try:
-        for name in names:
-            zf.extract(name, staging)
+        _extract_members_concurrently(zf, names, staging)
         with open(os.path.join(staging, _EXTRACT_COMPLETE_MARKER), "w"):
             pass
         os.rename(staging, final_dir)
@@ -365,21 +726,62 @@ def _extract_bundle_cached(zf: Any, path: str, names: list[str]) -> str:
         if os.path.exists(marker):
             # Lost the race: a concurrent open of this bundle finished
             # extracting between the marker check and the rename.
-            return final_dir
+            return final_dir, True
         raise
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
         raise
-    return final_dir
+    return final_dir, False
+
+
+def _extract_cache_key(path: str) -> str:
+    stat = os.stat(path)
+    return hashlib.sha256(f"{path}|{stat.st_size}|{stat.st_mtime_ns}".encode()).hexdigest()[:24]
+
+
+def extract_cache_dir_for(path: str) -> str:
+    """Where :func:`_extract_bundle_cached` would put this bundle's members.
+
+    Derived from the same bundle identity, without opening the archive, so a
+    caller that only needs the *location* (T52's cube writer, which pins the
+    directory it is lazily reading from) doesn't have to re-derive the key."""
+    import tempfile
+
+    return os.path.join(tempfile.gettempdir(), _EXTRACT_CACHE_DIR_NAME, _extract_cache_key(path))
+
+
+def _extract_members_concurrently(zf: Any, names: list[str], dest: str) -> None:
+    """Extract every member of ``zf`` into ``dest`` using a small bounded
+    thread pool instead of one file at a time.
+
+    ``zipfile.ZipFile`` serializes reads of the shared archive file through
+    its own internal lock (``ZipFile._lock``, thread-safe since Python 3.6),
+    so concurrent ``extract()`` calls from multiple threads decompress
+    correctly — each only contends briefly for that lock rather than the
+    whole extraction happening sequentially. Bounded by the same
+    ``granule_concurrency`` setting as the per-member open above, so a 50+
+    granule bundle doesn't spin up 50 threads at once. Fails fast (see
+    :func:`_run_bounded_failfast`): a bad member's failure stops any
+    not-yet-started extraction rather than extracting every remaining member
+    anyway before the caller's cleanup path gets to run."""
+    workers = min(get_settings().granule_concurrency, len(names))
+    _run_bounded_failfast(names, lambda name: zf.extract(name, dest), workers)
 
 
 def _prune_extract_cache(root: str, ttl_seconds: float = _EXTRACT_CACHE_TTL_SECONDS) -> None:
     """Sweep cache entries (completed or abandoned staging dirs) untouched
     for longer than the TTL. Reuse touches an entry's mtime, so only bundles
     nothing has opened for a full TTL are removed — far longer than any
-    single tool call keeps lazy readers on them."""
+    single tool call keeps lazy readers on them.
+
+    T52: an entry a cube write is currently reading from is pinned and skipped.
+    That writer holds a *lazy* Dataset pointing into this directory, and its
+    reads don't touch mtime — so without the pin a long enough write can have
+    its own source files deleted underneath it."""
     import shutil
     import time
+
+    from services.cube_cache import is_pinned
 
     cutoff = time.time() - ttl_seconds
     try:
@@ -388,37 +790,139 @@ def _prune_extract_cache(root: str, ttl_seconds: float = _EXTRACT_CACHE_TTL_SECO
         return
     for entry in entries:
         try:
-            if entry.is_dir(follow_symlinks=False) and entry.stat(follow_symlinks=False).st_mtime < cutoff:
-                shutil.rmtree(entry.path, ignore_errors=True)
+            if not entry.is_dir(follow_symlinks=False):
+                continue
+            if entry.stat(follow_symlinks=False).st_mtime >= cutoff or is_pinned(entry.path):
+                continue
+            shutil.rmtree(entry.path, ignore_errors=True)
         except OSError:
             continue
+
+
+def extract_cache_size_bytes() -> int:
+    """Total on-disk size of the bundle-extract TTL cache
+    (:func:`_extract_bundle_cached`), in bytes. Feeds the
+    bundle_extract_cache_bytes gauge -- an unexpectedly large cache is a
+    plausible, checkable culprit for a memory/disk plateau, distinct from
+    Python heap growth. 0 (not an error) when the directory doesn't exist
+    yet -- nothing has opened a bundle in this process."""
+    import tempfile
+
+    root = os.path.join(tempfile.gettempdir(), _EXTRACT_CACHE_DIR_NAME)
+    total = 0
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for name in filenames:
+            try:
+                total += os.path.getsize(os.path.join(dirpath, name))
+            except OSError:
+                continue  # pruned/removed concurrently -- not this call's problem
+    return total
+
+
+def _order_bundle_time(ds: Any, path: str) -> Any:
+    """Put a concatenated bundle onto a monotonic, duplicate-free time axis.
+
+    The members were concatenated in filename order on the MCP's assumption
+    that "names sort chronologically". Two failures follow from trusting it:
+
+    - A provider whose names don't sort against their dates leaves a
+      non-monotonic ``time`` axis, and a later ``sel(time=slice(...))``
+      silently returns the wrong subset. Sorting by the decoded timestamps
+      makes ordering independent of the naming scheme.
+    - Overlapping orbits and reprocessed granules can carry *identical*
+      timestamps, which double-count that granule in a mean and break
+      ``sel(time=...)`` with an opaque non-unique-index error. Keep the first
+      occurrence (in the original name order, so the choice is deterministic)
+      and disclose the drop in a ``bundle_duplicate_timestamps`` event.
+
+    No-op when there is no ``time`` coordinate to order by."""
+    import numpy as np
+
+    if "time" not in ds.coords or "time" not in ds.dims:
+        return ds
+
+    # De-duplicate in the current (name) order so keep-first is deterministic,
+    # *then* sort — sorting first would make "first" depend on argsort's
+    # tie-breaking among equal timestamps.
+    times = np.asarray(ds["time"].values)
+    _, first_idx = np.unique(times, return_index=True)
+    if first_idx.size != times.size:
+        keep = np.sort(first_idx)  # preserve name order among the survivors
+        logger.info(
+            "bundle_duplicate_timestamps",
+            extra={
+                "_event": "bundle_duplicate_timestamps",
+                "_duplicate_count": int(times.size - first_idx.size),
+                "_kept": int(first_idx.size),
+                "_path": path,
+            },
+        )
+        ds = ds.isel(time=keep)
+    return ds.sortby("time")
 
 
 def _synthesize_member_time_coord(ds: Any) -> Any:
     """Give a bundle member a real, indexed ``time`` coordinate before concat.
 
-    Some daily L3 products (e.g. OMI_MINDS_NO2d) carry a differently-cased
-    singleton time dimension (``Time``) with no coordinate variable at all —
-    the granule's date lives only in the ``RangeBeginningDate``/
-    ``RangeBeginningTime`` global attrs (standard CMR/UMM-G granule temporal
-    metadata). Left alone, ``xr.concat(dim="time")`` fabricates a brand-new
-    unindexed stacking dimension instead of reusing it. No-op when ``time``
-    already exists or the date attrs are absent. (Ported from the MCP's
+    Two shapes of attr-dated L3 product need this — in both, the granule's
+    date lives only in the ``RangeBeginningDate``/``RangeBeginningTime``
+    global attrs (standard CMR/UMM-G granule temporal metadata):
+
+    - a differently-cased singleton time dimension with no coordinate
+      variable (e.g. OMI_MINDS_NO2d's ``Time``), which gets renamed and
+      assigned the synthesized timestamp; and
+    - no time-like dimension at all (e.g. HAQ TROPOMI monthly L3: 2-D
+      lat/lon only), which gets a size-1 indexed ``time`` via expand_dims.
+
+    Left alone, ``xr.concat(dim="time")`` fabricates a brand-new *unindexed*
+    stacking dimension in both cases, and every downstream time selection
+    dies inside xarray with "no associated coordinate or index" (live
+    TROPOMI, 2026-07-16). No-op when ``time`` already exists or the date
+    attrs are absent or unparseable. (Extends the MCP's
     ``_synthesize_bundle_time_coord``.)
     """
     import numpy as np
 
     if "time" in ds.dims:
         return ds
-    candidates = [d for d in ds.dims if str(d).lower() == "time" and ds.sizes[d] == 1]
-    if not candidates:
-        return ds
     date = ds.attrs.get("RangeBeginningDate")
     if not date:
         return ds
     time_str = f"{date}T{ds.attrs.get('RangeBeginningTime', '00:00:00').rstrip('Z')}"
-    ds = ds.rename({candidates[0]: "time"})
-    return ds.assign_coords({"time": [np.datetime64(time_str)]})
+    try:
+        timestamp = np.datetime64(time_str)
+    except ValueError:
+        return ds  # malformed attrs — synthesis is best-effort, never fatal
+    candidates = [d for d in ds.dims if str(d).lower() == "time" and ds.sizes[d] == 1]
+    if candidates:
+        ds = ds.rename({candidates[0]: "time"})
+        # Preserve a real per-granule time coordinate the differently-cased dim
+        # already carried (Finding #15): only OMI_MINDS_NO2d's case -- a Time
+        # dim with no coordinate variable -- needs the attr timestamp. When the
+        # dim already indexes a real datetime (a genuine overpass time),
+        # overwriting it with the attr date's (midnight) stamp would collapse
+        # two same-day granules to identical timestamps, and _order_bundle_time
+        # would dedup one away -- halving a "daily average" from real distinct
+        # observations.
+        if not _has_real_time_coord(ds):
+            ds = ds.assign_coords({"time": [timestamp]})
+        return ds
+    return ds.expand_dims(time=[timestamp])
+
+
+def _has_real_time_coord(ds: Any) -> bool:
+    """Whether ``ds`` already carries a genuine datetime ``time`` coordinate
+    (an indexed datetime64 with at least one non-NaT value) -- as opposed to a
+    bare dimension or an integer index that only *names* time. Synthesis fills
+    the latter but must never clobber the former (Finding #15)."""
+    import numpy as np
+
+    if "time" not in ds.coords:
+        return False
+    values = np.asarray(ds["time"].values)
+    if not np.issubdtype(values.dtype, np.datetime64):
+        return False
+    return not bool(np.all(np.isnat(values)))
 
 
 def _strip_concat_unsafe_coord_attrs(ds: Any) -> Any:
@@ -476,6 +980,86 @@ def _open_all_groups(path: str, chunks: dict | None = None) -> dict[str, Any]:
     )
 
 
+def _apply_declared_dimension_names(ds: Any) -> Any:
+    """Rename engine-invented placeholder dims to the names the file itself
+    declares via per-variable ``DimensionNames`` attributes (the GPM
+    convention for HDF5 files without netCDF dimension scales).
+
+    Dims whose declared name matches an existing 1-D variable are
+    ``swap_dims``-ed so that variable becomes a real dimension coordinate
+    (lat/lon/time get their identity back); dims whose declared name is
+    otherwise unclaimed are plain-renamed. Opportunistic and safe by
+    construction: any disagreement between variables, duplicate target, or
+    name collision leaves the dataset exactly as it opened — this must
+    never break a product that was already working.
+    """
+    mapping: dict[str, str] = {}
+    for var in ds.variables.values():
+        declared = var.attrs.get("DimensionNames") or getattr(var, "encoding", {}).get("DimensionNames")
+        if declared is None:
+            continue
+        if isinstance(declared, bytes):
+            declared = declared.decode("utf-8", "replace")
+        names = [name.strip() for name in str(declared).split(",")]
+        if len(names) != len(var.dims):
+            continue
+        for dim, name in zip(var.dims, names):
+            if not name or name == dim:
+                continue
+            if mapping.get(dim, name) != name:
+                return ds  # two variables disagree on this dim's name
+            mapping[dim] = name
+
+    mapping = {dim: name for dim, name in mapping.items() if dim in ds.dims}
+    if not mapping:
+        return ds
+    targets = list(mapping.values())
+    if len(set(targets)) != len(targets):
+        return ds  # two dims claim the same name
+    if any(name in ds.dims for name in targets):
+        return ds  # target name already names a different dim
+
+    swaps: dict[str, str] = {}
+    renames: dict[str, str] = {}
+    for dim, name in mapping.items():
+        declared_var = ds.variables.get(name)
+        if declared_var is not None and declared_var.dims == (dim,):
+            swaps[dim] = name
+        elif name not in ds.variables:
+            renames[dim] = name
+        else:
+            return ds  # name taken by a variable that can't be this dim's axis
+    try:
+        if swaps:
+            ds = ds.swap_dims(swaps)
+        if renames:
+            ds = ds.rename_dims(renames)
+    except (ValueError, KeyError):  # pragma: no cover — belt over the checks above
+        return ds
+    return ds
+
+
+def pipeline_source_fingerprint() -> str:
+    """A hash of the source of every function that *interprets* an opened file.
+
+    ``_open_netcdf`` and its collaborators do not merely read files: they
+    rename declared dimensions, qualify collided leaves, merge groups,
+    synthesize time coordinates and promote lat/lon. Each of those has been
+    wrong and then fixed, and a cube written before a fix reproduces the old
+    interpretation forever with nothing in its output to reveal it.
+
+    :data:`OPEN_PIPELINE_SOURCE_FINGERPRINT` pins this value so that editing
+    any of them without bumping :data:`OPEN_PIPELINE_VERSION` fails CI rather
+    than silently leaving stale cubes servable.
+    """
+    import inspect
+
+    digest = hashlib.sha256()
+    for fn in _PIPELINE_SOURCE_FUNCTIONS:
+        digest.update(inspect.getsource(fn).encode())
+    return digest.hexdigest()
+
+
 def _promote_lat_lon_coords(ds: Any) -> Any:
     """Mark lat/lon-like data variables as coordinates instead of ordinary
     data variables, so they survive variable selection (e.g.
@@ -491,3 +1075,36 @@ def _promote_lat_lon_coords(ds: Any) -> Any:
     identified = [identify_lat(ds), identify_lon(ds)]
     to_promote = [name for name in identified if name in ds.data_vars]
     return ds.set_coords(to_promote) if to_promote else ds
+
+
+# ---------------------------------------------------------------------------
+# T52: the open pipeline's interpretation version
+# ---------------------------------------------------------------------------
+# Participates in every cube cache key (services/cube_cache.py). BUMP THIS
+# whenever any function in _PIPELINE_SOURCE_FUNCTIONS below changes the
+# *interpretation* of a file -- which, in practice, means any time you touch
+# one at all. Every cube built by the old logic is then unreachable by
+# construction, including the negative-cache entries that recorded which
+# sources the old logic could not cube. The pinned fingerprint below makes
+# that enforcement rather than convention: test_cube_cache.py fails if the
+# source moves and this doesn't.
+OPEN_PIPELINE_VERSION = "1"
+
+_PIPELINE_SOURCE_FUNCTIONS = (
+    _open_netcdf,
+    _open_netcdf_bundle,
+    _apply_declared_dimension_names,
+    _promote_lat_lon_coords,
+    _synthesize_member_time_coord,
+    _order_bundle_time,
+    _strip_concat_unsafe_coord_attrs,
+)
+
+# Regenerate with:
+#   docker compose --profile test run --build --rm backend-test \
+#     python -c "from services.open_handle import pipeline_source_fingerprint; print(pipeline_source_fingerprint())"
+# and bump OPEN_PIPELINE_VERSION in the same edit. The cube-cache *wiring*
+# deliberately lives outside these functions (in _open_by_media_type) so this
+# fingerprint tracks interpretation only, and cache plumbing changes don't
+# spuriously invalidate every cube.
+OPEN_PIPELINE_SOURCE_FINGERPRINT = "525c237310b7d20b7aa16bd5f7e7f8bfdfc27afce06b8fab4074484ed21763d4"

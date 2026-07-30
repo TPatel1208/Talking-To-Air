@@ -11,10 +11,33 @@ earthdata_mcp.toolset; this module only deals with the raw connection.
 """
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from typing import Any, AsyncIterator, Awaitable, Callable
+
 from langchain_core.tools import BaseTool
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain_mcp_adapters.tools import load_mcp_tools
 
 from config.settings import Settings
+
+
+@dataclass
+class HeldSession:
+    """The tool surface of one long-lived MCP session, plus a liveness ``probe``
+    bound to THAT session.
+
+    ``probe`` (the session's own ``send_ping``) lets the connection manager's
+    heartbeat check the session its bound tools actually use — instead of a
+    fresh throwaway session, which stays reachable even while the held one is a
+    404 zombie after a server restart (server lost the session id; every request
+    on it 404s, but a brand-new session connects fine). Probing the fresh one
+    masked that death and left the whole tool surface wedged until a process
+    restart. ``probe`` is ``None`` only for the legacy plain-loader test seam,
+    where the manager falls back to its injected fresh-session probe."""
+
+    tools: dict[str, BaseTool]
+    probe: Callable[[], Awaitable[Any]] | None = None
 
 # Model-facing curated surface (T11 decision record: MCP-first minimal
 # toolset): discovery, AOI, coverage. Retrieval, citation, and provenance
@@ -110,31 +133,126 @@ class EarthdataMCPUnavailableError(RuntimeError):
     """Raised when the earthdata-retrieval MCP is unreachable or missing a required tool."""
 
 
-async def load_raw_mcp_tools(settings: Settings) -> dict[str, BaseTool]:
-    """Connect to the earthdata-retrieval MCP and return every tool it exposes, by name."""
+def _client(settings: Settings) -> MultiServerMCPClient:
+    """Build the earthdata-retrieval streamable-HTTP client. The bearer token
+    here is this backend's *shared* MCP credential (T01), set once per
+    connection; per-user Earthdata credentials flow separately as the
+    ``edl_token`` tool argument (T31), never as a connection header, so one
+    long-lived session serves every user's calls without header divergence."""
     headers = {}
     if settings.earthdata_mcp_token:
         headers["Authorization"] = f"Bearer {settings.earthdata_mcp_token}"
-
-    client = MultiServerMCPClient({
+    return MultiServerMCPClient({
         "earthdata": {
             "url": settings.earthdata_mcp_url,
             "transport": "streamable_http",
             "headers": headers,
         }
     })
+
+
+async def _list_mcp_tools(settings: Settings) -> list[BaseTool]:
+    """Connect to the earthdata-retrieval MCP and return every tool it
+    exposes. Used by ``load_raw_mcp_tools`` (the standalone, non-session-held
+    load path still used by backend endpoints and test fixtures) and
+    ``probe_mcp_tools`` (steady-state heartbeat, listing only) -- both need
+    the same connect-and-list step and the same unreachable-MCP wrapping.
+
+    Note this is the *per-call-reconnect* path: ``get_tools()`` binds each
+    returned tool to ``session=None`` so every ``ainvoke`` opens a fresh
+    streamable-HTTP session. The connection manager's steady-state tool
+    surface goes through ``open_earthdata_session`` instead, which holds one
+    session open so bound tools reuse it (see that function's docstring)."""
     try:
-        tools = await client.get_tools()
+        return await _client(settings).get_tools()
     except Exception as exc:
         raise EarthdataMCPUnavailableError(
             f"Could not reach earthdata-retrieval MCP at {settings.earthdata_mcp_url}: {exc}"
         ) from exc
 
-    by_name = {tool.name: tool for tool in tools}
-    missing = [name for name in REQUIRED_TOOL_NAMES if name not in by_name]
+
+@asynccontextmanager
+async def open_earthdata_session(settings: Settings) -> AsyncIterator[HeldSession]:
+    """Open **one** long-lived streamable-HTTP session to the earthdata-
+    retrieval MCP and yield every tool it exposes, by name, bound to that
+    session.
+
+    This is the root-cause fix for the 2026-07-20 request storm. Tools loaded
+    via ``MultiServerMCPClient.get_tools()`` carry ``session=None``, so
+    langchain-mcp-adapters 0.3.0 opens a *fresh* session (POST initialize +
+    notifications/initialized + GET SSE + POST tools/call) on every single
+    ``ainvoke`` — a ~4-5x HTTP fan-out per logical tool call and a reconnect-
+    storm surface whenever the server's SSE flaps. ``load_mcp_tools(session)``
+    with a live session instead binds each tool to that one session, so its
+    ``call_tool`` reuses the open connection (``await session.call_tool(...)``)
+    with no per-call handshake.
+
+    The session stays open for the whole ``async with`` body — the connection
+    manager (earthdata_mcp/connection.py) holds it open across its ready +
+    heartbeat phase and only lets this context exit (closing the session) on
+    demotion, reconnect, or ``stop()``. Because a langchain-mcp-adapters
+    session is anchored to the anyio task that entered it, the *same* task
+    (the manager's connect loop) must own this ``async with`` for its lifetime;
+    concurrent tool calls from other tasks (the ReAct ToolNode's
+    ``asyncio.gather``) are safe — the MCP SDK's ``BaseSession`` multiplexes
+    them by JSON-RPC request id over the shared streams.
+
+    Connection-phase failures (unreachable server, a required tool gone
+    missing) raise ``EarthdataMCPUnavailableError`` exactly like
+    ``load_raw_mcp_tools``, so the manager's connect loop classifies them
+    unchanged. Exceptions raised by the *body* (bind/on_ready/heartbeat, or a
+    ``CancelledError`` from ``stop()``) propagate untouched and still close
+    the session via the context manager's normal unwind."""
+    connected = False
+    try:
+        async with _client(settings).session("earthdata") as session:
+            tools = await load_mcp_tools(session)
+            by_name = {tool.name: tool for tool in tools}
+            _require_all_present(set(by_name.keys()), settings.earthdata_mcp_url)
+            connected = True
+            # Hand the manager a probe bound to THIS session (send_ping over the
+            # held connection) so its heartbeat detects a 404-zombie session the
+            # bound tools would otherwise keep failing on — see HeldSession.
+            yield HeldSession(by_name, probe=session.send_ping)
+    except EarthdataMCPUnavailableError:
+        raise
+    except Exception as exc:
+        # Only a *connection-phase* failure (before ``connected``) is a
+        # reachability problem to wrap. Anything after the session is up is a
+        # body/teardown error (or CancelledError, a BaseException that skips
+        # this clause entirely) — re-raise it as-is so the manager's own
+        # classification (on_ready failure logging, etc.) stays intact.
+        if connected:
+            raise
+        raise EarthdataMCPUnavailableError(
+            f"Could not reach earthdata-retrieval MCP at {settings.earthdata_mcp_url}: {exc}"
+        ) from exc
+
+
+def _require_all_present(names: set[str], url: str) -> None:
+    missing = [name for name in REQUIRED_TOOL_NAMES if name not in names]
     if missing:
         raise EarthdataMCPUnavailableError(
-            f"earthdata-retrieval MCP at {settings.earthdata_mcp_url} is missing "
-            f"required tool(s): {', '.join(missing)}"
+            f"earthdata-retrieval MCP at {url} is missing required tool(s): {', '.join(missing)}"
         )
+
+
+async def load_raw_mcp_tools(settings: Settings) -> dict[str, BaseTool]:
+    """Connect to the earthdata-retrieval MCP and return every tool it exposes, by name."""
+    tools = await _list_mcp_tools(settings)
+    by_name = {tool.name: tool for tool in tools}
+    _require_all_present(set(by_name.keys()), settings.earthdata_mcp_url)
     return by_name
+
+
+async def probe_mcp_tools(settings: Settings) -> set[str]:
+    """Lightweight steady-state heartbeat check (PRD T40): list the MCP's
+    tool names and confirm every required tool is still present -- no
+    schema fetch beyond what listing requires, no workspace bind. Raises
+    ``EarthdataMCPUnavailableError`` exactly like ``load_raw_mcp_tools``
+    (unreachable, or a required tool went missing), so the connection
+    manager's heartbeat can treat any probe exception as a single miss."""
+    tools = await _list_mcp_tools(settings)
+    names = {tool.name for tool in tools}
+    _require_all_present(names, settings.earthdata_mcp_url)
+    return names

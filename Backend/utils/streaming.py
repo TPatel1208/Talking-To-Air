@@ -8,6 +8,7 @@ Yields:
     ("text", str)
     ("job_progress", {"job_handle": str, "status": str, "progress": Any, "phase": Any, "message": str | None})
     ("chart_payload", dict)  # full render payload — see utils.streaming.emit_chart
+    ("variable_choice", dict)  # deterministic picker — see utils.streaming.emit_variable_choice
 """
 
 import asyncio
@@ -41,9 +42,19 @@ _chart_emitter: ContextVar[Optional[Callable[[dict], None]]] = ContextVar(
     "chart_emitter",
     default=None,
 )
+_variable_choice_emitter: ContextVar[Optional[Callable[[dict], None]]] = ContextVar(
+    "variable_choice_emitter",
+    default=None,
+)
 _current_thread_id: ContextVar[Optional[str]] = ContextVar("current_thread_id", default=None)
 _current_user_id: ContextVar[Optional[str]] = ContextVar("current_user_id", default=None)
 _call_budget: ContextVar[Optional[dict]] = ContextVar("call_budget", default=None)
+# Per-turn MCP transport-failure circuit breaker state (storm containment,
+# 2026-07-20). A mutable dict {"consecutive": int, "tripped": bool} bound once
+# per turn — mutated in place, never re-``set()``, so it survives the ToolNode
+# gather-Task context copy exactly like _call_budget does (see
+# get_mcp_failure_state / get_call_budget).
+_mcp_failure_state: ContextVar[Optional[dict]] = ContextVar("mcp_failure_state", default=None)
 
 
 def emit_status(message: str, *, stage: str | None = None, detail: Any = None) -> None:
@@ -80,8 +91,15 @@ def emit_job_progress(
     progress=None,
     phase: str | None = None,
     message: str | None = None,
+    note: str | None = None,
 ) -> None:
-    """Emit a structured retrieval-job progress event for the active SSE stream."""
+    """Emit a structured retrieval-job progress event for the active SSE stream.
+
+    ``note`` is an additive plain-language line the jobs panel renders under
+    the row (today: the provider-paused guidance from
+    services.retrieval_composites.annotate_paused). Always present in the
+    payload — a later event without one must clear a stale note when the
+    frontend merges events into its row."""
     emitter = _job_progress_emitter.get()
     if emitter:
         emitter({
@@ -90,6 +108,7 @@ def emit_job_progress(
             "progress": progress,
             "phase": phase,
             "message": message,
+            "note": note,
         })
 
 
@@ -99,6 +118,19 @@ def emit_chart(payload: dict) -> None:
     model gets a compact summary, the frontend gets this full payload via the
     existing chart/artifact pipeline)."""
     emitter = _chart_emitter.get()
+    if emitter:
+        emitter(payload)
+
+
+def emit_variable_choice(payload: dict) -> None:
+    """T49: emit the deterministic variable-choice picker for the active SSE
+    stream, out-of-band from the tool's model-facing return value -- the same
+    two-audience split as emit_chart. The model gets a compact, P1-bounded 'a
+    picker was shown' tool result; the frontend gets THIS full, uncapped
+    candidate list, guaranteed to be exactly what the T48 resolver computed
+    (never narrated or truncated by the model). run_satellite captures it and
+    fills each candidate's auto-send prompt from the original request."""
+    emitter = _variable_choice_emitter.get()
     if emitter:
         emitter(payload)
 
@@ -123,6 +155,24 @@ def get_call_budget() -> dict:
     return budget
 
 
+def get_mcp_failure_state() -> dict | None:
+    """The active turn's MCP transport-failure circuit-breaker state, or None
+    when called outside a chat turn.
+
+    ``earthdata_mcp.results.call_tool`` reads this: on a transport/timeout
+    failure it increments ``consecutive`` and, once that crosses
+    ``settings.mcp_transport_failure_ceiling``, sets ``tripped`` so every later
+    MCP call this turn short-circuits instead of opening another doomed,
+    reconnect-storming session. A ``None`` return (the jobs/discovery endpoints,
+    which call MCP tools with a user id bound but no stream_response turn) means
+    the breaker is inert — those callers are never broken by a chat turn's storm.
+
+    Unlike ``get_call_budget`` this never lazily creates the dict: an unbound
+    caller must read as inert, not silently start its own breaker in a context
+    that will be discarded."""
+    return _mcp_failure_state.get()
+
+
 def current_thread_id() -> str | None:
     return _current_thread_id.get()
 
@@ -143,6 +193,24 @@ def user_id_context(user_id: str):
         yield
     finally:
         _current_user_id.reset(token)
+
+
+async def iter_with_user_id(user_id: str, chunks: AsyncGenerator) -> AsyncGenerator:
+    """Re-bind ``current_user_id()`` around every pull of ``chunks``.
+
+    A StreamingResponse body iterates *after* the endpoint handler has
+    returned, so a ``with user_id_context(...)`` inside the handler has
+    already been reset by the time later chunks are produced — any
+    workspace-bound MCP tool called while generating those chunks would
+    refuse with missing_user_context. This wrapper carries the request's
+    user binding across that boundary, one pull at a time."""
+    while True:
+        with user_id_context(user_id):
+            try:
+                chunk = await chunks.__anext__()
+            except StopAsyncIteration:
+                return
+        yield chunk
 
 
 def _message_text_chunk(message) -> str:
@@ -173,13 +241,23 @@ async def stream_response(
     if thread_ref is not None:
         thread_ref["id"] = thread_id
 
-    config = {"configurable": {"thread_id": thread_id}}
+    # recursion_limit is stated explicitly (not left to LangGraph's implicit
+    # default) so the graph's superstep budget is an intentional, tunable
+    # ceiling — a runaway ReAct loop stops here rather than silently at
+    # whatever the library's default happens to be (storm diagnosis 2026-07-20).
+    from config.settings import get_settings
+
+    config = {
+        "configurable": {"thread_id": thread_id},
+        "recursion_limit": get_settings().agent_recursion_limit,
+    }
     queue: asyncio.Queue = asyncio.Queue()
     done = object()
     loop = asyncio.get_running_loop()
     parent_emitter = _status_emitter.get()
     parent_job_progress_emitter = _job_progress_emitter.get()
     parent_chart_emitter = _chart_emitter.get()
+    parent_variable_choice_emitter = _variable_choice_emitter.get()
     # Last-activity clock the heartbeat watchdog polls (below) — touched by
     # every real event this turn publishes, including a bubbled event from a
     # nested stream_response call, so the heartbeat only ever fires during
@@ -211,6 +289,12 @@ async def stream_response(
         if parent_chart_emitter:
             parent_chart_emitter(data)
         loop.call_soon_threadsafe(queue.put_nowait, ("chart_payload", data))
+
+    def publish_variable_choice(data: dict) -> None:
+        _touch()
+        if parent_variable_choice_emitter:
+            parent_variable_choice_emitter(data)
+        loop.call_soon_threadsafe(queue.put_nowait, ("variable_choice", data))
 
     async def publish(event_type: str, data) -> None:
         _touch()
@@ -298,6 +382,7 @@ async def stream_response(
     token = _status_emitter.set(publish_status)
     job_progress_token = _job_progress_emitter.set(publish_job_progress)
     chart_token = _chart_emitter.set(publish_chart_payload)
+    variable_choice_token = _variable_choice_emitter.set(publish_variable_choice)
     thread_token = _current_thread_id.set(thread_id)
     # Same "set once, outermost wins" pattern as call_budget/turn_started_at
     # below: a nested stream_response call (run_ground/run_satellite's own
@@ -315,6 +400,13 @@ async def stream_response(
     call_budget_token = None
     if _call_budget.get() is None:
         call_budget_token = _call_budget.set({})
+    # Same "set once, outermost wins, mutate in place" contract as call_budget
+    # above — bound here (before produce()'s Task exists) so every ToolNode
+    # gather-Task copies a context already referencing this same dict, and
+    # call_tool's in-place increments/short-circuit are visible across them.
+    mcp_failure_token = None
+    if _mcp_failure_state.get() is None:
+        mcp_failure_token = _mcp_failure_state.set({"consecutive": 0, "tripped": False})
     # Same "set once, outermost wins" pattern as call_budget above — a
     # nested stream_response call (run_satellite's inner stream) reuses the
     # outer turn's start time, so stage_reached's elapsed is measured
@@ -337,11 +429,14 @@ async def stream_response(
         _status_emitter.reset(token)
         _job_progress_emitter.reset(job_progress_token)
         _chart_emitter.reset(chart_token)
+        _variable_choice_emitter.reset(variable_choice_token)
         _current_thread_id.reset(thread_token)
         if user_token is not None:
             _current_user_id.reset(user_token)
         if call_budget_token is not None:
             _call_budget.reset(call_budget_token)
+        if mcp_failure_token is not None:
+            _mcp_failure_state.reset(mcp_failure_token)
         if turn_started_token is not None:
             _turn_started_at.reset(turn_started_token)
         if not producer.done():

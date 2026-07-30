@@ -1,5 +1,9 @@
 import logging
 import asyncio
+import functools
+import json
+import os
+import threading
 import httpx
 import requests
 import time
@@ -16,10 +20,14 @@ from shapely.geometry import box, shape, Polygon, MultiPolygon
 from rasterio.features import rasterize
 from affine import Affine
 
-from typing import Optional, Tuple, Union, List
+from typing import Optional, Tuple, Union
 
 from config.settings import get_settings
-from earthdata_mcp.results import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
+from earthdata_mcp.results import (
+    CATEGORY_DIMENSION_CHOICE_REQUIRED,
+    CATEGORY_UNSUPPORTED_GRID,
+    MCPToolError,
+)
 from utils.geo_utils import (
     LAT_COORD_CANDIDATES,
     LON_COORD_CANDIDATES,
@@ -28,6 +36,7 @@ from utils.geo_utils import (
     find_lon_coord,
     identify_time,
 )
+from utils.phase_timing import phase_timer
 
 logger = logging.getLogger(__name__)
 _geocoding_service = None
@@ -49,6 +58,34 @@ def get_geocoding_service() -> "GeocodingService":
     if _geocoding_service is None:
         _geocoding_service = GeocodingService()
     return _geocoding_service
+
+
+# Real (simplified Natural Earth 110m) boundaries for the multi-country
+# presets, so "mean over the US" doesn't average in Sonora and the Atlantic
+# (T42). Built once by scripts/build_preset_regions.py and checked in under
+# datasets/ (data/ is a runtime volume, .dockerignore'd -- this asset must be
+# baked into the image). Loaded lazily and cached here -- no runtime fetch.
+_PRESET_REGIONS_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "datasets", "preset_regions.geojson"
+)
+
+
+@functools.lru_cache(maxsize=1)
+def load_preset_polygons() -> dict:
+    """``{preset_id: shapely geometry}`` from the checked-in preset GeoJSON,
+    parsed once. Returns ``{}`` (so callers fall back to bounding boxes) if
+    the asset is missing or unreadable rather than failing region resolution
+    outright."""
+    try:
+        with open(_PRESET_REGIONS_PATH, encoding="utf-8") as fh:
+            fc = json.load(fh)
+        return {
+            feature["id"]: shape(feature["geometry"])
+            for feature in fc.get("features", [])
+        }
+    except (OSError, ValueError, KeyError) as e:
+        logger.warning("Could not load preset polygons: %s", e)
+        return {}
 
 
 def plot_map(
@@ -140,9 +177,12 @@ def plot_map(
     lon_coord = find_lon_coord(data_array)
 
     if lat_coord is None or lon_coord is None:
-        raise ValueError(
-            f"Could not find lat/lon coordinates. "
-            f"Available: {list(data_array.coords.keys())}"
+        # Same typed refusal as geometry_mask — see the comment there.
+        raise MCPToolError(
+            CATEGORY_UNSUPPORTED_GRID,
+            "Could not identify latitude/longitude coordinates on this product "
+            f"(coords: {list(data_array.coords.keys())}).",
+            suggestion="Try a gridded (Level 3) product published on a lat/lon grid.",
         )
 
     # --- 2. Compute adaptive color scale ---
@@ -306,7 +346,13 @@ def _select_dim_nearest(data_array: xr.DataArray, dim_name: str, value) -> xr.Da
     hPa, say) into a plausible-looking selection of the wrong level, with no
     signal that anything went wrong."""
     coord = data_array[dim_name] if dim_name in data_array.coords else None
-    if coord is not None and coord.ndim == 1 and coord.size > 0:
+    if coord is None:
+        # A dim with no coordinate can only be selected by position —
+        # _dimension_choice_error advertises indices 0..n-1 for exactly this
+        # case, and xarray's .sel(method="nearest") refuses index-less dims
+        # outright ("no associated coordinate or index").
+        return _select_dim_positional(data_array, dim_name, value)
+    if coord.ndim == 1 and coord.size > 0:
         try:
             requested = float(value)
         except (TypeError, ValueError):
@@ -317,6 +363,27 @@ def _select_dim_nearest(data_array: xr.DataArray, dim_name: str, value) -> xr.Da
             if not (cmin <= requested <= cmax):
                 raise _dimension_out_of_range_error(coord, dim_name, requested, cmin, cmax)
     return data_array.sel({dim_name: value}, method="nearest")
+
+
+def _select_dim_positional(data_array: xr.DataArray, dim_name: str, value) -> xr.DataArray:
+    """Select by integer position along a coordinate-less ``dim_name``,
+    keeping the same refuse-don't-snap contract as ``_select_dim_nearest``:
+    a fractional or out-of-range index is a structured, range-naming error,
+    never a clamp or a silent truncation."""
+    size = data_array.sizes[dim_name]
+    try:
+        requested = float(value)
+    except (TypeError, ValueError):
+        requested = None
+    if requested is None or not requested.is_integer() or not (0 <= int(requested) < size):
+        raise MCPToolError(
+            CATEGORY_DIMENSION_CHOICE_REQUIRED,
+            f"Dimension '{dim_name}' has no coordinate values, so it is selected "
+            f"by position — got {value!r}, expected an integer index in "
+            f"[0, {size - 1}].",
+            suggestion=f"Pass a '{dim_name}' index between 0 and {size - 1}.",
+        )
+    return data_array.isel({dim_name: int(requested)})
 
 
 def _dimension_out_of_range_error(
@@ -366,28 +433,19 @@ def _normalize_to_2d(data_array: xr.DataArray, dim_selector: dict | None = None)
 
     return data_array
 
-def mask_data_by_geometry(
+def geometry_mask(
     data_array: xr.DataArray,
     geometry: Union[Polygon, MultiPolygon]
 ) -> xr.DataArray:
     """
-    Mask xarray data to only show values within a geometry boundary.
-    Sets all points outside the geometry to NaN.
+    Boolean (lat, lon) DataArray: True inside ``geometry``.
 
-    Parameters
-    ----------
-    data_array : xarray.DataArray
-        Data with latitude/longitude coordinates
-        Handles common coord names: 'lat'/'latitude', 'lon'/'longitude'
-    geometry : Polygon or MultiPolygon
-        Boundary geometry from RegionResult
-
-    Returns
-    -------
-    xarray.DataArray
-        Masked data array (copy, original unchanged)
+    The single rasterization seam: ``mask_data_by_geometry`` applies it to
+    the data, and callers needing the region footprint as well (plot_tools'
+    evidence crop) read it off this same mask instead of rasterizing an
+    all-ones twin — the mask depends only on the grid and the geometry,
+    never on the data values.
     """
-
     # The affine transform below assumes a 1-D rectilinear lat/lon grid. A
     # 2-D curvilinear swath or a projected x/y grid would be silently
     # mis-masked here -- refuse with a specific, typed error instead (T24).
@@ -398,10 +456,16 @@ def mask_data_by_geometry(
     lon_coord = find_lon_coord(data_array)
 
     if lat_coord is None or lon_coord is None:
-        raise ValueError(
-            f"Could not find lat/lon coordinates. "
-            f"Dims present: {list(data_array.dims)}; "
-            f"coords: {list(data_array.coords.keys())}"
+        # Typed like the curvilinear/projected refusals above, so the stat/
+        # plot tools answer a classified error instead of letting a bare
+        # ValueError escape off-taxonomy — live, that surfaced as a generic
+        # "internal error" for a plot and a false "no data found" for a
+        # point query (QA 2026-07-17, GPM).
+        raise MCPToolError(
+            CATEGORY_UNSUPPORTED_GRID,
+            "Could not identify latitude/longitude coordinates on this product "
+            f"(dims: {list(data_array.dims)}; coords: {list(data_array.coords.keys())}).",
+            suggestion="Try a gridded (Level 3) product published on a lat/lon grid.",
         )
 
     # Get coordinate arrays
@@ -435,141 +499,207 @@ def mask_data_by_geometry(
         dtype=np.uint8
     )
 
-    # Convert to boolean (True = INSIDE geometry = keep)
-    mask_2d = (mask_2d == 1)
+    # Empty-mask self-heal (T42): a region smaller than a grid cell can cover
+    # zero cell *centers*, so center-containment rasterization returns nothing
+    # for data that is right there. Retry with all_touched -- which keeps any
+    # cell the geometry intersects at all -- and, if that recovers cells,
+    # return them disclosed as boundary_cells. If it's still empty the region
+    # genuinely misses the grid, and today's no-data answer stands.
+    region_type = None
+    if not mask_2d.any():
+        boundary_2d = rasterize(
+            [(geometry, 1)],
+            out_shape=(len(lats), len(lons)),
+            transform=transform,
+            fill=0,
+            dtype=np.uint8,
+            all_touched=True,
+        )
+        if boundary_2d.any():
+            mask_2d = boundary_2d
+            region_type = "boundary_cells"
+
+    # Boolean (True = INSIDE geometry = keep), carrying the grid's own
+    # coordinates so it can be cropped/selected like the data itself.
+    mask_da = xr.DataArray(
+        mask_2d == 1,
+        coords={lat_coord: lats, lon_coord: lons},
+        dims=[lat_coord, lon_coord],
+    )
+    if region_type is not None:
+        # A masking-time fidelity fact (depends only on grid + geometry):
+        # callers read it off the mask to disclose region_type in provenance.
+        mask_da.attrs["region_type"] = region_type
+    return mask_da
+
+
+def half_cell(coords: np.ndarray) -> float:
+    """Half the (uniform) grid spacing of a 1-D coordinate axis, for extending
+    a pixel-center extent to its pixel-edge extent. Mirrors render_overlay_png's
+    resolution formula so overlay.bounds and the rendered raster agree: a
+    regular grid's step is (max - min) / (n - 1); a single-cell axis has no
+    spacing to measure, so it falls back to the 0.5° half-cell that
+    render_overlay_png assumes there (res default 1.0)."""
+    vals = np.asarray(coords, dtype=float)
+    finite = vals[np.isfinite(vals)]
+    if finite.size > 1:
+        return abs(float(finite.max()) - float(finite.min())) / (finite.size - 1) / 2.0
+    return 0.5
+
+
+def sel_bounds(da, lat_coord, lon_coord, bounds):
+    """
+    Crop a DataArray to (minx, miny, maxx, maxy) bounds in a coordinate-order-
+    safe way.  xarray slice() requires start <= stop when coords are increasing
+    and start >= stop when decreasing.  We detect the direction and swap if needed
+    so the crop never silently returns an empty array.
+    """
+    lat_vals = da[lat_coord].values
+    lon_vals = da[lon_coord].values
+
+    lat_min, lat_max = bounds[1], bounds[3]   # miny, maxy
+    lon_min, lon_max = bounds[0], bounds[2]   # minx, maxx
+
+    # If latitude is stored N→S (decreasing), slice must be (max, min)
+    if len(lat_vals) > 1 and lat_vals[0] > lat_vals[-1]:
+        lat_slice = slice(lat_max, lat_min)
+    else:
+        lat_slice = slice(lat_min, lat_max)
+
+    # Longitude is almost always W→E (increasing), but handle both
+    if len(lon_vals) > 1 and lon_vals[0] > lon_vals[-1]:
+        lon_slice = slice(lon_max, lon_min)
+    else:
+        lon_slice = slice(lon_min, lon_max)
+
+    return da.sel({lat_coord: lat_slice, lon_coord: lon_slice})
+
+
+def _crop_to_mask_footprint(
+    data_array: xr.DataArray,
+    mask_da: xr.DataArray,
+) -> Tuple[xr.DataArray, xr.DataArray]:
+    """Narrow ``data_array`` and its already-rasterized ``mask_da`` to the
+    smallest window containing every cell the mask keeps (T50).
+
+    "Mean NO2 over New Jersey" against a continental grid otherwise applies a
+    continental ``.where`` and reduces over an array that is >99% NaN by
+    construction. Rasterization stays on the FULL grid -- it costs ~10% of the
+    call and reads no data -- and both the data and that same mask are then
+    sliced by index. The kept cells are therefore *identical* to the uncropped
+    path's by construction, rather than by an argument about grid steps: a
+    window re-rasterized from cropped axes derives a step differing in the 8th
+    digit on the float32 axes real granules ship, which flips cell centers
+    lying on the geometry's boundary (measured live: a 2% move on a small AOI).
+
+    Returns the pair unchanged whenever the crop can't be taken -- an empty
+    mask (the honest no-data answer), a mask riding dims the data doesn't
+    have, or a region already spanning the granule. It is an optimization,
+    and must never be the reason a turn fails or a number moves.
+    """
+    try:
+        lat_dim, lon_dim = mask_da.dims
+        if lat_dim not in data_array.dims or lon_dim not in data_array.dims:
+            return data_array, mask_da
+
+        rows = np.flatnonzero(mask_da.any(dim=lon_dim).values)
+        cols = np.flatnonzero(mask_da.any(dim=lat_dim).values)
+        if rows.size == 0 or cols.size == 0:
+            # Nothing kept anywhere: leave today's empty result exactly as is.
+            return data_array, mask_da
+
+        window = {
+            lat_dim: slice(int(rows[0]), int(rows[-1]) + 1),
+            lon_dim: slice(int(cols[0]), int(cols[-1]) + 1),
+        }
+        cropped = data_array.isel(window)
+        if cropped.size == data_array.size:
+            # A region covering the whole granule has nothing to crop: hand
+            # back the original, so the event below counts savings not
+            # attempts.
+            return data_array, mask_da
+
+        cropped_mask = mask_da.isel(window)
+        logger.info(
+            "aoi_crop_applied",
+            extra={
+                "_event": "aoi_crop_applied",
+                "_cells_before": int(data_array.size),
+                "_cells_after": int(cropped.size),
+                "_crop_bounds": [
+                    float(np.nanmin(cropped_mask[lon_dim].values)),
+                    float(np.nanmin(cropped_mask[lat_dim].values)),
+                    float(np.nanmax(cropped_mask[lon_dim].values)),
+                    float(np.nanmax(cropped_mask[lat_dim].values)),
+                ],
+            },
+        )
+        return cropped, cropped_mask
+    except Exception:  # pragma: no cover - defensive: never fail a turn to crop
+        logger.warning("aoi_crop_skipped", exc_info=True)
+        return data_array, mask_da
+
+
+def mask_data_by_geometry(
+    data_array: xr.DataArray,
+    geometry: Union[Polygon, MultiPolygon],
+    crop: bool = True,
+) -> xr.DataArray:
+    """
+    Mask xarray data to only show values within a geometry boundary.
+    Sets all points outside the geometry to NaN.
+
+    Parameters
+    ----------
+    data_array : xarray.DataArray
+        Data with latitude/longitude coordinates
+        Handles common coord names: 'lat'/'latitude', 'lon'/'longitude'
+    geometry : Polygon or MultiPolygon
+        Boundary geometry from RegionResult
+    crop : bool, optional
+        Narrow the data (and the mask) to the mask's footprint before the
+        ``.where``, so the reduction doesn't run over a grid that is almost
+        entirely NaN by construction (T50). Pass ``False`` for the pre-T50
+        full-grid behavior; the values kept are identical either way.
+
+    Returns
+    -------
+    xarray.DataArray
+        Masked data array (copy, original unchanged)
+    """
+    mask_da = geometry_mask(data_array, geometry)
+
+    if crop:
+        # T51: the crop and the .where are timed separately because the whole
+        # point of T50 was to move work from the second into the first -- one
+        # combined number could not show that trade.
+        with phase_timer("crop", cells_in=int(data_array.size)) as timing:
+            data_array, mask_da = _crop_to_mask_footprint(data_array, mask_da)
+            timing["cells_out"] = int(data_array.size)
 
     if data_array.ndim not in (2, 3):
         raise ValueError(f"Unsupported array dimension: {data_array.ndim}D")
 
-    mask_da = xr.DataArray(mask_2d, dims=[lat_coord, lon_coord])
-
     # xarray aligns by dimension name, so this works for both (lat, lon)
     # and Harmony-reformatted grids ordered as (time, lon, lat).
-    masked = data_array.where(mask_da)
-
+    with phase_timer("mask", cells_in=int(data_array.size), cropped=crop):
+        masked = data_array.where(mask_da)
+    # Carry the mask's fidelity signal (T42): when geometry_mask self-healed
+    # an empty mask to boundary cells, surface that here (``.where`` doesn't
+    # keep the mask's attrs) so the tool can disclose region_type.
+    if mask_da.attrs.get("region_type"):
+        masked.attrs["region_type"] = mask_da.attrs["region_type"]
     return masked
-def plot_diff_maps(
-    data_arrays: List[xr.DataArray],
-    titles: List[str],
-    extent: Optional[List[Tuple[float, float, float, float]]] = None,
-    cmap: str = "Spectral_r",
-    figsize: Optional[Tuple[int, int]] = None,
-    dpi: int = 150,
-    vmin: Optional[float] = None,
-    vmax: Optional[float] = None,
-    mask_geometries: Optional[List[Union[Polygon, MultiPolygon]]] = None
-    ) -> Tuple[plt.Figure, List[plt.Axes]]:
-    """
-    Plot several difference maps side-by-side for comparison.
-
-    Parameters
-    ----------
-    data_arrays : list of xr.DataArray
-        Difference fields to display.
-    titles : list of str
-        Titles for each subplot.
-    extent : tuple, optional
-        Bounding box for all subplots.
-    cmap : str, optional
-        Diverging colormap for differences.
-    figsize : tuple, optional
-        Figure size. If None, computed automatically.
-    dpi : int, optional
-        Output resolution.
-    symmetric : bool, optional
-        Force symmetric colorbar around zero.
-    vmin, vmax : float, optional
-        Manual color limits.
-
-    Returns
-    -------
-    fig : matplotlib.figure.Figure
-    axes : list of matplotlib.axes.Axes
-    """
-    n_plots = len(data_arrays)
-    if len(titles) != n_plots:
-        raise ValueError(f"Number of titles ({len(titles)}) must match number of data arrays ({n_plots})")
-
-    if n_plots == 0:
-        raise ValueError("Must provide at least one data array to plot")
-
-    # Determine layout
-    if n_plots <= 3:
-        nrows, ncols = 1, n_plots
-    else:
-        ncols = 3
-        nrows = int(np.ceil(n_plots / ncols))
-
-    # Auto compute figsize
-    if figsize is None:
-        figsize = (6 * ncols, 5 * nrows)
-
-    # Symmetric color scale
-    if vmin is None or vmax is None:
-        values = np.hstack([da.values.flatten() for da in data_arrays])
-        values = values[np.isfinite(values)]
-        if len(values) > 0:
-            abs_max = np.max(np.abs(values))
-            vmin = 0 if vmin is None else vmin
-            vmax = abs_max if vmax is None else vmax
-
-    # Make figure
-    fig, axes = plt.subplots(
-        nrows=nrows,
-        ncols=ncols,
-        figsize=figsize,
-        dpi=dpi,
-        subplot_kw={'projection': ccrs.PlateCarree()},
-        squeeze=False
-    )
-    axes_flat = axes.flatten()
-
-    # Plot each map
-    for idx, (da, title) in enumerate(zip(data_arrays, titles)):
-        ax = axes_flat[idx]
-        im = da.plot(
-            ax=ax,
-            transform=ccrs.PlateCarree(),
-            cmap=cmap,
-            vmin=vmin,
-            vmax=vmax,
-            add_colorbar=False
-        )
-
-        if extent:
-            cartopy_extent = [extent[idx][0], extent[idx][2], extent[idx][1], extent[idx][3]]
-            ax.set_extent(cartopy_extent, crs=ccrs.PlateCarree())
-
-        ax.set_title(title, fontsize=11, fontweight="bold")
-        ax.coastlines(linewidth=0.5)
-        ax.add_feature(cfeature.STATES, linewidth=0.3, edgecolor='black', alpha=0.5)
-    if mask_geometries is not None:
-        for idx, mask_geometry in enumerate(mask_geometries):
-            axes_flat[idx].add_geometries(
-                [mask_geometry],
-                crs=ccrs.PlateCarree(),
-                facecolor='none',
-                edgecolor='red',
-                linewidth=2,
-                alpha=0.8
-            )
-    # Hide unused subplots
-    for idx in range(n_plots, len(axes_flat)):
-        axes_flat[idx].set_visible(False)
-
-    # Add shared colorbar
-    cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
-    cbar = fig.colorbar(im, cax=cbar_ax)
-    name = data_arrays[0].name or "Difference"
-    units = getattr(data_arrays[0], "units", "")
-    cbar.set_label(f"{name} {f'({units})' if units else ''}")
-
-    plt.tight_layout(rect=[0, 0, 0.90, 1])
-
-    return fig, axes_flat[:n_plots].tolist()
 
 
-
+def apply_mask_region_type(masked: xr.DataArray, region: dict) -> None:
+    """Downgrade ``region['region_type']`` to the masking-time fact when the
+    mask self-healed (T42): a sub-cell region that ``geometry_mask`` rescued
+    with ``all_touched`` is ``boundary_cells``, not the polygon/box/point the
+    resolver first named. Mutates the caller-owned ``region`` dict in place."""
+    mask_region_type = masked.attrs.get("region_type")
+    if mask_region_type:
+        region["region_type"] = mask_region_type
 class GeocodingService:
     """Free geocoding using Nominatim (OpenStreetMap) with polygon and bounding box"""
 
@@ -577,6 +707,28 @@ class GeocodingService:
         self.cache = {}
         self.cache_ttl_seconds = cache_ttl_seconds
         self.last_request = 0
+        # Guards the read-modify-write on last_request below: geocode()
+        # (sync, sometimes run in a worker thread) and ageocode() (async, on
+        # the event loop) share this one throttle timestamp, and without
+        # coordination two concurrent calls can both read a stale value and
+        # both pass the 1 rps check at once -- Nominatim's usage policy 403s
+        # on exactly that. A threading.Lock (not asyncio.Lock) works for
+        # both paths because the critical section below is pure arithmetic,
+        # held for microseconds -- the actual wait happens after release, so
+        # the async path never blocks the event loop on a contended lock.
+        self._throttle_lock = threading.Lock()
+
+    def _reserve_throttle_slot(self) -> float:
+        """Atomically claim the next allowed request slot (>=1s after the
+        previously claimed one) and return how long the caller must still
+        wait for it. Shared by geocode()/ageocode() so concurrent calls from
+        either path always claim distinct, correctly-spaced slots instead of
+        both reading the same last_request before either updates it."""
+        with self._throttle_lock:
+            now = time.time()
+            next_slot = max(now, self.last_request + 1.0)
+            self.last_request = next_slot
+            return max(0.0, next_slot - now)
 
     def _cache_key(self, location_name: str) -> str:
         return " ".join(location_name.lower().strip().split())
@@ -608,9 +760,9 @@ class GeocodingService:
             return cached
 
         # Rate limit: 1 request per second
-        time_since_last = time.time() - self.last_request
-        if time_since_last < 1.0:
-            time.sleep(1.0 - time_since_last)
+        wait_seconds = self._reserve_throttle_slot()
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
 
         url = "https://nominatim.openstreetmap.org/search"
         params = {
@@ -623,11 +775,14 @@ class GeocodingService:
             'User-Agent': NOMINATIM_USER_AGENT
         }
 
-        self.last_request = time.time()
         logger.info("satellite_geocode_requests", extra={"_location": location_name})
 
         try:
-            response = requests.get(url, params=params, headers=headers)
+            # timeout is load-bearing: this sync path still runs on the event
+            # loop in a few legacy callers (export_service) — without it a
+            # hanging Nominatim response freezes the whole single-worker
+            # backend (every SSE stream, heartbeat, and /health) indefinitely.
+            response = requests.get(url, params=params, headers=headers, timeout=15)
             data = response.json()
 
             if data:
@@ -664,9 +819,9 @@ class GeocodingService:
         if cached is not None:
             return cached
 
-        time_since_last = time.time() - self.last_request
-        if time_since_last < 1.0:
-            await asyncio.sleep(1.0 - time_since_last)
+        wait_seconds = self._reserve_throttle_slot()
+        if wait_seconds > 0:
+            await asyncio.sleep(wait_seconds)
 
         url = "https://nominatim.openstreetmap.org/search"
         params = {
@@ -677,7 +832,6 @@ class GeocodingService:
         }
         headers = {'User-Agent': NOMINATIM_USER_AGENT}
 
-        self.last_request = time.time()
         logger.info("satellite_geocode_requests", extra={"_location": location_name})
 
         try:
@@ -724,7 +878,7 @@ class RegionResolver:
         'antarctica':    {'geometry': box(-180, -90,  180, -60), 'bounds': (-180, -90,  180, -60), 'name': 'Antarctica'},
 
         # --- United States ---
-        'the united states':  {'geometry': box(-125, 24, -66, 50), 'bounds': (-125, 24, -66, 50), 'name': 'United States'},
+        'united states':  {'geometry': box(-125, 24, -66, 50), 'bounds': (-125, 24, -66, 50), 'name': 'United States'},
         'usa':            {'geometry': box(-125, 24, -66, 50), 'bounds': (-125, 24, -66, 50), 'name': 'United States'},
         'us':             {'geometry': box(-125, 24, -66, 50), 'bounds': (-125, 24, -66, 50), 'name': 'United States'},
         'conus':          {'geometry': box(-125, 24, -66, 50), 'bounds': (-125, 24, -66, 50), 'name': 'Continental US'},
@@ -763,55 +917,97 @@ class RegionResolver:
         'southern africa':    {'geometry': box( 11, -35, 40, -15), 'bounds': ( 11, -35, 40, -15), 'name': 'Southern Africa'},
     }
 
+    # Preset keys that resolve to a real polygon (feature id in
+    # preset_regions.geojson). Everything else in ``global_regions`` stays a
+    # disclosed bounding box -- pure-ocean/quadrant concepts where a rectangle
+    # is the honest answer (T42).
+    _POLYGON_PRESET_IDS = {
+        "united states": "united states", "usa": "united states", "us": "united states",
+        "conus": "conus", "continental us": "conus",
+        "contiguous us": "conus", "lower 48": "conus",
+        "north america": "north america", "south america": "south america",
+        "europe": "europe", "africa": "africa", "asia": "asia",
+        "oceania": "oceania", "antarctica": "antarctica",
+    }
+
+    def _finalize_preset(self, preset: dict, key: str) -> dict:
+        """Return a preset enriched with the T42 fidelity disclosure fields.
+        A multi-country concept (US, a continent) is upgraded to its real
+        Natural Earth polygon and labelled ``region_type: polygon``; every
+        other preset stays the crude rectangle it is, honestly labelled
+        ``bounding_box``. ``display_name`` is the human name the answer should
+        cite. A copy, so the shared ``global_regions`` dict is never mutated."""
+        region = dict(preset)
+        region.setdefault("display_name", region.get("name", ""))
+        polygon_id = self._POLYGON_PRESET_IDS.get(key)
+        polygon = load_preset_polygons().get(polygon_id) if polygon_id else None
+        if polygon is not None:
+            region["geometry"] = polygon
+            region["bounds"] = polygon.bounds
+            region["region_type"] = "polygon"
+        else:
+            region.setdefault("region_type", "bounding_box")
+        return region
+
+    @staticmethod
+    def _geocoded_region(geo_result: dict) -> dict:
+        """Build a RegionResult from a geocoder hit, disclosing which kind of
+        footprint it is: ``polygon`` when Nominatim returned a real boundary,
+        or ``point_buffer`` when it didn't and we mint a 0.1° box around the
+        centroid. ``display_name`` is the geocoder's own label, carried
+        through so a wrong-place answer ("Paris, Texas") is catchable. Shared
+        by the sync and async resolvers so a place can't resolve two ways."""
+        if geo_result.get("polygon"):
+            geometry = shape(geo_result["polygon"])
+            region_type = "polygon"
+        else:
+            lon, lat = geo_result["longitude"], geo_result["latitude"]
+            delta = 0.1  # degrees
+            geometry = box(lon - delta, lat - delta, lon + delta, lat + delta)
+            region_type = "point_buffer"
+        display_name = geo_result["display_name"]
+        return {
+            "geometry": geometry,
+            "bounds": geometry.bounds,  # (minx, miny, maxx, maxy)
+            "name": display_name,
+            "display_name": display_name,
+            "region_type": region_type,
+        }
+
+    @staticmethod
+    def _normalize_location_name(location_name: str) -> str:
+        """One normalization for both resolvers (T42 sync/async parity): lower,
+        strip, collapse whitespace, and drop a leading "the " so "the
+        Netherlands" and "the north america" resolve the same by either code
+        path. Previously only the async path stripped "the ", so the same
+        input could resolve two different ways."""
+        normalized = " ".join(location_name.lower().strip().split())
+        return normalized.removeprefix("the ")
+
     def resolve_location(self, location_name: str):
         """Convert location name to RegionResult with geometry"""
         # Check for global regions first
-        location_lower = location_name.lower().strip()
+        location_lower = self._normalize_location_name(location_name)
         if location_lower in self.global_regions:
-            return self.global_regions[location_lower]
+            return self._finalize_preset(self.global_regions[location_lower], location_lower)
 
         geo_result = self.geocoding_service.geocode(location_name)
         if geo_result is None:
             return None
 
-        # Convert GeoJSON polygon to shapely geometry
-        if geo_result['polygon']:
-            geometry = shape(geo_result['polygon'])
-        else:
-            # Fallback: create small box around point
-            lon, lat = geo_result['longitude'], geo_result['latitude']
-            delta = 0.1  # degrees
-            geometry = box(lon - delta, lat - delta, lon + delta, lat + delta)
-
-        return {
-            'geometry': geometry,
-            'bounds': geometry.bounds,  # (minx, miny, maxx, maxy)
-            'name': geo_result['display_name']
-        }
+        return self._geocoded_region(geo_result)
 
     async def aresolve_location(self, location_name: str):
         """Async version of resolve_location() for agent tool execution."""
-        location_lower = location_name.lower().strip()
-        location_lower = location_lower.removeprefix('the ')
+        location_lower = self._normalize_location_name(location_name)
         if location_lower in self.global_regions:
-            return self.global_regions[location_lower]
+            return self._finalize_preset(self.global_regions[location_lower], location_lower)
 
         geo_result = await self.geocoding_service.ageocode(location_name)
         if geo_result is None:
             return None
 
-        if geo_result['polygon']:
-            geometry = shape(geo_result['polygon'])
-        else:
-            lon, lat = geo_result['longitude'], geo_result['latitude']
-            delta = 0.1
-            geometry = box(lon - delta, lat - delta, lon + delta, lat + delta)
-
-        return {
-            'geometry': geometry,
-            'bounds': geometry.bounds,
-            'name': geo_result['display_name']
-        }
+        return self._geocoded_region(geo_result)
 
     def plot_singular(self, data_array, location_name, **kwargs):
         """Plot data for a single location"""
@@ -827,28 +1023,5 @@ class RegionResolver:
             title=title,
             extent=region['bounds'],
             mask_geometry=region['geometry'],
-            **kwargs
-        )
-    def plot_multiple(self, data_array, location_names, **kwargs):
-        """Plot data for multiple locations for comparison"""
-        regions = []
-        for name in location_names:
-            region = self.resolve_location(name)
-            if region:
-                regions.append(region)
-
-        data_arrays = [
-            mask_data_by_geometry(data_array, r['geometry'])
-            for r in regions
-        ]
-        titles = [r['name'] for r in regions]
-        extents = [r['bounds'] for r in regions]
-        geometries = [r['geometry'] for r in regions]
-
-        return plot_diff_maps(
-            data_arrays,
-            titles,
-            extent=extents,
-            mask_geometries=geometries,
             **kwargs
         )

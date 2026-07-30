@@ -11,13 +11,24 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 from typing import Any, Callable, Protocol
 
 from langchain_core.tools import BaseTool, StructuredTool
 
 from config.workflow_stages import STAGE_AOI, STAGE_COVERAGE, STAGE_SEARCH
-from earthdata_mcp.results import CATEGORY_TOKEN_INVALID, MCPToolError, call_tool, parse_tool_result
+from earthdata_mcp import tool_cache
+from earthdata_mcp.results import (
+    CATEGORY_CONTRACT,
+    CATEGORY_TOKEN_INVALID,
+    CATEGORY_USER_INPUT,
+    MCPToolError,
+    call_tool,
+    parse_tool_result,
+)
 from utils.streaming import emit_status
+
+logger = logging.getLogger(__name__)
 
 # T31: parameters injected here and hidden from the model-facing schema —
 # workspace_id always, edl_token only for a tool whose advertised schema
@@ -53,10 +64,13 @@ _STAGE_BY_TOOL_NAME: dict[str, tuple[str, str]] = {
 
 
 class MissingUserContextError(RuntimeError):
-    """Raised when a workspace-bound MCP tool is called with no user context
-    bound (T26). A context-less workspace is an isolation hole, not a
-    default — minting a shared ``"user-None"`` workspace silently pooled
-    every caller's retrievals together, so this fails loud instead."""
+    """A workspace-bound MCP tool was called with no user context bound
+    (T26). A context-less workspace is an isolation hole, not a default —
+    minting a shared ``"user-None"`` workspace silently pooled every
+    caller's retrievals together, so this fails loud instead. Since T37 it
+    is returned classified as a T18 ``contract`` error envelope (still
+    logged loudly — it indicates a programming error) rather than raised
+    bare into an unclassified traceback string."""
 
 
 def bind_workspace(
@@ -97,13 +111,29 @@ def _bind_one(
     async def _call(**kwargs):
         user_id = user_id_getter()
         if user_id is None:
-            raise MissingUserContextError(
+            exc = MissingUserContextError(
                 f"No user context bound for tool {tool.name!r} — refusing to "
                 "mint a shared 'user-None' workspace."
             )
+            logger.error(
+                "missing_user_context",
+                extra={"_event": "missing_user_context", "_tool": tool.name},
+            )
+            return MCPToolError(CATEGORY_CONTRACT, str(exc)).to_tool_json()
         kwargs["workspace_id"] = f"user-{user_id}"
         if stage_info is not None:
             emit_status(stage_info[1], stage=stage_info[0])
+
+        # T53: the discovery-metadata cache, read here — after workspace_id is
+        # known (it is part of the key) and *before* both the credential
+        # resolve and the call_tool round-trip, so a hit costs neither a
+        # decrypt nor a network call. No credential was used on a hit, so
+        # mark_used deliberately never fires for one.
+        cacheable = tool_cache.is_cacheable(tool.name)
+        if cacheable:
+            hit = tool_cache.lookup(tool.name, kwargs["workspace_id"], kwargs)
+            if hit is not None:
+                return hit
 
         # T31 injection policy: connected ∧ unexpired ∧ advertising: send
         # nothing otherwise and let the MCP fall back to its shared env
@@ -138,6 +168,22 @@ def _bind_one(
             # another's connector.
             if injected and exc.category == CATEGORY_TOKEN_INVALID:
                 await edl_injector.mark_invalid(user_id)
+            # T46 story #4: a rejected AOI *input* must leave a greppable trace.
+            # The live 2026-07-17 incident (define_area_of_interest rejected an
+            # inverted bbox, the agent improvised "North America") left nothing
+            # to grep for. Log the named event with the offending location so a
+            # silent-substitution regression is discoverable from logs; the
+            # dispatch-layer guard (services/subagent_dispatch.py) uses the same
+            # signal to refuse the substituted answer.
+            if tool.name == "define_area_of_interest" and exc.category == CATEGORY_USER_INPUT:
+                logger.warning(
+                    "aoi_user_input_rejected",
+                    extra={
+                        "_event": "aoi_user_input_rejected",
+                        "_location": kwargs.get("location"),
+                        "_detail": exc.message,
+                    },
+                )
             return exc.to_tool_json()
         if injected:
             # Fire-and-forget and coalesced per agent turn inside mark_used
@@ -149,6 +195,13 @@ def _bind_one(
         if tool.name == "check_coverage" and isinstance(result, dict) and "granule_count" in result:
             granule_count = result["granule_count"]
             emit_status(f"Checking coverage — {granule_count} granules...", stage=STAGE_COVERAGE, detail=granule_count)
+        # Only reached on success: every classified failure returned above, so
+        # a transient provider_unavailable is retried on the next attempt
+        # rather than replayed for the rest of the TTL. The **raw** result is
+        # what is stored, so parse_tool_result and model_view_describe_dataset
+        # behave byte-identically on hit and miss.
+        if cacheable:
+            tool_cache.store(tool.name, kwargs["workspace_id"], kwargs, raw)
         return raw
 
     return StructuredTool.from_function(

@@ -53,6 +53,51 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertEqual(result.meta["granule_dates"], ["2024-01-01", "2024-01-03"])
         self.assertEqual(float(da.sel(lat=40.0, lon=-75.0)), 3.0)
 
+    def test_clustered_granules_are_cadence_weighted_not_over_counted(self):
+        """Finding #11: 'average over the period' must weight each cadence
+        bucket equally, not each granule. Three granules on 2024-01-01 (value
+        10) and one on 2024-01-02 (value 0): the naive per-granule mean is
+        (10+10+10+0)/4 = 7.5, over-weighting the dense first day. The
+        cadence-weighted (per-day) mean is (10 + 0)/2 = 5.0."""
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset(
+            {"no2": (("time", "lat", "lon"), self.np.array([
+                [[10.0]], [[10.0]], [[10.0]], [[0.0]],
+            ]))},
+            coords={
+                "time": [
+                    "2024-01-01T06:00:00", "2024-01-01T12:00:00",
+                    "2024-01-01T18:00:00", "2024-01-02T12:00:00",
+                ],
+                "lat": [40.0], "lon": [-75.0],
+            },
+            attrs={"cadence": "daily"},
+        )
+
+        result = AggregationService().aggregate(ds, stat="mean", variable="no2", col_info=self.col_info)
+
+        self.assertAlmostEqual(float(result.ds["no2"].sel(lat=40.0, lon=-75.0)), 5.0)
+
+    def test_evenly_cadenced_granules_are_unchanged_by_weighting(self):
+        """Finding #11 guard: one granule per cadence bucket weights every day
+        equally already, so the cadence-weighted mean equals the plain mean --
+        the fix only moves clustered sampling, never evenly-spaced series."""
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset(
+            {"no2": (("time", "lat", "lon"), self.np.array([[[3.0]], [[6.0]], [[9.0]]]))},
+            coords={
+                "time": ["2024-01-01", "2024-01-02", "2024-01-03"],
+                "lat": [40.0], "lon": [-75.0],
+            },
+            attrs={"cadence": "daily"},
+        )
+
+        result = AggregationService().aggregate(ds, stat="mean", variable="no2", col_info=self.col_info)
+
+        self.assertAlmostEqual(float(result.ds["no2"].sel(lat=40.0, lon=-75.0)), 6.0)
+
     def test_all_stats_supported_and_invalid_stat_raises(self):
         from preprocessing.aggregation_service import AggregationService
 
@@ -70,9 +115,31 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertEqual(float(service.aggregate(da, stat="max", col_info=self.col_info).ds["no2"].values[0, 1]), 7.0)
         self.assertEqual(float(service.aggregate(da, stat="min", col_info=self.col_info).ds["no2"].values[0, 1]), 3.0)
         self.assertEqual(float(service.aggregate(da, stat="median", col_info=self.col_info).ds["no2"].values[0, 0]), 3.0)
-        self.assertAlmostEqual(float(service.aggregate(da, stat="std", col_info=self.col_info).ds["no2"].values[0, 0]), 2.0)
+        # Sample std (ddof=1) over the two granules [1, 5]: sqrt(((1-3)^2 +
+        # (5-3)^2) / (2-1)) = sqrt(8). Population std (ddof=0) would understate
+        # this as 2.0 — few-granule variability is a *sample*, not the whole.
+        self.assertAlmostEqual(
+            float(service.aggregate(da, stat="std", col_info=self.col_info).ds["no2"].values[0, 0]),
+            self.np.sqrt(8.0),
+        )
         with self.assertRaises(ValueError):
             service.aggregate(da, stat="mode", col_info=self.col_info)
+
+    def test_sample_std_of_a_single_granule_is_nan_not_a_fabricated_zero(self):
+        """n=1 has no sample spread to estimate: ddof=1 makes the honest answer
+        NaN, not the 0.0 that ddof=0 would fabricate (and never a crash)."""
+        from preprocessing.aggregation_service import AggregationService
+
+        da = self.xr.DataArray(
+            self.np.array([[[5.0, 5.0]]]),
+            dims=("time", "lat", "lon"),
+            coords={"time": ["2024-01-01"], "lat": [40.0], "lon": [-75.0, -74.0]},
+            name="no2",
+        )
+
+        result = AggregationService().aggregate(da, stat="std", col_info=self.col_info)
+
+        self.assertTrue(self.np.isnan(float(result.ds["no2"].values[0, 0])))
 
     def test_apply_quality_mask_falls_back_to_dataset_attrs_when_col_info_empty(self):
         from preprocessing.aggregation_service import AggregationService
@@ -215,6 +282,118 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertEqual(meta["n_granules"], 2)
         self.assertEqual(meta["granule_dates"], ["2024-01-01", "2024-01-03"])
 
+    def test_aggregate_falls_back_to_ecs_range_attrs_when_no_time_coordinate_exists(self):
+        """Monthly L3 means (e.g. HAQ_TROPOMI_NO2_GLOBAL_M_L3) have lat/lon
+        dims only -- the month lives exclusively in RangeBeginningDate/
+        RangeEndingDate global attrs. The Metadata tab showed "Date Range:
+        Not available"/"Granule Dates: Not available" for these charts because
+        _build_meta only read time coordinates (regression)."""
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset(
+            {"no2": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]])},
+            coords={"lat": [40.0, 41.0], "lon": [-75.0, -74.0]},
+            attrs={
+                "cadence": "monthly",
+                "RangeBeginningDate": "2024-01-01",
+                "RangeBeginningTime": "00:00:00.000000Z",
+                "RangeEndingDate": "2024-01-31",
+                "RangeEndingTime": "23:59:59.999999Z",
+            },
+        )
+
+        meta = AggregationService().aggregate(ds, stat="mean", variable="no2", col_info=self.col_info).meta
+
+        self.assertEqual(meta["n_granules"], 1)
+        self.assertEqual(meta["start_date"], "2024-01-01")
+        self.assertEqual(meta["end_date"], "2024-01-31")
+        self.assertEqual(meta["granule_dates"], ["2024-01-01"])
+        self.assertIn("2024-01-01 to 2024-01-31", meta["aggregation_label"])
+
+    def test_aggregate_reads_range_attrs_from_source_ds_when_data_is_an_extracted_dataarray(self):
+        """Every real tool path passes an already-extracted DataArray as
+        ``data`` (variable attrs only -- no global attrs) plus the opened
+        Dataset as ``source_ds``: the temporal fallback must look there."""
+        from preprocessing.aggregation_service import AggregationService
+
+        source_ds = self.xr.Dataset(
+            {"no2": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]])},
+            coords={"lat": [40.0, 41.0], "lon": [-75.0, -74.0]},
+            attrs={"time_coverage_start": "2024-01-01T00:00:00Z", "time_coverage_end": "2024-01-31T23:59:59Z"},
+        )
+        da = source_ds["no2"]
+
+        meta = AggregationService().aggregate(
+            da, stat="mean", variable="no2", col_info=self.col_info, source_ds=source_ds,
+        ).meta
+
+        self.assertEqual(meta["start_date"], "2024-01-01")
+        self.assertEqual(meta["end_date"], "2024-01-31")
+        self.assertEqual(meta["granule_dates"], ["2024-01-01"])
+
+    def test_aggregate_meta_start_and_end_come_from_the_time_coordinate_when_present(self):
+        """The explicit meta start_date/end_date facts (new) must agree with
+        the granule_dates the time coordinate already produced -- attrs are a
+        fallback, never an override."""
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset(
+            {"no2": (("time", "lat", "lon"), [[[1.0]], [[2.0]]])},
+            coords={"time": ["2024-06-01", "2024-06-02"], "lat": [40.0], "lon": [-75.0]},
+            attrs={"cadence": "daily", "RangeBeginningDate": "1999-01-01", "RangeEndingDate": "1999-01-31"},
+        )
+
+        meta = AggregationService().aggregate(ds, stat="mean", variable="no2", col_info=self.col_info).meta
+
+        self.assertEqual(meta["start_date"], "2024-06-01")
+        self.assertEqual(meta["end_date"], "2024-06-02")
+        self.assertEqual(meta["granule_dates"], ["2024-06-01", "2024-06-02"])
+
+    def test_twelve_clustered_monthly_granules_are_not_labeled_annual(self):
+        """Finding #14: "Annual" is inferred from a granule *count* of 12, not
+        the date *span*. Twelve monthly-cadence granules clustered inside a
+        single month (reprocessed/overlapping) span days, not a year -- calling
+        that "Annual" is a false provenance claim. The label must reflect the
+        real span instead."""
+        from preprocessing.aggregation_service import AggregationService
+
+        clustered = [f"2024-01-{d:02d}" for d in range(1, 13)]  # 12 granules, 11-day span
+        da = self.xr.DataArray(
+            self.np.arange(12.0).reshape(12, 1, 1),
+            dims=("time", "lat", "lon"),
+            coords={"time": clustered, "lat": [40.0], "lon": [-75.0]},
+            name="no2",
+            attrs={"cadence": "monthly"},
+        )
+
+        meta = AggregationService().timeseries_aggregation_meta(
+            da, valid_indices=list(range(12)), stat="mean", time_dim="time", col_info=self.col_info,
+        )
+
+        self.assertNotIn("Annual", meta["aggregation_label"])
+        self.assertIn("2024-01-01 to 2024-01-12", meta["aggregation_label"])
+
+    def test_twelve_monthly_granules_spanning_a_year_are_labeled_annual(self):
+        """Finding #14 guard: a real year of monthly means (span ~a year) must
+        still read "Annual" -- the fix narrows the label to genuine spans, it
+        doesn't remove it."""
+        from preprocessing.aggregation_service import AggregationService
+
+        annual = [f"2023-{m:02d}-01" for m in range(6, 13)] + [f"2024-{m:02d}-01" for m in range(1, 6)]
+        da = self.xr.DataArray(
+            self.np.arange(12.0).reshape(12, 1, 1),
+            dims=("time", "lat", "lon"),
+            coords={"time": annual, "lat": [40.0], "lon": [-75.0]},
+            name="no2",
+            attrs={"cadence": "monthly"},
+        )
+
+        meta = AggregationService().timeseries_aggregation_meta(
+            da, valid_indices=list(range(12)), stat="mean", time_dim="time", col_info=self.col_info,
+        )
+
+        self.assertIn("Annual", meta["aggregation_label"])
+
     def test_to_dataarray_returns_the_single_data_var_with_no_choice_needed(self):
         from preprocessing.aggregation_service import AggregationService
 
@@ -224,25 +403,102 @@ class AggregationServiceTests(unittest.TestCase):
 
         self.assertEqual(da.name, "no2")
 
-    def test_to_dataarray_raises_a_candidate_listing_error_for_a_multi_var_file_with_no_choice(self):
-        """T25: the next(iter(data.data_vars)) silent-first-var fallback is
-        deleted -- MOD08_D3-style multi-variable files with no explicit
-        variable, and no retrieval-recorded choice, must refuse with a
-        structured error naming the candidates rather than guess."""
-        from earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED, MCPToolError
-        from preprocessing.aggregation_service import AggregationService
+    def test_to_dataarray_picks_the_science_var_over_plumbing_in_a_multi_var_file(self):
+        """T48: the VariableResolver replaces the old blanket refusal. A
+        MOD08_D3-style file pairs a geophysical field with plumbing
+        (Cloud_Fraction is a category-1 implementation variable) -- so instead
+        of refusing and dumping both, the resolver excludes the plumbing and
+        auto-picks the single populated science field. The choice rides out on
+        the returned array's resolution attrs."""
+        from preprocessing.aggregation_service import VARIABLE_RESOLUTION_ATTR, AggregationService
 
         ds = self.xr.Dataset({
-            "Cloud_Fraction": (("lat", "lon"), [[1.0]]),
-            "Aerosol_Optical_Depth": (("lat", "lon"), [[2.0]]),
+            "Cloud_Fraction": (("lat", "lon"), [[0.5]]),
+            "Aerosol_Optical_Depth": (("lat", "lon"), [[0.2]]),
         })
 
-        with self.assertRaises(MCPToolError) as ctx:
+        da = AggregationService().to_dataarray(ds)
+
+        self.assertEqual(da.name, "Aerosol_Optical_Depth")
+        facts = da.attrs[VARIABLE_RESOLUTION_ATTR]
+        self.assertEqual(facts["chosen"], "Aerosol_Optical_Depth")
+
+    def test_to_dataarray_resolves_a_wide_unregistered_mean_file_to_a_populated_field(self):
+        """P2 win (AERDA_D3_VIIRS_MODIS, dataset_a88593edb7246c9b): a
+        Yori-aggregated L3 merges to hundreds of ``group/Mean`` data_vars with
+        no registry default. The old tail refused with an unusable candidate
+        dump; the resolver now scores the Mean fields, drops empties, ranks, and
+        auto-picks a populated one -- a real map on the first try instead of a
+        refusal. The resolution facts (chosen + disclosure) ride out on attrs."""
+        from preprocessing.aggregation_service import VARIABLE_RESOLUTION_ATTR, AggregationService
+
+        data_vars = {
+            f"group_{i:03d}/Mean": (("lat", "lon"), [[float(i) / 100.0]], {"units": "1"})
+            for i in range(200)
+        }
+        ds = self.xr.Dataset(data_vars)
+
+        da = AggregationService().to_dataarray(ds)
+
+        self.assertEqual(da.attrs[VARIABLE_RESOLUTION_ATTR]["chosen"], da.name)
+        self.assertTrue(da.name.endswith("/Mean"))
+        # A wide distinct-product fork must disclose (never silently guess).
+        self.assertIsNotNone(da.attrs[VARIABLE_RESOLUTION_ATTR]["disclosure"])
+
+    def test_ambiguous_variable_error_is_bounded_for_a_pathologically_wide_unresolvable_file(self):
+        """P1 bound, still load-bearing for the files that genuinely refuse: a
+        wide file whose candidates carry no strong disambiguating signal (no
+        units, no Mean leaf, no CF metadata) is a real fork the resolver won't
+        guess -- it refuses. That refusal message must be bounded in size
+        regardless of candidate count: name a capped sample, disclose the true
+        total, and say how many are hidden -- an O(1) error, never the 20 KB
+        O(N) dump that drove the original context blowup."""
+        from earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED
+        from preprocessing.aggregation_service import AggregationService, VariableChoiceRequired
+
+        data_vars = {f"field_{i:03d}": (("lat", "lon"), [[float(i)]]) for i in range(200)}
+        ds = self.xr.Dataset(data_vars)
+
+        with self.assertRaises(VariableChoiceRequired) as ctx:
             AggregationService().to_dataarray(ds)
 
-        self.assertEqual(ctx.exception.category, CATEGORY_VARIABLE_CHOICE_REQUIRED)
-        self.assertIn("Cloud_Fraction", ctx.exception.message)
-        self.assertIn("Aerosol_Optical_Depth", ctx.exception.message)
+        # T49: the LLM-facing compact tool result the signal carries is still
+        # P1-bounded (the full, uncapped candidate list rides out-of-band to
+        # the picker instead of being re-fed to the model).
+        exc = ctx.exception.mcp_error
+        self.assertEqual(exc.category, CATEGORY_VARIABLE_CHOICE_REQUIRED)
+        # O(1) size: the whole point of P1 -- must not scale with 200 vars.
+        self.assertLess(len(exc.message), 4000)
+        self.assertLess(len(exc.to_tool_json()), 4000)
+        # Still honest about the true total and that candidates are hidden.
+        self.assertIn("200", exc.message)
+        self.assertIn("more", exc.message.lower())
+        # Still actionable: names at least a few real candidates.
+        self.assertIn("field_000", exc.message)
+
+    def test_ambiguous_variable_error_lists_all_candidates_when_few(self):
+        """Bounding must not truncate a small refusal: two weak, name-only
+        distinct products (no units, no Mean leaf) are a genuine fork the
+        resolver refuses -- and the refusal names both candidates in full (no
+        spurious 'and N more')."""
+        from preprocessing.aggregation_service import AggregationService, VariableChoiceRequired
+
+        ds = self.xr.Dataset({
+            "DT_AOD_550_AVG": (("lat", "lon"), [[0.1]]),
+            "COMBINE_AOD_550_AVG": (("lat", "lon"), [[0.3]]),
+        })
+
+        with self.assertRaises(VariableChoiceRequired) as ctx:
+            AggregationService().to_dataarray(ds)
+
+        msg = ctx.exception.mcp_error.message
+        self.assertIn("DT_AOD_550_AVG", msg)
+        self.assertIn("COMBINE_AOD_550_AVG", msg)
+        self.assertNotIn("more", msg.lower())
+        # The signal carries the resolver's full Resolution so the tool can
+        # build the (uncapped) picker from it.
+        names = {c.name for c in ctx.exception.resolution.candidates}
+        self.assertEqual(names, {"DT_AOD_550_AVG", "COMBINE_AOD_550_AVG"})
 
     def test_to_dataarray_resolves_a_registered_multi_var_file_to_its_pinned_primary_var(self):
         """AOD misrouting follow-up (2026-07-12): a registered collection's
@@ -269,8 +525,8 @@ class AggregationServiceTests(unittest.TestCase):
         """The primary_var tier is registry-gated: the same shape whose
         short_name matches no registered collection must still refuse, so the
         never-guess doctrine holds for genuinely unknown files."""
-        from earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED, MCPToolError
-        from preprocessing.aggregation_service import AggregationService
+        from earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED
+        from preprocessing.aggregation_service import AggregationService, VariableChoiceRequired
 
         ds = self.xr.Dataset({
             "DT_AOD_550_AVG": (("lat", "lon"), [[1.0]]),
@@ -278,10 +534,49 @@ class AggregationServiceTests(unittest.TestCase):
         })
         ds.attrs["ShortName"] = "NOT_A_REGISTERED_COLLECTION"
 
-        with self.assertRaises(MCPToolError) as ctx:
+        with self.assertRaises(VariableChoiceRequired) as ctx:
             AggregationService().to_dataarray(ds)
 
-        self.assertEqual(ctx.exception.category, CATEGORY_VARIABLE_CHOICE_REQUIRED)
+        self.assertEqual(ctx.exception.mcp_error.category, CATEGORY_VARIABLE_CHOICE_REQUIRED)
+
+    def test_aggregate_surfaces_the_variable_resolution_disclosure_in_meta(self):
+        """T48 disclosure plumbing: when aggregate() resolves an ambiguous
+        multi-product file itself (Dataset input), the resolver's chosen
+        variable and its disclosure must ride out in meta -- the channel the
+        tool layer copies into chart provenance and the dispatch layer appends
+        to the answer. A silent auto-pick of a genuine sensor fork would hide
+        the choice."""
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset({
+            "Terra_MODIS_DarkTarget_AOD_550/Mean": (
+                ("lat", "lon"), [[0.19, 0.2]], {"units": "1", "long_name": "Terra MODIS Dark Target AOD 550"},
+            ),
+            "Aqua_MODIS_DarkTarget_AOD_550/Mean": (
+                ("lat", "lon"), [[0.21, 0.22]], {"units": "1", "long_name": "Aqua MODIS Dark Target AOD 550"},
+            ),
+        })
+
+        meta = AggregationService().aggregate(ds, stat="mean").meta
+
+        self.assertIn("variable_resolution", meta)
+        self.assertEqual(meta["variable_resolution"]["chosen"], "Terra_MODIS_DarkTarget_AOD_550/Mean")
+        self.assertIsNotNone(meta["variable_resolution"]["disclosure"])
+        self.assertIn("Aqua MODIS Dark Target AOD 550", meta["variable_resolution"]["disclosure"])
+
+    def test_aggregate_omits_variable_resolution_when_no_resolver_choice_was_made(self):
+        """A single-variable file (or an explicit/registry pick) never runs the
+        resolver, so meta carries no variable_resolution -- no note to nag with."""
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset(
+            {"no2": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]])},
+            coords={"lat": [40.0, 41.0], "lon": [-75.0, -74.0]},
+        )
+
+        meta = AggregationService().aggregate(ds, stat="mean", variable="no2").meta
+
+        self.assertNotIn("variable_resolution", meta)
 
     def test_to_dataarray_explicit_variable_param_wins_on_a_multi_var_file(self):
         from preprocessing.aggregation_service import AggregationService
@@ -402,8 +697,8 @@ class AggregationServiceTests(unittest.TestCase):
         """Even when a real choice is still required (2+ science vars), the QA
         flag riding along is excluded from the candidate list -- offering
         main_data_quality_flag as a 'science variable' to pick would be wrong."""
-        from earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED, MCPToolError
-        from preprocessing.aggregation_service import AggregationService
+        from earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED
+        from preprocessing.aggregation_service import AggregationService, VariableChoiceRequired
 
         ds = self.xr.Dataset({
             "vertical_column_troposphere": (("lat", "lon"), [[1.0]]),
@@ -411,13 +706,18 @@ class AggregationServiceTests(unittest.TestCase):
             "main_data_quality_flag": (("lat", "lon"), [[0]]),
         })
 
-        with self.assertRaises(MCPToolError) as ctx:
+        with self.assertRaises(VariableChoiceRequired) as ctx:
             AggregationService().to_dataarray(ds)
 
-        self.assertEqual(ctx.exception.category, CATEGORY_VARIABLE_CHOICE_REQUIRED)
-        self.assertIn("vertical_column_troposphere", ctx.exception.message)
-        self.assertIn("vertical_column_stratosphere", ctx.exception.message)
-        self.assertNotIn("main_data_quality_flag", ctx.exception.message)
+        exc = ctx.exception.mcp_error
+        self.assertEqual(exc.category, CATEGORY_VARIABLE_CHOICE_REQUIRED)
+        self.assertIn("vertical_column_troposphere", exc.message)
+        self.assertIn("vertical_column_stratosphere", exc.message)
+        self.assertNotIn("main_data_quality_flag", exc.message)
+        # The QA flag is excluded from the picker candidates too, not just the
+        # bounded message.
+        cand_names = {c.name for c in ctx.exception.resolution.candidates}
+        self.assertNotIn("main_data_quality_flag", cand_names)
 
     def test_aggregate_recognizes_a_valid_time_dim_as_time(self):
         """T25: a MERRA-2-style `valid_time` dim (no CF standard_name, just
@@ -762,6 +1062,204 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertEqual(values[0, 0], 1.0)  # flag 0 -> known, not bad -> kept
         self.assertTrue(self.np.isnan(values[0, 1]))  # flag 2 -> bad -> masked
         self.assertTrue(self.np.isnan(values[0, 2]))  # flag NaN -> unknown -> masked
+
+    def test_apply_quality_mask_drops_flag_own_integer_fill_sentinel_pixels(self):
+        """The QA-flag variable's OWN fill sentinel must be honored before the
+        good/bad test. A flag stored as an undecoded integer sentinel (255)
+        that xarray never turned to NaN would otherwise satisfy
+        ``notnull() & ~isin(bad)`` and let its science pixel through as a real
+        'good' observation. Only the already-NaN-flag case was covered before."""
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset({
+            "hcho": (("lat", "lon"), self.np.array([[1.0, 2.0, 3.0]])),
+            # flag 0 = good, 2 = bad, 255 = fill sentinel (quality not computed),
+            # declared via the flag var's own _FillValue -- never decoded to NaN.
+            "qa": (("lat", "lon"), self.np.array([[0, 2, 255]], dtype="int16")),
+        })
+        ds["qa"].attrs["_FillValue"] = 255
+
+        masked = AggregationService().apply_quality_mask(
+            ds["hcho"], ds=ds, col_info={"quality_flag_var": "qa", "qa_bad_values": [2]},
+        )
+
+        values = masked.values
+        self.assertEqual(values[0, 0], 1.0)  # flag 0 -> good -> kept
+        self.assertTrue(self.np.isnan(values[0, 1]))  # flag 2 -> bad -> masked
+        self.assertTrue(self.np.isnan(values[0, 2]))  # flag 255 fill -> unknown -> masked
+
+    def test_apply_quality_mask_honors_a_combined_cf_valid_range_attr(self):
+        """CF allows ``valid_range: [min, max]`` INSTEAD of valid_min/
+        valid_max, and xarray does not apply it on decode — ignoring it meant
+        no range mask at all for products publishing only that spelling."""
+        from preprocessing.aggregation_service import AggregationService
+
+        da = self.xr.DataArray(
+            self.np.array([[-5.0, 1.0], [2.0, 150.0]]),
+            dims=("lat", "lon"),
+            attrs={"valid_range": [0.0, 100.0]},
+            name="aod",
+        )
+
+        masked = AggregationService().apply_quality_mask(da, col_info={})
+
+        values = masked.values
+        self.assertTrue(self.np.isnan(values[0, 0]))  # below valid_range min
+        self.assertEqual(values[0, 1], 1.0)
+        self.assertEqual(values[1, 0], 2.0)
+        self.assertTrue(self.np.isnan(values[1, 1]))  # above valid_range max
+
+    def test_explicit_valid_min_max_attrs_win_over_valid_range(self):
+        from preprocessing.aggregation_service import AggregationService
+
+        da = self.xr.DataArray(
+            self.np.array([[5.0, 15.0]]),
+            dims=("lat", "lon"),
+            attrs={"valid_min": 0.0, "valid_max": 10.0, "valid_range": [0.0, 100.0]},
+            name="aod",
+        )
+
+        masked = AggregationService().apply_quality_mask(da, col_info={})
+
+        self.assertEqual(masked.values[0, 0], 5.0)
+        self.assertTrue(self.np.isnan(masked.values[0, 1]))  # 15 > valid_max 10
+
+    def test_cadence_defaults_to_unknown_for_an_unregistered_collection(self):
+        """An off-registry product's cadence is a fact this backend does not
+        have. The old "daily" default stamped a false provenance claim ("12
+        daily granules" over a year of monthly means) and fed the period-
+        label heuristics wrong inputs — the honest answer is "unknown", and
+        the granule label says just "granules"."""
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset(
+            {
+                "some_unregistered_var": (
+                    ("time", "lat", "lon"),
+                    self.np.array([[[1.0, 2.0]], [[3.0, 4.0]]]),
+                )
+            },
+            coords={
+                "time": ["2024-01-01", "2024-02-01"],
+                "lat": [40.0],
+                "lon": [-75.0, -74.0],
+            },
+        )
+
+        result = AggregationService().aggregate(ds, stat="mean", variable="some_unregistered_var")
+
+        self.assertEqual(result.meta["cadence"], "unknown")
+        self.assertIn("2 granules", result.meta["aggregation_label"])
+        self.assertNotIn("daily", result.meta["aggregation_label"])
+
+    def test_cf_valid_range_from_packed_attrs_is_scaled_before_masking_decoded_data(self):
+        """A scaled int product publishes ``valid_range`` in PACKED units, but
+        xarray's mask_and_scale decode leaves that attr untouched while decoding
+        the DATA to physical units and moving scale_factor/add_offset into
+        ``.encoding``. Comparing the physical field against the packed bound
+        (``da <= 30000``) wipes the entire real field. The CF bound must be
+        scaled to physical space first, so only genuinely out-of-range cells
+        drop."""
+        from preprocessing.aggregation_service import AggregationService
+
+        # scale_factor 2e13, valid_range packed [0, 30000] -> physical [0, 6e17].
+        da = self.xr.DataArray(
+            self.np.array([[2.0e13, 4.0e13], [6.0e13, 1.0e18]]),  # already decoded (physical)
+            dims=("lat", "lon"),
+            name="scaled_no2",
+            attrs={"valid_range": [0, 30000]},
+        )
+        da.encoding["scale_factor"] = 2.0e13
+        da.encoding["add_offset"] = 0.0
+
+        result = AggregationService().aggregate(da, variable="scaled_no2")
+        values = result.ds["scaled_no2"].values
+
+        # The three in-range physical values survive (packed bound scaled up).
+        self.assertEqual(values[0, 0], 2.0e13)
+        self.assertEqual(values[0, 1], 4.0e13)
+        self.assertEqual(values[1, 0], 6.0e13)
+        # Only the genuinely-too-large cell (> 6e17 physical) is masked.
+        self.assertTrue(self.np.isnan(values[1, 1]))
+
+    def test_cf_valid_range_scales_via_source_ds_encoding_when_the_working_array_lost_it(self):
+        """The real plot/stat path masks geometry with ``.where()`` *before*
+        aggregate, and ``.where()`` strips ``.encoding`` off the working array —
+        so scale_factor is only still reachable through the unmasked opened
+        Dataset (source_ds). resolve_and_mask must read the encoding from there,
+        or a decoded scaled product is wiped exactly where users plot it."""
+        from preprocessing.aggregation_service import AggregationService
+
+        source = self.xr.Dataset(
+            {"scaled_no2": (
+                ("lat", "lon"),
+                self.np.array([[2.0e13, 4.0e13], [6.0e13, 1.0e18]]),
+                {"valid_range": [0, 30000]},  # packed -> physical [0, 6e17]
+            )},
+            coords={"lat": [10.0, 20.0], "lon": [-100.0, -90.0]},
+        )
+        source["scaled_no2"].encoding["scale_factor"] = 2.0e13
+        source["scaled_no2"].encoding["add_offset"] = 0.0
+
+        # The working array is a .where()-derived view: same values, but its
+        # own .encoding has been dropped.
+        working = source["scaled_no2"].where(source["scaled_no2"].notnull())
+        self.assertNotIn("scale_factor", working.encoding)
+
+        masked, _ = AggregationService().resolve_and_mask(working, source_ds=source)
+        values = masked.values
+
+        self.assertEqual(values[0, 0], 2.0e13)  # survives — bound scaled to physical
+        self.assertTrue(self.np.isnan(values[1, 1]))  # 1e18 > 6e17
+
+    def test_apply_quality_mask_scales_packed_cf_valid_range_from_da_attrs(self):
+        """The direct apply_quality_mask fallback (no resolved col_info) reads
+        ``valid_range`` straight off ``da.attrs`` — also packed. It must scale
+        those bounds by the encoding's scale/offset too, or a decoded scaled
+        product is wiped."""
+        from preprocessing.aggregation_service import AggregationService
+
+        da = self.xr.DataArray(
+            self.np.array([[2.0e13, 6.0e13], [1.0e18, 4.0e13]]),  # decoded/physical
+            dims=("y", "x"),
+            name="scaled_v",
+            attrs={"valid_range": [0, 30000]},  # packed -> physical [0, 6e17]
+        )
+        da.encoding["scale_factor"] = 2.0e13
+        da.encoding["add_offset"] = 0.0
+
+        masked = AggregationService().apply_quality_mask(da, col_info={})
+        values = masked.values
+
+        self.assertEqual(values[0, 0], 2.0e13)
+        self.assertEqual(values[0, 1], 6.0e13)
+        self.assertEqual(values[1, 1], 4.0e13)
+        self.assertTrue(self.np.isnan(values[1, 0]))  # 1e18 > 6e17 physical
+
+    def test_apply_quality_mask_does_not_scale_physical_col_info_bounds(self):
+        """A scaled product can still carry a curated *physical* valid range in
+        col_info (registry/UMM-Var). Those bounds are already in the decoded
+        field's units — scaling them by the encoding would be a double-apply
+        that wrongly nukes the field. col_info bounds are used verbatim."""
+        from preprocessing.aggregation_service import AggregationService
+
+        da = self.xr.DataArray(
+            self.np.array([[2.0e13, 6.0e13], [8.0e17, 4.0e13]]),  # decoded/physical
+            dims=("y", "x"),
+            name="scaled_v",
+        )
+        da.encoding["scale_factor"] = 2.0e13
+        da.encoding["add_offset"] = 0.0
+
+        masked = AggregationService().apply_quality_mask(
+            da, col_info={"valid_min": 0.0, "valid_max": 6.0e17},  # already physical
+        )
+        values = masked.values
+
+        self.assertEqual(values[0, 0], 2.0e13)
+        self.assertEqual(values[0, 1], 6.0e13)
+        self.assertEqual(values[1, 1], 4.0e13)
+        self.assertTrue(self.np.isnan(values[1, 0]))  # 8e17 > physical valid_max
 
 
 if __name__ == "__main__":

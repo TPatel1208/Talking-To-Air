@@ -171,14 +171,45 @@ def _has_metre_xy(obj: Any) -> bool:
     return _is_metre("x") and _is_metre("y")
 
 
+# Relative tolerance on a 1-D axis's step, as a fraction of the median step,
+# below which the axis counts as uniformly spaced. Real "uniform" grids carry
+# floating-point wobble (0.25° cells stored as binary floats jitter in the
+# ~1e-9 range); a genuinely non-uniform axis (a stretched gap, a concatenation
+# of two resolutions) is orders of magnitude past this. Picked against real
+# MERRA-2 / TEMPO L3 grids (T44).
+_GRID_STEP_REL_TOLERANCE = 1e-3
+
+
+def _is_uniform_1d(values: Any) -> bool:
+    """True if a 1-D coordinate array is uniformly spaced within
+    :data:`_GRID_STEP_REL_TOLERANCE` of its median step. Axes with fewer than
+    three points have at most one gap and are uniform by definition."""
+    import numpy as np
+
+    arr = np.asarray(values, dtype="float64").ravel()
+    if arr.size < 3:
+        return True
+    steps = np.diff(arr)
+    median = np.median(np.abs(steps))
+    if median == 0:
+        # A degenerate (all-equal) axis has no resolution to misplace; leave
+        # it to the caller's own len<2 / zero-resolution handling.
+        return True
+    return bool(np.max(np.abs(steps - np.median(steps))) <= _GRID_STEP_REL_TOLERANCE * median)
+
+
 def _grid_kind(obj: Any) -> str:
-    """Classify ``obj``'s horizontal grid: ``rectilinear`` (1-D lat/lon, the
-    supported case), ``curvilinear`` (2-D lat/lon swath), ``projected``
-    (x/y + CRS), or ``none`` (no recognizable horizontal coordinates)."""
+    """Classify ``obj``'s horizontal grid: ``rectilinear`` (1-D uniformly
+    spaced lat/lon, the supported case), ``irregular`` (1-D lat/lon whose
+    spacing varies — the affine mask would mis-place pixels), ``curvilinear``
+    (2-D lat/lon swath), ``projected`` (x/y + CRS), or ``none`` (no
+    recognizable horizontal coordinates)."""
     lat, lon = identify_lat(obj), identify_lon(obj)
     if lat is not None and lon is not None:
         if obj[lat].ndim <= 1 and obj[lon].ndim <= 1:
-            return "rectilinear"
+            if _is_uniform_1d(obj[lat].values) and _is_uniform_1d(obj[lon].values):
+                return "rectilinear"
+            return "irregular"
         return "curvilinear"
     if _projected_crs_name(obj) is not None or _has_metre_xy(obj):
         return "projected"
@@ -193,10 +224,18 @@ def ensure_supported_grid(obj: Any) -> None:
     recognizable coordinates — handled by the caller's own error) is a
     no-op."""
     kind = _grid_kind(obj)
-    if kind not in ("curvilinear", "projected"):
+    if kind not in ("curvilinear", "projected", "irregular"):
         return
     from earthdata_mcp.results import CATEGORY_UNSUPPORTED_GRID, MCPToolError
 
+    if kind == "irregular":
+        raise MCPToolError(
+            CATEGORY_UNSUPPORTED_GRID,
+            "This product is on a 1-D grid with non-uniform spacing; the mask "
+            "math assumes a single cell size, so lat/lon masking isn't supported "
+            "yet for it (a wrong-region mean would otherwise happen silently).",
+            suggestion="Try a product published on a regularly-spaced lat/lon grid.",
+        )
     if kind == "curvilinear":
         raise MCPToolError(
             CATEGORY_UNSUPPORTED_GRID,

@@ -252,11 +252,18 @@ class HandleVolume:
         self.root = pathlib.Path(root)
         self._factories: dict[str, tuple[str, Callable[[], Any]]] = {}
         self.rematerialize_calls: dict[str, int] = {}
+        self.export_calls: dict[str, int] = {}
+        # Handles with no entry here are *legacy* handles: materialized before
+        # upstream PRD 023, so their ready export carries no content_digest at
+        # all. That is the default on purpose — it keeps every pre-T54 test
+        # exercising T52's verify-first ordering unchanged.
+        self._delivered: dict[str, dict] = {}
 
     def _path(self, handle: str) -> pathlib.Path:
         media_type, _ = self._factories[handle]
         ext = {
             "zarr": ".zarr",
+            "application/zarr": ".zarr.zip",
             "parquet": ".parquet",
             "netcdf": ".nc",
             "application/netcdf-bundle+zip": ".nc.zip",
@@ -275,8 +282,27 @@ class HandleVolume:
     def _write(self, handle: str) -> None:
         media_type, factory = self._factories[handle]
         path = self._path(handle)
-        if media_type == "zarr":
+        if media_type == "netcdf" and callable(factory):
+            # add_hdf5: a raw writer for provider-native HDF5 layouts
+            # to_netcdf can't produce (e.g. GPM's scale-less datasets).
+            factory(str(path))
+        elif media_type == "zarr":
             factory().to_zarr(path, mode="w")
+        elif media_type == "application/zarr":
+            # Written exactly the way the MCP's transform tools serialize a
+            # derived cube (harmony-retrieval-mcp tools/_dataio.py
+            # _zarr_zip_bytes): a Zarr directory tree, consolidated=False,
+            # zipped file-by-file with store-relative arcnames.
+            import tempfile
+            import zipfile
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                store_dir = pathlib.Path(tmpdir) / "store"
+                factory().to_zarr(store_dir, mode="w", consolidated=False)
+                with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for member in sorted(store_dir.rglob("*")):
+                        if member.is_file():
+                            zf.write(member, member.relative_to(store_dir))
         elif media_type == "netcdf":
             self._write_netcdf_groups(path, factory)
         elif media_type == "application/netcdf-bundle+zip":
@@ -301,8 +327,23 @@ class HandleVolume:
         self._factories[handle] = ("zarr", make_dataset)
         self._write(handle)
 
+    def add_zarr_zip(self, handle: str, make_dataset: Callable[[], Any]) -> None:
+        """Register an ``application/zarr`` handle materialized as a *zipped*
+        Zarr store — the shape every MCP transform export (compare/regrid
+        cube.zarr.zip) arrives in, as opposed to add_zarr's directory store."""
+        self._factories[handle] = ("application/zarr", make_dataset)
+        self._write(handle)
+
     def add_parquet(self, handle: str, make_table: Callable[[], Any]) -> None:
         self._factories[handle] = ("parquet", make_table)
+        self._write(handle)
+
+    def add_hdf5(self, handle: str, write_file: Callable[[str], None]) -> None:
+        """Register a handle whose bytes ``write_file(path)`` lays down raw
+        (h5py-level control) — for provider-native HDF5 layouts to_netcdf
+        can't produce, e.g. GPM's dimension-scale-less datasets. Still
+        exported as media_type 'netcdf', exactly as the MCP reports them."""
+        self._factories[handle] = ("netcdf", write_file)
         self._write(handle)
 
     def add_netcdf(self, handle: str, groups: dict[str | None, Callable[[], Any]]) -> None:
@@ -345,7 +386,18 @@ class HandleVolume:
             shutil.rmtree(path)
         path.write_bytes(contents)
 
+    def set_delivered_content(self, handle: str, content_digest: str, *, partial: bool = False) -> None:
+        """Declare what the job behind ``handle`` actually delivered (PRD 023).
+
+        Calling this again with a different digest models real upstream drift —
+        a late-arriving NRT granule, an unpinned Harmony submit that picked a
+        different service chain, an OPeNDAP fallback on replay — all of which
+        leave the handle and its request spec identical while changing the
+        bytes."""
+        self._delivered[handle] = {"content_digest": content_digest, "partial": partial}
+
     async def export_result(self, handle: str, workspace_id: str = "default") -> dict:
+        self.export_calls[handle] = self.export_calls.get(handle, 0) + 1
         if handle not in self._factories:
             return {"handle": handle, "status": "not_found", "message": f"Unknown handle '{handle}'."}
         path = self._path(handle)
@@ -360,6 +412,9 @@ class HandleVolume:
             "media_type": media_type,
             "size_bytes": size,
             "rematerialize_hint": None,
+            # Absent, not null, for a handle with no record — exactly as the
+            # real export_result omits the field rather than fabricating one.
+            **self._delivered.get(handle, {}),
         }
 
     async def rematerialize(self, handle: str, workspace_id: str = "default") -> dict:
@@ -380,11 +435,64 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
-class FakeEarthdataMCPServer:
-    """Starts/stops a real FastMCP streamable-HTTP server in a background thread."""
+class InitializeCountingMiddleware:
+    """ASGI middleware that counts MCP ``initialize`` requests reaching the
+    server — i.e. how many distinct streamable-HTTP sessions were opened.
 
-    def __init__(self, mcp: FastMCP):
+    One session opened and reused for N tool calls hits ``initialize`` once;
+    the per-call-reconnect path (``get_tools()``, ``session=None``) hits it
+    once per ``ainvoke``. Buffers each HTTP request body, peeks for the
+    ``initialize`` method, then replays the untouched body downstream so the
+    real FastMCP handling is unaffected. Non-HTTP scopes (lifespan) pass
+    straight through."""
+
+    def __init__(self, app):
+        self.app = app
+        self.initialize_count = 0
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        chunks = []
+        more = True
+        while more:
+            message = await receive()
+            if message["type"] == "http.request":
+                chunks.append(message.get("body", b""))
+                more = message.get("more_body", False)
+            else:
+                more = False
+        body = b"".join(chunks)
+        # The JSON-RPC initialize request carries ``"method":"initialize"``;
+        # notifications/initialized is a different token ("initialized") and
+        # never matches the quoted value here.
+        if b'"initialize"' in body:
+            self.initialize_count += 1
+
+        replayed = False
+
+        async def _replay():
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return await receive()
+
+        await self.app(scope, _replay, send)
+
+
+class FakeEarthdataMCPServer:
+    """Starts/stops a real FastMCP streamable-HTTP server in a background thread.
+
+    ``app_wrapper`` (optional) wraps the built ASGI app before serving — used
+    by the session-reuse regression test to slip an
+    ``InitializeCountingMiddleware`` in front of the real FastMCP handling."""
+
+    def __init__(self, mcp: FastMCP, app_wrapper: Callable[[Any], Any] | None = None):
         self.mcp = mcp
+        self._app_wrapper = app_wrapper
         self.port = _free_port()
         self.url = f"http://127.0.0.1:{self.port}/mcp"
         self._server: uvicorn.Server | None = None
@@ -392,6 +500,8 @@ class FakeEarthdataMCPServer:
 
     def start(self, timeout: float = 5.0) -> None:
         app = self.mcp.http_app(path="/mcp")
+        if self._app_wrapper is not None:
+            app = self._app_wrapper(app)
         config = uvicorn.Config(app, host="127.0.0.1", port=self.port, log_level="warning", lifespan="on")
         self._server = uvicorn.Server(config)
 

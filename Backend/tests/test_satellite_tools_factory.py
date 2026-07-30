@@ -90,11 +90,14 @@ class SatelliteToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ref["type"], "map")
         self.assertEqual(ref["metadata"]["source_handles"], ["obs_1"])
 
-    async def test_plot_singular_refuses_a_multi_variable_file_with_no_choice(self):
-        """T25: the next(iter(data.data_vars)) fallback is deleted -- a
-        multi-variable file with no variable param, and no retrieval-
-        recorded choice, must refuse with a structured, candidate-listing
-        error instead of silently plotting whichever variable came first."""
+    async def test_plot_singular_resolves_a_multi_variable_file_to_the_science_var_over_plumbing(self):
+        """T48: the VariableResolver replaces the old blanket refusal. A
+        multi-variable file that pairs plumbing with a science field
+        (Cloud_Fraction is category-1 implementation) resolves end to end to
+        the populated geophysical variable instead of refusing and dumping both
+        -- so the researcher gets a real map on the first try. The old
+        next(iter(...)) silent-first-var fallback stays deleted; this is a
+        scored, deterministic pick, not the arbitrary first key."""
         import xarray as xr
 
         def make_dataset():
@@ -109,12 +112,12 @@ class SatelliteToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
         self.volume.add_zarr("obs_multivar", make_dataset)
 
         plot_singular = self._tool("plot_singular")
-        result = await plot_singular.ainvoke({"handle": "obs_multivar", "location": "global"})
+        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda payload: None):
+            result = await plot_singular.ainvoke({"handle": "obs_multivar", "location": "global"})
         payload = json.loads(result)
 
-        self.assertEqual(payload["error"]["category"], "variable_choice_required")
-        self.assertIn("Cloud_Fraction", payload["error"]["message"])
-        self.assertIn("Aerosol_Optical_Depth", payload["error"]["message"])
+        self.assertNotIn("error", payload)
+        self.assertEqual(payload["variable"], "Aerosol_Optical_Depth")
 
     async def test_plot_singular_explicit_variable_param_resolves_a_multi_variable_file(self):
         import xarray as xr
@@ -334,7 +337,13 @@ class SatelliteToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(result)
 
         self.assertNotIn("error", payload)
-        self.assertEqual(payload["mean"], 2.5)
+        # The regional mean is cos(latitude) area-weighted: rows at lat=10
+        # ([1,2]) and lat=20 ([3,4]).
+        import math
+
+        w10, w20 = math.cos(math.radians(10.0)), math.cos(math.radians(20.0))
+        expected_mean = ((1.0 + 2.0) * w10 + (3.0 + 4.0) * w20) / (2 * (w10 + w20))
+        self.assertAlmostEqual(payload["mean"], expected_mean)
         self.assertEqual(payload["max"], 4.0)
         self.assertEqual(payload["source_handles"], ["obs_stat"])
 
@@ -394,6 +403,9 @@ class SatelliteToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_factory_registers_the_t20_point_timeseries_composite(self):
         self.assertIsNotNone(self._tool("point_timeseries"))
+
+    async def test_factory_registers_the_t36_p3_explain_measurement_composite(self):
+        self.assertIsNotNone(self._tool("explain_measurement"))
 
 
 if __name__ == "__main__":

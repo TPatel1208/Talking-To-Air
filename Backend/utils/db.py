@@ -141,10 +141,10 @@ async def get_checkpointer() -> AsyncPostgresSaver:
     """
     Build and return an AsyncPostgresSaver for use as a LangGraph checkpointer.
 
-    Uses a dedicated one-connection async pool instead of retaining a raw
-    PostgreSQL connection. The pool owns reconnection behavior after transient
-    database failures and prevents a stale module-level connection from
-    permanently breaking checkpoint persistence.
+    Uses a dedicated small async pool instead of retaining a raw PostgreSQL
+    connection. The pool owns reconnection behavior after transient database
+    failures and prevents a stale module-level connection from permanently
+    breaking checkpoint persistence.
 
     The supervisor should call this once and share the returned instance with
     both sub-agents to avoid multiple connections racing on the same tables.
@@ -159,15 +159,22 @@ async def get_checkpointer() -> AsyncPostgresSaver:
         _checkpointer = None
 
     if _checkpointer_pool is None:
+        # max_size > 1: every concurrent conversation's checkpoint reads and
+        # writes (plus the history endpoint) go through this pool — a
+        # single-connection pool serialized all of them, so one slow query
+        # stalled every chat in the app at once. AsyncPostgresSaver is safe
+        # over a multi-connection pool (each operation checks out its own
+        # connection; setup() already ran its migrations by the time
+        # concurrent traffic arrives).
         _checkpointer_pool = AsyncConnectionPool(
             kwargs={**_db_config(), "autocommit": True, "row_factory": dict_row},
             min_size=1,
-            max_size=1,
+            max_size=4,
             open=False,
             check=AsyncConnectionPool.check_connection,
         )
         await _checkpointer_pool.open()
-        logger.info("checkpointer_pool_initialized", extra={"_min_size": 1, "_max_size": 1})
+        logger.info("checkpointer_pool_initialized", extra={"_min_size": 1, "_max_size": 4})
 
     # Use a local variable so a failed setup() never caches a broken instance.
     # Assigning to _checkpointer only after setup() succeeds means a subsequent

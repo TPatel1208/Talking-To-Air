@@ -1,0 +1,41 @@
+{
+  "registry_key": "TROPOMI_NO2",
+  "collection_id": "C3087325222-GES_DISC",
+  "short_name": "HAQ_TROPOMI_NO2_GLOBAL_M_L3",
+  "source": "describe_dataset detail=True",
+  "primary_var": "Tropospheric_NO2",
+  "quality_flag_var": null,
+  "groups": [],
+  "variables": [
+    {
+      "name": "Latitude",
+      "long_name": "latitude, center of the grid cell",
+      "units": "degrees_north",
+      "standard_name": "latitude"
+    },
+    {
+      "name": "Longitude",
+      "long_name": "longitude, center of the grid cell",
+      "units": "degrees_east",
+      "standard_name": "longitude"
+    },
+    {
+      "name": "Number_obs",
+      "long_name": "number of valid pixels used for the average",
+      "units": "count",
+      "standard_name": "number_of_observations"
+    },
+    {
+      "name": "Tropospheric_NO2",
+      "long_name": "Tropospheric vertical column NO2 density",
+      "units": "molec cm-2",
+      "standard_name": "troposphere_mole_content_of_nitrogen_dioxide"
+    }
+  ],
+  "expected_roles": {
+    "Latitude": "context",
+    "Longitude": "context",
+    "Number_obs": "quality",
+    "Tropospheric_NO2": "science"
+  }
+}

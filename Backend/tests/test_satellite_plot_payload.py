@@ -31,11 +31,19 @@ class SatellitePlotPayloadTests(unittest.TestCase):
             },
         )
 
-        masked = mask_data_by_geometry(da, box(-99.5, 30.5, -96.5, 32.5))
+        geometry = box(-99.5, 30.5, -96.5, 32.5)
+        masked = mask_data_by_geometry(da, geometry)
+        uncropped = mask_data_by_geometry(da, geometry, crop=False)
 
         self.assertEqual(masked.dims, ("time", "Longitude", "Latitude"))
         self.assertTrue(np.isfinite(masked.values).any())
-        self.assertTrue(np.isnan(masked.values).any())
+        # Cells outside the geometry are gone -- dropped by the T50 crop where
+        # they used to survive as NaN. Same kept values either way.
+        self.assertLess(masked.size, da.size)
+        np.testing.assert_array_equal(
+            np.sort(masked.values[np.isfinite(masked.values)]),
+            np.sort(uncropped.values[np.isfinite(uncropped.values)]),
+        )
 
     def test_payload_preserves_sparse_valid_points(self):
         import numpy as np
@@ -110,7 +118,12 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         self.assertEqual(payload["colormap"]["name"], resolve("NO2", diverging=True).name)
         self.assertEqual(payload["colormap"]["name"], "RdBu_r")
 
-    def test_payload_attaches_overlay_bounds_from_the_full_resolution_extent(self):
+    def test_payload_attaches_edge_extended_overlay_bounds_matching_the_rendered_png(self):
+        # overlay.bounds must describe the raster's pixel-EDGE extent, because
+        # render_overlay_png rasterizes edge-to-edge (left = lons[0] - res/2,
+        # etc.). Reporting the pixel-CENTER min/max instead pins an edge-to-edge
+        # PNG onto center-to-center bounds, displacing every pixel up to half a
+        # cell on coarse grids and pushing edge rows outside the declared box.
         import numpy as np
         import xarray as xr
         from tools.satellite_tools.plot_tools import _da_to_heatmap_payload
@@ -123,7 +136,14 @@ class SatellitePlotPayloadTests(unittest.TestCase):
 
         payload = _da_to_heatmap_payload(da, "Extent", "NO2", "mol/m^2")
 
-        self.assertEqual(payload["overlay"]["bounds"], [-100.0, 10.0, -90.0, 20.0])
+        # lat step 5 -> half-cell 2.5 -> [7.5, 22.5]; lon step 10/3 -> half-cell
+        # 5/3 -> [-101.6667, -88.3333]. These are render_overlay_png's own
+        # left/bottom/right/top for this grid.
+        minx, miny, maxx, maxy = payload["overlay"]["bounds"]
+        self.assertAlmostEqual(minx, -100.0 - 5.0 / 3.0)
+        self.assertAlmostEqual(miny, 7.5)
+        self.assertAlmostEqual(maxx, -90.0 + 5.0 / 3.0)
+        self.assertAlmostEqual(maxy, 22.5)
         self.assertNotIn("_path", payload["overlay"])
 
     def test_value_range_override_drives_both_reported_bounds_and_overlay_colorization(self):
@@ -157,6 +177,65 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         pixel = tuple((decoded[center[0], center[1]] * 255).round().astype(int))
         expected = tuple(resolve("NO2").lut[128])  # 5.0 is the midpoint of [0, 10]
         self.assertEqual(pixel, expected)
+
+    def test_percentile_derived_bounds_stamp_a_percentile_scale_the_legend_can_disclose(self):
+        import numpy as np
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import _da_to_heatmap_payload
+
+        da = xr.DataArray(
+            np.linspace(0.0, 1.0, 12).reshape(3, 4),
+            dims=("lat", "lon"),
+            coords={"lat": np.linspace(10, 20, 3), "lon": np.linspace(-100, -90, 4)},
+        )
+
+        payload = _da_to_heatmap_payload(da, "Auto", "NO2", "mol/m^2")
+
+        # The vmin/vmax came from the 2nd–98th percentile clip -> the legend
+        # can honestly say the extremes are saturated.
+        self.assertEqual(payload["scale"], {"method": "percentile", "p": [2, 98]})
+
+    def test_explicit_value_range_stamps_an_explicit_scale(self):
+        import numpy as np
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import _da_to_heatmap_payload
+
+        da = xr.DataArray(
+            np.full((6, 8), 5.0),
+            dims=("lat", "lon"),
+            coords={"lat": np.linspace(10, 20, 6), "lon": np.linspace(-100, -90, 8)},
+        )
+
+        # A truly fixed range with no disclosure of how it was derived is not a
+        # clip of this array -> no clip disclosure.
+        payload = _da_to_heatmap_payload(da, "Shared", "NO2", "mol/m^2", value_range=(0.0, 10.0))
+
+        self.assertEqual(payload["scale"], {"method": "explicit"})
+
+    def test_value_range_with_a_scale_disclosure_stamps_that_disclosure_not_explicit(self):
+        import numpy as np
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import _da_to_heatmap_payload
+
+        da = xr.DataArray(
+            np.full((6, 8), 5.0),
+            dims=("lat", "lon"),
+            coords={"lat": np.linspace(10, 20, 6), "lon": np.linspace(-100, -90, 8)},
+        )
+
+        # A comparison caller imposes a shared/diverging range that IS a
+        # percentile clip (just computed across panels). Passing the method
+        # through keeps the legend's saturation warning honest instead of
+        # collapsing every imposed range to "explicit" (nothing to disclose).
+        payload = _da_to_heatmap_payload(
+            da, "Comparison panel", "NO2", "mol/m^2", value_range=(0.0, 10.0),
+            scale_disclosure={"method": "percentile", "p": [2, 98]},
+        )
+
+        self.assertEqual(payload["scale"], {"method": "percentile", "p": [2, 98]})
+        # The imposed range is still what colorizes the map.
+        self.assertEqual(payload["vmin"], 0.0)
+        self.assertEqual(payload["vmax"], 10.0)
 
     def test_render_overlay_true_persists_a_png_and_records_its_path(self):
         import os
@@ -283,6 +362,67 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         qa_methodology = payload["provenance"]["qa_methodology"]
         self.assertEqual(qa_methodology["quality_flag_var"], "main_data_quality_flag")
         self.assertEqual(qa_methodology["qa_good_values"], [0])
+
+    def test_provenance_stamps_delivered_scope_from_the_plotted_data(self):
+        """T46: the scope actually delivered — region, the data's own date
+        span, and cadence — travels in provenance so the disclosure layer (and
+        the Metadata tab) can compare it against what was requested."""
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import _attach_reproducibility
+
+        da = xr.DataArray(
+            [[1.0]],
+            dims=("lat", "lon"),
+            coords={"lat": [40.0], "lon": [-74.0], "time": "2024-07-01T00:00:00Z"},
+            name="TEMPO_NO2",
+            attrs={"units": "mol/m^2"},
+        )
+        agg_meta = {
+            "aggregation_label": "monthly mean",
+            "n_granules": 1,
+            "cadence": "monthly",
+            "granule_dates": ["2024-07-01"],
+        }
+
+        payload = _attach_reproducibility(
+            {"type": "heatmap", "title": "TEMPO over CA"},
+            ["obs_1"], da, "California", "monthly mean",
+            agg_meta=agg_meta, region={"bounds": [-124.0, 32.0, -114.0, 42.0]},
+        )
+
+        delivered = payload["provenance"]["delivered_scope"]
+        self.assertEqual(delivered["region_name"], "California")
+        self.assertEqual(delivered["cadence"], "monthly")
+        self.assertTrue(delivered["start_date"].startswith("2024-07-01"))
+
+    def test_provenance_stamps_requested_scope_recorded_for_the_handle(self):
+        """T46: the requested scope the composite recorded against this handle
+        is echoed back into provenance, so a single-day request answered by a
+        monthly mean is disclosable end-to-end."""
+        import xarray as xr
+        from services import scope_registry
+        from tools.satellite_tools.plot_tools import _attach_reproducibility
+
+        scope_registry.record_pending("job_x", {"location": "California", "time_range": "2024-07-15/2024-07-15"})
+        scope_registry.finalize("job_x", "obs_scope_1")
+
+        da = xr.DataArray(
+            [[1.0]],
+            dims=("lat", "lon"),
+            coords={"lat": [40.0], "lon": [-74.0], "time": "2024-07-01T00:00:00Z"},
+            name="TEMPO_NO2",
+            attrs={"units": "mol/m^2"},
+        )
+
+        payload = _attach_reproducibility(
+            {"type": "heatmap", "title": "TEMPO over CA"},
+            ["obs_scope_1"], da, "California", "monthly mean",
+            region={"bounds": [-124.0, 32.0, -114.0, 42.0]},
+        )
+
+        requested = payload["provenance"]["requested_scope"]
+        self.assertEqual(requested["location"], "California")
+        self.assertEqual(requested["time_range"], "2024-07-15/2024-07-15")
 
     def test_provenance_missing_dataset_facts_render_as_empty_not_error(self):
         """No col_info at all (unregistered collection) must not raise --
@@ -501,6 +641,73 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         result = json.loads(_save_chart({"type": "error"}, "n/a"))
 
         self.assertNotIn("_artifact_refs", result)
+
+    @staticmethod
+    def _reduced_2d_da():
+        """A time-less 2D DataArray, shaped like what reaches _provenance/
+        _query_definition after aggregation collapsed (or the granule never
+        had) the time dimension."""
+        import numpy as np
+        import xarray as xr
+
+        return xr.DataArray(
+            np.ones((2, 2)),
+            dims=("lat", "lon"),
+            coords={"lat": [40.0, 41.0], "lon": [-75.0, -74.0]},
+            name="no2",
+            attrs={"units": "molec cm-2"},
+        )
+
+    def test_provenance_dates_fall_back_to_aggregation_meta_for_a_timeless_reduced_array(self):
+        """Regression: the Metadata tab showed "Date Range: Not available" for
+        every aggregated map -- _provenance derived start/end from the
+        *reduced* array (time dim already collapsed), and monthly L3 granules
+        never had a time coordinate at all. The aggregation meta now carries
+        the range; provenance must use it."""
+        from tools.satellite_tools.plot_tools import _provenance
+
+        agg_meta = {
+            "aggregation_label": "Single Snapshot Mean, 1 monthly granule, 2024-01-01 to 2024-01-31",
+            "title_suffix": "Single Snapshot Mean (2024, 1 monthly granule)",
+            "granule_dates": ["2024-01-01"],
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-31",
+            "n_granules": 1,
+            "cadence": "monthly",
+            "stat": "mean",
+        }
+
+        provenance = _provenance(["obs_x"], self._reduced_2d_da(), "Houston", "mean", agg_meta)
+
+        self.assertEqual(provenance["start_date"], "2024-01-01")
+        self.assertEqual(provenance["end_date"], "2024-01-31")
+        self.assertEqual(provenance["granule_dates"], ["2024-01-01"])
+
+    def test_query_definition_dates_fall_back_to_aggregation_meta(self):
+        from tools.satellite_tools.plot_tools import _query_definition
+
+        agg_meta = {"start_date": "2024-01-01", "end_date": "2024-01-31", "granule_dates": ["2024-01-01"]}
+
+        query = _query_definition(self._reduced_2d_da(), None, "mean", agg_meta=agg_meta)
+
+        self.assertEqual(query["start_date"], "2024-01-01")
+        self.assertEqual(query["end_date"], "2024-01-31")
+
+    def test_time_range_prefers_the_time_coordinate_over_aggregation_meta(self):
+        import numpy as np
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import _time_range
+
+        da = xr.DataArray(
+            np.ones((2, 1, 1)),
+            dims=("time", "lat", "lon"),
+            coords={"time": ["2024-06-01", "2024-06-02"], "lat": [40.0], "lon": [-75.0]},
+        )
+
+        start, end = _time_range(da, {"start_date": "1999-01-01", "end_date": "1999-01-31"})
+
+        self.assertEqual(start, "2024-06-01")
+        self.assertEqual(end, "2024-06-02")
 
 
 if __name__ == "__main__":

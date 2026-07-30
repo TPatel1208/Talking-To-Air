@@ -22,6 +22,7 @@ services:
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ./sql/init_agent_charts.sql:/docker-entrypoint-initdb.d/01_agent_charts.sql:ro
+      - ./sql/init_agent_artifacts.sql:/docker-entrypoint-initdb.d/02_agent_artifacts.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d talking_to_air_memory"]
       interval: 10s
@@ -53,6 +54,14 @@ services:
       # overlay while its chart payload persists in Postgres, and the map
       # silently degrades to the canvas fallback ("quality lowered on restart").
       - overlay_store:/app/overlay_store
+      # T52 Zarr cube cache — the open pipeline's output, keyed so it self-
+      # invalidates. Backend-only and read-write, same posture as
+      # overlay_store. Deliberately NOT a tempdir: a cube costs minutes to
+      # build and this image is rebuilt constantly, so a tempdir store would
+      # be empty every time you looked and would read as "the cache doesn't
+      # help" rather than as a missing volume. Bounded by CUBE_STORE_MAX_BYTES,
+      # not by free space.
+      - cube_store:/app/cube_store
       # earthdata-retrieval MCP's materialization volume, read-only, mounted
       # at the same absolute path (/data) the MCP stack uses internally so
       # `export_result`'s file:// URIs resolve as a plain filesystem read.
@@ -90,10 +99,11 @@ services:
       DB_USER: "postgres"
       DB_PASSWORD: "test"
     volumes:
-      # test_chart_repository.py's schema-contract test reads this file
-      # straight off disk; it lives at the repo root so it's outside the
-      # ./Backend build context and must be bind-mounted in.
+      # test_chart_repository.py's / test_artifact_repository.py's schema-contract
+      # tests read these files straight off disk; they live at the repo root so
+      # they're outside the ./Backend build context and must be bind-mounted in.
       - ./sql/init_agent_charts.sql:/sql/init_agent_charts.sql:ro
+      - ./sql/init_agent_artifacts.sql:/sql/init_agent_artifacts.sql:ro
       # test_overlay_store_persistence.py asserts the deployment persists the
       # overlay store; the compose file is likewise outside the build context.
       - ./docker-compose.yml:/compose/docker-compose.yml:ro
@@ -147,6 +157,8 @@ volumes:
   plot_outputs:
     driver: local
   overlay_store:
+    driver: local
+  cube_store:
     driver: local
   # Owned by the harmony-retrieval-mcp stack (its `data` volume, fixed name
   # `earthdata_data`); joined here as external, read-only, so this stack is
