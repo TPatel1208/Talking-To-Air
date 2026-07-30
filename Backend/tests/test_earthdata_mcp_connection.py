@@ -265,7 +265,6 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
         from earthdata_mcp.client import EarthdataMCPUnavailableError, HeldSession
         from earthdata_mcp.connection import (
             EarthdataMCPConnectionManager,
-            STATE_READY,
             STATE_UNAVAILABLE,
         )
 
@@ -294,14 +293,32 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
 
         manager.start()
         try:
-            await asyncio.wait_for(_wait_for_state(manager, STATE_READY), timeout=1)
-            # The held probe fails -> the manager demotes, even though the fresh
-            # probe never failed. That is the whole fix.
+            # Wait for the SETTLED state, never the transient one. The held probe
+            # fails on the very first heartbeat and the threshold is 1, so READY
+            # exists only for as long as one heartbeat takes — and with
+            # ``_yielding_sleep`` (asyncio.sleep(0)) that can be a single
+            # scheduler pass, far inside ``_wait_for_state``'s 10ms poll
+            # interval. Polling for READY here was therefore a race the test
+            # merely usually won; CI lost it, finding the manager already
+            # UNAVAILABLE on the first sample and waiting out the timeout for a
+            # READY that never returns (the scope stays down by design).
+            # UNAVAILABLE is stable, so waiting for it is deterministic.
             await asyncio.wait_for(_wait_for_state(manager, STATE_UNAVAILABLE), timeout=1)
         finally:
             await manager.stop()
 
+        # The held probe fails -> the manager demotes, even though the fresh
+        # probe never failed. That is the whole fix.
         self.assertGreaterEqual(held_probe_calls["n"], 1, "heartbeat never probed the held session")
+        # ...and it demoted *from* a live held session rather than never
+        # connecting at all: the second scope call only happens on the
+        # post-demotion reconnect. Without this, the UNAVAILABLE wait above could
+        # be satisfied by a failed first connect and the test would pass
+        # vacuously — which is the one thing dropping the READY wait could have
+        # cost, so it is asserted directly instead.
+        self.assertGreaterEqual(
+            scope_calls["n"], 2, "manager never reached ready, so nothing was demoted"
+        )
 
     async def test_detects_a_later_outage_and_recovers_without_a_restart(self):
         # T17 story #5/#6: the manager must keep watching after boot — a
