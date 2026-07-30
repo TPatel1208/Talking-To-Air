@@ -11,6 +11,8 @@ TESTS_DIR = os.path.dirname(__file__)
 if TESTS_DIR not in sys.path:
     sys.path.insert(0, TESTS_DIR)
 
+from cache_isolation import ProcessCacheIsolation  # noqa: E402
+
 REQUIRED_MODULES = ["langchain_mcp_adapters", "fastmcp", "uvicorn"]
 
 
@@ -18,7 +20,7 @@ REQUIRED_MODULES = ["langchain_mcp_adapters", "fastmcp", "uvicorn"]
     any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
     "MCP client test dependencies are not installed",
 )
-class WorkspaceBindingTests(unittest.IsolatedAsyncioTestCase):
+class WorkspaceBindingTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
 
@@ -220,7 +222,7 @@ class WorkspaceBindingClassifiedErrorTests(unittest.IsolatedAsyncioTestCase):
     any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
     "MCP client test dependencies are not installed",
 )
-class WorkspaceMissingUserContextTests(unittest.IsolatedAsyncioTestCase):
+class WorkspaceMissingUserContextTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCase):
     """T26: a None user id must never mint a shared "user-None" workspace —
     that pooled every caller's retrievals together (113 orphaned rows found
     live). bind_workspace refuses instead, raising a typed error the model

@@ -13,6 +13,8 @@ TESTS_DIR = os.path.dirname(__file__)
 if TESTS_DIR not in sys.path:
     sys.path.insert(0, TESTS_DIR)
 
+from cache_isolation import ProcessCacheIsolation  # noqa: E402
+
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
 
 REQUIRED_MODULES = ["fastapi", "httpx", "jwt", "bcrypt", "langchain_mcp_adapters", "fastmcp", "uvicorn"]
@@ -22,7 +24,7 @@ REQUIRED_MODULES = ["fastapi", "httpx", "jwt", "bcrypt", "langchain_mcp_adapters
     any(importlib.util.find_spec(m) is None for m in REQUIRED_MODULES),
     "discovery endpoint test dependencies are not installed",
 )
-class DiscoveryEndpointTests(unittest.IsolatedAsyncioTestCase):
+class DiscoveryEndpointTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         import httpx
         import api

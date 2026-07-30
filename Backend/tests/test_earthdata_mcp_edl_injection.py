@@ -27,6 +27,8 @@ TESTS_DIR = os.path.dirname(__file__)
 if TESTS_DIR not in sys.path:
     sys.path.insert(0, TESTS_DIR)
 
+from cache_isolation import ProcessCacheIsolation  # noqa: E402
+
 REQUIRED_MODULES = ["langchain_mcp_adapters", "fastmcp", "uvicorn"]
 
 
@@ -76,7 +78,7 @@ def _build_mcp_with_edl_advertising_search(handler):
     any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
     "MCP client test dependencies are not installed",
 )
-class EdlTokenInjectionMatrixTests(unittest.IsolatedAsyncioTestCase):
+class EdlTokenInjectionMatrixTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from fake_earthdata_mcp import FakeEarthdataMCPServer
 
@@ -185,7 +187,7 @@ class EdlTokenInjectionMatrixTests(unittest.IsolatedAsyncioTestCase):
     any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
     "MCP client test dependencies are not installed",
 )
-class EdlTokenErrorClassificationTests(unittest.IsolatedAsyncioTestCase):
+class EdlTokenErrorClassificationTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCase):
     """PRD-022 (soft dependency): the three per-user credential error
     classes route through the existing structured-error pipeline
     (earthdata_mcp/results.py's category-generic _classify_dict) with fixed,

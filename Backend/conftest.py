@@ -45,15 +45,30 @@ _wire_proj_data()
 
 
 @pytest.fixture(autouse=True)
-def _isolate_tool_cache():
-    """T53's discovery-metadata cache is process-global by design, so without
-    this one test's ``search_datasets(query="no2")`` would be served to the
-    next test's identical call and its handler would never run — a shared-state
-    leak, not a behavior change. Cleared between tests so every test still
-    starts on a cold cache, exactly as it did before T53.
-    """
-    from earthdata_mcp.tool_cache import clear_tool_cache
+def _isolate_process_caches():
+    """Blanket cache isolation, for pytest.
 
-    clear_tool_cache()
+    T53's discovery-metadata cache is process-global by design, so without this
+    one test's ``search_datasets(query="no2")`` would be served to the next
+    test's identical call and its handler would never run — a shared-state leak,
+    not a behavior change.
+
+    The *policy* — which caches are process-global and therefore leak — lives in
+    ``tests/cache_isolation.py``, not here, because this file is pytest-only and
+    the leak is not: ``unittest`` never loads a conftest, so CI's
+    ``unittest discover`` ran without this fixture and four tests failed on state
+    earlier ones had left. Anything that must hold under every runner cannot live
+    in this file. This fixture is now just pytest's adapter onto the shared
+    policy; a ``TestCase`` gets the same guarantee runner-independently by mixing
+    in ``cache_isolation.ProcessCacheIsolation``.
+    """
+    import sys
+
+    tests_dir = os.path.join(os.path.dirname(__file__), "tests")
+    if tests_dir not in sys.path:
+        sys.path.insert(0, tests_dir)
+    from cache_isolation import clear_process_caches
+
+    clear_process_caches()
     yield
-    clear_tool_cache()
+    clear_process_caches()
