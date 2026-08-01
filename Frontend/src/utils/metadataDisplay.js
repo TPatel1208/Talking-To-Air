@@ -7,6 +7,8 @@
  * is unit-testable without a React render harness (this repo's frontend
  * test runner is plain `node --test`, no jsdom/RTL).
  */
+import { resolveMasking, formatQaPassRate } from './maskingProvenance.js'
+
 export const NOT_AVAILABLE = 'Not available'
 
 // Missing metadata is disclosed, not hidden (T32): every field a section
@@ -132,7 +134,27 @@ export function qaMethodologyFields(chart) {
     qaBadValues: methodology.qa_bad_values ?? null,
     fillValueSource: masking.fill_value_source ?? null,
     validRangeSource: masking.valid_range_source ?? null,
+    // T55: what those settings actually did to this data. The realized rate
+    // belongs beside the rule that produced it -- this block is what gets
+    // copied out of the Metadata tab, and a QA rule without its outcome is
+    // half the story.
+    qaPassRate: qaPassRateSummary(chart),
+    qaPassRateBasis: masking.qa_pass_rate_basis ?? null,
   }
+}
+
+// "75.3% (11,298 of 15,000 checked pixels)" -- the percentage never travels
+// without the denominator it was computed over, so it can't be mistaken for
+// the Statistics tab's "Valid values %", which answers the different question
+// "did we get data at all".
+function qaPassRateSummary(chart) {
+  const resolved = resolveMasking(chart)
+  const pct = formatQaPassRate(resolved)
+  if (pct === null) return null
+  const { qaPassingPixels: passing, qaCheckedPixels: checked } = resolved
+  if (passing == null || checked == null) return pct
+  const count = value => value.toLocaleString('en-US')
+  return `${pct} (${count(passing)} of ${count(checked)} checked pixels)`
 }
 
 export function variableDefinitionFields(chart) {

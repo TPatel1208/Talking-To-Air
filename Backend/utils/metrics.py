@@ -101,7 +101,13 @@ PIPELINE_PHASE_DURATION_SECONDS = Histogram(
 # narration contract the frontend's workflow strip and the eval's stage-
 # sequence assertions key off, and its ``stage_reached`` events carry
 # *cumulative* elapsed since turn start rather than a phase's own span.
-PIPELINE_PHASES = ("export", "extract", "open", "crop", "mask", "aggregate", "render")
+PIPELINE_PHASES = (
+    "export", "extract", "open", "crop", "mask", "aggregate", "render",
+    # T55: the QA pass-rate counting inside the masking path. Its own phase,
+    # not folded into "mask", because it adds an eager reduction to a
+    # lazily-opened bundle and what it costs is exactly what must stay visible.
+    "qa_pass_rate",
+)
 
 _PROMETHEUS_COUNTER_ALIASES = {
     "harmony_jobs_timed_out": HARMONY_TIMEOUTS_TOTAL,

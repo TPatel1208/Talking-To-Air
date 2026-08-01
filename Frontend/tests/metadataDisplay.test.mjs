@@ -245,13 +245,34 @@ test('qaMethodologyFields reads the pinned registry rule and the fill/valid-rang
     qaBadValues: null,
     fillValueSource: 'collections_yaml',
     validRangeSource: 'collections_yaml',
+    qaPassRate: null,
+    qaPassRateBasis: null,
   })
+})
+
+// T55: the realized pass rate is the OUTCOME of exactly the settings this
+// block lists, and this block is what gets copied out of the Metadata tab --
+// so the settings and what they did to the data travel together.
+test('qaMethodologyFields carries the realized pass rate and its stated basis', () => {
+  const chart = fixtureChart({
+    masking: {
+      qa_status: 'verified',
+      qa_pass_rate: 0.7532,
+      qa_checked_pixels: 15000,
+      qa_passing_pixels: 11298,
+      qa_pass_rate_basis: 'cos(latitude)-weighted fraction of pixels ...',
+    },
+  })
+  const fields = qaMethodologyFields(chart)
+  assert.equal(fields.qaPassRate, '75.3% (11,298 of 15,000 checked pixels)')
+  assert.match(fields.qaPassRateBasis, /weighted fraction/)
 })
 
 test('qaMethodologyFields is all null for an unregistered collection, not thrown', () => {
   assert.deepEqual(qaMethodologyFields({}), {
     qualityFlagVar: null, qaGoodValues: null, qaBadValues: null,
     fillValueSource: null, validRangeSource: null,
+    qaPassRate: null, qaPassRateBasis: null,
   })
 })
 

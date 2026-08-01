@@ -73,8 +73,8 @@ def attrs_time_range(attrs: dict | None) -> tuple[str, str]:
 def fill_match(values: Any, fill: Any) -> Any:
     """Boolean mask of cells equal to the fill value — the ONE definition of
     fill matching, shared by the science-variable masking
-    (``apply_quality_mask``) and the companion-evidence valid mask
-    (``plot_tools._band_valid_mask``), so a tolerance fix can never silently
+    (``apply_quality_mask``) and the companion-evidence band masking
+    (``plot_tools._band_time_mean``), so a tolerance fix can never silently
     diverge between the two. Works on ``xr.DataArray`` and ``np.ndarray``
     alike (pure elementwise ops).
 
@@ -159,6 +159,28 @@ def _sample_std(a: Any, **kwargs: Any) -> Any:
         return np.nanstd(a, ddof=1, **kwargs)
 
 
+def cos_lat_weights(da: xr.DataArray) -> xr.DataArray | None:
+    """Cos(latitude) cell weights broadcastable over ``da``, or ``None`` when
+    no latitude dimension is identifiable (point data, an already-flattened
+    array). The ONE weight definition — the area-weighted regional mean and
+    the area-weighted QA pass rate (T55) sit in the same stat grid, so they
+    must be weighted by the same thing or they quietly describe different
+    fields.
+
+    float64 regardless of how the granule stores its latitude axis: real
+    products publish float32 lat, and accumulating float32 weights makes the
+    answer depend on how many zero-weight (masked-out) cells happen to be
+    summed -- the same region answered ~5e-7 differently from a continental
+    granule than from a tight crop of it.
+    """
+    from utils.geo_utils import find_lat_coord
+
+    lat_name = find_lat_coord(da)
+    if lat_name is None or lat_name not in da.dims:
+        return None
+    return np.cos(np.deg2rad(da[lat_name].astype("float64")))
+
+
 def area_weighted_mean(da: xr.DataArray) -> float:
     """Cosine-latitude area-weighted mean over a (lat, lon) field — the ONE
     definition of a regional mean, shared by the statistics tool and the
@@ -172,22 +194,14 @@ def area_weighted_mean(da: xr.DataArray) -> float:
     Raises ``ValueError`` when no finite values remain, mirroring
     ``compute_values_stat``.
     """
-    from utils.geo_utils import find_lat_coord
-
     values = np.asarray(da.values, dtype=float)
     if not np.isfinite(values).any():
         raise ValueError("No finite values available for statistic.")
 
-    lat_name = find_lat_coord(da)
-    if lat_name is None or lat_name not in da.dims:
+    weights = cos_lat_weights(da)
+    if weights is None:
         return float(np.nanmean(values[np.isfinite(values)]))
 
-    # float64 weights regardless of how the granule stores its latitude axis:
-    # real products publish float32 lat, and accumulating float32 weights makes
-    # the answer depend on how many zero-weight (masked-out) cells happen to be
-    # summed -- the same region answered ~5e-7 differently from a continental
-    # granule than from a tight crop of it.
-    weights = np.cos(np.deg2rad(da[lat_name].astype("float64")))
     result = float(da.weighted(weights).mean(skipna=True))
     if not np.isfinite(result):
         raise ValueError("No finite values available for statistic.")
@@ -196,9 +210,12 @@ def area_weighted_mean(da: xr.DataArray) -> float:
 
 def flag_pass_condition(qf: xr.DataArray, good_values: Any = None, bad_values: Any = None) -> xr.DataArray:
     """Boolean condition of flag cells passing QA — the ONE good/bad flag
-    doctrine (T25), shared by ``apply_quality_mask`` and the evidence
-    pass-rate fact (``plot_tools._qa_pass_rate_fact``) so the reported pass
-    rate can never quietly disagree with the mask actually applied.
+    doctrine (T25). ``apply_quality_mask`` both masks with this condition and
+    counts the reported pass rate from it (``_count_qa_pixels``, T55), so the
+    number on screen is derived from the same boolean that gutted the data and
+    is structurally incapable of disagreeing with it. There is no sibling
+    implementation left to keep in step: the evidence path's second copy was
+    retired when this became the single source.
 
     With ``good_values``, membership passes (``isin`` already excludes an
     absent/NaN flag). With only ``bad_values``, a pixel passes only when its
@@ -208,6 +225,137 @@ def flag_pass_condition(qf: xr.DataArray, good_values: Any = None, bad_values: A
     if good_values is not None:
         return qf.isin(good_values)
     return qf.notnull() & ~qf.isin(bad_values)
+
+
+def _count_qa_pixels(da: xr.DataArray, qf: xr.DataArray, condition: xr.DataArray) -> dict[str, Any]:
+    """Count the QA outcome of the pixels ``apply_quality_mask`` is about to
+    mask, from the SAME boolean ``condition`` it masks with (T55).
+
+    ``checked`` is ``da.notnull()`` measured *after* fill/valid-range masking
+    and, on both real tool paths, after the geometry crop -- so the
+    denominator is "pixels in the AOI that had a retrievable value at all",
+    never the raw grid size. A fill pixel is not a QA failure and must not be
+    counted as one.
+    """
+    with phase_timer("qa_pass_rate", cells_in=_cell_count(da)):
+        checked = da.notnull()
+        checked, qf, condition = xr.align(checked, qf, condition, join="inner")
+        passing = checked & condition
+        # A pixel whose own flag ``_decode_flag_fill`` nulled lands in the
+        # failing bucket -- correct masking (unknown quality reads as absent,
+        # not good), but in the *report* it would collapse "failed QA" into "QA
+        # unknown". Count it separately so the disclosure keeps them apart.
+        flag_missing = checked & qf.isnull()
+        # Cos(latitude) area-weighted, the SAME weights ``area_weighted_mean``
+        # uses: an unweighted pixel ratio sitting in the same stat grid as an
+        # area-weighted mean over-counts shrunken poleward cells (Finding #13).
+        # The raw integer counts are kept alongside -- they are the honest "how
+        # many observations" fact the disclosure text needs.
+        weights = cos_lat_weights(checked)
+        if weights is None:
+            weights = 1.0
+        checked_area, passing_area = checked * weights, passing * weights
+
+        # ONE compute for every reduction. Each of these walks the same
+        # fill/valid-masked graph, and a compute per counter would re-read the
+        # bundle per counter.
+        #
+        # MEASURED, not assumed (T51's discipline; story 10): this block costs
+        # +0.32s on a 24-granule 500x700 float32 bundle (0.20s -> 0.51s for
+        # mask+reduce), and it materializes the source graph ONE extra time --
+        # 2 reads through the aggregate reduction instead of 1, because this
+        # compute and the later temporal reduction are separate. That is the
+        # price of the number, and the `qa_pass_rate` phase timer is what keeps
+        # it visible instead of hiding inside `aggregate`. Persisting the
+        # masked array would collapse the two reads but trades I/O for RAM on
+        # exactly the multi-granule bundles that have OOM'd this backend
+        # before, so it is deliberately not done here.
+        reductions = {
+            "checked": checked.sum(),
+            "passing": passing.sum(),
+            "flag_missing": flag_missing.sum(),
+            "checked_area": checked_area.sum(),
+            "passing_area": passing_area.sum(),
+        }
+        # Per-timestep rates, reduced over the spatial dims of the SAME
+        # pre/post arrays, so a day the mask gutted stays visible instead of
+        # being averaged into one cumulative fraction.
+        time_dim = identify_time(checked)
+        if time_dim is not None and time_dim in checked.dims and time_dim in checked.coords:
+            spatial = [d for d in checked.dims if d != time_dim]
+            reductions["checked_area_by_time"] = checked_area.sum(spatial)
+            reductions["passing_area_by_time"] = passing_area.sum(spatial)
+        else:
+            time_dim = None
+        reduced = xr.Dataset(reductions).compute()
+
+    counts = {
+        "checked": int(reduced["checked"]),
+        "passing": int(reduced["passing"]),
+        "flag_missing": int(reduced["flag_missing"]),
+    }
+    area_checked = float(reduced["checked_area"])
+    if area_checked > 0:
+        counts["pass_rate"] = float(reduced["passing_area"]) / area_checked
+    if time_dim is not None:
+        counts["pass_rate_by_time"] = _by_time_rates(
+            reduced["passing_area_by_time"], reduced["checked_area_by_time"],
+        )
+        counts["times"] = [
+            pd.Timestamp(t).isoformat() for t in np.asarray(reduced[time_dim].values)
+        ]
+    return counts
+
+
+def _by_time_rates(passing_area: xr.DataArray, checked_area: xr.DataArray) -> list[float | None]:
+    """Per-timestep pass rates, ``None`` for a timestep with nothing
+    retrievable to check -- the same absent-not-zero honesty the cumulative
+    rate gets, and it keeps the series index-aligned with its timestamps."""
+    rates: list[float | None] = []
+    for numerator, denominator in zip(
+        np.asarray(passing_area.values, dtype="float64"),
+        np.asarray(checked_area.values, dtype="float64"),
+    ):
+        rates.append(round(float(numerator) / float(denominator), 6) if denominator > 0 else None)
+    return rates
+
+
+# What the reported pass rate's denominator actually is, in one self-describing
+# line, so the number explains itself in CSV/metadata export and not only in
+# JSX -- and so nobody reads it as interchangeable with "Valid values %", which
+# answers the different question "did we get data at all".
+QA_PASS_RATE_BASIS = (
+    "cos(latitude)-weighted fraction of pixels in the analyzed region that had a "
+    "retrievable value (after fill/valid-range masking) and passed the QA flag"
+)
+
+
+def _qa_pass_rate_provenance(counts: dict[str, Any]) -> dict[str, Any]:
+    """The realized-QA disclosure keys for ``masking_provenance``, from the
+    counters ``apply_quality_mask`` recorded (T55).
+
+    Empty when QA masking never ran: the keys are *absent*, not ``null``,
+    matching the existing downgrade-to-not-applied honesty guard, so
+    "QA didn't run" stays distinguishable from a real 0% pass rate.
+    ``checked == 0`` is a different, real state -- a fully fill- or
+    cloud-covered scene -- and reports ``qa_checked_pixels: 0`` with no rate,
+    so the UI can say "no retrievable pixels to check" rather than the wrong
+    "Not applied".
+    """
+    if not counts:
+        return {}
+    provenance = {
+        "qa_checked_pixels": counts["checked"],
+        "qa_passing_pixels": counts["passing"],
+        "qa_flag_missing_pixels": counts["flag_missing"],
+        "qa_pass_rate_basis": QA_PASS_RATE_BASIS,
+    }
+    if "pass_rate" in counts:
+        provenance["qa_pass_rate"] = round(counts["pass_rate"], 6)
+    if "pass_rate_by_time" in counts:
+        provenance["qa_pass_rate_by_time"] = counts["pass_rate_by_time"]
+        provenance["qa_pass_rate_times"] = counts["times"]
+    return provenance
 
 
 # P1: cap on how many candidate variable names an ambiguous-variable refusal
@@ -505,12 +653,19 @@ class AggregationService:
             }
         masking_provenance.update(qa_provenance)
 
+        # T55: count the QA outcome where the mask is actually applied and fold
+        # it into the same provenance the disclosure already travels in. Both
+        # real tool paths crop to the AOI *before* masking, so the counts are
+        # region-scoped and mean the same thing on a heatmap and a timeseries.
+        qa_pixel_counts: dict[str, Any] = {}
         da = self.apply_quality_mask(
             da,
             source_ds,
             resolved_col_info,
             variable=variable,
+            qa_pixel_counts=qa_pixel_counts,
         )
+        masking_provenance.update(_qa_pass_rate_provenance(qa_pixel_counts))
         return da, masking_provenance
 
     def to_dataarray(
@@ -723,6 +878,7 @@ class AggregationService:
         apply_quality_flag: bool = True,
         variable: str | None = None,
         umm_var_facts: Any = None,
+        qa_pixel_counts: dict[str, Any] | None = None,
     ) -> xr.DataArray:
         col_info = col_info or {}
         if umm_var_facts is not None:
@@ -762,7 +918,10 @@ class AggregationService:
             bad_values = col_info.get("qa_bad_values")
             if good_values is not None or bad_values is not None:
                 qf = self._decode_flag_fill(qf)
-                da = da.where(flag_pass_condition(qf, good_values, bad_values))
+                condition = flag_pass_condition(qf, good_values, bad_values)
+                if qa_pixel_counts is not None:
+                    qa_pixel_counts.update(_count_qa_pixels(da, qf, condition))
+                da = da.where(condition)
         return da
 
     @staticmethod

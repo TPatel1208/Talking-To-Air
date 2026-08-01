@@ -56,7 +56,7 @@ class EvidenceComputationTests(unittest.TestCase):
                 return f
         return None
 
-    def test_tempo_o3_shaped_file_yields_context_and_qa_facts(self):
+    def test_tempo_o3_shaped_file_yields_context_facts_but_not_a_duplicate_qa_fact(self):
         import xarray as xr
         from tools.satellite_tools.plot_tools import _evidence
 
@@ -76,12 +76,18 @@ class EvidenceComputationTests(unittest.TestCase):
         facts = _evidence(ds, da, col_info, _global_region())
         names = {f["name"] for f in facts}
 
-        # Context bands present as mean facts; QA flag present as a pass-rate fact.
+        # Context bands present as mean facts.
         self.assertIn("radiative_cloud_frac", names)
         self.assertIn("uv_aerosol_index", names)
-        self.assertIn("main_data_quality_flag", names)
         # Never the science variable itself.
         self.assertNotIn("column_amount_o3", names)
+        # T55: the QA pass rate is no longer an evidence fact. It is counted
+        # where the mask is applied and reported once, as masking provenance --
+        # a second computation here could legitimately disagree with it (this
+        # path re-crops the flag band spatially, ignorant of any dim_selector
+        # applied to the plotted array), and two disagreeing quality numbers on
+        # one page are worse than one.
+        self.assertNotIn("main_data_quality_flag", names)
 
         cloud = self._fact(facts, "radiative_cloud_frac")
         self.assertEqual(cloud["role"], "context")
@@ -90,13 +96,6 @@ class EvidenceComputationTests(unittest.TestCase):
         self.assertAlmostEqual(cloud["value"], 0.098828, places=6)
         self.assertEqual(cloud["units"], "1")
         self.assertAlmostEqual(cloud["coverage"], 1.0)
-
-        qa = self._fact(facts, "main_data_quality_flag")
-        self.assertEqual(qa["role"], "quality")
-        self.assertEqual(qa["stat"], "pass_rate")
-        # good=[0]: 3 of 4 pixels flag==0 -> 0.75 pass rate, full coverage.
-        self.assertAlmostEqual(qa["value"], 0.75)
-        self.assertAlmostEqual(qa["coverage"], 1.0)
 
     def test_context_band_mean_is_cos_latitude_area_weighted(self):
         """Finding #13: the companion band mean must be cos(latitude)
@@ -174,7 +173,7 @@ class EvidenceComputationTests(unittest.TestCase):
         facts = _evidence(ds, da, col_info, _global_region())
         self.assertEqual([f["name"] for f in facts], [])
 
-    def test_tempo_no2_shaped_file_yields_qa_and_uncertainty_but_no_invented_context(self):
+    def test_tempo_no2_shaped_file_yields_uncertainty_but_no_invented_context(self):
         import xarray as xr
         from tools.satellite_tools.plot_tools import _evidence
 
@@ -197,7 +196,9 @@ class EvidenceComputationTests(unittest.TestCase):
         facts = _evidence(ds, da, col_info, _global_region())
         by_role = {f["name"]: f["role"] for f in facts}
 
-        self.assertEqual(by_role.get("main_data_quality_flag"), "quality")
+        # T55: the flag itself is excluded from the evidence list -- its pass
+        # rate is reported once, as masking provenance.
+        self.assertNotIn("main_data_quality_flag", by_role)
         # Uncertainty band summarized as a quality mean, with pct-of-science.
         unc = self._fact(facts, "vertical_column_troposphere_uncertainty")
         self.assertIsNotNone(unc)
@@ -308,37 +309,6 @@ class EvidenceComputationTests(unittest.TestCase):
         self.assertIsNotNone(unc)
         self.assertAlmostEqual(unc["value"], 0.495311, places=6)  # area-weighted
         self.assertNotIn("pct_of_science", unc)
-
-    def test_qa_pass_rate_reuses_the_same_flag_and_good_values_masking_resolves(self):
-        """The pass-rate fact must be computed with the exact flag var and good
-        values ``resolve_and_mask`` masks with -- not a divergent second QA
-        path. Compare directly against the shared resolution."""
-        import xarray as xr
-        from tools.satellite_tools.plot_tools import _evidence, _aggregation_service
-        from datasets.qa_flags import resolve_qa_info
-
-        ds = _dataset(xr, {
-            "column_amount_o3": (("lat", "lon"), [[300.0, 310.0], [320.0, 330.0]], {"units": "DU"}),
-            "main_data_quality_flag": (("lat", "lon"), [[0, 1], [1, 1]]),
-        })
-        da = ds["column_amount_o3"]
-        col_info = {
-            "short_name": "TEMPO_O3TOT_L3",
-            "primary_var": "column_amount_o3",
-            "quality_flag_var": "main_data_quality_flag",
-            "qa_good_values": [0],
-        }
-
-        # The masking pipeline's own resolution, for comparison.
-        qf_var, flag_attrs = _aggregation_service._resolve_qa_flag_var(ds, da, col_info)
-        qa_col_info, _ = resolve_qa_info(yaml_info=col_info, flag_attrs=flag_attrs)
-        self.assertEqual(qf_var, "main_data_quality_flag")
-        self.assertEqual(qa_col_info["qa_good_values"], [0])
-
-        facts = _evidence(ds, da, col_info, _global_region())
-        qa = self._fact(facts, "main_data_quality_flag")
-        # good=[0]: 1 of 4 pixels passes -> 0.25, over the same flag var.
-        self.assertAlmostEqual(qa["value"], 0.25)
 
     def test_provenance_attaches_evidence_additively(self):
         import xarray as xr

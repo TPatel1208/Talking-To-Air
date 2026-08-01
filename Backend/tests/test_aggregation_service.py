@@ -1262,5 +1262,431 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertTrue(self.np.isnan(values[1, 0]))  # 8e17 > physical valid_max
 
 
+@unittest.skipIf(importlib.util.find_spec("xarray") is None, "xarray is not installed")
+class QaPassRateCounterTests(unittest.TestCase):
+    """T55: the QA pass rate reported to the researcher is counted where the
+    mask is actually applied -- from the same boolean condition
+    ``apply_quality_mask`` masks with -- so it is structurally incapable of
+    disagreeing with the plotted data."""
+
+    def setUp(self):
+        import numpy as np
+        import xarray as xr
+
+        self.np = np
+        self.xr = xr
+
+    def _tempo_ds(self, values, flags, lat=(10.0, 20.0), lon=(30.0, 40.0)):
+        """A TEMPO_NO2-shaped Dataset: science var + sibling QA flag."""
+        return self.xr.Dataset(
+            {
+                "no2": (("lat", "lon"), self.np.array(values, dtype="float64")),
+                "main_data_quality_flag": (("lat", "lon"), self.np.array(flags, dtype="int64")),
+            },
+            coords={"lat": list(lat), "lon": list(lon)},
+        )
+
+    @property
+    def _pinned(self):
+        return {"quality_flag_var": "main_data_quality_flag", "qa_good_values": [0]}
+
+    def test_apply_quality_mask_counts_the_pixels_it_checked_and_the_pixels_that_passed(self):
+        """The opt-in counter dict is filled from the same ``.where()``
+        condition the mask uses: 3 of 4 pixels carry a good flag."""
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self._tempo_ds([[1.0, 2.0], [3.0, 4.0]], [[0, 1], [0, 0]])
+        counts = {}
+
+        AggregationService().apply_quality_mask(
+            ds["no2"], ds, self._pinned, qa_pixel_counts=counts,
+        )
+
+        self.assertEqual(counts["checked"], 4)
+        self.assertEqual(counts["passing"], 3)
+
+    def test_checked_excludes_cells_already_masked_as_fill_or_out_of_range(self):
+        """The denominator is "pixels that had a retrievable value at all",
+        not the raw grid size: a fill pixel is not a QA failure and must not
+        be counted as one. Of 4 pixels one is fill and one is out of range,
+        so only 2 were ever QA-checkable -- and both pass."""
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self._tempo_ds([[-999.0, 500.0], [3.0, 4.0]], [[0, 0], [0, 0]])
+        col_info = {**self._pinned, "fill_value": -999.0, "valid_min": 0.0, "valid_max": 100.0}
+        counts = {}
+
+        AggregationService().apply_quality_mask(
+            ds["no2"], ds, col_info, qa_pixel_counts=counts,
+        )
+
+        self.assertEqual(counts["checked"], 2)
+        self.assertEqual(counts["passing"], 2)
+
+    def test_a_pixel_whose_flag_is_itself_fill_is_reported_as_unknown_not_just_failed(self):
+        """Three counters, not two. ``_decode_flag_fill`` nulls the flag's own
+        sentinel so an unknown-quality pixel reads as absent, not good -- correct
+        masking, but in the *report* it collapses "failed QA" into "QA unknown".
+        The third counter keeps them separable: of 4 checked pixels, 2 pass, 1
+        genuinely failed, and 1 had no usable flag at all."""
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset(
+            {
+                "no2": (("lat", "lon"), self.np.array([[1.0, 2.0], [3.0, 4.0]])),
+                "main_data_quality_flag": (
+                    ("lat", "lon"),
+                    self.np.array([[0, 1], [0, 255]], dtype="int64"),
+                    {"_FillValue": 255},
+                ),
+            },
+            coords={"lat": [10.0, 20.0], "lon": [30.0, 40.0]},
+        )
+        counts = {}
+
+        AggregationService().apply_quality_mask(
+            ds["no2"], ds, self._pinned, qa_pixel_counts=counts,
+        )
+
+        self.assertEqual(counts["checked"], 4)
+        self.assertEqual(counts["passing"], 2)
+        self.assertEqual(counts["flag_missing"], 1)
+
+    def test_the_pass_rate_is_cos_latitude_area_weighted_not_a_raw_pixel_ratio(self):
+        """Finding #13's doctrine, applied to quality: an unweighted pixel
+        count sitting in the same stat grid as an area-weighted mean is an
+        inconsistency. Two good pixels at the equator and two bad ones at 80N
+        are 50% of the pixels but ~85% of the *area* -- the shrunken poleward
+        cells must not be counted as equals."""
+        import math
+
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self._tempo_ds(
+            [[1.0, 2.0], [3.0, 4.0]], [[0, 0], [1, 1]], lat=(0.0, 80.0),
+        )
+        counts = {}
+
+        AggregationService().apply_quality_mask(
+            ds["no2"], ds, self._pinned, qa_pixel_counts=counts,
+        )
+
+        w_eq, w_80 = 1.0, math.cos(math.radians(80.0))
+        expected = (2 * w_eq) / (2 * w_eq + 2 * w_80)
+        self.assertAlmostEqual(counts["pass_rate"], expected, places=9)
+        self.assertNotAlmostEqual(counts["pass_rate"], 0.5, places=2)
+        # The raw integer counts stay available as the honest "how many
+        # observations" fact -- they are not replaced by the weighted fraction.
+        self.assertEqual(counts["checked"], 4)
+        self.assertEqual(counts["passing"], 2)
+
+    def test_counting_leaves_the_masked_array_bit_identical(self):
+        """An honesty feature must not change the science. The counters are
+        derived from the same condition, never from a re-derived mask that
+        could re-enter the masking path."""
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self._tempo_ds([[1.0, 2.0], [3.0, 4.0]], [[0, 1], [1, 0]])
+        service = AggregationService()
+
+        without = service.apply_quality_mask(ds["no2"], ds, self._pinned)
+        with_counts = service.apply_quality_mask(
+            ds["no2"], ds, self._pinned, qa_pixel_counts={},
+        )
+
+        self.np.testing.assert_array_equal(
+            without.values, with_counts.values,
+        )
+
+    def test_a_lazy_array_stays_lazy_and_its_graph_is_computed_exactly_once(self):
+        """T51's finding applied here: counting adds an eager reduction to the
+        masking path, *before* the reduction the ``aggregate`` phase already
+        pays for, on lazily-opened multi-granule bundles. Two guarantees earn
+        the feature its keep -- the returned array is still lazy (masking did
+        not force the graph), and every counter comes out of ONE
+        ``compute``, not one per counter."""
+        dask = self._require_dask()
+        from preprocessing.aggregation_service import AggregationService
+
+        loads = []
+
+        def _load_science():
+            loads.append("science")
+            return self.np.array([[1.0, 2.0], [3.0, 4.0]])
+
+        science = self.xr.DataArray(
+            dask.array.from_delayed(
+                dask.delayed(_load_science)(), shape=(2, 2), dtype="float64",
+            ),
+            dims=("lat", "lon"),
+            coords={"lat": [10.0, 20.0], "lon": [30.0, 40.0]},
+            name="no2",
+        )
+        ds = self.xr.Dataset({
+            "no2": science,
+            "main_data_quality_flag": (
+                ("lat", "lon"), self.np.array([[0, 1], [0, 0]], dtype="int64"),
+            ),
+        })
+        counts = {}
+
+        masked = AggregationService().apply_quality_mask(
+            ds["no2"], ds, self._pinned, qa_pixel_counts=counts,
+        )
+
+        self.assertEqual(counts["checked"], 4)
+        self.assertEqual(len(loads), 1, f"source graph materialized {len(loads)} times")
+        self.assertIsNotNone(masked.chunks, "masking forced a lazy array to load")
+
+    def _lazy_bundle(self, granules, flags, loads):
+        """A lazily-opened multi-granule bundle: ONE dask chunk per granule,
+        each backed by a loader that records its read.
+
+        The single-chunk ``from_delayed`` array above proves the masking path
+        alone computes once; it cannot see the cost this models. A real
+        HDF5/Zarr-backed bundle is chunked along time, so a second walk of the
+        graph is a second *I/O pass* over every granule -- the thing the
+        counter's own comment measured at +0.32s synthetically and flagged as
+        larger on real storage.
+        """
+        dask = self._require_dask()
+
+        def _chunk(name, index, values, dtype):
+            block = self.np.asarray(values, dtype=dtype)[None, ...]
+
+            def _load():
+                loads.append(f"{name}[{index}]")
+                return block
+
+            return dask.array.from_delayed(
+                dask.delayed(_load)(), shape=block.shape, dtype=dtype,
+            )
+
+        science = dask.array.concatenate(
+            [_chunk("no2", i, g, "float64") for i, g in enumerate(granules)], axis=0,
+        )
+        flag = dask.array.concatenate(
+            [_chunk("flag", i, f, "int64") for i, f in enumerate(flags)], axis=0,
+        )
+        return self.xr.Dataset(
+            {
+                "no2": (("time", "lat", "lon"), science),
+                "main_data_quality_flag": (("time", "lat", "lon"), flag),
+            },
+            coords={
+                "time": self.np.array(
+                    ["2024-01-01", "2024-01-02", "2024-01-03"], dtype="datetime64[ns]",
+                ),
+                "lat": [10.0, 20.0],
+                "lon": [30.0, 40.0],
+            },
+        )
+
+    def test_the_bundle_is_read_once_across_masking_and_the_aggregate_reduction(self):
+        """The counter's compute and ``aggregate``'s temporal reduction walk the
+        same source graph. Separate ``compute`` calls share nothing, so a
+        lazily-opened bundle is re-read per pass -- I/O, not just CPU, on
+        exactly the multi-granule opens that have OOM'd this backend before.
+
+        Pin the whole path at ONE read per granule: masking, the valid-timestep
+        scan, and the reduction must all come out of a single graph walk.
+        """
+        from preprocessing.aggregation_service import AggregationService
+
+        loads = []
+        ds = self._lazy_bundle(
+            granules=[[[1.0, 2.0], [3.0, 4.0]]] * 3,
+            flags=[[[0, 1], [0, 0]]] * 3,
+            loads=loads,
+        )
+
+        result = AggregationService().aggregate(
+            ds, variable="no2", col_info=self._pinned,
+        )
+        reduced = result.ds["no2"].values  # force the temporal reduction
+
+        self.assertEqual(reduced.shape, (2, 2))
+        self.assertEqual(result.meta["masking"]["qa_checked_pixels"], 12)
+        self.assertEqual(result.meta["masking"]["qa_passing_pixels"], 9)
+        science_reads = [name for name in loads if name.startswith("no2")]
+        flag_reads = [name for name in loads if name.startswith("flag")]
+        self.assertEqual(
+            len(science_reads), 3,
+            f"science bundle read {len(science_reads)} times, want 3 (one per granule): {loads}",
+        )
+        self.assertEqual(
+            len(flag_reads), 3,
+            f"QA-flag bundle read {len(flag_reads)} times, want 3 (one per granule): {loads}",
+        )
+
+    def test_resolve_and_mask_reports_the_realized_pass_rate_as_provenance(self):
+        """The rate is a first-class masking-provenance fact, so both chart
+        types inherit it through the ``masking`` dict they already carry --
+        no new wiring, and no second computation to drift from this one."""
+        import math
+
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self._tempo_ds([[1.0, 2.0], [3.0, 4.0]], [[0, 1], [0, 0]])
+
+        _, provenance = AggregationService().resolve_and_mask(
+            ds["no2"], variable="no2", col_info=self._pinned, source_ds=ds,
+        )
+
+        w10, w20 = math.cos(math.radians(10.0)), math.cos(math.radians(20.0))
+        expected = (w10 + 2 * w20) / (2 * w10 + 2 * w20)  # 3 of 4, area-weighted
+        self.assertEqual(provenance["qa_checked_pixels"], 4)
+        self.assertEqual(provenance["qa_passing_pixels"], 3)
+        self.assertEqual(provenance["qa_flag_missing_pixels"], 0)
+        self.assertAlmostEqual(provenance["qa_pass_rate"], expected, places=6)
+        # The number explains its own denominator wherever it travels (CSV and
+        # metadata export, not only JSX).
+        self.assertIn("retrievable", provenance["qa_pass_rate_basis"])
+
+    def test_the_pass_rate_is_absent_not_null_when_qa_masking_never_ran(self):
+        """Consistent with the existing downgrade-to-not-applied honesty guard:
+        a key that isn't there says "QA didn't run", which must stay
+        distinguishable from a real 0% pass rate."""
+        from datasets.qa_flags import QA_NOT_APPLIED
+        from preprocessing.aggregation_service import AggregationService
+
+        da = self.xr.DataArray(
+            self.np.array([[1.0, 2.0], [3.0, 4.0]]),
+            dims=("lat", "lon"),
+            coords={"lat": [10.0, 20.0], "lon": [30.0, 40.0]},
+            name="no2",
+        )
+
+        _, provenance = AggregationService().resolve_and_mask(
+            da, variable="no2", col_info=self._pinned,
+        )
+
+        self.assertEqual(provenance["qa_status"], QA_NOT_APPLIED)
+        self.assertNotIn("qa_pass_rate", provenance)
+        self.assertNotIn("qa_checked_pixels", provenance)
+
+    def test_a_scene_with_no_retrievable_pixels_reports_zero_checked_not_a_missing_run(self):
+        """A fully fill-covered scene really did have nothing to QA-check.
+        That is diagnosable ("no retrievable pixels to check") only if it is
+        distinguishable from QA never running -- so the count is reported as a
+        real 0 while the undefined rate stays absent."""
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self._tempo_ds(
+            [[-999.0, -999.0], [-999.0, -999.0]], [[0, 0], [0, 0]],
+        )
+        col_info = {**self._pinned, "fill_value": -999.0}
+
+        _, provenance = AggregationService().resolve_and_mask(
+            ds["no2"], variable="no2", col_info=col_info, source_ds=ds,
+        )
+
+        self.assertEqual(provenance["qa_checked_pixels"], 0)
+        self.assertEqual(provenance["qa_passing_pixels"], 0)
+        self.assertNotIn("qa_pass_rate", provenance)
+
+    def test_a_per_timestep_series_keeps_a_bad_day_from_averaging_away(self):
+        """A single cumulative fraction cannot distinguish a uniform 50% every
+        day from one clean day plus one totally lost day -- and the second is a
+        data-quality event. The companion series carries every timestep, not
+        only the ones that survived to be plotted: a 0%-pass day drops off the
+        chart line entirely, which is exactly when it most needs to be visible.
+        Timestamps travel alongside so the series can be aligned to a chart."""
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset(
+            {
+                "no2": (("time", "lat", "lon"), self.np.array([[[1.0, 2.0]], [[3.0, 4.0]]])),
+                "main_data_quality_flag": (
+                    ("time", "lat", "lon"), self.np.array([[[1, 1]], [[0, 0]]], dtype="int64"),
+                ),
+            },
+            coords={
+                "time": self.np.array(
+                    ["2024-01-01", "2024-01-02"], dtype="datetime64[ns]",
+                ),
+                "lat": [10.0],
+                "lon": [30.0, 40.0],
+            },
+        )
+
+        _, provenance = AggregationService().resolve_and_mask(
+            ds["no2"], variable="no2", col_info=self._pinned, source_ds=ds,
+        )
+
+        self.assertEqual(provenance["qa_pass_rate_by_time"], [0.0, 1.0])
+        self.assertEqual(
+            provenance["qa_pass_rate_times"],
+            ["2024-01-01T00:00:00", "2024-01-02T00:00:00"],
+        )
+        # The cumulative rate is unchanged by the split -- the series is extra
+        # resolution, not a redefinition.
+        self.assertAlmostEqual(provenance["qa_pass_rate"], 0.5)
+
+    def test_the_count_is_region_scoped_because_callers_crop_before_masking(self):
+        """Both real tool paths crop to the AOI *before* masking, which is the
+        only reason one pass-rate card means the same thing on a heatmap and a
+        timeseries. Pin it: a cropped input must count strictly fewer pixels
+        than the full grid, so a future caller that masks before cropping
+        fails here instead of silently reporting a continental rate for a city."""
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self._tempo_ds(
+            [[1.0, 2.0], [3.0, 4.0]], [[0, 0], [0, 0]], lat=(10.0, 20.0), lon=(30.0, 40.0),
+        )
+        service = AggregationService()
+
+        full, cropped = {}, {}
+        service.apply_quality_mask(ds["no2"], ds, self._pinned, qa_pixel_counts=full)
+        service.apply_quality_mask(
+            ds["no2"].sel(lat=[10.0]), ds, self._pinned, qa_pixel_counts=cropped,
+        )
+
+        self.assertEqual(full["checked"], 4)
+        self.assertLess(cropped["checked"], full["checked"])
+        self.assertEqual(cropped["checked"], 2)
+
+    def test_a_collection_nobody_pinned_still_gets_a_real_pass_rate(self):
+        """collections.yaml pins a QA rule for a minority of collections, but
+        ``_resolve_qa_flag_var`` discovers flag variables generically at
+        runtime -- so masking already works where no registry entry exists.
+        Because the rate is counted at the mask, reporting follows the masking
+        rather than the registry, for every present and future collection."""
+        from datasets.qa_flags import QA_CF_DETERMINISTIC
+        from preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset(
+            {
+                "so2_column": (
+                    ("lat", "lon"),
+                    self.np.array([[1.0, 2.0], [3.0, 4.0]]),
+                    {"ancillary_variables": "quality_flags"},
+                ),
+                "quality_flags": (
+                    ("lat", "lon"),
+                    self.np.array([[0, 1], [1, 0]], dtype="int64"),
+                    {"flag_values": [0, 1], "flag_meanings": "good_quality bad_quality"},
+                ),
+            },
+            coords={"lat": [10.0, 20.0], "lon": [30.0, 40.0]},
+        )
+
+        result = AggregationService().aggregate(ds, variable="so2_column")
+        masking = result.meta["masking"]
+
+        self.assertEqual(masking["qa_status"], QA_CF_DETERMINISTIC)
+        self.assertEqual(masking["qa_checked_pixels"], 4)
+        self.assertEqual(masking["qa_passing_pixels"], 2)
+        self.assertAlmostEqual(masking["qa_pass_rate"], 0.5, places=6)
+
+    def _require_dask(self):
+        if importlib.util.find_spec("dask") is None:  # pragma: no cover
+            self.skipTest("dask is not installed")
+        import dask
+        import dask.array  # noqa: F401  -- registers the .array attribute
+
+        return dask
+
+
 if __name__ == "__main__":
     unittest.main()

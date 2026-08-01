@@ -575,6 +575,50 @@ class ComparisonDisclosureTests(unittest.TestCase):
         masking = emitted["payload"]["provenance"]["masking"]
         self.assertTrue(masking.get("qa_status"))
 
+    def _flagged_side(self, values, flags):
+        """A TEMPO_NO2-shaped Dataset whose ``short_name`` matches the pinned
+        collections.yaml QA rule, so masking actually runs on this side."""
+        import numpy as np
+        import xarray as xr
+
+        return xr.Dataset(
+            {
+                "no2": (
+                    ("lat", "lon"), np.asarray(values, dtype=float), {"units": "mol/m^2"},
+                ),
+                "main_data_quality_flag": (
+                    ("lat", "lon"), np.asarray(flags, dtype="int64"),
+                ),
+            },
+            coords={"lat": [10.0, 20.0], "lon": [-100.0, -90.0]},
+            attrs={"short_name": "TEMPO_NO2_L3"},
+        )
+
+    def test_each_compare_side_carries_its_own_labelled_pass_rate(self):
+        """T55 on compare: each side gets its own realized pass rate, attached
+        to the panel that names it. Two pass rates with no way to tell which
+        period or region each belongs to would be worse than showing none."""
+        from tools.satellite_tools.comparison_tools import _build_region_comparison
+
+        # Side A: 1 of 4 pixels passes. Side B: all 4 pass.
+        ds_a = self._flagged_side([[1.0, 2.0], [3.0, 4.0]], [[0, 1], [1, 1]])
+        ds_b = self._flagged_side([[2.0, 4.0], [6.0, 8.0]], [[0, 0], [0, 0]])
+
+        emitted = {}
+        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
+            _build_region_comparison(
+                "h_a", "h_b", ds_a["no2"], ds_b["no2"], "June", "July", "no2", "mol/m^2",
+                ds_a=ds_a, ds_b=ds_b,
+            )
+
+        panel_a, panel_b = emitted["payload"]["panels"]
+        self.assertEqual(panel_a["title"], "June")
+        self.assertEqual(panel_b["title"], "July")
+        self.assertLess(panel_a["provenance"]["masking"]["qa_pass_rate"], 0.5)
+        self.assertAlmostEqual(panel_b["provenance"]["masking"]["qa_pass_rate"], 1.0)
+        self.assertEqual(panel_a["provenance"]["masking"]["qa_passing_pixels"], 1)
+        self.assertEqual(panel_b["provenance"]["masking"]["qa_passing_pixels"], 4)
+
     def test_region_comparison_surfaces_scope_echo_so_the_dispatch_note_fires(self):
         import numpy as np
         import xarray as xr

@@ -60,7 +60,6 @@ from pydantic import Field
 
 from config.workflow_stages import STAGE_RENDER
 from datasets.mask_info import col_info_for_short_name, resolve_mask_info, short_name_from_attrs
-from datasets.qa_flags import resolve_qa_info
 from datasets.variable_roles import classify_inventory, related_variables
 from earthdata_mcp.results import MCPToolError
 from services import scope_registry
@@ -86,7 +85,6 @@ from preprocessing.aggregation_service import (
     VariableChoiceRequired,
     area_weighted_mean,
     fill_match,
-    flag_pass_condition,
 )
 from preprocessing.variable_choice_builder import emit_variable_choice_payload
 
@@ -610,29 +608,6 @@ def _evi_leaf(name) -> str:
     return str(name or "").rsplit("/", 1)[-1].lower()
 
 
-def _band_valid_mask(values, fill_value, valid_min, valid_max):
-    """Boolean array of finite, non-fill, in-valid-range cells -- the same
-    fill/valid discipline ``AggregationService.apply_quality_mask`` applies to
-    the science variable, applied here to a companion band so an evidence stat
-    is computed only over real data. Fill matching is the shared
-    ``aggregation_service.fill_match`` — one definition, so a tolerance fix
-    there can never diverge from this path. This is what keeps ``coverage``
-    honest and guards the valid-pct-computed-after-null-stripping trap fixed
-    once already in this repo: fill cells are excluded from the numerator,
-    never silently averaged in."""
-    valid = np.isfinite(values)
-    if fill_value is not None:
-        try:
-            valid &= ~np.asarray(fill_match(values, fill_value))
-        except (TypeError, ValueError):
-            pass
-    if valid_min is not None:
-        valid &= values >= valid_min
-    if valid_max is not None:
-        valid &= values <= valid_max
-    return valid
-
-
 def _crop_band_to_region(band, region):
     """Crop a companion band to the plotted science variable's region footprint
     -- the same geometry mask + ``_sel_bounds`` crop the science variable
@@ -737,42 +712,15 @@ def _band_mean_fact(band, leaf, role, region, *, pct_of_science=None):
     return fact
 
 
-def _qa_pass_rate_fact(flag_band, qf_var, good_values, bad_values, region):
-    """A deterministic QA-pass-rate fact from the co-located flag band, using
-    the SAME good/bad flag values AND the same pass condition
-    (``aggregation_service.flag_pass_condition``) ``resolve_and_mask`` masks
-    with -- never a second QA doctrine. ``value`` is the fraction of valid
-    flag pixels passing over the region/time; ``coverage`` is the fraction of
-    the region footprint where a valid (non-fill) flag exists at all."""
-    cropped, in_region = _crop_band_to_region(flag_band, region)
-    if cropped is None or in_region == 0:
-        return None
-    vals = np.asarray(cropped.values, dtype="float64")
-    resolved, _ = resolve_mask_info(cf_attrs=dict(flag_band.attrs))
-    valid = _band_valid_mask(
-        vals, resolved.get("fill_value"), resolved.get("valid_min"), resolved.get("valid_max"),
-    )
-    valid_count = int(valid.sum())
-    if valid_count == 0:
-        return None
-    passing = np.asarray(flag_pass_condition(cropped, good_values, bad_values).values)[valid]
-    return {
-        "name": str(qf_var).rsplit("/", 1)[-1],
-        "role": "quality",
-        "stat": "pass_rate",
-        "value": round(float(passing.sum()) / valid_count, 4),
-        "units": "",
-        "coverage": round(valid_count / in_region, 4),
-    }
-
-
 def _evidence(ds, da, col_info: dict | None, region: dict | None) -> list[dict]:
     """Deterministic companion-evidence facts (PRD T36 Phase 2): the quality
     and context bands sitting unused beside the plotted science variable in the
     same opened Dataset, summarized as co-located facts a scientist can use to
-    judge *this* measurement -- QA pass rate, retrieval uncertainty, cloud
-    fraction, aerosol index -- each with honest coverage. No LLM, no narrative;
-    this is the facts layer P3 will later explain.
+    judge *this* measurement -- retrieval uncertainty, cloud fraction, aerosol
+    index -- each with honest coverage. No LLM, no narrative; this is the facts
+    layer P3 will later explain. The QA pass rate is deliberately NOT here
+    (T55): it is counted where the mask is applied and reported once as masking
+    provenance, so it cannot disagree with the plotted data.
 
     Driven entirely by T35's ``classify_inventory`` over ``ds.data_vars`` (the
     High-confidence CF ``standard_name`` tier is reachable here, post-open) so
@@ -802,23 +750,16 @@ def _evidence(ds, da, col_info: dict | None, region: dict | None) -> list[dict]:
     except Exception:
         science_mean = None
 
-    # QA pass rate -- reuse the exact flag var + good/bad values resolution
-    # ``resolve_and_mask`` uses, so the pass rate reports the one QA doctrine
-    # applied to the data, not a forked second one.
+    # Locate the QA-flag variable purely to EXCLUDE it from the context/
+    # uncertainty loop below. Its pass rate is not an evidence fact: T55 counts
+    # it where the mask is actually applied (aggregation_service) and reports it
+    # once as masking provenance, so there is no second computation here that
+    # could legitimately disagree with the mask the chart was drawn from.
     qf_leaf = None
     try:
-        qf_var, flag_attrs = _aggregation_service._resolve_qa_flag_var(ds, da, col_info)
+        qf_var, _ = _aggregation_service._resolve_qa_flag_var(ds, da, col_info)
         if qf_var and qf_var in ds.data_vars:
             qf_leaf = _evi_leaf(qf_var)
-            qa_col_info, _ = resolve_qa_info(
-                yaml_info=col_info, flag_attrs=flag_attrs, short_name=col_info.get("short_name"),
-            )
-            good = qa_col_info.get("qa_good_values")
-            bad = qa_col_info.get("qa_bad_values")
-            if good is not None or bad is not None:
-                fact = _qa_pass_rate_fact(ds[qf_var], qf_var, good, bad, region)
-                if fact:
-                    facts.append(fact)
     except Exception:
         pass
 

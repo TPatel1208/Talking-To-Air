@@ -172,7 +172,10 @@ class PhaseLabelsetTests(unittest.TestCase):
 
         self.assertEqual(
             set(PIPELINE_PHASES),
-            {"export", "extract", "open", "crop", "mask", "aggregate", "render"},
+            # qa_pass_rate (T55) is its own phase, not part of "mask": it is an
+            # eager reduction added to the masking path, and the whole point of
+            # timing it separately is to see what the honesty feature costs.
+            {"export", "extract", "open", "crop", "mask", "aggregate", "render", "qa_pass_rate"},
         )
 
 

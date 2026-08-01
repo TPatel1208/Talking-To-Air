@@ -311,6 +311,85 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(full["masking"]["qa_status"], "verified")
         self.assertEqual(full["masking"]["qa_source"], "collections_yaml")
 
+    async def test_conduct_temporal_statistic_reports_the_qa_loss_the_plotted_line_cannot_show(self):
+        """T55: masking runs before each timestep collapses to one scalar, so a
+        timestep the mask gutted still contributes a clean finite value. Here
+        every timestep returns -- a naive "timesteps returned" completeness
+        signal reads 100% -- while a quarter of the observations were actually
+        discarded. Only the realized pass rate can say so."""
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import make_conduct_temporal_statistic
+
+        def make_ds():
+            # One bad pixel per timestep, at a different latitude each time, so
+            # the area-weighted rate is exactly 3/4 rather than a cos(lat) skew.
+            return _tempo_no2_dataset(
+                xr,
+                values=[[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]],
+                flags=[[[0, 1], [0, 0]], [[0, 0], [1, 0]]],
+                time=["2024-01-01", "2024-01-02"],
+            )
+
+        self.volume.add_zarr("obs_1", make_ds)
+
+        emitted = {}
+        conduct_temporal_statistic = make_conduct_temporal_statistic(self.mcp_tools)
+        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
+            raw = await conduct_temporal_statistic.ainvoke({
+                "handle": "obs_1", "location": "global", "stat": "mean",
+            })
+
+        self.assertNotIn("error", json.loads(raw))
+        full = emitted["payload"]
+
+        # Every timestep survived to the chart -- nothing about `values` reveals
+        # the loss.
+        self.assertEqual(len(full["values"]), 2)
+        self.assertTrue(all(isinstance(v, float) for v in full["values"]))
+        # ...but a quarter of the retrievable observations failed QA.
+        self.assertAlmostEqual(full["masking"]["qa_pass_rate"], 0.75, places=6)
+        self.assertEqual(full["masking"]["qa_checked_pixels"], 8)
+        self.assertEqual(full["masking"]["qa_passing_pixels"], 6)
+
+    async def test_a_totally_failed_day_survives_in_the_series_after_dropping_off_the_line(self):
+        """One day at 0% and one at 100% average to the same 0.5 as two days at
+        50% -- and the second is a data-quality event. The 0% day is dropped
+        from the chart entirely (no finite value to plot), which is exactly why
+        the companion series must cover every timestep and not only the plotted
+        ones: otherwise the worst day is the one the report cannot show."""
+        import xarray as xr
+        from tools.satellite_tools.plot_tools import make_conduct_temporal_statistic
+
+        def make_ds():
+            return _tempo_no2_dataset(
+                xr,
+                values=[[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]],
+                flags=[[[1, 1], [1, 1]], [[0, 0], [0, 0]]],
+                time=["2024-01-01", "2024-01-02"],
+            )
+
+        self.volume.add_zarr("obs_1", make_ds)
+
+        emitted = {}
+        conduct_temporal_statistic = make_conduct_temporal_statistic(self.mcp_tools)
+        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
+            raw = await conduct_temporal_statistic.ainvoke({
+                "handle": "obs_1", "location": "global", "stat": "mean",
+            })
+
+        self.assertNotIn("error", json.loads(raw))
+        masking = emitted["payload"]["masking"]
+
+        # The first day never reaches the chart...
+        self.assertEqual(len(emitted["payload"]["values"]), 1)
+        # ...but the series still reports it, timestamped, as a total loss.
+        self.assertEqual(masking["qa_pass_rate_by_time"], [0.0, 1.0])
+        self.assertEqual(
+            masking["qa_pass_rate_times"],
+            ["2024-01-01T00:00:00", "2024-01-02T00:00:00"],
+        )
+        self.assertAlmostEqual(masking["qa_pass_rate"], 0.5, places=6)
+
     async def test_conduct_temporal_statistic_mean_is_area_weighted_and_agrees_with_stats_tool(self):
         """The per-timestep regional mean must be the SAME cos(latitude)
         area-weighted mean the stats tool computes (area_weighted_mean), not a
