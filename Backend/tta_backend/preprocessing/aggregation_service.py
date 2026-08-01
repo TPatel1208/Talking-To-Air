@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import warnings
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -39,6 +39,23 @@ VARIABLE_RESOLUTION_ATTR = "_variable_resolution"
 class AggregatedResult:
     ds: xr.Dataset
     meta: dict[str, Any]
+
+
+class MaskedField(NamedTuple):
+    """What ``_resolve_and_mask`` hands back to callers INSIDE this module.
+
+    ``counts`` is the raw QA counter block ``_apply_quality_mask`` recorded,
+    empty when QA masking never ran. It is deliberately absent from the public
+    ``resolve_and_mask`` interface: ``aggregate`` is its only consumer -- it
+    reuses the per-timestep reduction rather than force a second I/O pass over
+    a lazily-opened bundle (T55) -- and every fact an outside caller needs is
+    already summarized into ``provenance``. Handing it out publicly would widen
+    the interface for a reuse channel nobody outside can act on.
+    """
+
+    data: xr.DataArray
+    provenance: dict[str, Any]
+    counts: dict[str, Any]
 
 
 # Global-attribute spellings that carry a granule's temporal coverage when the
@@ -247,6 +264,13 @@ def _count_qa_pixels(da: xr.DataArray, qf: xr.DataArray, condition: xr.DataArray
         checked, finite, qf, condition = xr.align(
             checked, finite, qf, condition, join="inner",
         )
+        # The extent every counter below is reduced over, read off the aligned
+        # array rather than declared by a caller -- so the disclosure cannot
+        # claim a region the reductions did not actually cover. A pass rate is
+        # uninterpretable without it: "4 checked pixels" reads the same whether
+        # that was a whole grid or a single monitor cell, and a point series
+        # masked before it was narrowed used to report its entire grid here.
+        counted_extent = {str(dim): int(size) for dim, size in checked.sizes.items()}
         passing = checked & condition
         # A pixel whose own flag ``_decode_flag_fill`` nulled lands in the
         # failing bucket -- correct masking (unknown quality reads as absent,
@@ -319,6 +343,7 @@ def _count_qa_pixels(da: xr.DataArray, qf: xr.DataArray, condition: xr.DataArray
         "checked": int(reduced["checked"]),
         "passing": int(reduced["passing"]),
         "flag_missing": int(reduced["flag_missing"]),
+        "counted_extent": counted_extent,
     }
     area_checked = float(reduced["checked_area"])
     if area_checked > 0:
@@ -381,6 +406,7 @@ def _qa_pass_rate_provenance(counts: dict[str, Any]) -> dict[str, Any]:
         "qa_checked_pixels": counts["checked"],
         "qa_passing_pixels": counts["passing"],
         "qa_flag_missing_pixels": counts["flag_missing"],
+        "qa_counted_extent": counts["counted_extent"],
         "qa_pass_rate_basis": QA_PASS_RATE_BASIS,
     }
     if "pass_rate" in counts:
@@ -508,11 +534,13 @@ class AggregationService:
         # Dataset for an already-extracted/cropped ``data`` DataArray (T25
         # masking-execution fix -- every real tool path takes this branch).
         qf_source = data if isinstance(data, xr.Dataset) else source_ds
-        # The counters come back alongside the provenance so the valid-timestep
-        # scan below can reuse the per-timestep reduction they already computed,
-        # instead of re-reading the bundle to derive the same booleans.
-        qa_pixel_counts: dict[str, Any] = {}
-        da, masking_provenance = self.resolve_and_mask(
+        # The private form, for its third field: the counters come back
+        # alongside the provenance so the valid-timestep scan below can reuse
+        # the per-timestep reduction they already computed, instead of
+        # re-reading the bundle to derive the same booleans. This is the only
+        # caller that needs them, which is why they are not on the public
+        # interface.
+        masked = self._resolve_and_mask(
             da,
             variable=variable,
             col_info=col_info,
@@ -520,8 +548,8 @@ class AggregationService:
             umm_var_facts=umm_var_facts,
             qa_good_tokens=qa_good_tokens,
             source_ds=qf_source,
-            qa_pixel_counts=qa_pixel_counts,
         )
+        da, masking_provenance = masked.data, masked.provenance
 
         # T25: identified by CF metadata (standard_name/axis/datetime dtype),
         # not the literal name "time" -- so a MERRA-2-style `valid_time` dim
@@ -533,7 +561,7 @@ class AggregationService:
             reduced = da
             valid_indices = [0]
         else:
-            valid_indices = self._valid_time_indices(da, time_dim, qa_pixel_counts)
+            valid_indices = self._valid_time_indices(da, time_dim, masked.counts)
             if not valid_indices:
                 reduced = da.isel({time_dim: slice(0, 0)}).mean(dim=time_dim, skipna=True)
             else:
@@ -608,8 +636,39 @@ class AggregationService:
         umm_var_facts: Any = None,
         qa_good_tokens: list[str] | None = None,
         source_ds: xr.Dataset | None = None,
-        qa_pixel_counts: dict[str, Any] | None = None,
     ) -> tuple[xr.DataArray, dict[str, Any]]:
+        """Mask ``da`` honestly and disclose exactly what was masked.
+
+        See ``_resolve_and_mask`` for the resolution doctrine. This is the
+        interface every caller outside this module uses: the masked array and
+        its complete masking provenance, nothing else to learn. The QA counters
+        the mask recorded stay behind the seam -- ``aggregate`` is their only
+        consumer and it calls the private form directly.
+
+        Returns ``(masked_da, masking_provenance)``.
+        """
+        masked = self._resolve_and_mask(
+            da,
+            variable=variable,
+            col_info=col_info,
+            collection_id=collection_id,
+            umm_var_facts=umm_var_facts,
+            qa_good_tokens=qa_good_tokens,
+            source_ds=source_ds,
+        )
+        return masked.data, masked.provenance
+
+    def _resolve_and_mask(
+        self,
+        da: xr.DataArray,
+        *,
+        variable: str | None = None,
+        col_info: dict[str, Any] | None = None,
+        collection_id: str | None = None,
+        umm_var_facts: Any = None,
+        qa_good_tokens: list[str] | None = None,
+        source_ds: xr.Dataset | None = None,
+    ) -> MaskedField:
         """Resolve fill/valid-range/QA masking facts (T25's collections.yaml
         -> UMM-Var -> CF-attrs precedence, plus the three-tier QA-flag
         doctrine) and apply them to ``da``, honestly. Shared by aggregate()
@@ -628,16 +687,12 @@ class AggregationService:
         full-grid ``source_ds`` via its default inner join, no explicit
         cropping of ``source_ds`` required.
 
-        ``qa_pixel_counts`` is an optional out-dict receiving the raw QA
-        counters this call computed, alongside the ``masking_provenance`` they
-        are summarized into. Nothing about the returned provenance changes --
-        it is still complete and synchronous, exactly as every caller reads it.
-        The dict exists so a caller that is about to walk the same graph again
-        (``_aggregate``, for its valid-timestep scan) can reuse a reduction
-        this compute already paid for instead of forcing a second I/O pass over
-        the bundle.
-
-        Returns ``(masked_da, masking_provenance)``.
+        Returns a ``MaskedField``: the masked array, its complete masking
+        provenance, and the raw QA counters this call computed. The counters
+        ride the return value rather than a caller-supplied out-dict so the
+        reuse channel is visible in the type -- ``aggregate`` consumes them for
+        its valid-timestep scan instead of forcing a second I/O pass over the
+        bundle, and no other caller has to know they exist.
         """
         yaml_info = col_info or self._collection_info(collection_id, variable)
         umm_var_variable = match_umm_var_variable(umm_var_facts, variable or da.name)
@@ -702,19 +757,16 @@ class AggregationService:
         masking_provenance.update(qa_provenance)
 
         # T55: count the QA outcome where the mask is actually applied and fold
-        # it into the same provenance the disclosure already travels in. Both
-        # real tool paths crop to the AOI *before* masking, so the counts are
-        # region-scoped and mean the same thing on a heatmap and a timeseries.
-        counts = qa_pixel_counts if qa_pixel_counts is not None else {}
-        da = self.apply_quality_mask(
-            da,
-            source_ds,
-            resolved_col_info,
-            variable=variable,
-            qa_pixel_counts=counts,
+        # it into the same provenance the disclosure already travels in. Every
+        # caller narrows to its analyzed region -- an AOI crop on the plot/stat
+        # paths, the monitor cell on the validation path -- *before* masking, so
+        # the counters mean the same thing on a heatmap, a timeseries, and a
+        # point series. ``qa_counted_extent`` states which of those it was.
+        da, counts = self._apply_quality_mask(
+            da, source_ds, resolved_col_info, variable=variable,
         )
         masking_provenance.update(_qa_pass_rate_provenance(counts))
-        return da, masking_provenance
+        return MaskedField(da, masking_provenance, counts)
 
     def to_dataarray(
         self,
@@ -917,7 +969,7 @@ class AggregationService:
             suggestion=f"Pass variable=<name>, e.g. one of: {', '.join(shown)}{more}.",
         )
 
-    def apply_quality_mask(
+    def _apply_quality_mask(
         self,
         da: xr.DataArray,
         ds: xr.Dataset | None = None,
@@ -926,8 +978,16 @@ class AggregationService:
         apply_quality_flag: bool = True,
         variable: str | None = None,
         umm_var_facts: Any = None,
-        qa_pixel_counts: dict[str, Any] | None = None,
-    ) -> xr.DataArray:
+    ) -> tuple[xr.DataArray, dict[str, Any]]:
+        """Apply fill / valid-range / QA-flag masking and report what the QA
+        pass counted.
+
+        Internal to this module: ``_resolve_and_mask`` is the only caller, and
+        it is what resolves the masking facts this consumes. The returned
+        counters are empty when QA-flag masking did not run at all -- absent,
+        never zeroed, so "no QA mask" stays distinguishable from "nothing
+        passed".
+        """
         col_info = col_info or {}
         if umm_var_facts is not None:
             umm_var_variable = match_umm_var_variable(umm_var_facts, variable or da.name)
@@ -959,6 +1019,7 @@ class AggregationService:
         if valid_max is not None:
             da = da.where(da <= valid_max)
 
+        counts: dict[str, Any] = {}
         qf_var = col_info.get("quality_flag_var")
         if apply_quality_flag and ds is not None and qf_var and qf_var in ds.data_vars:
             qf = ds[qf_var]
@@ -967,10 +1028,9 @@ class AggregationService:
             if good_values is not None or bad_values is not None:
                 qf = self._decode_flag_fill(qf)
                 condition = flag_pass_condition(qf, good_values, bad_values)
-                if qa_pixel_counts is not None:
-                    qa_pixel_counts.update(_count_qa_pixels(da, qf, condition))
+                counts = _count_qa_pixels(da, qf, condition)
                 da = da.where(condition)
-        return da
+        return da, counts
 
     @staticmethod
     def _decode_flag_fill(qf: xr.DataArray) -> xr.DataArray:
@@ -994,6 +1054,34 @@ class AggregationService:
         if valid_max is not None:
             qf = qf.where(qf <= valid_max)
         return qf
+
+    def qa_flag_variable(
+        self,
+        ds: xr.Dataset | None,
+        da: xr.DataArray,
+        col_info: dict[str, Any] | None = None,
+    ) -> str | None:
+        """The name of ``da``'s sibling QA-flag variable, or ``None``.
+
+        The identification half of the masking doctrine, for callers who need
+        to know *which* variable carries quality without masking anything --
+        plot_tools excludes it from the evidence band loop, because T55 already
+        reports its pass rate once, from the mask itself, and a second
+        computation there could only disagree.
+
+        Answers only with a name the caller can use: a flag pinned in
+        ``col_info`` but absent from the opened view is not reachable, so it is
+        not an answer. Total by construction -- an unreadable or malformed view
+        resolves to "no flag identified" rather than raising, since this
+        question is always best-effort and never worth failing a chart over.
+        """
+        try:
+            qf_var, _ = self._resolve_qa_flag_var(ds, da, col_info or {})
+        except Exception:  # pragma: no cover -- defensive, see docstring
+            return None
+        if qf_var and qf_var in getattr(ds, "data_vars", {}):
+            return qf_var
+        return None
 
     def _resolve_qa_flag_var(
         self, ds: xr.Dataset | None, da: xr.DataArray, yaml_info: dict[str, Any],

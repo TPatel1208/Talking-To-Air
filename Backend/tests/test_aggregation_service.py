@@ -145,7 +145,7 @@ class AggregationServiceTests(unittest.TestCase):
             attrs={"_FillValue": -999.0, "valid_min": 0.0, "valid_max": 100.0},
         )
 
-        masked = AggregationService().apply_quality_mask(da, col_info={})
+        masked, _ = AggregationService()._apply_quality_mask(da, col_info={})
 
         values = masked.values
         self.assertTrue(self.np.isnan(values[0, 0]))
@@ -959,7 +959,7 @@ class AggregationServiceTests(unittest.TestCase):
             attrs={"_FillValue": -1.0, "valid_min": -1000.0, "valid_max": 1000.0},
         )
 
-        masked = AggregationService().apply_quality_mask(
+        masked, _ = AggregationService()._apply_quality_mask(
             da, col_info={"fill_value": -1.0, "valid_min": 0.0, "valid_max": 100.0}
         )
 
@@ -1006,7 +1006,7 @@ class AggregationServiceTests(unittest.TestCase):
             name="conc",
         )
 
-        masked = AggregationService().apply_quality_mask(da, col_info={"fill_value": 0.0})
+        masked, _ = AggregationService()._apply_quality_mask(da, col_info={"fill_value": 0.0})
 
         values = masked.values
         self.assertTrue(self.np.isnan(values[0, 0]))  # exact 0 fill masked
@@ -1027,7 +1027,7 @@ class AggregationServiceTests(unittest.TestCase):
             name="v",
         )
 
-        masked = AggregationService().apply_quality_mask(da, col_info={"fill_value": 50.0})
+        masked, _ = AggregationService()._apply_quality_mask(da, col_info={"fill_value": 50.0})
 
         values = masked.values
         self.assertTrue(self.np.isnan(values[0, 0]))  # exact fill masked
@@ -1048,7 +1048,7 @@ class AggregationServiceTests(unittest.TestCase):
             "qa": (("lat", "lon"), self.np.array([[0.0, 2.0, self.np.nan]])),
         })
 
-        masked = AggregationService().apply_quality_mask(
+        masked, _ = AggregationService()._apply_quality_mask(
             ds["aod"], ds=ds, col_info={"quality_flag_var": "qa", "qa_bad_values": [2]},
         )
 
@@ -1073,7 +1073,7 @@ class AggregationServiceTests(unittest.TestCase):
         })
         ds["qa"].attrs["_FillValue"] = 255
 
-        masked = AggregationService().apply_quality_mask(
+        masked, _ = AggregationService()._apply_quality_mask(
             ds["hcho"], ds=ds, col_info={"quality_flag_var": "qa", "qa_bad_values": [2]},
         )
 
@@ -1095,7 +1095,7 @@ class AggregationServiceTests(unittest.TestCase):
             name="aod",
         )
 
-        masked = AggregationService().apply_quality_mask(da, col_info={})
+        masked, _ = AggregationService()._apply_quality_mask(da, col_info={})
 
         values = masked.values
         self.assertTrue(self.np.isnan(values[0, 0]))  # below valid_range min
@@ -1113,7 +1113,7 @@ class AggregationServiceTests(unittest.TestCase):
             name="aod",
         )
 
-        masked = AggregationService().apply_quality_mask(da, col_info={})
+        masked, _ = AggregationService()._apply_quality_mask(da, col_info={})
 
         self.assertEqual(masked.values[0, 0], 5.0)
         self.assertTrue(self.np.isnan(masked.values[0, 1]))  # 15 > valid_max 10
@@ -1222,7 +1222,7 @@ class AggregationServiceTests(unittest.TestCase):
         da.encoding["scale_factor"] = 2.0e13
         da.encoding["add_offset"] = 0.0
 
-        masked = AggregationService().apply_quality_mask(da, col_info={})
+        masked, _ = AggregationService()._apply_quality_mask(da, col_info={})
         values = masked.values
 
         self.assertEqual(values[0, 0], 2.0e13)
@@ -1245,7 +1245,7 @@ class AggregationServiceTests(unittest.TestCase):
         da.encoding["scale_factor"] = 2.0e13
         da.encoding["add_offset"] = 0.0
 
-        masked = AggregationService().apply_quality_mask(
+        masked, _ = AggregationService()._apply_quality_mask(
             da, col_info={"valid_min": 0.0, "valid_max": 6.0e17},  # already physical
         )
         values = masked.values
@@ -1285,15 +1285,14 @@ class QaPassRateCounterTests(unittest.TestCase):
         return {"quality_flag_var": "main_data_quality_flag", "qa_good_values": [0]}
 
     def test_apply_quality_mask_counts_the_pixels_it_checked_and_the_pixels_that_passed(self):
-        """The opt-in counter dict is filled from the same ``.where()``
-        condition the mask uses: 3 of 4 pixels carry a good flag."""
+        """The counters come back from the same ``.where()`` condition the mask
+        uses: 3 of 4 pixels carry a good flag."""
         from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self._tempo_ds([[1.0, 2.0], [3.0, 4.0]], [[0, 1], [0, 0]])
-        counts = {}
 
-        AggregationService().apply_quality_mask(
-            ds["no2"], ds, self._pinned, qa_pixel_counts=counts,
+        _, counts = AggregationService()._apply_quality_mask(
+            ds["no2"], ds, self._pinned,
         )
 
         self.assertEqual(counts["checked"], 4)
@@ -1308,11 +1307,8 @@ class QaPassRateCounterTests(unittest.TestCase):
 
         ds = self._tempo_ds([[-999.0, 500.0], [3.0, 4.0]], [[0, 0], [0, 0]])
         col_info = {**self._pinned, "fill_value": -999.0, "valid_min": 0.0, "valid_max": 100.0}
-        counts = {}
 
-        AggregationService().apply_quality_mask(
-            ds["no2"], ds, col_info, qa_pixel_counts=counts,
-        )
+        _, counts = AggregationService()._apply_quality_mask(ds["no2"], ds, col_info)
 
         self.assertEqual(counts["checked"], 2)
         self.assertEqual(counts["passing"], 2)
@@ -1336,10 +1332,9 @@ class QaPassRateCounterTests(unittest.TestCase):
             },
             coords={"lat": [10.0, 20.0], "lon": [30.0, 40.0]},
         )
-        counts = {}
 
-        AggregationService().apply_quality_mask(
-            ds["no2"], ds, self._pinned, qa_pixel_counts=counts,
+        _, counts = AggregationService()._apply_quality_mask(
+            ds["no2"], ds, self._pinned,
         )
 
         self.assertEqual(counts["checked"], 4)
@@ -1359,10 +1354,9 @@ class QaPassRateCounterTests(unittest.TestCase):
         ds = self._tempo_ds(
             [[1.0, 2.0], [3.0, 4.0]], [[0, 0], [1, 1]], lat=(0.0, 80.0),
         )
-        counts = {}
 
-        AggregationService().apply_quality_mask(
-            ds["no2"], ds, self._pinned, qa_pixel_counts=counts,
+        _, counts = AggregationService()._apply_quality_mask(
+            ds["no2"], ds, self._pinned,
         )
 
         w_eq, w_80 = 1.0, math.cos(math.radians(80.0))
@@ -1374,23 +1368,69 @@ class QaPassRateCounterTests(unittest.TestCase):
         self.assertEqual(counts["checked"], 4)
         self.assertEqual(counts["passing"], 2)
 
-    def test_counting_leaves_the_masked_array_bit_identical(self):
+    def test_counting_leaves_the_masked_array_exactly_what_the_qa_condition_dictates(self):
         """An honesty feature must not change the science. The counters are
-        derived from the same condition, never from a re-derived mask that
-        could re-enter the masking path."""
+        derived from the same condition the mask applies, never from a
+        re-derived mask that could re-enter the masking path -- so the surviving
+        cells are exactly the good-flagged ones and nothing else moved."""
         from tta_backend.preprocessing.aggregation_service import AggregationService
 
+        # Good flags on the diagonal: [0][0] and [1][1] survive, the rest go.
         ds = self._tempo_ds([[1.0, 2.0], [3.0, 4.0]], [[0, 1], [1, 0]])
-        service = AggregationService()
 
-        without = service.apply_quality_mask(ds["no2"], ds, self._pinned)
-        with_counts = service.apply_quality_mask(
-            ds["no2"], ds, self._pinned, qa_pixel_counts={},
+        masked, counts = AggregationService()._apply_quality_mask(
+            ds["no2"], ds, self._pinned,
         )
 
         self.np.testing.assert_array_equal(
-            without.values, with_counts.values,
+            masked.values, self.np.array([[1.0, self.np.nan], [self.np.nan, 4.0]]),
         )
+        self.assertEqual(counts["passing"], 2)
+
+    def test_qa_flag_variable_names_the_sibling_flag_without_masking_anything(self):
+        """plot_tools needs to *identify* the QA flag so it can exclude it from
+        the evidence band loop -- its pass rate is already reported once, from
+        the mask itself (T55), so a second computation there could only
+        disagree. A narrow public accessor for that question, so the caller
+        stops reaching across a module seam into a private method.
+
+        Answers with a name the caller can actually use: a flag pinned in
+        col_info but absent from the opened view is not reachable, so it is not
+        an answer.
+        """
+        from tta_backend.preprocessing.aggregation_service import AggregationService
+
+        ds = self._tempo_ds([[1.0, 2.0], [3.0, 4.0]], [[0, 1], [0, 0]])
+        service = AggregationService()
+
+        self.assertEqual(
+            service.qa_flag_variable(ds, ds["no2"], self._pinned),
+            "main_data_quality_flag",
+        )
+        self.assertIsNone(
+            service.qa_flag_variable(
+                ds, ds["no2"], {"quality_flag_var": "not_in_this_file"},
+            ),
+        )
+
+    def test_provenance_states_the_extent_the_counters_actually_covered(self):
+        """A pass rate is only interpretable against the extent it was counted
+        over: ``qa_checked_pixels: 4`` says nothing about whether that was a
+        whole grid or one cell until the extent says so too.
+
+        Derived from the aligned array the reductions actually ran on, never
+        declared by a caller -- a caller cannot state an extent that disagrees
+        with what was counted, which is the failure this closes.
+        """
+        from tta_backend.preprocessing.aggregation_service import AggregationService
+
+        ds = self._tempo_ds([[1.0, 2.0], [3.0, 4.0]], [[0, 1], [0, 0]])
+
+        _, provenance = AggregationService().resolve_and_mask(
+            ds["no2"], col_info=self._pinned, source_ds=ds,
+        )
+
+        self.assertEqual(provenance["qa_counted_extent"], {"lat": 2, "lon": 2})
 
     def test_a_lazy_array_stays_lazy_and_its_graph_is_computed_exactly_once(self):
         """T51's finding applied here: counting adds an eager reduction to the
@@ -1422,10 +1462,8 @@ class QaPassRateCounterTests(unittest.TestCase):
                 ("lat", "lon"), self.np.array([[0, 1], [0, 0]], dtype="int64"),
             ),
         })
-        counts = {}
-
-        masked = AggregationService().apply_quality_mask(
-            ds["no2"], ds, self._pinned, qa_pixel_counts=counts,
+        masked, counts = AggregationService()._apply_quality_mask(
+            ds["no2"], ds, self._pinned,
         )
 
         self.assertEqual(counts["checked"], 4)
@@ -1678,12 +1716,18 @@ class QaPassRateCounterTests(unittest.TestCase):
         # resolution, not a redefinition.
         self.assertAlmostEqual(provenance["qa_pass_rate"], 0.5)
 
-    def test_the_count_is_region_scoped_because_callers_crop_before_masking(self):
-        """Both real tool paths crop to the AOI *before* masking, which is the
-        only reason one pass-rate card means the same thing on a heatmap and a
-        timeseries. Pin it: a cropped input must count strictly fewer pixels
-        than the full grid, so a future caller that masks before cropping
-        fails here instead of silently reporting a continental rate for a city."""
+    def test_the_count_is_region_scoped_because_callers_narrow_before_masking(self):
+        """Every real tool path narrows to its analyzed region *before* masking
+        -- an AOI crop on the plot/stat paths, the monitor cell on the
+        validation path -- which is the only reason one pass-rate card means the
+        same thing on a heatmap, a timeseries and a point series. Pin it: a
+        narrowed input must count strictly fewer pixels than the full grid, so a
+        future caller that masks before narrowing fails here instead of silently
+        reporting a continental rate for a city.
+
+        The extent rides along so the number says which of the two it was --
+        reading ``checked`` alone cannot distinguish a 2-cell strip from a whole
+        small grid."""
         from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self._tempo_ds(
@@ -1691,15 +1735,16 @@ class QaPassRateCounterTests(unittest.TestCase):
         )
         service = AggregationService()
 
-        full, cropped = {}, {}
-        service.apply_quality_mask(ds["no2"], ds, self._pinned, qa_pixel_counts=full)
-        service.apply_quality_mask(
-            ds["no2"].sel(lat=[10.0]), ds, self._pinned, qa_pixel_counts=cropped,
+        _, full = service._apply_quality_mask(ds["no2"], ds, self._pinned)
+        _, cropped = service._apply_quality_mask(
+            ds["no2"].sel(lat=[10.0]), ds, self._pinned,
         )
 
         self.assertEqual(full["checked"], 4)
         self.assertLess(cropped["checked"], full["checked"])
         self.assertEqual(cropped["checked"], 2)
+        self.assertEqual(full["counted_extent"], {"lat": 2, "lon": 2})
+        self.assertEqual(cropped["counted_extent"], {"lat": 1, "lon": 2})
 
     def test_a_collection_nobody_pinned_still_gets_a_real_pass_rate(self):
         """collections.yaml pins a QA rule for a minority of collections, but

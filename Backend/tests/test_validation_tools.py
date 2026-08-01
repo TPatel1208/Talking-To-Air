@@ -160,6 +160,10 @@ class MonitorSeriesExtractionTests(unittest.TestCase):
         self.assertEqual(masking["qa_checked_pixels"], 2)
         self.assertEqual(masking["qa_passing_pixels"], 2)
         self.assertEqual(masking["qa_pass_rate"], 1.0)
+        # And it says so itself: the counters were reduced over two timesteps
+        # at one cell, with no lat/lon extent left to average over. Reading
+        # "2 checked pixels" alone could not tell that from a 2-cell strip.
+        self.assertEqual(masking["qa_counted_extent"], {"time": 2})
 
 
 @unittest.skipIf(

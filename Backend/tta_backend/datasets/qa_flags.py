@@ -143,7 +143,7 @@ def resolve_qa_info(
     """Resolve which flag values count as "good" per the three-tier doctrine.
 
     Returns ``(qa_col_info, qa_provenance)``: ``qa_col_info`` carries whatever
-    ``qa_good_values``/``qa_bad_values`` AggregationService.apply_quality_mask
+    ``qa_good_values``/``qa_bad_values`` AggregationService.resolve_and_mask
     needs to actually filter; ``qa_provenance`` is what a caller merges into
     ``result.meta["masking"]`` so the tier that decided is never left
     unstated (``qa_status``/``qa_source`` plus tier-specific detail).

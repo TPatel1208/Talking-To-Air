@@ -3,7 +3,7 @@ datasets/mask_info.py
 ======================
 The retrieval MCP embeds each variable's fill value and valid range as
 CF-convention attrs (_FillValue/valid_min/valid_max) on the Zarr/NetCDF it
-materializes — AggregationService.apply_quality_mask already reads those
+materializes — AggregationService.resolve_and_mask already reads those
 directly off the opened DataArray. MASK_OVERRIDES corrects the rare
 known-wrong UMM-Var/CF record, keyed by short_name, taking precedence over
 whatever the file itself says. Populated from the live-matrix quirk ledger

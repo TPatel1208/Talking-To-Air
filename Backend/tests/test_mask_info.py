@@ -223,7 +223,7 @@ class MaskInfoAppliesToAggregationServiceTests(unittest.TestCase):
             attrs={"_FillValue": -999.0, "valid_min": 0.0, "valid_max": 500.0},
         )
 
-        masked = AggregationService().apply_quality_mask(da, col_info={})
+        masked, _ = AggregationService()._apply_quality_mask(da, col_info={})
 
         values = masked.values
         self.assertTrue(np.isnan(values[0, 0]))  # sentinel fill
@@ -248,7 +248,7 @@ class MaskInfoAppliesToAggregationServiceTests(unittest.TestCase):
         overrides = {"QUIRKY_NO2": {"fill_value": -1.0, "valid_min": 0.0, "valid_max": 500.0}}
 
         col_info = override_for("QUIRKY_NO2", overrides=overrides)
-        masked = AggregationService().apply_quality_mask(da, col_info=col_info)
+        masked, _ = AggregationService()._apply_quality_mask(da, col_info=col_info)
 
         values = masked.values
         self.assertTrue(np.isnan(values[0, 0]))

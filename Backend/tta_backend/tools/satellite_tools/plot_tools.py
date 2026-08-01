@@ -756,13 +756,8 @@ def _evidence(ds, da, col_info: dict | None, region: dict | None) -> list[dict]:
     # it where the mask is actually applied (aggregation_service) and reports it
     # once as masking provenance, so there is no second computation here that
     # could legitimately disagree with the mask the chart was drawn from.
-    qf_leaf = None
-    try:
-        qf_var, _ = _aggregation_service._resolve_qa_flag_var(ds, da, col_info)
-        if qf_var and qf_var in ds.data_vars:
-            qf_leaf = _evi_leaf(qf_var)
-    except Exception:
-        pass
+    qf_var = _aggregation_service.qa_flag_variable(ds, da, col_info)
+    qf_leaf = _evi_leaf(qf_var) if qf_var else None
 
     # Context / uncertainty means -- classify the opened Dataset's bands and
     # keep only High/Medium-confidence quality (uncertainty) and context bands,
