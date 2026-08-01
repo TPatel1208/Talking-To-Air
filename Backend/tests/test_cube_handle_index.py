@@ -152,6 +152,14 @@ class HandleIndexReorderTests(unittest.IsolatedAsyncioTestCase):
 
         StoreTestCase.setUp(self)
         self.set_limits = StoreTestCase.set_limits.__get__(self)
+        # Every test here ends on an `open_handle`, and an `open_handle` that
+        # misses schedules a fire-and-forget cube write. Nothing awaits it: the
+        # task writes on a worker thread and `reset_for_test` only clears the
+        # in-flight *set*. So without this the writer is still creating chunk
+        # files while StoreTestCase's tempdir is being removed. Registered here,
+        # after StoreTestCase.setUp, so the LIFO cleanup stack drains before that
+        # tempdir goes away rather than after.
+        self.addAsyncCleanup(self._drain_writes)
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
         self.volume = HandleVolume(self._tmpdir.name)
