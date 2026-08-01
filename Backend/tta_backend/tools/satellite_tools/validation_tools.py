@@ -45,6 +45,26 @@ def _nearest_cell_series(da, lat: float, lon: float):
     return da.sel({lat_coord: lat, lon_coord: lon}, method="nearest")
 
 
+def _nearest_cell_dataset(ds, da, lat: float, lon: float):
+    """Narrow ``ds`` to the same cell ``_nearest_cell_series`` takes from ``da``.
+
+    The sibling QA-flag variable has to be narrowed alongside the science
+    variable, not left at full grid: ``.sel`` leaves lat/lon as scalar coords
+    rather than dims, so a full-grid flag condition would broadcast the single
+    cell back up to the whole grid at ``.where()`` instead of aligning against
+    it. Falls back to ``ds`` untouched when it does not carry the science
+    array's horizontal coords at all -- there is nothing to narrow against.
+    """
+    if ds is None:
+        return None
+    selection = {
+        name: value
+        for name, value in ((find_lat_coord(da), lat), (find_lon_coord(da), lon))
+        if name and name in ds.coords
+    }
+    return ds.sel(selection, method="nearest") if selection else ds
+
+
 def _extract_monitor_series(
     da, lat: float, lon: float, col_info: dict | None = None, source_ds=None,
 ):
@@ -58,14 +78,24 @@ def _extract_monitor_series(
     hand-rolled apply_quality_mask(ds=None) call that could never actually
     apply QA-flag masking or disclose its provenance.
 
+    Narrowed to the monitor cell BEFORE masking, never after. The provenance
+    riding out beside this series reports a QA pass rate whose documented
+    basis (``QA_PASS_RATE_BASIS``) is "pixels in the analyzed region", and for
+    a monitor comparison that region is one cell -- masking the full grid
+    first counted every other cell's QA outcome into a number presented next
+    to a single-point series. This is the same crop-before-mask ordering both
+    plot paths already follow, so the counters mean the same thing on a
+    heatmap, a timeseries, and here.
+
     Returns (times: list[ISO str], values: list[float], coverage: dict,
     masking: dict) where coverage = {n_total, n_valid, n_excluded,
     coverage_fraction} and masking is the honest QA-masking provenance dict.
     """
-    masked, masking = _aggregation_service.resolve_and_mask(
-        da, col_info=col_info, source_ds=source_ds,
+    series, masking = _aggregation_service.resolve_and_mask(
+        _nearest_cell_series(da, lat, lon),
+        col_info=col_info,
+        source_ds=_nearest_cell_dataset(source_ds, da, lat, lon),
     )
-    series = _nearest_cell_series(masked, lat, lon)
 
     n_total = series.sizes.get("time", 1)
     raw_values = np.atleast_1d(series.values)
