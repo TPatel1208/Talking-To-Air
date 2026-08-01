@@ -8,13 +8,7 @@ the REAL MCP — nodes with prefix-derived kinds, events keyed
 the exact expected Markdown comes out — no LLM in the loop, so the same
 session always yields the same text.
 """
-import os
-import sys
 import unittest
-
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 
 class BuildMethodsMarkdownTests(unittest.TestCase):

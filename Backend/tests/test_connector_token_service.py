@@ -1,11 +1,5 @@
-import os
-import sys
 import unittest
 from datetime import datetime, timedelta, timezone
-
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 
 def _make_token(exp=None, **extra_claims):

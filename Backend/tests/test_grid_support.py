@@ -6,20 +6,15 @@ crash with an opaque empty-coords error). It must instead raise a specific,
 T18-typed `unsupported_grid` error that tells the researcher the truth about
 the limitation.
 """
-import os
-import sys
 import unittest
 
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)
 
-import numpy as np  # noqa: E402
-import xarray as xr  # noqa: E402
-from shapely.geometry import box  # noqa: E402
+import numpy as np
+import xarray as xr
+from shapely.geometry import box
 
-from tta_backend.earthdata_mcp.results import CATEGORY_UNSUPPORTED_GRID, MCPToolError  # noqa: E402
-from tta_backend.utils.plotting import mask_data_by_geometry  # noqa: E402
+from tta_backend.earthdata_mcp.results import CATEGORY_UNSUPPORTED_GRID, MCPToolError
+from tta_backend.utils.plotting import mask_data_by_geometry
 
 
 class MaskGridSupportTests(unittest.TestCase):

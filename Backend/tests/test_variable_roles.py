@@ -13,14 +13,9 @@ from __future__ import annotations
 import glob
 import json
 import os
-import sys
 import unittest
 
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
-
-from tta_backend.datasets.variable_roles import (  # noqa: E402
+from tta_backend.datasets.variable_roles import (
     CONFIDENCE_HIGH,
     CONFIDENCE_LOW,
     CONFIDENCE_MEDIUM,
@@ -34,7 +29,7 @@ from tta_backend.datasets.variable_roles import (  # noqa: E402
     related_variables,
 )
 
-FIXTURE_DIR = os.path.join(BACKEND_DIR, "tests", "fixtures", "variable_inventories")
+FIXTURE_DIR = os.path.join(os.path.dirname(__file__), "fixtures", "variable_inventories")
 
 
 def _load_fixtures() -> list[dict]:

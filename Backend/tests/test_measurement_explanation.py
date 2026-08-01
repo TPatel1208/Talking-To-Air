@@ -16,14 +16,8 @@ compact reliability subset, with NO recomputation and NO error path:
 import asyncio
 import importlib.util
 import json
-import os
-import sys
 import unittest
 from unittest import mock
-
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)
 
 
 def _evidence_payload():

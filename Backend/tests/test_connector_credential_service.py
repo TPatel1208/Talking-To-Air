@@ -9,15 +9,9 @@ independent of any live MCP or Postgres (repository calls are patched, same
 seam test_user_connector_repository.py already proves against a fake conn).
 """
 import asyncio
-import os
-import sys
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
-
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 
 def _settings_with_key():

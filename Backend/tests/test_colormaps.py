@@ -1,12 +1,7 @@
-import os
-import sys
 import unittest
 
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
-from tta_backend.utils.colormaps import resolve  # noqa: E402
+from tta_backend.utils.colormaps import resolve
 
 
 class ColormapRegistryTests(unittest.TestCase):

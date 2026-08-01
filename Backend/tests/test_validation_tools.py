@@ -14,9 +14,6 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
 
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)
 
 TESTS_DIR = os.path.dirname(__file__)
 if TESTS_DIR not in sys.path:
@@ -117,6 +114,52 @@ class MonitorSeriesExtractionTests(unittest.TestCase):
         self.assertEqual(coverage["n_total"], 2)
         self.assertEqual(coverage["n_valid"], 1)
         self.assertEqual(coverage["n_excluded"], 1)
+
+    def test_disclosed_qa_pass_rate_describes_the_monitor_cell_not_the_whole_grid(self):
+        """The pass rate riding out on this series' masking provenance must
+        describe the cell the series came from.
+
+        ``QA_PASS_RATE_BASIS`` promises "pixels in the analyzed region", and for
+        a monitor comparison the analyzed region is one cell. Masking the full
+        grid and narrowing afterwards counts every other cell's QA outcome into
+        a number presented next to a single-point series -- the same
+        scope-substitution class as T46, and the inverse of the crop-before-mask
+        ordering both plot paths already follow.
+
+        Here the monitor cell passes QA on both days while all three
+        neighbouring cells fail on both days: point-scoped is 100%, grid-scoped
+        is roughly a quarter.
+        """
+        import numpy as np
+        import pandas as pd
+        import xarray as xr
+        from tta_backend.tools.satellite_tools.validation_tools import _extract_monitor_series
+
+        times = pd.date_range("2024-01-01", periods=2, freq="D")
+        # Monitor cell is (lat=10.0, lon=30.0) -- index [:, 0, 0].
+        values = np.full((2, 2, 2), 5.0)
+        flags = np.ones((2, 2, 2), dtype="int64")
+        flags[:, 0, 0] = 0  # only the monitor cell carries a good flag
+
+        source_ds = xr.Dataset(
+            {
+                "no2": (("time", "lat", "lon"), values),
+                "main_data_quality_flag": (("time", "lat", "lon"), flags),
+            },
+            coords={"time": times, "lat": [10.0, 20.0], "lon": [30.0, 40.0]},
+        )
+        col_info = {"quality_flag_var": "main_data_quality_flag", "qa_good_values": [0]}
+
+        _, values_out, _, masking = _extract_monitor_series(
+            source_ds["no2"], lat=10.0, lon=30.0, col_info=col_info, source_ds=source_ds,
+        )
+
+        # The series itself is already point-correct: the monitor cell survives.
+        self.assertEqual(values_out, [5.0, 5.0])
+        # ...so the disclosure beside it must be point-scoped too.
+        self.assertEqual(masking["qa_checked_pixels"], 2)
+        self.assertEqual(masking["qa_passing_pixels"], 2)
+        self.assertEqual(masking["qa_pass_rate"], 1.0)
 
 
 @unittest.skipIf(

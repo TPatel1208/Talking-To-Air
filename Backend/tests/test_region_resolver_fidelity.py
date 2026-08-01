@@ -10,14 +10,9 @@ sub-continental US quadrants) stay boxes but say so. Sync and async
 resolvers normalize input identically.
 """
 import importlib.util
-import os
-import sys
 import unittest
 from unittest.mock import patch
 
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 REQUIRED_MODULES = ["httpx", "cartopy", "shapely", "rasterio", "affine"]
 

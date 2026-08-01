@@ -1,8 +1,24 @@
 """
 Backend/conftest.py
 -------------------
-Pytest bootstrap. Point PROJ at rasterio's bundled data directory before any
-test module (transitively) imports ``utils.overlay_render``, which builds a
+Pytest bootstrap. Two jobs, both of which must happen before any test module
+is imported.
+
+**1. Put ``Backend/`` on ``sys.path``** so ``import tta_backend...`` resolves
+in a checkout where the package has not been ``pip install -e``'d. This lived
+copy-pasted at the top of 102 test files, each carrying a stale "TODO: remove
+after pyproject.toml install" — stale because pyproject *did* land, but its
+flat include list omitted ``api`` and ``earthdata_mcp``, so the hack stayed
+load-bearing anyway. The tta_backend.* refactor fixed the packaging; this is
+the one remaining reason the path needs help, and one copy is enough now that
+pytest is the runner everywhere (CI, ``--profile test``, and locally).
+
+Consequence worth knowing: ``python Backend/tests/test_x.py`` no longer works
+on its own. Use ``python -m pytest Backend/tests/test_x.py``. The ``__main__``
+blocks those files still carry are vestigial from the unittest era.
+
+**2. Point PROJ at rasterio's bundled data directory** before any test module
+(transitively) imports ``tta_backend.utils.overlay_render``, which builds a
 CRS at import time (``CRS.from_epsg(4326)``).
 
 On this Windows checkout ``PROJ_LIB`` is inherited from a *different* Python
@@ -16,8 +32,13 @@ where PROJ resolves correctly on its own, is never touched.
 """
 import importlib.util
 import os
+import sys
 
 import pytest
+
+BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+if BACKEND_DIR not in sys.path:
+    sys.path.insert(0, BACKEND_DIR)
 
 
 def _has_proj_db(path: str | None) -> bool:

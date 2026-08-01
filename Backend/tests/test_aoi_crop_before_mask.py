@@ -14,19 +14,14 @@ granules ship, which flips cell centers lying on the geometry's boundary.
 The governing assertion here is numerical equivalence, not speed: every value
 the cropped path keeps must be exactly the value the uncropped path kept.
 """
-import os
-import sys
 import unittest
 
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)
 
-import numpy as np  # noqa: E402
-import xarray as xr  # noqa: E402
-from shapely.geometry import box  # noqa: E402
+import numpy as np
+import xarray as xr
+from shapely.geometry import box
 
-from tta_backend.utils.plotting import mask_data_by_geometry  # noqa: E402
+from tta_backend.utils.plotting import mask_data_by_geometry
 
 
 def _grid(lats, lons, name="no2"):

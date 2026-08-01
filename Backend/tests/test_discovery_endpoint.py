@@ -5,15 +5,12 @@ import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 TESTS_DIR = os.path.dirname(__file__)
 if TESTS_DIR not in sys.path:
     sys.path.insert(0, TESTS_DIR)
 
-from cache_isolation import ProcessCacheIsolation  # noqa: E402
+from cache_isolation import ProcessCacheIsolation  # noqa: E402 -- needs the TESTS_DIR insert above
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
 

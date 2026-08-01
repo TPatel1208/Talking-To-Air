@@ -19,8 +19,6 @@ import unittest
 import zipfile
 
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 SCRIPTS_DIR = os.path.join(BACKEND_DIR, "scripts")
 if SCRIPTS_DIR not in sys.path:

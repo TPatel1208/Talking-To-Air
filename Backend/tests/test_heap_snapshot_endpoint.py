@@ -7,15 +7,11 @@ every other route (not listed in PUBLIC_ENDPOINTS).
 import dataclasses
 import importlib.util
 import os
-import sys
 import tracemalloc
 import unittest
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
 

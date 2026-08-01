@@ -12,14 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
-import os
-import sys
 import unittest
 from types import SimpleNamespace
 
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 REQUIRED_MODULES = ["langchain_core"]
 

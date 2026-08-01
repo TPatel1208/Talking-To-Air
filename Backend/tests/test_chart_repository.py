@@ -1,14 +1,11 @@
 import json
 import os
 import re
-import sys
 import unittest
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 _SCHEMA_SQL = os.path.abspath(
     os.path.join(BACKEND_DIR, "..", "sql", "init_agent_charts.sql")

@@ -1,13 +1,7 @@
 import importlib.util
 import asyncio
-import os
-import sys
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
-
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 
 @unittest.skipIf(importlib.util.find_spec("langchain") is None, "langchain is not installed")
