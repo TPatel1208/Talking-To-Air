@@ -239,7 +239,14 @@ def _count_qa_pixels(da: xr.DataArray, qf: xr.DataArray, condition: xr.DataArray
     """
     with phase_timer("qa_pass_rate", cells_in=_cell_count(da)):
         checked = da.notnull()
-        checked, qf, condition = xr.align(checked, qf, condition, join="inner")
+        # ``np.isfinite``, deliberately not ``notnull``: this feeds the
+        # valid-timestep scan below, whose definition of "this timestep
+        # survived masking" excludes +-inf as well as NaN. It has to be
+        # exactly that boolean to be allowed to replace it.
+        finite = np.isfinite(da)
+        checked, finite, qf, condition = xr.align(
+            checked, finite, qf, condition, join="inner",
+        )
         passing = checked & condition
         # A pixel whose own flag ``_decode_flag_fill`` nulled lands in the
         # failing bucket -- correct masking (unknown quality reads as absent,
@@ -260,16 +267,29 @@ def _count_qa_pixels(da: xr.DataArray, qf: xr.DataArray, condition: xr.DataArray
         # fill/valid-masked graph, and a compute per counter would re-read the
         # bundle per counter.
         #
-        # MEASURED, not assumed (T51's discipline; story 10): this block costs
-        # +0.32s on a 24-granule 500x700 float32 bundle (0.20s -> 0.51s for
-        # mask+reduce), and it materializes the source graph ONE extra time --
-        # 2 reads through the aggregate reduction instead of 1, because this
-        # compute and the later temporal reduction are separate. That is the
-        # price of the number, and the `qa_pass_rate` phase timer is what keeps
-        # it visible instead of hiding inside `aggregate`. Persisting the
-        # masked array would collapse the two reads but trades I/O for RAM on
-        # exactly the multi-granule bundles that have OOM'd this backend
-        # before, so it is deliberately not done here.
+        # MEASURED, not assumed (T51's discipline), and re-measured after the
+        # first estimate proved optimistic. Counting a lazily-opened 3-granule
+        # bundle through a full ``aggregate()`` with a dask.delayed load
+        # counter showed the source read THREE times, not twice:
+        #   1. this compute,
+        #   2. ``_valid_time_indices``' per-timestep ``.values`` scan, and
+        #   3. the temporal reduction, forced downstream at ``.values``.
+        # Pass 2 is now folded into pass 1 -- the ``valid_by_time`` reduction
+        # below is the same boolean that scan was computing, so it rides this
+        # graph walk for free and ``_valid_time_indices`` consumes the answer
+        # instead of re-deriving it. Verified at 2 reads per granule, down
+        # from 3, by ``test_the_bundle_is_read_once_per_pass_...``.
+        #
+        # Two passes is the FLOOR here, not a compromise pending more work: the
+        # reduction graph cannot be built until the valid timesteps are known
+        # (``_cadence_weighted_mean`` weights each cadence bucket by how many
+        # VALID granules landed in it, and ``_build_meta`` reports their dates),
+        # so scan-then-reduce is a genuine data dependency. Fusing this compute
+        # into the reduction instead would hit the same floor from the other
+        # side while also forcing ``aggregate`` to return an eager result.
+        # Persisting the masked array would collapse the passes but trades I/O
+        # for RAM on exactly the multi-granule bundles that have OOM'd this
+        # backend before, so it is deliberately not done here.
         reductions = {
             "checked": checked.sum(),
             "passing": passing.sum(),
@@ -285,6 +305,12 @@ def _count_qa_pixels(da: xr.DataArray, qf: xr.DataArray, condition: xr.DataArray
             spatial = [d for d in checked.dims if d != time_dim]
             reductions["checked_area_by_time"] = checked_area.sum(spatial)
             reductions["passing_area_by_time"] = passing_area.sum(spatial)
+            # ``_aggregate``'s valid-timestep scan, folded in here. A timestep
+            # survives masking iff some pixel is finite AFTER the QA mask, and
+            # ``da.where(condition)`` makes that exactly ``finite & condition``
+            # -- so this is not an approximation of the scan, it is the scan,
+            # moved onto a graph walk that was happening anyway.
+            reductions["valid_by_time"] = (finite & condition).any(spatial)
         else:
             time_dim = None
         reduced = xr.Dataset(reductions).compute()
@@ -303,6 +329,13 @@ def _count_qa_pixels(da: xr.DataArray, qf: xr.DataArray, condition: xr.DataArray
         )
         counts["times"] = [
             pd.Timestamp(t).isoformat() for t in np.asarray(reduced[time_dim].values)
+        ]
+        # Handed back for ``_valid_time_indices`` to consume instead of
+        # re-scanning. Carries the dimension it was reduced over so the
+        # consumer can refuse a mismatch rather than trust positions blindly.
+        counts["valid_time_dim"] = time_dim
+        counts["valid_time_flags"] = [
+            bool(v) for v in np.asarray(reduced["valid_by_time"].values)
         ]
     return counts
 
@@ -475,6 +508,10 @@ class AggregationService:
         # Dataset for an already-extracted/cropped ``data`` DataArray (T25
         # masking-execution fix -- every real tool path takes this branch).
         qf_source = data if isinstance(data, xr.Dataset) else source_ds
+        # The counters come back alongside the provenance so the valid-timestep
+        # scan below can reuse the per-timestep reduction they already computed,
+        # instead of re-reading the bundle to derive the same booleans.
+        qa_pixel_counts: dict[str, Any] = {}
         da, masking_provenance = self.resolve_and_mask(
             da,
             variable=variable,
@@ -483,6 +520,7 @@ class AggregationService:
             umm_var_facts=umm_var_facts,
             qa_good_tokens=qa_good_tokens,
             source_ds=qf_source,
+            qa_pixel_counts=qa_pixel_counts,
         )
 
         # T25: identified by CF metadata (standard_name/axis/datetime dtype),
@@ -495,7 +533,7 @@ class AggregationService:
             reduced = da
             valid_indices = [0]
         else:
-            valid_indices = self._valid_time_indices(da, time_dim)
+            valid_indices = self._valid_time_indices(da, time_dim, qa_pixel_counts)
             if not valid_indices:
                 reduced = da.isel({time_dim: slice(0, 0)}).mean(dim=time_dim, skipna=True)
             else:
@@ -570,6 +608,7 @@ class AggregationService:
         umm_var_facts: Any = None,
         qa_good_tokens: list[str] | None = None,
         source_ds: xr.Dataset | None = None,
+        qa_pixel_counts: dict[str, Any] | None = None,
     ) -> tuple[xr.DataArray, dict[str, Any]]:
         """Resolve fill/valid-range/QA masking facts (T25's collections.yaml
         -> UMM-Var -> CF-attrs precedence, plus the three-tier QA-flag
@@ -588,6 +627,15 @@ class AggregationService:
         the same way) -- xarray aligns a cropped ``da`` against a
         full-grid ``source_ds`` via its default inner join, no explicit
         cropping of ``source_ds`` required.
+
+        ``qa_pixel_counts`` is an optional out-dict receiving the raw QA
+        counters this call computed, alongside the ``masking_provenance`` they
+        are summarized into. Nothing about the returned provenance changes --
+        it is still complete and synchronous, exactly as every caller reads it.
+        The dict exists so a caller that is about to walk the same graph again
+        (``_aggregate``, for its valid-timestep scan) can reuse a reduction
+        this compute already paid for instead of forcing a second I/O pass over
+        the bundle.
 
         Returns ``(masked_da, masking_provenance)``.
         """
@@ -657,15 +705,15 @@ class AggregationService:
         # it into the same provenance the disclosure already travels in. Both
         # real tool paths crop to the AOI *before* masking, so the counts are
         # region-scoped and mean the same thing on a heatmap and a timeseries.
-        qa_pixel_counts: dict[str, Any] = {}
+        counts = qa_pixel_counts if qa_pixel_counts is not None else {}
         da = self.apply_quality_mask(
             da,
             source_ds,
             resolved_col_info,
             variable=variable,
-            qa_pixel_counts=qa_pixel_counts,
+            qa_pixel_counts=counts,
         )
-        masking_provenance.update(_qa_pass_rate_provenance(qa_pixel_counts))
+        masking_provenance.update(_qa_pass_rate_provenance(counts))
         return da, masking_provenance
 
     def to_dataarray(
@@ -994,12 +1042,49 @@ class AggregationService:
             raise ValueError("No finite values available for statistic.")
         return float(self._STAT_FUNCS[stat](valid))
 
-    def _valid_time_indices(self, da: xr.DataArray, time_dim: str) -> list[int]:
-        indices = []
-        for i in range(da.sizes[time_dim]):
-            if bool(np.isfinite(da.isel({time_dim: i}).values).any()):
-                indices.append(i)
-        return indices
+    def _valid_time_indices(
+        self,
+        da: xr.DataArray,
+        time_dim: str,
+        qa_pixel_counts: dict[str, Any] | None = None,
+    ) -> list[int]:
+        """Which timesteps still hold a finite value after masking.
+
+        Prefers the ``valid_by_time`` reduction ``_count_qa_pixels`` already
+        computed on the same graph (see its comment): re-deriving it here is a
+        second full I/O pass over a lazily-opened bundle for a boolean that has
+        already been paid for. Falls back to computing it directly when QA
+        masking did not run -- and then as ONE reduction rather than the
+        previous ``.values`` per timestep, which forced a separate graph walk
+        for every granule.
+        """
+        flags = self._fused_valid_flags(da, time_dim, qa_pixel_counts)
+        if flags is None:
+            spatial = [d for d in da.dims if d != time_dim]
+            flags = np.atleast_1d(np.asarray(np.isfinite(da).any(spatial).values))
+        return [i for i, is_valid in enumerate(flags) if bool(is_valid)]
+
+    @staticmethod
+    def _fused_valid_flags(
+        da: xr.DataArray, time_dim: str, qa_pixel_counts: dict[str, Any] | None,
+    ) -> list[bool] | None:
+        """The precomputed per-timestep validity flags, or ``None`` when they
+        cannot be trusted to index ``da``'s time axis.
+
+        The counters are reduced over the inner-aligned arrays, which is the
+        same axis ``da.where(condition)`` produced -- but positional indices
+        are only safe if that holds, so a different dimension name or length
+        refuses the shortcut and re-scans instead of silently dropping the
+        wrong granules.
+        """
+        if not qa_pixel_counts:
+            return None
+        flags = qa_pixel_counts.get("valid_time_flags")
+        if flags is None or qa_pixel_counts.get("valid_time_dim") != time_dim:
+            return None
+        if len(flags) != da.sizes.get(time_dim):
+            return None
+        return flags
 
     # Cadence -> the pandas offset a timestamp is floored to when grouping
     # granules into the buckets a temporal mean must weight equally (#11).

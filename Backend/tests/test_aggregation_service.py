@@ -1482,14 +1482,21 @@ class QaPassRateCounterTests(unittest.TestCase):
             },
         )
 
-    def test_the_bundle_is_read_once_across_masking_and_the_aggregate_reduction(self):
-        """The counter's compute and ``aggregate``'s temporal reduction walk the
-        same source graph. Separate ``compute`` calls share nothing, so a
-        lazily-opened bundle is re-read per pass -- I/O, not just CPU, on
-        exactly the multi-granule opens that have OOM'd this backend before.
+    def test_the_bundle_is_read_once_per_pass_and_there_are_only_two_passes(self):
+        """Separate ``compute`` calls share no graph, so each one is a fresh
+        I/O pass over a lazily-opened bundle -- the cost the counter's own
+        comment flagged as larger than its synthetic +0.32s on real storage.
 
-        Pin the whole path at ONE read per granule: masking, the valid-timestep
-        scan, and the reduction must all come out of a single graph walk.
+        Measured through a full ``aggregate()``, the source was read THREE
+        times per granule: the counter compute, ``_valid_time_indices``'
+        per-timestep ``.values`` scan, and the temporal reduction. The scan is
+        now folded into the counter compute, leaving two.
+
+        Two is the floor, not a way-station: the reduction graph cannot be
+        built until the valid timesteps are known (cadence-bucket weights and
+        the reported granule dates both depend on them), so scan-then-reduce is
+        a real data dependency. A third pass reappearing here means someone
+        added a compute that could have ridden an existing graph walk.
         """
         from preprocessing.aggregation_service import AggregationService
 
@@ -1503,20 +1510,74 @@ class QaPassRateCounterTests(unittest.TestCase):
         result = AggregationService().aggregate(
             ds, variable="no2", col_info=self._pinned,
         )
-        reduced = result.ds["no2"].values  # force the temporal reduction
+        # aggregate() must not have forced the reduction -- collapsing the
+        # passes by materializing eagerly is the RAM trade this must not make.
+        self.assertIsNotNone(
+            result.ds["no2"].chunks, "aggregate() forced its result eagerly",
+        )
+        reduced = result.ds["no2"].values  # now force the temporal reduction
 
         self.assertEqual(reduced.shape, (2, 2))
         self.assertEqual(result.meta["masking"]["qa_checked_pixels"], 12)
         self.assertEqual(result.meta["masking"]["qa_passing_pixels"], 9)
-        science_reads = [name for name in loads if name.startswith("no2")]
-        flag_reads = [name for name in loads if name.startswith("flag")]
-        self.assertEqual(
-            len(science_reads), 3,
-            f"science bundle read {len(science_reads)} times, want 3 (one per granule): {loads}",
+        for name in ("no2", "flag"):
+            reads = [entry for entry in loads if entry.startswith(name)]
+            self.assertEqual(
+                len(reads), 6,
+                f"{name} bundle read {len(reads)} times across 3 granules, "
+                f"want 6 (2 passes x 3 granules): {loads}",
+            )
+
+    def test_the_folded_scan_drops_the_same_timesteps_the_per_step_scan_did(self):
+        """The fused reduction has to BE the scan, not an approximation of it:
+        a granule the QA mask emptied must still be dropped from the temporal
+        mean and from the reported granule count. Granule 1 is entirely
+        bad-flagged, so two of three survive -- and the surviving mean must not
+        have averaged in a timestep of NaN."""
+        from preprocessing.aggregation_service import AggregationService
+
+        loads = []
+        ds = self._lazy_bundle(
+            granules=[[[2.0, 2.0], [2.0, 2.0]]] * 3,
+            flags=[[[0, 0], [0, 0]], [[1, 1], [1, 1]], [[0, 0], [0, 0]]],
+            loads=loads,
         )
-        self.assertEqual(
-            len(flag_reads), 3,
-            f"QA-flag bundle read {len(flag_reads)} times, want 3 (one per granule): {loads}",
+
+        result = AggregationService().aggregate(
+            ds, variable="no2", col_info=self._pinned,
+        )
+
+        self.assertEqual(result.meta["n_granules"], 2)
+        self.assertEqual(result.meta["granule_dates"], ["2024-01-01", "2024-01-03"])
+        self.np.testing.assert_allclose(
+            result.ds["no2"].values, self.np.full((2, 2), 2.0),
+        )
+
+    def test_a_timestep_left_holding_only_infinities_is_not_a_valid_timestep(self):
+        """``_valid_time_indices`` tested finiteness, not non-nullness, and the
+        folded reduction has to keep that distinction: ``notnull()`` counts an
+        inf as present, so reusing the ``checked`` counter here would quietly
+        promote an all-infinite granule into the temporal mean."""
+        from preprocessing.aggregation_service import AggregationService
+
+        loads = []
+        ds = self._lazy_bundle(
+            granules=[
+                [[1.0, 1.0], [1.0, 1.0]],
+                [[self.np.inf, self.np.inf], [self.np.inf, self.np.inf]],
+                [[3.0, 3.0], [3.0, 3.0]],
+            ],
+            flags=[[[0, 0], [0, 0]]] * 3,
+            loads=loads,
+        )
+
+        result = AggregationService().aggregate(
+            ds, variable="no2", col_info=self._pinned,
+        )
+
+        self.assertEqual(result.meta["n_granules"], 2)
+        self.np.testing.assert_allclose(
+            result.ds["no2"].values, self.np.full((2, 2), 2.0),
         )
 
     def test_resolve_and_mask_reports_the_realized_pass_rate_as_provenance(self):
