@@ -106,8 +106,16 @@ class Settings:
     await_retrieval_poll_min_seconds: int = field(
         default_factory=lambda: max(1, _int_env("AWAIT_RETRIEVAL_POLL_MIN_SECONDS", 2))
     )
+    # The backoff doubles 2 -> 4 -> 8 -> cap, so once saturated the narrated
+    # status trails reality by up to a full cap: a job that finished at t=30s
+    # kept being reported as running until the next poll. At the old 15s cap
+    # that was 7.5s of staleness on average and 15s at worst — 4% noise on a
+    # 3-minute Harmony job, but 25-45% on a 30-second retrieval, i.e. the
+    # backoff cost the most exactly where there was least to hide it and the
+    # fast retrievals never got to feel fast. 5s buys that back for a handful
+    # of extra status calls per job.
     await_retrieval_poll_max_seconds: int = field(
-        default_factory=lambda: max(1, _int_env("AWAIT_RETRIEVAL_POLL_MAX_SECONDS", 15))
+        default_factory=lambda: max(1, _int_env("AWAIT_RETRIEVAL_POLL_MAX_SECONDS", 5))
     )
     await_retrieval_timeout_seconds: int = field(
         default_factory=lambda: max(1, _int_env("AWAIT_RETRIEVAL_TIMEOUT_SECONDS", 900))

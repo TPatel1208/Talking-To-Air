@@ -26,7 +26,7 @@ from tta_backend.earthdata_mcp.results import (
     MCPToolError,
     parse_tool_result,
 )
-from tta_backend.services import scope_registry, variable_choice_registry
+from tta_backend.services import retrieval_narration, scope_registry, variable_choice_registry
 from tta_backend.utils.metrics import observe_harmony_fetch
 from tta_backend.utils.streaming import emit_job_progress, emit_status
 
@@ -220,7 +220,20 @@ async def await_retrieval(
                 detail=progress,
             )
             return data
-        emit_status(f"Retrieving data — {status}...", stage=STAGE_PROGRESS, detail=progress)
+        # `phase` is harmony-retrieval-mcp's qualitative label for the job and
+        # reads better mid-flight than the durable `status` it qualifies
+        # ("queued at provider" vs. "submitted") — the jobs panel already
+        # prefers it for exactly that reason (Frontend/src/utils/jobCard.js),
+        # so this line had been showing the worse of two strings it already
+        # held. Terminal responses ignore it for the same reason that panel
+        # does: a cancel carries no phase, or a stale one, and a "cancelled"
+        # line reading "materializing" is a contradiction.
+        label = status if status in TERMINAL_STATUSES else (data.get("phase") or status)
+        # What the wait is *for*, recorded at submission. None for a job this
+        # process didn't submit (open_handle's rematerialize path), which
+        # degrades to the wording this line always had.
+        subject = retrieval_narration.describe(job_handle) or "data"
+        emit_status(f"Retrieving {subject} — {label}...", stage=STAGE_PROGRESS, detail=progress)
         if status in TERMINAL_STATUSES:
             if status == "ready":
                 # T51: the one place that knows a retrieval's full span. Only
@@ -239,6 +252,10 @@ async def await_retrieval(
                 # the resolved handle, so a later plot/stat can disclose any
                 # silent substitution between requested and delivered scope.
                 scope_registry.finalize(job_handle, handle)
+            # A narration describes the wait, and the wait is over. No
+            # finalize onto the result handle: unlike the two registries
+            # above, nothing downstream reads this against a result.
+            retrieval_narration.discard(job_handle)
             return data
 
         if loop.time() >= deadline:
@@ -360,6 +377,18 @@ async def safe_retrieve(
     # is caught by the dispatch-layer AOI guard instead.
     scope_registry.record_pending(subset.get("job_handle"), {"time_range": time_range})
 
+    # What the researcher will be waiting on, for the status line. Everything
+    # here was already computed above and then dropped; the same aoi_handle
+    # limitation the scope record just noted applies, so there is no place
+    # name to offer — the size estimate stands in as the other bound on the
+    # wait.
+    retrieval_narration.record(
+        subset.get("job_handle"),
+        variable=science_variables[0] if len(science_variables) == 1 else None,
+        time_range=time_range,
+        estimated_bytes=estimated_bytes,
+    )
+
     return {"status": "submitted", "estimated_bytes": estimated_bytes, **subset}
 
 
@@ -449,6 +478,14 @@ async def point_timeseries(
     # records the full requested scope for the job — promoted onto the cube
     # handle by await_retrieval's finalize.
     scope_registry.record_pending(job_handle, {"location": location, "time_range": time_range})
+
+    # This composite awaits inline, so its own status line is the one the
+    # researcher watches. Unlike safe_retrieve it holds the actual place name
+    # (it resolved the AOI itself) but has no size estimate — a point series
+    # has none to quote.
+    retrieval_narration.record(
+        job_handle, variable=variable, location=location, time_range=time_range
+    )
 
     status = await await_retrieval(job_handle, tools, settings=settings)
     return {"aoi_handle": aoi_handle, **status}

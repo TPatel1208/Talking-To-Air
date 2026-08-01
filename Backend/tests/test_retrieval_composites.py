@@ -387,6 +387,173 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(_harmony_fetch_count() - before, 0)
 
+    def test_the_poll_backoff_caps_low_enough_not_to_flatten_a_fast_retrieval(self):
+        """The backoff doubles 2 -> 4 -> 8 -> cap, so once it saturates the
+        reported status is up to a full cap-length behind reality: a job that
+        finished at t=30s is still narrated as running until the next poll.
+
+        At the old 15s cap that staleness was 7.5s on average and 15s at worst.
+        On a 3-minute Harmony job that is 4% noise, but on a 30-second
+        retrieval it is 25-45% — i.e. the backoff cost the most exactly where
+        there was the least to hide it, and the fast retrievals this app can
+        actually deliver never got to feel fast. The cap buys that back for a
+        handful of extra status calls per job.
+
+        Asserted against the *default*, with any ambient env override removed:
+        a developer whose .env still carries the old 15 should not see this as
+        a code failure (their .env is the thing that is stale)."""
+        import os
+        from unittest import mock
+
+        from tta_backend.config.settings import Settings
+
+        with mock.patch.dict(os.environ):
+            os.environ.pop("AWAIT_RETRIEVAL_POLL_MAX_SECONDS", None)
+            self.assertLessEqual(Settings().await_retrieval_poll_max_seconds, 5)
+
+    async def test_the_status_line_prefers_the_providers_phase_over_the_bare_status(self):
+        """`phase` is harmony-retrieval-mcp's qualitative label for a job and
+        reads better mid-flight than the durable `status` it qualifies
+        ("queued at provider" vs. "submitted"). The jobs panel already prefers
+        it for exactly that reason (Frontend/src/utils/jobCard.js), so the chat
+        line was showing the worse of two strings it already had in hand."""
+        from tta_backend.services.retrieval_composites import await_retrieval
+
+        responses = [
+            {"job_handle": "job_p", "status": "submitted", "phase": "queued at provider"},
+            {"job_handle": "job_p", "status": "ready", "obs_handle": "obs_p"},
+        ]
+        calls = {"n": 0}
+
+        async def get_retrieval_status(job_handle, workspace_id):
+            data = responses[min(calls["n"], len(responses) - 1)]
+            calls["n"] += 1
+            return data
+
+        tools, settings = await self._tools({"get_retrieval_status": get_retrieval_status})
+        settings = self._fast_settings(settings)
+
+        seen = self._capture_status()
+        await await_retrieval("job_p", tools, settings=settings)
+
+        first = [s["message"] for s in seen if s["stage"] == "progress"][0]
+        self.assertIn("queued at provider", first)
+        self.assertNotIn("submitted", first)
+
+    async def test_a_terminal_poll_ignores_a_stale_phase(self):
+        """Mirrors the jobs panel's rule: a terminal response can carry no
+        phase at all (a cancel) or a stale one, and rendering "cancelled" under
+        a phase that still says "materializing" reads as a contradiction. Once
+        terminal, the durable status is the honest label."""
+        from tta_backend.services.retrieval_composites import await_retrieval
+
+        async def get_retrieval_status(job_handle, workspace_id):
+            return {"job_handle": "job_t", "status": "cancelled", "phase": "materializing"}
+
+        tools, settings = await self._tools({"get_retrieval_status": get_retrieval_status})
+        settings = self._fast_settings(settings)
+
+        seen = self._capture_status()
+        await await_retrieval("job_t", tools, settings=settings)
+
+        last = [s["message"] for s in seen if s["stage"] == "progress"][-1]
+        self.assertIn("cancelled", last)
+        self.assertNotIn("materializing", last)
+
+    async def test_the_status_line_names_what_is_being_retrieved(self):
+        """The wait is minutes long and the line said "Retrieving data" for all
+        of it, while the variable, scope and size estimate sat recorded in the
+        process. Naming them is what makes the wait legible."""
+        from tta_backend.services import retrieval_narration
+        from tta_backend.services.retrieval_composites import await_retrieval
+
+        retrieval_narration._narrations.clear()
+        self.addCleanup(retrieval_narration._narrations.clear)
+        retrieval_narration.record(
+            "job_n",
+            variable="product/vertical_column_troposphere",
+            time_range="2024-06-12T00:00:00/2024-06-14T23:59:59",
+            estimated_bytes=47_000_000,
+        )
+
+        responses = [
+            {"job_handle": "job_n", "status": "running", "phase": "materializing"},
+            {"job_handle": "job_n", "status": "ready", "obs_handle": "obs_n"},
+        ]
+        calls = {"n": 0}
+
+        async def get_retrieval_status(job_handle, workspace_id):
+            data = responses[min(calls["n"], len(responses) - 1)]
+            calls["n"] += 1
+            return data
+
+        tools, settings = await self._tools({"get_retrieval_status": get_retrieval_status})
+        settings = self._fast_settings(settings)
+
+        seen = self._capture_status()
+        await await_retrieval("job_n", tools, settings=settings)
+
+        first = [s["message"] for s in seen if s["stage"] == "progress"][0]
+        self.assertIn("vertical_column_troposphere", first)
+        self.assertIn("Jun 12–14, 2024", first)
+        self.assertIn("~47 MB", first)
+        self.assertIn("materializing", first)
+
+    async def test_an_unnarrated_job_keeps_the_bare_retrieving_data_line(self):
+        """open_handle's rematerialize path awaits a job this process never
+        submitted, so there is nothing recorded for it. That must degrade to
+        the old wording, not to an empty subject."""
+        from tta_backend.services import retrieval_narration
+        from tta_backend.services.retrieval_composites import await_retrieval
+
+        retrieval_narration._narrations.clear()
+        self.addCleanup(retrieval_narration._narrations.clear)
+
+        async def get_retrieval_status(job_handle, workspace_id):
+            return {"job_handle": "job_b", "status": "ready", "obs_handle": "obs_b"}
+
+        tools, settings = await self._tools({"get_retrieval_status": get_retrieval_status})
+        settings = self._fast_settings(settings)
+
+        seen = self._capture_status()
+        await await_retrieval("job_b", tools, settings=settings)
+
+        self.assertIn("Retrieving data — ready", [s["message"] for s in seen if s["stage"] == "progress"][-1])
+
+    async def test_a_terminal_job_discards_its_narration(self):
+        """A narration describes the *wait*; once the job is terminal there is
+        no wait left to describe. Unlike the scope/variable registries there is
+        no finalize onto the result handle -- nothing downstream reads it."""
+        from tta_backend.services import retrieval_narration
+        from tta_backend.services.retrieval_composites import await_retrieval
+
+        retrieval_narration._narrations.clear()
+        self.addCleanup(retrieval_narration._narrations.clear)
+        retrieval_narration.record("job_d", variable="NO2")
+
+        async def get_retrieval_status(job_handle, workspace_id):
+            return {"job_handle": "job_d", "status": "ready", "obs_handle": "obs_d"}
+
+        tools, settings = await self._tools({"get_retrieval_status": get_retrieval_status})
+        settings = self._fast_settings(settings)
+
+        await await_retrieval("job_d", tools, settings=settings)
+
+        self.assertIsNone(retrieval_narration.describe("job_d"))
+
+    def _capture_status(self):
+        """Collect emit_status calls for the duration of one test."""
+        import tta_backend.utils.streaming as streaming
+
+        seen = []
+
+        def _capture(message, *, stage=None, detail=None):
+            seen.append({"message": message, "stage": stage, "detail": detail})
+
+        token = streaming._status_emitter.set(_capture)
+        self.addCleanup(streaming._status_emitter.reset, token)
+        return seen
+
     def _fast_settings(self, settings):
         from dataclasses import replace
 
@@ -470,6 +637,46 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
         scope_registry.finalize("job_new", "obs_new")
 
         self.assertIn("2024-07-15", scope_registry.get("obs_new")["time_range"])
+
+    async def test_safe_retrieve_records_what_the_wait_is_for(self):
+        """Everything that makes a multi-minute materialize legible is known
+        right here, synchronously, and used to be dropped: the science variable
+        (already isolated for the T25 choice record), the requested time range,
+        and the size the estimator just quoted."""
+        from tta_backend.services import retrieval_narration
+        from tta_backend.services.retrieval_composites import safe_retrieve
+
+        retrieval_narration._narrations.clear()
+        self.addCleanup(retrieval_narration._narrations.clear)
+
+        tools, settings, calls = await self._tools_and_settings(estimated_bytes=1000)
+
+        await safe_retrieve(
+            "dataset_1", "aoi_1", "2024-07-15/2024-07-15", ["product/no2"], tools, settings=settings
+        )
+
+        self.assertEqual(
+            retrieval_narration.describe("job_new"), "no2 · Jul 15, 2024 · ~1.0 kB"
+        )
+
+    async def test_a_refused_retrieval_records_no_narration(self):
+        """Nothing was submitted, so there is no wait to describe — and a
+        stale entry keyed by a job handle that will never exist would be a slow
+        leak of exactly the kind the TTL exists to bound."""
+        from tta_backend.services import retrieval_narration
+        from tta_backend.services.retrieval_composites import safe_retrieve
+
+        retrieval_narration._narrations.clear()
+        self.addCleanup(retrieval_narration._narrations.clear)
+
+        tools, settings, calls = await self._tools_and_settings(estimated_bytes=99999)
+
+        result = await safe_retrieve(
+            "dataset_1", "aoi_1", "2024-01-01/2024-01-02", ["no2"], tools, settings=settings
+        )
+
+        self.assertEqual(result["status"], "refused")
+        self.assertEqual(retrieval_narration._narrations, {})
 
     async def test_safe_retrieve_pauses_for_confirmation_between_caps(self):
         from tta_backend.services.retrieval_composites import safe_retrieve

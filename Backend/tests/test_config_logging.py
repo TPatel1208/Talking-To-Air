@@ -107,7 +107,10 @@ class ConfigLoggingTests(unittest.TestCase):
         self.assertEqual(loaded.retrieval_soft_cap_bytes, 2 * 1024 ** 3)
         self.assertEqual(loaded.retrieval_hard_cap_bytes, 10 * 1024 ** 3)
         self.assertEqual(loaded.await_retrieval_poll_min_seconds, 2)
-        self.assertEqual(loaded.await_retrieval_poll_max_seconds, 15)
+        # Capped low on purpose: the backoff's ceiling is also how far behind
+        # reality a narrated status can fall once it saturates. See the note on
+        # the field in config/settings.py.
+        self.assertEqual(loaded.await_retrieval_poll_max_seconds, 5)
         self.assertEqual(loaded.await_retrieval_timeout_seconds, 900)
 
         with patch.dict(
