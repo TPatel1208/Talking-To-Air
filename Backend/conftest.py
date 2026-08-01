@@ -1,7 +1,7 @@
 """
 Backend/conftest.py
 -------------------
-Pytest bootstrap. Two jobs, both of which must happen before any test module
+Pytest bootstrap. Three jobs, all of which must happen before any test module
 is imported.
 
 **1. Put ``Backend/`` on ``sys.path``** so ``import tta_backend...`` resolves
@@ -29,6 +29,9 @@ fill in an *unset* PROJ path — we also override one that points somewhere
 without a usable ``proj.db``. When the inherited path is already valid, or
 rasterio's own data dir can't be located, this is a no-op. The Docker image,
 where PROJ resolves correctly on its own, is never touched.
+
+**3. Redirect T52's cube store to a tempdir** so the suite stops reading and
+writing the real one. See :func:`_isolate_cube_store`.
 """
 import importlib.util
 import os
@@ -63,6 +66,32 @@ def _wire_proj_data() -> None:
 
 
 _wire_proj_data()
+
+
+def _isolate_cube_store() -> None:
+    """Redirect T52's cube store before any test module is imported.
+
+    At import time, not in a fixture, and for the same reason as PROJ above:
+    by the time a fixture runs, a module-scope or session-scope fixture may
+    already have resolved the store root, and a cube write started under one
+    test can still be in flight during the next. There is no point in the
+    session at which it is safe for the default to be a real directory.
+
+    Left un-redirected, the default is the deployment volume — production's
+    named volume under Docker, ``C:\\app\\cube_store`` on a Windows checkout —
+    which the suite then reads back, making a run's outcome depend on what
+    earlier runs left behind. The policy lives in ``tests/cache_isolation.py``
+    with the rest of it; this is just the call site early enough to matter.
+    """
+    tests_dir = os.path.join(BACKEND_DIR, "tests")
+    if tests_dir not in sys.path:
+        sys.path.insert(0, tests_dir)
+    from cache_isolation import isolate_cube_store
+
+    isolate_cube_store()
+
+
+_isolate_cube_store()
 
 
 @pytest.fixture(autouse=True)
