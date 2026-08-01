@@ -6,8 +6,7 @@
 
 A React frontend talks to a FastAPI backend over a streamed (SSE) `/chat` endpoint. A **supervisor** agent routes each query to one of two subagents: a **satellite** agent that retrieves NASA data on demand through the [earthdata-retrieval MCP](https://github.com/TPatel1208/harmony-retrieval-mcp) (a separate stack, with size-gated "safe retrieval"), and a **ground-sensor** agent that queries the EPA AQS API. PostgreSQL holds conversation memory (one thread per session) and a chart/artifact index. Each agent's provider and model are configuration entries resolved through a single model factory, so switching providers is an environment change, not a code change.
 
-That's the whole picture you need to run it — this README is setup-focused. For internals, see [`docs/`](docs/) and the PRDs in [`docs/prds/`](docs/prds/).
-
+That's the whole picture you need to run it — this README is setup-focused. For internals, see [`docs/`](docs/)
 ---
 
 ## Prerequisites
