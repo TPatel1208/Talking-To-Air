@@ -3,9 +3,13 @@ __pycache__/
 .venv/
 venv/
 
-# These are mounted as volumes — don't bake into image
+# These are mounted as volumes — don't bake into image. The Dockerfile
+# pre-creates all four as mount points, so a dev's local copy baked into a
+# layer is pure waste (and, for cube_store, potentially GBs of it).
 data/
 outputs/
+overlay_store/
+cube_store/
 *.zarr
 
 # Secrets
@@ -14,6 +18,8 @@ outputs/
 
 # Dev/test clutter
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 *.log
 
 # IDE

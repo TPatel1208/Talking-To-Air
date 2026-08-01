@@ -1,0 +1,16 @@
+# Test and lint toolchain. Kept out of requirements.txt because the Dockerfile
+# installs that file into /opt/venv and the runtime stage copies the venv
+# wholesale — anything in requirements.txt ships to production.
+#
+# Install alongside the runtime deps:
+#     pip install -r requirements.txt -r requirements-dev.txt
+#
+# The `test` compose profile builds the Dockerfile's `builder` target, which
+# installs this file; the default (runtime) target does not.
+-r requirements.txt
+
+pytest>=8.3.0
+pytest-asyncio>=0.24.0
+ruff>=0.8.0
+mypy>=1.13.0
+coverage>=7.6.0

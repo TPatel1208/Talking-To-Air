@@ -1,6 +1,9 @@
 line-length = 200
-target-version = "py311"
+# Must match Backend/Dockerfile's base image and the CI setup-python version.
+target-version = "py312"
 
 [lint]
 select = ["E", "F", "W"]
-exclude = ["tests"]
+# tests/ is deliberately NOT excluded — it is ~40% of the codebase and was
+# unlinted for long enough to accumulate 106 copies of the same import
+# bootstrap. It passes E/F/W today; keep it that way.

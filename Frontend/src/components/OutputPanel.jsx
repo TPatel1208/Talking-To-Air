@@ -766,17 +766,23 @@ export default function OutputPanel({
   const isMetadataTabbedArtifact = artifact?.type === 'table' || artifact?.type === 'timeseries'
 
   const availableTabs = chart ? (CHART_TABS[chart.type] || ['metadata']) : []
-  const [activeTab, setActiveTab] = useState(availableTabs[0])
+  // Reset to the first tab when the focused output -- or its tab set -- changes,
+  // derived during render rather than via an effect. This is what
+  // ArtifactTabsPanel gets for free from the `key` prop its caller passes (see
+  // its comment); the chart tabs live inline here, so the previous
+  // focusedOutput is tracked explicitly instead. Re-focusing the *same* object
+  // keeps the user on their current tab, matching the old effect's deps.
+  const tabsSignature = availableTabs.join(',')
+  const [tabChoice, setTabChoice] = useState({ source: focusedOutput, signature: tabsSignature, tab: availableTabs[0] })
+  const tabChoiceIsStale = tabChoice.source !== focusedOutput || tabChoice.signature !== tabsSignature
+  const activeTab = tabChoiceIsStale ? availableTabs[0] : tabChoice.tab
+  const setActiveTab = tab => setTabChoice({ source: focusedOutput, signature: tabsSignature, tab })
   const [autoScaleEach, setAutoScaleEach] = useState(true)
   // Keyed by compareSessionId (bumped once per enterCompare in App.jsx)
   // rather than a boolean, so a dismissal doesn't leak into the next fresh
   // compare session -- purely derived from props, no effect/ref needed.
   const [hintDismissedForSession, setHintDismissedForSession] = useState(null)
   const plotRootRef = useRef(null)
-
-  useEffect(() => {
-    setActiveTab(availableTabs[0])
-  }, [focusedOutput, availableTabs.join(',')])
 
   const showCollapseHint = shouldShowCollapseHint({
     compareMode, sessionsCollapsed, chatCollapsed, rightPanelCollapsed,

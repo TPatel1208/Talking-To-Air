@@ -1,9 +1,12 @@
 [run]
+# NOTE: this is a deliberately narrow slice, not the whole backend -- it dates
+# from 00b5daa ("temporaraly track selected packages") and fail_under below is
+# judged against it alone. preprocessing.data_loader and
+# preprocessing.cache_manager were listed here until they stopped existing;
+# coverage warned "module was never imported" on every run and counted nothing.
 source =
     api
     utils.db
-    preprocessing.data_loader
-    preprocessing.cache_manager
 
 [report]
 show_missing = True

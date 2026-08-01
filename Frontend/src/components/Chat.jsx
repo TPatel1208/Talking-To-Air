@@ -239,12 +239,14 @@ function InlineImage({ url, accessToken }) {
   const [lightbox, setLightbox] = useState(false)
   const [blobUrl, setBlobUrl] = useState(null)
   const src = toImageUrl(url)
+  // Only authed /api/outputs/ images go through the blob fetch. Deriving this
+  // lets the effect bail without a setState (react-hooks/set-state-in-effect):
+  // the render below ignores blobUrl when it doesn't apply, which is what the
+  // old setBlobUrl(null) reset was for.
+  const needsAuthedFetch = Boolean(src && accessToken && src.startsWith('/api/outputs/'))
 
   useEffect(() => {
-    if (!src || !accessToken || !src.startsWith('/api/outputs/')) {
-      setBlobUrl(null)
-      return undefined
-    }
+    if (!needsAuthedFetch) return undefined
 
     let cancelled = false
     let objectUrl = null
@@ -264,10 +266,10 @@ function InlineImage({ url, accessToken }) {
       cancelled = true
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
-  }, [src, accessToken])
+  }, [src, accessToken, needsAuthedFetch])
 
   if (!src) return null
-  const displaySrc = blobUrl || src
+  const displaySrc = (needsAuthedFetch && blobUrl) || src
 
   return (
     <>
