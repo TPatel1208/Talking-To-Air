@@ -50,7 +50,7 @@ class AreaWeightedMeanTests(unittest.TestCase):
 
     def test_weights_cells_by_cosine_of_latitude(self):
         import xarray as xr
-        from preprocessing.aggregation_service import area_weighted_mean
+        from tta_backend.preprocessing.aggregation_service import area_weighted_mean
 
         # Two lat rows: value 0.0 at the equator (weight 1.0), 1.0 at 60°N
         # (weight 0.5) -> weighted mean 1/3, where the unweighted mean is 0.5.
@@ -65,7 +65,7 @@ class AreaWeightedMeanTests(unittest.TestCase):
     def test_nan_cells_are_excluded_not_zero_filled(self):
         import numpy as np
         import xarray as xr
-        from preprocessing.aggregation_service import area_weighted_mean
+        from tta_backend.preprocessing.aggregation_service import area_weighted_mean
 
         da = xr.DataArray(
             [[np.nan, np.nan], [1.0, 3.0]],
@@ -85,7 +85,7 @@ class AreaWeightedMeanTests(unittest.TestCase):
         zero-weight cells summed -- 5e-7 on a real TEMPO New Jersey mean."""
         import numpy as np
         import xarray as xr
-        from preprocessing.aggregation_service import area_weighted_mean
+        from tta_backend.preprocessing.aggregation_service import area_weighted_mean
 
         lats = np.arange(38.79, 41.35, 0.02).astype(np.float32)
         lons = np.arange(-75.57, -73.88, 0.02).astype(np.float32)
@@ -108,7 +108,7 @@ class AreaWeightedMeanTests(unittest.TestCase):
 
     def test_falls_back_to_unweighted_mean_without_a_latitude_axis(self):
         import xarray as xr
-        from preprocessing.aggregation_service import area_weighted_mean
+        from tta_backend.preprocessing.aggregation_service import area_weighted_mean
 
         da = xr.DataArray([1.0, 2.0, 3.0], dims=("x",))
 
@@ -117,7 +117,7 @@ class AreaWeightedMeanTests(unittest.TestCase):
     def test_raises_when_no_finite_values_remain(self):
         import numpy as np
         import xarray as xr
-        from preprocessing.aggregation_service import area_weighted_mean
+        from tta_backend.preprocessing.aggregation_service import area_weighted_mean
 
         da = xr.DataArray(
             [[np.nan], [np.nan]],
@@ -136,8 +136,8 @@ class AreaWeightedMeanTests(unittest.TestCase):
 class StatToolsTimeCompositionTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from fake_earthdata_mcp import HandleVolume, build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
 
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
@@ -174,7 +174,7 @@ class StatToolsTimeCompositionTests(unittest.IsolatedAsyncioTestCase):
         time-mean field is [[5,1.25],[1.75,2.25]] — its max is 5.0 and its
         min is 1.25, but the TRUE extremes over every observation are 9.0
         and 0.5. The old max-of-the-mean-field shape reported 5.0/1.25."""
-        from tools.satellite_tools.stat_tools import make_compute_statistic_tool
+        from tta_backend.tools.satellite_tools.stat_tools import make_compute_statistic_tool
 
         self._add_two_day_dataset("obs_2day", [
             [[1.0, 2.0], [3.0, 4.0]],
@@ -193,7 +193,7 @@ class StatToolsTimeCompositionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("all timesteps", result["stat_basis"]["max"])
 
     async def test_mean_is_area_weighted_and_its_basis_is_disclosed(self):
-        from tools.satellite_tools.stat_tools import make_compute_statistic_tool
+        from tta_backend.tools.satellite_tools.stat_tools import make_compute_statistic_tool
 
         self._add_two_day_dataset("obs_1day", [[[1.0, 1.0], [3.0, 3.0]]])
 
@@ -212,7 +212,7 @@ class StatToolsTimeCompositionTests(unittest.IsolatedAsyncioTestCase):
     async def test_find_daily_peak_reports_the_peak_over_all_observations(self):
         """Day 2 carries a 10.0 spike that the period-mean field flattens to
         7.0 — the reported peak must be the observed 10.0."""
-        from tools.satellite_tools.stat_tools import make_find_daily_peak
+        from tta_backend.tools.satellite_tools.stat_tools import make_find_daily_peak
 
         self._add_two_day_dataset("obs_peak", [
             [[1.0, 2.0], [3.0, 4.0]],

@@ -43,9 +43,9 @@ pytestmark = [
 
 @pytest_asyncio.fixture
 async def invoke():
-    from config.settings import Settings
-    from earthdata_mcp.client import load_raw_mcp_tools
-    from earthdata_mcp.results import parse_tool_result
+    from tta_backend.config.settings import Settings
+    from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+    from tta_backend.earthdata_mcp.results import parse_tool_result
 
     workspace_id = f"preset_resolve_{uuid.uuid4().hex[:8]}"
     settings = Settings(earthdata_mcp_url=_mcp_url(), earthdata_mcp_token=os.environ.get("EARTHDATA_MCP_TOKEN"))
@@ -64,7 +64,7 @@ def _rows(result: dict):
 
 
 def _preset_params():
-    from datasets.preset_collections import PRESET_COLLECTIONS
+    from tta_backend.datasets.preset_collections import PRESET_COLLECTIONS
 
     return [pytest.param(p, id=p["short_name"]) for p in PRESET_COLLECTIONS]
 

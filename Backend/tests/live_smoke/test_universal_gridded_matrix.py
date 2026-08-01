@@ -118,9 +118,9 @@ async def invoke():
     """One MCP tool-invocation callable per test, each with its own throwaway
     workspace id (mirrors test_mcp_contract.py's asyncSetUp) so parametrized
     rows never collide with each other or a researcher's real workspace."""
-    from config.settings import Settings
-    from earthdata_mcp.client import load_raw_mcp_tools
-    from earthdata_mcp.results import parse_tool_result
+    from tta_backend.config.settings import Settings
+    from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+    from tta_backend.earthdata_mcp.results import parse_tool_result
 
     workspace_id = f"live_smoke_t25_{uuid.uuid4().hex[:8]}"
     settings = Settings(earthdata_mcp_url=_mcp_url(), earthdata_mcp_token=os.environ.get("EARTHDATA_MCP_TOKEN"))
@@ -185,7 +185,7 @@ async def _open_after_retrieval(invoke, row: _Row, variables: list[str] | None =
     if export_result.get("status") != "ready":
         pytest.skip(f"{row.id}: export did not become ready: {export_result}")
 
-    from services.open_handle import _open
+    from tta_backend.services.open_handle import _open
 
     return _open(export_result["storage_uri"], export_result.get("media_type", "netcdf"))
 
@@ -213,7 +213,7 @@ async def test_unregistered_tier1_dataset_discloses_masking_source(invoke, row):
     via datasets/mask_info.py::resolve_mask_info's collections.yaml ->
     UMM-Var -> CF-attrs -> none precedence ladder, so an unregistered
     collection never leaves masking provenance unstated."""
-    from preprocessing.aggregation_service import AggregationService
+    from tta_backend.preprocessing.aggregation_service import AggregationService
 
     ds = await _open_after_retrieval(invoke, row)
     result = AggregationService().aggregate(ds)
@@ -243,8 +243,8 @@ async def test_multi_variable_file_with_no_choice_raises_a_candidate_listing_err
     next(iter(data.data_vars)) fallback is deleted -- an unregistered
     multi-variable file with no explicit variable and no retrieval-recorded
     choice now raises CATEGORY_VARIABLE_CHOICE_REQUIRED listing candidates."""
-    from earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED, MCPToolError
-    from preprocessing.aggregation_service import AggregationService
+    from tta_backend.earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED, MCPToolError
+    from tta_backend.preprocessing.aggregation_service import AggregationService
 
     ds = await _open_after_retrieval(invoke, row)
     assert len(ds.data_vars) > 1, f"{row.id}: expected a multi-variable file to exercise the no-choice case, got {list(ds.data_vars)}"
@@ -271,10 +271,10 @@ async def test_unselected_vertical_dimension_raises_a_candidate_listing_error(in
     coordinate values. Time still auto-reduces (unaffected by this row) via
     the CF-identified time dim (T25's identify_time), not the literal name
     "time"."""
-    from earthdata_mcp.results import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
-    from preprocessing.aggregation_service import AggregationService
-    from utils.geo_utils import identify_lat, identify_lon, identify_time
-    from utils.plotting import _normalize_to_2d
+    from tta_backend.earthdata_mcp.results import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
+    from tta_backend.preprocessing.aggregation_service import AggregationService
+    from tta_backend.utils.geo_utils import identify_lat, identify_lon, identify_time
+    from tta_backend.utils.plotting import _normalize_to_2d
 
     ds = await _open_after_retrieval(invoke, row)
     da = AggregationService().to_dataarray(ds)
@@ -316,7 +316,7 @@ async def test_unselected_vertical_dimension_raises_a_candidate_listing_error(in
 
 @pytest.mark.asyncio
 async def test_flag_meanings_dataset_gets_a_deterministic_cf_mask(invoke):
-    from preprocessing.aggregation_service import AggregationService
+    from tta_backend.preprocessing.aggregation_service import AggregationService
 
     row = _Row("omso2e_flag_meanings_qa", "OMSO2e")
     # Explicit science variable + its QA sibling (PRD resolution order:
@@ -337,7 +337,7 @@ async def test_flag_meanings_dataset_gets_a_deterministic_cf_mask(invoke):
 
 @pytest.mark.asyncio
 async def test_prose_only_qa_dataset_discloses_no_mask_or_an_inferred_tag(invoke):
-    from preprocessing.aggregation_service import AggregationService
+    from tta_backend.preprocessing.aggregation_service import AggregationService
 
     row = _Row("mod08_d3_prose_only_qa", "MOD08_D3")
     # Explicit variable override (PRD resolution order: explicit param wins) so this row exercises
@@ -370,8 +370,8 @@ _EXPECTED_REFUSAL_ROWS = [
 async def test_unsupported_grid_products_refuse_with_the_named_limitation(invoke, row):
     """Not xfail: T24 already raises this typed refusal today
     (utils/geo_utils.py::ensure_supported_grid + CATEGORY_UNSUPPORTED_GRID)."""
-    from earthdata_mcp.results import CATEGORY_UNSUPPORTED_GRID, MCPToolError
-    from utils.geo_utils import ensure_supported_grid
+    from tta_backend.earthdata_mcp.results import CATEGORY_UNSUPPORTED_GRID, MCPToolError
+    from tta_backend.utils.geo_utils import ensure_supported_grid
 
     ds = await _open_after_retrieval(invoke, row)
     with pytest.raises(MCPToolError) as excinfo:

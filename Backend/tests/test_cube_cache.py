@@ -37,8 +37,8 @@ class StoreTestCase(unittest.TestCase):
     process-lifetime state (open counts, in-flight writes) between tests."""
 
     def setUp(self):
-        import services.cube_cache as cube_cache
-        from config.settings import get_settings
+        import tta_backend.services.cube_cache as cube_cache
+        from tta_backend.config.settings import get_settings
 
         self.cube_cache = cube_cache
         self._store = tempfile.TemporaryDirectory()
@@ -58,7 +58,7 @@ class StoreTestCase(unittest.TestCase):
         self.addCleanup(cube_cache.reset_for_test)
 
     def set_limits(self, **env):
-        from config.settings import get_settings
+        from tta_backend.config.settings import get_settings
 
         patcher = unittest.mock.patch.dict(os.environ, {k: str(v) for k, v in env.items()})
         patcher.start()
@@ -87,7 +87,7 @@ class CacheKeyTests(unittest.TestCase):
     when the environment's reader changes."""
 
     def _identity(self, contents: bytes) -> str:
-        from services.cube_cache import source_identity
+        from tta_backend.services.cube_cache import source_identity
 
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "bundle.zip")
@@ -96,7 +96,7 @@ class CacheKeyTests(unittest.TestCase):
             return source_identity(path)
 
     def test_cache_key_changes_when_the_pipeline_version_changes(self):
-        from services.cube_cache import cache_key
+        from tta_backend.services.cube_cache import cache_key
 
         source = "some-source-identity"
         before = cache_key(source, "1", "h5netcdf")
@@ -105,7 +105,7 @@ class CacheKeyTests(unittest.TestCase):
         self.assertNotEqual(before, after)
 
     def test_cache_key_changes_when_the_netcdf_engine_changes(self):
-        from services.cube_cache import cache_key
+        from tta_backend.services.cube_cache import cache_key
 
         source = "some-source-identity"
         self.assertNotEqual(
@@ -114,7 +114,7 @@ class CacheKeyTests(unittest.TestCase):
         )
 
     def test_cache_key_is_stable_for_the_same_inputs(self):
-        from services.cube_cache import cache_key
+        from tta_backend.services.cube_cache import cache_key
 
         self.assertEqual(cache_key("s", "1", "h5netcdf"), cache_key("s", "1", "h5netcdf"))
 
@@ -129,7 +129,7 @@ class CacheKeyTests(unittest.TestCase):
         the very same service chain. Keyed on filesystem metadata that cube
         misses and rebuilds for nothing, which is precisely the rebuild-the-
         input-to-an-answer-you-already-hold failure T54 exists to end."""
-        from services.cube_cache import source_identity
+        from tta_backend.services.cube_cache import source_identity
 
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "bundle.zip")
@@ -148,7 +148,7 @@ class CacheKeyTests(unittest.TestCase):
         unreachable, not reinterpreted — a filesystem identity that happened to
         collide with a content identity would serve one retrieval's cube for
         another's."""
-        from services.cube_cache import cache_key, source_identity
+        from tta_backend.services.cube_cache import cache_key, source_identity
 
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "bundle.zip")
@@ -200,7 +200,7 @@ class RoundTripTests(StoreTestCase):
         import numpy as np
         import xarray as xr
 
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         # scale_factor 2e13, valid_range packed [0, 30000] -> physical [0, 6e17].
         ds = xr.Dataset(
@@ -275,7 +275,7 @@ class RoundTripTests(StoreTestCase):
         import numpy as np
         import xarray as xr
 
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = xr.Dataset(
             {
@@ -319,7 +319,7 @@ class IntegrityTests(StoreTestCase):
         half-populated entry that lookup would serve as complete."""
         ds = self.make_dataset()
 
-        with unittest.mock.patch("services.cube_cache.json.dump", side_effect=OSError("boom")):
+        with unittest.mock.patch("tta_backend.services.cube_cache.json.dump", side_effect=OSError("boom")):
             with self.assertRaises(OSError):
                 self.cube_cache.write_cube(ds, "interrupted")
 
@@ -362,7 +362,7 @@ class IntegrityTests(StoreTestCase):
         self.cube_cache.write_cube(self.make_dataset(), "unreadable")
 
         with unittest.mock.patch.object(xr, "open_zarr", side_effect=RuntimeError("bad store")):
-            with self.assertLogs("services.cube_cache", level="WARNING") as logs:
+            with self.assertLogs("tta_backend.services.cube_cache", level="WARNING") as logs:
                 self.assertIsNone(self.cube_cache.lookup("unreadable"))
 
         self.assertTrue(any("cube_read_failed" in line for line in logs.output))
@@ -445,7 +445,7 @@ class RefusalTests(StoreTestCase):
         pipeline version — so the fix that makes a product cubeable also
         retires its own negative-cache entry, with nothing to remember to
         clear."""
-        from services.cube_cache import cache_key
+        from tta_backend.services.cube_cache import cache_key
 
         before = cache_key("src", "1", "h5netcdf")
         after = cache_key("src", "2", "h5netcdf")
@@ -461,7 +461,7 @@ class RefusalTests(StoreTestCase):
         import numpy as np
         import xarray as xr
 
-        from services.cube_cache import _SLASH_ESCAPE
+        from tta_backend.services.cube_cache import _SLASH_ESCAPE
 
         ds = xr.Dataset({
             "product/foo": ("x", np.array([1.0, 2.0])),
@@ -475,7 +475,7 @@ class RefusalTests(StoreTestCase):
         """A disk error is not the data's fault. Blacklisting a perfectly
         cubeable source because the volume was briefly full would keep it
         uncached until the next pipeline-version bump."""
-        with unittest.mock.patch("services.cube_cache.json.dump", side_effect=OSError("no space")):
+        with unittest.mock.patch("tta_backend.services.cube_cache.json.dump", side_effect=OSError("no space")):
             with self.assertRaises(OSError):
                 self.cube_cache.write_cube(self.make_dataset(), "diskfull")
 
@@ -546,7 +546,7 @@ class EvictionTests(StoreTestCase):
         self.assertFalse(self.cube_cache.is_refused("toobig"))
 
     def test_the_write_cap_stays_below_the_bundle_open_cap(self):
-        from config.settings import Settings
+        from tta_backend.config.settings import Settings
 
         settings = Settings()
         self.assertLess(settings.cube_write_max_bytes, settings.bundle_open_max_uncompressed_bytes)
@@ -686,7 +686,7 @@ class ExtractDirPinningTests(StoreTestCase):
     def test_a_pinned_extract_dir_survives_a_prune_that_would_otherwise_sweep_it(self):
         import time
 
-        from services.open_handle import _prune_extract_cache
+        from tta_backend.services.open_handle import _prune_extract_cache
 
         with tempfile.TemporaryDirectory() as root:
             pinned = os.path.join(root, "pinned")
@@ -717,7 +717,7 @@ class PipelineVersionEnforcementTests(unittest.TestCase):
     without bumping the constant fails here."""
 
     def test_the_pinned_fingerprint_matches_the_pipeline_source(self):
-        from services.open_handle import OPEN_PIPELINE_SOURCE_FINGERPRINT, pipeline_source_fingerprint
+        from tta_backend.services.open_handle import OPEN_PIPELINE_SOURCE_FINGERPRINT, pipeline_source_fingerprint
 
         self.assertEqual(
             pipeline_source_fingerprint(),
@@ -731,7 +731,7 @@ class PipelineVersionEnforcementTests(unittest.TestCase):
     def test_the_fingerprint_moves_when_a_pipeline_function_is_edited(self):
         import inspect
 
-        from services.open_handle import pipeline_source_fingerprint
+        from tta_backend.services.open_handle import pipeline_source_fingerprint
 
         before = pipeline_source_fingerprint()
         real = inspect.getsource
@@ -749,7 +749,7 @@ class PipelineVersionEnforcementTests(unittest.TestCase):
         """The guard is only as good as its list. These are the functions that
         *interpret* a file rather than merely read it — each has been wrong and
         then fixed at least once."""
-        from services.open_handle import _PIPELINE_SOURCE_FUNCTIONS
+        from tta_backend.services.open_handle import _PIPELINE_SOURCE_FUNCTIONS
 
         self.assertEqual(
             sorted(fn.__name__ for fn in _PIPELINE_SOURCE_FUNCTIONS),
@@ -779,8 +779,8 @@ class OpenHandleCubeIntegrationTests(unittest.IsolatedAsyncioTestCase):
     set_limits = StoreTestCase.set_limits
 
     async def asyncSetUp(self):
-        from config.settings import Settings
-        from earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
         from fake_earthdata_mcp import FakeEarthdataMCPServer, HandleVolume, build_fake_mcp
 
         StoreTestCase.setUp(self)
@@ -831,7 +831,7 @@ class OpenHandleCubeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         return sorted(os.listdir(self.store_root)) if os.path.isdir(self.store_root) else []
 
     async def test_the_first_question_writes_no_cube_and_costs_what_it_costs_today(self):
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         await open_handle("obs_cubed", self.tools)
         await self._drain_writes()
@@ -841,8 +841,8 @@ class OpenHandleCubeIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_the_second_question_cubes_the_retrieval_and_the_third_is_served_from_it(self):
         import numpy as np
 
-        import services.open_handle as open_handle_module
-        from services.open_handle import open_handle
+        import tta_backend.services.open_handle as open_handle_module
+        from tta_backend.services.open_handle import open_handle
 
         first = await open_handle("obs_cubed", self.tools)
         await open_handle("obs_cubed", self.tools)
@@ -862,7 +862,7 @@ class OpenHandleCubeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         """User story #2: a cache can never change a scientific result."""
         import xarray as xr
 
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         uncached = (await open_handle("obs_cubed", self.tools)).load()
         await open_handle("obs_cubed", self.tools)
@@ -876,7 +876,7 @@ class OpenHandleCubeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         """User story #3: the answer still arrives, just uncached."""
         import numpy as np
 
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         first = await open_handle("obs_cubed", self.tools)
         await open_handle("obs_cubed", self.tools)
@@ -894,7 +894,7 @@ class OpenHandleCubeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         does not help are different problems with different fixes."""
         from prometheus_client import REGISTRY
 
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         def hits():
             return REGISTRY.get_sample_value("cache_hits_total", {"cache_level": "zarr"}) or 0.0
@@ -918,7 +918,7 @@ class OpenHandleCubeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         neither goes through the interpretation pipeline this caches."""
         import xarray as xr
 
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         self.volume.add_zarr("obs_zarr", lambda: xr.Dataset({"no2": (("y", "x"), [[1.0, 2.0]])}))
         for _ in range(3):
@@ -1035,8 +1035,8 @@ class TurnActivityWiringTests(unittest.IsolatedAsyncioTestCase):
         import json
         from types import SimpleNamespace
 
-        from services.chart_service import ChartService
-        from services.chat_stream_service import ChatStreamService
+        from tta_backend.services.chart_service import ChartService
+        from tta_backend.services.chat_stream_service import ChatStreamService
 
         cube_cache = self.cube_cache
         seen = []

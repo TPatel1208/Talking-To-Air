@@ -20,7 +20,7 @@ BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
-from datasets.variable_roles import (  # noqa: E402
+from tta_backend.datasets.variable_roles import (  # noqa: E402
     CONFIDENCE_HIGH,
     CONFIDENCE_LOW,
     CONFIDENCE_MEDIUM,
@@ -52,7 +52,7 @@ class GoldenInventoryTests(unittest.TestCase):
     classifier."""
 
     def test_fixtures_exist_for_every_registered_collection(self):
-        from datasets.registry import load_registry
+        from tta_backend.datasets.registry import load_registry
 
         keys = {fx["registry_key"] for fx in _load_fixtures()}
         registered = set(load_registry().keys())
@@ -301,7 +301,7 @@ class EnrichmentSeamTests(unittest.TestCase):
         }
 
     def test_attach_inventory_is_additive_and_classifies(self):
-        from services.discovery_service import _attach_inventory
+        from tta_backend.services.discovery_service import _attach_inventory
 
         result = self._describe_result()
         original_keys = set(result.keys())
@@ -322,7 +322,7 @@ class EnrichmentSeamTests(unittest.TestCase):
         self.assertEqual(inv["roles_present"][0], ROLE_SCIENCE)
 
     def test_attach_inventory_untouched_when_no_variables(self):
-        from services.discovery_service import _attach_inventory
+        from tta_backend.services.discovery_service import _attach_inventory
 
         result = {"handle": "dataset_x", "variables": []}
         enriched = _attach_inventory(result)
@@ -334,7 +334,7 @@ class EnrichmentSeamTests(unittest.TestCase):
         concept_id must resolve to TEMPO_HCHO_V03 even though TEMPO_HCHO
         iterates first in the registry and also matches on short_name —
         concept_id is the stronger identity and wins across ALL entries."""
-        from services.discovery_service import _attach_inventory
+        from tta_backend.services.discovery_service import _attach_inventory
 
         result = {
             "handle": "dataset_tempo_hcho_v03",
@@ -350,7 +350,7 @@ class EnrichmentSeamTests(unittest.TestCase):
         an unhandled 500 (api.py registers only the MCPToolError handler): the
         result degrades to its bare, inventory-less shape — the same honest
         degrade plot_tools' evidence path already applies (T18 doctrine)."""
-        from services.discovery_service import _attach_inventory
+        from tta_backend.services.discovery_service import _attach_inventory
 
         result = {"handle": "dataset_x", "variables": [{"name": 123}]}
         enriched = _attach_inventory(result)

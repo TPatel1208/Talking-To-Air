@@ -15,14 +15,14 @@ if BACKEND_DIR not in sys.path:
 @unittest.skipIf(importlib.util.find_spec("langchain") is None, "langchain is not installed")
 class HelperTests(unittest.TestCase):
     def test_ground_tool_failure_detects_provider_tool_call_errors(self):
-        from services.subagent_dispatch import _is_ground_tool_failure
+        from tta_backend.services.subagent_dispatch import _is_ground_tool_failure
 
         self.assertTrue(_is_ground_tool_failure("Error: Failed to call a function. failed_generation"))
         self.assertTrue(_is_ground_tool_failure("tool call validation failed: parameters for tool did not match schema"))
         self.assertFalse(_is_ground_tool_failure("The monitor is Rutgers University."))
 
     def test_ground_context_extracts_and_injects_monitor_facts(self):
-        from services.subagent_dispatch import _extract_ground_monitor_context, _inject_ground_context
+        from tta_backend.services.subagent_dispatch import _extract_ground_monitor_context, _inject_ground_context
 
         context = _extract_ground_monitor_context(
             "The closest NO2 monitor is Rutgers University with station_id 34-023-0011 "
@@ -42,7 +42,7 @@ class HelperTests(unittest.TestCase):
         self.assertNotIn("pollutant=", enriched)
 
     def test_ground_context_does_not_bleed_pollutant_across_requests(self):
-        from services.subagent_dispatch import _extract_ground_monitor_context, _inject_ground_context
+        from tta_backend.services.subagent_dispatch import _extract_ground_monitor_context, _inject_ground_context
 
         # Simulate a failure response that mentions multiple pollutants — the first
         # match used to be SO2, which then poisoned a subsequent NO2 request.
@@ -57,7 +57,7 @@ class HelperTests(unittest.TestCase):
         self.assertNotIn("pollutant=", enriched)
 
     def test_satellite_context_captures_dataset_aoi_and_handles_from_tool_calls(self):
-        from services.subagent_dispatch import _capture_satellite_context
+        from tta_backend.services.subagent_dispatch import _capture_satellite_context
 
         captured: dict[str, str] = {}
         _capture_satellite_context("search_datasets", {"query": "TEMPO_NO2"}, captured)
@@ -75,14 +75,14 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(captured["last_time_range"], "2024-06-01/2024-06-07")
 
     def test_satellite_context_capture_ignores_non_dict_args(self):
-        from services.subagent_dispatch import _capture_satellite_context
+        from tta_backend.services.subagent_dispatch import _capture_satellite_context
 
         captured: dict[str, str] = {}
         _capture_satellite_context("plot_singular", None, captured)
         self.assertEqual(captured, {})
 
     def test_satellite_context_injection_frames_handles_as_unverified_and_demands_recheck(self):
-        from services.subagent_dispatch import _inject_satellite_context
+        from tta_backend.services.subagent_dispatch import _inject_satellite_context
 
         enriched = _inject_satellite_context(
             "Pick an available date.",
@@ -98,7 +98,7 @@ class HelperTests(unittest.TestCase):
         self.assertTrue(enriched.endswith("Pick an available date."))
 
     def test_satellite_context_injection_is_a_noop_without_context(self):
-        from services.subagent_dispatch import _inject_satellite_context
+        from tta_backend.services.subagent_dispatch import _inject_satellite_context
 
         self.assertEqual(_inject_satellite_context("task", {}), "task")
 
@@ -109,7 +109,7 @@ class HelperTests(unittest.TestCase):
         the model's prior."""
         from datetime import datetime, timezone
 
-        from services.subagent_dispatch import _current_date_preamble
+        from tta_backend.services.subagent_dispatch import _current_date_preamble
 
         text = _current_date_preamble(datetime(2026, 7, 19, 12, 0, tzinfo=timezone.utc))
         lowered = text.lower()
@@ -122,7 +122,7 @@ class HelperTests(unittest.TestCase):
         self.assertTrue(text.endswith("\n\n"))
 
     def test_current_date_preamble_defaults_to_now_when_unset(self):
-        from services.subagent_dispatch import _current_date_preamble
+        from tta_backend.services.subagent_dispatch import _current_date_preamble
 
         # No argument → uses the real clock; just assert it produces a banner.
         self.assertIn("authoritative", _current_date_preamble().lower())
@@ -137,7 +137,7 @@ class HelperTests(unittest.TestCase):
         map). The researcher's own current wording must win, exactly like the
         ground-monitor pollutant fix above never carries a stale pollutant
         across requests."""
-        from services.subagent_dispatch import _inject_satellite_context
+        from tta_backend.services.subagent_dispatch import _inject_satellite_context
 
         enriched = _inject_satellite_context(
             "Plot TEMPO NO2 for 2026-07-16, bounding box: min longitude -84, "
@@ -156,7 +156,7 @@ class HelperTests(unittest.TestCase):
         self.assertNotIn("location=New York/New Jersey", enriched)
 
     def test_satellite_context_injection_reuses_aoi_when_task_names_no_new_area(self):
-        from services.subagent_dispatch import _inject_satellite_context
+        from tta_backend.services.subagent_dispatch import _inject_satellite_context
 
         enriched = _inject_satellite_context(
             "Pick an available date in that range.",
@@ -170,7 +170,7 @@ class HelperTests(unittest.TestCase):
         """T36 P3: the satellite agent is stateless, so the chart id a follow-up
         reliability question must hand to explain_measurement is only reachable
         if it's injected as prior-retrieval context."""
-        from services.subagent_dispatch import _inject_satellite_context
+        from tta_backend.services.subagent_dispatch import _inject_satellite_context
 
         enriched = _inject_satellite_context(
             "How reliable is this measurement?",
@@ -185,7 +185,7 @@ class HelperTests(unittest.TestCase):
         NO2"). Last-write-wins would silently misattribute a follow-up
         reliability question to whichever chart streamed last — every id must
         survive, ordered, most recent last."""
-        from services.subagent_dispatch import _capture_chart_id
+        from tta_backend.services.subagent_dispatch import _capture_chart_id
 
         captured: dict[str, str] = {}
         _capture_chart_id({"chart_id": "map_aod"}, captured)
@@ -198,7 +198,7 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(captured["last_chart_ids"], "map_no2,map_aod")
 
     def test_injection_of_a_single_chart_id_stays_unambiguous(self):
-        from services.subagent_dispatch import _inject_satellite_context
+        from tta_backend.services.subagent_dispatch import _inject_satellite_context
 
         enriched = _inject_satellite_context(
             "How reliable is this measurement?",
@@ -210,7 +210,7 @@ class HelperTests(unittest.TestCase):
         """When the prior turn produced several charts, the stateless satellite
         agent must see all of them plus an instruction to ask which chart is
         meant — a bare single id would confidently explain the wrong one."""
-        from services.subagent_dispatch import _inject_satellite_context
+        from tta_backend.services.subagent_dispatch import _inject_satellite_context
 
         enriched = _inject_satellite_context(
             "Why should I trust this?",
@@ -222,9 +222,9 @@ class HelperTests(unittest.TestCase):
         self.assertNotIn("most_recent_chart_id=", enriched)
 
     def test_finalize_sub_agent_result_resolves_matching_artifact_ids_and_handles(self):
-        from services.subagent_dispatch import _finalize_sub_agent_result
-        from models import AgentResult
-        from models.artifact import ArtifactReference
+        from tta_backend.services.subagent_dispatch import _finalize_sub_agent_result
+        from tta_backend.models import AgentResult
+        from tta_backend.models.artifact import ArtifactReference
 
         raw = AgentResult(
             text='{"summary": "Found the closest monitor.", "artifact_ids": ["art_1"], "handles": ["obs_1"]}',
@@ -245,8 +245,8 @@ class HelperTests(unittest.TestCase):
         the substitution is stamped in the chart's provenance, and the chat
         answer the researcher reads carries the deterministic disclosure, not
         just the Metadata tab."""
-        from services.subagent_dispatch import _finalize_sub_agent_result
-        from models import AgentResult, ChartPayload
+        from tta_backend.services.subagent_dispatch import _finalize_sub_agent_result
+        from tta_backend.models import AgentResult, ChartPayload
 
         chart = ChartPayload(type="heatmap", title="NO2", provenance={
             "requested_scope": {"location": "California", "time_range": "2024-07-15/2024-07-15"},
@@ -274,8 +274,8 @@ class HelperTests(unittest.TestCase):
         chart's provenance -- and the chat answer must carry it, so the choice
         among distinct sensors/products is transparent and redirectable, not
         buried in the Metadata tab."""
-        from services.subagent_dispatch import _finalize_sub_agent_result
-        from models import AgentResult, ChartPayload
+        from tta_backend.services.subagent_dispatch import _finalize_sub_agent_result
+        from tta_backend.models import AgentResult, ChartPayload
 
         disclosure = (
             "Note: this product has several distinct variables; showing "
@@ -301,8 +301,8 @@ class HelperTests(unittest.TestCase):
     def test_finalize_adds_no_variable_note_when_no_resolver_disclosure(self):
         """A single-variable file (no resolver disclosure) must not be nagged
         with a variable note."""
-        from services.subagent_dispatch import _finalize_sub_agent_result
-        from models import AgentResult, ChartPayload
+        from tta_backend.services.subagent_dispatch import _finalize_sub_agent_result
+        from tta_backend.models import AgentResult, ChartPayload
 
         chart = ChartPayload(type="heatmap", title="NO2", provenance={"variable": "no2"})
         raw = AgentResult(
@@ -316,8 +316,8 @@ class HelperTests(unittest.TestCase):
 
     def test_finalize_adds_no_scope_note_when_a_charts_scopes_match(self):
         """Regression: an exact request must not be nagged with a note."""
-        from services.subagent_dispatch import _finalize_sub_agent_result
-        from models import AgentResult, ChartPayload
+        from tta_backend.services.subagent_dispatch import _finalize_sub_agent_result
+        from tta_backend.models import AgentResult, ChartPayload
 
         chart = ChartPayload(type="heatmap", title="NO2", provenance={
             "requested_scope": {"location": "California", "time_range": "2024-07-01/2024-07-31"},
@@ -338,8 +338,8 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(finalized.text, "Here is the NO2 map.")
 
     def test_finalize_sub_agent_result_drops_unknown_artifact_ids(self):
-        from services.subagent_dispatch import _finalize_sub_agent_result
-        from models import AgentResult
+        from tta_backend.services.subagent_dispatch import _finalize_sub_agent_result
+        from tta_backend.models import AgentResult
 
         raw = AgentResult(text='{"summary": "ok", "artifact_ids": ["missing"], "handles": []}')
 
@@ -348,9 +348,9 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(finalized.artifacts, [])
 
     def test_finalize_sub_agent_result_salvages_prose_with_collected_artifacts(self):
-        from services.subagent_dispatch import _finalize_sub_agent_result
-        from models import AgentResult, ChartPayload
-        from models.artifact import ArtifactReference
+        from tta_backend.services.subagent_dispatch import _finalize_sub_agent_result
+        from tta_backend.models import AgentResult, ChartPayload
+        from tta_backend.models.artifact import ArtifactReference
 
         raw = AgentResult(
             text="I found 3 monitors near Newark, NJ.",
@@ -371,9 +371,9 @@ class HelperTests(unittest.TestCase):
         self.assertIn("raw_preview", finalized.metadata)
 
     def test_finalize_sub_agent_result_salvage_attaches_handles_from_artifact_metadata(self):
-        from services.subagent_dispatch import _finalize_sub_agent_result
-        from models import AgentResult
-        from models.artifact import ArtifactReference
+        from tta_backend.services.subagent_dispatch import _finalize_sub_agent_result
+        from tta_backend.models import AgentResult
+        from tta_backend.models.artifact import ArtifactReference
 
         raw = AgentResult(
             text="Plotted TROPOMI NO2 over New Jersey.",
@@ -389,8 +389,8 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(finalized.handles, ["obs_1"])
 
     def test_finalize_sub_agent_result_passes_through_suggested_followups(self):
-        from services.subagent_dispatch import _finalize_sub_agent_result
-        from models import AgentResult
+        from tta_backend.services.subagent_dispatch import _finalize_sub_agent_result
+        from tta_backend.models import AgentResult
 
         raw = AgentResult(text=(
             '{"summary": "Found the closest monitor.", "artifact_ids": [], "handles": [], '
@@ -402,8 +402,8 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(finalized.suggested_followups, ["What about last month?"])
 
     def test_finalize_sub_agent_result_leaves_suggested_followups_none_when_the_envelope_omits_them(self):
-        from services.subagent_dispatch import _finalize_sub_agent_result
-        from models import AgentResult
+        from tta_backend.services.subagent_dispatch import _finalize_sub_agent_result
+        from tta_backend.models import AgentResult
 
         raw = AgentResult(text='{"summary": "ok", "artifact_ids": [], "handles": []}')
 
@@ -415,8 +415,8 @@ class HelperTests(unittest.TestCase):
         """T22 story #7/#12: salvage never invents a next step — a
         malformed-envelope prose fallback must never surface suggestions,
         even though the tool stream may have collected real artifacts."""
-        from services.subagent_dispatch import _finalize_sub_agent_result
-        from models import AgentResult
+        from tta_backend.services.subagent_dispatch import _finalize_sub_agent_result
+        from tta_backend.models import AgentResult
 
         raw = AgentResult(text="I found 3 monitors near Newark, NJ.")
 
@@ -426,8 +426,8 @@ class HelperTests(unittest.TestCase):
         self.assertIsNone(finalized.suggested_followups)
 
     def test_finalize_sub_agent_result_is_a_structured_failure_on_empty_text(self):
-        from services.subagent_dispatch import _finalize_sub_agent_result
-        from models import AgentResult
+        from tta_backend.services.subagent_dispatch import _finalize_sub_agent_result
+        from tta_backend.models import AgentResult
 
         raw = AgentResult(text="   ")
 
@@ -440,7 +440,7 @@ class HelperTests(unittest.TestCase):
         self.assertIn("earthdata", finalized.text.lower())
         # T18: this is a rendered contract-category template, not free text —
         # matches config.error_templates.render_error_answer's fixed wording.
-        from config.error_templates import render_error_answer
+        from tta_backend.config.error_templates import render_error_answer
 
         self.assertEqual(
             finalized.text,
@@ -448,9 +448,9 @@ class HelperTests(unittest.TestCase):
         )
 
     def test_finalize_sub_agent_result_parses_an_envelope_longer_than_the_display_limit(self):
-        from services.subagent_dispatch import _finalize_sub_agent_result
-        from models import AgentResult
-        from models.artifact import ArtifactReference
+        from tta_backend.services.subagent_dispatch import _finalize_sub_agent_result
+        from tta_backend.models import AgentResult
+        from tta_backend.models.artifact import ArtifactReference
 
         long_summary = "A" * 2500
         raw_text = json.dumps({
@@ -474,8 +474,8 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(len(finalized.text), 2000)
 
     def test_satellite_retry_task_names_only_the_sanctioned_toolset(self):
-        from services.subagent_dispatch import _satellite_retry_task
-        from tools.satellite_tools.factory import sanctioned_tool_names
+        from tta_backend.services.subagent_dispatch import _satellite_retry_task
+        from tta_backend.tools.satellite_tools.factory import sanctioned_tool_names
 
         retry_task = _satellite_retry_task("Plot TROPOMI NO2 over New Jersey")
 
@@ -487,15 +487,15 @@ class HelperTests(unittest.TestCase):
         self.assertIn("Task: Plot TROPOMI NO2 over New Jersey", retry_task)
 
     def test_ground_retry_guidance_names_only_ground_tools(self):
-        from services.subagent_dispatch import _GROUND_RETRY_TOOL_GUIDANCE
-        from tools import GROUND_TOOLS
+        from tta_backend.services.subagent_dispatch import _GROUND_RETRY_TOOL_GUIDANCE
+        from tta_backend.tools import GROUND_TOOLS
 
         for tool in GROUND_TOOLS:
             self.assertIn(tool.name, _GROUND_RETRY_TOOL_GUIDANCE)
         self.assertNotIn("geocode_location", _GROUND_RETRY_TOOL_GUIDANCE)
 
     def test_extracts_a_map_artifact_ref_from_tool_content(self):
-        from services.subagent_dispatch import _artifact_refs_from_content
+        from tta_backend.services.subagent_dispatch import _artifact_refs_from_content
 
         content = json.dumps({
             "type": "heatmap",
@@ -522,13 +522,13 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(refs[0].type, "map")
 
     def test_returns_empty_list_for_content_with_no_artifact_refs(self):
-        from services.subagent_dispatch import _artifact_refs_from_content
+        from tta_backend.services.subagent_dispatch import _artifact_refs_from_content
 
         self.assertEqual(_artifact_refs_from_content("plain text"), [])
         self.assertEqual(_artifact_refs_from_content(json.dumps({"type": "heatmap"})), [])
 
     def test_extract_artifact_refs_from_messages_uses_the_shared_helper(self):
-        from services.subagent_dispatch import _extract_artifact_refs
+        from tta_backend.services.subagent_dispatch import _extract_artifact_refs
 
         table_ref = {"id": "tbl_1", "type": "table", "title": "EPA Summary"}
         messages = [
@@ -547,8 +547,8 @@ class RepromptFinalEnvelopeTests(unittest.IsolatedAsyncioTestCase):
     one structured-output model call, never a second tool-workflow run."""
 
     async def test_reprompts_via_the_model_factorys_structured_output_hook(self):
-        from services.subagent_dispatch import _reprompt_final_envelope
-        from models import SubAgentEnvelope
+        from tta_backend.services.subagent_dispatch import _reprompt_final_envelope
+        from tta_backend.models import SubAgentEnvelope
 
         envelope = SubAgentEnvelope(summary="Recovered answer.", artifact_ids=[], handles=[])
 
@@ -577,7 +577,7 @@ class RepromptFinalEnvelopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(result.text)["summary"], "Recovered answer.")
 
     async def test_returns_empty_text_when_the_model_call_raises(self):
-        from services.subagent_dispatch import _reprompt_final_envelope
+        from tta_backend.services.subagent_dispatch import _reprompt_final_envelope
 
         class FakeBoundModel:
             async def ainvoke(self, text):
@@ -594,7 +594,7 @@ class RepromptFinalEnvelopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.text, "")
 
     async def test_returns_empty_text_when_the_agent_has_no_model_attached(self):
-        from services.subagent_dispatch import _reprompt_final_envelope
+        from tta_backend.services.subagent_dispatch import _reprompt_final_envelope
 
         result = await _reprompt_final_envelope(SimpleNamespace(), "Retry task", "satellite")
 
@@ -604,7 +604,7 @@ class RepromptFinalEnvelopeTests(unittest.IsolatedAsyncioTestCase):
 @unittest.skipIf(importlib.util.find_spec("langchain") is None, "langchain is not installed")
 class RunGroundTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_ground_reads_and_merges_persisted_monitor_context(self):
-        from services import subagent_dispatch
+        from tta_backend.services import subagent_dispatch
 
         envelope = json.dumps({"summary": "Ground summary.", "artifact_ids": [], "handles": []})
 
@@ -629,7 +629,7 @@ class RunGroundTests(unittest.IsolatedAsyncioTestCase):
         save_mock.assert_not_called()  # the reply didn't mention a new monitor
 
     async def test_run_ground_persists_newly_discovered_monitor_context(self):
-        from services import subagent_dispatch
+        from tta_backend.services import subagent_dispatch
 
         envelope = json.dumps({
             "summary": "The closest monitor is Rutgers University with station_id 34-023-0011.",
@@ -655,8 +655,8 @@ class RunGroundTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_ground_renders_an_unexpected_exception_through_the_taxonomy(self):
         # T37: a bare exception string (possibly empty: KeyError('x') →
         # "'x'") must never become the ground agent's "answer".
-        from services import subagent_dispatch
-        from config.error_templates import render_error_answer
+        from tta_backend.services import subagent_dispatch
+        from tta_backend.config.error_templates import render_error_answer
 
         class ExplodingGroundAgent:
             async def ainvoke(self, input_, config):
@@ -676,8 +676,8 @@ class RunGroundTests(unittest.IsolatedAsyncioTestCase):
         # multi-period workflow running out of step budget) escaped as a bare
         # GraphRecursionError caught by the blanket handler and rendered as the
         # generic "internal error" — indistinguishable from a genuine crash.
-        from services import subagent_dispatch
-        from config.error_templates import CATEGORY_RECURSION_EXHAUSTED, render_error_answer
+        from tta_backend.services import subagent_dispatch
+        from tta_backend.config.error_templates import CATEGORY_RECURSION_EXHAUSTED, render_error_answer
 
         class GraphRecursionError(Exception):
             pass
@@ -692,8 +692,8 @@ class RunGroundTests(unittest.IsolatedAsyncioTestCase):
         # "wait and retry" condition, not a contract crash. Match on the message
         # shape (429/quota/rate limit) so it works across providers without
         # importing any provider-specific exception class.
-        from services import subagent_dispatch
-        from config.error_templates import CATEGORY_RATE_LIMITED, render_error_answer
+        from tta_backend.services import subagent_dispatch
+        from tta_backend.config.error_templates import CATEGORY_RATE_LIMITED, render_error_answer
 
         class ChatGoogleGenerativeAIError(Exception):
             pass
@@ -709,8 +709,8 @@ class RunGroundTests(unittest.IsolatedAsyncioTestCase):
     def test_render_unexpected_exception_leaves_an_ordinary_crash_as_contract(self):
         # Anything that is neither a recursion stop nor a rate limit stays a
         # contract failure, and its raw text never reaches the researcher.
-        from services import subagent_dispatch
-        from config.error_templates import render_error_answer
+        from tta_backend.services import subagent_dispatch
+        from tta_backend.config.error_templates import render_error_answer
 
         text = subagent_dispatch._render_unexpected_exception(
             RuntimeError("secret path leak /opt/creds"), "earthdata agent"
@@ -720,7 +720,7 @@ class RunGroundTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(text, render_error_answer("contract", "earthdata agent"))
 
     async def test_run_ground_second_call_in_the_same_task_is_budget_blocked(self):
-        from services import subagent_dispatch
+        from tta_backend.services import subagent_dispatch
 
         class FakeGroundAgent:
             async def ainvoke(self, input_, config):
@@ -737,7 +737,7 @@ class RunGroundTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("already returned a result", second.text)
 
     async def test_run_ground_refusal_triggers_one_reprompt_not_a_second_workflow_run(self):
-        from services import subagent_dispatch
+        from tta_backend.services import subagent_dispatch
 
         class FakeBoundModel:
             def __init__(self):
@@ -745,7 +745,7 @@ class RunGroundTests(unittest.IsolatedAsyncioTestCase):
 
             async def ainvoke(self, text):
                 self.call_count += 1
-                from models import SubAgentEnvelope
+                from tta_backend.models import SubAgentEnvelope
                 return SubAgentEnvelope(summary="Recovered via reprompt.", artifact_ids=[], handles=[])
 
         class FakeModel:
@@ -784,7 +784,7 @@ class RunGroundTests(unittest.IsolatedAsyncioTestCase):
 @unittest.skipIf(importlib.util.find_spec("langchain") is None, "langchain is not installed")
 class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_satellite_forwards_events_via_on_event(self):
-        from services import subagent_dispatch
+        from tta_backend.services import subagent_dispatch
 
         envelope = json.dumps({"summary": "Plotted NO2 over NJ.", "artifact_ids": [], "handles": ["obs_1"]})
 
@@ -813,7 +813,7 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("tool_call", forwarded_types)
 
     async def test_run_satellite_reads_and_injects_persisted_retrieval_context(self):
-        from services import subagent_dispatch
+        from tta_backend.services import subagent_dispatch
 
         envelope = json.dumps({"summary": "Plotted NO2 over NJ.", "artifact_ids": [], "handles": []})
 
@@ -844,7 +844,7 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
         save_mock.assert_not_called()  # this turn issued no capturable tool calls
 
     async def test_run_satellite_persists_captured_retrieval_context(self):
-        from services import subagent_dispatch
+        from tta_backend.services import subagent_dispatch
 
         envelope = json.dumps({"summary": "No data for June 5.", "artifact_ids": [], "handles": []})
 
@@ -888,7 +888,7 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
         answer becomes the deterministic T18 error relay, and the wrong-region
         map is dropped (story #1: never a confident map of a region I didn't
         ask about)."""
-        from services import subagent_dispatch
+        from tta_backend.services import subagent_dispatch
 
         error_env = json.dumps({"error": {
             "category": "user_input",
@@ -928,7 +928,7 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
         asks a clarifying question instead of substituting a region (no chart
         delivered), its answer stands — the guard only replaces a *substituted*
         answer."""
-        from services import subagent_dispatch
+        from tta_backend.services import subagent_dispatch
 
         error_env = json.dumps({"error": {
             "category": "user_input",
@@ -959,8 +959,8 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
         the finalized AgentResult, with each candidate's prompt reconstructed
         from the ORIGINAL user request -- not the date/context-enriched task the
         sub-agent actually ran, and never composed by the model."""
-        from services import subagent_dispatch
-        from utils.streaming import emit_variable_choice
+        from tta_backend.services import subagent_dispatch
+        from tta_backend.utils.streaming import emit_variable_choice
 
         envelope = json.dumps({"summary": "I've shown a variable picker.", "artifact_ids": [], "handles": []})
 
@@ -1000,8 +1000,8 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
         where one resolves cleanly (a chart) and the other is ambiguous (a tool
         emits a picker) returns BOTH — the good work is never discarded because
         one part was unclear."""
-        from services import subagent_dispatch
-        from utils.streaming import emit_chart, emit_variable_choice
+        from tta_backend.services import subagent_dispatch
+        from tta_backend.utils.streaming import emit_chart, emit_variable_choice
 
         envelope = json.dumps({"summary": "Plotted NO2; AOD needs a choice.", "artifact_ids": [], "handles": []})
 
@@ -1036,8 +1036,8 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
         with its chart AND an override picker (lifted from the chart's
         provenance), never one instead of the other. Prompts come from the
         original request."""
-        from services import subagent_dispatch
-        from utils.streaming import emit_chart
+        from tta_backend.services import subagent_dispatch
+        from tta_backend.utils.streaming import emit_chart
 
         envelope = json.dumps({"summary": "Plotted AOD over NJ.", "artifact_ids": [], "handles": []})
         chart = {
@@ -1079,7 +1079,7 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_run_satellite_second_call_in_the_same_task_is_budget_blocked(self):
-        from services import subagent_dispatch
+        from tta_backend.services import subagent_dispatch
 
         envelope = json.dumps({"summary": "ok", "artifact_ids": [], "handles": []})
 
@@ -1096,8 +1096,8 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_satellite_returns_the_deterministic_message_when_the_mcp_is_not_ready(self):
         # T17 story #13: gate on the connection manager's state before ever
         # touching the sub-agent, so an outage costs zero model calls.
-        from services import subagent_dispatch
-        from earthdata_mcp.connection import STATE_UNAVAILABLE
+        from tta_backend.services import subagent_dispatch
+        from tta_backend.earthdata_mcp.connection import STATE_UNAVAILABLE
 
         class UntouchedSatelliteAgent:
             def __getattr__(self, name):
@@ -1115,7 +1115,7 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
         # T18: rendered from the shared provider_unavailable template — the
         # same code path the supervisor's ask_earthdata_agent tool wrapper
         # dispatches through, so both paths fail identically (story #12).
-        from config.error_templates import render_error_answer
+        from tta_backend.config.error_templates import render_error_answer
 
         self.assertEqual(
             result.text,
@@ -1125,8 +1125,8 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_run_satellite_dispatches_normally_once_the_mcp_is_ready(self):
-        from services import subagent_dispatch
-        from earthdata_mcp.connection import STATE_READY
+        from tta_backend.services import subagent_dispatch
+        from tta_backend.earthdata_mcp.connection import STATE_READY
 
         envelope = json.dumps({"summary": "Plotted NO2 over NJ.", "artifact_ids": [], "handles": []})
 
@@ -1147,8 +1147,8 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
         # T37: an arbitrary exception string must never become the
         # sub-agent's "answer" the supervisor can dress up — it renders as
         # the taxonomy's honest contract answer, real exception in the logs.
-        from services import subagent_dispatch
-        from config.error_templates import render_error_answer
+        from tta_backend.services import subagent_dispatch
+        from tta_backend.config.error_templates import render_error_answer
 
         class ExplodingSatelliteAgent:
             async def astream(self, input_, config, stream_mode):
@@ -1162,9 +1162,9 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.text, render_error_answer("contract", "earthdata agent"))
 
     async def test_run_satellite_renders_a_classified_mcp_error_with_its_own_category(self):
-        from services import subagent_dispatch
-        from config.error_templates import render_error_answer
-        from earthdata_mcp.results import CATEGORY_PROVIDER_UNAVAILABLE, MCPToolError
+        from tta_backend.services import subagent_dispatch
+        from tta_backend.config.error_templates import render_error_answer
+        from tta_backend.earthdata_mcp.results import CATEGORY_PROVIDER_UNAVAILABLE, MCPToolError
 
         class ExplodingSatelliteAgent:
             async def astream(self, input_, config, stream_mode):
@@ -1188,7 +1188,7 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_satellite_without_a_manager_dispatches_normally(self):
         # Default (no mcp_manager passed) preserves today's behavior for
         # every existing caller — the manager must be invisible when unused.
-        from services import subagent_dispatch
+        from tta_backend.services import subagent_dispatch
 
         envelope = json.dumps({"summary": "ok", "artifact_ids": [], "handles": []})
 
@@ -1202,7 +1202,7 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.text, "ok")
 
     async def test_run_satellite_refusal_triggers_one_reprompt_not_a_second_workflow_run(self):
-        from services import subagent_dispatch
+        from tta_backend.services import subagent_dispatch
 
         class FakeBoundModel:
             def __init__(self):
@@ -1210,7 +1210,7 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
 
             async def ainvoke(self, text):
                 self.call_count += 1
-                from models import SubAgentEnvelope
+                from tta_backend.models import SubAgentEnvelope
                 return SubAgentEnvelope(summary="Recovered via reprompt.", artifact_ids=[], handles=[])
 
         class FakeModel:
@@ -1257,7 +1257,7 @@ class CallBudgetTaskBoundaryTests(unittest.IsolatedAsyncioTestCase):
     the full LangGraph loop) and proves the budget survives it."""
 
     async def _build_tools(self, ground_agent, satellite_agent):
-        from agents import supervisor_agent
+        from tta_backend.agents import supervisor_agent
 
         captured = {}
 
@@ -1273,8 +1273,8 @@ class CallBudgetTaskBoundaryTests(unittest.IsolatedAsyncioTestCase):
         return captured["tools"]
 
     async def test_ground_budget_survives_the_tool_node_task_boundary(self):
-        from services import subagent_dispatch
-        from utils.streaming import _call_budget
+        from tta_backend.services import subagent_dispatch
+        from tta_backend.utils.streaming import _call_budget
 
         envelope = json.dumps({"summary": "ok", "artifact_ids": [], "handles": []})
 
@@ -1304,7 +1304,7 @@ class CallBudgetTaskBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("already returned a result", second)
 
     async def test_satellite_budget_survives_the_tool_node_task_boundary(self):
-        from utils.streaming import _call_budget
+        from tta_backend.utils.streaming import _call_budget
 
         envelope = json.dumps({"summary": "ok", "artifact_ids": [], "handles": []})
 

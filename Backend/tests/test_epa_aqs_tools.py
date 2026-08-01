@@ -27,12 +27,12 @@ def _load_epa_module():
     stubs = {
         "langchain": MagicMock(),
         "langchain.tools": MagicMock(tool=lambda f: f),
-        "config": MagicMock(),
-        "config.settings": MagicMock(get_settings=MagicMock(return_value=fake_settings)),
-        "services": MagicMock(),
-        "services.artifact_store": MagicMock(artifact_store=fake_artifact_store),
-        "utils": MagicMock(),
-        "utils.plotting": MagicMock(get_geocoding_service=MagicMock()),
+        "tta_backend.config": MagicMock(),
+        "tta_backend.config.settings": MagicMock(get_settings=MagicMock(return_value=fake_settings)),
+        "tta_backend.services": MagicMock(),
+        "tta_backend.services.artifact_store": MagicMock(artifact_store=fake_artifact_store),
+        "tta_backend.utils": MagicMock(),
+        "tta_backend.utils.plotting": MagicMock(get_geocoding_service=MagicMock()),
     }
 
     prev = {k: sys.modules.pop(k, None) for k in stubs}
@@ -45,7 +45,7 @@ def _load_epa_module():
     sys.modules.update(stubs)
     try:
         path = os.path.join(
-            BACKEND_DIR, "tools", "ground_sensor_tools", "epa_aqs_tools.py"
+            BACKEND_DIR, "tta_backend", "tools", "ground_sensor_tools", "epa_aqs_tools.py"
         )
         spec = importlib.util.spec_from_file_location("epa_aqs_tools_isolated", path)
         mod = importlib.util.module_from_spec(spec)

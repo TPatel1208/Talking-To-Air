@@ -32,8 +32,8 @@ REQUIRED_MODULES = ["langchain", "langchain_mcp_adapters", "fastmcp", "uvicorn",
 class HandleBasedToolsSurfaceClassifiedErrorsTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
 
         # A tool-raised error unrecognized by the classifier's known
         # prefixes — pins the contract fallback, not a hand-picked category,
@@ -48,7 +48,7 @@ class HandleBasedToolsSurfaceClassifiedErrorsTests(unittest.IsolatedAsyncioTestC
         self.mcp_tools = await load_raw_mcp_tools(settings)
 
     async def test_plot_singular_surfaces_a_classified_error_as_structured_json(self):
-        from tools.satellite_tools.plot_tools import make_plot_singular
+        from tta_backend.tools.satellite_tools.plot_tools import make_plot_singular
 
         plot_singular = make_plot_singular(self.mcp_tools)
         raw = await plot_singular.ainvoke({"handle": "obs_1", "location": "New Jersey"})
@@ -58,7 +58,7 @@ class HandleBasedToolsSurfaceClassifiedErrorsTests(unittest.IsolatedAsyncioTestC
         self.assertTrue(payload["error"]["message"])
 
     async def test_compute_statistic_tool_surfaces_a_classified_error_as_structured_json(self):
-        from tools.satellite_tools.stat_tools import make_compute_statistic_tool
+        from tta_backend.tools.satellite_tools.stat_tools import make_compute_statistic_tool
 
         compute_statistic_tool = make_compute_statistic_tool(self.mcp_tools)
         raw = await compute_statistic_tool.ainvoke({"handle": "obs_1", "location": "New Jersey"})
@@ -67,7 +67,7 @@ class HandleBasedToolsSurfaceClassifiedErrorsTests(unittest.IsolatedAsyncioTestC
         self.assertEqual(payload["error"]["category"], "contract")
 
     async def test_validate_against_ground_surfaces_a_classified_error_as_structured_json(self):
-        from tools.satellite_tools.validation_tools import make_validate_against_ground
+        from tta_backend.tools.satellite_tools.validation_tools import make_validate_against_ground
 
         validate_against_ground = make_validate_against_ground(self.mcp_tools)
         raw = await validate_against_ground.ainvoke({"handle": "obs_1", "location": "New Jersey"})
@@ -76,7 +76,7 @@ class HandleBasedToolsSurfaceClassifiedErrorsTests(unittest.IsolatedAsyncioTestC
         self.assertEqual(payload["error"]["category"], "contract")
 
     async def test_compare_surfaces_a_classified_error_as_structured_json(self):
-        from tools.satellite_tools.comparison_tools import make_compare
+        from tta_backend.tools.satellite_tools.comparison_tools import make_compare
 
         compare = make_compare(self.mcp_tools)
         raw = await compare.ainvoke({"handle_a": "obs_1", "handle_b": "obs_2", "mode": "region"})
@@ -85,14 +85,14 @@ class HandleBasedToolsSurfaceClassifiedErrorsTests(unittest.IsolatedAsyncioTestC
         self.assertEqual(payload["error"]["category"], "contract")
 
     async def test_await_retrieval_tool_surfaces_a_classified_error_as_structured_json(self):
-        from tools.satellite_tools.retrieval_tools import make_await_retrieval
+        from tta_backend.tools.satellite_tools.retrieval_tools import make_await_retrieval
 
         async def get_retrieval_status(job_handle, workspace_id="default"):
             raise ValueError("harmony: provider GES_DISC rejected the status poll for an unmapped reason")
 
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
 
         server = FakeEarthdataMCPServer(build_fake_mcp({"get_retrieval_status": get_retrieval_status}))
         server.start()

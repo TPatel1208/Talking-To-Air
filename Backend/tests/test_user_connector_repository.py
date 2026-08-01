@@ -44,10 +44,10 @@ class EnsureTableSchemaContractTests(unittest.IsolatedAsyncioTestCase):
     -- no migration framework, so the shape asserted here IS the schema."""
 
     async def test_table_ddl_has_a_unique_constraint_on_user_id_and_connector_type(self):
-        from repositories import user_connector_repository
+        from tta_backend.repositories import user_connector_repository
 
         conn = _fake_conn()
-        with patch("repositories.user_connector_repository.pg_connection", _fake_pg_connection(conn)):
+        with patch("tta_backend.repositories.user_connector_repository.pg_connection", _fake_pg_connection(conn)):
             await user_connector_repository.ensure_user_connector_table()
 
         ddl = conn.execute.await_args.args[0]
@@ -59,7 +59,7 @@ class EnsureTableSchemaContractTests(unittest.IsolatedAsyncioTestCase):
 
 class UpsertConnectorTests(unittest.IsolatedAsyncioTestCase):
     async def test_upsert_inserts_with_an_on_conflict_upgrade_and_never_returns_the_secret(self):
-        from repositories import user_connector_repository
+        from tta_backend.repositories import user_connector_repository
 
         row = {
             "connector_type": "earthdata", "auth_method": "token", "expires_at": datetime.now(timezone.utc),
@@ -68,7 +68,7 @@ class UpsertConnectorTests(unittest.IsolatedAsyncioTestCase):
         cursor = _FakeCursor(fetchone_result=row)
         conn = _fake_conn(cursor=cursor)
 
-        with patch("repositories.user_connector_repository.pg_connection", _fake_pg_connection(conn)):
+        with patch("tta_backend.repositories.user_connector_repository.pg_connection", _fake_pg_connection(conn)):
             result = await user_connector_repository.upsert_connector(
                 "user-1", "earthdata", "token", "encrypted-blob", datetime.now(timezone.utc) + timedelta(days=60),
             )
@@ -83,12 +83,12 @@ class UpsertConnectorTests(unittest.IsolatedAsyncioTestCase):
 
 class ListConnectorsForUserTests(unittest.IsolatedAsyncioTestCase):
     async def test_scopes_the_select_to_the_caller_and_never_selects_the_secret_column(self):
-        from repositories import user_connector_repository
+        from tta_backend.repositories import user_connector_repository
 
         cursor = _FakeCursor(fetchall_result=[{"connector_type": "earthdata"}])
         conn = _fake_conn(cursor=cursor)
 
-        with patch("repositories.user_connector_repository.pg_connection", _fake_pg_connection(conn)):
+        with patch("tta_backend.repositories.user_connector_repository.pg_connection", _fake_pg_connection(conn)):
             rows = await user_connector_repository.list_connectors_for_user("user-1")
 
         sql, params = cursor.execute.await_args.args
@@ -100,11 +100,11 @@ class ListConnectorsForUserTests(unittest.IsolatedAsyncioTestCase):
 
 class DeleteConnectorTests(unittest.IsolatedAsyncioTestCase):
     async def test_delete_scopes_to_both_user_id_and_connector_type(self):
-        from repositories import user_connector_repository
+        from tta_backend.repositories import user_connector_repository
 
         conn = _fake_conn(execute_result=MagicMock(rowcount=1))
 
-        with patch("repositories.user_connector_repository.pg_connection", _fake_pg_connection(conn)):
+        with patch("tta_backend.repositories.user_connector_repository.pg_connection", _fake_pg_connection(conn)):
             deleted = await user_connector_repository.delete_connector("user-1", "earthdata")
 
         sql, params = conn.execute.await_args.args
@@ -113,11 +113,11 @@ class DeleteConnectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(deleted)
 
     async def test_delete_reports_false_when_nothing_matched(self):
-        from repositories import user_connector_repository
+        from tta_backend.repositories import user_connector_repository
 
         conn = _fake_conn(execute_result=MagicMock(rowcount=0))
 
-        with patch("repositories.user_connector_repository.pg_connection", _fake_pg_connection(conn)):
+        with patch("tta_backend.repositories.user_connector_repository.pg_connection", _fake_pg_connection(conn)):
             deleted = await user_connector_repository.delete_connector("user-1", "earthdata")
 
         self.assertFalse(deleted)
@@ -129,13 +129,13 @@ class GetConnectorSecretRowTests(unittest.IsolatedAsyncioTestCase):
     resolution, never by an API response."""
 
     async def test_selects_the_secret_scoped_to_user_and_connector_type(self):
-        from repositories import user_connector_repository
+        from tta_backend.repositories import user_connector_repository
 
         row = {"encrypted_secret": "blob", "expires_at": datetime.now(timezone.utc), "status": "connected"}
         cursor = _FakeCursor(fetchone_result=row)
         conn = _fake_conn(cursor=cursor)
 
-        with patch("repositories.user_connector_repository.pg_connection", _fake_pg_connection(conn)):
+        with patch("tta_backend.repositories.user_connector_repository.pg_connection", _fake_pg_connection(conn)):
             result = await user_connector_repository.get_connector_secret_row("user-1", "earthdata")
 
         sql, params = cursor.execute.await_args.args
@@ -145,12 +145,12 @@ class GetConnectorSecretRowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, row)
 
     async def test_returns_none_when_no_row_exists(self):
-        from repositories import user_connector_repository
+        from tta_backend.repositories import user_connector_repository
 
         cursor = _FakeCursor(fetchone_result=None)
         conn = _fake_conn(cursor=cursor)
 
-        with patch("repositories.user_connector_repository.pg_connection", _fake_pg_connection(conn)):
+        with patch("tta_backend.repositories.user_connector_repository.pg_connection", _fake_pg_connection(conn)):
             result = await user_connector_repository.get_connector_secret_row("user-1", "earthdata")
 
         self.assertIsNone(result)
@@ -158,11 +158,11 @@ class GetConnectorSecretRowTests(unittest.IsolatedAsyncioTestCase):
 
 class TouchLastUsedAtTests(unittest.IsolatedAsyncioTestCase):
     async def test_updates_last_used_at_scoped_to_user_and_connector_type(self):
-        from repositories import user_connector_repository
+        from tta_backend.repositories import user_connector_repository
 
         conn = _fake_conn()
 
-        with patch("repositories.user_connector_repository.pg_connection", _fake_pg_connection(conn)):
+        with patch("tta_backend.repositories.user_connector_repository.pg_connection", _fake_pg_connection(conn)):
             await user_connector_repository.touch_last_used_at("user-1", "earthdata")
 
         sql, params = conn.execute.await_args.args
@@ -173,11 +173,11 @@ class TouchLastUsedAtTests(unittest.IsolatedAsyncioTestCase):
 
 class SetConnectorStatusTests(unittest.IsolatedAsyncioTestCase):
     async def test_updates_status_scoped_to_user_and_connector_type(self):
-        from repositories import user_connector_repository
+        from tta_backend.repositories import user_connector_repository
 
         conn = _fake_conn()
 
-        with patch("repositories.user_connector_repository.pg_connection", _fake_pg_connection(conn)):
+        with patch("tta_backend.repositories.user_connector_repository.pg_connection", _fake_pg_connection(conn)):
             await user_connector_repository.set_connector_status("user-1", "earthdata", "error")
 
         sql, params = conn.execute.await_args.args

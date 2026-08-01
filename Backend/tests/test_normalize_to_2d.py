@@ -29,7 +29,7 @@ class NormalizeTo2dTests(unittest.TestCase):
         self.xr = xr
 
     def test_squeezes_size_one_dims_with_no_error(self):
-        from utils.plotting import _normalize_to_2d
+        from tta_backend.utils.plotting import _normalize_to_2d
 
         da = self.xr.DataArray(
             self.np.ones((1, 2, 2)),
@@ -43,8 +43,8 @@ class NormalizeTo2dTests(unittest.TestCase):
         self.assertEqual(result.dims, ("lat", "lon"))
 
     def test_raises_a_candidate_listing_error_for_an_unselected_level_dim(self):
-        from earthdata_mcp.results import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
-        from utils.plotting import _normalize_to_2d
+        from tta_backend.earthdata_mcp.results import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
+        from tta_backend.utils.plotting import _normalize_to_2d
 
         da = self.xr.DataArray(
             self.np.ones((3, 2, 2)),
@@ -68,7 +68,7 @@ class NormalizeTo2dTests(unittest.TestCase):
         self.assertIn("hPa", ctx.exception.message)
 
     def test_dim_selector_resolves_the_level_dim_by_coordinate_value(self):
-        from utils.plotting import _normalize_to_2d
+        from tta_backend.utils.plotting import _normalize_to_2d
 
         da = self.xr.DataArray(
             self.np.array([[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]]),
@@ -87,8 +87,8 @@ class NormalizeTo2dTests(unittest.TestCase):
         min--max range (e.g. a bare hPa value against a Pa-unit ``lev`` coord)
         is refused with a structured error, not silently nearest-snapped to a
         plausible-but-wrong edge level."""
-        from earthdata_mcp.results import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
-        from utils.plotting import _normalize_to_2d
+        from tta_backend.earthdata_mcp.results import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
+        from tta_backend.utils.plotting import _normalize_to_2d
 
         da = self.xr.DataArray(
             self.np.arange(3 * 2 * 2, dtype=float).reshape(3, 2, 2),
@@ -113,7 +113,7 @@ class NormalizeTo2dTests(unittest.TestCase):
     def test_dim_selector_in_range_value_still_nearest_selects(self):
         """An in-range selection nearest-matches normally -- the range guard
         only rejects values outside the coordinate, not legitimate ones."""
-        from utils.plotting import _normalize_to_2d
+        from tta_backend.utils.plotting import _normalize_to_2d
 
         da = self.xr.DataArray(
             self.np.array([[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]]),
@@ -140,7 +140,7 @@ class NormalizeTo2dTests(unittest.TestCase):
         must honor them positionally instead of crashing inside xarray with
         "cannot supply selection options {'method': 'nearest', ...} for
         dimension ... that has no associated coordinate or index"."""
-        from utils.plotting import _normalize_to_2d
+        from tta_backend.utils.plotting import _normalize_to_2d
 
         da = self.xr.DataArray(
             self.np.array([[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]]),
@@ -158,8 +158,8 @@ class NormalizeTo2dTests(unittest.TestCase):
         """Positional selection keeps the same refuse-don't-snap contract as
         coordinate selection: an index past the dim's size is a structured
         error, not a clamp to the last slice."""
-        from earthdata_mcp.results import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
-        from utils.plotting import _normalize_to_2d
+        from tta_backend.earthdata_mcp.results import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
+        from tta_backend.utils.plotting import _normalize_to_2d
 
         da = self.xr.DataArray(
             self.np.ones((2, 2, 2)),
@@ -178,7 +178,7 @@ class NormalizeTo2dTests(unittest.TestCase):
         """Time is the one transparent auto-reduction (PRD T25) -- a
         surviving time-identified dim must not raise, even without a
         selector, unlike a genuine extra dim such as a vertical level."""
-        from utils.plotting import _normalize_to_2d
+        from tta_backend.utils.plotting import _normalize_to_2d
 
         da = self.xr.DataArray(
             self.np.array([[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]]),

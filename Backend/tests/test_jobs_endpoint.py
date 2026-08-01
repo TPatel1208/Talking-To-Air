@@ -26,13 +26,13 @@ REQUIRED_MODULES = ["fastapi", "httpx", "jwt", "bcrypt", "langchain_mcp_adapters
 class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         import httpx
-        import api
+        import tta_backend.api as api
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.toolset import load_earthdata_tools
-        from config.settings import Settings
-        from models.user import User
-        from services.jobs_service import clear_terminal_status_cache
-        from utils.streaming import current_user_id
+        from tta_backend.earthdata_mcp.toolset import load_earthdata_tools
+        from tta_backend.config.settings import Settings
+        from tta_backend.models.user import User
+        from tta_backend.services.jobs_service import clear_terminal_status_cache
+        from tta_backend.utils.streaming import current_user_id
 
         # list_jobs caches terminal statuses process-globally; clear it between
         # tests so a job_handle reused across methods with different status
@@ -115,8 +115,8 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
         async def fake_is_token_revoked(jti):
             return False
 
-        return patch("services.auth_service.get_user_by_id", fake_get_user_by_id), \
-            patch("services.auth_service.is_token_revoked", fake_is_token_revoked)
+        return patch("tta_backend.services.auth_service.get_user_by_id", fake_get_user_by_id), \
+            patch("tta_backend.services.auth_service.is_token_revoked", fake_is_token_revoked)
 
     async def test_get_jobs_composes_list_and_status_scoped_to_the_caller(self):
         transport = self.httpx.ASGITransport(app=self.api.app)
@@ -189,9 +189,9 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
         handlers are already baked into a running server) and swaps it onto
         app.state for the duration of the call."""
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.toolset import load_earthdata_tools
-        from config.settings import Settings
-        from utils.streaming import current_user_id
+        from tta_backend.earthdata_mcp.toolset import load_earthdata_tools
+        from tta_backend.config.settings import Settings
+        from tta_backend.utils.streaming import current_user_id
 
         cancel_calls = []
 
@@ -231,9 +231,9 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
         taxonomy handler as a 404, so the panel gets a generic error instead
         of the honest, refetchable not-found row."""
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.toolset import load_earthdata_tools
-        from config.settings import Settings
-        from utils.streaming import current_user_id
+        from tta_backend.earthdata_mcp.toolset import load_earthdata_tools
+        from tta_backend.config.settings import Settings
+        from tta_backend.utils.streaming import current_user_id
 
         async def cancel_retrieval(job_handle, workspace_id):
             return {"error": {"category": "not_found", "message": "No retrieval named job_ghost in this workspace."}}
@@ -266,9 +266,9 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
         error). That already-honest signal must reach the panel verbatim at
         200 — the normalization must not mangle it into something else."""
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.toolset import load_earthdata_tools
-        from config.settings import Settings
-        from utils.streaming import current_user_id
+        from tta_backend.earthdata_mcp.toolset import load_earthdata_tools
+        from tta_backend.config.settings import Settings
+        from tta_backend.utils.streaming import current_user_id
 
         async def cancel_retrieval(job_handle, workspace_id):
             return {"job_handle": job_handle, "status": "not_found"}

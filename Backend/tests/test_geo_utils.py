@@ -8,8 +8,8 @@ if BACKEND_DIR not in sys.path:
 
 import xarray as xr  # noqa: E402
 
-from utils.geo_utils import find_lat_coord, find_lon_coord  # noqa: E402
-from utils.geo_utils import identify_lat, identify_lon, identify_time  # noqa: E402
+from tta_backend.utils.geo_utils import find_lat_coord, find_lon_coord  # noqa: E402
+from tta_backend.utils.geo_utils import identify_lat, identify_lon, identify_time  # noqa: E402
 
 
 class IdentifyLatLonTests(unittest.TestCase):

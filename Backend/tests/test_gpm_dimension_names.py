@@ -104,8 +104,8 @@ def _write_undeclared_phony_granule(path: str) -> None:
 class GpmDimensionNamesTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from fake_earthdata_mcp import HandleVolume, build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
 
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
@@ -122,8 +122,8 @@ class GpmDimensionNamesTests(unittest.IsolatedAsyncioTestCase):
         self.mcp_tools = await load_raw_mcp_tools(settings)
 
     async def test_open_handle_recovers_real_dim_names_from_dimension_names_attrs(self):
-        from services.open_handle import open_handle
-        from utils.geo_utils import find_lat_coord, find_lon_coord
+        from tta_backend.services.open_handle import open_handle
+        from tta_backend.utils.geo_utils import find_lat_coord, find_lon_coord
 
         self.volume.add_hdf5("obs_gpm", _write_gpm_granule)
 
@@ -136,7 +136,7 @@ class GpmDimensionNamesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(find_lon_coord(da), "lon")
 
     async def test_compute_statistic_tool_answers_stats_for_a_gpm_shaped_granule(self):
-        from tools.satellite_tools.stat_tools import make_compute_statistic_tool
+        from tta_backend.tools.satellite_tools.stat_tools import make_compute_statistic_tool
 
         self.volume.add_hdf5("obs_gpm", _write_gpm_granule)
 
@@ -151,7 +151,7 @@ class GpmDimensionNamesTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(result["n_pixels"], 0)
 
     async def test_root_header_variables_do_not_hide_the_science_groups(self):
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         self.volume.add_hdf5("obs_3cmb", _write_3cmb_style_granule)
 
@@ -169,7 +169,7 @@ class GpmDimensionNamesTests(unittest.IsolatedAsyncioTestCase):
         # Refusal path: no scales, no DimensionNames — the tool must answer
         # a classified unsupported_grid error, never crash off-taxonomy and
         # never claim "no data found" for data that is right there.
-        from tools.satellite_tools.stat_tools import make_compute_statistic_tool
+        from tta_backend.tools.satellite_tools.stat_tools import make_compute_statistic_tool
 
         self.volume.add_hdf5("obs_mystery", _write_undeclared_phony_granule)
 

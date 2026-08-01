@@ -55,7 +55,7 @@ def test_overlay_store_is_backed_by_a_persisted_volume():
 
         pytest.skip(f"{COMPOSE_PATH} not mounted (run via docker compose backend-test)")
 
-    from tools.satellite_tools.plot_tools import OVERLAY_STORE_DIR
+    from tta_backend.tools.satellite_tools.plot_tools import OVERLAY_STORE_DIR
 
     # In the container, plot_tools resolves this to /app/overlay_store/overlays.
     overlay_container_path = os.path.abspath(OVERLAY_STORE_DIR)

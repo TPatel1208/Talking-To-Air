@@ -9,7 +9,7 @@ if BACKEND_DIR not in sys.path:
 
 class MapArtifactMetadataTests(unittest.TestCase):
     def test_accepts_a_well_formed_map_metadata(self):
-        from models.artifact import MapArtifactMetadata
+        from tta_backend.models.artifact import MapArtifactMetadata
 
         meta = MapArtifactMetadata(
             bbox=[-75.0, 39.0, -73.0, 41.0],
@@ -25,7 +25,7 @@ class MapArtifactMetadataTests(unittest.TestCase):
 
     def test_rejects_bbox_with_wrong_number_of_coordinates(self):
         from pydantic import ValidationError
-        from models.artifact import MapArtifactMetadata
+        from tta_backend.models.artifact import MapArtifactMetadata
 
         with self.assertRaises(ValidationError):
             MapArtifactMetadata(
@@ -37,7 +37,7 @@ class MapArtifactMetadataTests(unittest.TestCase):
 
     def test_rejects_missing_colorbar_bounds(self):
         from pydantic import ValidationError
-        from models.artifact import MapArtifactMetadata
+        from tta_backend.models.artifact import MapArtifactMetadata
 
         with self.assertRaises(ValidationError):
             MapArtifactMetadata(
@@ -48,7 +48,7 @@ class MapArtifactMetadataTests(unittest.TestCase):
             )
 
     def test_source_handles_defaults_to_empty_list(self):
-        from models.artifact import MapArtifactMetadata
+        from tta_backend.models.artifact import MapArtifactMetadata
 
         meta = MapArtifactMetadata(
             bbox=[-75.0, 39.0, -73.0, 41.0],
@@ -62,7 +62,7 @@ class MapArtifactMetadataTests(unittest.TestCase):
 
 class ComparisonArtifactMetadataTests(unittest.TestCase):
     def test_accepts_a_well_formed_n_panel_comparison(self):
-        from models.artifact import ComparisonArtifactMetadata
+        from tta_backend.models.artifact import ComparisonArtifactMetadata
 
         meta = ComparisonArtifactMetadata(
             mode="n-panel",
@@ -78,14 +78,14 @@ class ComparisonArtifactMetadataTests(unittest.TestCase):
 
     def test_rejects_fewer_than_two_panels(self):
         from pydantic import ValidationError
-        from models.artifact import ComparisonArtifactMetadata
+        from tta_backend.models.artifact import ComparisonArtifactMetadata
 
         with self.assertRaises(ValidationError):
             ComparisonArtifactMetadata(mode="n-panel", panels=[{"handle": "obs_1"}])
 
     def test_rejects_unknown_mode(self):
         from pydantic import ValidationError
-        from models.artifact import ComparisonArtifactMetadata
+        from tta_backend.models.artifact import ComparisonArtifactMetadata
 
         with self.assertRaises(ValidationError):
             ComparisonArtifactMetadata(
@@ -96,7 +96,7 @@ class ComparisonArtifactMetadataTests(unittest.TestCase):
 
 class TimeseriesArtifactMetadataTests(unittest.TestCase):
     def test_accepts_a_single_satellite_series(self):
-        from models.artifact import TimeseriesArtifactMetadata
+        from tta_backend.models.artifact import TimeseriesArtifactMetadata
 
         meta = TimeseriesArtifactMetadata(
             series=[{"label": "TEMPO NO2 mean", "source_kind": "satellite"}],
@@ -107,7 +107,7 @@ class TimeseriesArtifactMetadataTests(unittest.TestCase):
         self.assertIsNone(meta.series[0].station_id)
 
     def test_accepts_a_ground_series_with_station_id(self):
-        from models.artifact import TimeseriesArtifactMetadata
+        from tta_backend.models.artifact import TimeseriesArtifactMetadata
 
         meta = TimeseriesArtifactMetadata(
             series=[
@@ -120,14 +120,14 @@ class TimeseriesArtifactMetadataTests(unittest.TestCase):
 
     def test_rejects_empty_series_list(self):
         from pydantic import ValidationError
-        from models.artifact import TimeseriesArtifactMetadata
+        from tta_backend.models.artifact import TimeseriesArtifactMetadata
 
         with self.assertRaises(ValidationError):
             TimeseriesArtifactMetadata(series=[])
 
     def test_rejects_unknown_source_kind(self):
         from pydantic import ValidationError
-        from models.artifact import TimeseriesArtifactMetadata
+        from tta_backend.models.artifact import TimeseriesArtifactMetadata
 
         with self.assertRaises(ValidationError):
             TimeseriesArtifactMetadata(series=[{"label": "x", "source_kind": "model"}])

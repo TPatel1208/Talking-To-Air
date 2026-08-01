@@ -148,8 +148,8 @@ class HandleIndexReorderTests(unittest.IsolatedAsyncioTestCase):
     influence and the only thing T54 changes."""
 
     async def asyncSetUp(self):
-        from config.settings import Settings
-        from earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
         from fake_earthdata_mcp import FakeEarthdataMCPServer, HandleVolume, build_fake_mcp
         from test_cube_cache import StoreTestCase
 
@@ -201,7 +201,7 @@ class HandleIndexReorderTests(unittest.IsolatedAsyncioTestCase):
 
     async def _cube_it(self):
         """Two opens (cubing is earned on the second) plus the background write."""
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         first = await open_handle("obs_cubed", self.tools)
         await open_handle("obs_cubed", self.tools)
@@ -216,7 +216,7 @@ class HandleIndexReorderTests(unittest.IsolatedAsyncioTestCase):
         MCP is not on the path to the answer."""
         import numpy as np
 
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         first = await self._cube_it()
         before = self._export_calls()
@@ -241,7 +241,7 @@ class HandleIndexReorderTests(unittest.IsolatedAsyncioTestCase):
         :func:`services.cube_cache.reconcile_handle` — a handle's delivered
         content changes only when a rematerialization completes, and this
         backend only ever rematerializes on the verify path."""
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         await self._cube_it()
         stale_key = self.cube_cache.key_for_handle("obs_cubed")
@@ -272,7 +272,7 @@ class HandleIndexReorderTests(unittest.IsolatedAsyncioTestCase):
         performs no rematerialize, so it cannot be serving across a drift."""
         import numpy as np
 
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         first = await self._cube_it()
         self.volume.evict("obs_cubed")
@@ -289,7 +289,7 @@ class HandleIndexReorderTests(unittest.IsolatedAsyncioTestCase):
         lookup was gated behind a call to the thing that was down."""
         import numpy as np
 
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         first = await self._cube_it()
 
@@ -313,7 +313,7 @@ class HandleIndexReorderTests(unittest.IsolatedAsyncioTestCase):
         self.set_limits(CUBE_SKIP_EXPORT_VERIFY=0)
         before = self._export_calls()
 
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         served = await open_handle("obs_cubed", self.tools)
 
@@ -328,7 +328,7 @@ class HandleIndexReorderTests(unittest.IsolatedAsyncioTestCase):
         was skipped too."""
         from prometheus_client import REGISTRY
 
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         def value(name, labels=None):
             return REGISTRY.get_sample_value(name, labels) or 0.0
@@ -348,7 +348,7 @@ class HandleIndexReorderTests(unittest.IsolatedAsyncioTestCase):
         science moved."""
         from prometheus_client import REGISTRY
 
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         await self._cube_it()
         before = REGISTRY.get_sample_value("cube_index_invalidations_total") or 0.0
@@ -369,7 +369,7 @@ class HandleIndexReorderTests(unittest.IsolatedAsyncioTestCase):
         cannot: a chunk file deleted underneath the store."""
         import numpy as np
 
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         first = await self._cube_it()
         key = self.cube_cache.key_for_handle("obs_cubed")

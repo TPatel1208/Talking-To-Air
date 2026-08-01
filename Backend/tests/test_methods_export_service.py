@@ -19,7 +19,7 @@ if BACKEND_DIR not in sys.path:
 
 class BuildMethodsMarkdownTests(unittest.TestCase):
     def test_a_single_dataset_map_artifact_renders_the_full_golden_methods_text(self):
-        from services.methods_export_service import build_methods_markdown
+        from tta_backend.services.methods_export_service import build_methods_markdown
 
         lineage = {
             "nodes": [
@@ -91,7 +91,7 @@ class BuildMethodsMarkdownTests(unittest.TestCase):
     def test_a_comparisons_aligned_intermediate_appears_in_the_processing_chain(self):
         # T10 story 7: a T08 comparison's resampling step must be visible in
         # the method, not hidden — it renders as its own numbered step.
-        from services.methods_export_service import build_methods_markdown
+        from tta_backend.services.methods_export_service import build_methods_markdown
 
         lineage = {
             "nodes": [
@@ -133,7 +133,7 @@ class BuildMethodsMarkdownTests(unittest.TestCase):
         # QA 2026-07-17: the endpoint 500'd on a KeyError. The generator must
         # tolerate missing keys anywhere in lineage/citations — an unknown
         # future event shape yields duller text, not an exception.
-        from services.methods_export_service import build_methods_markdown
+        from tta_backend.services.methods_export_service import build_methods_markdown
 
         lineage = {
             "nodes": [

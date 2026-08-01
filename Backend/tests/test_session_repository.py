@@ -15,7 +15,7 @@ class DeleteSessionCascadeTests(unittest.IsolatedAsyncioTestCase):
     behind forever."""
 
     async def test_delete_session_also_deletes_that_sessions_artifacts(self):
-        from repositories.session_repository import SessionRepository
+        from tta_backend.repositories.session_repository import SessionRepository
 
         conn = MagicMock()
         conn.execute = AsyncMock()
@@ -30,10 +30,10 @@ class DeleteSessionCascadeTests(unittest.IsolatedAsyncioTestCase):
         async def _pg_connection_cm(*args, **kwargs):
             yield conn
 
-        with patch("repositories.session_repository.delete_session_metadata", AsyncMock(return_value=True)), \
-             patch("repositories.session_repository.delete_charts_for_session", AsyncMock()) as delete_charts, \
-             patch("repositories.session_repository.delete_artifacts_for_session", AsyncMock()) as delete_artifacts, \
-             patch("repositories.session_repository.pg_connection", _pg_connection_cm):
+        with patch("tta_backend.repositories.session_repository.delete_session_metadata", AsyncMock(return_value=True)), \
+             patch("tta_backend.repositories.session_repository.delete_charts_for_session", AsyncMock()) as delete_charts, \
+             patch("tta_backend.repositories.session_repository.delete_artifacts_for_session", AsyncMock()) as delete_artifacts, \
+             patch("tta_backend.repositories.session_repository.pg_connection", _pg_connection_cm):
             deleted = await SessionRepository().delete_session("thread-1", "user-1")
 
         self.assertTrue(deleted)
@@ -41,11 +41,11 @@ class DeleteSessionCascadeTests(unittest.IsolatedAsyncioTestCase):
         delete_artifacts.assert_awaited_once_with("thread-1", "user-1")
 
     async def test_delete_session_skips_cascade_when_session_not_found(self):
-        from repositories.session_repository import SessionRepository
+        from tta_backend.repositories.session_repository import SessionRepository
 
-        with patch("repositories.session_repository.delete_session_metadata", AsyncMock(return_value=False)), \
-             patch("repositories.session_repository.delete_charts_for_session", AsyncMock()) as delete_charts, \
-             patch("repositories.session_repository.delete_artifacts_for_session", AsyncMock()) as delete_artifacts:
+        with patch("tta_backend.repositories.session_repository.delete_session_metadata", AsyncMock(return_value=False)), \
+             patch("tta_backend.repositories.session_repository.delete_charts_for_session", AsyncMock()) as delete_charts, \
+             patch("tta_backend.repositories.session_repository.delete_artifacts_for_session", AsyncMock()) as delete_artifacts:
             deleted = await SessionRepository().delete_session("thread-1", "user-1")
 
         self.assertFalse(deleted)

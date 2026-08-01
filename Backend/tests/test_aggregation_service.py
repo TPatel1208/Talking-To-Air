@@ -25,7 +25,7 @@ class AggregationServiceTests(unittest.TestCase):
         }
 
     def test_aggregate_counts_only_valid_time_steps(self):
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self.xr.Dataset(
             {
@@ -59,7 +59,7 @@ class AggregationServiceTests(unittest.TestCase):
         10) and one on 2024-01-02 (value 0): the naive per-granule mean is
         (10+10+10+0)/4 = 7.5, over-weighting the dense first day. The
         cadence-weighted (per-day) mean is (10 + 0)/2 = 5.0."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self.xr.Dataset(
             {"no2": (("time", "lat", "lon"), self.np.array([
@@ -83,7 +83,7 @@ class AggregationServiceTests(unittest.TestCase):
         """Finding #11 guard: one granule per cadence bucket weights every day
         equally already, so the cadence-weighted mean equals the plain mean --
         the fix only moves clustered sampling, never evenly-spaced series."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self.xr.Dataset(
             {"no2": (("time", "lat", "lon"), self.np.array([[[3.0]], [[6.0]], [[9.0]]]))},
@@ -99,7 +99,7 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertAlmostEqual(float(result.ds["no2"].sel(lat=40.0, lon=-75.0)), 6.0)
 
     def test_all_stats_supported_and_invalid_stat_raises(self):
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         da = self.xr.DataArray(
             self.np.array([
@@ -128,7 +128,7 @@ class AggregationServiceTests(unittest.TestCase):
     def test_sample_std_of_a_single_granule_is_nan_not_a_fabricated_zero(self):
         """n=1 has no sample spread to estimate: ddof=1 makes the honest answer
         NaN, not the 0.0 that ddof=0 would fabricate (and never a crash)."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         da = self.xr.DataArray(
             self.np.array([[[5.0, 5.0]]]),
@@ -142,7 +142,7 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertTrue(self.np.isnan(float(result.ds["no2"].values[0, 0])))
 
     def test_apply_quality_mask_falls_back_to_dataset_attrs_when_col_info_empty(self):
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         da = self.xr.DataArray(
             [[-999.0, 10.0], [200.0, 20.0]],
@@ -163,7 +163,7 @@ class AggregationServiceTests(unittest.TestCase):
         """T25 Phase 1: an unregistered collection with no UMM-Var facts still
         gets a masking-provenance disclosure — the CF-attrs tier — instead of
         aggregate() staying silent about where fill/valid came from."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         da = self.xr.DataArray(
             self.np.array([[-999.0, 10.0], [600.0, 20.0]]),
@@ -182,7 +182,7 @@ class AggregationServiceTests(unittest.TestCase):
     def test_aggregate_uses_umm_var_facts_when_no_yaml_col_info_supplied(self):
         """describe_dataset's per-variable UMM-Var facts mask an unregistered
         collection correctly even though the file's own CF attrs are wrong."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         da = self.xr.DataArray(
             self.np.array([[-9999.0, 10.0], [600.0, 20.0]]),
@@ -211,7 +211,7 @@ class AggregationServiceTests(unittest.TestCase):
     def test_aggregate_col_info_override_still_wins_over_umm_var_facts(self):
         """Registry/quirk-ledger col_info stays the top precedence tier even
         when UMM-Var facts are also supplied."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         da = self.xr.DataArray(
             self.np.array([[-1.0, 10.0], [600.0, 20.0]]),
@@ -233,7 +233,7 @@ class AggregationServiceTests(unittest.TestCase):
         wrapper must build the identical aggregation_label/granule_dates/
         n_granules/cadence summary aggregate() derives internally, from the
         caller's own record of which timesteps survived masking."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         da = self.xr.DataArray(
             self.np.array([
@@ -262,7 +262,7 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertNotIn("masking", meta)  # caller merges its own masking_provenance in
 
     def test_timeseries_aggregation_meta_counts_only_the_valid_indices_given(self):
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         da = self.xr.DataArray(
             self.np.array([
@@ -288,7 +288,7 @@ class AggregationServiceTests(unittest.TestCase):
         RangeEndingDate global attrs. The Metadata tab showed "Date Range:
         Not available"/"Granule Dates: Not available" for these charts because
         _build_meta only read time coordinates (regression)."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self.xr.Dataset(
             {"no2": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]])},
@@ -314,7 +314,7 @@ class AggregationServiceTests(unittest.TestCase):
         """Every real tool path passes an already-extracted DataArray as
         ``data`` (variable attrs only -- no global attrs) plus the opened
         Dataset as ``source_ds``: the temporal fallback must look there."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         source_ds = self.xr.Dataset(
             {"no2": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]])},
@@ -335,7 +335,7 @@ class AggregationServiceTests(unittest.TestCase):
         """The explicit meta start_date/end_date facts (new) must agree with
         the granule_dates the time coordinate already produced -- attrs are a
         fallback, never an override."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self.xr.Dataset(
             {"no2": (("time", "lat", "lon"), [[[1.0]], [[2.0]]])},
@@ -355,7 +355,7 @@ class AggregationServiceTests(unittest.TestCase):
         single month (reprocessed/overlapping) span days, not a year -- calling
         that "Annual" is a false provenance claim. The label must reflect the
         real span instead."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         clustered = [f"2024-01-{d:02d}" for d in range(1, 13)]  # 12 granules, 11-day span
         da = self.xr.DataArray(
@@ -377,7 +377,7 @@ class AggregationServiceTests(unittest.TestCase):
         """Finding #14 guard: a real year of monthly means (span ~a year) must
         still read "Annual" -- the fix narrows the label to genuine spans, it
         doesn't remove it."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         annual = [f"2023-{m:02d}-01" for m in range(6, 13)] + [f"2024-{m:02d}-01" for m in range(1, 6)]
         da = self.xr.DataArray(
@@ -395,7 +395,7 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertIn("Annual", meta["aggregation_label"])
 
     def test_to_dataarray_returns_the_single_data_var_with_no_choice_needed(self):
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self.xr.Dataset({"no2": (("lat", "lon"), [[1.0]])})
 
@@ -410,7 +410,7 @@ class AggregationServiceTests(unittest.TestCase):
         of refusing and dumping both, the resolver excludes the plumbing and
         auto-picks the single populated science field. The choice rides out on
         the returned array's resolution attrs."""
-        from preprocessing.aggregation_service import VARIABLE_RESOLUTION_ATTR, AggregationService
+        from tta_backend.preprocessing.aggregation_service import VARIABLE_RESOLUTION_ATTR, AggregationService
 
         ds = self.xr.Dataset({
             "Cloud_Fraction": (("lat", "lon"), [[0.5]]),
@@ -430,7 +430,7 @@ class AggregationServiceTests(unittest.TestCase):
         dump; the resolver now scores the Mean fields, drops empties, ranks, and
         auto-picks a populated one -- a real map on the first try instead of a
         refusal. The resolution facts (chosen + disclosure) ride out on attrs."""
-        from preprocessing.aggregation_service import VARIABLE_RESOLUTION_ATTR, AggregationService
+        from tta_backend.preprocessing.aggregation_service import VARIABLE_RESOLUTION_ATTR, AggregationService
 
         data_vars = {
             f"group_{i:03d}/Mean": (("lat", "lon"), [[float(i) / 100.0]], {"units": "1"})
@@ -453,8 +453,8 @@ class AggregationServiceTests(unittest.TestCase):
         regardless of candidate count: name a capped sample, disclose the true
         total, and say how many are hidden -- an O(1) error, never the 20 KB
         O(N) dump that drove the original context blowup."""
-        from earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED
-        from preprocessing.aggregation_service import AggregationService, VariableChoiceRequired
+        from tta_backend.earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED
+        from tta_backend.preprocessing.aggregation_service import AggregationService, VariableChoiceRequired
 
         data_vars = {f"field_{i:03d}": (("lat", "lon"), [[float(i)]]) for i in range(200)}
         ds = self.xr.Dataset(data_vars)
@@ -481,7 +481,7 @@ class AggregationServiceTests(unittest.TestCase):
         distinct products (no units, no Mean leaf) are a genuine fork the
         resolver refuses -- and the refusal names both candidates in full (no
         spurious 'and N more')."""
-        from preprocessing.aggregation_service import AggregationService, VariableChoiceRequired
+        from tta_backend.preprocessing.aggregation_service import AggregationService, VariableChoiceRequired
 
         ds = self.xr.Dataset({
             "DT_AOD_550_AVG": (("lat", "lon"), [[0.1]]),
@@ -507,7 +507,7 @@ class AggregationServiceTests(unittest.TestCase):
         primary COMBINE_AOD_550_AVG) resolves to that variable instead of
         raising. Uses the CF/ACDD ``ShortName`` spelling the real AER_DBDT
         export actually carries (live-verified 2026-07-12), not lowercase."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self.xr.Dataset({
             "DT_AOD_550_AVG": (("lat", "lon"), [[1.0]]),
@@ -525,8 +525,8 @@ class AggregationServiceTests(unittest.TestCase):
         """The primary_var tier is registry-gated: the same shape whose
         short_name matches no registered collection must still refuse, so the
         never-guess doctrine holds for genuinely unknown files."""
-        from earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED
-        from preprocessing.aggregation_service import AggregationService, VariableChoiceRequired
+        from tta_backend.earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED
+        from tta_backend.preprocessing.aggregation_service import AggregationService, VariableChoiceRequired
 
         ds = self.xr.Dataset({
             "DT_AOD_550_AVG": (("lat", "lon"), [[1.0]]),
@@ -546,7 +546,7 @@ class AggregationServiceTests(unittest.TestCase):
         tool layer copies into chart provenance and the dispatch layer appends
         to the answer. A silent auto-pick of a genuine sensor fork would hide
         the choice."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self.xr.Dataset({
             "Terra_MODIS_DarkTarget_AOD_550/Mean": (
@@ -567,7 +567,7 @@ class AggregationServiceTests(unittest.TestCase):
     def test_aggregate_omits_variable_resolution_when_no_resolver_choice_was_made(self):
         """A single-variable file (or an explicit/registry pick) never runs the
         resolver, so meta carries no variable_resolution -- no note to nag with."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self.xr.Dataset(
             {"no2": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]])},
@@ -579,7 +579,7 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertNotIn("variable_resolution", meta)
 
     def test_to_dataarray_explicit_variable_param_wins_on_a_multi_var_file(self):
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self.xr.Dataset({
             "Cloud_Fraction": (("lat", "lon"), [[1.0]]),
@@ -592,8 +592,8 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertEqual(float(da.values[0, 0]), 2.0)
 
     def test_to_dataarray_inherits_the_retrieval_recorded_choice_via_handle(self):
-        from preprocessing.aggregation_service import AggregationService
-        from services import variable_choice_registry
+        from tta_backend.preprocessing.aggregation_service import AggregationService
+        from tta_backend.services import variable_choice_registry
 
         variable_choice_registry._choices.clear()
         variable_choice_registry._choices["obs_1"] = ("Cloud_Fraction", float("inf"))
@@ -609,8 +609,8 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertEqual(da.name, "Cloud_Fraction")
 
     def test_to_dataarray_explicit_variable_wins_over_a_recorded_choice(self):
-        from preprocessing.aggregation_service import AggregationService
-        from services import variable_choice_registry
+        from tta_backend.preprocessing.aggregation_service import AggregationService
+        from tta_backend.services import variable_choice_registry
 
         variable_choice_registry._choices.clear()
         variable_choice_registry._choices["obs_1"] = ("Cloud_Fraction", float("inf"))
@@ -630,8 +630,8 @@ class AggregationServiceTests(unittest.TestCase):
         (``product/vertical_column_troposphere``), but open_handle merges HDF
         groups down to bare leaf names -- so resolution has to match on the
         leaf, or a registered TEMPO retrieval refuses its own recorded choice."""
-        from preprocessing.aggregation_service import AggregationService
-        from services import variable_choice_registry
+        from tta_backend.preprocessing.aggregation_service import AggregationService
+        from tta_backend.services import variable_choice_registry
 
         variable_choice_registry._choices.clear()
         variable_choice_registry._choices["obs_1"] = ("product/vertical_column_troposphere", float("inf"))
@@ -649,7 +649,7 @@ class AggregationServiceTests(unittest.TestCase):
     def test_to_dataarray_resolves_a_group_qualified_explicit_variable_against_merged_leaf_names(self):
         """An explicit ``variable`` may arrive group-qualified too (the
         registry's own variable list is): it must match the merged bare leaf."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self.xr.Dataset({
             "vertical_column_troposphere": (("lat", "lon"), [[1.0]]),
@@ -665,7 +665,7 @@ class AggregationServiceTests(unittest.TestCase):
         main_data_quality_flag (2 data_vars). The QA flag is not a science-
         variable candidate, so resolution picks the sole science var rather
         than raising CATEGORY_VARIABLE_CHOICE_REQUIRED and offering the flag."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self.xr.Dataset({
             "vertical_column_troposphere": (("lat", "lon"), [[1.0]]),
@@ -680,7 +680,7 @@ class AggregationServiceTests(unittest.TestCase):
         """A sibling flag var need not be registry-pinned: CF ``flag_values``
         + ``flag_meanings`` mark it as a flag, so a science + CF-flag pair
         still resolves to the science var."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self.xr.Dataset({
             "aerosol_optical_depth": (("lat", "lon"), [[1.0]]),
@@ -697,8 +697,8 @@ class AggregationServiceTests(unittest.TestCase):
         """Even when a real choice is still required (2+ science vars), the QA
         flag riding along is excluded from the candidate list -- offering
         main_data_quality_flag as a 'science variable' to pick would be wrong."""
-        from earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED
-        from preprocessing.aggregation_service import AggregationService, VariableChoiceRequired
+        from tta_backend.earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED
+        from tta_backend.preprocessing.aggregation_service import AggregationService, VariableChoiceRequired
 
         ds = self.xr.Dataset({
             "vertical_column_troposphere": (("lat", "lon"), [[1.0]]),
@@ -724,7 +724,7 @@ class AggregationServiceTests(unittest.TestCase):
         the bare name) must still auto-reduce like a literal 'time' dim,
         rather than surviving into _normalize_to_2d as an unrecognized extra
         dimension that used to be silently averaged."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self.xr.Dataset(
             {"no2": (("valid_time", "lat", "lon"), [[[1.0, 2.0]], [[3.0, 4.0]]])},
@@ -744,8 +744,8 @@ class AggregationServiceTests(unittest.TestCase):
         """T25 Phase 3: a pinned collections.yaml quality_flag_var + qa_good_values
         rule masks deterministically with no CF flag_meanings needed at all,
         and result.meta["masking"]["qa_status"] discloses it as "verified"."""
-        from datasets.qa_flags import QA_VERIFIED
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.datasets.qa_flags import QA_VERIFIED
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self.xr.Dataset({
             "no2": (("lat", "lon"), self.np.array([[1.0, 2.0], [3.0, 4.0]])),
@@ -770,8 +770,8 @@ class AggregationServiceTests(unittest.TestCase):
         the honesty guard downgraded to "not applied" no matter what
         collections.yaml pinned. This proves source_ds restores real masking
         for that exact shape."""
-        from datasets.qa_flags import QA_VERIFIED
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.datasets.qa_flags import QA_VERIFIED
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         source_ds = self.xr.Dataset({
             "no2": (("lat", "lon"), self.np.array([[1.0, 2.0], [3.0, 4.0]])),
@@ -793,8 +793,8 @@ class AggregationServiceTests(unittest.TestCase):
         """The honesty guard still fires when a caller genuinely has no
         Dataset available at all -- source_ds is opt-in, not a silent
         always-on assumption."""
-        from datasets.qa_flags import QA_NOT_APPLIED
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.datasets.qa_flags import QA_NOT_APPLIED
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         da = self.xr.DataArray(
             self.np.array([[1.0, 2.0], [3.0, 4.0]]), dims=("lat", "lon"), name="no2",
@@ -810,8 +810,8 @@ class AggregationServiceTests(unittest.TestCase):
         directly instead of hand-rolling apply_quality_mask -- this pins its
         contract: masked data + honest provenance, same shape aggregate()
         gets internally."""
-        from datasets.qa_flags import QA_VERIFIED
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.datasets.qa_flags import QA_VERIFIED
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         source_ds = self.xr.Dataset({
             "no2": (("time", "lat", "lon"), self.np.array([[[1.0, 2.0]], [[3.0, 4.0]]])),
@@ -836,8 +836,8 @@ class AggregationServiceTests(unittest.TestCase):
         quality_flag_var, the CF `ancillary_variables` attribute on the
         science variable is a real machine-readable pointer to the QA
         variable -- resolved without any registry entry."""
-        from datasets.qa_flags import QA_CF_DETERMINISTIC
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.datasets.qa_flags import QA_CF_DETERMINISTIC
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self.xr.Dataset(
             {
@@ -868,8 +868,8 @@ class AggregationServiceTests(unittest.TestCase):
         attr, a single sibling data var carrying flag_values+flag_meanings is
         still discoverable deterministically -- there is nothing ambiguous
         about picking the only candidate."""
-        from datasets.qa_flags import QA_CF_DETERMINISTIC
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.datasets.qa_flags import QA_CF_DETERMINISTIC
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self.xr.Dataset({
             "aod": (("lat", "lon"), self.np.array([[1.0, 2.0]])),
@@ -892,8 +892,8 @@ class AggregationServiceTests(unittest.TestCase):
         -- only the agent's proposed good-token list resolves them, and the
         result is tagged "inferred, not verified", not silently folded into
         "verified" or "cf-deterministic"."""
-        from datasets.qa_flags import QA_INFERRED
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.datasets.qa_flags import QA_INFERRED
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self.xr.Dataset({
             "aod": (("lat", "lon"), self.np.array([[1.0, 2.0, 3.0]])),
@@ -916,8 +916,8 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertTrue(self.np.isnan(values[0, 2]))  # missing, still bad
 
     def test_aggregate_ambiguous_cf_tokens_without_proposal_applies_no_mask(self):
-        from datasets.qa_flags import QA_AMBIGUOUS_PENDING
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.datasets.qa_flags import QA_AMBIGUOUS_PENDING
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self.xr.Dataset({
             "aod": (("lat", "lon"), self.np.array([[1.0, 2.0, 3.0]])),
@@ -940,8 +940,8 @@ class AggregationServiceTests(unittest.TestCase):
         """T25 Phase 3: a prose-only-QA product (e.g. MOD08_D3) has no
         pinned rule and no CF flag_values/flag_meanings anywhere -- masking
         stays off, and meta says so explicitly rather than staying silent."""
-        from datasets.qa_flags import QA_NOT_APPLIED
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.datasets.qa_flags import QA_NOT_APPLIED
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self.xr.Dataset({
             "Aerosol_Optical_Depth_Land_Ocean_Mean": (("lat", "lon"), self.np.array([[1.0, 2.0]])),
@@ -954,7 +954,7 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertEqual(list(values[0]), [1.0, 2.0])
 
     def test_apply_quality_mask_col_info_override_wins_over_dataset_attrs(self):
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         # Dataset's own attrs are wrong (a known CMR/UMM-Var quirk); the
         # override in col_info must take precedence.
@@ -981,8 +981,8 @@ class AggregationServiceTests(unittest.TestCase):
         runs (source_ds threaded), keying ``qf.isin([])`` would NaN every
         pixel. The empty good-set must instead disable masking (go ambiguous),
         never wipe the variable."""
-        from datasets.qa_flags import QA_AMBIGUOUS_PENDING
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.datasets.qa_flags import QA_AMBIGUOUS_PENDING
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self.xr.Dataset({
             "aod": (("lat", "lon"), self.np.array([[1.0, 2.0]])),
@@ -1004,7 +1004,7 @@ class AggregationServiceTests(unittest.TestCase):
         UMM-Var fill tier) must mask only exact-fill cells. The old
         magnitude-scaled tolerance collapsed to atol=0 here; the exact-match
         contract keeps legitimate near-zero measurements alive."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         da = self.xr.DataArray(
             [[0.0, 0.4], [1.0, 2.0]],
@@ -1025,7 +1025,7 @@ class AggregationServiceTests(unittest.TestCase):
         masked legitimate values *near* a small integer fill (49.99 and 50.05
         against a 50.0 fill fall inside the old 0.05 band). Exact matching
         masks only the true fill."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         da = self.xr.DataArray(
             [[50.0, 49.99], [50.05, 10.0]],
@@ -1046,7 +1046,7 @@ class AggregationServiceTests(unittest.TestCase):
         flag is NaN/unknown (uncomputed quality), symmetric with the
         good_values path -- not silently count them as good. Before, ``~isin``
         alone kept every unknown-flag pixel."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self.xr.Dataset({
             "aod": (("lat", "lon"), self.np.array([[1.0, 2.0, 3.0]])),
@@ -1069,7 +1069,7 @@ class AggregationServiceTests(unittest.TestCase):
         that xarray never turned to NaN would otherwise satisfy
         ``notnull() & ~isin(bad)`` and let its science pixel through as a real
         'good' observation. Only the already-NaN-flag case was covered before."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self.xr.Dataset({
             "hcho": (("lat", "lon"), self.np.array([[1.0, 2.0, 3.0]])),
@@ -1092,7 +1092,7 @@ class AggregationServiceTests(unittest.TestCase):
         """CF allows ``valid_range: [min, max]`` INSTEAD of valid_min/
         valid_max, and xarray does not apply it on decode — ignoring it meant
         no range mask at all for products publishing only that spelling."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         da = self.xr.DataArray(
             self.np.array([[-5.0, 1.0], [2.0, 150.0]]),
@@ -1110,7 +1110,7 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertTrue(self.np.isnan(values[1, 1]))  # above valid_range max
 
     def test_explicit_valid_min_max_attrs_win_over_valid_range(self):
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         da = self.xr.DataArray(
             self.np.array([[5.0, 15.0]]),
@@ -1130,7 +1130,7 @@ class AggregationServiceTests(unittest.TestCase):
         daily granules" over a year of monthly means) and fed the period-
         label heuristics wrong inputs — the honest answer is "unknown", and
         the granule label says just "granules"."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self.xr.Dataset(
             {
@@ -1160,7 +1160,7 @@ class AggregationServiceTests(unittest.TestCase):
         (``da <= 30000``) wipes the entire real field. The CF bound must be
         scaled to physical space first, so only genuinely out-of-range cells
         drop."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         # scale_factor 2e13, valid_range packed [0, 30000] -> physical [0, 6e17].
         da = self.xr.DataArray(
@@ -1188,7 +1188,7 @@ class AggregationServiceTests(unittest.TestCase):
         so scale_factor is only still reachable through the unmasked opened
         Dataset (source_ds). resolve_and_mask must read the encoding from there,
         or a decoded scaled product is wiped exactly where users plot it."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         source = self.xr.Dataset(
             {"scaled_no2": (
@@ -1217,7 +1217,7 @@ class AggregationServiceTests(unittest.TestCase):
         ``valid_range`` straight off ``da.attrs`` — also packed. It must scale
         those bounds by the encoding's scale/offset too, or a decoded scaled
         product is wiped."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         da = self.xr.DataArray(
             self.np.array([[2.0e13, 6.0e13], [1.0e18, 4.0e13]]),  # decoded/physical
@@ -1241,7 +1241,7 @@ class AggregationServiceTests(unittest.TestCase):
         col_info (registry/UMM-Var). Those bounds are already in the decoded
         field's units — scaling them by the encoding would be a double-apply
         that wrongly nukes the field. col_info bounds are used verbatim."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         da = self.xr.DataArray(
             self.np.array([[2.0e13, 6.0e13], [8.0e17, 4.0e13]]),  # decoded/physical
@@ -1293,7 +1293,7 @@ class QaPassRateCounterTests(unittest.TestCase):
     def test_apply_quality_mask_counts_the_pixels_it_checked_and_the_pixels_that_passed(self):
         """The opt-in counter dict is filled from the same ``.where()``
         condition the mask uses: 3 of 4 pixels carry a good flag."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self._tempo_ds([[1.0, 2.0], [3.0, 4.0]], [[0, 1], [0, 0]])
         counts = {}
@@ -1310,7 +1310,7 @@ class QaPassRateCounterTests(unittest.TestCase):
         not the raw grid size: a fill pixel is not a QA failure and must not
         be counted as one. Of 4 pixels one is fill and one is out of range,
         so only 2 were ever QA-checkable -- and both pass."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self._tempo_ds([[-999.0, 500.0], [3.0, 4.0]], [[0, 0], [0, 0]])
         col_info = {**self._pinned, "fill_value": -999.0, "valid_min": 0.0, "valid_max": 100.0}
@@ -1329,7 +1329,7 @@ class QaPassRateCounterTests(unittest.TestCase):
         masking, but in the *report* it collapses "failed QA" into "QA unknown".
         The third counter keeps them separable: of 4 checked pixels, 2 pass, 1
         genuinely failed, and 1 had no usable flag at all."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self.xr.Dataset(
             {
@@ -1360,7 +1360,7 @@ class QaPassRateCounterTests(unittest.TestCase):
         cells must not be counted as equals."""
         import math
 
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self._tempo_ds(
             [[1.0, 2.0], [3.0, 4.0]], [[0, 0], [1, 1]], lat=(0.0, 80.0),
@@ -1384,7 +1384,7 @@ class QaPassRateCounterTests(unittest.TestCase):
         """An honesty feature must not change the science. The counters are
         derived from the same condition, never from a re-derived mask that
         could re-enter the masking path."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self._tempo_ds([[1.0, 2.0], [3.0, 4.0]], [[0, 1], [1, 0]])
         service = AggregationService()
@@ -1406,7 +1406,7 @@ class QaPassRateCounterTests(unittest.TestCase):
         not force the graph), and every counter comes out of ONE
         ``compute``, not one per counter."""
         dask = self._require_dask()
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         loads = []
 
@@ -1498,7 +1498,7 @@ class QaPassRateCounterTests(unittest.TestCase):
         a real data dependency. A third pass reappearing here means someone
         added a compute that could have ridden an existing graph walk.
         """
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         loads = []
         ds = self._lazy_bundle(
@@ -1534,7 +1534,7 @@ class QaPassRateCounterTests(unittest.TestCase):
         mean and from the reported granule count. Granule 1 is entirely
         bad-flagged, so two of three survive -- and the surviving mean must not
         have averaged in a timestep of NaN."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         loads = []
         ds = self._lazy_bundle(
@@ -1558,7 +1558,7 @@ class QaPassRateCounterTests(unittest.TestCase):
         folded reduction has to keep that distinction: ``notnull()`` counts an
         inf as present, so reusing the ``checked`` counter here would quietly
         promote an all-infinite granule into the temporal mean."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         loads = []
         ds = self._lazy_bundle(
@@ -1586,7 +1586,7 @@ class QaPassRateCounterTests(unittest.TestCase):
         no new wiring, and no second computation to drift from this one."""
         import math
 
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self._tempo_ds([[1.0, 2.0], [3.0, 4.0]], [[0, 1], [0, 0]])
 
@@ -1608,8 +1608,8 @@ class QaPassRateCounterTests(unittest.TestCase):
         """Consistent with the existing downgrade-to-not-applied honesty guard:
         a key that isn't there says "QA didn't run", which must stay
         distinguishable from a real 0% pass rate."""
-        from datasets.qa_flags import QA_NOT_APPLIED
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.datasets.qa_flags import QA_NOT_APPLIED
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         da = self.xr.DataArray(
             self.np.array([[1.0, 2.0], [3.0, 4.0]]),
@@ -1631,7 +1631,7 @@ class QaPassRateCounterTests(unittest.TestCase):
         That is diagnosable ("no retrievable pixels to check") only if it is
         distinguishable from QA never running -- so the count is reported as a
         real 0 while the undefined rate stays absent."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self._tempo_ds(
             [[-999.0, -999.0], [-999.0, -999.0]], [[0, 0], [0, 0]],
@@ -1653,7 +1653,7 @@ class QaPassRateCounterTests(unittest.TestCase):
         only the ones that survived to be plotted: a 0%-pass day drops off the
         chart line entirely, which is exactly when it most needs to be visible.
         Timestamps travel alongside so the series can be aligned to a chart."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self.xr.Dataset(
             {
@@ -1690,7 +1690,7 @@ class QaPassRateCounterTests(unittest.TestCase):
         timeseries. Pin it: a cropped input must count strictly fewer pixels
         than the full grid, so a future caller that masks before cropping
         fails here instead of silently reporting a continental rate for a city."""
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self._tempo_ds(
             [[1.0, 2.0], [3.0, 4.0]], [[0, 0], [0, 0]], lat=(10.0, 20.0), lon=(30.0, 40.0),
@@ -1713,8 +1713,8 @@ class QaPassRateCounterTests(unittest.TestCase):
         runtime -- so masking already works where no registry entry exists.
         Because the rate is counted at the mask, reporting follows the masking
         rather than the registry, for every present and future collection."""
-        from datasets.qa_flags import QA_CF_DETERMINISTIC
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.datasets.qa_flags import QA_CF_DETERMINISTIC
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self.xr.Dataset(
             {

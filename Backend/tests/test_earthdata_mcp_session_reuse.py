@@ -73,7 +73,7 @@ class SessionReuseTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.server.stop)
 
     def _settings(self):
-        from config.settings import Settings
+        from tta_backend.config.settings import Settings
 
         return Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None)
 
@@ -83,7 +83,7 @@ class SessionReuseTests(unittest.IsolatedAsyncioTestCase):
         # with initializes. This both documents the bug and proves the counter
         # is actually observing session opens (so a 1 in the reuse test below
         # is meaningful, not a counter that never increments).
-        from earthdata_mcp.toolset import load_earthdata_tools
+        from tta_backend.earthdata_mcp.toolset import load_earthdata_tools
 
         n = 5
         tools = await load_earthdata_tools(self._settings(), lambda: "17")
@@ -98,7 +98,7 @@ class SessionReuseTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(self.middleware.initialize_count, count_after_load + n)
 
     async def test_manager_holds_one_session_for_many_tool_calls(self):
-        from earthdata_mcp.connection import (
+        from tta_backend.earthdata_mcp.connection import (
             STATE_READY,
             EarthdataMCPConnectionManager,
         )

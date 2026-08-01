@@ -9,14 +9,14 @@ if BACKEND_DIR not in sys.path:
 
 class EarthdataAgentPromptT07Tests(unittest.TestCase):
     def test_prompt_tells_the_agent_satellite_and_ground_are_different_quantities(self):
-        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+        from tta_backend.config.earthdata_agent_prompt import get_earthdata_agent_prompt
 
         prompt = get_earthdata_agent_prompt()
 
         self.assertIn("different physical quantities", prompt.lower())
 
     def test_prompt_routes_validation_requests_to_the_t07_tools(self):
-        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+        from tta_backend.config.earthdata_agent_prompt import get_earthdata_agent_prompt
 
         prompt = get_earthdata_agent_prompt()
 
@@ -26,7 +26,7 @@ class EarthdataAgentPromptT07Tests(unittest.TestCase):
 
 class EarthdataAgentPromptT08Tests(unittest.TestCase):
     def test_prompt_routes_comparison_requests_to_the_compare_tool(self):
-        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+        from tta_backend.config.earthdata_agent_prompt import get_earthdata_agent_prompt
 
         prompt = get_earthdata_agent_prompt()
 
@@ -37,7 +37,7 @@ class EarthdataAgentPromptT08Tests(unittest.TestCase):
 
 class EarthdataAgentPromptT09Tests(unittest.TestCase):
     def test_prompt_calls_preview_dataset_before_any_retrieval(self):
-        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+        from tta_backend.config.earthdata_agent_prompt import get_earthdata_agent_prompt
 
         prompt = get_earthdata_agent_prompt()
 
@@ -50,7 +50,7 @@ class EarthdataAgentPromptT09Tests(unittest.TestCase):
         )
 
     def test_prompt_tells_the_agent_to_report_a_missing_gibs_layer_plainly(self):
-        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+        from tta_backend.config.earthdata_agent_prompt import get_earthdata_agent_prompt
 
         prompt = get_earthdata_agent_prompt()
 
@@ -59,7 +59,7 @@ class EarthdataAgentPromptT09Tests(unittest.TestCase):
 
 class EarthdataAgentPromptT20Tests(unittest.TestCase):
     def test_prompt_routes_a_single_locations_history_to_point_timeseries(self):
-        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+        from tta_backend.config.earthdata_agent_prompt import get_earthdata_agent_prompt
 
         prompt = get_earthdata_agent_prompt()
 
@@ -67,7 +67,7 @@ class EarthdataAgentPromptT20Tests(unittest.TestCase):
         self.assertIn("point-over-time", prompt.lower())
 
     def test_prompt_still_routes_area_mean_trends_to_conduct_temporal_statistic(self):
-        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+        from tta_backend.config.earthdata_agent_prompt import get_earthdata_agent_prompt
 
         prompt = get_earthdata_agent_prompt()
 
@@ -79,7 +79,7 @@ class EarthdataAgentPromptAvailabilityGroundingTests(unittest.TestCase):
     prior claim quoted back in the task — only from a this-turn coverage check."""
 
     def test_prompt_forbids_stating_availability_without_a_this_turn_check(self):
-        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+        from tta_backend.config.earthdata_agent_prompt import get_earthdata_agent_prompt
 
         # Collapse whitespace so line wrapping in the prompt can't hide a phrase.
         prompt = " ".join(get_earthdata_agent_prompt().lower().split())
@@ -96,7 +96,7 @@ class EarthdataAgentPromptAvailabilityGroundingTests(unittest.TestCase):
 
 class EarthdataAgentPromptT22Tests(unittest.TestCase):
     def test_prompt_offers_the_optional_suggested_followups_envelope_key(self):
-        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+        from tta_backend.config.earthdata_agent_prompt import get_earthdata_agent_prompt
 
         prompt = get_earthdata_agent_prompt()
 
@@ -112,7 +112,7 @@ class EarthdataAgentPromptT25Phase4Tests(unittest.TestCase):
     and treat structured choice-errors as questions, not failures."""
 
     def test_prompt_states_satellite_handles_any_gridded_collection(self):
-        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+        from tta_backend.config.earthdata_agent_prompt import get_earthdata_agent_prompt
 
         prompt = get_earthdata_agent_prompt().lower()
 
@@ -120,7 +120,7 @@ class EarthdataAgentPromptT25Phase4Tests(unittest.TestCase):
         self.assertIn("not in the preset table", prompt)
 
     def test_prompt_names_the_out_of_scope_grid_refusals(self):
-        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+        from tta_backend.config.earthdata_agent_prompt import get_earthdata_agent_prompt
 
         prompt = get_earthdata_agent_prompt().lower()
 
@@ -128,7 +128,7 @@ class EarthdataAgentPromptT25Phase4Tests(unittest.TestCase):
         self.assertIn("sinusoidal", prompt)
 
     def test_prompt_never_promises_ground_confirmation_outside_air_quality(self):
-        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+        from tta_backend.config.earthdata_agent_prompt import get_earthdata_agent_prompt
 
         # Collapse whitespace so line wrapping in the prompt can't hide a phrase.
         prompt = " ".join(get_earthdata_agent_prompt().lower().split())
@@ -138,7 +138,7 @@ class EarthdataAgentPromptT25Phase4Tests(unittest.TestCase):
         self.assertIn("never offer, promise, or imply", prompt)
 
     def test_prompt_names_non_aq_domains_the_asymmetry_covers(self):
-        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+        from tta_backend.config.earthdata_agent_prompt import get_earthdata_agent_prompt
 
         prompt = get_earthdata_agent_prompt().lower()
 
@@ -146,7 +146,7 @@ class EarthdataAgentPromptT25Phase4Tests(unittest.TestCase):
         self.assertIn("land surface temperature", prompt)
 
     def test_prompt_instructs_using_describe_dataset_variable_metadata_to_choose(self):
-        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+        from tta_backend.config.earthdata_agent_prompt import get_earthdata_agent_prompt
 
         prompt = get_earthdata_agent_prompt()
 
@@ -155,7 +155,7 @@ class EarthdataAgentPromptT25Phase4Tests(unittest.TestCase):
         self.assertIn("advisory_notes", prompt)
 
     def test_prompt_instructs_relaying_choice_errors_as_questions_not_failures(self):
-        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+        from tta_backend.config.earthdata_agent_prompt import get_earthdata_agent_prompt
 
         prompt = get_earthdata_agent_prompt()
 
@@ -172,7 +172,7 @@ class EarthdataAgentPromptT36Phase3Tests(unittest.TestCase):
     loop) rather than confabulating confidence."""
 
     def _prompt(self):
-        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+        from tta_backend.config.earthdata_agent_prompt import get_earthdata_agent_prompt
 
         return get_earthdata_agent_prompt()
 
@@ -229,7 +229,7 @@ class EarthdataAgentPromptCurrentDateTests(unittest.TestCase):
     forbid refusing present dates as future from the model's own prior."""
 
     def _prompt(self):
-        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+        from tta_backend.config.earthdata_agent_prompt import get_earthdata_agent_prompt
 
         return get_earthdata_agent_prompt()
 
@@ -259,7 +259,7 @@ class EarthdataAgentPromptNrtLatencyTests(unittest.TestCase):
     a partially-filled recent window honestly instead of as a failure."""
 
     def _prompt(self):
-        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
+        from tta_backend.config.earthdata_agent_prompt import get_earthdata_agent_prompt
 
         return get_earthdata_agent_prompt()
 

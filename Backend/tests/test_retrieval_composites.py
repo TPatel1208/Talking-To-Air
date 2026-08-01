@@ -17,7 +17,7 @@ REQUIRED_MODULES = ["langchain_mcp_adapters", "fastmcp", "uvicorn"]
 def _harmony_fetch_count() -> float:
     """Observations currently recorded on the harmony_fetch_duration_seconds
     histogram. Process-wide state, so callers assert on a delta."""
-    from utils.metrics import HARMONY_FETCH_DURATION_SECONDS
+    from tta_backend.utils.metrics import HARMONY_FETCH_DURATION_SECONDS
 
     for metric in HARMONY_FETCH_DURATION_SECONDS.collect():
         for sample in metric.samples:
@@ -33,8 +33,8 @@ def _harmony_fetch_count() -> float:
 class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
     async def _tools(self, handlers):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
 
         server = FakeEarthdataMCPServer(build_fake_mcp(handlers))
         server.start()
@@ -48,8 +48,8 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
         variable, keyed by the handle the job resolves to, so a later plot/
         stat/compare call inherits it instead of AggregationService.
         to_dataarray refusing a multi-variable file all over again."""
-        from services import variable_choice_registry
-        from services.retrieval_composites import await_retrieval
+        from tta_backend.services import variable_choice_registry
+        from tta_backend.services.retrieval_composites import await_retrieval
 
         variable_choice_registry._pending.clear()
         variable_choice_registry._choices.clear()
@@ -72,8 +72,8 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
         job_handle is promoted onto the obs_/cube_ handle the job resolves to,
         so a later plot can echo it — the same two-step handoff as the T25
         variable choice above."""
-        from services import scope_registry
-        from services.retrieval_composites import await_retrieval
+        from tta_backend.services import scope_registry
+        from tta_backend.services.retrieval_composites import await_retrieval
 
         scope_registry._pending.clear()
         scope_registry._scopes.clear()
@@ -92,8 +92,8 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(scope_registry.get("obs_scope")["location"], "California")
 
     async def test_await_retrieval_does_not_record_a_choice_for_a_failed_job(self):
-        from services import variable_choice_registry
-        from services.retrieval_composites import await_retrieval
+        from tta_backend.services import variable_choice_registry
+        from tta_backend.services.retrieval_composites import await_retrieval
 
         variable_choice_registry._pending.clear()
         variable_choice_registry._choices.clear()
@@ -112,7 +112,7 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(variable_choice_registry.get("obs_never_ready"))
 
     async def test_await_retrieval_polls_until_ready_and_emits_progress_in_order(self):
-        from services.retrieval_composites import await_retrieval
+        from tta_backend.services.retrieval_composites import await_retrieval
 
         responses = [
             {"job_handle": "job_1", "status": "queued", "progress": 0, "phase": "submitting", "message": None},
@@ -130,7 +130,7 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
         settings = self._fast_settings(settings)
 
         seen = []
-        import utils.streaming as streaming
+        import tta_backend.utils.streaming as streaming
 
         token = streaming._job_progress_emitter.set(lambda data: seen.append(data))
         try:
@@ -143,7 +143,7 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([e["status"] for e in seen], ["queued", "processing", "ready"])
 
     async def test_await_retrieval_returns_failed_status_verbatim_without_raising(self):
-        from services.retrieval_composites import await_retrieval
+        from tta_backend.services.retrieval_composites import await_retrieval
 
         async def get_retrieval_status(job_handle, workspace_id):
             return {
@@ -165,7 +165,7 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
         the job runs, forwarded from the same poll that already drives
         emit_job_progress — one poll, two audiences (job panel + chat
         strip), never two separate polling loops."""
-        from services.retrieval_composites import await_retrieval
+        from tta_backend.services.retrieval_composites import await_retrieval
 
         responses = [
             {"job_handle": "job_1", "status": "queued", "progress": 0, "phase": "submitting"},
@@ -183,7 +183,7 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
         settings = self._fast_settings(settings)
 
         seen = []
-        import utils.streaming as streaming
+        import tta_backend.utils.streaming as streaming
 
         def _capture(message, *, stage=None, detail=None):
             seen.append({"message": message, "stage": stage, "detail": detail})
@@ -205,7 +205,7 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
         provider's paused text only in `message`. await_retrieval must stop
         polling and return an honest "paused" status with guidance — not
         narrate an ever-climbing timer until the timeout."""
-        from services.retrieval_composites import await_retrieval
+        from tta_backend.services.retrieval_composites import await_retrieval
 
         calls = {"n": 0}
 
@@ -223,7 +223,7 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
         settings = self._fast_settings(settings)
 
         seen = []
-        import utils.streaming as streaming
+        import tta_backend.utils.streaming as streaming
 
         token = streaming._job_progress_emitter.set(lambda data: seen.append(data))
         try:
@@ -244,7 +244,7 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
         """A failed job whose provider message happens to contain the word
         "paused" must stay failed — annotation only rescues non-terminal
         statuses."""
-        from services.retrieval_composites import await_retrieval
+        from tta_backend.services.retrieval_composites import await_retrieval
 
         async def get_retrieval_status(job_handle, workspace_id):
             return {
@@ -266,7 +266,7 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
         away the whole await — the agent reported failure while the job
         completed unobserved at the provider. A transient provider_unavailable
         poll outcome must be retried (bounded), not surfaced."""
-        from services.retrieval_composites import await_retrieval
+        from tta_backend.services.retrieval_composites import await_retrieval
 
         calls = {"n": 0}
 
@@ -291,8 +291,8 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
     async def test_await_retrieval_gives_up_after_persistent_poll_failures(self):
         # Bounded, not infinite: a genuinely down MCP must still surface as
         # the classified provider_unavailable error, not retry forever.
-        from earthdata_mcp.results import MCPToolError
-        from services.retrieval_composites import POLL_TRANSIENT_FAILURE_LIMIT, await_retrieval
+        from tta_backend.earthdata_mcp.results import MCPToolError
+        from tta_backend.services.retrieval_composites import POLL_TRANSIENT_FAILURE_LIMIT, await_retrieval
 
         calls = {"n": 0}
 
@@ -312,8 +312,8 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
     async def test_await_retrieval_does_not_retry_a_non_transient_poll_error(self):
         # Only transient outages are retried — a contract-class failure (a
         # malformed request, a backend bug) must fail loud on the first poll.
-        from earthdata_mcp.results import MCPToolError
-        from services.retrieval_composites import await_retrieval
+        from tta_backend.earthdata_mcp.results import MCPToolError
+        from tta_backend.services.retrieval_composites import await_retrieval
 
         calls = {"n": 0}
 
@@ -331,7 +331,7 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls["n"], 1)
 
     async def test_await_retrieval_times_out_when_job_never_reaches_terminal_state(self):
-        from services.retrieval_composites import RetrievalTimeoutError, await_retrieval
+        from tta_backend.services.retrieval_composites import RetrievalTimeoutError, await_retrieval
 
         async def get_retrieval_status(job_handle, workspace_id):
             return {"job_handle": "job_3", "status": "processing", "progress": 10}
@@ -350,7 +350,7 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
         shipped with no call site at all and sat dead across three releases --
         the metrics module advertising a capability the system didn't have.
         This is the assertion that notices if it goes dead again."""
-        from services.retrieval_composites import await_retrieval
+        from tta_backend.services.retrieval_composites import await_retrieval
 
         responses = [
             {"job_handle": "job_h", "status": "processing", "progress": 40},
@@ -377,7 +377,7 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
         """The histogram is documented as "job duration ... through download
         completion". Feeding it jobs that never downloaded anything would make
         its percentiles describe a different population than they claim."""
-        from services.retrieval_composites import await_retrieval
+        from tta_backend.services.retrieval_composites import await_retrieval
 
         async def get_retrieval_status(job_handle, workspace_id):
             return {"job_handle": "job_hf", "status": "failed", "message": "boom"}
@@ -408,8 +408,8 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
 class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
     async def _tools_and_settings(self, estimated_bytes, retrieve_subset=None):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
 
         calls = {"retrieve_subset": 0}
 
@@ -441,7 +441,7 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
         return tools, settings, calls
 
     async def test_safe_retrieve_proceeds_automatically_at_or_below_soft_cap(self):
-        from services.retrieval_composites import safe_retrieve
+        from tta_backend.services.retrieval_composites import safe_retrieve
 
         tools, settings, calls = await self._tools_and_settings(estimated_bytes=1000)
 
@@ -457,8 +457,8 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
         """T46: safe_retrieve only ever sees an opaque aoi_handle (not a place
         name), but it knows the requested time_range — record it so a later
         plot can disclose a single-day request served by a monthly mean."""
-        from services import scope_registry
-        from services.retrieval_composites import safe_retrieve
+        from tta_backend.services import scope_registry
+        from tta_backend.services.retrieval_composites import safe_retrieve
 
         scope_registry._pending.clear()
         scope_registry._scopes.clear()
@@ -475,7 +475,7 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("2024-07-15", scope_registry.get("obs_new")["time_range"])
 
     async def test_safe_retrieve_pauses_for_confirmation_between_caps(self):
-        from services.retrieval_composites import safe_retrieve
+        from tta_backend.services.retrieval_composites import safe_retrieve
 
         tools, settings, calls = await self._tools_and_settings(estimated_bytes=6000)
 
@@ -488,7 +488,7 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls["retrieve_subset"], 0)
 
     async def test_safe_retrieve_proceeds_between_caps_once_confirmed(self):
-        from services.retrieval_composites import safe_retrieve
+        from tta_backend.services.retrieval_composites import safe_retrieve
 
         tools, settings, calls = await self._tools_and_settings(estimated_bytes=6000)
 
@@ -500,12 +500,12 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls["retrieve_subset"], 1)
 
     async def test_safe_retrieve_emits_estimate_and_submit_stage_status(self):
-        from services.retrieval_composites import safe_retrieve
+        from tta_backend.services.retrieval_composites import safe_retrieve
 
         tools, settings, calls = await self._tools_and_settings(estimated_bytes=1000)
 
         seen = []
-        import utils.streaming as streaming
+        import tta_backend.utils.streaming as streaming
 
         def _capture(message, *, stage=None, detail=None):
             seen.append({"message": message, "stage": stage, "detail": detail})
@@ -519,12 +519,12 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([s["stage"] for s in seen], ["estimate", "submit"])
 
     async def test_safe_retrieve_does_not_emit_submit_when_it_pauses_for_confirmation(self):
-        from services.retrieval_composites import safe_retrieve
+        from tta_backend.services.retrieval_composites import safe_retrieve
 
         tools, settings, calls = await self._tools_and_settings(estimated_bytes=6000)
 
         seen = []
-        import utils.streaming as streaming
+        import tta_backend.utils.streaming as streaming
 
         def _capture(message, *, stage=None, detail=None):
             seen.append({"message": message, "stage": stage, "detail": detail})
@@ -544,7 +544,7 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
         retrieve_subset unconditionally, and the MCP attempts a doomed
         variable subset before falling back to a full-file retrieval on
         every single call."""
-        from services.retrieval_composites import safe_retrieve
+        from tta_backend.services.retrieval_composites import safe_retrieve
 
         seen_variables = []
 
@@ -565,7 +565,7 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
         """TEMPO_NO2 is registered with supports_variable_subsetting: true --
         the gate must not suppress variables for collections that actually
         support it."""
-        from services.retrieval_composites import safe_retrieve
+        from tta_backend.services.retrieval_composites import safe_retrieve
 
         seen_variables = []
 
@@ -585,7 +585,7 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
     async def test_safe_retrieve_forwards_variables_unknown_to_the_registry_unchanged(self):
         """A variable name the registry has never heard of must not be
         silently dropped -- default to today's send-it-and-see behavior."""
-        from services.retrieval_composites import safe_retrieve
+        from tta_backend.services.retrieval_composites import safe_retrieve
 
         seen_variables = []
 
@@ -609,7 +609,7 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
         leaving retrievals to live or die on the OPeNDAP fallback. A
         degenerate start==end date pair means "that whole day" — widen it
         before any provider sees it."""
-        from services.retrieval_composites import safe_retrieve
+        from tta_backend.services.retrieval_composites import safe_retrieve
 
         seen = {}
 
@@ -628,7 +628,7 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
     async def test_safe_retrieve_widens_an_equal_timestamp_range_by_one_second(self):
         # A timestamped instant ("midday") is degenerate the same way; give
         # it one second of width instead of inventing a whole-day window.
-        from services.retrieval_composites import safe_retrieve
+        from tta_backend.services.retrieval_composites import safe_retrieve
 
         seen = {}
 
@@ -645,7 +645,7 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen["time_range"], "2024-06-15T12:00:00/2024-06-15T12:00:01")
 
     async def test_safe_retrieve_leaves_a_real_time_range_unchanged(self):
-        from services.retrieval_composites import safe_retrieve
+        from tta_backend.services.retrieval_composites import safe_retrieve
 
         seen = {}
 
@@ -662,8 +662,8 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen["time_range"], "2024-06-01/2024-06-30")
 
     async def test_safe_retrieve_records_a_pending_choice_for_a_single_requested_variable(self):
-        from services import variable_choice_registry
-        from services.retrieval_composites import safe_retrieve
+        from tta_backend.services import variable_choice_registry
+        from tta_backend.services.retrieval_composites import safe_retrieve
 
         variable_choice_registry._pending.clear()
         self.addCleanup(variable_choice_registry._pending.clear)
@@ -680,8 +680,8 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
         """More than one requested variable is not an unambiguous choice --
         must not poison the registry with a guess when the file later opens
         multi-variable."""
-        from services import variable_choice_registry
-        from services.retrieval_composites import safe_retrieve
+        from tta_backend.services import variable_choice_registry
+        from tta_backend.services.retrieval_composites import safe_retrieve
 
         variable_choice_registry._pending.clear()
         self.addCleanup(variable_choice_registry._pending.clear)
@@ -702,8 +702,8 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
         opened 2-var file later refuses. The QA flag isn't a science choice --
         excluding it (by bare leaf) leaves a single science variable still
         worth recording."""
-        from services import variable_choice_registry
-        from services.retrieval_composites import safe_retrieve
+        from tta_backend.services import variable_choice_registry
+        from tta_backend.services.retrieval_composites import safe_retrieve
 
         variable_choice_registry._pending.clear()
         self.addCleanup(variable_choice_registry._pending.clear)
@@ -727,7 +727,7 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
         ``estimate.get("estimated_bytes", 0)`` submitted unconditionally,
         making the guardrail silently inert exactly when the estimator was
         blind."""
-        from services.retrieval_composites import safe_retrieve
+        from tta_backend.services.retrieval_composites import safe_retrieve
 
         tools, settings, calls = await self._tools_and_settings(estimated_bytes=None)
 
@@ -743,7 +743,7 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
     async def test_safe_retrieve_proceeds_without_an_estimate_once_confirmed(self):
         # The researcher can still say "go ahead" — the bundle-open size gate
         # (services/open_handle.py) remains the backstop at open time.
-        from services.retrieval_composites import safe_retrieve
+        from tta_backend.services.retrieval_composites import safe_retrieve
 
         tools, settings, calls = await self._tools_and_settings(estimated_bytes=None)
 
@@ -756,7 +756,7 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls["retrieve_subset"], 1)
 
     async def test_safe_retrieve_refuses_above_hard_cap_even_if_confirmed(self):
-        from services.retrieval_composites import safe_retrieve
+        from tta_backend.services.retrieval_composites import safe_retrieve
 
         tools, settings, calls = await self._tools_and_settings(estimated_bytes=50000)
 
@@ -783,8 +783,8 @@ class PointTimeseriesTests(unittest.IsolatedAsyncioTestCase):
 
     async def _tools_and_settings(self, handlers, **settings_kwargs):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
         from dataclasses import replace
 
         server = FakeEarthdataMCPServer(build_fake_mcp(handlers))
@@ -800,7 +800,7 @@ class PointTimeseriesTests(unittest.IsolatedAsyncioTestCase):
         return tools, settings
 
     async def test_point_timeseries_resolves_aoi_submits_point_sampled_retrieval_and_awaits_to_ready(self):
-        from services.retrieval_composites import point_timeseries
+        from tta_backend.services.retrieval_composites import point_timeseries
 
         aoi_calls = []
         submit_calls = []
@@ -842,8 +842,8 @@ class PointTimeseriesTests(unittest.IsolatedAsyncioTestCase):
         """T46: point_timeseries has both the place name and the time range, so
         it records the full requested scope — echoed onto the cube handle the
         job resolves to (via await_retrieval), disclosable end-to-end."""
-        from services import scope_registry
-        from services.retrieval_composites import point_timeseries
+        from tta_backend.services import scope_registry
+        from tta_backend.services.retrieval_composites import point_timeseries
 
         scope_registry._pending.clear()
         scope_registry._scopes.clear()
@@ -874,8 +874,8 @@ class PointTimeseriesTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("2024-01-01", recorded["time_range"])
 
     async def test_point_timeseries_refuses_an_over_span_request_without_any_mcp_calls(self):
-        from earthdata_mcp.results import CATEGORY_TOO_LARGE, MCPToolError
-        from services.retrieval_composites import point_timeseries
+        from tta_backend.earthdata_mcp.results import CATEGORY_TOO_LARGE, MCPToolError
+        from tta_backend.services.retrieval_composites import point_timeseries
 
         calls = []
 
@@ -905,7 +905,7 @@ class PointTimeseriesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, [])
 
     async def test_point_timeseries_returns_a_failed_job_verbatim_without_raising(self):
-        from services.retrieval_composites import point_timeseries
+        from tta_backend.services.retrieval_composites import point_timeseries
 
         async def define_area_of_interest(location, workspace_id):
             return {"handle": "aoi_1", "location": location}

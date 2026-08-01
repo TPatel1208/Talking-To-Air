@@ -35,7 +35,7 @@ FULL_TOOL_REQUIRED_MODULES = REQUIRED_MODULES + [
 class VariableMismatchTests(unittest.TestCase):
     def test_same_variable_name_is_not_a_mismatch(self):
         import xarray as xr
-        from tools.satellite_tools.comparison_tools import _variable_mismatch_error
+        from tta_backend.tools.satellite_tools.comparison_tools import _variable_mismatch_error
 
         da_a = xr.DataArray([1.0], name="no2")
         da_b = xr.DataArray([2.0], name="no2")
@@ -44,7 +44,7 @@ class VariableMismatchTests(unittest.TestCase):
 
     def test_different_variable_names_are_a_mismatch(self):
         import xarray as xr
-        from tools.satellite_tools.comparison_tools import _variable_mismatch_error
+        from tta_backend.tools.satellite_tools.comparison_tools import _variable_mismatch_error
 
         da_a = xr.DataArray([1.0], name="no2")
         da_b = xr.DataArray([2.0], name="hcho")
@@ -63,7 +63,7 @@ class VariableMismatchTests(unittest.TestCase):
 class UnitsMismatchTests(unittest.TestCase):
     def test_equal_units_are_not_a_mismatch(self):
         import xarray as xr
-        from tools.satellite_tools.comparison_tools import _units_mismatch_error
+        from tta_backend.tools.satellite_tools.comparison_tools import _units_mismatch_error
 
         da_a = xr.DataArray([1.0], name="no2", attrs={"units": "mol/m^2"})
         da_b = xr.DataArray([2.0], name="no2", attrs={"units": "mol/m^2"})
@@ -72,7 +72,7 @@ class UnitsMismatchTests(unittest.TestCase):
 
     def test_absent_units_on_both_sides_are_not_a_mismatch(self):
         import xarray as xr
-        from tools.satellite_tools.comparison_tools import _units_mismatch_error
+        from tta_backend.tools.satellite_tools.comparison_tools import _units_mismatch_error
 
         # Same variable, neither side publishes a units attr: no confident unit
         # label is stamped on the difference, so there is nothing to mislabel.
@@ -83,7 +83,7 @@ class UnitsMismatchTests(unittest.TestCase):
 
     def test_units_on_only_one_side_is_rejected_naming_the_declared_unit(self):
         import xarray as xr
-        from tools.satellite_tools.comparison_tools import _units_mismatch_error
+        from tta_backend.tools.satellite_tools.comparison_tools import _units_mismatch_error
 
         # One side declares units, the other has none: the difference would be
         # differenced and stamped with the declared label, presenting an
@@ -102,7 +102,7 @@ class UnitsMismatchTests(unittest.TestCase):
 
     def test_different_units_are_rejected_naming_both(self):
         import xarray as xr
-        from tools.satellite_tools.comparison_tools import _units_mismatch_error
+        from tta_backend.tools.satellite_tools.comparison_tools import _units_mismatch_error
 
         da_a = xr.DataArray([1.0], name="vertical_column_troposphere", attrs={"units": "molec/cm^2"})
         da_b = xr.DataArray([2.0], name="vertical_column_troposphere", attrs={"units": "mol/m^2"})
@@ -121,7 +121,7 @@ class UnitsMismatchTests(unittest.TestCase):
 class DifferenceTests(unittest.TestCase):
     def test_difference_is_period_b_minus_period_a(self):
         import xarray as xr
-        from tools.satellite_tools.comparison_tools import _difference
+        from tta_backend.tools.satellite_tools.comparison_tools import _difference
 
         da_a = xr.DataArray([[1.0, 2.0], [3.0, 4.0]], dims=("lat", "lon"))
         da_b = xr.DataArray([[5.0, 5.0], [5.0, 5.0]], dims=("lat", "lon"))
@@ -133,7 +133,7 @@ class DifferenceTests(unittest.TestCase):
     def test_a_cell_missing_on_either_side_is_excluded_from_the_difference(self):
         import numpy as np
         import xarray as xr
-        from tools.satellite_tools.comparison_tools import _difference
+        from tta_backend.tools.satellite_tools.comparison_tools import _difference
 
         da_a = xr.DataArray([1.0, np.nan, 3.0], dims=("x",))
         da_b = xr.DataArray([10.0, 20.0, np.nan], dims=("x",))
@@ -152,7 +152,7 @@ class DifferenceTests(unittest.TestCase):
 class AnomalyStatsTests(unittest.TestCase):
     def test_mean_difference_and_percent_change_match_hand_computed_values(self):
         import xarray as xr
-        from tools.satellite_tools.comparison_tools import _anomaly_stats, _difference
+        from tta_backend.tools.satellite_tools.comparison_tools import _anomaly_stats, _difference
 
         # a: mean 2.0 -> b: mean 3.0. diff mean = 1.0, percent change = 50%.
         da_a = xr.DataArray([1.0, 2.0, 3.0], dims=("x",))
@@ -169,7 +169,7 @@ class AnomalyStatsTests(unittest.TestCase):
     def test_cells_missing_on_either_side_are_excluded_from_stats(self):
         import numpy as np
         import xarray as xr
-        from tools.satellite_tools.comparison_tools import _anomaly_stats, _difference
+        from tta_backend.tools.satellite_tools.comparison_tools import _anomaly_stats, _difference
 
         da_a = xr.DataArray([1.0, np.nan], dims=("x",))
         da_b = xr.DataArray([2.0, 5.0], dims=("x",))
@@ -182,7 +182,7 @@ class AnomalyStatsTests(unittest.TestCase):
 
     def test_area_exceeding_threshold_counts_cells_at_or_above_the_magnitude(self):
         import xarray as xr
-        from tools.satellite_tools.comparison_tools import _anomaly_stats, _difference
+        from tta_backend.tools.satellite_tools.comparison_tools import _anomaly_stats, _difference
 
         da_a = xr.DataArray([0.0, 0.0, 0.0, 0.0], dims=("x",))
         da_b = xr.DataArray([1.0, 2.0, 5.0, 10.0], dims=("x",))
@@ -197,7 +197,7 @@ class AnomalyStatsTests(unittest.TestCase):
     def test_percent_change_is_reported_when_the_baseline_clears_the_floor(self):
         import numpy as np
         import xarray as xr
-        from tools.satellite_tools.comparison_tools import (
+        from tta_backend.tools.satellite_tools.comparison_tools import (
             _PERCENT_CHANGE_FLOOR_FRACTION,
             _anomaly_stats,
             _difference,
@@ -222,7 +222,7 @@ class AnomalyStatsTests(unittest.TestCase):
     def test_percent_change_is_withheld_with_a_note_when_the_baseline_is_below_the_floor(self):
         import numpy as np
         import xarray as xr
-        from tools.satellite_tools.comparison_tools import (
+        from tta_backend.tools.satellite_tools.comparison_tools import (
             _PERCENT_CHANGE_FLOOR_FRACTION,
             _anomaly_stats,
             _difference,
@@ -257,7 +257,7 @@ class AnomalyStatsTests(unittest.TestCase):
 class SplitAlignedTests(unittest.TestCase):
     def test_splits_a_two_source_aligned_cube_into_its_two_arrays_in_order(self):
         import xarray as xr
-        from tools.satellite_tools.comparison_tools import _split_aligned
+        from tta_backend.tools.satellite_tools.comparison_tools import _split_aligned
 
         da = xr.DataArray(
             [[[1.0, 2.0]], [[10.0, 20.0]]],
@@ -272,7 +272,7 @@ class SplitAlignedTests(unittest.TestCase):
 
     def test_prefers_explicit_source_labels_over_position_so_a_reorder_cannot_flip_sign(self):
         import xarray as xr
-        from tools.satellite_tools.comparison_tools import _split_aligned
+        from tta_backend.tools.satellite_tools.comparison_tools import _split_aligned
 
         # The MCP stamps the source handles as the `source` coordinate, but in
         # the *opposite* order from how they were passed. Label selection must
@@ -290,7 +290,7 @@ class SplitAlignedTests(unittest.TestCase):
 
     def test_falls_back_to_positional_order_when_sources_carry_no_handle_labels(self):
         import xarray as xr
-        from tools.satellite_tools.comparison_tools import _split_aligned
+        from tta_backend.tools.satellite_tools.comparison_tools import _split_aligned
 
         # Integer source coords (no handle names) -> the MCP input-order
         # convention: position 0 is A, position 1 is B.
@@ -307,7 +307,7 @@ class SplitAlignedTests(unittest.TestCase):
 
     def test_rejects_an_aligned_result_without_a_source_dimension(self):
         import xarray as xr
-        from tools.satellite_tools.comparison_tools import _split_aligned
+        from tta_backend.tools.satellite_tools.comparison_tools import _split_aligned
 
         da = xr.DataArray([[1.0, 2.0]], dims=("lat", "lon"), coords={"lat": [10.0], "lon": [30.0, 40.0]})
 
@@ -316,7 +316,7 @@ class SplitAlignedTests(unittest.TestCase):
 
     def test_rejects_an_aligned_result_with_the_wrong_number_of_sources(self):
         import xarray as xr
-        from tools.satellite_tools.comparison_tools import _split_aligned
+        from tta_backend.tools.satellite_tools.comparison_tools import _split_aligned
 
         da = xr.DataArray(
             [[[1.0]], [[2.0]], [[3.0]]],
@@ -335,7 +335,7 @@ class SplitAlignedTests(unittest.TestCase):
 class RegionStatsTests(unittest.TestCase):
     def test_computes_basic_stats_over_valid_cells(self):
         import xarray as xr
-        from tools.satellite_tools.comparison_tools import _region_stats
+        from tta_backend.tools.satellite_tools.comparison_tools import _region_stats
 
         da = xr.DataArray([[1.0, 2.0], [3.0, 4.0]], dims=("lat", "lon"))
 
@@ -349,7 +349,7 @@ class RegionStatsTests(unittest.TestCase):
     def test_returns_none_when_no_valid_cells(self):
         import numpy as np
         import xarray as xr
-        from tools.satellite_tools.comparison_tools import _region_stats
+        from tta_backend.tools.satellite_tools.comparison_tools import _region_stats
 
         da = xr.DataArray([np.nan, np.nan], dims=("x",))
 
@@ -362,7 +362,7 @@ class RegionStatsTests(unittest.TestCase):
         them as the true peak/trough. When the caller names the field basis, the
         stats disclose it so the label can be qualified rather than bare."""
         import xarray as xr
-        from tools.satellite_tools.comparison_tools import _region_stats
+        from tta_backend.tools.satellite_tools.comparison_tools import _region_stats
 
         da = xr.DataArray([[1.0, 2.0], [3.0, 4.0]], dims=("lat", "lon"))
 
@@ -377,7 +377,7 @@ class RegionStatsTests(unittest.TestCase):
         """Regression: the disclosure is additive — a caller that doesn't name
         a field basis (a plain snapshot) gets the original stats shape."""
         import xarray as xr
-        from tools.satellite_tools.comparison_tools import _region_stats
+        from tta_backend.tools.satellite_tools.comparison_tools import _region_stats
 
         stats = _region_stats(xr.DataArray([[1.0, 2.0], [3.0, 4.0]], dims=("lat", "lon")))
 
@@ -391,7 +391,7 @@ class RegionStatsTests(unittest.TestCase):
 class EmptyOverlapTests(unittest.TestCase):
     def test_returns_none_when_data_has_finite_values(self):
         import xarray as xr
-        from tools.satellite_tools.comparison_tools import _empty_overlap_error
+        from tta_backend.tools.satellite_tools.comparison_tools import _empty_overlap_error
 
         da = xr.DataArray([1.0, 2.0], dims=("x",))
 
@@ -400,7 +400,7 @@ class EmptyOverlapTests(unittest.TestCase):
     def test_returns_an_error_naming_the_side_when_all_values_are_missing(self):
         import numpy as np
         import xarray as xr
-        from tools.satellite_tools.comparison_tools import _empty_overlap_error
+        from tta_backend.tools.satellite_tools.comparison_tools import _empty_overlap_error
 
         da = xr.DataArray([np.nan, np.nan], dims=("x",))
 
@@ -418,7 +418,7 @@ class DisjointPeriodsTests(unittest.TestCase):
     def test_overlapping_time_ranges_are_not_disjoint(self):
         import pandas as pd
         import xarray as xr
-        from tools.satellite_tools.comparison_tools import _disjoint_periods_error
+        from tta_backend.tools.satellite_tools.comparison_tools import _disjoint_periods_error
 
         da_a = xr.DataArray([1.0, 2.0], dims=("time",), coords={"time": pd.date_range("2024-01-01", periods=2)})
         da_b = xr.DataArray([1.0, 2.0], dims=("time",), coords={"time": pd.date_range("2024-01-02", periods=2)})
@@ -428,7 +428,7 @@ class DisjointPeriodsTests(unittest.TestCase):
     def test_non_overlapping_time_ranges_are_rejected(self):
         import pandas as pd
         import xarray as xr
-        from tools.satellite_tools.comparison_tools import _disjoint_periods_error
+        from tta_backend.tools.satellite_tools.comparison_tools import _disjoint_periods_error
 
         da_a = xr.DataArray([1.0, 2.0], dims=("time",), coords={"time": pd.date_range("2024-01-01", periods=2)})
         da_b = xr.DataArray([1.0, 2.0], dims=("time",), coords={"time": pd.date_range("2024-06-01", periods=2)})
@@ -437,7 +437,7 @@ class DisjointPeriodsTests(unittest.TestCase):
 
     def test_no_time_dimension_on_either_side_is_not_disjoint(self):
         import xarray as xr
-        from tools.satellite_tools.comparison_tools import _disjoint_periods_error
+        from tta_backend.tools.satellite_tools.comparison_tools import _disjoint_periods_error
 
         da_a = xr.DataArray([1.0, 2.0], dims=("x",))
         da_b = xr.DataArray([1.0, 2.0], dims=("x",))
@@ -480,13 +480,13 @@ class ComparisonScaleDisclosureTests(unittest.TestCase):
 
     def test_region_panels_disclose_the_shared_2_98_percentile_clip(self):
         from unittest.mock import patch
-        from tools.satellite_tools.comparison_tools import _build_region_comparison
+        from tta_backend.tools.satellite_tools.comparison_tools import _build_region_comparison
 
         da_a = self._2d([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]])
         da_b = self._2d([[2.0, 3.0, 4.0, 5.0], [6.0, 7.0, 8.0, 9.0]])
 
         emitted = {}
-        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
             _build_region_comparison("h_a", "h_b", da_a, da_b, "A", "B", "no2", "mol/m^2")
 
         for panel in emitted["payload"]["panels"]:
@@ -494,13 +494,13 @@ class ComparisonScaleDisclosureTests(unittest.TestCase):
 
     def test_period_difference_discloses_the_diverging_magnitude_percentile_clip(self):
         from unittest.mock import patch
-        from tools.satellite_tools.comparison_tools import _build_period_comparison
+        from tta_backend.tools.satellite_tools.comparison_tools import _build_period_comparison
 
         aligned_a = self._2d([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]])
         aligned_b = self._2d([[2.0, 4.0, 6.0, 8.0], [10.0, 12.0, 14.0, 16.0]])
 
         emitted = {}
-        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
             _build_period_comparison(
                 "h_a", "h_b", "h_aligned", aligned_a, aligned_b, "A", "B", "no2", "mol/m^2", None,
             )
@@ -537,20 +537,20 @@ class ComparisonDisclosureTests(unittest.TestCase):
         )
 
     def _record_scope(self, handle, scope):
-        from services import scope_registry
+        from tta_backend.services import scope_registry
 
         scope_registry.record_pending(handle, scope)
         scope_registry.finalize(handle, handle)
         self.addCleanup(lambda: scope_registry._scopes.pop(handle, None))
 
     def test_region_comparison_discloses_qa_masking_provenance(self):
-        from tools.satellite_tools.comparison_tools import _build_region_comparison
+        from tta_backend.tools.satellite_tools.comparison_tools import _build_region_comparison
 
         da_a = self._2d([[1.0, 2.0], [3.0, 4.0]])
         da_b = self._2d([[2.0, 4.0], [6.0, 8.0]])
 
         emitted = {}
-        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
             _build_region_comparison("h_a", "h_b", da_a, da_b, "A", "B", "no2", "mol/m^2")
 
         # The masking that aggregate() applied is disclosed on the payload where
@@ -561,13 +561,13 @@ class ComparisonDisclosureTests(unittest.TestCase):
         self.assertIn("valid_range_source", masking)
 
     def test_period_difference_discloses_qa_masking_provenance(self):
-        from tools.satellite_tools.comparison_tools import _build_period_comparison
+        from tta_backend.tools.satellite_tools.comparison_tools import _build_period_comparison
 
         aligned_a = self._2d([[1.0, 2.0], [3.0, 4.0]])
         aligned_b = self._2d([[2.0, 4.0], [6.0, 8.0]])
 
         emitted = {}
-        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
             _build_period_comparison(
                 "h_a", "h_b", "h_aligned", aligned_a, aligned_b, "A", "B", "no2", "mol/m^2", None,
             )
@@ -598,14 +598,14 @@ class ComparisonDisclosureTests(unittest.TestCase):
         """T55 on compare: each side gets its own realized pass rate, attached
         to the panel that names it. Two pass rates with no way to tell which
         period or region each belongs to would be worse than showing none."""
-        from tools.satellite_tools.comparison_tools import _build_region_comparison
+        from tta_backend.tools.satellite_tools.comparison_tools import _build_region_comparison
 
         # Side A: 1 of 4 pixels passes. Side B: all 4 pass.
         ds_a = self._flagged_side([[1.0, 2.0], [3.0, 4.0]], [[0, 1], [1, 1]])
         ds_b = self._flagged_side([[2.0, 4.0], [6.0, 8.0]], [[0, 0], [0, 0]])
 
         emitted = {}
-        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
             _build_region_comparison(
                 "h_a", "h_b", ds_a["no2"], ds_b["no2"], "June", "July", "no2", "mol/m^2",
                 ds_a=ds_a, ds_b=ds_b,
@@ -622,8 +622,8 @@ class ComparisonDisclosureTests(unittest.TestCase):
     def test_region_comparison_surfaces_scope_echo_so_the_dispatch_note_fires(self):
         import numpy as np
         import xarray as xr
-        from config.error_templates import render_scope_note
-        from tools.satellite_tools.comparison_tools import _build_region_comparison
+        from tta_backend.config.error_templates import render_scope_note
+        from tta_backend.tools.satellite_tools.comparison_tools import _build_region_comparison
 
         # Delivered data spans all of June; the recorded request was a single day
         # — the T46 substitution the compare surface previously hid entirely.
@@ -641,7 +641,7 @@ class ComparisonDisclosureTests(unittest.TestCase):
         self._record_scope("h_a", {"location": "California", "time_range": ["2026-06-15", "2026-06-15"]})
 
         emitted = {}
-        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
             _build_region_comparison("h_a", "h_b", da, da, "A", "B", "no2", "mol/m^2")
 
         prov = emitted["payload"]["provenance"]
@@ -651,8 +651,8 @@ class ComparisonDisclosureTests(unittest.TestCase):
         self.assertIn("2026-06-01", note)  # the wider span actually delivered
 
     def test_period_comparison_surfaces_scope_echo(self):
-        from config.error_templates import render_scope_note
-        from tools.satellite_tools.comparison_tools import _build_period_comparison
+        from tta_backend.config.error_templates import render_scope_note
+        from tta_backend.tools.satellite_tools.comparison_tools import _build_period_comparison
 
         # Aligned slices carry their coverage as global attrs (the timeless-L3
         # fallback), spanning June; the recorded request was one day.
@@ -663,7 +663,7 @@ class ComparisonDisclosureTests(unittest.TestCase):
         self._record_scope("h_a", {"location": "Texas", "time_range": ["2026-06-15", "2026-06-15"]})
 
         emitted = {}
-        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
             _build_period_comparison(
                 "h_a", "h_b", "h_aligned", aligned_a, aligned_b, "A", "B", "no2", "mol/m^2", None,
             )
@@ -674,14 +674,14 @@ class ComparisonDisclosureTests(unittest.TestCase):
         self.assertIn("2026-06-15", note)
 
     def test_no_scope_note_when_nothing_was_recorded_for_the_handles(self):
-        from config.error_templates import render_scope_note
-        from tools.satellite_tools.comparison_tools import _build_region_comparison
+        from tta_backend.config.error_templates import render_scope_note
+        from tta_backend.tools.satellite_tools.comparison_tools import _build_region_comparison
 
         da_a = self._2d([[1.0, 2.0], [3.0, 4.0]])
         da_b = self._2d([[2.0, 4.0], [6.0, 8.0]])
 
         emitted = {}
-        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
             _build_region_comparison("h_a", "h_b", da_a, da_b, "A", "B", "no2", "mol/m^2")
 
         prov = emitted["payload"]["provenance"]
@@ -698,8 +698,8 @@ class ComparisonDisclosureTests(unittest.TestCase):
 class CompareToolTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from fake_earthdata_mcp import HandleVolume, build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
 
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
@@ -722,7 +722,7 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_region_mode_produces_side_by_side_panels_on_a_shared_scale(self):
         import xarray as xr
-        from tools.satellite_tools import comparison_tools
+        from tta_backend.tools.satellite_tools import comparison_tools
 
         def make_a():
             return xr.Dataset(
@@ -745,7 +745,7 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
             emitted["payload"] = full_payload
 
         compare = comparison_tools.make_compare(self.mcp_tools)
-        with patch("tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
             raw = await compare.ainvoke({
                 "handle_a": "obs_a", "handle_b": "obs_b", "mode": "region",
                 "label_a": "Newark", "label_b": "Philly",
@@ -798,9 +798,9 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
     async def test_region_mode_discloses_masking_and_scope_echo_end_to_end(self):
         import numpy as np
         import xarray as xr
-        from config.error_templates import render_scope_note
-        from services import scope_registry
-        from tools.satellite_tools import comparison_tools
+        from tta_backend.config.error_templates import render_scope_note
+        from tta_backend.services import scope_registry
+        from tta_backend.tools.satellite_tools import comparison_tools
 
         def make_ds():
             return xr.Dataset(
@@ -825,7 +825,7 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
 
         emitted = {}
         compare = comparison_tools.make_compare(self.mcp_tools)
-        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
             raw = await compare.ainvoke({
                 "handle_a": "obs_a", "handle_b": "obs_b", "mode": "region",
                 "label_a": "Newark", "label_b": "Philly",
@@ -842,7 +842,7 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_period_mode_differences_b_minus_a_via_mcp_align(self):
         import xarray as xr
-        from tools.satellite_tools import comparison_tools
+        from tta_backend.tools.satellite_tools import comparison_tools
 
         def make_a():
             return xr.Dataset(
@@ -882,7 +882,7 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
             emitted["payload"] = full_payload
 
         compare = comparison_tools.make_compare(self.mcp_tools)
-        with patch("tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
             raw = await compare.ainvoke({
                 "handle_a": "obs_june25", "handle_b": "obs_june26", "mode": "period",
                 "label_a": "June 2025", "label_b": "June 2026",
@@ -926,7 +926,7 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_mismatched_variables_are_rejected_with_a_plain_explanation(self):
         import xarray as xr
-        from tools.satellite_tools import comparison_tools
+        from tta_backend.tools.satellite_tools import comparison_tools
 
         def make_no2():
             return xr.Dataset(
@@ -961,7 +961,7 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
         from unittest.mock import AsyncMock
 
         import xarray as xr
-        from tools.satellite_tools import comparison_tools
+        from tta_backend.tools.satellite_tools import comparison_tools
 
         def make_ds(value):
             return xr.Dataset(
@@ -974,7 +974,7 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
             return make_ds(1.0 if handle == "obs_a" else 2.0)
 
         compare = comparison_tools.make_compare(self.mcp_tools)
-        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda p: None), \
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", lambda p: None), \
              patch.object(comparison_tools, "open_handle", AsyncMock(side_effect=slow_open)):
             start = time.monotonic()
             raw = await compare.ainvoke({"handle_a": "obs_a", "handle_b": "obs_b", "mode": "region"})
@@ -996,10 +996,10 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
         from unittest.mock import AsyncMock, patch
 
         import xarray as xr
-        from earthdata_mcp.results import MCPToolError
-        from preprocessing.aggregation_service import VariableChoiceRequired
-        from services.open_handle import OpenHandleError
-        from tools.satellite_tools import comparison_tools
+        from tta_backend.earthdata_mcp.results import MCPToolError
+        from tta_backend.preprocessing.aggregation_service import VariableChoiceRequired
+        from tta_backend.services.open_handle import OpenHandleError
+        from tta_backend.tools.satellite_tools import comparison_tools
 
         def make_ds():
             return xr.Dataset(
@@ -1023,7 +1023,7 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
         emitted = []
 
         compare = comparison_tools.make_compare(self.mcp_tools)
-        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda p: None), \
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", lambda p: None), \
              patch.object(comparison_tools, "open_handle", AsyncMock(side_effect=open_side)), \
              patch.object(
                  comparison_tools._aggregation_service, "to_dataarray", side_effect=fake_to_dataarray
@@ -1049,9 +1049,9 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
         from unittest.mock import AsyncMock, patch
 
         import xarray as xr
-        from earthdata_mcp.results import MCPToolError
-        from preprocessing.aggregation_service import VariableChoiceRequired
-        from tools.satellite_tools import comparison_tools
+        from tta_backend.earthdata_mcp.results import MCPToolError
+        from tta_backend.preprocessing.aggregation_service import VariableChoiceRequired
+        from tta_backend.tools.satellite_tools import comparison_tools
 
         def make_ds():
             return xr.Dataset(
@@ -1073,7 +1073,7 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
         emitted = []
 
         compare = comparison_tools.make_compare(self.mcp_tools)
-        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda p: None), \
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", lambda p: None), \
              patch.object(comparison_tools, "open_handle", AsyncMock(side_effect=open_side)), \
              patch.object(
                  comparison_tools._aggregation_service, "to_dataarray", side_effect=fake_to_dataarray
@@ -1092,7 +1092,7 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_an_unknown_mode_is_rejected(self):
         import xarray as xr
-        from tools.satellite_tools import comparison_tools
+        from tta_backend.tools.satellite_tools import comparison_tools
 
         def make_ds():
             return xr.Dataset(

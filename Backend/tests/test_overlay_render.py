@@ -19,8 +19,8 @@ class OverlayRenderTests(unittest.TestCase):
         import io
         import numpy as np
         import matplotlib.image as mpimg
-        from utils.colormaps import resolve
-        from utils.overlay_render import render_overlay_png
+        from tta_backend.utils.colormaps import resolve
+        from tta_backend.utils.overlay_render import render_overlay_png
 
         lats = np.linspace(30.0, 33.0, 12)
         lons = np.linspace(-100.0, -96.0, 16)
@@ -40,8 +40,8 @@ class OverlayRenderTests(unittest.TestCase):
         import io
         import numpy as np
         import matplotlib.image as mpimg
-        from utils.colormaps import resolve
-        from utils.overlay_render import render_overlay_png
+        from tta_backend.utils.colormaps import resolve
+        from tta_backend.utils.overlay_render import render_overlay_png
 
         lats = np.linspace(30.0, 33.0, 12)
         lons = np.linspace(-100.0, -96.0, 16)
@@ -69,8 +69,8 @@ class OverlayRenderTests(unittest.TestCase):
         import io
         import numpy as np
         import matplotlib.image as mpimg
-        from utils.colormaps import resolve
-        from utils.overlay_render import render_overlay_png
+        from tta_backend.utils.colormaps import resolve
+        from tta_backend.utils.overlay_render import render_overlay_png
 
         lats = np.linspace(30.0, 33.0, 12)
         lons = np.linspace(-100.0, -96.0, 16)

@@ -660,7 +660,7 @@ def starter_prompts_missing_eval_tasks(volume) -> list[str]:
     a starter prompt could rot into a broken promise with nothing to catch
     it. Returns the ids of any entries with no matching eval task (empty
     when the contract holds)."""
-    from config.starter_prompts import STARTER_PROMPTS
+    from tta_backend.config.starter_prompts import STARTER_PROMPTS
 
     task_ids = all_task_ids(volume)
     return [entry["id"] for entry in STARTER_PROMPTS if entry["id"] not in task_ids]
@@ -668,16 +668,16 @@ def starter_prompts_missing_eval_tasks(volume) -> list[str]:
 
 async def run_eval_task(task: EvalTask, *, model: str | None = None) -> EvalTaskResult:
     from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-    from earthdata_mcp.client import load_raw_mcp_tools
-    from config.settings import Settings
-    from agents.earthdata_agent import build_earthdata_agent
-    from models.agent_result import parse_sub_agent_envelope
-    from utils.streaming import stream_response
+    from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+    from tta_backend.config.settings import Settings
+    from tta_backend.agents.earthdata_agent import build_earthdata_agent
+    from tta_backend.models.agent_result import parse_sub_agent_envelope
+    from tta_backend.utils.streaming import stream_response
 
     server = FakeEarthdataMCPServer(build_fake_mcp(task.handlers))
     server.start()
     aqs_patch = (
-        patch("tools.ground_sensor_tools.epa_aqs_tools._aqs_get", AsyncMock(side_effect=task.aqs_get))
+        patch("tta_backend.tools.ground_sensor_tools.epa_aqs_tools._aqs_get", AsyncMock(side_effect=task.aqs_get))
         if task.aqs_get is not None
         else nullcontext()
     )
@@ -721,9 +721,9 @@ async def run_robustness_task() -> EvalTaskResult:
     not the {summary, artifact_ids, handles} envelope. Passes when the
     scored outcome is a non-error answer that still carries the artifact.
     """
-    from models import AgentResult, ChartPayload
-    from models.artifact import ArtifactReference
-    from services.subagent_dispatch import _finalize_sub_agent_result
+    from tta_backend.models import AgentResult, ChartPayload
+    from tta_backend.models.artifact import ArtifactReference
+    from tta_backend.services.subagent_dispatch import _finalize_sub_agent_result
 
     task = EvalTask(
         name="robustness_malformed_final_envelope",
@@ -779,14 +779,14 @@ async def run_e2e_task(task: E2ETask, volume, *, model: str | None = None) -> Ev
     real sub-agents, fake MCP — scored on which agent(s) ran plus a
     non-error terminal answer, per the Technical Implementation Guide."""
     from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-    from earthdata_mcp.client import load_raw_mcp_tools
-    from config.settings import Settings
-    from agents.ground_sensor_agent import build_ground_agent
-    from agents.earthdata_agent import build_earthdata_agent
-    from agents.supervisor_agent import build_agent as build_supervisor_agent
-    from services.chart_service import ChartService
-    from services.chat_stream_service import ChatStreamService
-    from utils.streaming import get_call_budget
+    from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+    from tta_backend.config.settings import Settings
+    from tta_backend.agents.ground_sensor_agent import build_ground_agent
+    from tta_backend.agents.earthdata_agent import build_earthdata_agent
+    from tta_backend.agents.supervisor_agent import build_agent as build_supervisor_agent
+    from tta_backend.services.chart_service import ChartService
+    from tta_backend.services.chat_stream_service import ChatStreamService
+    from tta_backend.utils.streaming import get_call_budget
 
     # A shared top-level context runs every task in the suite sequentially
     # (see run_eval_suite) — clear the T16 per-request budget holder so one
@@ -800,7 +800,7 @@ async def run_e2e_task(task: E2ETask, volume, *, model: str | None = None) -> Ev
         return await task.aqs_get(endpoint, params)
 
     aqs_patch = (
-        patch("tools.ground_sensor_tools.epa_aqs_tools._aqs_get", AsyncMock(side_effect=_capturing_aqs_get))
+        patch("tta_backend.tools.ground_sensor_tools.epa_aqs_tools._aqs_get", AsyncMock(side_effect=_capturing_aqs_get))
         if task.aqs_get is not None
         else nullcontext()
     )

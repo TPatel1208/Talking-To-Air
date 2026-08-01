@@ -66,16 +66,16 @@ class CheckToolSchemasTests(unittest.TestCase):
     """Hermetic — a fake tool dict, no network, no fake MCP server."""
 
     def test_every_required_tool_present_and_complete_yields_no_mismatch(self):
-        from earthdata_mcp.connection import check_tool_schemas
-        from earthdata_mcp.client import REQUIRED_TOOL_PARAMS
+        from tta_backend.earthdata_mcp.connection import check_tool_schemas
+        from tta_backend.earthdata_mcp.client import REQUIRED_TOOL_PARAMS
 
         tools = {name: _fake_tool(name, params) for name, params in REQUIRED_TOOL_PARAMS.items()}
 
         self.assertEqual(check_tool_schemas(tools), {})
 
     def test_a_tool_missing_a_sent_param_is_named_in_the_diff(self):
-        from earthdata_mcp.connection import check_tool_schemas
-        from earthdata_mcp.client import REQUIRED_TOOL_PARAMS
+        from tta_backend.earthdata_mcp.connection import check_tool_schemas
+        from tta_backend.earthdata_mcp.client import REQUIRED_TOOL_PARAMS
 
         tools = {name: _fake_tool(name, params) for name, params in REQUIRED_TOOL_PARAMS.items()}
         # Real-world shape of the bug this check exists for (T11's
@@ -90,7 +90,7 @@ class CheckToolSchemasTests(unittest.TestCase):
     def test_a_missing_tool_is_not_reported_as_a_schema_mismatch(self):
         # Tool presence is a separate (missing-tools) verdict, handled by
         # load_raw_mcp_tools raising before the schema check ever runs.
-        from earthdata_mcp.connection import check_tool_schemas
+        from tta_backend.earthdata_mcp.connection import check_tool_schemas
 
         self.assertEqual(check_tool_schemas({}), {})
 
@@ -101,7 +101,7 @@ class CheckToolSchemasTests(unittest.TestCase):
 )
 class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
     async def test_starts_connecting_and_reaches_ready_on_first_success(self):
-        from earthdata_mcp.connection import EarthdataMCPConnectionManager, STATE_CONNECTING, STATE_READY
+        from tta_backend.earthdata_mcp.connection import EarthdataMCPConnectionManager, STATE_CONNECTING, STATE_READY
 
         tools = {"search_datasets": _fake_tool("search_datasets", ("query", "filters", "workspace_id"))}
 
@@ -121,7 +121,7 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
         await manager.stop()
 
     async def test_tools_raises_when_not_ready(self):
-        from earthdata_mcp.connection import EarthdataMCPConnectionManager, EarthdataMCPNotReadyError
+        from tta_backend.earthdata_mcp.connection import EarthdataMCPConnectionManager, EarthdataMCPNotReadyError
 
         async def loader(settings):
             raise AssertionError("loader should never be called — manager.start() was not called")
@@ -132,8 +132,8 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
             manager.tools
 
     async def test_retries_with_backoff_and_recovers_after_n_failures(self):
-        from earthdata_mcp.connection import EarthdataMCPConnectionManager, STATE_READY
-        from earthdata_mcp.client import EarthdataMCPUnavailableError
+        from tta_backend.earthdata_mcp.connection import EarthdataMCPConnectionManager, STATE_READY
+        from tta_backend.earthdata_mcp.client import EarthdataMCPUnavailableError
 
         attempts = {"count": 0}
         tools = {"search_datasets": _fake_tool("search_datasets", ("query", "filters", "workspace_id"))}
@@ -170,7 +170,7 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
         await manager.stop()
 
     async def test_a_schema_mismatch_lands_the_manager_in_incompatible(self):
-        from earthdata_mcp.connection import EarthdataMCPConnectionManager, STATE_INCOMPATIBLE
+        from tta_backend.earthdata_mcp.connection import EarthdataMCPConnectionManager, STATE_INCOMPATIBLE
 
         broken_tools = {"define_area_of_interest": _fake_tool("define_area_of_interest", ("workspace_id",))}
 
@@ -188,7 +188,7 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
             settings=object(), user_id_getter=lambda: "1", loader=loader, sleep=fake_sleep,
         )
 
-        with self.assertLogs("earthdata_mcp.connection", level="CRITICAL") as captured:
+        with self.assertLogs("tta_backend.earthdata_mcp.connection", level="CRITICAL") as captured:
             manager.start()
             await asyncio.wait_for(_wait_for_state(manager, STATE_INCOMPATIBLE), timeout=1)
             await manager.stop()
@@ -197,7 +197,7 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("earthdata_mcp_schema_mismatch" in line for line in captured.output))
 
     async def test_on_ready_is_awaited_exactly_once_before_state_flips_to_ready(self):
-        from earthdata_mcp.connection import EarthdataMCPConnectionManager, STATE_READY
+        from tta_backend.earthdata_mcp.connection import EarthdataMCPConnectionManager, STATE_READY
 
         tools = {"search_datasets": _fake_tool("search_datasets", ("query", "filters", "workspace_id"))}
         observed_state_at_callback = []
@@ -226,7 +226,7 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
     async def test_on_ready_does_not_re_fire_on_a_healthy_heartbeat(self):
         # T17: a steady-state loop must not rebuild the satellite agent every
         # heartbeat — only a genuine transition into ready calls on_ready.
-        from earthdata_mcp.connection import EarthdataMCPConnectionManager, STATE_READY
+        from tta_backend.earthdata_mcp.connection import EarthdataMCPConnectionManager, STATE_READY
 
         tools = {"search_datasets": _fake_tool("search_datasets", ("query", "filters", "workspace_id"))}
         on_ready_calls = []
@@ -262,8 +262,8 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
         # unavailable) rather than reporting ready off the fresh probe.
         from contextlib import asynccontextmanager
 
-        from earthdata_mcp.client import EarthdataMCPUnavailableError, HeldSession
-        from earthdata_mcp.connection import (
+        from tta_backend.earthdata_mcp.client import EarthdataMCPUnavailableError, HeldSession
+        from tta_backend.earthdata_mcp.connection import (
             EarthdataMCPConnectionManager,
             STATE_UNAVAILABLE,
         )
@@ -326,12 +326,12 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
         # /health away from "ready", or every consumer gated on manager.state
         # would let a bare connection failure through during that window
         # (the exact "/health lies" bug this PRD's Problem Statement names).
-        from earthdata_mcp.connection import (
+        from tta_backend.earthdata_mcp.connection import (
             EarthdataMCPConnectionManager,
             STATE_READY,
             STATE_UNAVAILABLE,
         )
-        from earthdata_mcp.client import EarthdataMCPUnavailableError
+        from tta_backend.earthdata_mcp.client import EarthdataMCPUnavailableError
 
         tools = {"search_datasets": _fake_tool("search_datasets", ("query", "filters", "workspace_id"))}
         mcp_up = {"value": True}
@@ -382,7 +382,7 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
         # the state forever: /health kept reporting the last state and no
         # reconnect ever ran again. The loop must classify the unexpected
         # error as an outage and keep retrying.
-        from earthdata_mcp.connection import (
+        from tta_backend.earthdata_mcp.connection import (
             EarthdataMCPConnectionManager,
             STATE_READY,
             STATE_UNAVAILABLE,
@@ -400,7 +400,7 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
             settings=object(), user_id_getter=lambda: "1", loader=loader, probe=_probe_ok, sleep=_yielding_sleep,
         )
 
-        with self.assertLogs("earthdata_mcp.connection", level="ERROR") as captured:
+        with self.assertLogs("tta_backend.earthdata_mcp.connection", level="ERROR") as captured:
             manager.start()
             await asyncio.wait_for(_wait_for_state(manager, STATE_UNAVAILABLE), timeout=1)
 
@@ -414,7 +414,7 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
         # on_ready rebuilds the satellite agent (api.py) — if that rebuild
         # throws, the manager must degrade to unavailable and retry, not die
         # holding state=connecting forever with no tools and no watchdog.
-        from earthdata_mcp.connection import EarthdataMCPConnectionManager, STATE_READY
+        from tta_backend.earthdata_mcp.connection import EarthdataMCPConnectionManager, STATE_READY
 
         tools = {"search_datasets": _fake_tool("search_datasets", ("query", "filters", "workspace_id"))}
         on_ready_calls = []
@@ -447,7 +447,7 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
         test_earthdata_mcp_edl_injection.py. This just proves the manager
         passes edl_injector through to bind_workspace rather than silently
         dropping it, using the schema-stripping side effect as the signal."""
-        from earthdata_mcp.connection import EarthdataMCPConnectionManager, STATE_READY
+        from tta_backend.earthdata_mcp.connection import EarthdataMCPConnectionManager, STATE_READY
 
         tools = {"search_datasets": _fake_tool("search_datasets", ("query", "filters", "workspace_id", "edl_token"))}
 
@@ -484,8 +484,8 @@ class HeartbeatDampeningTests(unittest.IsolatedAsyncioTestCase):
     interval instead of transitioning."""
 
     async def test_a_single_failing_probe_does_not_demote_from_ready(self):
-        from earthdata_mcp.connection import EarthdataMCPConnectionManager, STATE_READY
-        from earthdata_mcp.client import EarthdataMCPUnavailableError
+        from tta_backend.earthdata_mcp.connection import EarthdataMCPConnectionManager, STATE_READY
+        from tta_backend.earthdata_mcp.client import EarthdataMCPUnavailableError
 
         tools = {"search_datasets": _fake_tool("search_datasets", ("query", "filters", "workspace_id"))}
         probe_calls = {"count": 0}
@@ -504,7 +504,7 @@ class HeartbeatDampeningTests(unittest.IsolatedAsyncioTestCase):
             sleep=_yielding_sleep,
         )
 
-        with self.assertLogs("earthdata_mcp.connection", level="WARNING") as captured:
+        with self.assertLogs("tta_backend.earthdata_mcp.connection", level="WARNING") as captured:
             manager.start()
             await asyncio.wait_for(_wait_for_state(manager, STATE_READY), timeout=1)
             # Let the flaky probe's single failure (and its recovery) run.
@@ -518,12 +518,12 @@ class HeartbeatDampeningTests(unittest.IsolatedAsyncioTestCase):
         await manager.stop()
 
     async def test_threshold_consecutive_failures_demotes_then_recovers_via_the_connect_loop(self):
-        from earthdata_mcp.connection import (
+        from tta_backend.earthdata_mcp.connection import (
             EarthdataMCPConnectionManager,
             STATE_READY,
             STATE_UNAVAILABLE,
         )
-        from earthdata_mcp.client import EarthdataMCPUnavailableError
+        from tta_backend.earthdata_mcp.client import EarthdataMCPUnavailableError
 
         tools = {"search_datasets": _fake_tool("search_datasets", ("query", "filters", "workspace_id"))}
         on_ready_calls = []
@@ -569,8 +569,8 @@ class HeartbeatDampeningTests(unittest.IsolatedAsyncioTestCase):
         # a demote-then-instantly-recover (loader always succeeds here)
         # would otherwise land back on STATE_READY too and mask a missing
         # reset.
-        from earthdata_mcp.connection import EarthdataMCPConnectionManager, STATE_READY
-        from earthdata_mcp.client import EarthdataMCPUnavailableError
+        from tta_backend.earthdata_mcp.connection import EarthdataMCPConnectionManager, STATE_READY
+        from tta_backend.earthdata_mcp.client import EarthdataMCPUnavailableError
 
         tools = {"search_datasets": _fake_tool("search_datasets", ("query", "filters", "workspace_id"))}
         probe_calls = {"count": 0}
@@ -607,7 +607,7 @@ class HeartbeatDampeningTests(unittest.IsolatedAsyncioTestCase):
         # The whole point of the light probe (PRD T40): steady-state
         # heartbeats must not repeat the expensive full load-bind-verify
         # path every interval -- only a genuine (re)connect calls the loader.
-        from earthdata_mcp.connection import EarthdataMCPConnectionManager, STATE_READY
+        from tta_backend.earthdata_mcp.connection import EarthdataMCPConnectionManager, STATE_READY
 
         tools = {"search_datasets": _fake_tool("search_datasets", ("query", "filters", "workspace_id"))}
         loader_calls = {"count": 0}

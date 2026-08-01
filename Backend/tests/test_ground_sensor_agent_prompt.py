@@ -9,7 +9,7 @@ if BACKEND_DIR not in sys.path:
 
 class GroundSensorAgentPromptT22Tests(unittest.TestCase):
     def test_prompt_offers_the_optional_suggested_followups_envelope_key(self):
-        from config.ground_sensor_agent_prompt import GROUND_SYSTEM_PROMPT
+        from tta_backend.config.ground_sensor_agent_prompt import GROUND_SYSTEM_PROMPT
 
         self.assertIn("suggested_followups", GROUND_SYSTEM_PROMPT)
         self.assertIn("otherwise omit", GROUND_SYSTEM_PROMPT.lower())

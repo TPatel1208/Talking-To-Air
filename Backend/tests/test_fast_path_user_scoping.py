@@ -49,10 +49,10 @@ class UntouchedAgent:
 class FastPathUserScopingTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from earthdata_mcp.workspace import bind_workspace
-        from config.settings import Settings
-        from utils.streaming import current_user_id
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
+        from tta_backend.config.settings import Settings
+        from tta_backend.utils.streaming import current_user_id
 
         self.received_workspace_ids = []
 
@@ -73,8 +73,8 @@ class FastPathUserScopingTests(unittest.IsolatedAsyncioTestCase):
         self.bound_tools = bind_workspace(raw_tools, current_user_id)
 
     async def test_satellite_fast_path_binds_the_real_users_workspace_not_user_none(self):
-        from services.chat_stream_service import ChatStreamService
-        from services.chart_service import ChartService
+        from tta_backend.services.chat_stream_service import ChatStreamService
+        from tta_backend.services.chart_service import ChartService
 
         bound_tools = self.bound_tools
 
@@ -110,8 +110,8 @@ class FastPathUserScopingTests(unittest.IsolatedAsyncioTestCase):
         called; run_satellite's existing generic-failure handling folds that
         into the turn's answer text rather than reaching the fake MCP — this
         test's job is just to confirm no "user-None" call ever lands here."""
-        from services.chat_stream_service import ChatStreamService
-        from services.chart_service import ChartService
+        from tta_backend.services.chat_stream_service import ChatStreamService
+        from tta_backend.services.chart_service import ChartService
 
         bound_tools = self.bound_tools
 

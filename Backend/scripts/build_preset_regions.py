@@ -31,7 +31,7 @@ CONTINENTS = [
 ]
 OUT_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "datasets", "preset_regions.geojson",
+    "tta_backend", "datasets", "preset_regions.geojson",
 )
 
 

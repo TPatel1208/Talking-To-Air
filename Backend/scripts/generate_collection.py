@@ -54,7 +54,7 @@ _BACKEND = _HERE.parent  # Backend/
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-_DEFAULT_REGISTRY = _BACKEND / "datasets" / "collections.yaml"
+_DEFAULT_REGISTRY = _BACKEND / "tta_backend" / "datasets" / "collections.yaml"
 CMR_BASE = "https://cmr.earthdata.nasa.gov/search"
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(message)s")
@@ -432,7 +432,7 @@ def render_yaml(key: str, entry: dict, warnings: list[str]) -> str:
 
 def validate_entry(registry_key: str, registry_path: pathlib.Path):
     """Re-fetch CMR data and check for drift in an existing entry."""
-    from datasets.registry import load_registry, reload_registry
+    from tta_backend.datasets.registry import load_registry, reload_registry
 
     reload_registry()
     registry = load_registry()

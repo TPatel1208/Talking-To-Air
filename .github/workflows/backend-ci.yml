@@ -43,7 +43,7 @@ jobs:
         run: python -m ruff check Backend/
 
       - name: Type check selected backend packages
-        run: python -m mypy Backend/services/ Backend/repositories/ Backend/models/ --ignore-missing-imports --config-file Backend/mypy.ini
+        run: python -m mypy Backend/tta_backend/services/ Backend/tta_backend/repositories/ Backend/tta_backend/models/ --ignore-missing-imports --config-file Backend/mypy.ini
 
       # pytest, not `unittest discover`: the suite's bootstrap lives in
       # Backend/conftest.py, which only pytest loads. Under unittest CI ran

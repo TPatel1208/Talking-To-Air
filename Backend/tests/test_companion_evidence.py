@@ -58,7 +58,7 @@ class EvidenceComputationTests(unittest.TestCase):
 
     def test_tempo_o3_shaped_file_yields_context_facts_but_not_a_duplicate_qa_fact(self):
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _evidence
+        from tta_backend.tools.satellite_tools.plot_tools import _evidence
 
         ds = _dataset(xr, {
             "column_amount_o3": (("lat", "lon"), [[300.0, 310.0], [320.0, 330.0]], {"units": "DU"}),
@@ -105,7 +105,7 @@ class EvidenceComputationTests(unittest.TestCase):
         unweighted mean is 5.0; the area-weighted mean is ~8.52 (the equatorial
         cells carry ~5.8x the weight of the shrunken 80N cells)."""
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _evidence
+        from tta_backend.tools.satellite_tools.plot_tools import _evidence
 
         ds = _dataset(
             xr,
@@ -126,7 +126,7 @@ class EvidenceComputationTests(unittest.TestCase):
 
     def test_context_band_fill_lowers_coverage_and_is_excluded_from_the_mean(self):
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _evidence
+        from tta_backend.tools.satellite_tools.plot_tools import _evidence
 
         ds = _dataset(xr, {
             "column_amount_o3": (("lat", "lon"), [[300.0, 310.0], [320.0, 330.0]], {"units": "DU"}),
@@ -150,7 +150,7 @@ class EvidenceComputationTests(unittest.TestCase):
 
     def test_modis_aod_shaped_file_yields_no_evidence(self):
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _evidence
+        from tta_backend.tools.satellite_tools.plot_tools import _evidence
 
         ds = _dataset(xr, {
             "AOD": (("lat", "lon"), [[0.1, 0.2], [0.3, 0.4]], {"units": "1"}),
@@ -161,7 +161,7 @@ class EvidenceComputationTests(unittest.TestCase):
 
     def test_unclassified_band_is_not_invented_as_evidence(self):
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _evidence
+        from tta_backend.tools.satellite_tools.plot_tools import _evidence
 
         ds = _dataset(xr, {
             "column_amount_o3": (("lat", "lon"), [[300.0, 310.0], [320.0, 330.0]], {"units": "DU"}),
@@ -175,7 +175,7 @@ class EvidenceComputationTests(unittest.TestCase):
 
     def test_tempo_no2_shaped_file_yields_uncertainty_but_no_invented_context(self):
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _evidence
+        from tta_backend.tools.satellite_tools.plot_tools import _evidence
 
         ds = _dataset(xr, {
             "vertical_column_troposphere": (
@@ -221,7 +221,7 @@ class EvidenceComputationTests(unittest.TestCase):
         verdict the describe_dataset inventory reaches from its
         slash-qualified name."""
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _evidence
+        from tta_backend.tools.satellite_tools.plot_tools import _evidence
 
         ds = _dataset(xr, {
             "column_amount_o3": (("lat", "lon"), [[300.0, 310.0], [320.0, 330.0]], {"units": "DU"}),
@@ -248,7 +248,7 @@ class EvidenceComputationTests(unittest.TestCase):
         coverage varies across time, which is exactly this fixture."""
         import numpy as np
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _evidence
+        from tta_backend.tools.satellite_tools.plot_tools import _evidence
 
         unc = np.array([
             [[2.0, 2.0], [2.0, 2.0]],             # t0: all four cells valid
@@ -289,7 +289,7 @@ class EvidenceComputationTests(unittest.TestCase):
         itself must survive (a naive presence-only guard would raise inside
         the best-effort except and silently lose the whole fact)."""
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _evidence
+        from tta_backend.tools.satellite_tools.plot_tools import _evidence
 
         ds = _dataset(xr, {
             # Symmetric within each latitude row so the area-weighted mean is
@@ -312,7 +312,7 @@ class EvidenceComputationTests(unittest.TestCase):
 
     def test_provenance_attaches_evidence_additively(self):
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _provenance
+        from tta_backend.tools.satellite_tools.plot_tools import _provenance
 
         ds = _dataset(xr, {
             "column_amount_o3": (("lat", "lon"), [[300.0, 310.0], [320.0, 330.0]], {"units": "DU"}),
@@ -352,7 +352,7 @@ class EvidenceComputationTests(unittest.TestCase):
         — the opened Dataset — so the chart page can never say "no
         companions" while showing companion-derived evidence facts below."""
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _provenance
+        from tta_backend.tools.satellite_tools.plot_tools import _provenance
 
         ds = _dataset(xr, {
             "vertical_column_troposphere": (
@@ -389,7 +389,7 @@ class EvidenceComputationTests(unittest.TestCase):
 
     def test_related_variables_fall_back_to_the_curated_list_without_a_dataset(self):
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _provenance
+        from tta_backend.tools.satellite_tools.plot_tools import _provenance
 
         ds = _dataset(xr, {
             "vertical_column": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]], {"units": "molecules/cm^2"}),
@@ -415,7 +415,7 @@ class EvidenceComputationTests(unittest.TestCase):
         are region-specific: presenting one panel's as the whole comparison's
         is misleading for exactly the trust judgment they exist to support.
         They stay per-panel; the merged view omits them."""
-        from tools.satellite_tools.plot_tools import _merged_multi_provenance
+        from tta_backend.tools.satellite_tools.plot_tools import _merged_multi_provenance
 
         panels = [
             {"provenance": {
@@ -452,7 +452,7 @@ class EvidenceComputationTests(unittest.TestCase):
         single rasterize call instead of rasterizing an all-ones twin."""
         import xarray as xr
         from shapely.geometry import box
-        from utils.plotting import geometry_mask, mask_data_by_geometry
+        from tta_backend.utils.plotting import geometry_mask, mask_data_by_geometry
 
         ds = _dataset(xr, {
             "column_amount_o3": (("lat", "lon"), [[300.0, 310.0], [320.0, 330.0]], {"units": "DU"}),
@@ -473,7 +473,7 @@ class EvidenceComputationTests(unittest.TestCase):
 
     def test_evidence_is_empty_and_safe_without_a_source_dataset(self):
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _evidence
+        from tta_backend.tools.satellite_tools.plot_tools import _evidence
 
         ds = _dataset(xr, {
             "column_amount_o3": (("lat", "lon"), [[300.0, 310.0], [320.0, 330.0]], {"units": "DU"}),

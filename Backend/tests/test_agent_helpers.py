@@ -13,16 +13,16 @@ if BACKEND_DIR not in sys.path:
 @unittest.skipIf(importlib.util.find_spec("langchain") is None, "langchain is not installed")
 class AgentHelperTests(unittest.TestCase):
     def test_truncate_text_logs_warning_with_lengths(self):
-        from utils.message_utils import truncate_text
+        from tta_backend.utils.message_utils import truncate_text
 
-        with self.assertLogs("utils.message_utils", level="WARNING") as captured:
+        with self.assertLogs("tta_backend.utils.message_utils", level="WARNING") as captured:
             result = truncate_text("abcdef", 3, "satellite", "req-1")
 
         self.assertEqual(result, "abc")
         self.assertIn("response_truncated", captured.output[0])
 
     def test_extract_last_text_handles_list_content(self):
-        from utils.message_utils import extract_last_text
+        from tta_backend.utils.message_utils import extract_last_text
 
         class Message:
             content = [{"type": "text", "text": "hello"}, {"type": "thinking", "text": "hidden"}]
@@ -32,8 +32,8 @@ class AgentHelperTests(unittest.TestCase):
         self.assertEqual(text, "hello")
 
     def test_compact_model_input_preserves_anonymous_chart(self):
-        from agents.supervisor_agent import _compact_model_input_content
-        from models import AgentResult, ChartPayload, agent_result_to_json
+        from tta_backend.agents.supervisor_agent import _compact_model_input_content
+        from tta_backend.models import AgentResult, ChartPayload, agent_result_to_json
 
         raw = agent_result_to_json(
             AgentResult(
@@ -47,7 +47,7 @@ class AgentHelperTests(unittest.TestCase):
         self.assertEqual(compacted, "Here is the result.\n\nCharts generated: chart")
 
     def test_build_agent_builds_the_supervisor_model_via_the_factory(self):
-        from agents import supervisor_agent
+        from tta_backend.agents import supervisor_agent
 
         created = object()
         with patch.object(
@@ -69,8 +69,8 @@ class AgentHelperTests(unittest.TestCase):
         self.assertEqual(factory.call_args.args[1], "configured-model")
 
     def test_build_agent_defaults_the_supervisor_provider_from_settings(self):
-        from agents import supervisor_agent
-        from config.settings import get_settings
+        from tta_backend.agents import supervisor_agent
+        from tta_backend.config.settings import get_settings
 
         created = object()
         with patch.object(
@@ -85,7 +85,7 @@ class AgentHelperTests(unittest.TestCase):
         self.assertEqual(factory.call_args.args[0], get_settings().supervisor_model_provider)
 
     def test_build_agent_wires_the_passed_in_subagents_into_the_dispatch_tools(self):
-        from agents import supervisor_agent
+        from tta_backend.agents import supervisor_agent
 
         captured = {}
 

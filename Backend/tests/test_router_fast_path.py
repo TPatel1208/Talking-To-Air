@@ -81,7 +81,7 @@ class FakeSupervisorAgent:
 
 
 def _no_monitor_context():
-    from services import subagent_dispatch
+    from tta_backend.services import subagent_dispatch
 
     return (
         patch.object(subagent_dispatch, "get_ground_monitor_context", AsyncMock(return_value={})),
@@ -92,13 +92,13 @@ def _no_monitor_context():
 @unittest.skipIf(importlib.util.find_spec("langchain") is None, "langchain is not installed")
 class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        from services import subagent_dispatch
+        from tta_backend.services import subagent_dispatch
 
         subagent_dispatch.get_call_budget().clear()
 
     async def test_ground_only_message_invokes_only_the_ground_agent(self):
-        from services.chat_stream_service import ChatStreamService
-        from services.chart_service import ChartService
+        from tta_backend.services.chat_stream_service import ChatStreamService
+        from tta_backend.services.chart_service import ChartService
 
         ground_agent = FakeGroundAgent()
         satellite_agent = UntouchedAgent()
@@ -122,8 +122,8 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("event: done", joined)
 
     async def test_satellite_only_message_invokes_only_the_satellite_agent(self):
-        from services.chat_stream_service import ChatStreamService
-        from services.chart_service import ChartService
+        from tta_backend.services.chat_stream_service import ChatStreamService
+        from tta_backend.services.chart_service import ChartService
 
         ground_agent = UntouchedAgent()
         satellite_agent = FakeSatelliteAgent()
@@ -151,9 +151,9 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         the frontend's workflow strip never lights up."""
         import json as _json
 
-        from services.chat_stream_service import ChatStreamService
-        from services.chart_service import ChartService
-        from utils.streaming import emit_status
+        from tta_backend.services.chat_stream_service import ChatStreamService
+        from tta_backend.services.chart_service import ChartService
+        from tta_backend.utils.streaming import emit_status
 
         class StageEmittingSatelliteAgent:
             async def astream(self, input_, config, stream_mode):
@@ -184,14 +184,14 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["detail"], 14)
 
     async def test_ambiguous_message_uses_the_supervisor_and_never_touches_subagents(self):
-        from services.chat_stream_service import ChatStreamService
-        from services.chart_service import ChartService
+        from tta_backend.services.chat_stream_service import ChatStreamService
+        from tta_backend.services.chart_service import ChartService
 
         async def fake_stream_response(agent, message, thread_id, **kwargs):
             yield "text", "Agent consulted: GROUND + SATELLITE\n\nHere is the synthesis."
 
         service = ChatStreamService(ChartService(), long_request_seconds=999)
-        with patch("services.chat_stream_service.stream_response", fake_stream_response):
+        with patch("tta_backend.services.chat_stream_service.stream_response", fake_stream_response):
             events = [
                 event
                 async for event in service.stream_chat_events(
@@ -206,8 +206,8 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
     async def test_fast_path_done_event_carries_suggestions_from_a_well_formed_envelope(self):
         """T22 story #9: the done event is the additive surface for the
         finalized envelope's suggestions on the router fast path."""
-        from services.chat_stream_service import ChatStreamService
-        from services.chart_service import ChartService
+        from tta_backend.services.chat_stream_service import ChatStreamService
+        from tta_backend.services.chart_service import ChartService
 
         envelope = json.dumps({
             "summary": "The closest NO2 monitor is Rutgers University.",
@@ -236,8 +236,8 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_fast_path_done_event_omits_suggestions_when_the_envelope_has_none(self):
-        from services.chat_stream_service import ChatStreamService
-        from services.chart_service import ChartService
+        from tta_backend.services.chat_stream_service import ChatStreamService
+        from tta_backend.services.chart_service import ChartService
 
         ground_agent = FakeGroundAgent()  # default envelope has no suggested_followups key
         service = ChatStreamService(ChartService(), long_request_seconds=999)
@@ -261,8 +261,8 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         """T22 story #7/#12: a malformed final message is salvaged from raw
         prose (T15) — it must never carry suggestions, even when the
         salvaged prose happens to contain question marks."""
-        from services.chat_stream_service import ChatStreamService
-        from services.chart_service import ChartService
+        from tta_backend.services.chat_stream_service import ChatStreamService
+        from tta_backend.services.chart_service import ChartService
 
         ground_agent = FakeGroundAgent(envelope_text="The nearest monitor is Rutgers. What about last month?")
         service = ChatStreamService(ChartService(), long_request_seconds=999)
@@ -286,9 +286,9 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         """T22 story #8: the supervisor's synthesis must not strip a
         sub-agent's suggestions — chat_stream_service reads them straight
         off the tool_result envelope, not from the supervisor's own prose."""
-        from services.chat_stream_service import ChatStreamService
-        from services.chart_service import ChartService
-        from models import AgentResult, agent_result_to_json
+        from tta_backend.services.chat_stream_service import ChatStreamService
+        from tta_backend.services.chart_service import ChartService
+        from tta_backend.models import AgentResult, agent_result_to_json
 
         sub_agent_result = agent_result_to_json(AgentResult(
             text="The ground monitor reads 12 ppb.",
@@ -300,7 +300,7 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
             yield "text", "Agent consulted: GROUND + SATELLITE\n\nHere is the synthesis."
 
         service = ChatStreamService(ChartService(), long_request_seconds=999)
-        with patch("services.chat_stream_service.stream_response", fake_stream_response):
+        with patch("tta_backend.services.chat_stream_service.stream_response", fake_stream_response):
             events = [
                 event
                 async for event in service.stream_chat_events(
@@ -318,9 +318,9 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         """T49: a satellite turn whose tool emitted a variable_choice picker
         (the deterministic short-circuit) surfaces it on the done event, with
         each candidate's auto-send prompt filled from the original request."""
-        from services.chat_stream_service import ChatStreamService
-        from services.chart_service import ChartService
-        from utils.streaming import emit_variable_choice
+        from tta_backend.services.chat_stream_service import ChatStreamService
+        from tta_backend.services.chart_service import ChartService
+        from tta_backend.utils.streaming import emit_variable_choice
 
         class PickerSatelliteAgent:
             async def astream(self, input_, config, stream_mode):
@@ -361,9 +361,9 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         """T49: on the supervisor path the picker rides in the sub-agent's
         AgentResult tool_result, and must survive the supervisor's synthesis
         onto the done event exactly like suggested_followups does."""
-        from services.chat_stream_service import ChatStreamService
-        from services.chart_service import ChartService
-        from models import AgentResult, VariableChoice, VariableChoiceOption, agent_result_to_json
+        from tta_backend.services.chat_stream_service import ChatStreamService
+        from tta_backend.services.chart_service import ChartService
+        from tta_backend.models import AgentResult, VariableChoice, VariableChoiceOption, agent_result_to_json
 
         sub_agent_result = agent_result_to_json(AgentResult(
             text="I've shown a variable picker.",
@@ -382,7 +382,7 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
             yield "text", "Agent consulted: SATELLITE\n\nHere is the synthesis."
 
         service = ChatStreamService(ChartService(), long_request_seconds=999)
-        with patch("services.chat_stream_service.stream_response", fake_stream_response):
+        with patch("tta_backend.services.chat_stream_service.stream_response", fake_stream_response):
             events = [
                 event
                 async for event in service.stream_chat_events(
@@ -397,8 +397,8 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["variable_choice"]["candidates"][0]["name"], "DT_AOD_550_AVG")
 
     async def test_sub_agent_failure_yields_error_and_does_not_write_back(self):
-        from services.chat_stream_service import ChatStreamService
-        from services.chart_service import ChartService
+        from tta_backend.services.chat_stream_service import ChatStreamService
+        from tta_backend.services.chart_service import ChartService
 
         ground_agent = FakeGroundAgent(raises=TimeoutError("AQS timed out"))
         supervisor_agent = AsyncMock()
@@ -424,8 +424,8 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         asyncio.create_task) — a wedged satellite tool call must not hang
         the turn forever, and the sub-agent's own stream must actually be
         cancelled once the deadline fires."""
-        from services.chat_stream_service import ChatStreamService
-        from services.chart_service import ChartService
+        from tta_backend.services.chat_stream_service import ChatStreamService
+        from tta_backend.services.chart_service import ChartService
 
         class HangingSatelliteAgent:
             def __init__(self):
@@ -468,8 +468,8 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         supervisor_agent.aupdate_state.assert_not_called()
 
     async def test_fast_pathed_turn_is_written_back_and_visible_to_the_next_supervisor_turn(self):
-        from services.chat_stream_service import ChatStreamService
-        from services.chart_service import ChartService
+        from tta_backend.services.chat_stream_service import ChatStreamService
+        from tta_backend.services.chart_service import ChartService
 
         ground_agent = FakeGroundAgent()
         supervisor = FakeSupervisorAgent()
@@ -512,10 +512,10 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         write-back must now also carry a ToolMessage with the full
         AgentResult envelope, the same shape the supervisor's own
         ask_earthdata_agent tool call produces."""
-        from models import AgentResult, ChartPayload
-        from services.chart_service import ChartService
-        from services.chat_stream_service import ChatStreamService
-        from services.history_service import HistoryService
+        from tta_backend.models import AgentResult, ChartPayload
+        from tta_backend.services.chart_service import ChartService
+        from tta_backend.services.chat_stream_service import ChatStreamService
+        from tta_backend.services.history_service import HistoryService
 
         chart = ChartPayload(type="heatmap", chart_id="chart_xyz", title="NO2 over NJ")
         satellite_result = AgentResult(text="Plotted NO2 over New Jersey.", charts=[chart])
@@ -529,9 +529,9 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
             saved.setdefault(payload["chart_id"], {**payload, "thread_id": thread_id, "user_id": user_id})
             return saved[payload["chart_id"]]
 
-        with patch("services.chat_stream_service.run_satellite", AsyncMock(return_value=satellite_result)), \
-             patch("services.chart_service.chart_repository.get_chart", AsyncMock(return_value=None)), \
-             patch("services.chart_service.chart_repository.save_chart", AsyncMock(side_effect=fake_save_chart)):
+        with patch("tta_backend.services.chat_stream_service.run_satellite", AsyncMock(return_value=satellite_result)), \
+             patch("tta_backend.services.chart_service.chart_repository.get_chart", AsyncMock(return_value=None)), \
+             patch("tta_backend.services.chart_service.chart_repository.save_chart", AsyncMock(side_effect=fake_save_chart)):
             [
                 event
                 async for event in service.stream_chat_events(
@@ -559,8 +559,8 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         artifact should the write-back use that heavier shape."""
         from langchain_core.messages import ToolMessage
 
-        from services.chat_stream_service import ChatStreamService
-        from services.chart_service import ChartService
+        from tta_backend.services.chat_stream_service import ChatStreamService
+        from tta_backend.services.chart_service import ChartService
 
         ground_agent = FakeGroundAgent()  # default envelope: no artifact_ids, no handles
         supervisor = FakeSupervisorAgent()
@@ -596,9 +596,9 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         checkpointer."""
         from langgraph.checkpoint.memory import InMemorySaver
 
-        from models import AgentResult
-        from services.chart_service import ChartService
-        from services.chat_stream_service import ChatStreamService
+        from tta_backend.models import AgentResult
+        from tta_backend.services.chart_service import ChartService
+        from tta_backend.services.chat_stream_service import ChatStreamService
 
         class FakeModel:
             def bind_tools(self, tools, **kw):
@@ -607,9 +607,9 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
             async def ainvoke(self, *a, **kw):
                 return SimpleNamespace(content="hi", tool_calls=[])
 
-        with patch("agents.supervisor_agent.build_chat_model", return_value=FakeModel()), \
-             patch("agents.supervisor_agent.get_checkpointer", return_value=InMemorySaver()):
-            from agents.supervisor_agent import build_agent
+        with patch("tta_backend.agents.supervisor_agent.build_chat_model", return_value=FakeModel()), \
+             patch("tta_backend.agents.supervisor_agent.get_checkpointer", return_value=InMemorySaver()):
+            from tta_backend.agents.supervisor_agent import build_agent
 
             supervisor = await build_agent(ground_agent=object(), satellite_agent=object())
 
@@ -618,7 +618,7 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
 
         for i in range(2):
             turn_result = AgentResult(text=f"Plotted NO2 over New Jersey, turn {i}.")
-            with patch("services.chat_stream_service.run_satellite", AsyncMock(return_value=turn_result)):
+            with patch("tta_backend.services.chat_stream_service.run_satellite", AsyncMock(return_value=turn_result)):
                 events = [
                     event
                     async for event in service.stream_chat_events(

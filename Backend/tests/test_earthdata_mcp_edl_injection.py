@@ -95,13 +95,13 @@ class EdlTokenInjectionMatrixTests(ProcessCacheIsolation, unittest.IsolatedAsync
         self.server.start()
         self.addCleanup(self.server.stop)
 
-        from config.settings import Settings
-        from earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
 
         self.tools = await load_raw_mcp_tools(Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None))
 
     async def test_connected_unexpired_token_is_injected_when_the_schema_advertises_it(self):
-        from earthdata_mcp.workspace import bind_workspace
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
 
         injector = _FakeInjector(token="decrypted-token-abc")
         bound = bind_workspace(self.tools, lambda: "17", edl_injector=injector)
@@ -113,7 +113,7 @@ class EdlTokenInjectionMatrixTests(ProcessCacheIsolation, unittest.IsolatedAsync
         self.assertEqual(injector.resolve_calls, ["17"])
 
     async def test_no_connector_sends_nothing_and_never_marks_used(self):
-        from earthdata_mcp.workspace import bind_workspace
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
 
         injector = _FakeInjector(token=None)
         bound = bind_workspace(self.tools, lambda: "17", edl_injector=injector)
@@ -124,7 +124,7 @@ class EdlTokenInjectionMatrixTests(ProcessCacheIsolation, unittest.IsolatedAsync
         self.assertEqual(injector.mark_used_calls, [])
 
     async def test_non_advertising_schema_never_receives_edl_token_even_with_a_valid_connector(self):
-        from earthdata_mcp.workspace import bind_workspace
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
 
         injector = _FakeInjector(token="decrypted-token-abc")
         bound = bind_workspace(self.tools, lambda: "17", edl_injector=injector)
@@ -136,7 +136,7 @@ class EdlTokenInjectionMatrixTests(ProcessCacheIsolation, unittest.IsolatedAsync
         self.assertEqual(injector.mark_used_calls, [])
 
     async def test_no_injector_bound_is_inert(self):
-        from earthdata_mcp.workspace import bind_workspace
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
 
         bound = bind_workspace(self.tools, lambda: "17")  # edl_injector omitted
 
@@ -145,7 +145,7 @@ class EdlTokenInjectionMatrixTests(ProcessCacheIsolation, unittest.IsolatedAsync
         self.assertIsNone(self.received["edl_token"])
 
     async def test_edl_token_and_workspace_id_are_both_stripped_from_the_model_facing_schema(self):
-        from earthdata_mcp.workspace import bind_workspace
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
 
         injector = _FakeInjector(token="decrypted-token-abc")
         bound = bind_workspace(self.tools, lambda: "17", edl_injector=injector)
@@ -162,7 +162,7 @@ class EdlTokenInjectionMatrixTests(ProcessCacheIsolation, unittest.IsolatedAsync
         # the injector must never have been consulted (no token to leak).
         import json
 
-        from earthdata_mcp.workspace import bind_workspace
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
 
         injector = _FakeInjector(token="decrypted-token-abc")
         bound = bind_workspace(self.tools, lambda: None, edl_injector=injector)
@@ -176,7 +176,7 @@ class EdlTokenInjectionMatrixTests(ProcessCacheIsolation, unittest.IsolatedAsync
         """T31: edl_token is feature-detected, never required -- an
         un-upgraded MCP (every tool here except search_datasets) must still
         pass the connect-time schema check (T17)."""
-        from earthdata_mcp.connection import check_tool_schemas
+        from tta_backend.earthdata_mcp.connection import check_tool_schemas
 
         mismatches = check_tool_schemas(self.tools)
 
@@ -219,13 +219,13 @@ class EdlTokenErrorClassificationTests(ProcessCacheIsolation, unittest.IsolatedA
         self.server.start()
         self.addCleanup(self.server.stop)
 
-        from config.settings import Settings
-        from earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
 
         self.tools = await load_raw_mcp_tools(Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None))
 
     async def test_token_invalid_flips_connector_status_and_never_echoes_the_token(self):
-        from earthdata_mcp.workspace import bind_workspace
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
 
         injector = _FakeInjector(token="super-secret-token-value")
         bound = bind_workspace(self.tools, lambda: "17", edl_injector=injector)
@@ -239,7 +239,7 @@ class EdlTokenErrorClassificationTests(ProcessCacheIsolation, unittest.IsolatedA
         self.assertEqual(injector.mark_invalid_calls, ["17"])
 
     async def test_token_expired_degrades_without_flipping_stored_status(self):
-        from earthdata_mcp.workspace import bind_workspace
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
 
         injector = _FakeInjector(token="super-secret-token-value")
         bound = bind_workspace(self.tools, lambda: "17", edl_injector=injector)
@@ -253,7 +253,7 @@ class EdlTokenErrorClassificationTests(ProcessCacheIsolation, unittest.IsolatedA
         self.assertNotIn("super-secret-token-value", raw)
 
     async def test_eula_not_accepted_leaves_status_untouched_and_carries_the_resolution_link(self):
-        from earthdata_mcp.workspace import bind_workspace
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
 
         injector = _FakeInjector(token="super-secret-token-value")
         bound = bind_workspace(self.tools, lambda: "17", edl_injector=injector)
@@ -269,7 +269,7 @@ class EdlTokenErrorClassificationTests(ProcessCacheIsolation, unittest.IsolatedA
         """No connector resolved (injected is False) -- a shared-credential
         call bouncing as token_invalid must never flip a connector row that
         this call never used."""
-        from earthdata_mcp.workspace import bind_workspace
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
 
         injector = _FakeInjector(token=None)
         bound = bind_workspace(self.tools, lambda: "17", edl_injector=injector)

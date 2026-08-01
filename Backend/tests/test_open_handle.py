@@ -23,8 +23,8 @@ REQUIRED_MODULES = ["langchain_mcp_adapters", "fastmcp", "uvicorn", "xarray", "z
 class OpenHandleZarrTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from fake_earthdata_mcp import HandleVolume, build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
 
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
@@ -43,7 +43,7 @@ class OpenHandleZarrTests(unittest.IsolatedAsyncioTestCase):
     async def test_open_handle_opens_zarr_handle_into_dataset_with_expected_variables(self):
         import xarray as xr
 
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         def make_dataset():
             return xr.Dataset({"no2": (("y", "x"), [[1.0, 2.0], [3.0, 4.0]])})
@@ -65,7 +65,7 @@ class OpenHandleZarrTests(unittest.IsolatedAsyncioTestCase):
         (live TEMPO NO2 Texas compare, 2026-07-16)."""
         import xarray as xr
 
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         def make_dataset():
             return xr.Dataset(
@@ -82,7 +82,7 @@ class OpenHandleZarrTests(unittest.IsolatedAsyncioTestCase):
     async def test_open_handle_opens_parquet_handle_into_arrow_table(self):
         import pyarrow as pa
 
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         def make_table():
             return pa.table({"lat": [1.0, 2.0], "lon": [3.0, 4.0], "no2": [5.0, 6.0]})
@@ -103,8 +103,8 @@ class OpenHandleZarrTests(unittest.IsolatedAsyncioTestCase):
         without touching each tool individually."""
         import xarray as xr
 
-        from services.open_handle import open_handle
-        import utils.streaming as streaming
+        from tta_backend.services.open_handle import open_handle
+        import tta_backend.utils.streaming as streaming
 
         def make_dataset():
             return xr.Dataset({"no2": (("y", "x"), [[1.0, 2.0], [3.0, 4.0]])})
@@ -127,7 +127,7 @@ class OpenHandleZarrTests(unittest.IsolatedAsyncioTestCase):
     async def test_open_handle_recovers_from_eviction_via_rematerialize(self):
         import xarray as xr
 
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         def make_dataset():
             return xr.Dataset({"no2": (("y", "x"), [[1.0, 2.0], [3.0, 4.0]])})
@@ -150,7 +150,7 @@ class OpenHandleZarrTests(unittest.IsolatedAsyncioTestCase):
         rather than surfacing the failure and making the user retry by hand."""
         import xarray as xr
 
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         def make_root():
             return xr.Dataset()
@@ -186,8 +186,8 @@ class OpenHandleEventLoopOffloadTests(unittest.IsolatedAsyncioTestCase):
 
         import xarray as xr
 
-        from services import open_handle as open_handle_module
-        from services.open_handle import open_handle
+        from tta_backend.services import open_handle as open_handle_module
+        from tta_backend.services.open_handle import open_handle
 
         def slow_open_zarr(path):
             time.sleep(0.6)
@@ -226,9 +226,9 @@ class OpenHandleEventLoopOffloadTests(unittest.IsolatedAsyncioTestCase):
 class OpenHandleRecoveryExhaustedTests(unittest.IsolatedAsyncioTestCase):
     async def test_open_handle_surfaces_mcp_error_verbatim_after_one_failed_rematerialize(self):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from config.settings import Settings
-        from services.open_handle import OpenHandleError, open_handle
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
+        from tta_backend.services.open_handle import OpenHandleError, open_handle
 
         calls = {"rematerialize": 0}
 
@@ -276,10 +276,10 @@ class OpenHandleClassifiedErrorTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_open_handle_lets_a_classified_mcp_error_propagate_distinct_from_open_handle_error(self):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from earthdata_mcp.results import MCPToolError
-        from config.settings import Settings
-        from services.open_handle import OpenHandleError, open_handle
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.earthdata_mcp.results import MCPToolError
+        from tta_backend.config.settings import Settings
+        from tta_backend.services.open_handle import OpenHandleError, open_handle
 
         async def export_result(handle, workspace_id="default"):
             raise ValueError("a shape the classifier has never seen before")
@@ -311,8 +311,8 @@ class OpenHandleGroupedNetcdfTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         from fake_earthdata_mcp import HandleVolume, build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
 
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
@@ -331,7 +331,7 @@ class OpenHandleGroupedNetcdfTests(unittest.IsolatedAsyncioTestCase):
     async def test_open_handle_descends_into_a_subgroup_when_root_has_no_data_vars(self):
         import xarray as xr
 
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         def make_root():
             return xr.Dataset()
@@ -351,7 +351,7 @@ class OpenHandleGroupedNetcdfTests(unittest.IsolatedAsyncioTestCase):
     async def test_open_handle_merges_multiple_non_empty_subgroups(self):
         import xarray as xr
 
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         def make_root():
             return xr.Dataset()
@@ -385,7 +385,7 @@ class OpenHandleGroupedNetcdfTests(unittest.IsolatedAsyncioTestCase):
         the same group a describe_dataset inventory name would."""
         import xarray as xr
 
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         def make_root():
             return xr.Dataset()
@@ -420,8 +420,8 @@ class OpenHandleGroupedNetcdfTests(unittest.IsolatedAsyncioTestCase):
         refused with candidates (T25 doctrine), never guessed."""
         import xarray as xr
 
-        from preprocessing.aggregation_service import AggregationService, VariableChoiceRequired
-        from services.open_handle import open_handle
+        from tta_backend.preprocessing.aggregation_service import AggregationService, VariableChoiceRequired
+        from tta_backend.services.open_handle import open_handle
 
         def make_root():
             return xr.Dataset()
@@ -465,7 +465,7 @@ class OpenHandleGroupedNetcdfTests(unittest.IsolatedAsyncioTestCase):
     async def test_open_handle_leaves_a_genuinely_flat_netcdf_dataset_untouched(self):
         import xarray as xr
 
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         def make_flat():
             return xr.Dataset({"no2": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]])})
@@ -487,9 +487,9 @@ class OpenHandleGroupedNetcdfTests(unittest.IsolatedAsyncioTestCase):
         (dict iteration order put it before the real science variable)."""
         import xarray as xr
 
-        from services.open_handle import open_handle
-        from preprocessing.aggregation_service import AggregationService
-        from utils.geo_utils import find_lat_coord, find_lon_coord
+        from tta_backend.services.open_handle import open_handle
+        from tta_backend.preprocessing.aggregation_service import AggregationService
+        from tta_backend.utils.geo_utils import find_lat_coord, find_lon_coord
 
         def make_root():
             return xr.Dataset()
@@ -531,9 +531,9 @@ class OpenHandleGroupedNetcdfTests(unittest.IsolatedAsyncioTestCase):
         on disk by the contract they publish against."""
         import xarray as xr
 
-        from services.open_handle import open_handle
-        from preprocessing.aggregation_service import AggregationService
-        from utils.geo_utils import find_lat_coord, find_lon_coord
+        from tta_backend.services.open_handle import open_handle
+        from tta_backend.preprocessing.aggregation_service import AggregationService
+        from tta_backend.utils.geo_utils import find_lat_coord, find_lon_coord
 
         def make_root():
             return xr.Dataset()
@@ -579,9 +579,9 @@ class OpenHandleGroupedNetcdfTests(unittest.IsolatedAsyncioTestCase):
         252241949_TEMPO_NO2_L3_V04_...subsetted.nc4 granule."""
         import xarray as xr
 
-        from services.open_handle import open_handle
-        from preprocessing.aggregation_service import AggregationService
-        from utils.geo_utils import find_lat_coord, find_lon_coord
+        from tta_backend.services.open_handle import open_handle
+        from tta_backend.preprocessing.aggregation_service import AggregationService
+        from tta_backend.utils.geo_utils import find_lat_coord, find_lon_coord
 
         def make_root():
             # coord-only root: lat/lon/time as coordinate variables, no data_vars
@@ -634,8 +634,8 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         from fake_earthdata_mcp import HandleVolume, build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
 
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
@@ -671,7 +671,7 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
     async def test_open_handle_concats_a_multi_granule_bundle_on_time(self):
         import xarray as xr
 
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         self.volume.add_netcdf_bundle("obs_bundle_multi", {
             "granule_20260709.nc4": {None: self._make_granule(9)},
@@ -694,7 +694,7 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
         must order by the decoded timestamps, not the alphabetics."""
         import numpy as np
 
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         # Alphabetical order (a_ < z_) is the OPPOSITE of date order (9 < 10).
         self.volume.add_netcdf_bundle("obs_bundle_misordered", {
@@ -715,7 +715,7 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
         and break later sel(time=...) with an opaque non-unique-index error.
         Keep the first occurrence, disclose the drop in a log event, and never
         crash."""
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         self.volume.add_netcdf_bundle("obs_bundle_dupes", {
             "granule_a.nc4": {None: self._make_granule(9)},
@@ -723,7 +723,7 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
             "granule_c.nc4": {None: self._make_granule(10)},
         })
 
-        with self.assertLogs("services.open_handle", level="INFO") as logs:
+        with self.assertLogs("tta_backend.services.open_handle", level="INFO") as logs:
             ds = await open_handle("obs_bundle_dupes", self.tools)
 
         self.assertEqual(ds.sizes["time"], 2)  # the duplicate collapsed to one
@@ -738,7 +738,7 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
     async def test_open_handle_opens_a_single_member_bundle(self):
         """OPeNDAP subsets arrive as a bundle even for one granule
         (subset.nc.zip with a single member)."""
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         self.volume.add_netcdf_bundle("obs_bundle_single", {
             "subset.nc4": {None: self._make_granule(10)},
@@ -755,7 +755,7 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
         their root-group grid coordinates attached."""
         import xarray as xr
 
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         def make_root():
             return xr.Dataset(coords={
@@ -783,7 +783,7 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("longitude", ds.coords)
 
     async def test_open_handle_self_heals_a_corrupt_bundle_via_rematerialize(self):
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         self.volume.add_netcdf_bundle("obs_bundle_corrupt", {
             "granule_20260710.nc4": {None: self._make_granule(10)},
@@ -803,9 +803,9 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
         2026-07-12, full-day TEMPO NO2)."""
         from unittest.mock import patch
 
-        from config.settings import Settings
-        from earthdata_mcp.results import CATEGORY_TOO_LARGE, MCPToolError
-        from services.open_handle import open_handle
+        from tta_backend.config.settings import Settings
+        from tta_backend.earthdata_mcp.results import CATEGORY_TOO_LARGE, MCPToolError
+        from tta_backend.services.open_handle import open_handle
 
         self.volume.add_netcdf_bundle("obs_bundle_big", {
             "granule_20260709.nc4": {None: self._make_granule(9)},
@@ -813,7 +813,7 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
         })
 
         tiny_cap = Settings(bundle_open_max_uncompressed_bytes=1)
-        with patch("services.open_handle.get_settings", return_value=tiny_cap):
+        with patch("tta_backend.services.open_handle.get_settings", return_value=tiny_cap):
             with self.assertRaises(MCPToolError) as ctx:
                 await open_handle("obs_bundle_big", self.tools)
 
@@ -845,7 +845,7 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
         before concat. Left alone, xr.concat(dim="time") fabricates a bare
         index-less dim, and every downstream time selection dies with
         xarray's "no associated coordinate or index" (live 2026-07-16)."""
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         self.volume.add_netcdf_bundle("obs_bundle_attr_dated", {
             "tropomi_202406.nc4": {None: self._make_attr_dated_granule(6)},
@@ -866,7 +866,7 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
         """The synthesis applies uniformly, so single-month opens of the same
         product carry the same shape (a size-1 indexed time) as multi-month
         opens — downstream squeezing already handles time=1 cleanly."""
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         self.volume.add_netcdf_bundle("obs_bundle_attr_dated_single", {
             "tropomi_202406.nc4": {None: self._make_attr_dated_granule(6)},
@@ -887,7 +887,7 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
         then drop one, halving a 'daily average'."""
         import numpy as np
         import xarray as xr
-        from services.open_handle import _synthesize_member_time_coord
+        from tta_backend.services.open_handle import _synthesize_member_time_coord
 
         ds = xr.Dataset(
             {"no2": (("Time", "lat", "lon"), [[[1.0, 2.0], [3.0, 4.0]]])},
@@ -911,7 +911,7 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
         given the synthesized attr timestamp (Finding #15 preserves real
         coords; it does not stop filling absent ones)."""
         import xarray as xr
-        from services.open_handle import _synthesize_member_time_coord
+        from tta_backend.services.open_handle import _synthesize_member_time_coord
 
         ds = xr.Dataset(
             {"no2": (("Time", "lat", "lon"), [[[1.0, 2.0], [3.0, 4.0]]])},
@@ -931,7 +931,7 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
         must see both observations."""
         import numpy as np
         import xarray as xr
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         def _make(hour: int, minute: int):
             def factory():
@@ -965,7 +965,7 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
         if importlib.util.find_spec("dask") is None:
             self.skipTest("dask is not installed")
 
-        from services.open_handle import open_handle
+        from tta_backend.services.open_handle import open_handle
 
         self.volume.add_netcdf_bundle("obs_bundle_lazy", {
             "granule_20260709.nc4": {None: self._make_granule(9)},
@@ -996,7 +996,7 @@ class OpenNetcdfMislabeledZipTests(unittest.TestCase):
         import numpy as np
         import xarray as xr
 
-        from services.open_handle import _open_netcdf
+        from tta_backend.services.open_handle import _open_netcdf
 
         member = xr.Dataset(
             {"no2": (("time", "latitude", "longitude"), [[[1.0, 2.0], [3.0, 4.0]]])},
@@ -1057,7 +1057,7 @@ class BundleExtractionCacheTests(unittest.TestCase):
         import time
         from unittest.mock import patch
 
-        from services.open_handle import _open_netcdf_bundle
+        from tta_backend.services.open_handle import _open_netcdf_bundle
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cache_home = os.path.join(tmpdir, "fake_tmp")
@@ -1122,8 +1122,8 @@ class BundleExtractionConcurrencyTests(unittest.TestCase):
         import time
         from unittest.mock import patch
 
-        from config.settings import Settings
-        from services.open_handle import _extract_members_concurrently
+        from tta_backend.config.settings import Settings
+        from tta_backend.services.open_handle import _extract_members_concurrently
 
         calls = []
 
@@ -1134,7 +1134,7 @@ class BundleExtractionConcurrencyTests(unittest.TestCase):
 
         names = [f"g{i}.nc4" for i in range(4)]
         settings = Settings(granule_concurrency=4)
-        with patch("services.open_handle.get_settings", return_value=settings):
+        with patch("tta_backend.services.open_handle.get_settings", return_value=settings):
             start = time.monotonic()
             _extract_members_concurrently(FakeZip(), names, "/fake/dest")
             elapsed = time.monotonic() - start
@@ -1148,8 +1148,8 @@ class BundleExtractionConcurrencyTests(unittest.TestCase):
         import time
         from unittest.mock import patch
 
-        from config.settings import Settings
-        from services.open_handle import _extract_members_concurrently
+        from tta_backend.config.settings import Settings
+        from tta_backend.services.open_handle import _extract_members_concurrently
 
         class FakeZip:
             def extract(self, name, dest):
@@ -1157,7 +1157,7 @@ class BundleExtractionConcurrencyTests(unittest.TestCase):
 
         names = [f"g{i}.nc4" for i in range(4)]
         settings = Settings(granule_concurrency=1)
-        with patch("services.open_handle.get_settings", return_value=settings):
+        with patch("tta_backend.services.open_handle.get_settings", return_value=settings):
             start = time.monotonic()
             _extract_members_concurrently(FakeZip(), names, "/fake/dest")
             elapsed = time.monotonic() - start
@@ -1175,8 +1175,8 @@ class BundleExtractionConcurrencyTests(unittest.TestCase):
         import time
         from unittest.mock import patch
 
-        from config.settings import Settings
-        from services.open_handle import _extract_members_concurrently
+        from tta_backend.config.settings import Settings
+        from tta_backend.services.open_handle import _extract_members_concurrently
 
         calls: list[str] = []
         call_lock = threading.Lock()
@@ -1198,7 +1198,7 @@ class BundleExtractionConcurrencyTests(unittest.TestCase):
         # to show it's nowhere near "every member ran anyway".
         names = ["bad.nc4"] + [f"hold_{i}.nc4" for i in range(10)]
         settings = Settings(granule_concurrency=2)
-        with patch("services.open_handle.get_settings", return_value=settings):
+        with patch("tta_backend.services.open_handle.get_settings", return_value=settings):
             with self.assertRaises(OSError):
                 _extract_members_concurrently(FakeZip(), names, "/fake/dest")
 
@@ -1220,9 +1220,9 @@ class BundleMemberOpenConcurrencyTests(unittest.TestCase):
         import time
         from unittest.mock import patch
 
-        from config.settings import Settings
-        import services.open_handle as open_handle_module
-        from services.open_handle import _open_bundle_members_concurrently
+        from tta_backend.config.settings import Settings
+        import tta_backend.services.open_handle as open_handle_module
+        from tta_backend.services.open_handle import _open_bundle_members_concurrently
 
         def fake_open_netcdf(path, chunks=None):
             time.sleep(random.uniform(0.0, 0.05))
@@ -1230,7 +1230,7 @@ class BundleMemberOpenConcurrencyTests(unittest.TestCase):
 
         names = [f"z_{i}.nc4" for i in range(6)]
         settings = Settings(granule_concurrency=3)
-        with patch("services.open_handle.get_settings", return_value=settings), \
+        with patch("tta_backend.services.open_handle.get_settings", return_value=settings), \
              patch.object(open_handle_module, "_open_netcdf", side_effect=fake_open_netcdf), \
              patch.object(open_handle_module, "_synthesize_member_time_coord", side_effect=lambda ds: ds):
             results = _open_bundle_members_concurrently("/extract/dir", names, {})
@@ -1249,9 +1249,9 @@ class BundleMemberOpenConcurrencyTests(unittest.TestCase):
         import time
         from unittest.mock import patch
 
-        from config.settings import Settings
-        import services.open_handle as open_handle_module
-        from services.open_handle import _open_bundle_members_concurrently
+        from tta_backend.config.settings import Settings
+        import tta_backend.services.open_handle as open_handle_module
+        from tta_backend.services.open_handle import _open_bundle_members_concurrently
 
         active = 0
         peak = 0
@@ -1269,7 +1269,7 @@ class BundleMemberOpenConcurrencyTests(unittest.TestCase):
 
         names = [f"z_{i}.nc4" for i in range(4)]
         settings = Settings(granule_concurrency=4)
-        with patch("services.open_handle.get_settings", return_value=settings), \
+        with patch("tta_backend.services.open_handle.get_settings", return_value=settings), \
              patch.object(open_handle_module, "_open_netcdf", side_effect=fake_open_netcdf), \
              patch.object(open_handle_module, "_synthesize_member_time_coord", side_effect=lambda ds: ds):
             _open_bundle_members_concurrently("/extract/dir", names, {})
@@ -1285,9 +1285,9 @@ class BundleMemberOpenConcurrencyTests(unittest.TestCase):
         import time
         from unittest.mock import patch
 
-        from config.settings import Settings
-        import services.open_handle as open_handle_module
-        from services.open_handle import _open_bundle_members_concurrently
+        from tta_backend.config.settings import Settings
+        import tta_backend.services.open_handle as open_handle_module
+        from tta_backend.services.open_handle import _open_bundle_members_concurrently
 
         def fake_open_netcdf(path, chunks=None):
             return path  # instant -- isolates the "outside the lock" work below
@@ -1298,7 +1298,7 @@ class BundleMemberOpenConcurrencyTests(unittest.TestCase):
 
         names = [f"z_{i}.nc4" for i in range(4)]
         settings = Settings(granule_concurrency=4)
-        with patch("services.open_handle.get_settings", return_value=settings), \
+        with patch("tta_backend.services.open_handle.get_settings", return_value=settings), \
              patch.object(open_handle_module, "_open_netcdf", side_effect=fake_open_netcdf), \
              patch.object(open_handle_module, "_synthesize_member_time_coord", side_effect=fake_synthesize):
             start = time.monotonic()
@@ -1319,9 +1319,9 @@ class BundleMemberOpenConcurrencyTests(unittest.TestCase):
         import time
         from unittest.mock import patch
 
-        from config.settings import Settings
-        import services.open_handle as open_handle_module
-        from services.open_handle import _open_bundle_members_concurrently
+        from tta_backend.config.settings import Settings
+        import tta_backend.services.open_handle as open_handle_module
+        from tta_backend.services.open_handle import _open_bundle_members_concurrently
 
         calls: list[str] = []
         call_lock = threading.Lock()
@@ -1344,7 +1344,7 @@ class BundleMemberOpenConcurrencyTests(unittest.TestCase):
         # to show it's nowhere near "every member opened anyway".
         names = ["bad.nc4"] + [f"hold_{i}.nc4" for i in range(10)]
         settings = Settings(granule_concurrency=2)
-        with patch("services.open_handle.get_settings", return_value=settings), \
+        with patch("tta_backend.services.open_handle.get_settings", return_value=settings), \
              patch.object(open_handle_module, "_open_netcdf", side_effect=fake_open_netcdf), \
              patch.object(open_handle_module, "_synthesize_member_time_coord", side_effect=lambda ds: ds):
             with self.assertRaises(ValueError):
@@ -1360,7 +1360,7 @@ class OpenNativeFormatMediaTypeTests(unittest.TestCase):
     different product", not the retry-shaped unreadable-file message."""
 
     def test_open_raises_actionable_error_for_native_format_media_types(self):
-        from services.open_handle import OpenHandleError, UnreadableExportError, _open
+        from tta_backend.services.open_handle import OpenHandleError, UnreadableExportError, _open
 
         for media_type in ("application/x-hdf4", "application/x-native-archive+zip"):
             with self.subTest(media_type=media_type):
@@ -1385,7 +1385,7 @@ class OpenNetcdfUnreadableFileTests(unittest.TestCase):
     to install packages that are already installed."""
 
     def _open_bytes(self, contents: bytes):
-        from services.open_handle import _open_netcdf
+        from tta_backend.services.open_handle import _open_netcdf
 
         with tempfile.NamedTemporaryFile(suffix=".nc4", delete=False) as fh:
             fh.write(contents)
@@ -1396,7 +1396,7 @@ class OpenNetcdfUnreadableFileTests(unittest.TestCase):
             os.unlink(path)
 
     def test_open_netcdf_raises_actionable_error_on_a_non_netcdf_file(self):
-        from services.open_handle import UnreadableExportError
+        from tta_backend.services.open_handle import UnreadableExportError
 
         for contents in (b"", b"<html><body>503</body></html>", os.urandom(4096)):
             with self.subTest(contents=contents[:16]):
@@ -1458,8 +1458,8 @@ class OpenNetcdfLazyVsEagerEquivalenceTests(unittest.TestCase):
         }
 
     def test_eager_and_dask_backed_opens_aggregate_identically(self):
-        from preprocessing.aggregation_service import AggregationService
-        from services.open_handle import _open_netcdf
+        from tta_backend.preprocessing.aggregation_service import AggregationService
+        from tta_backend.services.open_handle import _open_netcdf
 
         eager_ds = _open_netcdf(self.path)
         lazy_ds = _open_netcdf(self.path, chunks={})

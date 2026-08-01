@@ -22,14 +22,14 @@ class ListJobsTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         # The terminal-status cache is process-global; clear it between tests
         # so one test's cached rows never leak into another's fan-out count.
-        from services.jobs_service import clear_terminal_status_cache
+        from tta_backend.services.jobs_service import clear_terminal_status_cache
 
         clear_terminal_status_cache()
 
     async def _tools(self, handlers):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
 
         server = FakeEarthdataMCPServer(build_fake_mcp(handlers))
         server.start()
@@ -43,7 +43,7 @@ class ListJobsTests(unittest.IsolatedAsyncioTestCase):
         summary}]} — list_jobs must filter to type == "job" and map
         handle -> job_handle rather than reading a "jobs" key the real MCP
         never returns."""
-        from services.jobs_service import list_jobs
+        from tta_backend.services.jobs_service import list_jobs
 
         async def list_workspace(workspace_id):
             return {
@@ -94,7 +94,7 @@ class ListJobsTests(unittest.IsolatedAsyncioTestCase):
         reports status "running" from the MCP forever, with the pause visible
         only in the provider message. The panel row must say paused (with the
         cancel-and-narrow note), not "Processing — 0%" indefinitely."""
-        from services.jobs_service import list_jobs
+        from tta_backend.services.jobs_service import list_jobs
 
         async def list_workspace(workspace_id):
             return {
@@ -124,7 +124,7 @@ class ListJobsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("cancel", jobs[0]["note"].lower())
 
     async def test_list_jobs_sorts_active_jobs_first_then_newest_first_within_each_group(self):
-        from services.jobs_service import list_jobs
+        from tta_backend.services.jobs_service import list_jobs
 
         async def list_workspace(workspace_id):
             return {
@@ -163,7 +163,7 @@ class ListJobsTests(unittest.IsolatedAsyncioTestCase):
         vastly outnumber real jobs (live repro: 134 vs 46), so leaving
         "not_found" out of TERMINAL_STATUSES buried current tasks under a
         wall of dead rows sorted as if they were still running."""
-        from services.jobs_service import list_jobs
+        from tta_backend.services.jobs_service import list_jobs
 
         async def list_workspace(workspace_id):
             return {
@@ -198,7 +198,7 @@ class ListJobsTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_list_jobs_passes_through_the_mcps_failed_status_message_verbatim(self):
-        from services.jobs_service import list_jobs
+        from tta_backend.services.jobs_service import list_jobs
 
         async def list_workspace(workspace_id):
             return {
@@ -231,7 +231,7 @@ class ListJobsTests(unittest.IsolatedAsyncioTestCase):
         """list_jobs is a thin composite (entry | status merge) — PRD 021's
         curated request_spec slice on get_retrieval_status must reach the
         frontend verbatim, with no backend-side reshaping (T27)."""
-        from services.jobs_service import list_jobs
+        from tta_backend.services.jobs_service import list_jobs
 
         async def list_workspace(workspace_id):
             return {
@@ -277,7 +277,7 @@ class ListJobsTests(unittest.IsolatedAsyncioTestCase):
         """The status fan-out is fault-isolated: a single job whose
         get_retrieval_status returns an error envelope degrades to a
         status:"error" row, and every healthy sibling still lists."""
-        from services.jobs_service import list_jobs
+        from tta_backend.services.jobs_service import list_jobs
 
         async def list_workspace(workspace_id):
             return {
@@ -310,7 +310,7 @@ class ListJobsTests(unittest.IsolatedAsyncioTestCase):
         the frontend's 15s poll, drove hundreds of MCP round-trips/min on a
         large workspace for data that can't have changed. Only non-terminal
         jobs incur a status call on subsequent polls."""
-        from services.jobs_service import list_jobs
+        from tta_backend.services.jobs_service import list_jobs
 
         async def list_workspace(workspace_id):
             return {
@@ -354,7 +354,7 @@ class ListJobsTests(unittest.IsolatedAsyncioTestCase):
         workspace these dominate (live repro: 134 not_found vs 46 real jobs),
         so re-polling them every 15s was the bulk of the fan-out. They must be
         cached like a terminal status: fetched once, then served from cache."""
-        from services.jobs_service import list_jobs
+        from tta_backend.services.jobs_service import list_jobs
 
         async def list_workspace(workspace_id):
             return {
@@ -386,7 +386,7 @@ class ListJobsTests(unittest.IsolatedAsyncioTestCase):
         """Paused and still-running jobs are not immutable — they must stay on
         the per-poll fan-out so a resume/completion is picked up, and an
         errored status read must be retried, not frozen."""
-        from services.jobs_service import list_jobs
+        from tta_backend.services.jobs_service import list_jobs
 
         async def list_workspace(workspace_id):
             return {
@@ -423,7 +423,7 @@ class ListJobsTests(unittest.IsolatedAsyncioTestCase):
         wrap, or a bug in parsing the response) must degrade that single row
         instead of blowing up the whole asyncio.gather and blanking every
         healthy sibling."""
-        from services.jobs_service import list_jobs
+        from tta_backend.services.jobs_service import list_jobs
 
         async def list_workspace(workspace_id):
             return {
@@ -466,8 +466,8 @@ class ListJobsTests(unittest.IsolatedAsyncioTestCase):
 class CancelJobTests(unittest.IsolatedAsyncioTestCase):
     async def _tools(self, handlers):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
 
         server = FakeEarthdataMCPServer(build_fake_mcp(handlers))
         server.start()
@@ -476,7 +476,7 @@ class CancelJobTests(unittest.IsolatedAsyncioTestCase):
         return await load_raw_mcp_tools(settings)
 
     async def test_cancel_job_proxies_the_mcps_cancel_tool(self):
-        from services.jobs_service import cancel_job
+        from tta_backend.services.jobs_service import cancel_job
 
         calls = {}
 
@@ -495,7 +495,7 @@ class CancelJobTests(unittest.IsolatedAsyncioTestCase):
         """cancel_job is a thin proxy — PRD 021's `upstream` outcome
         ("requested"/"unsupported"/"already_terminal"/"error") must reach the
         frontend verbatim so the cancel UX can render an honest line (T27)."""
-        from services.jobs_service import cancel_job
+        from tta_backend.services.jobs_service import cancel_job
 
         async def cancel_retrieval(job_handle, workspace_id):
             return {"job_handle": job_handle, "status": "cancelled", "cancelled": True, "upstream": "requested"}

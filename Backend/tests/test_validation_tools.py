@@ -35,7 +35,7 @@ FULL_TOOL_REQUIRED_MODULES = REQUIRED_MODULES + [
 class NearestCellExtractionTests(unittest.TestCase):
     def test_extracts_value_at_exact_grid_point(self):
         import xarray as xr
-        from tools.satellite_tools.validation_tools import _nearest_cell_series
+        from tta_backend.tools.satellite_tools.validation_tools import _nearest_cell_series
 
         da = xr.DataArray(
             [[1.0, 2.0], [3.0, 4.0]],
@@ -49,7 +49,7 @@ class NearestCellExtractionTests(unittest.TestCase):
 
     def test_extracts_nearest_value_for_off_grid_point(self):
         import xarray as xr
-        from tools.satellite_tools.validation_tools import _nearest_cell_series
+        from tta_backend.tools.satellite_tools.validation_tools import _nearest_cell_series
 
         da = xr.DataArray(
             [[1.0, 2.0], [3.0, 4.0]],
@@ -72,7 +72,7 @@ class MonitorSeriesExtractionTests(unittest.TestCase):
         import numpy as np
         import pandas as pd
         import xarray as xr
-        from tools.satellite_tools.validation_tools import _extract_monitor_series
+        from tta_backend.tools.satellite_tools.validation_tools import _extract_monitor_series
 
         times = pd.date_range("2024-01-01", periods=3, freq="D")
         values = np.array([
@@ -100,7 +100,7 @@ class MonitorSeriesExtractionTests(unittest.TestCase):
         import numpy as np
         import pandas as pd
         import xarray as xr
-        from tools.satellite_tools.validation_tools import _extract_monitor_series
+        from tta_backend.tools.satellite_tools.validation_tools import _extract_monitor_series
 
         times = pd.date_range("2024-01-01", periods=2, freq="D")
         values = np.array([[[500.0]], [[5.0]]])
@@ -125,7 +125,7 @@ class MonitorSeriesExtractionTests(unittest.TestCase):
 )
 class DailyPairingTests(unittest.TestCase):
     def test_aggregates_hourly_satellite_values_to_daily_and_pairs_by_date(self):
-        from tools.satellite_tools.validation_tools import _pair_daily
+        from tta_backend.tools.satellite_tools.validation_tools import _pair_daily
 
         times = [
             "2024-01-01T00:00:00", "2024-01-01T12:00:00",  # day 1: mean = 2.0
@@ -141,7 +141,7 @@ class DailyPairingTests(unittest.TestCase):
         self.assertEqual(paired[1], {"date": "2024-01-02", "satellite": 10.0, "ground": 20.0})
 
     def test_dates_without_a_ground_reading_are_dropped(self):
-        from tools.satellite_tools.validation_tools import _pair_daily
+        from tta_backend.tools.satellite_tools.validation_tools import _pair_daily
 
         times = ["2024-01-01T00:00:00", "2024-01-02T00:00:00"]
         values = [1.0, 2.0]
@@ -159,7 +159,7 @@ class DailyPairingTests(unittest.TestCase):
 )
 class CorrelationStatsTests(unittest.TestCase):
     def test_perfectly_correlated_series_gives_r_of_one(self):
-        from tools.satellite_tools.validation_tools import _correlation_stats
+        from tta_backend.tools.satellite_tools.validation_tools import _correlation_stats
 
         paired = [
             {"date": "2024-01-01", "satellite": 1.0, "ground": 2.0},
@@ -175,7 +175,7 @@ class CorrelationStatsTests(unittest.TestCase):
         self.assertAlmostEqual(stats["coverage_fraction"], 1.0)
 
     def test_anti_correlated_series_gives_r_of_negative_one(self):
-        from tools.satellite_tools.validation_tools import _correlation_stats
+        from tta_backend.tools.satellite_tools.validation_tools import _correlation_stats
 
         paired = [
             {"date": "2024-01-01", "satellite": 1.0, "ground": 8.0},
@@ -189,7 +189,7 @@ class CorrelationStatsTests(unittest.TestCase):
         self.assertAlmostEqual(stats["r"], -1.0)
 
     def test_coverage_fraction_relative_to_total_ground_days(self):
-        from tools.satellite_tools.validation_tools import _correlation_stats
+        from tta_backend.tools.satellite_tools.validation_tools import _correlation_stats
 
         paired = [
             {"date": "2024-01-01", "satellite": 1.0, "ground": 2.0},
@@ -203,7 +203,7 @@ class CorrelationStatsTests(unittest.TestCase):
         self.assertAlmostEqual(stats["coverage_fraction"], 0.6)
 
     def test_fewer_than_two_points_yields_none_correlation(self):
-        from tools.satellite_tools.validation_tools import _correlation_stats
+        from tta_backend.tools.satellite_tools.validation_tools import _correlation_stats
 
         stats = _correlation_stats([{"date": "2024-01-01", "satellite": 1.0, "ground": 2.0}])
 
@@ -211,7 +211,7 @@ class CorrelationStatsTests(unittest.TestCase):
         self.assertEqual(stats["n"], 1)
 
     def test_pooled_stats_concatenate_across_monitors(self):
-        from tools.satellite_tools.validation_tools import _correlation_stats
+        from tta_backend.tools.satellite_tools.validation_tools import _correlation_stats
 
         monitor_a = [
             {"date": "2024-01-01", "satellite": 1.0, "ground": 2.0},
@@ -234,7 +234,7 @@ class CorrelationStatsTests(unittest.TestCase):
 )
 class ExceedanceDaysHelperTests(unittest.TestCase):
     def test_hard_threshold_flags_only_days_above_it(self):
-        from tools.satellite_tools.validation_tools import _exceedance_days
+        from tta_backend.tools.satellite_tools.validation_tools import _exceedance_days
 
         records = [
             {"date_local": "2024-01-01", "first_max_value": "2.0"},
@@ -247,7 +247,7 @@ class ExceedanceDaysHelperTests(unittest.TestCase):
         self.assertEqual(flagged, {"2024-01-02"})
 
     def test_percentile_threshold_flags_top_fraction(self):
-        from tools.satellite_tools.validation_tools import _exceedance_days
+        from tta_backend.tools.satellite_tools.validation_tools import _exceedance_days
 
         records = [
             {"date_local": "2024-01-01", "first_max_value": "1.0"},
@@ -261,7 +261,7 @@ class ExceedanceDaysHelperTests(unittest.TestCase):
         self.assertEqual(flagged, {"2024-01-04"})
 
     def test_records_with_missing_values_are_ignored(self):
-        from tools.satellite_tools.validation_tools import _exceedance_days
+        from tta_backend.tools.satellite_tools.validation_tools import _exceedance_days
 
         records = [
             {"date_local": "2024-01-01", "first_max_value": None},
@@ -298,8 +298,8 @@ def _fake_aqs_get(monitors_body, daily_body):
 class ValidateAgainstGroundToolTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from fake_earthdata_mcp import HandleVolume, build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
 
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
@@ -318,7 +318,7 @@ class ValidateAgainstGroundToolTests(unittest.IsolatedAsyncioTestCase):
     async def test_validate_against_ground_pairs_and_scores_a_single_monitor(self):
         import pandas as pd
         import xarray as xr
-        from tools.satellite_tools import validation_tools
+        from tta_backend.tools.satellite_tools import validation_tools
 
         def make_cube():
             times = pd.date_range("2024-01-01", periods=3, freq="D")
@@ -369,7 +369,7 @@ class ValidateAgainstGroundToolTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(validation_tools._resolver, "aresolve_location", AsyncMock(return_value=region)), \
              patch(
-                 "tools.ground_sensor_tools.epa_aqs_tools._aqs_get",
+                 "tta_backend.tools.ground_sensor_tools.epa_aqs_tools._aqs_get",
                  AsyncMock(side_effect=_fake_aqs_get(monitors_body, daily_body)),
              ):
             tool = validation_tools.make_validate_against_ground(self.mcp_tools)
@@ -426,7 +426,7 @@ class ValidateAgainstGroundToolTests(unittest.IsolatedAsyncioTestCase):
     async def test_exceedance_overlay_marks_the_right_days_on_the_satellite_series(self):
         import pandas as pd
         import xarray as xr
-        from tools.satellite_tools import validation_tools
+        from tta_backend.tools.satellite_tools import validation_tools
 
         def make_cube():
             times = pd.date_range("2024-01-01", periods=3, freq="D")
@@ -474,7 +474,7 @@ class ValidateAgainstGroundToolTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(validation_tools._resolver, "aresolve_location", AsyncMock(return_value=region)), \
              patch(
-                 "tools.ground_sensor_tools.epa_aqs_tools._aqs_get",
+                 "tta_backend.tools.ground_sensor_tools.epa_aqs_tools._aqs_get",
                  AsyncMock(side_effect=_fake_aqs_get(monitors_body, daily_body)),
              ):
             tool = validation_tools.make_exceedance_overlay(self.mcp_tools)

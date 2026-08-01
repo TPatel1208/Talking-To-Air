@@ -44,8 +44,8 @@ def _make_point_series_table():
 class PointSampleTimeseriesExportTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from fake_earthdata_mcp import HandleVolume, build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
 
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
@@ -77,7 +77,7 @@ class PointSampleTimeseriesExportTests(unittest.IsolatedAsyncioTestCase):
         }
 
     async def test_timeseries_rows_reads_the_parquet_table_directly(self):
-        from services.export_service import ExportService
+        from tta_backend.services.export_service import ExportService
 
         service = ExportService()
         rows = await service._timeseries_rows_async(self.payload["export"], self.tools)
@@ -88,7 +88,7 @@ class PointSampleTimeseriesExportTests(unittest.IsolatedAsyncioTestCase):
         ])
 
     async def test_csv_rows_export_a_point_sample_timeseries_without_crashing(self):
-        from services.export_service import ExportService
+        from tta_backend.services.export_service import ExportService
 
         service = ExportService()
         rows = [row async for row in service.iter_chart_csv_rows_async(self.payload, self.tools)]
@@ -100,7 +100,7 @@ class PointSampleTimeseriesExportTests(unittest.IsolatedAsyncioTestCase):
         ])
 
     async def test_csv_chunks_export_a_point_sample_timeseries_without_crashing(self):
-        from services.export_service import ExportService
+        from tta_backend.services.export_service import ExportService
 
         service = ExportService()
         chunks = [
@@ -112,7 +112,7 @@ class PointSampleTimeseriesExportTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("no2,2024-01-02T00:00:00,point sample,2.0,mol/m^2", csv_text)
 
     async def test_png_export_renders_a_point_sample_timeseries_without_crashing(self):
-        from services.export_service import ExportService
+        from tta_backend.services.export_service import ExportService
 
         service = ExportService()
         png_bytes = await service.build_chart_png_async(self.payload, self.tools)
@@ -121,7 +121,7 @@ class PointSampleTimeseriesExportTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(png_bytes.startswith(b"\x89PNG"))
 
     async def test_timeseries_rows_raises_a_clear_error_with_no_source_handle(self):
-        from services.export_service import ExportService
+        from tta_backend.services.export_service import ExportService
 
         service = ExportService()
         export = dict(self.payload["export"])
@@ -149,8 +149,8 @@ class MultiVariableExportResolutionTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         from fake_earthdata_mcp import HandleVolume, build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
 
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
@@ -202,7 +202,7 @@ class MultiVariableExportResolutionTests(unittest.IsolatedAsyncioTestCase):
         self.volume.add_netcdf(handle, {None: make_root, "product": make_product_group})
 
     async def test_export_with_variable_none_resolves_the_science_var_over_a_science_plus_flag_file(self):
-        from services.export_service import ExportService
+        from tta_backend.services.export_service import ExportService
 
         self._add_science_plus_flag_handle("obs_multi")
         export = {"variable": None, "units": "mol/m^2", "source_handles": ["obs_multi"]}
@@ -215,7 +215,7 @@ class MultiVariableExportResolutionTests(unittest.IsolatedAsyncioTestCase):
         """No recorded choice and two genuine science variables: it can't be
         resolved, but it must surface as the export path's own ValueError
         (a clean 422) rather than an MCPToolError escaping mid-stream."""
-        from services.export_service import ExportService
+        from tta_backend.services.export_service import ExportService
 
         self._add_two_science_var_handle("obs_ambiguous")
         export = {"variable": None, "units": "mol/m^2", "source_handles": ["obs_ambiguous"]}
@@ -226,8 +226,8 @@ class MultiVariableExportResolutionTests(unittest.IsolatedAsyncioTestCase):
     async def test_export_inherits_a_recorded_choice_via_the_source_handle(self):
         """The handle is threaded through, so a choice recorded at retrieval
         time resolves the export even when the payload's ``variable`` is None."""
-        from services import variable_choice_registry
-        from services.export_service import ExportService
+        from tta_backend.services import variable_choice_registry
+        from tta_backend.services.export_service import ExportService
 
         self._add_two_science_var_handle("obs_recorded")
         variable_choice_registry._choices.clear()

@@ -43,8 +43,8 @@ def clear_process_caches() -> None:
     Clearing a cache can only ever cause a miss, so this is safe to call
     unconditionally — including for tests that never touch either cache.
     """
-    from earthdata_mcp.tool_cache import clear_tool_cache
-    from services.jobs_service import clear_terminal_status_cache
+    from tta_backend.earthdata_mcp.tool_cache import clear_tool_cache
+    from tta_backend.services.jobs_service import clear_terminal_status_cache
 
     clear_tool_cache()
     clear_terminal_status_cache()

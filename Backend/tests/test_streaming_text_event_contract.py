@@ -19,7 +19,7 @@ class TextEventContractTests(unittest.IsolatedAsyncioTestCase):
         breaking that contract and crashing any consumer (e.g.
         subagent_dispatch.run_satellite's ``data.get("response", "")``) that
         trusted it."""
-        from utils.streaming import stream_response
+        from tta_backend.utils.streaming import stream_response
 
         class FakeAgent:
             async def astream(self, input_, config, stream_mode):

@@ -35,13 +35,13 @@ class WorkspaceBindingTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestC
         self.server.start()
         self.addCleanup(self.server.stop)
 
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
 
         self.tools = await load_raw_mcp_tools(Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None))
 
     async def test_bind_workspace_injects_workspace_id_at_call_time(self):
-        from earthdata_mcp.workspace import bind_workspace
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
 
         bound = bind_workspace(self.tools, lambda: "17")
 
@@ -50,7 +50,7 @@ class WorkspaceBindingTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestC
         self.assertEqual(self.received["workspace_id"], "user-17")
 
     async def test_bind_workspace_hides_workspace_id_from_the_schema(self):
-        from earthdata_mcp.workspace import bind_workspace
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
 
         bound = bind_workspace(self.tools, lambda: "17")
 
@@ -63,8 +63,8 @@ class WorkspaceBindingTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestC
     async def test_search_datasets_emits_a_search_stage_status(self):
         """T19: one wrapper covers all curated discovery tools without
         touching the MCP — search_datasets narrates the "search" stage."""
-        from earthdata_mcp.workspace import bind_workspace
-        import utils.streaming as streaming
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
+        import tta_backend.utils.streaming as streaming
 
         bound = bind_workspace(self.tools, lambda: "17")
 
@@ -101,14 +101,14 @@ class WorkspaceBindingStageStatusTests(unittest.IsolatedAsyncioTestCase):
         self.server.start()
         self.addCleanup(self.server.stop)
 
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
 
         self.tools = await load_raw_mcp_tools(Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None))
 
     async def test_define_area_of_interest_emits_an_aoi_stage_status(self):
-        from earthdata_mcp.workspace import bind_workspace
-        import utils.streaming as streaming
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
+        import tta_backend.utils.streaming as streaming
 
         bound = bind_workspace(self.tools, lambda: "17")
 
@@ -128,8 +128,8 @@ class WorkspaceBindingStageStatusTests(unittest.IsolatedAsyncioTestCase):
         a researcher understands why their request is small or large before
         the wait — a second stage="coverage" status carrying the count once
         the MCP's own response is known, alongside the pre-call one."""
-        from earthdata_mcp.workspace import bind_workspace
-        import utils.streaming as streaming
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
+        import tta_backend.utils.streaming as streaming
 
         bound = bind_workspace(self.tools, lambda: "17")
 
@@ -169,15 +169,15 @@ class WorkspaceBindingClassifiedErrorTests(unittest.IsolatedAsyncioTestCase):
         self.server.start()
         self.addCleanup(self.server.stop)
 
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
 
         self.tools = await load_raw_mcp_tools(Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None))
 
     async def test_a_classified_tool_error_comes_back_as_the_structured_json_envelope(self):
         import json
 
-        from earthdata_mcp.workspace import bind_workspace
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
 
         bound = bind_workspace(self.tools, lambda: "17")
 
@@ -189,8 +189,8 @@ class WorkspaceBindingClassifiedErrorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("suggestion", payload["error"])
 
     async def test_a_backend_composite_calling_parse_tool_result_on_that_same_output_recovers_the_typed_error(self):
-        from earthdata_mcp.results import MCPToolError, parse_tool_result
-        from earthdata_mcp.workspace import bind_workspace
+        from tta_backend.earthdata_mcp.results import MCPToolError, parse_tool_result
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
 
         bound = bind_workspace(self.tools, lambda: "17")
 
@@ -206,11 +206,11 @@ class WorkspaceBindingClassifiedErrorTests(unittest.IsolatedAsyncioTestCase):
         left NOTHING to grep for. A user_input rejection from
         define_area_of_interest must fire a named log event carrying the
         offending input, so the regression is discoverable from logs."""
-        from earthdata_mcp.workspace import bind_workspace
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
 
         bound = bind_workspace(self.tools, lambda: "17")
 
-        with self.assertLogs("earthdata_mcp.workspace", level="WARNING") as cm:
+        with self.assertLogs("tta_backend.earthdata_mcp.workspace", level="WARNING") as cm:
             await bound["define_area_of_interest"].ainvoke({"location": "zzzzqqqq nowhere"})
 
         rejection_lines = [r for r in cm.records if getattr(r, "_event", None) == "aoi_user_input_rejected"]
@@ -242,8 +242,8 @@ class WorkspaceMissingUserContextTests(ProcessCacheIsolation, unittest.IsolatedA
         self.server.start()
         self.addCleanup(self.server.stop)
 
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
 
         self.tools = await load_raw_mcp_tools(Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None))
 
@@ -253,7 +253,7 @@ class WorkspaceMissingUserContextTests(ProcessCacheIsolation, unittest.IsolatedA
         # instead of surfacing as an unclassified traceback string.
         import json
 
-        from earthdata_mcp.workspace import bind_workspace
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
 
         bound = bind_workspace(self.tools, lambda: None)
 

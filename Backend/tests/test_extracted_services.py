@@ -11,9 +11,15 @@ if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 
+def _echo_saved_chart(thread_id, payload, user_id):
+    """chart_repository.save_chart stub -- echo the payload back with its
+    ownership stamped on, the way the real repository does."""
+    return {**payload, "thread_id": thread_id, "user_id": user_id}
+
+
 class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
     def test_export_service_safe_name_and_missing_export(self):
-        from services.export_service import ExportService
+        from tta_backend.services.export_service import ExportService
 
         service = ExportService(csv_export_max_granules=2)
 
@@ -22,8 +28,8 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
             list(service.iter_chart_csv_rows({}))
 
     def test_chart_service_parses_agent_result_and_persists(self):
-        from models import AgentResult, ChartPayload, agent_result_to_json
-        from services.chart_service import ChartService
+        from tta_backend.models import AgentResult, ChartPayload, agent_result_to_json
+        from tta_backend.services.chart_service import ChartService
 
         service = ChartService()
         raw = agent_result_to_json(AgentResult(text="done", charts=[ChartPayload(type="heatmap", title="Map")]))
@@ -34,11 +40,11 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(charts[0].type, "heatmap")
 
     async def test_chart_service_reuses_owned_stored_chart(self):
-        from models import ChartPayload
-        from services.chart_service import ChartService
+        from tta_backend.models import ChartPayload
+        from tta_backend.services.chart_service import ChartService
 
         stored = {"chart_id": "chart-1", "user_id": "user-1"}
-        with patch("services.chart_service.chart_repository.get_chart", AsyncMock(return_value=stored)):
+        with patch("tta_backend.services.chart_service.chart_repository.get_chart", AsyncMock(return_value=stored)):
             result = await ChartService().persist_chart_payload(
                 "thread-1",
                 ChartPayload(type="heatmap", chart_id="chart-1"),
@@ -48,8 +54,8 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, stored)
 
     async def test_history_service_surfaces_a_map_artifact_from_a_tool_message(self):
-        from services.chart_service import ChartService
-        from services.history_service import HistoryService
+        from tta_backend.services.chart_service import ChartService
+        from tta_backend.services.history_service import HistoryService
 
         tool_content = json.dumps({
             "type": "heatmap",
@@ -84,10 +90,10 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
                     SimpleNamespace(type="ai", content="Here is the map.", tool_calls=[]),
                 ]})
 
-        from services.artifact_store import artifact_store
+        from tta_backend.services.artifact_store import artifact_store
 
-        with patch("services.chart_service.chart_repository.get_chart", AsyncMock(return_value=None)), \
-             patch("services.chart_service.chart_repository.save_chart", AsyncMock(side_effect=lambda thread_id, payload, user_id: {**payload, "thread_id": thread_id, "user_id": user_id})), \
+        with patch("tta_backend.services.chart_service.chart_repository.get_chart", AsyncMock(return_value=None)), \
+             patch("tta_backend.services.chart_service.chart_repository.save_chart", AsyncMock(side_effect=_echo_saved_chart)), \
              patch.object(artifact_store, "claim", side_effect=AssertionError("map artifacts must not go through the table artifact_store")) as claim:
             messages = await HistoryService(ChartService()).build_history(FakeAgent(), "thread-1", "user-1")
 
@@ -100,8 +106,8 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(assistant["artifacts"][0]["type"], "map")
 
     async def test_history_service_builds_plain_history(self):
-        from services.chart_service import ChartService
-        from services.history_service import HistoryService
+        from tta_backend.services.chart_service import ChartService
+        from tta_backend.services.history_service import HistoryService
 
         class FakeAgent:
             async def aget_state(self, config):
@@ -116,14 +122,14 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(messages[1]["content"], "hello")
 
     async def test_chat_stream_service_emits_done_event(self):
-        from services.chat_stream_service import ChatStreamService
-        from services.chart_service import ChartService
+        from tta_backend.services.chat_stream_service import ChatStreamService
+        from tta_backend.services.chart_service import ChartService
 
         async def fake_stream_response(agent, message, thread_id, **kwargs):
             yield "text", "hello"
 
         service = ChatStreamService(ChartService(), long_request_seconds=999)
-        with patch("services.chat_stream_service.stream_response", fake_stream_response):
+        with patch("tta_backend.services.chat_stream_service.stream_response", fake_stream_response):
             events = [
                 event
                 async for event in service.stream_chat_events(object(), None, None, "hi", "thread-1", "user-1", "req-1")
@@ -135,8 +141,8 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"response": "hello"', events[-1])
 
     async def test_chat_stream_service_forwards_job_progress_events(self):
-        from services.chat_stream_service import ChatStreamService
-        from services.chart_service import ChartService
+        from tta_backend.services.chat_stream_service import ChatStreamService
+        from tta_backend.services.chart_service import ChartService
 
         job_event = {
             "job_handle": "job_1",
@@ -150,7 +156,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
             yield "job_progress", job_event
 
         service = ChatStreamService(ChartService(), long_request_seconds=999)
-        with patch("services.chat_stream_service.stream_response", fake_stream_response):
+        with patch("tta_backend.services.chat_stream_service.stream_response", fake_stream_response):
             events = [
                 event
                 async for event in service.stream_chat_events(object(), None, None, "hi", "thread-1", "user-1", "req-1")
@@ -161,12 +167,12 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"status": "processing"', events[0])
 
     async def test_chat_stream_service_does_not_warn_for_plain_tool_result(self):
-        from services.chat_stream_service import ChatStreamService
-        from services.chart_service import ChartService
+        from tta_backend.services.chat_stream_service import ChatStreamService
+        from tta_backend.services.chart_service import ChartService
 
         service = ChatStreamService(ChartService(), long_request_seconds=999)
 
-        with self.assertNoLogs("services.chat_stream_service", level="WARNING"):
+        with self.assertNoLogs("tta_backend.services.chat_stream_service", level="WARNING"):
             events = [
                 event
                 async for event in service._tool_result_events(
@@ -180,9 +186,9 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events, [])
 
     async def test_chat_stream_service_emits_artifact_refs(self):
-        from services.artifact_store import artifact_store
-        from services.chat_stream_service import ChatStreamService
-        from services.chart_service import ChartService
+        from tta_backend.services.artifact_store import artifact_store
+        from tta_backend.services.chat_stream_service import ChatStreamService
+        from tta_backend.services.chart_service import ChartService
 
         ref = artifact_store.put_table(
             "Sample Table",
@@ -192,8 +198,8 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         content = json.dumps({"Header": [{"rows": 1}], "Body": [], "_artifact_refs": [ref.model_dump()]})
         service = ChatStreamService(ChartService(), long_request_seconds=999)
 
-        with patch("services.artifact_store.artifact_repository.save_artifact", AsyncMock()), \
-             patch("services.artifact_store.artifact_repository.delete_expired_unclaimed", AsyncMock()):
+        with patch("tta_backend.services.artifact_store.artifact_repository.save_artifact", AsyncMock()), \
+             patch("tta_backend.services.artifact_store.artifact_repository.delete_expired_unclaimed", AsyncMock()):
             events = [
                 event
                 async for event in service._tool_result_events(
@@ -212,8 +218,8 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(page["rows"], [{"date": "2024-01-01", "value": 10}])
 
     async def test_chat_stream_service_emits_both_chart_and_artifact_for_a_map_payload(self):
-        from services.chat_stream_service import ChatStreamService
-        from services.chart_service import ChartService
+        from tta_backend.services.chat_stream_service import ChatStreamService
+        from tta_backend.services.chart_service import ChartService
 
         content = json.dumps({
             "type": "heatmap",
@@ -240,8 +246,8 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         })
         service = ChatStreamService(ChartService(), long_request_seconds=999)
 
-        with patch("services.chart_service.chart_repository.get_chart", AsyncMock(return_value=None)), \
-             patch("services.chart_service.chart_repository.save_chart", AsyncMock(side_effect=lambda thread_id, payload, user_id: {**payload, "thread_id": thread_id, "user_id": user_id})):
+        with patch("tta_backend.services.chart_service.chart_repository.get_chart", AsyncMock(return_value=None)), \
+             patch("tta_backend.services.chart_service.chart_repository.save_chart", AsyncMock(side_effect=_echo_saved_chart)):
             events = [
                 event
                 async for event in service._tool_result_events(content, "thread-1", "user-1", [], [])
@@ -255,12 +261,12 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"type": "map"', events[1])
 
     async def test_chat_stream_service_warns_for_malformed_chart_payload(self):
-        from services.chat_stream_service import ChatStreamService
-        from services.chart_service import ChartService
+        from tta_backend.services.chat_stream_service import ChatStreamService
+        from tta_backend.services.chart_service import ChartService
 
         service = ChatStreamService(ChartService(), long_request_seconds=999)
 
-        with self.assertLogs("services.chat_stream_service", level="WARNING") as captured:
+        with self.assertLogs("tta_backend.services.chat_stream_service", level="WARNING") as captured:
             events = [
                 event
                 async for event in service._tool_result_events(
@@ -279,8 +285,8 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         sub-agent's own stream, mirroring job_progress) is persisted and
         emitted as a "chart" SSE event directly, without waiting for the
         sub-agent's final tool_result envelope."""
-        from services.chat_stream_service import ChatStreamService
-        from services.chart_service import ChartService
+        from tta_backend.services.chat_stream_service import ChatStreamService
+        from tta_backend.services.chart_service import ChartService
 
         chart_payload = {"type": "heatmap", "chart_id": "map_abc123", "title": "TEMPO over NJ"}
 
@@ -288,9 +294,9 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
             yield "chart_payload", chart_payload
 
         service = ChatStreamService(ChartService(), long_request_seconds=999)
-        with patch("services.chat_stream_service.stream_response", fake_stream_response), \
-             patch("services.chart_service.chart_repository.get_chart", AsyncMock(return_value=None)), \
-             patch("services.chart_service.chart_repository.save_chart", AsyncMock(side_effect=lambda thread_id, payload, user_id: {**payload, "thread_id": thread_id, "user_id": user_id})):
+        with patch("tta_backend.services.chat_stream_service.stream_response", fake_stream_response), \
+             patch("tta_backend.services.chart_service.chart_repository.get_chart", AsyncMock(return_value=None)), \
+             patch("tta_backend.services.chart_service.chart_repository.save_chart", AsyncMock(side_effect=_echo_saved_chart)):
             events = [
                 event
                 async for event in service.stream_chat_events(object(), None, None, "hi", "thread-1", "user-1", "req-1")
@@ -305,9 +311,9 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         embedded in the sub-agent's tool_result envelope (AgentResult.charts)
         must not double-render in the UI (Frontend/src/hooks/useChat.js just
         appends every "chart" event to a list, with no dedup of its own)."""
-        from models import AgentResult, ChartPayload, agent_result_to_json
-        from services.chat_stream_service import ChatStreamService
-        from services.chart_service import ChartService
+        from tta_backend.models import AgentResult, ChartPayload, agent_result_to_json
+        from tta_backend.services.chat_stream_service import ChatStreamService
+        from tta_backend.services.chart_service import ChartService
 
         chart_payload = {"type": "heatmap", "chart_id": "map_abc123", "title": "TEMPO over NJ"}
         envelope = agent_result_to_json(AgentResult(
@@ -320,9 +326,9 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
             yield "tool_result", {"name": "ask_earthdata_agent", "content": envelope}
 
         service = ChatStreamService(ChartService(), long_request_seconds=999)
-        with patch("services.chat_stream_service.stream_response", fake_stream_response), \
-             patch("services.chart_service.chart_repository.get_chart", AsyncMock(return_value=None)), \
-             patch("services.chart_service.chart_repository.save_chart", AsyncMock(side_effect=lambda thread_id, payload, user_id: {**payload, "thread_id": thread_id, "user_id": user_id})):
+        with patch("tta_backend.services.chat_stream_service.stream_response", fake_stream_response), \
+             patch("tta_backend.services.chart_service.chart_repository.get_chart", AsyncMock(return_value=None)), \
+             patch("tta_backend.services.chart_service.chart_repository.save_chart", AsyncMock(side_effect=_echo_saved_chart)):
             events = [
                 event
                 async for event in service.stream_chat_events(object(), None, None, "hi", "thread-1", "user-1", "req-1")
@@ -336,8 +342,8 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         chat_turn_timeout_seconds elapses, the SSE sequence ends with the
         timeout `error` (naming no in-flight jobs here) then `done`, and the
         underlying agent stream is actually cancelled, not just abandoned."""
-        from services.chat_stream_service import ChatStreamService
-        from services.chart_service import ChartService
+        from tta_backend.services.chat_stream_service import ChatStreamService
+        from tta_backend.services.chart_service import ChartService
 
         class HangingAgent:
             def __init__(self):
@@ -373,15 +379,15 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_chat_stream_service_completes_normally_when_slowness_is_within_the_turn_budget(self):
         """A turn whose only slowness is legitimate work that finishes under
         the turn budget must not be misread as a hang."""
-        from services.chat_stream_service import ChatStreamService
-        from services.chart_service import ChartService
+        from tta_backend.services.chat_stream_service import ChatStreamService
+        from tta_backend.services.chart_service import ChartService
 
         async def fake_stream_response(agent, message, thread_id, **kwargs):
             await asyncio.sleep(0.01)
             yield "text", "hello"
 
         service = ChatStreamService(ChartService(), long_request_seconds=999, chat_turn_timeout_seconds=5)
-        with patch("services.chat_stream_service.stream_response", fake_stream_response):
+        with patch("tta_backend.services.chat_stream_service.stream_response", fake_stream_response):
             events = [
                 event
                 async for event in service.stream_chat_events(object(), None, None, "hi", "thread-1", "user-1", "req-1")
@@ -392,7 +398,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("event: done", joined)
 
     async def test_find_closest_monitor_accepts_string_k(self):
-        from tools.ground_sensor_tools import epa_aqs_tools
+        from tta_backend.tools.ground_sensor_tools import epa_aqs_tools
 
         monitors = [
             {
@@ -418,7 +424,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
             "ageocode",
             AsyncMock(return_value={"latitude": 40.0, "longitude": -74.0, "bbox": [39.9, 40.1, -74.1, -73.9]}),
         ), patch(
-            "tools.ground_sensor_tools.epa_aqs_tools._fetch_active_monitors",
+            "tta_backend.tools.ground_sensor_tools.epa_aqs_tools._fetch_active_monitors",
             AsyncMock(return_value=monitors),
         ) as fetch:
             result = await epa_aqs_tools.find_closest_monitor.ainvoke({
@@ -434,7 +440,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["Body"][0]["monitor_name"], "Near")
 
     async def test_find_closest_monitor_by_coords_accepts_string_k(self):
-        from tools.ground_sensor_tools import epa_aqs_tools
+        from tta_backend.tools.ground_sensor_tools import epa_aqs_tools
 
         monitors = [
             {
@@ -456,7 +462,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         with patch(
-            "tools.ground_sensor_tools.epa_aqs_tools._fetch_active_monitors",
+            "tta_backend.tools.ground_sensor_tools.epa_aqs_tools._fetch_active_monitors",
             AsyncMock(return_value=monitors),
         ) as fetch:
             result = await epa_aqs_tools.find_closest_monitor_by_coords.ainvoke({
@@ -473,7 +479,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["Body"][0]["monitor_name"], "Near")
 
     async def test_aqs_get_deduplicates_identical_requests_within_task(self):
-        from tools.ground_sensor_tools import epa_aqs_tools
+        from tta_backend.tools.ground_sensor_tools import epa_aqs_tools
         from unittest.mock import MagicMock
 
         call_count = 0
@@ -490,7 +496,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         # Reset the ContextVar so this test starts with a clean cache
         epa_aqs_tools._request_cache.set(None)
 
-        with patch("tools.ground_sensor_tools.epa_aqs_tools.httpx.AsyncClient") as mock_client_cls:
+        with patch("tta_backend.tools.ground_sensor_tools.epa_aqs_tools.httpx.AsyncClient") as mock_client_cls:
             mock_client = MagicMock()
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock(return_value=False)
@@ -504,7 +510,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(result1, result2, "Both calls should return the same cached object")
 
     async def test_aqs_get_does_not_share_cache_across_independent_resets(self):
-        from tools.ground_sensor_tools import epa_aqs_tools
+        from tta_backend.tools.ground_sensor_tools import epa_aqs_tools
         from unittest.mock import MagicMock
 
         call_count = 0
@@ -518,7 +524,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
             resp.json = MagicMock(return_value={"Header": [{"status": "success"}], "Data": []})
             return resp
 
-        with patch("tools.ground_sensor_tools.epa_aqs_tools.httpx.AsyncClient") as mock_client_cls:
+        with patch("tta_backend.tools.ground_sensor_tools.epa_aqs_tools.httpx.AsyncClient") as mock_client_cls:
             mock_client = MagicMock()
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock(return_value=False)
@@ -536,7 +542,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call_count, 2, "Each fresh cache should result in a new HTTP call")
 
     def test_summary_filter_rejects_literal_site_id_placeholder(self):
-        from tools.ground_sensor_tools import epa_aqs_tools
+        from tta_backend.tools.ground_sensor_tools import epa_aqs_tools
 
         with self.assertRaisesRegex(ValueError, "placeholder"):
             epa_aqs_tools._resolve_filter(
@@ -552,7 +558,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
             )
 
     def test_summary_filter_accepts_station_id_as_site_number(self):
-        from tools.ground_sensor_tools import epa_aqs_tools
+        from tta_backend.tools.ground_sensor_tools import epa_aqs_tools
 
         endpoint, params = epa_aqs_tools._resolve_filter(
             "dailyData",
@@ -570,7 +576,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(params, {"state": "34", "county": "019", "site": "0007"})
 
     async def test_daily_summary_returns_bounded_per_site_aggregates(self):
-        from tools.ground_sensor_tools import epa_aqs_tools
+        from tta_backend.tools.ground_sensor_tools import epa_aqs_tools
 
         records = []
         for idx in range(30):
@@ -592,7 +598,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
             })
 
         with patch(
-            "tools.ground_sensor_tools.epa_aqs_tools._fetch_summary",
+            "tta_backend.tools.ground_sensor_tools.epa_aqs_tools._fetch_summary",
             AsyncMock(return_value=(records, "dailyData/byState", {"state": "01"})),
         ):
             result = await epa_aqs_tools.get_daily_summary.ainvoke({
@@ -626,7 +632,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(page["total_rows"], 25)
 
     async def test_daily_summary_returns_one_row_per_day_for_site(self):
-        from tools.ground_sensor_tools import epa_aqs_tools
+        from tta_backend.tools.ground_sensor_tools import epa_aqs_tools
 
         records = [
             {
@@ -664,7 +670,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         with patch(
-            "tools.ground_sensor_tools.epa_aqs_tools._fetch_summary",
+            "tta_backend.tools.ground_sensor_tools.epa_aqs_tools._fetch_summary",
             AsyncMock(return_value=(records, "dailyData/bySite", {"state": "01"})),
         ):
             result = await epa_aqs_tools.get_daily_summary.ainvoke({
@@ -687,7 +693,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["Body"][1]["peak"], {"value": 25.0, "date": "2024-01-02", "first_max_hour": 15})
 
     async def test_daily_summary_long_range_returns_quarterly_rows(self):
-        from tools.ground_sensor_tools import epa_aqs_tools
+        from tta_backend.tools.ground_sensor_tools import epa_aqs_tools
 
         records = [{
             "state_code": "01",
@@ -707,7 +713,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         }]
         fetch_summary = AsyncMock(return_value=(records, "quarterlyData/bySite", {"state": "01"}))
 
-        with patch("tools.ground_sensor_tools.epa_aqs_tools._fetch_summary", fetch_summary):
+        with patch("tta_backend.tools.ground_sensor_tools.epa_aqs_tools._fetch_summary", fetch_summary):
             result = await epa_aqs_tools.get_daily_summary.ainvoke({
                 "state_code": "01",
                 "county_code": "001",
@@ -723,7 +729,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["Body"][0]["period"], "2024-Q1")
 
     async def test_quarterly_summary_returns_one_row_per_quarter(self):
-        from tools.ground_sensor_tools import epa_aqs_tools
+        from tta_backend.tools.ground_sensor_tools import epa_aqs_tools
 
         records = [
             {
@@ -761,7 +767,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         with patch(
-            "tools.ground_sensor_tools.epa_aqs_tools._fetch_summary",
+            "tta_backend.tools.ground_sensor_tools.epa_aqs_tools._fetch_summary",
             AsyncMock(return_value=(records, "quarterlyData/bySite", {"state": "01"})),
         ):
             result = await epa_aqs_tools.get_quarterly_summary.ainvoke({
@@ -797,7 +803,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second["peak"], {"value": 31.0, "year": 2024, "quarter": 2})
 
     async def test_annual_summary_returns_one_row_per_year(self):
-        from tools.ground_sensor_tools import epa_aqs_tools
+        from tta_backend.tools.ground_sensor_tools import epa_aqs_tools
 
         records = [
             {
@@ -837,7 +843,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         with patch(
-            "tools.ground_sensor_tools.epa_aqs_tools._fetch_summary",
+            "tta_backend.tools.ground_sensor_tools.epa_aqs_tools._fetch_summary",
             AsyncMock(return_value=(records, "annualData/bySite", {"state": "01"})),
         ):
             result = await epa_aqs_tools.get_annual_summary.ainvoke({

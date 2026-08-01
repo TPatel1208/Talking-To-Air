@@ -69,5 +69,5 @@ USER appuser
 ENV PORT=8000
 EXPOSE ${PORT}
 
-# Entry point is api.py, app object is named "app"
-CMD ["sh", "-c", "uvicorn api:app --host 0.0.0.0 --port ${PORT} --workers 1 --proxy-headers"]
+# Entry point is tta_backend/api.py, app object is named "app"
+CMD ["sh", "-c", "uvicorn tta_backend.api:app --host 0.0.0.0 --port ${PORT} --workers 1 --proxy-headers"]

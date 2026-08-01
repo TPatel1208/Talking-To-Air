@@ -32,9 +32,9 @@ class WorkflowStageSequenceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         import xarray as xr
         from fake_earthdata_mcp import HandleVolume, build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from earthdata_mcp.workspace import bind_workspace
-        from config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
+        from tta_backend.config.settings import Settings
 
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
@@ -80,9 +80,9 @@ class WorkflowStageSequenceTests(unittest.IsolatedAsyncioTestCase):
         self.tools = bind_workspace(raw_tools, lambda: "test-user")
 
     async def test_stage_sequence_covers_search_through_render_in_order(self):
-        from services.retrieval_composites import await_retrieval, safe_retrieve
-        from tools.satellite_tools.plot_tools import make_plot_singular
-        from utils.streaming import stream_response
+        from tta_backend.services.retrieval_composites import await_retrieval, safe_retrieve
+        from tta_backend.tools.satellite_tools.plot_tools import make_plot_singular
+        from tta_backend.utils.streaming import stream_response
         from eval_harness import contains_subsequence
 
         plot_singular = make_plot_singular(self.tools)
@@ -125,9 +125,9 @@ class WorkflowStageSequenceTests(unittest.IsolatedAsyncioTestCase):
         """User story #6: narration stops cleanly when the answer starts
         streaming — every stage status this turn observed arrives before
         the text event, never interleaved after it."""
-        from services.retrieval_composites import await_retrieval, safe_retrieve
-        from tools.satellite_tools.plot_tools import make_plot_singular
-        from utils.streaming import stream_response
+        from tta_backend.services.retrieval_composites import await_retrieval, safe_retrieve
+        from tta_backend.tools.satellite_tools.plot_tools import make_plot_singular
+        from tta_backend.utils.streaming import stream_response
 
         plot_singular = make_plot_singular(self.tools)
 

@@ -26,9 +26,9 @@ from unittest import mock
 
 import httpx
 
-import earthdata_mcp.results as results
-from earthdata_mcp.results import MCPToolError, call_tool
-from utils.streaming import _mcp_failure_state, get_mcp_failure_state
+import tta_backend.earthdata_mcp.results as results
+from tta_backend.earthdata_mcp.results import MCPToolError, call_tool
+from tta_backend.utils.streaming import _mcp_failure_state, get_mcp_failure_state
 
 
 class _CountingTransportFailureTool:

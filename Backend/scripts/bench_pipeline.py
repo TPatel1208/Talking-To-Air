@@ -118,7 +118,7 @@ def _resolve_aoi(aoi: str):
     case (a New-Jersey-sized AOI on a continental grid) has no preset."""
     from shapely.geometry import box
 
-    from utils.plotting import RegionResolver
+    from tta_backend.utils.plotting import RegionResolver
 
     parts = aoi.split(",")
     if len(parts) == 4:
@@ -141,7 +141,7 @@ def _resolve_aoi(aoi: str):
 def _newest_cached_bundle() -> str:
     """The newest completed entry in the bundle-extract cache -- i.e. the
     members of whatever bundle the last real turn opened."""
-    from services.open_handle import _EXTRACT_CACHE_DIR_NAME, _EXTRACT_COMPLETE_MARKER
+    from tta_backend.services.open_handle import _EXTRACT_CACHE_DIR_NAME, _EXTRACT_COMPLETE_MARKER
 
     root = os.path.join(tempfile.gettempdir(), _EXTRACT_CACHE_DIR_NAME)
     try:
@@ -165,7 +165,7 @@ def _open_bundle(path: str):
     bundle zip or an already-extracted cache directory of members."""
     import xarray as xr
 
-    from services.open_handle import (
+    from tta_backend.services.open_handle import (
         _EXTRACT_COMPLETE_MARKER,
         _lazy_chunks,
         _open_bundle_members_concurrently,
@@ -234,7 +234,7 @@ def _time_one_run(da, geometry, crop: bool) -> tuple[float, int, int, int | None
     """
     import numpy as np
 
-    from utils.plotting import mask_data_by_geometry
+    from tta_backend.utils.plotting import mask_data_by_geometry
 
     cells_in = int(da.size)
     read_before = _read_bytes_counter()
@@ -255,8 +255,8 @@ def _cube_and_reopen(ds, variable: str | None):
     import tempfile
     import unittest.mock
 
-    from config.settings import get_settings
-    from services import cube_cache
+    from tta_backend.config.settings import get_settings
+    from tta_backend.services import cube_cache
 
     store = tempfile.mkdtemp(prefix="bench-cube-store-")
     with unittest.mock.patch.dict(os.environ, {"CUBE_STORE_DIR": store, "CUBE_WRITE_MAX_BYTES": str(64 * 1024 ** 3)}):

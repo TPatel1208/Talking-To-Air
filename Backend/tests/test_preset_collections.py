@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 class PresetCollectionsTests(unittest.TestCase):
     def test_preset_collections_is_a_small_suggestion_list_not_an_exhaustive_registry(self):
-        from datasets.preset_collections import PRESET_COLLECTIONS
+        from tta_backend.datasets.preset_collections import PRESET_COLLECTIONS
 
         self.assertGreater(len(PRESET_COLLECTIONS), 0)
         self.assertLess(len(PRESET_COLLECTIONS), 15)
@@ -21,8 +21,8 @@ class PresetCollectionsTests(unittest.TestCase):
         a registered collection exactly — the identifiers are pulled from the
         registry, so a preset can never again point at a resolve-to-nothing
         label."""
-        from datasets.preset_collections import PRESET_COLLECTIONS
-        from datasets.registry import load_registry
+        from tta_backend.datasets.preset_collections import PRESET_COLLECTIONS
+        from tta_backend.datasets.registry import load_registry
 
         registry = load_registry()
         by_concept_id = {cfg.collection_id: cfg for cfg in registry.values()}
@@ -50,8 +50,8 @@ class PresetCollectionsTests(unittest.TestCase):
     def test_the_prompt_table_instructs_search_by_concept_id(self):
         """The prompt must actually surface the concept_ids and tell the agent
         to search by them — the behavioral half of the fix."""
-        from config.earthdata_agent_prompt import get_earthdata_agent_prompt
-        from datasets.preset_collections import PRESET_COLLECTIONS
+        from tta_backend.config.earthdata_agent_prompt import get_earthdata_agent_prompt
+        from tta_backend.datasets.preset_collections import PRESET_COLLECTIONS
 
         prompt = get_earthdata_agent_prompt()
         self.assertIn("concept_id", prompt)
@@ -65,8 +65,8 @@ class PresetCollectionsTests(unittest.TestCase):
         with a bare KeyError at import, naming nothing useful. It must instead
         raise a clear error that names the missing preset key(s) so onboarding
         is as safe as the header claims."""
-        from datasets import preset_collections
-        from datasets.registry import load_registry
+        from tta_backend.datasets import preset_collections
+        from tta_backend.datasets.registry import load_registry
 
         real = load_registry()
         missing_key = preset_collections._PRESETS[0][0]
@@ -83,8 +83,8 @@ class PresetCollectionsTests(unittest.TestCase):
         """The constant moved behind a lazy accessor so import order can't turn
         a data error into an ImportError cascade — a broken registry surfaces
         the same named error on *access*, not at module import time."""
-        from datasets import preset_collections
-        from datasets.registry import load_registry
+        from tta_backend.datasets import preset_collections
+        from tta_backend.datasets.registry import load_registry
 
         real = load_registry()
         missing_key = preset_collections._PRESETS[0][0]

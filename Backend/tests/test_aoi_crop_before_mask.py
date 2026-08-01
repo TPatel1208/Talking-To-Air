@@ -26,7 +26,7 @@ import numpy as np  # noqa: E402
 import xarray as xr  # noqa: E402
 from shapely.geometry import box  # noqa: E402
 
-from utils.plotting import mask_data_by_geometry  # noqa: E402
+from tta_backend.utils.plotting import mask_data_by_geometry  # noqa: E402
 
 
 def _grid(lats, lons, name="no2"):
@@ -114,7 +114,7 @@ class AoiCropEquivalenceTests(unittest.TestCase):
         """The stat-tools longitude regression (2026-07-16), re-asserted
         through the crop: a western-hemisphere AOI against a grid published on
         0..360 must still answer, not crop itself into an empty selection."""
-        from tools.satellite_tools.plot_tools import _normalize_longitudes
+        from tta_backend.tools.satellite_tools.plot_tools import _normalize_longitudes
 
         shifted = _grid(np.arange(20.0, 55.01, 0.5), np.arange(235.0, 300.01, 0.5))
         normalized = _normalize_longitudes(shifted, "lon")
@@ -211,7 +211,7 @@ class AoiCropEquivalenceTests(unittest.TestCase):
         spacing changes only *outside* the AOI would look uniform once
         cropped -- the crop must not launder an unsupported grid into a
         silently mis-placed mask."""
-        from earthdata_mcp.results import CATEGORY_UNSUPPORTED_GRID, MCPToolError
+        from tta_backend.earthdata_mcp.results import CATEGORY_UNSUPPORTED_GRID, MCPToolError
 
         lons = np.concatenate([np.arange(-125.0, -80.0, 0.5), np.arange(-80.0, -60.0 + 0.01, 1.0)])
         da = _grid(np.arange(20.0, 55.01, 0.5), lons)
@@ -225,7 +225,7 @@ class AoiCropEquivalenceTests(unittest.TestCase):
         """The win has to be measurable from production logs, not inferred."""
         da = _continental_grid()
 
-        with self.assertLogs("utils.plotting", level="INFO") as captured:
+        with self.assertLogs("tta_backend.utils.plotting", level="INFO") as captured:
             cropped = mask_data_by_geometry(da, SMALL_AOI)
 
         events = [r for r in captured.records if r.getMessage() == "aoi_crop_applied"]
@@ -239,7 +239,7 @@ class AoiCropEquivalenceTests(unittest.TestCase):
         real crops rather than attempts."""
         shifted = _grid(np.arange(20.0, 55.01, 0.5), np.arange(235.0, 300.01, 0.5))
 
-        with self.assertNoLogs("utils.plotting", level="INFO"):
+        with self.assertNoLogs("tta_backend.utils.plotting", level="INFO"):
             mask_data_by_geometry(shifted, SMALL_AOI)
 
     def test_a_crop_that_drops_nothing_is_not_reported_as_a_win(self):
@@ -249,7 +249,7 @@ class AoiCropEquivalenceTests(unittest.TestCase):
         da = _continental_grid()
         whole_grid = box(-130.0, 15.0, -55.0, 60.0)
 
-        with self.assertNoLogs("utils.plotting", level="INFO"):
+        with self.assertNoLogs("tta_backend.utils.plotting", level="INFO"):
             masked = mask_data_by_geometry(da, whole_grid)
 
         xr.testing.assert_identical(masked, mask_data_by_geometry(da, whole_grid, crop=False))
@@ -259,8 +259,8 @@ class AoiCropEquivalenceTests(unittest.TestCase):
         Runs the real reduction helpers -- including the cos(latitude)
         area-weighted mean, whose weights the crop could plausibly disturb --
         over the shapes real regions actually take."""
-        from preprocessing.aggregation_service import AggregationService, area_weighted_mean
-        from utils.plotting import load_preset_polygons
+        from tta_backend.preprocessing.aggregation_service import AggregationService, area_weighted_mean
+        from tta_backend.utils.plotting import load_preset_polygons
 
         service = AggregationService()
         regions = {
@@ -312,7 +312,7 @@ class AoiCropEquivalenceTests(unittest.TestCase):
         """Story #4: the plot path crops the masked array to the region before
         deriving overlay bounds, so a tighter masked array must land on exactly
         the same extent -- and the same pixel edges the PNG is rendered at."""
-        from tools.satellite_tools.plot_tools import _half_cell, _sel_bounds
+        from tta_backend.tools.satellite_tools.plot_tools import _half_cell, _sel_bounds
 
         da = _continental_grid()
         cropped = _sel_bounds(mask_data_by_geometry(da, SMALL_AOI), "lat", "lon", SMALL_AOI.bounds)
@@ -328,8 +328,8 @@ class AoiCropEquivalenceTests(unittest.TestCase):
         """Decision #5: the bounds crop and the pixel-edge half-cell live in
         utils.plotting as one implementation that plot_tools imports, rather
         than a tool-module copy that export_service reaches through."""
-        from tools.satellite_tools import plot_tools
-        from utils import plotting
+        from tta_backend.tools.satellite_tools import plot_tools
+        from tta_backend.utils import plotting
 
         self.assertIs(plot_tools._sel_bounds, plotting.sel_bounds)
         self.assertIs(plot_tools._half_cell, plotting.half_cell)

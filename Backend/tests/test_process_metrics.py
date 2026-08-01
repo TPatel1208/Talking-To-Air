@@ -22,7 +22,7 @@ def _gauge_value(gauge) -> float:
 
 class ProcessMetricsTests(unittest.TestCase):
     def test_refresh_process_gauges_sets_a_positive_process_rss(self):
-        from utils.metrics import PROCESS_RSS_BYTES, refresh_process_gauges
+        from tta_backend.utils.metrics import PROCESS_RSS_BYTES, refresh_process_gauges
 
         refresh_process_gauges()
 
@@ -35,7 +35,7 @@ class ProcessMetricsTests(unittest.TestCase):
     def test_refresh_process_gauges_counts_open_matplotlib_figures(self):
         import matplotlib.pyplot as plt
 
-        from utils.metrics import MATPLOTLIB_OPEN_FIGURES, refresh_process_gauges
+        from tta_backend.utils.metrics import MATPLOTLIB_OPEN_FIGURES, refresh_process_gauges
 
         plt.close("all")
         try:
@@ -52,9 +52,9 @@ class ProcessMetricsTests(unittest.TestCase):
         self.assertEqual(_gauge_value(MATPLOTLIB_OPEN_FIGURES), 0)
 
     def test_refresh_process_gauges_reports_the_bundle_extract_cache_size(self):
-        from utils.metrics import BUNDLE_EXTRACT_CACHE_BYTES, refresh_process_gauges
+        from tta_backend.utils.metrics import BUNDLE_EXTRACT_CACHE_BYTES, refresh_process_gauges
 
-        with patch("services.open_handle.extract_cache_size_bytes", return_value=54321):
+        with patch("tta_backend.services.open_handle.extract_cache_size_bytes", return_value=54321):
             refresh_process_gauges()
 
         self.assertEqual(_gauge_value(BUNDLE_EXTRACT_CACHE_BYTES), 54321)
@@ -71,13 +71,13 @@ class MetricsEndpointRefreshesProcessGaugesTests(unittest.IsolatedAsyncioTestCas
         if any(importlib.util.find_spec(m) is None for m in _REQUIRED):
             self.skipTest("metrics endpoint test dependencies are not installed")
         import httpx
-        import api
+        import tta_backend.api as api
 
         self.httpx = httpx
         self.api = api
 
     async def test_metrics_endpoint_reports_a_positive_process_rss(self):
-        from utils.metrics import PROCESS_RSS_BYTES
+        from tta_backend.utils.metrics import PROCESS_RSS_BYTES
 
         # Zero it first: gauges are process-wide state, so without this the
         # test could pass on a stale value some earlier test happened to

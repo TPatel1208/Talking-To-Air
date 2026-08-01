@@ -27,8 +27,8 @@ async def _aiter(items):
 class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         import httpx
-        import api
-        from models.user import User
+        import tta_backend.api as api
+        from tta_backend.models.user import User
 
         self.httpx = httpx
         self.api = api
@@ -51,8 +51,8 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         async def fake_is_token_revoked(jti):
             return False
 
-        return patch("services.auth_service.get_user_by_id", fake_get_user_by_id), \
-            patch("services.auth_service.is_token_revoked", fake_is_token_revoked)
+        return patch("tta_backend.services.auth_service.get_user_by_id", fake_get_user_by_id), \
+            patch("tta_backend.services.auth_service.is_token_revoked", fake_is_token_revoked)
 
     async def test_chat_streams_done_event(self):
         async def fake_stream_response(agent, message, thread_id, **kwargs):
@@ -66,7 +66,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         auth_patches = self._auth_patch()
         with auth_patches[0], auth_patches[1], \
              patch.object(self.api, "save_session_metadata_once", fake_save_session_metadata_once), \
-             patch("services.chat_stream_service.stream_response", fake_stream_response):
+             patch("tta_backend.services.chat_stream_service.stream_response", fake_stream_response):
             async with self.httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",
@@ -317,7 +317,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(setattr, self.api.app.state, "earthdata_mcp_manager", None)
 
         async def dying_chunks(payload_, tools, chunk_size=64 * 1024):
-            from earthdata_mcp.results import CATEGORY_PROVIDER_UNAVAILABLE, MCPToolError
+            from tta_backend.earthdata_mcp.results import CATEGORY_PROVIDER_UNAVAILABLE, MCPToolError
 
             yield b"variable,latitude,longitude,value,units\n"
             raise MCPToolError(CATEGORY_PROVIDER_UNAVAILABLE, "The satellite data layer is temporarily unavailable.")
@@ -600,7 +600,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tick_count, 15)
 
     async def test_artifact_endpoints_return_paginated_rows_and_csv(self):
-        from services.artifact_store import artifact_store
+        from tta_backend.services.artifact_store import artifact_store
 
         ref = artifact_store.put_table(
             "EPA Summary",
@@ -611,8 +611,8 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
         with auth_patches[0], auth_patches[1], \
-             patch("services.artifact_store.artifact_repository.save_artifact", AsyncMock()), \
-             patch("services.artifact_store.artifact_repository.delete_expired_unclaimed", AsyncMock()):
+             patch("tta_backend.services.artifact_store.artifact_repository.save_artifact", AsyncMock()), \
+             patch("tta_backend.services.artifact_store.artifact_repository.delete_expired_unclaimed", AsyncMock()):
             await artifact_store.claim(ref.id, self.user.id, "thread-1")
             async with self.httpx.AsyncClient(
                 transport=transport,
@@ -757,7 +757,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         auth_patches = self._auth_patch()
         with auth_patches[0], auth_patches[1], \
              patch.object(self.api, "save_session_metadata_once", fake_save_session_metadata_once), \
-             patch("services.chat_stream_service.stream_response", fake_stream_response):
+             patch("tta_backend.services.chat_stream_service.stream_response", fake_stream_response):
             async with self.httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",

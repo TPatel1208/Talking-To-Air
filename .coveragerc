@@ -5,8 +5,8 @@
 # preprocessing.cache_manager were listed here until they stopped existing;
 # coverage warned "module was never imported" on every run and counted nothing.
 source =
-    api
-    utils.db
+    tta_backend.api
+    tta_backend.utils.db
 
 [report]
 show_missing = True

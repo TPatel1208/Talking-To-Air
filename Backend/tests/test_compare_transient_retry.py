@@ -16,13 +16,13 @@ from __future__ import annotations
 import unittest
 from unittest import mock
 
-from earthdata_mcp.results import (
+from tta_backend.earthdata_mcp.results import (
     CATEGORY_CONTRACT,
     CATEGORY_PROVIDER_UNAVAILABLE,
     CATEGORY_USER_INPUT,
     MCPToolError,
 )
-from tools.satellite_tools.comparison_tools import _TRANSIENT_RETRY_ATTEMPTS, _retry_transient
+from tta_backend.tools.satellite_tools.comparison_tools import _TRANSIENT_RETRY_ATTEMPTS, _retry_transient
 
 
 class CompareTransientRetryTests(unittest.IsolatedAsyncioTestCase):

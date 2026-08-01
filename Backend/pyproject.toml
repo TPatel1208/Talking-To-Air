@@ -10,20 +10,13 @@ requires-python = ">=3.12"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = [
-    "agents*",
-    "config*",
-    "datasets*",
-    "models*",
-    "preprocessing*",
-    "repositories*",
-    "services*",
-    "tools*",
-    "utils*",
-]
+# One namespaced root, so `pip install -e Backend` exposes the WHOLE backend --
+# including api and earthdata_mcp, which the old flat include list silently
+# omitted, leaving them importable only via a sys.path hack.
+include = ["tta_backend*"]
 
 [tool.setuptools.package-data]
-datasets = ["*.yaml"]
+"tta_backend.datasets" = ["*.yaml", "*.geojson"]
 
 [tool.pytest.ini_options]
 addopts = "-m \"not eval and not live_mcp\""

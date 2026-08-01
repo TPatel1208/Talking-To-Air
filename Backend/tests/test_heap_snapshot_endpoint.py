@@ -29,8 +29,8 @@ _REQUIRED = ["fastapi", "httpx", "jwt", "bcrypt"]
 class HeapSnapshotEndpointTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         import httpx
-        import api
-        from models.user import User
+        import tta_backend.api as api
+        from tta_backend.models.user import User
 
         self.httpx = httpx
         self.api = api
@@ -51,8 +51,8 @@ class HeapSnapshotEndpointTests(unittest.IsolatedAsyncioTestCase):
         async def fake_is_token_revoked(jti):
             return False
 
-        return patch("services.auth_service.get_user_by_id", fake_get_user_by_id), \
-            patch("services.auth_service.is_token_revoked", fake_is_token_revoked)
+        return patch("tta_backend.services.auth_service.get_user_by_id", fake_get_user_by_id), \
+            patch("tta_backend.services.auth_service.is_token_revoked", fake_is_token_revoked)
 
     async def test_heap_snapshot_404s_when_the_debug_flag_is_disabled(self):
         transport = self.httpx.ASGITransport(app=self.api.app)

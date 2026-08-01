@@ -28,7 +28,7 @@ REQUIRED_MODULES = ["httpx", "cartopy", "shapely", "rasterio", "affine"]
 )
 class RegionResolverFidelityTests(unittest.IsolatedAsyncioTestCase):
     def _resolver(self):
-        from utils.plotting import RegionResolver
+        from tta_backend.utils.plotting import RegionResolver
         return RegionResolver()
 
     def test_box_preset_discloses_bounding_box_type_and_display_name(self):

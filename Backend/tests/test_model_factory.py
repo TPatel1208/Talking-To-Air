@@ -12,8 +12,8 @@ _HAS_GOOGLE_GENAI = importlib.util.find_spec("langchain_google_genai") is not No
 
 class ModelFactoryTests(unittest.TestCase):
     def test_groq_provider_yields_a_model_bound_to_the_groq_api(self):
-        from config.model_factory import build_chat_model
-        from config.settings import Settings
+        from tta_backend.config.model_factory import build_chat_model
+        from tta_backend.config.settings import Settings
         from langchain_groq import ChatGroq
 
         settings = Settings(groq_api_key="groq-secret")
@@ -29,8 +29,8 @@ class ModelFactoryTests(unittest.TestCase):
         "(installed in the backend-test Docker image; see CLAUDE.md)",
     )
     def test_google_provider_yields_a_model_bound_to_gemini(self):
-        from config.model_factory import build_chat_model
-        from config.settings import Settings
+        from tta_backend.config.model_factory import build_chat_model
+        from tta_backend.config.settings import Settings
         from langchain_google_genai import ChatGoogleGenerativeAI
 
         settings = Settings(google_api_key="google-secret")
@@ -41,15 +41,15 @@ class ModelFactoryTests(unittest.TestCase):
         self.assertEqual(model.google_api_key.get_secret_value(), "google-secret")
 
     def test_unknown_provider_raises_configuration_error_at_construction(self):
-        from config.model_factory import build_chat_model
-        from config.settings import ConfigurationError, Settings
+        from tta_backend.config.model_factory import build_chat_model
+        from tta_backend.config.settings import ConfigurationError, Settings
 
         settings = Settings()
         with self.assertRaisesRegex(ConfigurationError, "openai"):
             build_chat_model("openai", "gpt-4", settings)
 
     def test_structured_output_hook_delegates_to_the_model(self):
-        from config.model_factory import structured_output
+        from tta_backend.config.model_factory import structured_output
 
         class _Schema:
             pass
@@ -72,8 +72,8 @@ class ModelFactoryTests(unittest.TestCase):
         """T15: the retry demotion's single re-prompt routes through this
         same seam with the real SubAgentEnvelope schema (asserted here
         hermetically — no live provider call)."""
-        from config.model_factory import structured_output
-        from models import SubAgentEnvelope
+        from tta_backend.config.model_factory import structured_output
+        from tta_backend.models import SubAgentEnvelope
 
         class _FakeModel:
             def __init__(self):
@@ -95,8 +95,8 @@ class ModelFactoryTests(unittest.TestCase):
         safe to feed to both providers' with_structured_output without
         reopening either provider's call site. Hermetic — no live provider
         call, per the Testing Decisions' factory-seam extension."""
-        from config.model_factory import structured_output
-        from models import SubAgentEnvelope
+        from tta_backend.config.model_factory import structured_output
+        from tta_backend.models import SubAgentEnvelope
 
         class _FakeModel:
             def __init__(self):

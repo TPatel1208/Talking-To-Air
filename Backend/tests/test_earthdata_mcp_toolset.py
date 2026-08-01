@@ -26,13 +26,13 @@ class EarthdataToolsetTests(unittest.IsolatedAsyncioTestCase):
         self.server.start()
         self.addCleanup(self.server.stop)
 
-        from config.settings import Settings
+        from tta_backend.config.settings import Settings
 
         self.settings = Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None)
 
     async def test_curated_model_tools_matches_the_curated_list_exactly(self):
-        from earthdata_mcp.client import CURATED_TOOL_NAMES
-        from earthdata_mcp.toolset import curated_model_tools, load_earthdata_tools
+        from tta_backend.earthdata_mcp.client import CURATED_TOOL_NAMES
+        from tta_backend.earthdata_mcp.toolset import curated_model_tools, load_earthdata_tools
 
         tools = await load_earthdata_tools(self.settings, lambda: "1")
         model_tools = curated_model_tools(tools)
@@ -40,7 +40,7 @@ class EarthdataToolsetTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({t.name for t in model_tools}, set(CURATED_TOOL_NAMES))
 
     async def test_curated_model_tools_excludes_internal_and_hidden_tools(self):
-        from earthdata_mcp.toolset import curated_model_tools, load_earthdata_tools
+        from tta_backend.earthdata_mcp.toolset import curated_model_tools, load_earthdata_tools
 
         tools = await load_earthdata_tools(self.settings, lambda: "1")
         model_tool_names = {t.name for t in curated_model_tools(tools)}
@@ -122,13 +122,13 @@ class DescribeDatasetModelViewTests(unittest.IsolatedAsyncioTestCase):
         self.server.start()
         self.addCleanup(self.server.stop)
 
-        from config.settings import Settings
+        from tta_backend.config.settings import Settings
 
         self.settings = Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None)
 
     async def test_model_facing_describe_dataset_drops_fill_and_range_record_lists(self):
-        from earthdata_mcp.results import parse_tool_result
-        from earthdata_mcp.toolset import curated_model_tools, load_earthdata_tools
+        from tta_backend.earthdata_mcp.results import parse_tool_result
+        from tta_backend.earthdata_mcp.toolset import curated_model_tools, load_earthdata_tools
 
         tools = await load_earthdata_tools(self.settings, lambda: "1")
         model_tools = {t.name: t for t in curated_model_tools(tools)}
@@ -154,8 +154,8 @@ class DescribeDatasetModelViewTests(unittest.IsolatedAsyncioTestCase):
         """discovery_service.py calls tools["describe_dataset"] directly on
         the same workspace-bound dict curated_model_tools reads from — the
         model-view wrapper must not weaken that shared dict."""
-        from services.discovery_service import describe_dataset
-        from earthdata_mcp.toolset import curated_model_tools, load_earthdata_tools
+        from tta_backend.services.discovery_service import describe_dataset
+        from tta_backend.earthdata_mcp.toolset import curated_model_tools, load_earthdata_tools
 
         tools = await load_earthdata_tools(self.settings, lambda: "1")
         # Build the model-facing list too, to prove it doesn't mutate `tools`.

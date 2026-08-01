@@ -30,12 +30,12 @@ REQUIRED_MODULES = ["fastapi", "httpx", "jwt", "bcrypt", "langchain_mcp_adapters
 class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         import httpx
-        import api
+        import tta_backend.api as api
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.toolset import load_earthdata_tools
-        from config.settings import Settings
-        from models.user import User
-        from utils.streaming import current_user_id
+        from tta_backend.earthdata_mcp.toolset import load_earthdata_tools
+        from tta_backend.config.settings import Settings
+        from tta_backend.models.user import User
+        from tta_backend.utils.streaming import current_user_id
 
         self.httpx = httpx
         self.api = api
@@ -147,8 +147,8 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
         async def fake_is_token_revoked(jti):
             return False
 
-        return patch("services.auth_service.get_user_by_id", fake_get_user_by_id), \
-            patch("services.auth_service.is_token_revoked", fake_is_token_revoked)
+        return patch("tta_backend.services.auth_service.get_user_by_id", fake_get_user_by_id), \
+            patch("tta_backend.services.auth_service.is_token_revoked", fake_is_token_revoked)
 
     async def test_provenance_endpoint_returns_the_merged_lineage_for_the_owned_chart(self):
         async def fake_get_chart(chart_id):
@@ -258,9 +258,9 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_export_netcdf_422s_when_the_mcp_cannot_convert_the_handle(self):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.toolset import load_earthdata_tools
-        from config.settings import Settings
-        from utils.streaming import current_user_id
+        from tta_backend.earthdata_mcp.toolset import load_earthdata_tools
+        from tta_backend.config.settings import Settings
+        from tta_backend.utils.streaming import current_user_id
 
         async def unsupported_convert_format(source_handle, output_format, workspace_id):
             return {"handle": source_handle, "status": "unsupported", "message": "NetCDF export is not available for this handle."}

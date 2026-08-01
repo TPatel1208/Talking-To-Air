@@ -31,8 +31,8 @@ REQUIRED_MODULES = ["langchain_mcp_adapters", "fastmcp", "uvicorn"]
 class IterConvertedChunksTests(unittest.IsolatedAsyncioTestCase):
     async def _tools(self, handlers):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
 
         server = FakeEarthdataMCPServer(build_fake_mcp(handlers))
         server.start()
@@ -41,7 +41,7 @@ class IterConvertedChunksTests(unittest.IsolatedAsyncioTestCase):
         return await load_raw_mcp_tools(settings)
 
     async def test_streams_the_converted_files_bytes_with_the_mcps_media_type(self):
-        from services.data_download_service import iter_converted_chunks
+        from tta_backend.services.data_download_service import iter_converted_chunks
 
         with tempfile.NamedTemporaryFile(suffix=".nc", delete=False) as fixture:
             fixture.write(b"fake-netcdf-bytes" * 100)
@@ -74,7 +74,7 @@ class IterConvertedChunksTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(content, b"fake-netcdf-bytes" * 100)
 
     async def test_raises_with_the_mcps_message_when_conversion_is_not_ready(self):
-        from services.data_download_service import DataDownloadError, iter_converted_chunks
+        from tta_backend.services.data_download_service import DataDownloadError, iter_converted_chunks
 
         async def convert_format(source_handle, output_format, workspace_id):
             return {"handle": source_handle, "status": "unsupported", "message": "NetCDF export is not available for this handle."}
@@ -88,7 +88,7 @@ class IterConvertedChunksTests(unittest.IsolatedAsyncioTestCase):
     async def test_raises_with_the_mcps_message_when_the_converted_export_is_not_ready(self):
         # convert_format itself can succeed (mint the cube_ handle) while the
         # follow-up export_result still reports pending/expired.
-        from services.data_download_service import DataDownloadError, iter_converted_chunks
+        from tta_backend.services.data_download_service import DataDownloadError, iter_converted_chunks
 
         async def convert_format(source_handle, output_format, workspace_id):
             return {"handle": "cube_1", "status": "ready", "output_format": output_format, "operation": "convert_format"}

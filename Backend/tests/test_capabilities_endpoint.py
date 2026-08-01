@@ -19,13 +19,13 @@ _REQUIRED = ["fastapi", "httpx", "jwt", "bcrypt", "langchain", "langgraph"]
 class CapabilitiesStartersEndpointTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         import httpx
-        import api
+        import tta_backend.api as api
 
         self.httpx = httpx
         self.api = api
 
     async def test_starters_endpoint_is_reachable_without_authentication(self):
-        from config.starter_prompts import STARTER_PROMPTS
+        from tta_backend.config.starter_prompts import STARTER_PROMPTS
 
         transport = self.httpx.ASGITransport(app=self.api.app)
         async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:

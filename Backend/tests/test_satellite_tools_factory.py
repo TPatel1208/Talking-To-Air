@@ -24,8 +24,8 @@ REQUIRED_MODULES = ["langchain_mcp_adapters", "fastmcp", "uvicorn", "xarray", "z
 class SatelliteToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from fake_earthdata_mcp import HandleVolume, build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
 
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
@@ -42,7 +42,7 @@ class SatelliteToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
         self.mcp_tools = await load_raw_mcp_tools(settings)
 
     def _tool(self, name):
-        from tools.satellite_tools.factory import build_satellite_tools
+        from tta_backend.tools.satellite_tools.factory import build_satellite_tools
 
         tools = {t.name: t for t in build_satellite_tools(self.mcp_tools)}
         return tools[name]
@@ -64,7 +64,7 @@ class SatelliteToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
             emitted["payload"] = full_payload
 
         plot_singular = self._tool("plot_singular")
-        with patch("tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
             result = await plot_singular.ainvoke({"handle": "obs_1", "location": "global"})
         payload = json.loads(result)
 
@@ -112,7 +112,7 @@ class SatelliteToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
         self.volume.add_zarr("obs_multivar", make_dataset)
 
         plot_singular = self._tool("plot_singular")
-        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda payload: None):
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", lambda payload: None):
             result = await plot_singular.ainvoke({"handle": "obs_multivar", "location": "global"})
         payload = json.loads(result)
 
@@ -134,7 +134,7 @@ class SatelliteToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
         self.volume.add_zarr("obs_multivar_pick", make_dataset)
 
         plot_singular = self._tool("plot_singular")
-        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda payload: None):
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", lambda payload: None):
             result = await plot_singular.ainvoke({
                 "handle": "obs_multivar_pick", "location": "global", "variable": "Aerosol_Optical_Depth",
             })
@@ -149,7 +149,7 @@ class SatelliteToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
         handle must inherit it without a variable param."""
         import xarray as xr
 
-        from services import variable_choice_registry
+        from tta_backend.services import variable_choice_registry
 
         def make_dataset():
             return xr.Dataset(
@@ -166,7 +166,7 @@ class SatelliteToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(variable_choice_registry._choices.clear)
 
         plot_singular = self._tool("plot_singular")
-        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda payload: None):
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", lambda payload: None):
             result = await plot_singular.ainvoke({"handle": "obs_recorded", "location": "global"})
         payload = json.loads(result)
 
@@ -225,7 +225,7 @@ class SatelliteToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
         self.volume.add_zarr("obs_level_pick", make_dataset)
 
         plot_singular = self._tool("plot_singular")
-        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda payload: None):
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", lambda payload: None):
             result = await plot_singular.ainvoke({
                 "handle": "obs_level_pick", "location": "global", "dimension": "lev", "dimension_value": 500.0,
             })
@@ -251,7 +251,7 @@ class SatelliteToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
             emitted["payload"] = full_payload
 
         plot_multiple = self._tool("plot_multiple")
-        with patch("tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
             result = await plot_multiple.ainvoke({
                 "handles": ["obs_a", "obs_b"],
                 "locations": ["global", "global"],
@@ -301,7 +301,7 @@ class SatelliteToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
             emitted["payload"] = full_payload
 
         conduct_temporal_statistic = self._tool("conduct_temporal_statistic")
-        with patch("tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
             result = await conduct_temporal_statistic.ainvoke({"handle": "obs_ts", "location": "global", "stat": "mean"})
         payload = json.loads(result)
 

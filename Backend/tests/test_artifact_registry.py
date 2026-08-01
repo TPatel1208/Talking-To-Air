@@ -9,7 +9,7 @@ if BACKEND_DIR not in sys.path:
 
 class BuildArtifactReferenceMapTests(unittest.TestCase):
     def test_builds_a_map_artifact_from_a_heatmap_payload(self):
-        from services.artifact_registry import build_artifact_reference
+        from tta_backend.services.artifact_registry import build_artifact_reference
 
         payload = {
             "chart_id": "map_abc123",
@@ -34,7 +34,7 @@ class BuildArtifactReferenceMapTests(unittest.TestCase):
         self.assertEqual(ref.metadata["source_handles"], ["obs_1"])
 
     def test_rejects_a_heatmap_payload_missing_bounds(self):
-        from services.artifact_registry import build_artifact_reference
+        from tta_backend.services.artifact_registry import build_artifact_reference
 
         payload = {
             "chart_id": "map_bad",
@@ -51,7 +51,7 @@ class BuildArtifactReferenceMapTests(unittest.TestCase):
             build_artifact_reference(payload)
 
     def test_returns_none_for_a_render_type_with_no_artifact_mapping(self):
-        from services.artifact_registry import build_artifact_reference
+        from tta_backend.services.artifact_registry import build_artifact_reference
 
         ref = build_artifact_reference({"type": "table", "title": "n/a"})
 
@@ -60,7 +60,7 @@ class BuildArtifactReferenceMapTests(unittest.TestCase):
 
 class BuildArtifactReferenceComparisonTests(unittest.TestCase):
     def test_builds_a_comparison_artifact_from_a_heatmap_multi_payload(self):
-        from services.artifact_registry import build_artifact_reference
+        from tta_backend.services.artifact_registry import build_artifact_reference
 
         payload = {
             "chart_id": "cmp_abc123",
@@ -83,7 +83,7 @@ class BuildArtifactReferenceComparisonTests(unittest.TestCase):
         self.assertEqual(ref.metadata["source_handles"], ["obs_1", "obs_2"])
 
     def test_builds_a_difference_mode_comparison_artifact_when_payload_states_the_mode(self):
-        from services.artifact_registry import build_artifact_reference
+        from tta_backend.services.artifact_registry import build_artifact_reference
 
         payload = {
             "chart_id": "cmp_diff1",
@@ -104,7 +104,7 @@ class BuildArtifactReferenceComparisonTests(unittest.TestCase):
         self.assertEqual(len(ref.metadata["panels"]), 2)
 
     def test_rejects_a_heatmap_multi_payload_with_only_one_panel(self):
-        from services.artifact_registry import build_artifact_reference
+        from tta_backend.services.artifact_registry import build_artifact_reference
 
         payload = {
             "chart_id": "cmp_bad",
@@ -120,7 +120,7 @@ class BuildArtifactReferenceComparisonTests(unittest.TestCase):
 
 class BuildArtifactReferenceTimeseriesTests(unittest.TestCase):
     def test_builds_a_timeseries_artifact_from_a_timeseries_payload(self):
-        from services.artifact_registry import build_artifact_reference
+        from tta_backend.services.artifact_registry import build_artifact_reference
 
         payload = {
             "chart_id": "ts_abc123",
@@ -143,7 +143,7 @@ class BuildArtifactReferenceTimeseriesTests(unittest.TestCase):
         self.assertEqual(ref.metadata["source_handles"], ["obs_1"])
 
     def test_builds_an_overlay_timeseries_artifact_with_explicit_series_list(self):
-        from services.artifact_registry import build_artifact_reference
+        from tta_backend.services.artifact_registry import build_artifact_reference
 
         payload = {
             "chart_id": "ts_overlay1",
@@ -171,7 +171,7 @@ class BuildArtifactReferenceTimeseriesTests(unittest.TestCase):
         # T33: validate_against_ground/exceedance_overlay already compute these
         # facts (ts_payload["stats"]/["coverage"]/["exceedance_dates"]) but the
         # artifact stub used to drop them -- the new Overview/Details needs them.
-        from services.artifact_registry import build_artifact_reference
+        from tta_backend.services.artifact_registry import build_artifact_reference
 
         payload = {
             "chart_id": "ts_overlay2",
@@ -200,7 +200,7 @@ class BuildArtifactReferenceTimeseriesTests(unittest.TestCase):
         # QA-masking provenance (ts_payload["masking"], same top-level spot
         # plot_tools uses) but the artifact stub used to drop it -- the
         # ground-validation Overview's "Data quality" field needs it.
-        from services.artifact_registry import build_artifact_reference
+        from tta_backend.services.artifact_registry import build_artifact_reference
 
         payload = {
             "chart_id": "ts_overlay3",
@@ -224,7 +224,7 @@ class BuildArtifactReferenceTimeseriesTests(unittest.TestCase):
     def test_stats_coverage_and_exceedance_dates_are_optional(self):
         # Additive/optional (T33) -- a payload with none of these still builds
         # a valid artifact, existing smaller-shape consumers unaffected.
-        from services.artifact_registry import build_artifact_reference
+        from tta_backend.services.artifact_registry import build_artifact_reference
 
         payload = {
             "chart_id": "ts_abc999",

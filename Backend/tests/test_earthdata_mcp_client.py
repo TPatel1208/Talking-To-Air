@@ -28,26 +28,26 @@ class EarthdataMCPClientTests(unittest.IsolatedAsyncioTestCase):
         self.all_names = set(ALL_RAW_TOOL_NAMES)
 
     def _settings(self, url=None):
-        from config.settings import Settings
+        from tta_backend.config.settings import Settings
 
         return Settings(earthdata_mcp_url=url or self.server.url, earthdata_mcp_token=None)
 
     async def test_load_raw_mcp_tools_returns_every_tool_by_name(self):
-        from earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
 
         tools = await load_raw_mcp_tools(self._settings())
 
         self.assertEqual(set(tools.keys()), self.all_names)
 
     async def test_load_raw_mcp_tools_fails_loud_when_unreachable(self):
-        from earthdata_mcp.client import EarthdataMCPUnavailableError, load_raw_mcp_tools
+        from tta_backend.earthdata_mcp.client import EarthdataMCPUnavailableError, load_raw_mcp_tools
 
         with self.assertRaises(EarthdataMCPUnavailableError):
             await load_raw_mcp_tools(self._settings(url="http://127.0.0.1:1/mcp"))
 
     async def test_load_raw_mcp_tools_fails_loud_when_required_tool_missing(self):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import EarthdataMCPUnavailableError, load_raw_mcp_tools
+        from tta_backend.earthdata_mcp.client import EarthdataMCPUnavailableError, load_raw_mcp_tools
 
         mcp = build_fake_mcp(exclude=("get_provenance",))
         server = FakeEarthdataMCPServer(mcp)
@@ -61,7 +61,7 @@ class EarthdataMCPClientTests(unittest.IsolatedAsyncioTestCase):
         # T05's jobs panel composes list_workspace + get_retrieval_status;
         # a stack that can't list a workspace's jobs should fail at boot.
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import EarthdataMCPUnavailableError, load_raw_mcp_tools
+        from tta_backend.earthdata_mcp.client import EarthdataMCPUnavailableError, load_raw_mcp_tools
 
         mcp = build_fake_mcp(exclude=("list_workspace",))
         server = FakeEarthdataMCPServer(mcp)
@@ -76,7 +76,7 @@ class EarthdataMCPClientTests(unittest.IsolatedAsyncioTestCase):
         # over the exported handle; a stack that can't convert formats
         # should fail at boot, not mid-download.
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import EarthdataMCPUnavailableError, load_raw_mcp_tools
+        from tta_backend.earthdata_mcp.client import EarthdataMCPUnavailableError, load_raw_mcp_tools
 
         mcp = build_fake_mcp(exclude=("convert_format",))
         server = FakeEarthdataMCPServer(mcp)
@@ -89,21 +89,21 @@ class EarthdataMCPClientTests(unittest.IsolatedAsyncioTestCase):
     async def test_probe_mcp_tools_returns_every_required_tool_name(self):
         # T40: the steady-state heartbeat probe is a listing, not a full
         # load+bind -- it still proves every required tool is present.
-        from earthdata_mcp.client import REQUIRED_TOOL_NAMES, probe_mcp_tools
+        from tta_backend.earthdata_mcp.client import REQUIRED_TOOL_NAMES, probe_mcp_tools
 
         names = await probe_mcp_tools(self._settings())
 
         self.assertTrue(set(REQUIRED_TOOL_NAMES).issubset(names))
 
     async def test_probe_mcp_tools_fails_loud_when_unreachable(self):
-        from earthdata_mcp.client import EarthdataMCPUnavailableError, probe_mcp_tools
+        from tta_backend.earthdata_mcp.client import EarthdataMCPUnavailableError, probe_mcp_tools
 
         with self.assertRaises(EarthdataMCPUnavailableError):
             await probe_mcp_tools(self._settings(url="http://127.0.0.1:1/mcp"))
 
     async def test_probe_mcp_tools_fails_loud_when_required_tool_missing(self):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import EarthdataMCPUnavailableError, probe_mcp_tools
+        from tta_backend.earthdata_mcp.client import EarthdataMCPUnavailableError, probe_mcp_tools
 
         mcp = build_fake_mcp(exclude=("get_provenance",))
         server = FakeEarthdataMCPServer(mcp)

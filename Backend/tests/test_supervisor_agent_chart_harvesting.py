@@ -20,7 +20,7 @@ class RunSatelliteChartHarvestingTests(unittest.IsolatedAsyncioTestCase):
     are compact summaries now and no longer parse as a ChartPayload."""
 
     async def _build_ask_earthdata_agent(self, fake_satellite_agent):
-        from agents import supervisor_agent
+        from tta_backend.agents import supervisor_agent
 
         captured = {}
 
@@ -36,13 +36,13 @@ class RunSatelliteChartHarvestingTests(unittest.IsolatedAsyncioTestCase):
         return captured["tools"]["ask_earthdata_agent"]
 
     async def test_harvests_a_chart_from_a_chart_payload_event(self):
-        from models import AgentResult
+        from tta_backend.models import AgentResult
 
         envelope = json.dumps({"summary": "Plotted NO2 over NJ.", "artifact_ids": [], "handles": ["obs_1"]})
 
         class FakeSatelliteAgent:
             async def astream(self, input_, config, stream_mode):
-                from utils.streaming import emit_chart
+                from tta_backend.utils.streaming import emit_chart
 
                 emit_chart({"type": "heatmap", "chart_id": "map_1", "values": [[1.0]], "title": "NO2"})
                 await asyncio.sleep(0)
@@ -62,7 +62,7 @@ class RunSatelliteChartHarvestingTests(unittest.IsolatedAsyncioTestCase):
         """The compact tool_result content (render_type, not type) must not be
         mis-parsed as a ChartPayload — charts come exclusively from
         chart_payload events now."""
-        from models import AgentResult
+        from tta_backend.models import AgentResult
 
         compact_tool_result = json.dumps({
             "render_type": "heatmap",

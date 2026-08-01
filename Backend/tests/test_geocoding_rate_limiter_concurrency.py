@@ -63,7 +63,7 @@ class _TimingFakeAsyncClient:
 )
 class GeocodingRateLimiterConcurrencyTests(unittest.IsolatedAsyncioTestCase):
     async def test_two_concurrent_ageocode_calls_are_throttled_a_full_second_apart(self):
-        from utils.plotting import GeocodingService
+        from tta_backend.utils.plotting import GeocodingService
 
         service = GeocodingService()
         # Prime last_request as if a request "just" fired: both concurrent
@@ -75,7 +75,7 @@ class GeocodingRateLimiterConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         service.last_request = time.time() - 0.1
         _TimingFakeAsyncClient.call_times = []
 
-        with patch("utils.plotting.httpx.AsyncClient", _TimingFakeAsyncClient):
+        with patch("tta_backend.utils.plotting.httpx.AsyncClient", _TimingFakeAsyncClient):
             await asyncio.gather(
                 service.ageocode("T45 Concurrency Test Locale A"),
                 service.ageocode("T45 Concurrency Test Locale B"),
@@ -96,7 +96,7 @@ class GeocodingRateLimiterConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         bookkeeping, not two independent clocks that can both fire at once."""
         import requests
 
-        from utils.plotting import GeocodingService
+        from tta_backend.utils.plotting import GeocodingService
 
         service = GeocodingService()
         # Same priming as the async/async test: forces both paths through
@@ -117,7 +117,7 @@ class GeocodingRateLimiterConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         _TimingFakeAsyncClient.call_times = []
 
         with patch.object(requests, "get", fake_requests_get), \
-             patch("utils.plotting.httpx.AsyncClient", _TimingFakeAsyncClient):
+             patch("tta_backend.utils.plotting.httpx.AsyncClient", _TimingFakeAsyncClient):
             await asyncio.gather(
                 asyncio.to_thread(service.geocode, "T45 Sync Locale"),
                 service.ageocode("T45 Concurrency Test Locale C"),

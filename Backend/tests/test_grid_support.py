@@ -18,8 +18,8 @@ import numpy as np  # noqa: E402
 import xarray as xr  # noqa: E402
 from shapely.geometry import box  # noqa: E402
 
-from earthdata_mcp.results import CATEGORY_UNSUPPORTED_GRID, MCPToolError  # noqa: E402
-from utils.plotting import mask_data_by_geometry  # noqa: E402
+from tta_backend.earthdata_mcp.results import CATEGORY_UNSUPPORTED_GRID, MCPToolError  # noqa: E402
+from tta_backend.utils.plotting import mask_data_by_geometry  # noqa: E402
 
 
 class MaskGridSupportTests(unittest.TestCase):

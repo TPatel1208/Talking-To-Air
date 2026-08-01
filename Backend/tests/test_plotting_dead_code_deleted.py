@@ -28,19 +28,19 @@ REQUIRED_MODULES = ["cartopy", "shapely", "rasterio"]
 )
 class PlotDiffMapsDeletedTests(unittest.TestCase):
     def test_plot_diff_maps_is_deleted(self):
-        import utils.plotting as plotting
+        import tta_backend.utils.plotting as plotting
 
         self.assertFalse(hasattr(plotting, "plot_diff_maps"))
 
     def test_region_resolver_plot_multiple_is_deleted(self):
-        from utils.plotting import RegionResolver
+        from tta_backend.utils.plotting import RegionResolver
 
         self.assertFalse(hasattr(RegionResolver, "plot_multiple"))
 
     def test_plot_map_and_plot_singular_survive(self):
         """plot_map stays live via export_service.py's PNG export path."""
-        import utils.plotting as plotting
-        from utils.plotting import RegionResolver
+        import tta_backend.utils.plotting as plotting
+        from tta_backend.utils.plotting import RegionResolver
 
         self.assertTrue(hasattr(plotting, "plot_map"))
         self.assertTrue(hasattr(RegionResolver, "plot_singular"))
