@@ -14,6 +14,7 @@ from tta_backend.datasets.qa_flags import (
     QA_CF_DETERMINISTIC,
     QA_INFERRED,
     QA_NOT_APPLIED,
+    QA_NO_FLAG_VARIABLE,
     QA_VERIFIED,
     resolve_qa_info,
 )
@@ -754,6 +755,18 @@ class AggregationService:
                 "qa_source": qa_provenance.get("qa_source", "none"),
                 "qa_note": "quality-flag data not present in the opened view; mask not applied",
             }
+        # Distinguish "no flag to interpret" from "flag we could not interpret".
+        # ``_resolve_qa_flag_var`` returns a pinned name even when that band is
+        # absent from the opened view, so a None here means we looked at a real
+        # Dataset and it publishes no quality flag at all -- nothing to pin,
+        # nothing to fix. Only claimable when a Dataset was actually available.
+        if (
+            source_ds is not None
+            and qf_var is None
+            and qa_provenance.get("qa_status") == QA_NOT_APPLIED
+        ):
+            qa_provenance = {**qa_provenance, "qa_status": QA_NO_FLAG_VARIABLE}
+
         masking_provenance.update(qa_provenance)
 
         # T55: count the QA outcome where the mask is actually applied and fold

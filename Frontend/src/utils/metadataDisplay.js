@@ -71,6 +71,12 @@ export function granuleDates(chart) {
 export function maskingStatusColor(qaStatus) {
   if (qaStatus === 'verified' || qaStatus === 'cf-deterministic') return 'var(--success, #1a7f4b)'
   if (qaStatus === 'inferred, not verified') return 'var(--warning, #b98900)'
+  // A product that publishes no quality flag has nothing anyone can pin or
+  // fix, so it reads neutral. Red is reserved for the statuses that mean a
+  // mask was expected and did not happen.
+  if (qaStatus === 'not applied — this product publishes no quality flag variable') {
+    return 'var(--text-muted, #667085)'
+  }
   return 'var(--error, #b42318)'
 }
 

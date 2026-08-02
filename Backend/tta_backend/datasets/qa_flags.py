@@ -37,6 +37,13 @@ QA_CF_DETERMINISTIC = "cf-deterministic"
 QA_INFERRED = "inferred, not verified"
 QA_AMBIGUOUS_PENDING = "ambiguous — awaiting classification"
 QA_NOT_APPLIED = "not applied — semantics unknown"
+# Distinct from QA_NOT_APPLIED: that one means a flag exists somewhere but its
+# semantics could not be established, which is a prompt to go pin it. This one
+# means the product publishes no per-pixel quality flag at all (TEMPO O3TOT,
+# granule-verified 2026-08-02), so there is nothing to pin and nothing to fix.
+# Reporting both as "semantics unknown" sent readers hunting for a flag that
+# does not exist.
+QA_NO_FLAG_VARIABLE = "not applied — this product publishes no quality flag variable"
 
 # Tokens whose plain-English meaning is unambiguous good/bad quality --
 # matched case-insensitively against each flag_meanings token (spaces and

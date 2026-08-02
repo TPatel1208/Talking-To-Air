@@ -164,6 +164,15 @@ test('maskingStatusColor maps ambiguous/not-applied to the red/error color', () 
   assert.equal(maskingStatusColor('not applied — semantics unknown'), red)
 })
 
+// A product that publishes no quality flag is not a fault to alarm about --
+// TEMPO O3TOT will never have one, so error-red on every plot forever reads as
+// something the researcher could fix. The unfixable case gets a neutral color.
+test('maskingStatusColor maps "no flag variable" to neutral, not error red', () => {
+  const status = 'not applied — this product publishes no quality flag variable'
+  assert.notEqual(maskingStatusColor(status), 'var(--error, #b42318)')
+  assert.equal(maskingStatusColor(status), 'var(--text-muted, #667085)')
+})
+
 // ── Source dataset / citation ───────────────────────────────────────────────
 
 test('citationString composes dataset, description, version, source, and collection id', () => {

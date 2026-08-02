@@ -933,8 +933,13 @@ class AggregationServiceTests(unittest.TestCase):
     def test_aggregate_no_qa_metadata_anywhere_discloses_not_applied(self):
         """T25 Phase 3: a prose-only-QA product (e.g. MOD08_D3) has no
         pinned rule and no CF flag_values/flag_meanings anywhere -- masking
-        stays off, and meta says so explicitly rather than staying silent."""
-        from tta_backend.datasets.qa_flags import QA_NOT_APPLIED
+        stays off, and meta says so explicitly rather than staying silent.
+
+        Since 2026-08-02 that disclosure is the more precise "publishes no
+        quality flag variable": nothing here is unknown, there is simply no
+        flag band to interpret. MODIS L3 AOD is quality-screened at L2 before
+        gridding, so this is a permanent product property, not a gap to pin."""
+        from tta_backend.datasets.qa_flags import QA_NO_FLAG_VARIABLE
         from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self.xr.Dataset({
@@ -943,7 +948,7 @@ class AggregationServiceTests(unittest.TestCase):
 
         result = AggregationService().aggregate(ds, variable="Aerosol_Optical_Depth_Land_Ocean_Mean")
 
-        self.assertEqual(result.meta["masking"]["qa_status"], QA_NOT_APPLIED)
+        self.assertEqual(result.meta["masking"]["qa_status"], QA_NO_FLAG_VARIABLE)
         values = result.ds["Aerosol_Optical_Depth_Land_Ocean_Mean"].values
         self.assertEqual(list(values[0]), [1.0, 2.0])
 
@@ -1778,6 +1783,27 @@ class QaPassRateCounterTests(unittest.TestCase):
         self.assertEqual(masking["qa_checked_pixels"], 4)
         self.assertEqual(masking["qa_passing_pixels"], 2)
         self.assertAlmostEqual(masking["qa_pass_rate"], 0.5, places=6)
+
+    def test_a_product_with_no_flag_band_says_so_instead_of_semantics_unknown(self):
+        """TEMPO O3TOT publishes no quality flag variable at all -- granule-
+        verified 2026-08-02, 16 bands, none carrying CF flag attributes. Saying
+        "semantics unknown" there describes a flag we could not interpret, when
+        the truth is there is no flag to interpret. The two cases lead a reader
+        to different actions (go pin it / nothing to pin), so they read
+        differently."""
+        from tta_backend.datasets.qa_flags import QA_NO_FLAG_VARIABLE
+        from tta_backend.preprocessing.aggregation_service import AggregationService
+
+        ds = self.xr.Dataset(
+            {"column_amount_o3": (("lat", "lon"), self.np.array([[300.0, 310.0], [320.0, 330.0]]))},
+            coords={"lat": [10.0, 20.0], "lon": [30.0, 40.0]},
+        )
+
+        _masked, provenance = AggregationService().resolve_and_mask(
+            ds["column_amount_o3"], variable="column_amount_o3", col_info={}, source_ds=ds,
+        )
+
+        self.assertEqual(provenance["qa_status"], QA_NO_FLAG_VARIABLE)
 
     def _require_dask(self):
         if importlib.util.find_spec("dask") is None:  # pragma: no cover
