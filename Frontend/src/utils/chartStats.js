@@ -5,14 +5,36 @@ export function computeChartStats(chart) {
   if (chart.type === 'heatmap' || chart.type === 'heatmap_multi') {
     const payload = chart.type === 'heatmap_multi' ? chart.panels?.[0] : chart
     if (!payload) return null
-    return statsFromValues(rawCellValues(payload), payload.units)
+    return statsFromPayload(payload) || statsFromValues(rawCellValues(payload), payload.units, 'rendered-grid')
   }
 
   if (chart.type === 'timeseries') {
-    return statsFromValues(chart.values || [], chart.units)
+    return statsFromValues(chart.values || [], chart.units, 'series')
   }
 
   return null
+}
+
+// Statistics the backend computed on the FULL-resolution field, before the
+// grid was thinned for rendering (plot_tools._field_statistics). Recomputing
+// them here from `values` would describe the thumbnail instead: the grid is
+// capped at _MAX_GRID_CELLS by a uniform stride, which steps over exactly the
+// small-area features that set the extremes. Returns null for a payload that
+// predates this field, so an older artifact still renders its own numbers.
+function statsFromPayload(payload) {
+  const s = payload.statistics
+  if (!s || !Number.isFinite(s.count) || s.count <= 0) return null
+  if (![s.mean, s.min, s.max].every(Number.isFinite)) return null
+
+  return {
+    mean: s.mean,
+    max: s.max,
+    min: s.min,
+    units: payload.units,
+    basis: 'analyzed-region',
+    count: s.count,
+    validPct: Number.isFinite(s.valid_fraction) ? s.valid_fraction * 100 : 0,
+  }
 }
 
 // Every cell of the payload's own grid, nulls included. Masked pixels (QA
@@ -28,7 +50,7 @@ function rawCellValues(payload) {
   return []
 }
 
-function statsFromValues(values, units) {
+function statsFromValues(values, units, basis) {
   const finite = values.filter(Number.isFinite)
   if (!finite.length) return null
 
@@ -39,7 +61,7 @@ function statsFromValues(values, units) {
   const validPct = values.length ? (finite.length / values.length) * 100 : 0
 
   return {
-    mean, max, min, units,
+    mean, max, min, units, basis,
     count: finite.length,
     validPct,
   }

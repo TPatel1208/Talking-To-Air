@@ -172,6 +172,52 @@ def _downsample_grid(lats: np.ndarray, lons: np.ndarray, arr: np.ndarray):
     return lats[::row_step], lons[::col_step], arr[::row_step, ::col_step]
 
 
+def _field_statistics(arr: np.ndarray, lats: np.ndarray) -> dict:
+    """Summary statistics for the analyzed region, computed on the FULL
+    resolution field -- deliberately before ``_downsample_grid`` thins it, for
+    the same reason the overlay PNG is rendered before thinning: what the
+    reader is told and what fits in the payload are different concerns.
+
+    Computing these from the thinned grid understates the extremes badly, since
+    a stride steps over exactly the small-area features that produce them
+    (measured on a real TEMPO NO2 L3 scene: true max 9.2418e+17 reported as
+    6.9003e+16). ``valid_fraction`` is the one figure that survives thinning
+    intact, which is why the discrepancy stayed invisible for so long.
+    """
+    finite = np.isfinite(arr)
+    count = int(finite.sum())
+    if count == 0:
+        return {"count": 0, "valid_fraction": 0.0}
+    values = arr[finite]
+    return {
+        "count": count,
+        "valid_fraction": round(float(count) / float(arr.size), 6),
+        "mean": float(f"{_area_weighted_mean(arr, lats, finite):.6e}"),
+        "min": float(f"{values.min():.6e}"),
+        "max": float(f"{values.max():.6e}"),
+    }
+
+
+def _area_weighted_mean(arr: np.ndarray, lats: np.ndarray, finite: np.ndarray) -> float:
+    """cos(latitude)-weighted mean over the finite cells of a (lat, lon) grid.
+
+    Cells shrink toward the poles, so a plain cell average overweights
+    high-latitude cells -- on a 0-80 degree grid that is a 31% error. The stats
+    and trend tools already weight this way; a map reporting its own mean has
+    to agree with them, or one scene answers two different numbers.
+    """
+    lat_vals = np.asarray(lats, dtype=float)
+    if lat_vals.ndim != 1 or lat_vals.size != arr.shape[0]:
+        return float(arr[finite].mean())          # not a (lat, lon) grid we can weight
+    weights = np.clip(np.cos(np.deg2rad(lat_vals)), 0.0, None)
+    weights = np.where(np.isfinite(weights), weights, 0.0)
+    w = np.broadcast_to(weights[:, None], arr.shape)[finite]
+    total = float(w.sum())
+    if total <= 0.0:
+        return float(arr[finite].mean())
+    return float((arr[finite] * w).sum() / total)
+
+
 def _points_from_grid(lats: np.ndarray, lons: np.ndarray, arr: np.ndarray):
     row_idx, col_idx = np.where(np.isfinite(arr))
     count = len(row_idx)
@@ -300,6 +346,8 @@ def _build_heatmap_payload(
         if overlay_path is not None:
             overlay["_path"] = overlay_path
 
+    statistics = _field_statistics(arr, lats_out)
+
     lats_out, lons_out, arr = _downsample_grid(lats_out, lons_out, arr)
 
     values_json = [
@@ -316,6 +364,7 @@ def _build_heatmap_payload(
         "lons":     [round(float(v), 6) for v in lons_out],
         "values":   values_json,
         "points":   points,
+        "statistics": statistics,
         "vmin": float(f"{vmin:.6e}"),
         "vmax": float(f"{vmax:.6e}"),
         "scale": scale,

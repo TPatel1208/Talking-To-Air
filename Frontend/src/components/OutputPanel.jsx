@@ -226,6 +226,18 @@ function qaPassRateCard(masking) {
   return { value: rate, subtitle: parts.join(' · ') }
 }
 
+// What extent each figure was counted over, keyed by computeChartStats' basis.
+const VALID_BASIS = {
+  'analyzed-region': 'finite cells in the analyzed region',
+  'rendered-grid': 'finite cells in the rendered grid',
+  series: 'time steps carrying a value',
+}
+const COUNT_BASIS = {
+  'analyzed-region': 'observations in the analyzed region',
+  'rendered-grid': 'cells in the rendered grid, not observations',
+  series: 'time steps',
+}
+
 function StatisticsTab({ chart }) {
   const stats = useMemo(() => computeChartStats(chart), [chart])
   const masking = useMemo(() => resolveMasking(chart), [chart])
@@ -250,10 +262,13 @@ function StatisticsTab({ chart }) {
         <StatCard label="Min" value={`${fmt(stats.min)} ${stats.units || ''}`} />
         {/* "Valid values" answers "did we get data at all"; the QA pass rate
             answers "how much of what we got survived the quality mask". Both
-            stay, and each states its basis so they can't be conflated. */}
-        <StatCard label="Valid values" value={`${stats.validPct.toFixed(1)}%`} subtitle="finite cells in the rendered grid" />
+            stay, and each states its basis so they can't be conflated. The
+            basis is not fixed: statistics computed server-side describe the
+            analyzed region, while an artifact predating that field can only be
+            recomputed from the thinned grid it shipped. */}
+        <StatCard label="Valid values" value={`${stats.validPct.toFixed(1)}%`} subtitle={VALID_BASIS[stats.basis] || VALID_BASIS['rendered-grid']} />
         {passRate && <StatCard label="QA pass rate" value={passRate.value} subtitle={passRate.subtitle} />}
-        <StatCard label="Sample count" value={stats.count.toLocaleString()} />
+        <StatCard label="Sample count" value={stats.count.toLocaleString()} subtitle={COUNT_BASIS[stats.basis] || COUNT_BASIS['rendered-grid']} />
       </div>
       <MaskingDisclosure chart={chart} masking={masking} />
       <EvidenceSection chart={chart} />

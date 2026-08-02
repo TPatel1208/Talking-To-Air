@@ -60,6 +60,55 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         self.assertEqual(len(payload["points"]["values"]), 2)
         self.assertLessEqual(len(payload["points"]["values"]), _MAX_GRID_CELLS)
 
+    def test_reported_statistics_describe_the_full_field_not_the_rendered_grid(self):
+        """The grid in the payload is thinned to _MAX_GRID_CELLS for rendering,
+        so a peak that falls between kept rows/columns disappears from it. A
+        statistic computed on what survives describes the thumbnail, not the
+        analyzed region: measured 2026-08-01 on a real TEMPO NO2 L3 scene, the
+        true maximum 9.2418e+17 was reported as 6.9003e+16 -- low by 13.4x."""
+        import numpy as np
+        import xarray as xr
+        from tta_backend.tools.satellite_tools.plot_tools import _MAX_GRID_CELLS, _da_to_heatmap_payload
+
+        arr = np.full((200, 200), 1.0)          # 40,000 cells -> thinned
+        arr[1, 1] = 1000.0                      # a peak the stride steps over
+        da = xr.DataArray(
+            arr,
+            dims=("lat", "lon"),
+            coords={"lat": np.linspace(10, 20, 200), "lon": np.linspace(-100, -90, 200)},
+        )
+
+        payload = _da_to_heatmap_payload(da, "Peak", "NO2", "mol/cm2")
+
+        rendered = [v for row in payload["values"] for v in row if v is not None]
+        self.assertLessEqual(len(rendered), _MAX_GRID_CELLS)
+        self.assertNotIn(1000.0, rendered)      # the peak really is dropped
+        self.assertEqual(payload["statistics"]["max"], 1000.0)
+
+    def test_reported_mean_weights_cells_by_latitude(self):
+        """Grid cells shrink toward the poles, so a plain cell average
+        overweights high-latitude cells. The stats and trend tools already
+        report cos(latitude)-weighted means; a map's own reported mean has to
+        agree with them or the same scene answers two different numbers."""
+        import numpy as np
+        import xarray as xr
+        from tta_backend.tools.satellite_tools.plot_tools import _da_to_heatmap_payload
+
+        lats = np.linspace(0.0, 80.0, 100)
+        arr = np.tile(np.where(lats < 40.0, 0.0, 100.0)[:, None], (1, 100))  # 50 rows each way
+        da = xr.DataArray(
+            arr, dims=("lat", "lon"),
+            coords={"lat": lats, "lon": np.linspace(-10, 10, 100)},
+        )
+
+        payload = _da_to_heatmap_payload(da, "Weighted", "NO2", "mol/cm2")
+
+        self.assertEqual(float(arr.mean()), 50.0)          # the unweighted answer
+        weights = np.cos(np.deg2rad(lats))
+        expected = float(np.average(arr.mean(axis=1), weights=weights))
+        self.assertLess(expected, 50.0)                    # weighting must move it
+        self.assertAlmostEqual(payload["statistics"]["mean"], expected, delta=expected * 1e-5)
+
     def test_payload_normalizes_longitudes_and_sanitizes_values(self):
         import numpy as np
         import xarray as xr

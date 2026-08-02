@@ -26,6 +26,63 @@ test('heatmap validPct counts null (masked) cells as invalid', () => {
   assert.equal(stats.mean, 2.0)
 })
 
+// The `values` grid is thinned to _MAX_GRID_CELLS before it is serialized, so
+// recomputing statistics from it describes the thumbnail, not the analyzed
+// region — on a real TEMPO NO2 L3 scene that reported the maximum 13.4x low.
+// The backend now ships statistics computed on the full-resolution field.
+test('heatmap statistics come from the payload, not the thinned grid', () => {
+  const chart = {
+    type: 'heatmap',
+    units: 'mol/cm2',
+    lats: [10, 11],
+    lons: [20, 21],
+    values: [
+      [1.0, 1.0],
+      [1.0, null],
+    ],
+    statistics: {
+      count: 3_818_995,
+      valid_fraction: 0.167,
+      mean: 1.1172e15,
+      min: -9.9999e14,
+      max: 9.2418e17,
+    },
+  }
+  const stats = computeChartStats(chart)
+  assert.equal(stats.max, 9.2418e17, 'peak must survive decimation')
+  assert.equal(stats.min, -9.9999e14)
+  assert.equal(stats.mean, 1.1172e15)
+  assert.equal(stats.count, 3_818_995, 'count is observations, not rendered cells')
+  assert.ok(Math.abs(stats.validPct - 16.7) < 1e-9)
+  assert.equal(stats.units, 'mol/cm2')
+})
+
+// Which extent a number describes is exactly the kind of thing this project
+// refuses to leave unstated, and the two cases genuinely differ: a payload
+// carrying server-computed statistics describes the analyzed region, while a
+// pre-existing artifact can only be recomputed from the grid it shipped.
+test('stats declare whether they describe the analyzed region or the rendered grid', () => {
+  const grid = {
+    type: 'heatmap',
+    units: '',
+    lats: [10],
+    lons: [20, 21],
+    values: [[1.0, 2.0]],
+  }
+  assert.equal(computeChartStats(grid).basis, 'rendered-grid')
+
+  const withStats = {
+    ...grid,
+    statistics: { count: 40, valid_fraction: 1, mean: 1.5, min: 1, max: 2 },
+  }
+  assert.equal(computeChartStats(withStats).basis, 'analyzed-region')
+
+  // A timeseries ships every step it plotted — nothing is thinned, so its
+  // numbers are exact and must not be labelled as a rendered-grid estimate.
+  const series = { type: 'timeseries', units: 'ppb', values: [1.0, null, 3.0] }
+  assert.equal(computeChartStats(series).basis, 'series')
+})
+
 test('heatmap_multi validPct uses first panel grid including nulls', () => {
   const chart = {
     type: 'heatmap_multi',
