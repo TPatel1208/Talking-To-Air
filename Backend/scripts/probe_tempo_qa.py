@@ -98,22 +98,53 @@ def describe(label, da):
           f"neg={100.0 * (finite < 0).mean():5.1f}%")
 
 
-def main(path):
-    cfg = load_registry()["TEMPO_NO2"]
+def _resolve_collection(ds, key=None):
+    """Which registry entry this granule belongs to. An explicit key wins;
+    otherwise match the file's own bands against each entry's primary_var, so
+    the probe works on any registered collection rather than only TEMPO NO2."""
+    registry = load_registry()
+    if key:
+        return registry[key]
+    for name, cfg in registry.items():
+        if cfg.primary_var and _leaf(cfg.primary_var) in ds.data_vars:
+            print(f"(matched registry entry {name} on primary_var)")
+            return cfg
+    raise SystemExit(
+        f"No registry entry matches this file's bands: {sorted(ds.data_vars)[:15]}\n"
+        f"Pass a registry key explicitly: {sorted(registry)}")
+
+
+def _leaf(name):
+    return str(name or "").rsplit("/", 1)[-1]
+
+
+def main(path, key=None):
+    ds_probe = open_merged(path)
+    cfg = _resolve_collection(ds_probe, key)
     col_info = cfg.model_dump()
-    science, flag = cfg.primary_var, cfg.quality_flag_var
+    science, flag = _leaf(cfg.primary_var), _leaf(cfg.quality_flag_var or "")
 
     print(f"=== file: {path}")
     print(f"groups: {_groups(path)}")
 
-    ds = open_merged(path)
+    ds = ds_probe
     print(f"merged data_vars ({len(ds.data_vars)}): {sorted(ds.data_vars)[:12]}")
-    print(f"science var present: {science in ds.data_vars}")
-    print(f"flag var present   : {flag in ds.data_vars}   <- claim 1 hinges on this name")
+    print(f"science var present: {science in ds.data_vars}  ({science!r})")
+    print(f"pinned flag var    : {flag or '<none pinned>'}")
+    print(f"flag var present   : {bool(flag) and flag in ds.data_vars}   <- claim 1 hinges on this name")
+    if not flag:
+        # No Tier-1 pin: report what the file offers so a pin can be written,
+        # or so "this product genuinely has no flag" can be settled.
+        cands = [n for n, v in ds.data_vars.items()
+                 if "flag_values" in v.attrs and "flag_meanings" in v.attrs]
+        print(f"UNPINNED -- bands carrying CF flag_values+flag_meanings: {cands or 'NONE'}")
+        for n in cands:
+            print(f"    {n}: flag_values={ds[n].attrs.get('flag_values')!r} "
+                  f"flag_meanings={ds[n].attrs.get('flag_meanings')!r}")
     if science not in ds.data_vars:
         print("!! science variable missing; wrong file?")
         return
-    if flag in ds.data_vars:
+    if flag and flag in ds.data_vars:
         fa = ds[flag].attrs
         print(f"flag CF attrs      : flag_values={fa.get('flag_values')!r} "
               f"flag_meanings={fa.get('flag_meanings')!r}")
@@ -155,7 +186,7 @@ def main(path):
 
     print()
     print("=== claim 3: full field vs the grid the browser actually gets ===")
-    field = masked_b if flag in ds.data_vars else masked_a
+    field = masked_b if (flag and flag in ds.data_vars) else masked_a
     field = field.squeeze(drop=True)
     lat_dim, lon_dim = _latlon(field)
     if lat_dim is None or lon_dim is None or field.ndim != 2:
@@ -192,4 +223,4 @@ def main(path):
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         sys.exit(__doc__)
-    main(sys.argv[1])
+    main(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else None)
