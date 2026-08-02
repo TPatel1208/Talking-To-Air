@@ -130,6 +130,39 @@ def load_registry(path: str | None = None) -> dict[str, CollectionConfig]:
     return registry
 
 
+# Collections established to publish no per-pixel quality flag variable at all,
+# with how that was established. A collection missing from BOTH this record and
+# collections.yaml's ``quality_flag_var`` masks nothing and says only "not
+# applied -- semantics unknown", which reads identically to a product whose flag
+# we simply forgot to pin. Keeping the two cases distinct is the difference
+# between "there is nothing to apply" and "we never looked".
+#
+# This matters more than it looks: measured 2026-08-02, the Tier-2 CF path has
+# never fired on a real NASA product (see tests/test_collection_registry_qa_
+# coverage.py), so an unpinned collection is an unmasked collection.
+COLLECTIONS_WITHOUT_QUALITY_FLAG: dict[str, str] = {
+    "TEMPO_O3TOT": (
+        "granule-verified 2026-08-02 (TEMPO_O3TOT_L3_V04_20260802T011507Z_S017): "
+        "16 merged bands, none carrying CF flag_values/flag_meanings"
+    ),
+    "MODIS_AOD_AQUA": (
+        "inventory-verified (describe_dataset): L3 AOD is quality-screened at L2 "
+        "before gridding, so the grid publishes no per-pixel flag band"
+    ),
+    "MODIS_AOD_TERRA": (
+        "inventory-verified (describe_dataset): L3 AOD is quality-screened at L2 "
+        "before gridding, so the grid publishes no per-pixel flag band"
+    ),
+    "OMI_NO2": "inventory-verified (describe_dataset): no flag band in the L3 grid",
+    "OMI_O3": "inventory-verified (describe_dataset): no flag band in the L3 grid",
+    "TROPOMI_NO2": (
+        "inventory-verified (describe_dataset): no CF flag band. NOTE the L2 product "
+        "ships a continuous 0-1 `qa_value` (community practice filters > 0.75), which "
+        "the enumerated three-tier doctrine cannot express -- extending it is open work"
+    ),
+}
+
+
 def known_quality_flag_vars() -> frozenset[str]:
     """Leaf names of every ``quality_flag_var`` pinned in the registry.
 
