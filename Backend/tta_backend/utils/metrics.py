@@ -202,10 +202,17 @@ def set_db_pool_connections_active(value: int | float | None) -> None:
         DB_POOL_CONNECTIONS_ACTIVE.set(value)
 
 
+# Named so the parse can be exercised on a host that has no /proc -- the field
+# this reads is the one thing about the Linux path that can silently regress
+# (VmRSS is current, the VmHWM two lines above it is the high-water mark), and
+# a guard that only runs in the container is no guard on the dev machine.
+_LINUX_STATUS_PATH = "/proc/self/status"
+
+
 def _linux_rss_bytes() -> int | None:
     """VmRSS from /proc/self/status, in bytes. None off Linux."""
     try:
-        with open("/proc/self/status") as f:
+        with open(_LINUX_STATUS_PATH) as f:
             for line in f:
                 if line.startswith("VmRSS:"):
                     return int(line.split()[1]) * 1024

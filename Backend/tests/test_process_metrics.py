@@ -5,8 +5,11 @@ vs leak" was unfalsifiable from dashboards. refresh_process_gauges() reads
 process RSS, the matplotlib open-figure count, and the bundle extract-cache
 size into Prometheus gauges on each /metrics scrape.
 """
+import ctypes
 import importlib.util
+import os
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -122,6 +125,15 @@ class ProcessRssReaderTests(unittest.TestCase):
         back down, so it cannot express "plateaued" at all. This asserts the
         reading actually falls when the memory is released, which is what rules
         those out.
+
+        Empirical, and therefore the one test here that can fail while the
+        metric is fine: it needs the allocator to hand the pages back to the OS.
+        128 MiB clears glibc's mmap threshold and Windows' ``VirtualAlloc``
+        cutoff, so both supported platforms do release it — but that is a
+        property of the allocator, not of this code. The two tests below pin the
+        same current-not-peak property at the field each reader names, with no
+        allocation involved, so a flake here is never the only thing standing
+        between a swap to a peak counter and a green suite.
         """
         from tta_backend.utils.metrics import _current_process_rss_bytes
 
@@ -147,6 +159,88 @@ class ProcessRssReaderTests(unittest.TestCase):
             "RSS stayed at its high-water mark after the allocation was freed — "
             "this is reading a peak counter, which cannot distinguish a plateau "
             "from a leak",
+        )
+
+    def test_the_linux_reader_takes_vmrss_and_not_the_vmhwm_above_it(self):
+        """The Linux half of current-not-peak, asserted without /proc.
+
+        ``/proc/self/status`` lists ``VmHWM`` (the high-water mark) immediately
+        before ``VmRSS``, so the failure mode is a one-word edit that reads
+        plausibly and produces a gauge that only ever climbs. Pointed at a
+        synthetic status file, this runs on the Windows development host too —
+        the point being that the deployment platform's reader cannot rot
+        unnoticed on a machine that never exercises it.
+        """
+        import tta_backend.utils.metrics as metrics
+
+        status = (
+            "Name:\tpython\n"
+            "VmPeak:\t 4194304 kB\n"
+            "VmSize:\t 2097152 kB\n"
+            "VmHWM:\t  999999 kB\n"  # the high-water mark, listed first
+            "VmRSS:\t  123456 kB\n"  # the current reading, which is the one
+            "RssAnon:\t 100000 kB\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "status")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(status)
+
+            with patch.object(metrics, "_LINUX_STATUS_PATH", path):
+                rss = metrics._linux_rss_bytes()
+
+        self.assertEqual(
+            rss,
+            123456 * 1024,
+            "the Linux reader did not return VmRSS — 999999 kB means it is "
+            "reading VmHWM, a high-water mark that cannot fall",
+        )
+
+    @unittest.skipUnless(sys.platform == "win32", "the Win32 reader only loads on Windows")
+    def test_the_windows_reader_takes_the_working_set_and_not_its_peak(self):
+        """The Windows half, same property, same technique.
+
+        ``WorkingSetSize`` and ``PeakWorkingSetSize`` are adjacent fields of one
+        struct and differ by a word at the call site, so the swap is as easy to
+        make here as ``VmHWM`` is on Linux. Sentinel values through a stubbed
+        ``kernel32`` make the answer exact: no allocation, no allocator
+        behaviour, no tolerance.
+        """
+        import tta_backend.utils.metrics as metrics
+
+        working_set = 111 * 1024 * 1024
+        peak = 999 * 1024 * 1024
+
+        class _StubExport:
+            """Stands in for a ctypes foreign function: the reader assigns
+            ``argtypes``/``restype`` on it before calling."""
+
+            def __init__(self, fn):
+                self._fn = fn
+                self.argtypes = None
+                self.restype = None
+
+            def __call__(self, *args):
+                return self._fn(*args)
+
+        def _fill(_handle, counters_ref, _cb):
+            counters = counters_ref._obj  # unwrap ctypes.byref
+            counters.WorkingSetSize = working_set
+            counters.PeakWorkingSetSize = peak
+            return 1
+
+        class _StubKernel32:
+            GetCurrentProcess = _StubExport(lambda: 0)
+            K32GetProcessMemoryInfo = _StubExport(_fill)
+
+        with patch.object(ctypes, "WinDLL", lambda *a, **kw: _StubKernel32()):
+            rss = metrics._windows_rss_bytes()
+
+        self.assertEqual(
+            rss,
+            working_set,
+            "the Windows reader did not return WorkingSetSize — the peak "
+            "sentinel means it is reading PeakWorkingSetSize, which never falls",
         )
 
     def test_the_chain_falls_through_to_the_next_reader(self):
