@@ -112,6 +112,56 @@ def _supports_variable_subsetting(variables: list[str]) -> bool:
     return all(resolved) if resolved else True
 
 
+def _leaf(name: str) -> str:
+    return str(name or "").rsplit("/", 1)[-1]
+
+
+def _pinned_quality_flag_variables(variables: list[str]) -> list[str]:
+    """The quality flag variable pinned for each requested science variable's
+    collection, in the spelling the registry itself uses.
+
+    A variable subset that drops the quality flag variable cannot be masked at
+    all: masking provenance degrades to "not applied — semantics unknown" and
+    every not-normal pixel is plotted as if it were good (measured 2026-08-01:
+    26.6% of a real TEMPO NO2 L3 scene). Requesting the flag is therefore part
+    of requesting the science variable, not a separate decision -- and not one
+    left to the agent, which is what the previous "a standard TEMPO retrieval
+    always requests both" comment assumed without enforcing.
+
+    Matched by bare leaf name, since the caller's spelling may be
+    group-qualified (``product/vertical_column_troposphere``) or bare. The
+    addition is emitted in whichever spelling the matching request used:
+    handing the provider one variable list addressed two different ways is a
+    request no collection's variable list ever looks like.
+    """
+    requested = {_leaf(v) for v in variables}
+    by_leaf = {_leaf(v): v for v in variables}
+    additions: list[str] = []
+    for cfg in load_registry().values():
+        if not cfg.quality_flag_var:
+            continue
+        flag_leaf = _leaf(cfg.quality_flag_var)
+        if flag_leaf in requested:
+            continue                      # the caller already asked for it
+        collection_leaves = {_leaf(cfg.primary_var)} | {_leaf(v) for v in cfg.variables}
+        matched = requested & collection_leaves
+        if not matched:
+            continue
+        science_as_asked = by_leaf[sorted(matched)[0]]
+        if "/" not in science_as_asked:
+            spelling = flag_leaf
+        else:
+            # Prefer the registry's own qualified spelling; fall back to the
+            # group the caller addressed the science variable through.
+            spelling = next(
+                (v for v in cfg.variables if _leaf(v) == flag_leaf and "/" in v),
+                f"{science_as_asked.rsplit('/', 1)[0]}/{flag_leaf}",
+            )
+        if spelling not in additions:
+            additions.append(spelling)
+    return additions
+
+
 def _normalize_time_range(time_range: str) -> str:
     """Widen a degenerate ``start/end`` interval where start == end — the
     shape a single-date request ("June 15, 2024" → '2024-06-15/2024-06-15')
@@ -348,6 +398,8 @@ async def safe_retrieve(
     # already knows don't support it (e.g. TROPOMI, MODIS AOD) -- avoids a
     # wasted failed-subset-then-full-retrieval round trip on every call.
     subset_variables = variables if _supports_variable_subsetting(variables) else []
+    if subset_variables:
+        subset_variables = [*subset_variables, *_pinned_quality_flag_variables(subset_variables)]
     subset_raw = await tools["retrieve_subset"].ainvoke({
         "dataset_handle": dataset_handle,
         "aoi_handle": aoi_handle,
@@ -358,14 +410,15 @@ async def safe_retrieve(
     subset = parse_tool_result(subset_raw)
 
     # T25: record the model's chosen science variable, keyed by the job this
-    # retrieval submits as. A QA flag riding along is not a science choice --
-    # a standard TEMPO retrieval always requests the science variable *and*
-    # main_data_quality_flag together, so counting raw ``variables`` would see
+    # retrieval submits as. A quality flag variable riding along is not a
+    # science choice -- ``_pinned_quality_flag_variables`` above adds one to
+    # every registered subset request, so counting raw ``variables`` would see
     # 2 and record nothing, leaving the opened 2-var file to refuse downstream.
     # Exclude known flag vars (matched by bare leaf name, since ``variables``
     # is group-qualified) first: a single remaining science variable is still
     # an unambiguous choice worth recording; 0 or >1 leave the file's own
-    # choice to be made downstream.
+    # choice to be made downstream. Note this reads the caller's ``variables``,
+    # not ``subset_variables`` -- the injected flag must not shift the count.
     flag_vars = known_quality_flag_vars()
     science_variables = [v for v in variables if v.rsplit("/", 1)[-1] not in flag_vars]
     if len(science_variables) == 1:
@@ -458,7 +511,7 @@ async def point_timeseries(
         "dataset_handle": dataset_handle,
         "aoi_handle": aoi_handle,
         "time_range": time_range,
-        "variables": [variable],
+        "variables": [variable, *_pinned_quality_flag_variables([variable])],
         "point_sample": True,
     })
     submit = parse_tool_result(submit_raw)

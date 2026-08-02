@@ -617,6 +617,36 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["job_handle"], "job_new")
         self.assertEqual(calls["retrieve_subset"], 1)
 
+    async def _captured_subset_variables(self, variables):
+        """Run safe_retrieve and return the variable list the provider was
+        actually asked to subset to."""
+        from tta_backend.services.retrieval_composites import safe_retrieve
+
+        seen: dict = {}
+
+        async def capture(dataset_handle, aoi_handle, time_range, variables, output_format, workspace_id):
+            seen["variables"] = list(variables)
+            return {"job_handle": "job_new", "obs_handle": "obs_new"}
+
+        tools, settings, _calls = await self._tools_and_settings(
+            estimated_bytes=1000, retrieve_subset=capture)
+        await safe_retrieve(
+            "dataset_1", "aoi_1", "2024-01-01/2024-01-02", variables, tools, settings=settings)
+        return seen["variables"]
+
+    async def test_a_subset_retrieval_carries_the_collections_pinned_quality_flag_variable(self):
+        """Measured 2026-08-01 on a real TEMPO L3 granule: with the quality flag
+        variable absent from the retrieved file, masking provenance can only
+        report "not applied — semantics unknown", and 26.6% of the scene that
+        TEMPO flags as not-normal is plotted as if it were good. The flag is
+        not a science choice the researcher makes — it is what makes the
+        science variable interpretable — so a subset retrieval requests it
+        alongside, rather than leaving it to the agent to remember."""
+        variables = await self._captured_subset_variables(["product/vertical_column_troposphere"])
+
+        self.assertIn("product/main_data_quality_flag", variables)
+        self.assertIn("product/vertical_column_troposphere", variables)
+
     async def test_safe_retrieve_records_the_requested_time_range_scope_for_the_job(self):
         """T46: safe_retrieve only ever sees an opaque aoi_handle (not a place
         name), but it knows the requested time_range — record it so a later
@@ -784,7 +814,25 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
             settings=settings,
         )
 
-        self.assertEqual(seen_variables, [["vertical_column_troposphere"]])
+        # The collection's pinned quality flag variable rides along now, so this
+        # is no longer an exact-list assertion — the subject here is that the
+        # gate does not SUPPRESS the requested science variable.
+        self.assertEqual(len(seen_variables), 1)
+        self.assertIn("vertical_column_troposphere", seen_variables[0])
+
+    async def test_the_quality_flag_variable_is_requested_in_the_spelling_the_caller_used(self):
+        """The registry addresses TEMPO's bands group-qualified
+        (``product/…``), but a caller may ask for a bare leaf. Mixing the two
+        spellings in one request would hand the provider a variable list in two
+        different addressing schemes; match whichever the caller used instead."""
+        bare = await self._captured_subset_variables(["vertical_column_troposphere"])
+        qualified = await self._captured_subset_variables(["product/vertical_column_troposphere"])
+
+        self.assertEqual(bare, ["vertical_column_troposphere", "main_data_quality_flag"])
+        self.assertEqual(
+            qualified,
+            ["product/vertical_column_troposphere", "product/main_data_quality_flag"],
+        )
 
     async def test_safe_retrieve_forwards_variables_unknown_to_the_registry_unchanged(self):
         """A variable name the registry has never heard of must not be
@@ -1041,6 +1089,38 @@ class PointTimeseriesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "ready")
         self.assertEqual(result["obs_handle"], "cube_ts_1")
         self.assertEqual(result["aoi_handle"], "aoi_newark")
+
+    async def test_a_point_timeseries_carries_the_collections_pinned_quality_flag_variable(self):
+        """A point series is masked by the same doctrine as a map, so it needs
+        the quality flag variable in the retrieved file for the same reason —
+        without it every point is plotted at face value and the masking
+        provenance can only say "not applied"."""
+        from tta_backend.services.retrieval_composites import point_timeseries
+
+        submitted: dict = {}
+
+        async def define_area_of_interest(location, workspace_id):
+            return {"handle": "aoi_newark", "location": location}
+
+        async def retrieve_timeseries(dataset_handle, time_range, variables, aoi_handle, output_format, point_sample, workspace_id):
+            submitted["variables"] = list(variables)
+            return {"job_handle": "job_ts_1"}
+
+        async def get_retrieval_status(job_handle, workspace_id):
+            return {"job_handle": job_handle, "status": "ready", "obs_handle": "cube_ts_1"}
+
+        tools, settings = await self._tools_and_settings({
+            "define_area_of_interest": define_area_of_interest,
+            "retrieve_timeseries": retrieve_timeseries,
+            "get_retrieval_status": get_retrieval_status,
+        })
+
+        await point_timeseries(
+            "dataset_1", "Newark, NJ", "2024-01-01/2024-01-31",
+            "product/vertical_column_troposphere", tools, settings=settings,
+        )
+
+        self.assertIn("product/main_data_quality_flag", submitted["variables"])
 
     async def test_point_timeseries_records_the_requested_location_and_time_range_scope(self):
         """T46: point_timeseries has both the place name and the time range, so
