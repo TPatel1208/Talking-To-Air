@@ -58,7 +58,7 @@ from langchain_core.tools import BaseTool
 from typing import Annotated, List, Optional
 from pydantic import Field
 
-from tta_backend import APP_ROOT
+from tta_backend.config.settings import get_settings
 from tta_backend.config.workflow_stages import STAGE_RENDER
 from tta_backend.datasets.mask_info import col_info_for_short_name, resolve_mask_info, short_name_from_attrs
 from tta_backend.datasets.variable_roles import classify_inventory, related_variables
@@ -97,14 +97,27 @@ _resolver = RegionResolver()
 _aggregation_service = AggregationService()
 
 
-OUTPUT_DIR = os.path.join(APP_ROOT, "outputs")
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+def overlay_store_dir() -> str:
+    """Where rendered overlay PNGs are persisted.
 
-# Overlay PNGs live outside OUTPUT_DIR on purpose: OUTPUT_DIR is mounted
-# unauthenticated at /outputs (api.py), and overlays must only be reachable
-# through the authenticated /chart/{id}/overlay.png route (T23).
-OVERLAY_STORE_DIR = os.path.join(APP_ROOT, "overlay_store", "overlays")
-os.makedirs(OVERLAY_STORE_DIR, exist_ok=True)
+    Overlay PNGs live outside the public output dir on purpose: that one is
+    mounted unauthenticated at /outputs (api.py), and overlays must only be
+    reachable through the authenticated /chart/{id}/overlay.png route (T23).
+
+    Resolved per call from settings, and *not* a module constant with an
+    ``os.makedirs`` beside it, as it was until this became a setting. A constant
+    can only be computed at import time, and the value available then was
+    ``APP_ROOT``-relative — so merely importing this module created
+    ``Backend/overlay_store/`` inside the checkout, and the test suite wrote
+    into the developer's own store. Gitignored, so that state survived branch
+    switches and stayed invisible to ``git status``. The directory is now
+    created at write time by the one function that writes.
+
+    The module's ``OUTPUT_DIR`` constant is gone entirely rather than converted:
+    nothing here ever read it, and it created ``Backend/outputs/`` at import for
+    no one's benefit. ``api.py`` owns that path now.
+    """
+    return get_settings().overlay_store_dir
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -179,13 +192,20 @@ def _points_from_grid(lats: np.ndarray, lons: np.ndarray, arr: np.ndarray):
 
 
 def _render_and_store_overlay(lats: np.ndarray, lons: np.ndarray, arr: np.ndarray, lut: list, vmin: float, vmax: float) -> str | None:
-    """Render the full-native-resolution overlay PNG and persist it to
-    OVERLAY_STORE_DIR. Returns the stored path, or None on failure -- a
+    """Render the full-native-resolution overlay PNG and persist it to the
+    overlay store. Returns the stored path, or None on failure -- a
     failed render must degrade the chart (no overlay.url; the frontend
-    falls back to canvas-from-arrays), never fail the whole tool call."""
+    falls back to canvas-from-arrays), never fail the whole tool call.
+
+    The store directory is created here rather than at import: this is the only
+    function that writes into it, so nothing else has a reason to bring it into
+    existence. A failed mkdir degrades exactly like a failed render, which is
+    the same behaviour the read-only-mount case already had."""
     try:
         png_bytes = render_overlay_png(lats, lons, arr, lut, vmin, vmax)
-        path = os.path.join(OVERLAY_STORE_DIR, f"{uuid.uuid4().hex}.png")
+        store = overlay_store_dir()
+        os.makedirs(store, exist_ok=True)
+        path = os.path.join(store, f"{uuid.uuid4().hex}.png")
         with open(path, "wb") as f:
             f.write(png_bytes)
         return path

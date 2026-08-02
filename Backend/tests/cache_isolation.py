@@ -1,12 +1,13 @@
 """Cache isolation, independent of which runner is executing.
 
-Three caches outlive a single test by design — T53's discovery-metadata cache
-(``earthdata_mcp.tool_cache``), the jobs terminal-status cache
-(``services.jobs_service``), and T52's Zarr cube store. The first two are
+Several caches and stores outlive a single test by design — T53's
+discovery-metadata cache (``earthdata_mcp.tool_cache``), the jobs
+terminal-status cache (``services.jobs_service``), T52's Zarr cube store, T23's
+overlay PNG store, and the public chart-output directory. The first two are
 process-lifetime *memory*, so unless something clears them between tests, one
 test's call is served to the next test's identical call and that test's handler
-never runs. The third is *disk*, and needs the opposite treatment — see
-:func:`isolate_cube_store`.
+never runs. The last three are *disk*, and need the opposite treatment — see
+:func:`isolate_cube_store` and :func:`_isolate_store`.
 
 For the two in-memory ones, the only thing clearing them used to be an autouse
 fixture in ``Backend/conftest.py``. pytest loads that file; ``unittest`` does
@@ -20,11 +21,14 @@ is the single definition of *what leaks*; ``conftest.py``'s fixture calls it, an
 ``setUp``, which every runner honours because it is the framework's own contract
 rather than one runner's extension point.
 
-:func:`isolate_cube_store` is called from the same two places, but from
+The three store redirects are called from the same two places, but from
 ``conftest.py``'s *import*, not its fixture: a store root has to be wrong-proof
-before the first module is imported, not merely before each test. Tests that
-need the deployment's real path — rather than this process's sandbox — ask
-:func:`deployment_cube_store_dir`.
+before the first module is imported, not merely before each test. For the
+output dir that is not belt-and-braces — ``api.py`` hands it to a
+``StaticFiles`` mount at import, so nothing later would be early enough. Tests
+that need a deployment's real path — rather than this process's sandbox — ask
+:func:`deployment_cube_store_dir`, :func:`deployment_overlay_store_dir` or
+:func:`deployment_output_dir`.
 
 If another process-global cache is ever added, :func:`clear_process_caches` is
 the one place that has to learn about it — and ``test_cache_isolation.py``
@@ -39,8 +43,102 @@ import shutil
 import tempfile
 
 CUBE_STORE_ENV = "CUBE_STORE_DIR"
+OVERLAY_STORE_ENV = "OVERLAY_STORE_DIR"
+OUTPUT_DIR_ENV = "OUTPUT_DIR"
 
 _cube_store_root: str | None = None
+_isolated_roots: dict[str, str] = {}
+
+
+def _isolate_store(env_var: str, prefix: str) -> str:
+    """Point ``env_var`` at a throwaway directory for this whole process.
+
+    The generalisation of :func:`isolate_cube_store` to the other two on-disk
+    stores. Same reasoning throughout: the problem is *where the store is*, not
+    what is in it, so clearing between tests cannot fix it and only moving the
+    default can.
+
+    Idempotent, and one directory per process rather than per call — a root that
+    moved underneath the suite would strand whatever was already written to the
+    old one.
+    """
+    if env_var in _isolated_roots:
+        return _isolated_roots[env_var]
+
+    root = tempfile.mkdtemp(prefix=prefix)
+    _isolated_roots[env_var] = root
+    os.environ[env_var] = root
+    # ignore_errors for the same reason as the cube store: a still-open handle
+    # on Windows would otherwise turn cleanup into an interpreter-exit traceback.
+    atexit.register(shutil.rmtree, root, ignore_errors=True)
+
+    # Settings are lru_cached, so anything that read them before this point is
+    # holding the real root. Local import: this module is imported by
+    # ``conftest.py``, and at conftest import time the application packages are
+    # not necessarily importable yet.
+    try:
+        from tta_backend.config.settings import get_settings
+
+        get_settings.cache_clear()
+    except Exception:  # noqa: BLE001 — isolation must not gate collection
+        pass
+
+    return root
+
+
+def _deployment_dir(env_var: str, attr: str) -> str:
+    """The path the *deployment* uses, ignoring the test redirect.
+
+    Same contract as :func:`deployment_cube_store_dir`: once the redirect is in
+    place, ``Settings()`` answers "where is this process's sandbox", not "where
+    does this live in production". The deployment-contract tests need the
+    latter, and asserting a volume contract against the sandbox would pass while
+    checking nothing.
+
+    Derived from the setting's own default rather than hard-coded, so it keeps
+    telling the truth if the deployment path ever moves.
+    """
+    import unittest.mock
+
+    from tta_backend.config.settings import Settings
+
+    with unittest.mock.patch.dict(os.environ):
+        os.environ.pop(env_var, None)
+        return getattr(Settings(), attr)
+
+
+def isolate_overlay_store() -> str:
+    """Redirect T23's overlay PNG store (``plot_tools``).
+
+    Until this existed the store was an ``APP_ROOT``-relative constant with an
+    ``os.makedirs`` beside it, so merely *importing* ``plot_tools`` created
+    ``Backend/overlay_store/`` in the checkout — a directory the developer uses
+    and Docker backs with a named volume. Gitignored, so the pollution survived
+    branch switches and never showed up in ``git status``.
+    """
+    return _isolate_store(OVERLAY_STORE_ENV, "tta-overlay-store-")
+
+
+def deployment_overlay_store_dir() -> str:
+    """The overlay store path the deployment uses — see :func:`_deployment_dir`."""
+    return _deployment_dir(OVERLAY_STORE_ENV, "overlay_store_dir")
+
+
+def isolate_output_dir() -> str:
+    """Redirect the public chart-output directory (``/app/outputs``).
+
+    Unlike the overlay store this one is genuinely needed at import: ``api.py``
+    hands it to a ``StaticFiles`` mount, which resolves the directory when it is
+    mounted. So the ``os.makedirs`` there stays and only its *location* moves —
+    which is why this, like :func:`isolate_cube_store`, has to run from
+    ``conftest``'s import rather than a fixture.
+    """
+    return _isolate_store(OUTPUT_DIR_ENV, "tta-outputs-")
+
+
+def deployment_output_dir() -> str:
+    """The output dir the deployment uses — see :func:`_deployment_dir`."""
+    return _deployment_dir(OUTPUT_DIR_ENV, "output_dir")
 
 
 def isolate_cube_store() -> str:
@@ -166,6 +264,8 @@ class ProcessCacheIsolation:
 
     def setUp(self) -> None:  # noqa: D102 - contract documented on the class
         isolate_cube_store()
+        isolate_overlay_store()
+        isolate_output_dir()
         clear_process_caches()
         self.addCleanup(clear_process_caches)
         super().setUp()

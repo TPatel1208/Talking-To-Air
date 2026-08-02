@@ -18,7 +18,6 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.routing import Match
 
-from tta_backend import APP_ROOT
 from tta_backend.agents.earthdata_agent import LazySatelliteAgent, build_earthdata_agent, refresh_live_tools
 from tta_backend.agents.ground_sensor_agent import build_ground_agent
 from tta_backend.agents.supervisor_agent import build_agent
@@ -202,7 +201,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-OUTPUT_DIR = os.path.join(APP_ROOT, "outputs")
+# The one live consumer of the public output dir. StaticFiles resolves and
+# checks the directory when it is mounted, so this genuinely has to exist at
+# import — which is why the makedirs stays here while the two dead copies of
+# this constant (plot_tools, stat_tools) were simply deleted. Resolved from
+# settings so the test suite lands in a tempdir instead of creating
+# `Backend/outputs/` inside the checkout.
+OUTPUT_DIR = settings.output_dir
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 app.mount("/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
 

@@ -1,6 +1,5 @@
 import asyncio
 import json
-import os
 import numpy as np
 from langchain.tools import tool
 from langchain_core.tools import BaseTool
@@ -11,7 +10,6 @@ from tta_backend.config.workflow_stages import STAGE_RENDER
 from tta_backend.datasets.mask_info import col_info_for_short_name, short_name_from_attrs
 from tta_backend.earthdata_mcp.results import MCPToolError
 from tta_backend.services.open_handle import OpenHandleError, open_handle
-from tta_backend import APP_ROOT
 from tta_backend.tools.satellite_tools.plot_tools import _normalize_longitudes
 from tta_backend.utils.geo_utils import find_lat_coord, find_lon_coord
 from tta_backend.utils.plotting import _normalize_to_2d, apply_mask_region_type, mask_data_by_geometry, RegionResolver
@@ -24,8 +22,6 @@ from tta_backend.preprocessing.aggregation_service import (
 )
 from tta_backend.preprocessing.variable_choice_builder import emit_variable_choice_payload
 
-OUTPUT_DIR = os.path.join(APP_ROOT, "outputs")
-os.makedirs(OUTPUT_DIR, exist_ok=True)
 _resolver = RegionResolver()
 _aggregation_service = AggregationService()
 

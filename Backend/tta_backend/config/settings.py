@@ -181,6 +181,31 @@ class Settings:
     bundle_open_max_uncompressed_bytes: int = field(
         default_factory=lambda: max(1, _int_env("BUNDLE_OPEN_MAX_UNCOMPRESSED_BYTES", 2 * 1024 ** 3))
     )
+    # The public chart-output directory. Mounted unauthenticated at /outputs
+    # (api.py) and shared with the frontend nginx container through the
+    # `plot_outputs` named volume, so anything written here is world-readable.
+    #
+    # A setting for the same reason cube_store_dir is one: it was three
+    # ``APP_ROOT``-relative module constants, each with an import-time
+    # os.makedirs, so importing the backend created `Backend/outputs/` in the
+    # checkout — the cube-store problem again, and invisible for longer because
+    # an *empty* directory is omitted from `git status` entirely, even under
+    # --ignored. Only api.py's copy is live; StaticFiles needs the directory to
+    # exist when it is mounted.
+    output_dir: str = field(default_factory=lambda: os.getenv("OUTPUT_DIR", "/app/outputs"))
+    # T23: the server-rendered map overlay PNGs (tools/satellite_tools/
+    # plot_tools.py). Deliberately OUTSIDE output_dir, which is served
+    # unauthenticated — overlays are only reachable through the authenticated
+    # /chart/{id}/overlay.png route, which checks chart ownership first.
+    #
+    # Also a setting rather than an ``APP_ROOT``-relative constant, and for the
+    # same reason: the constant was computed at import and created
+    # `Backend/overlay_store/` in the checkout, so the suite wrote into the
+    # developer's own store. Gitignored, so that state survived branch switches
+    # while never appearing in `git status`.
+    overlay_store_dir: str = field(
+        default_factory=lambda: os.getenv("OVERLAY_STORE_DIR", "/app/overlay_store/overlays")
+    )
     # T52: the L4 Zarr cube cache (services/cube_cache.py). A backend-only
     # Docker named volume, NOT a tempdir — cubes cost minutes to build and
     # `tta-backend` is rebuilt constantly, so a tempdir store would be empty

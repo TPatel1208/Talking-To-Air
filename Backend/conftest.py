@@ -30,8 +30,9 @@ without a usable ``proj.db``. When the inherited path is already valid, or
 rasterio's own data dir can't be located, this is a no-op. The Docker image,
 where PROJ resolves correctly on its own, is never touched.
 
-**3. Redirect T52's cube store to a tempdir** so the suite stops reading and
-writing the real one. See :func:`_isolate_cube_store`.
+**3. Redirect the on-disk stores to tempdirs** so the suite stops reading and
+writing the real ones — T52's cube store, T23's overlay store, and the public
+chart-output directory. See :func:`_isolate_on_disk_stores`.
 """
 import importlib.util
 import os
@@ -68,8 +69,8 @@ def _wire_proj_data() -> None:
 _wire_proj_data()
 
 
-def _isolate_cube_store() -> None:
-    """Redirect T52's cube store before any test module is imported.
+def _isolate_on_disk_stores() -> None:
+    """Redirect every on-disk store before any test module is imported.
 
     At import time, not in a fixture, and for the same reason as PROJ above:
     by the time a fixture runs, a module-scope or session-scope fixture may
@@ -77,21 +78,32 @@ def _isolate_cube_store() -> None:
     test can still be in flight during the next. There is no point in the
     session at which it is safe for the default to be a real directory.
 
-    Left un-redirected, the default is the deployment volume — production's
-    named volume under Docker, ``C:\\app\\cube_store`` on a Windows checkout —
-    which the suite then reads back, making a run's outcome depend on what
-    earlier runs left behind. The policy lives in ``tests/cache_isolation.py``
-    with the rest of it; this is just the call site early enough to matter.
+    Left un-redirected, T52's cube store defaults to the deployment volume —
+    production's named volume under Docker, ``C:\\app\\cube_store`` on a Windows
+    checkout — which the suite then reads back, making a run's outcome depend on
+    what earlier runs left behind.
+
+    T23's overlay store and the public output dir were worse: ``APP_ROOT``-
+    relative constants with an ``os.makedirs`` beside them, so they landed
+    *inside the checkout* and a bare import was enough to create them. For the
+    output dir the import-time call is load-bearing rather than merely early —
+    ``api.py`` hands it to a ``StaticFiles`` mount, which resolves the directory
+    when it is mounted, so a fixture would already be too late.
+
+    The policy lives in ``tests/cache_isolation.py`` with the rest of it; this
+    is just the call site early enough to matter.
     """
     tests_dir = os.path.join(BACKEND_DIR, "tests")
     if tests_dir not in sys.path:
         sys.path.insert(0, tests_dir)
-    from cache_isolation import isolate_cube_store
+    from cache_isolation import isolate_cube_store, isolate_output_dir, isolate_overlay_store
 
     isolate_cube_store()
+    isolate_overlay_store()
+    isolate_output_dir()
 
 
-_isolate_cube_store()
+_isolate_on_disk_stores()
 
 
 @pytest.fixture(autouse=True)
