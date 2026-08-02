@@ -6,8 +6,19 @@ process RSS, the matplotlib open-figure count, and the bundle extract-cache
 size into Prometheus gauges on each /metrics scrape.
 """
 import importlib.util
+import sys
 import unittest
 from unittest.mock import patch
+
+# The platforms this project supports, and the reader that must work on each:
+# Linux is the deployment (Docker), Windows is the local development host. A
+# platform is listed here only if the gauge is expected to work there, so
+# `_PLATFORM_READER[sys.platform]` failing is a real defect rather than an
+# unsupported environment.
+_PLATFORM_READER = {
+    "linux": "_linux_rss_bytes",
+    "win32": "_windows_rss_bytes",
+}
 
 
 def _gauge_value(gauge) -> float:
@@ -18,11 +29,12 @@ class ProcessMetricsTests(unittest.TestCase):
     def test_refresh_process_gauges_sets_a_positive_process_rss(self):
         from tta_backend.utils.metrics import PROCESS_RSS_BYTES, refresh_process_gauges
 
+        PROCESS_RSS_BYTES.set(0)
         refresh_process_gauges()
 
-        # A live Linux process (Docker) always has a nonzero RSS -- this
-        # gauge existing and being positive is the whole point (item 6):
-        # the dashboard could never see this value before.
+        # Any live process has a nonzero RSS -- this gauge existing and being
+        # positive is the whole point (item 6): the dashboard could never see
+        # this value before.
         self.assertGreater(_gauge_value(PROCESS_RSS_BYTES), 0)
 
     @unittest.skipIf(importlib.util.find_spec("matplotlib") is None, "matplotlib is not installed")
@@ -52,6 +64,123 @@ class ProcessMetricsTests(unittest.TestCase):
             refresh_process_gauges()
 
         self.assertEqual(_gauge_value(BUNDLE_EXTRACT_CACHE_BYTES), 54321)
+
+
+class ProcessRssReaderTests(unittest.TestCase):
+    """The RSS read itself, which is where this gauge silently died.
+
+    ``_current_process_rss_bytes`` originally read only /proc/self/status. That
+    is correct on the deployment target and absent on the Windows development
+    host, where the open raised FileNotFoundError, the helper returned None, and
+    ``refresh_process_gauges`` skipped the ``.set()`` — leaving the gauge at its
+    default 0.0. The failure surfaced as a test assertion, but the real cost was
+    that the metric T45 added to make "plateau vs leak" falsifiable was dead for
+    anyone not running in Docker, and nothing said so.
+    """
+
+    def test_this_platforms_reader_returns_a_positive_rss(self):
+        """Assert against the reader this platform is *supposed* to use.
+
+        Deliberately not just ``_current_process_rss_bytes() > 0``: that passes
+        as long as *some* reader works, so the Linux path could rot unnoticed on
+        a Windows host (and vice versa). Naming the expected reader per platform
+        is what makes this fail on the machine whose support actually broke.
+        """
+        import tta_backend.utils.metrics as metrics
+
+        reader_name = _PLATFORM_READER.get(sys.platform)
+        self.assertIsNotNone(
+            reader_name,
+            f"{sys.platform!r} is not in the supported-platform table. If this "
+            "project now supports it, add a reader and list it here rather than "
+            "letting the gauge fall through to None.",
+        )
+
+        rss = getattr(metrics, reader_name)()
+
+        self.assertIsNotNone(rss, f"{reader_name} returned None on {sys.platform}")
+        self.assertGreater(rss, 0)
+
+    def test_readers_for_other_platforms_return_none_rather_than_raising(self):
+        """The fallback chain walks every reader, so the ones that do not apply
+        here must decline quietly. A reader that raised on the wrong OS would
+        take down the whole /metrics scrape, not just its own gauge."""
+        import tta_backend.utils.metrics as metrics
+
+        for platform, reader_name in _PLATFORM_READER.items():
+            if platform == sys.platform:
+                continue
+            with self.subTest(reader=reader_name):
+                self.assertIsNone(getattr(metrics, reader_name)())
+
+    def test_rss_reflects_current_footprint_not_the_high_water_mark(self):
+        """The property that makes this metric worth having.
+
+        T45 added it because a jump-and-plateau (~400MB -> ~811MB, then flat)
+        could not be told apart from a leak. A peak-only reading —
+        ``ru_maxrss`` on Linux, ``PeakWorkingSetSize`` on Windows — never comes
+        back down, so it cannot express "plateaued" at all. This asserts the
+        reading actually falls when the memory is released, which is what rules
+        those out.
+        """
+        from tta_backend.utils.metrics import _current_process_rss_bytes
+
+        blob_bytes = 128 * 1024 * 1024
+        baseline = _current_process_rss_bytes()
+        self.assertIsNotNone(baseline)
+
+        blob = bytearray(blob_bytes)  # touched by construction: zero-filled
+        peak = _current_process_rss_bytes()
+        del blob
+
+        released = _current_process_rss_bytes()
+
+        # Half the blob is a deliberately loose margin: the point is direction,
+        # not precision, and the allocator is free to retain some of it.
+        margin = blob_bytes // 2
+        self.assertGreater(
+            peak, baseline + margin, "RSS did not rise when 128 MiB was allocated"
+        )
+        self.assertLess(
+            released,
+            peak - margin,
+            "RSS stayed at its high-water mark after the allocation was freed — "
+            "this is reading a peak counter, which cannot distinguish a plateau "
+            "from a leak",
+        )
+
+    def test_the_chain_falls_through_to_the_next_reader(self):
+        """Ordering contract, asserted without depending on the host OS."""
+        import tta_backend.utils.metrics as metrics
+
+        with patch.object(metrics, "_linux_rss_bytes", return_value=None), patch.object(
+            metrics, "_windows_rss_bytes", return_value=None
+        ), patch.object(metrics, "_psutil_rss_bytes", return_value=4242):
+            self.assertEqual(metrics._current_process_rss_bytes(), 4242)
+
+    def test_a_reader_returning_zero_is_not_treated_as_a_measurement(self):
+        """Zero RSS is not a real reading for a live process, so it must not
+        short-circuit the chain and publish a value that looks like the very
+        bug this fixes."""
+        import tta_backend.utils.metrics as metrics
+
+        with patch.object(metrics, "_linux_rss_bytes", return_value=0), patch.object(
+            metrics, "_windows_rss_bytes", return_value=None
+        ), patch.object(metrics, "_psutil_rss_bytes", return_value=777):
+            self.assertEqual(metrics._current_process_rss_bytes(), 777)
+
+    def test_an_unmeasurable_platform_leaves_the_gauge_alone(self):
+        """No reader can measure => no series update. Publishing a zero would be
+        indistinguishable from a process that really is using no memory, which is
+        exactly how this bug hid; leaving the gauge stale-but-honest is the
+        documented behaviour and Prometheus can spot a non-advancing series."""
+        import tta_backend.utils.metrics as metrics
+
+        metrics.PROCESS_RSS_BYTES.set(123456)
+        with patch.object(metrics, "_current_process_rss_bytes", return_value=None):
+            metrics.refresh_process_gauges()
+
+        self.assertEqual(_gauge_value(metrics.PROCESS_RSS_BYTES), 123456)
 
 
 class MetricsEndpointRefreshesProcessGaugesTests(unittest.IsolatedAsyncioTestCase):

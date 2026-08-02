@@ -1,6 +1,7 @@
 """Prometheus metrics and legacy in-process counters."""
 from __future__ import annotations
 
+import ctypes
 from collections import Counter as LegacyCounter
 from threading import Lock
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
@@ -201,12 +202,8 @@ def set_db_pool_connections_active(value: int | float | None) -> None:
         DB_POOL_CONNECTIONS_ACTIVE.set(value)
 
 
-def _current_process_rss_bytes() -> int | None:
-    """Current (not peak) resident set size, read from /proc/self/status --
-    ru_maxrss is a high-water mark that only ever climbs, which would hide a
-    plateau-then-shrink shape; VmRSS reflects the process's actual current
-    footprint. None on a non-Linux host (this deploys via Docker/Linux; a
-    host run just skips the gauge instead of raising)."""
+def _linux_rss_bytes() -> int | None:
+    """VmRSS from /proc/self/status, in bytes. None off Linux."""
     try:
         with open("/proc/self/status") as f:
             for line in f:
@@ -214,6 +211,108 @@ def _current_process_rss_bytes() -> int | None:
                     return int(line.split()[1]) * 1024
     except OSError:
         return None
+    return None
+
+
+class _PROCESS_MEMORY_COUNTERS(ctypes.Structure):
+    """Win32 PROCESS_MEMORY_COUNTERS. Field order is the ABI contract — the
+    struct is matched by layout, not by name, so these must not be reordered."""
+
+    _fields_ = [
+        ("cb", ctypes.c_uint32),
+        ("PageFaultCount", ctypes.c_uint32),
+        ("PeakWorkingSetSize", ctypes.c_size_t),
+        ("WorkingSetSize", ctypes.c_size_t),
+        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+        ("PagefileUsage", ctypes.c_size_t),
+        ("PeakPagefileUsage", ctypes.c_size_t),
+    ]
+
+
+def _windows_rss_bytes() -> int | None:
+    """WorkingSetSize for this process, in bytes. None off Windows.
+
+    The working set is the physical memory currently resident for the process —
+    the Windows analogue of VmRSS, and what psutil reports as ``rss`` on this
+    platform. Deliberately **not** ``PeakWorkingSetSize``, which is the same
+    high-water-mark trap as ``ru_maxrss``: it only ever climbs, so it would hide
+    exactly the plateau-then-shrink shape this gauge exists to make visible.
+
+    Uses ``K32GetProcessMemoryInfo`` (exported from kernel32 since Windows 7)
+    rather than psapi's ``GetProcessMemoryInfo``, so there is no second DLL to
+    resolve. ``GetCurrentProcess()`` is a pseudo-handle that needs no close.
+    """
+    if not hasattr(ctypes, "WinDLL"):
+        return None
+    try:
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        get_memory_info = kernel32.K32GetProcessMemoryInfo
+        get_memory_info.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(_PROCESS_MEMORY_COUNTERS),
+            ctypes.c_uint32,
+        ]
+        get_memory_info.restype = wintypes.BOOL
+
+        counters = _PROCESS_MEMORY_COUNTERS()
+        counters.cb = ctypes.sizeof(_PROCESS_MEMORY_COUNTERS)
+        if not get_memory_info(
+            kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb
+        ):
+            return None
+        return int(counters.WorkingSetSize)
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def _psutil_rss_bytes() -> int | None:
+    """Current RSS via psutil, if it happens to be installed. None otherwise.
+
+    Not a dependency — the two supported environments (Docker/Linux for the
+    deployment, Windows for local development) are both covered without it, and
+    adding a C extension to the runtime image to satisfy a platform nobody
+    deploys on would be the wrong trade. This exists so a contributor on macOS
+    or BSD, where there is no stdlib way to read current RSS, gets a working
+    gauge by installing psutil rather than a silently dead one.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return None
+    try:
+        return int(psutil.Process().memory_info().rss)
+    except Exception:  # noqa: BLE001 — a metrics read must never break a scrape
+        return None
+
+
+def _current_process_rss_bytes() -> int | None:
+    """Current (not peak) resident set size of **this** process, in bytes.
+
+    Per-process by design: each process exposes its own /metrics, so scraping an
+    aggregate here would double-count against Prometheus's own aggregation. If
+    the backend is ever run with multiple uvicorn workers, each reports its own
+    RSS under its own target, which is what makes a per-worker leak visible at
+    all — an aggregate would average it away.
+
+    Peak is deliberately avoided in every reader below: ``ru_maxrss`` and
+    ``PeakWorkingSetSize`` only ever climb, which would hide the
+    plateau-then-shrink shape (T45) this gauge was added to make falsifiable.
+
+    Returns None only on a platform none of the readers cover, in which case
+    ``refresh_process_gauges`` leaves the gauge alone rather than raising or
+    publishing a fabricated zero — a missing series is honest, a zero one is not,
+    and a zero is exactly how the Linux-only version hid on Windows.
+    """
+    for reader in (_linux_rss_bytes, _windows_rss_bytes, _psutil_rss_bytes):
+        rss = reader()
+        if rss is not None and rss > 0:
+            return rss
     return None
 
 
