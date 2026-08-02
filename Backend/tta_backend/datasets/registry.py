@@ -156,9 +156,32 @@ COLLECTIONS_WITHOUT_QUALITY_FLAG: dict[str, str] = {
     "OMI_NO2": "inventory-verified (describe_dataset): no flag band in the L3 grid",
     "OMI_O3": "inventory-verified (describe_dataset): no flag band in the L3 grid",
     "TROPOMI_NO2": (
-        "inventory-verified (describe_dataset): no CF flag band. NOTE the L2 product "
-        "ships a continuous 0-1 `qa_value` (community practice filters > 0.75), which "
-        "the enumerated three-tier doctrine cannot express -- extending it is open work"
+        "inventory-verified (describe_dataset): no flag band. The registered product is "
+        "HAQ_TROPOMI_NO2_GLOBAL_M_L3, a MONTHLY global composite -- not the S5P_L2 swath, "
+        "whose continuous 0-1 `qa_value` the enumerated doctrine could not express anyway. "
+        "Being monthly-only is its real limitation for air-quality work, not the masking"
+    ),
+    "VIIRS_AOD_SNPP": (
+        "inventory-verified (describe_dataset, 2026-08-02): 13 bands, none a flag. Same "
+        "AER_DBDT_D10KM_L3 algorithm as the MODIS entries, quality-screened at L2 before "
+        "gridding, and publishes an identical variable list to them"
+    ),
+    "VIIRS_AOD_NOAA20": (
+        "inventory-verified (describe_dataset, 2026-08-02): 13 bands, none a flag. Same "
+        "AER_DBDT_D10KM_L3 algorithm as the MODIS entries, quality-screened at L2 before "
+        "gridding, and publishes an identical variable list to them"
+    ),
+    "AERDA_AOD_NRT": (
+        "granule-verified 2026-08-02: all 432 bands are one of Mean / Pixel_Counts / "
+        "Standard_Deviation / Histogram_Counts across 121 product groups -- no flag band "
+        "anywhere. The product filters on pre-defined QA thresholds before L3 aggregation "
+        "(per its own abstract), so screening happens upstream and the QF3 groups are "
+        "already-filtered variants rather than a per-pixel flag to apply"
+    ),
+    "AERDA_AOD_NRT_3H": (
+        "granule-verified 2026-08-02: the 3-hourly cut of AERDA_AOD_NRT, confirmed "
+        "structurally identical (432 bands, 121 groups, same four leaf names), so the "
+        "same upstream-QA-threshold reasoning applies unchanged"
     ),
 }
 

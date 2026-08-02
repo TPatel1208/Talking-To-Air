@@ -1,0 +1,3041 @@
+{
+  "registry_key": "AERDA_AOD_NRT_3H",
+  "collection_id": "C3573647939-ASIPS",
+  "short_name": "AERDA_L3_VIIRS_MODIS_NRT",
+  "source": "granule open (AERDA_L3_VIIRS_MODIS_NRT, 2026-08-01T00:00-06:00, one granule) 2026-08-02; variable list verified identical to the 24-hour variant",
+  "primary_var": "NOAA20_VIIRS_NASADeepBlue_AOD_550/Mean",
+  "quality_flag_var": null,
+  "groups": [],
+  "variables": [
+    {
+      "name": "Aqua_MODIS_NASADarkTargetDeepBlue_AOD_550_QF3/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASADarkTargetDeepBlue_AOD_550_QF3/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASADarkTargetDeepBlue_AOD_550_QF3/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASADarkTargetDeepBlue_AOD_550_QF3/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASADarkTarget_AOD_550/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASADarkTarget_AOD_550/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASADarkTarget_AOD_550/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASADarkTarget_AOD_550/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASADarkTarget_AOD_550_QF3/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASADarkTarget_AOD_550_QF3/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASADarkTarget_AOD_550_QF3/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASADarkTarget_AOD_550_QF3/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASADeepBlue_AOD_550_Land/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASADeepBlue_AOD_550_Land/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASADeepBlue_AOD_550_Land/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASADeepBlue_AOD_550_Land/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASADeepBlue_AOD_550_Land_QF3/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASADeepBlue_AOD_550_Land_QF3/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASADeepBlue_AOD_550_Land_QF3/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASADeepBlue_AOD_550_Land_QF3/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASA_FMF_Land/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASA_FMF_Land/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASA_FMF_Land/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASA_FMF_Land/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASA_FMF_Land_QF3/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASA_FMF_Land_QF3/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASA_FMF_Land_QF3/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASA_FMF_Land_QF3/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASA_FMF_Ocean/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASA_FMF_Ocean/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASA_FMF_Ocean/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASA_FMF_Ocean/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASA_FMF_Ocean_QF3/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASA_FMF_Ocean_QF3/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASA_FMF_Ocean_QF3/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NASA_FMF_Ocean_QF3/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NRLCorrection_AOD_550/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NRLCorrection_AOD_550/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NRLCorrection_AOD_550/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NRLCorrection_AOD_550/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NRLCorrection_AOD_550_Land/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NRLCorrection_AOD_550_Land/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NRLCorrection_AOD_550_Land/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NRLCorrection_AOD_550_Land/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NRLCorrection_AOD_550_Ocean/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NRLCorrection_AOD_550_Ocean/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NRLCorrection_AOD_550_Ocean/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_NRLCorrection_AOD_550_Ocean/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_aerosol_cloud_fraction_land/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_aerosol_cloud_fraction_land/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_aerosol_cloud_fraction_land/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_aerosol_cloud_fraction_ocean/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_aerosol_cloud_fraction_ocean/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_aerosol_cloud_fraction_ocean/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_scattering_angle/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_scattering_angle/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_scattering_angle/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_solar_zenith_angle/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_solar_zenith_angle/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_solar_zenith_angle/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_viewing_zenith_angle/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_viewing_zenith_angle/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Aqua_MODIS_viewing_zenith_angle/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_DarkTargetNRLCorrection_Beta_AOD_550/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_DarkTargetNRLCorrection_Beta_AOD_550/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_DarkTargetNRLCorrection_Beta_AOD_550/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_DarkTargetNRLCorrection_Beta_AOD_550/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_DeepBlueNRLCorrection_AOD_550/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_DeepBlueNRLCorrection_AOD_550/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_DeepBlueNRLCorrection_AOD_550/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_DeepBlueNRLCorrection_AOD_550/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Land_Aerosol_Cloud_Fraction/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Land_Aerosol_Cloud_Fraction/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Land_Aerosol_Cloud_Fraction/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Land_Mean_Reflectance_0_49/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Land_Mean_Reflectance_0_49/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Land_Mean_Reflectance_0_49/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Land_Mean_Reflectance_0_55/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Land_Mean_Reflectance_0_55/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Land_Mean_Reflectance_0_55/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Land_Mean_Reflectance_0_67/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Land_Mean_Reflectance_0_67/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Land_Mean_Reflectance_0_67/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Land_Mean_Reflectance_0_86/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Land_Mean_Reflectance_0_86/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Land_Mean_Reflectance_0_86/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Land_Mean_Reflectance_1_24/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Land_Mean_Reflectance_1_24/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Land_Mean_Reflectance_1_24/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Land_Mean_Reflectance_1_60/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Land_Mean_Reflectance_1_60/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Land_Mean_Reflectance_1_60/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Land_Mean_Reflectance_2_26/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Land_Mean_Reflectance_2_26/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Land_Mean_Reflectance_2_26/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Land_Ocean_Mask/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Land_Ocean_Mask/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Land_Ocean_Mask/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADarkTarget_AOD_550/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADarkTarget_AOD_550/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADarkTarget_AOD_550/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADarkTarget_AOD_550/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADarkTarget_AOD_550_QF3/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADarkTarget_AOD_550_QF3/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADarkTarget_AOD_550_QF3/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADarkTarget_AOD_550_QF3/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADarkTarget_FMF_Land/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADarkTarget_FMF_Land/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADarkTarget_FMF_Land/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADarkTarget_FMF_Land/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADarkTarget_FMF_Land_QF3/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADarkTarget_FMF_Land_QF3/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADarkTarget_FMF_Land_QF3/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADarkTarget_FMF_Land_QF3/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADarkTarget_FMF_Ocean/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADarkTarget_FMF_Ocean/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADarkTarget_FMF_Ocean/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADarkTarget_FMF_Ocean/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADarkTarget_FMF_Ocean_QF3/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADarkTarget_FMF_Ocean_QF3/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADarkTarget_FMF_Ocean_QF3/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADarkTarget_FMF_Ocean_QF3/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADeepBlue_AOD_550/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADeepBlue_AOD_550/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADeepBlue_AOD_550/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADeepBlue_AOD_550/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADeepBlue_AOD_550_QF3/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADeepBlue_AOD_550_QF3/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADeepBlue_AOD_550_QF3/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADeepBlue_AOD_550_QF3/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADeepBlue_FMF_Ocean/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADeepBlue_FMF_Ocean/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADeepBlue_FMF_Ocean/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADeepBlue_FMF_Ocean/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADeepBlue_FMF_Ocean_QF3/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADeepBlue_FMF_Ocean_QF3/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADeepBlue_FMF_Ocean_QF3/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NASADeepBlue_FMF_Ocean_QF3/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NDVI/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NDVI/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_NDVI/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Ocean_Aerosol_Cloud_Fraction/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Ocean_Aerosol_Cloud_Fraction/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Ocean_Aerosol_Cloud_Fraction/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Ocean_Mean_Reflectance_0_49/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Ocean_Mean_Reflectance_0_49/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Ocean_Mean_Reflectance_0_49/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Ocean_Mean_Reflectance_0_55/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Ocean_Mean_Reflectance_0_55/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Ocean_Mean_Reflectance_0_55/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Ocean_Mean_Reflectance_0_67/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Ocean_Mean_Reflectance_0_67/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Ocean_Mean_Reflectance_0_67/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Ocean_Mean_Reflectance_0_86/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Ocean_Mean_Reflectance_0_86/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Ocean_Mean_Reflectance_0_86/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Ocean_Mean_Reflectance_1_24/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Ocean_Mean_Reflectance_1_24/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Ocean_Mean_Reflectance_1_24/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Ocean_Mean_Reflectance_1_60/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Ocean_Mean_Reflectance_1_60/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Ocean_Mean_Reflectance_1_60/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Ocean_Mean_Reflectance_2_26/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Ocean_Mean_Reflectance_2_26/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_Ocean_Mean_Reflectance_2_26/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_scattering_angle/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_scattering_angle/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_scattering_angle/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_solar_zenith_angle/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_solar_zenith_angle/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_solar_zenith_angle/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_viewing_zenith_angle/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_viewing_zenith_angle/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "NOAA20_VIIRS_viewing_zenith_angle/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_DarkTargetNRLCorrection_Beta_AOD_550/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_DarkTargetNRLCorrection_Beta_AOD_550/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_DarkTargetNRLCorrection_Beta_AOD_550/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_DarkTargetNRLCorrection_Beta_AOD_550/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_DeepBlueNRLCorrection_AOD_550/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_DeepBlueNRLCorrection_AOD_550/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_DeepBlueNRLCorrection_AOD_550/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_DeepBlueNRLCorrection_AOD_550/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Land_Aerosol_Cloud_Fraction/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Land_Aerosol_Cloud_Fraction/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Land_Aerosol_Cloud_Fraction/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Land_Mean_Reflectance_0_49/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Land_Mean_Reflectance_0_49/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Land_Mean_Reflectance_0_49/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Land_Mean_Reflectance_0_55/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Land_Mean_Reflectance_0_55/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Land_Mean_Reflectance_0_55/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Land_Mean_Reflectance_0_67/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Land_Mean_Reflectance_0_67/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Land_Mean_Reflectance_0_67/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Land_Mean_Reflectance_0_86/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Land_Mean_Reflectance_0_86/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Land_Mean_Reflectance_0_86/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Land_Mean_Reflectance_1_24/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Land_Mean_Reflectance_1_24/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Land_Mean_Reflectance_1_24/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Land_Mean_Reflectance_1_60/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Land_Mean_Reflectance_1_60/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Land_Mean_Reflectance_1_60/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Land_Mean_Reflectance_2_26/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Land_Mean_Reflectance_2_26/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Land_Mean_Reflectance_2_26/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Land_Ocean_Mask/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Land_Ocean_Mask/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Land_Ocean_Mask/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADarkTarget_AOD_550/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADarkTarget_AOD_550/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADarkTarget_AOD_550/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADarkTarget_AOD_550/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADarkTarget_AOD_550_QF3/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADarkTarget_AOD_550_QF3/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADarkTarget_AOD_550_QF3/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADarkTarget_AOD_550_QF3/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADarkTarget_FMF_Land/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADarkTarget_FMF_Land/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADarkTarget_FMF_Land/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADarkTarget_FMF_Land/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADarkTarget_FMF_Land_QF3/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADarkTarget_FMF_Land_QF3/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADarkTarget_FMF_Land_QF3/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADarkTarget_FMF_Land_QF3/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADarkTarget_FMF_Ocean/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADarkTarget_FMF_Ocean/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADarkTarget_FMF_Ocean/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADarkTarget_FMF_Ocean/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADarkTarget_FMF_Ocean_QF3/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADarkTarget_FMF_Ocean_QF3/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADarkTarget_FMF_Ocean_QF3/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADarkTarget_FMF_Ocean_QF3/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADeepBlue_AOD_550/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADeepBlue_AOD_550/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADeepBlue_AOD_550/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADeepBlue_AOD_550/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADeepBlue_AOD_550_QF3/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADeepBlue_AOD_550_QF3/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADeepBlue_AOD_550_QF3/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADeepBlue_AOD_550_QF3/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADeepBlue_FMF_Ocean/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADeepBlue_FMF_Ocean/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADeepBlue_FMF_Ocean/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADeepBlue_FMF_Ocean/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADeepBlue_FMF_Ocean_QF3/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADeepBlue_FMF_Ocean_QF3/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADeepBlue_FMF_Ocean_QF3/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NASADeepBlue_FMF_Ocean_QF3/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NDVI/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NDVI/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_NDVI/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Ocean_Aerosol_Cloud_Fraction/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Ocean_Aerosol_Cloud_Fraction/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Ocean_Aerosol_Cloud_Fraction/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Ocean_Mean_Reflectance_0_49/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Ocean_Mean_Reflectance_0_49/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Ocean_Mean_Reflectance_0_49/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Ocean_Mean_Reflectance_0_55/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Ocean_Mean_Reflectance_0_55/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Ocean_Mean_Reflectance_0_55/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Ocean_Mean_Reflectance_0_67/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Ocean_Mean_Reflectance_0_67/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Ocean_Mean_Reflectance_0_67/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Ocean_Mean_Reflectance_0_86/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Ocean_Mean_Reflectance_0_86/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Ocean_Mean_Reflectance_0_86/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Ocean_Mean_Reflectance_1_24/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Ocean_Mean_Reflectance_1_24/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Ocean_Mean_Reflectance_1_24/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Ocean_Mean_Reflectance_1_60/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Ocean_Mean_Reflectance_1_60/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Ocean_Mean_Reflectance_1_60/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Ocean_Mean_Reflectance_2_26/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Ocean_Mean_Reflectance_2_26/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_Ocean_Mean_Reflectance_2_26/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_scattering_angle/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_scattering_angle/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_scattering_angle/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_solar_zenith_angle/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_solar_zenith_angle/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_solar_zenith_angle/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_viewing_zenith_angle/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_viewing_zenith_angle/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "SNPP_VIIRS_viewing_zenith_angle/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASADarkTargetDeepBlue_AOD_550_QF3/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASADarkTargetDeepBlue_AOD_550_QF3/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASADarkTargetDeepBlue_AOD_550_QF3/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASADarkTargetDeepBlue_AOD_550_QF3/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASADarkTarget_AOD_550/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASADarkTarget_AOD_550/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASADarkTarget_AOD_550/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASADarkTarget_AOD_550/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASADarkTarget_AOD_550_QF3/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASADarkTarget_AOD_550_QF3/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASADarkTarget_AOD_550_QF3/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASADarkTarget_AOD_550_QF3/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASADeepBlue_AOD_550_Land/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASADeepBlue_AOD_550_Land/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASADeepBlue_AOD_550_Land/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASADeepBlue_AOD_550_Land/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASADeepBlue_AOD_550_Land_QF3/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASADeepBlue_AOD_550_Land_QF3/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASADeepBlue_AOD_550_Land_QF3/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASADeepBlue_AOD_550_Land_QF3/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASA_FMF_Land/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASA_FMF_Land/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASA_FMF_Land/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASA_FMF_Land/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASA_FMF_Land_QF3/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASA_FMF_Land_QF3/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASA_FMF_Land_QF3/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASA_FMF_Land_QF3/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASA_FMF_Ocean/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASA_FMF_Ocean/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASA_FMF_Ocean/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASA_FMF_Ocean/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASA_FMF_Ocean_QF3/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASA_FMF_Ocean_QF3/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASA_FMF_Ocean_QF3/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NASA_FMF_Ocean_QF3/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NRLCorrection_AOD_550/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NRLCorrection_AOD_550/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NRLCorrection_AOD_550/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NRLCorrection_AOD_550/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NRLCorrection_AOD_550_Land/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NRLCorrection_AOD_550_Land/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NRLCorrection_AOD_550_Land/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NRLCorrection_AOD_550_Land/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NRLCorrection_AOD_550_Ocean/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NRLCorrection_AOD_550_Ocean/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NRLCorrection_AOD_550_Ocean/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_NRLCorrection_AOD_550_Ocean/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_aerosol_cloud_fraction_land/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_aerosol_cloud_fraction_land/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_aerosol_cloud_fraction_land/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_aerosol_cloud_fraction_ocean/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_aerosol_cloud_fraction_ocean/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_aerosol_cloud_fraction_ocean/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_scattering_angle/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_scattering_angle/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_scattering_angle/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_solar_zenith_angle/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_solar_zenith_angle/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_solar_zenith_angle/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_viewing_zenith_angle/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_viewing_zenith_angle/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "Terra_MODIS_viewing_zenith_angle/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_388/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_388/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_388/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_388/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_412/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_412/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_412/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_412/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_470/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_470/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_470/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_470/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_532/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_532/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_532/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_532/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_550/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_550/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_550/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_550/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_630/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_630/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_630/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_630/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_870/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_870/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_870/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_870/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_coarsemode_338/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_coarsemode_338/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_coarsemode_338/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_coarsemode_338/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_coarsemode_412/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_coarsemode_412/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_coarsemode_412/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_coarsemode_412/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_coarsemode_470/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_coarsemode_470/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_coarsemode_470/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_coarsemode_470/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_coarsemode_532/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_coarsemode_532/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_coarsemode_532/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_coarsemode_532/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_coarsemode_550/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_coarsemode_550/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_coarsemode_550/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_coarsemode_550/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_coarsemode_630/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_coarsemode_630/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_coarsemode_630/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_coarsemode_630/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_coarsemode_870/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_coarsemode_870/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_coarsemode_870/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_coarsemode_870/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_finemode_338/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_finemode_338/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_finemode_338/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_finemode_338/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_finemode_412/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_finemode_412/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_finemode_412/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_finemode_412/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_finemode_470/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_finemode_470/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_finemode_470/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_finemode_470/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_finemode_532/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_finemode_532/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_finemode_532/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_finemode_532/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_finemode_550/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_finemode_550/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_finemode_550/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_finemode_550/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_finemode_630/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_finemode_630/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_finemode_630/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_finemode_630/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_finemode_870/Histogram_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_finemode_870/Mean",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_finemode_870/Pixel_Counts",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "aeronet_AOD_finemode_870/Standard_Deviation",
+      "long_name": null,
+      "units": null,
+      "standard_name": null
+    }
+  ],
+  "expected_roles": {
+    "Aqua_MODIS_NASADarkTargetDeepBlue_AOD_550_QF3/Histogram_Counts": "unclassified",
+    "Aqua_MODIS_NASADarkTargetDeepBlue_AOD_550_QF3/Mean": "science",
+    "Aqua_MODIS_NASADarkTargetDeepBlue_AOD_550_QF3/Pixel_Counts": "unclassified",
+    "Aqua_MODIS_NASADarkTargetDeepBlue_AOD_550_QF3/Standard_Deviation": "unclassified",
+    "Aqua_MODIS_NASADarkTarget_AOD_550/Histogram_Counts": "unclassified",
+    "Aqua_MODIS_NASADarkTarget_AOD_550/Mean": "science",
+    "Aqua_MODIS_NASADarkTarget_AOD_550/Pixel_Counts": "unclassified",
+    "Aqua_MODIS_NASADarkTarget_AOD_550/Standard_Deviation": "unclassified",
+    "Aqua_MODIS_NASADarkTarget_AOD_550_QF3/Histogram_Counts": "unclassified",
+    "Aqua_MODIS_NASADarkTarget_AOD_550_QF3/Mean": "science",
+    "Aqua_MODIS_NASADarkTarget_AOD_550_QF3/Pixel_Counts": "unclassified",
+    "Aqua_MODIS_NASADarkTarget_AOD_550_QF3/Standard_Deviation": "unclassified",
+    "Aqua_MODIS_NASADeepBlue_AOD_550_Land/Histogram_Counts": "unclassified",
+    "Aqua_MODIS_NASADeepBlue_AOD_550_Land/Mean": "science",
+    "Aqua_MODIS_NASADeepBlue_AOD_550_Land/Pixel_Counts": "unclassified",
+    "Aqua_MODIS_NASADeepBlue_AOD_550_Land/Standard_Deviation": "unclassified",
+    "Aqua_MODIS_NASADeepBlue_AOD_550_Land_QF3/Histogram_Counts": "unclassified",
+    "Aqua_MODIS_NASADeepBlue_AOD_550_Land_QF3/Mean": "science",
+    "Aqua_MODIS_NASADeepBlue_AOD_550_Land_QF3/Pixel_Counts": "unclassified",
+    "Aqua_MODIS_NASADeepBlue_AOD_550_Land_QF3/Standard_Deviation": "unclassified",
+    "Aqua_MODIS_NASA_FMF_Land/Histogram_Counts": "unclassified",
+    "Aqua_MODIS_NASA_FMF_Land/Mean": "science",
+    "Aqua_MODIS_NASA_FMF_Land/Pixel_Counts": "unclassified",
+    "Aqua_MODIS_NASA_FMF_Land/Standard_Deviation": "unclassified",
+    "Aqua_MODIS_NASA_FMF_Land_QF3/Histogram_Counts": "unclassified",
+    "Aqua_MODIS_NASA_FMF_Land_QF3/Mean": "science",
+    "Aqua_MODIS_NASA_FMF_Land_QF3/Pixel_Counts": "unclassified",
+    "Aqua_MODIS_NASA_FMF_Land_QF3/Standard_Deviation": "unclassified",
+    "Aqua_MODIS_NASA_FMF_Ocean/Histogram_Counts": "unclassified",
+    "Aqua_MODIS_NASA_FMF_Ocean/Mean": "science",
+    "Aqua_MODIS_NASA_FMF_Ocean/Pixel_Counts": "unclassified",
+    "Aqua_MODIS_NASA_FMF_Ocean/Standard_Deviation": "unclassified",
+    "Aqua_MODIS_NASA_FMF_Ocean_QF3/Histogram_Counts": "unclassified",
+    "Aqua_MODIS_NASA_FMF_Ocean_QF3/Mean": "science",
+    "Aqua_MODIS_NASA_FMF_Ocean_QF3/Pixel_Counts": "unclassified",
+    "Aqua_MODIS_NASA_FMF_Ocean_QF3/Standard_Deviation": "unclassified",
+    "Aqua_MODIS_NRLCorrection_AOD_550/Histogram_Counts": "unclassified",
+    "Aqua_MODIS_NRLCorrection_AOD_550/Mean": "science",
+    "Aqua_MODIS_NRLCorrection_AOD_550/Pixel_Counts": "unclassified",
+    "Aqua_MODIS_NRLCorrection_AOD_550/Standard_Deviation": "unclassified",
+    "Aqua_MODIS_NRLCorrection_AOD_550_Land/Histogram_Counts": "unclassified",
+    "Aqua_MODIS_NRLCorrection_AOD_550_Land/Mean": "science",
+    "Aqua_MODIS_NRLCorrection_AOD_550_Land/Pixel_Counts": "unclassified",
+    "Aqua_MODIS_NRLCorrection_AOD_550_Land/Standard_Deviation": "unclassified",
+    "Aqua_MODIS_NRLCorrection_AOD_550_Ocean/Histogram_Counts": "unclassified",
+    "Aqua_MODIS_NRLCorrection_AOD_550_Ocean/Mean": "science",
+    "Aqua_MODIS_NRLCorrection_AOD_550_Ocean/Pixel_Counts": "unclassified",
+    "Aqua_MODIS_NRLCorrection_AOD_550_Ocean/Standard_Deviation": "unclassified",
+    "Aqua_MODIS_aerosol_cloud_fraction_land/Mean": "science",
+    "Aqua_MODIS_aerosol_cloud_fraction_land/Pixel_Counts": "unclassified",
+    "Aqua_MODIS_aerosol_cloud_fraction_land/Standard_Deviation": "unclassified",
+    "Aqua_MODIS_aerosol_cloud_fraction_ocean/Mean": "science",
+    "Aqua_MODIS_aerosol_cloud_fraction_ocean/Pixel_Counts": "unclassified",
+    "Aqua_MODIS_aerosol_cloud_fraction_ocean/Standard_Deviation": "unclassified",
+    "Aqua_MODIS_scattering_angle/Mean": "science",
+    "Aqua_MODIS_scattering_angle/Pixel_Counts": "unclassified",
+    "Aqua_MODIS_scattering_angle/Standard_Deviation": "unclassified",
+    "Aqua_MODIS_solar_zenith_angle/Mean": "science",
+    "Aqua_MODIS_solar_zenith_angle/Pixel_Counts": "unclassified",
+    "Aqua_MODIS_solar_zenith_angle/Standard_Deviation": "unclassified",
+    "Aqua_MODIS_viewing_zenith_angle/Mean": "science",
+    "Aqua_MODIS_viewing_zenith_angle/Pixel_Counts": "unclassified",
+    "Aqua_MODIS_viewing_zenith_angle/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_DarkTargetNRLCorrection_Beta_AOD_550/Histogram_Counts": "unclassified",
+    "NOAA20_VIIRS_DarkTargetNRLCorrection_Beta_AOD_550/Mean": "science",
+    "NOAA20_VIIRS_DarkTargetNRLCorrection_Beta_AOD_550/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_DarkTargetNRLCorrection_Beta_AOD_550/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_DeepBlueNRLCorrection_AOD_550/Histogram_Counts": "unclassified",
+    "NOAA20_VIIRS_DeepBlueNRLCorrection_AOD_550/Mean": "science",
+    "NOAA20_VIIRS_DeepBlueNRLCorrection_AOD_550/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_DeepBlueNRLCorrection_AOD_550/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_Land_Aerosol_Cloud_Fraction/Mean": "science",
+    "NOAA20_VIIRS_Land_Aerosol_Cloud_Fraction/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_Land_Aerosol_Cloud_Fraction/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_Land_Mean_Reflectance_0_49/Mean": "science",
+    "NOAA20_VIIRS_Land_Mean_Reflectance_0_49/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_Land_Mean_Reflectance_0_49/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_Land_Mean_Reflectance_0_55/Mean": "science",
+    "NOAA20_VIIRS_Land_Mean_Reflectance_0_55/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_Land_Mean_Reflectance_0_55/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_Land_Mean_Reflectance_0_67/Mean": "science",
+    "NOAA20_VIIRS_Land_Mean_Reflectance_0_67/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_Land_Mean_Reflectance_0_67/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_Land_Mean_Reflectance_0_86/Mean": "science",
+    "NOAA20_VIIRS_Land_Mean_Reflectance_0_86/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_Land_Mean_Reflectance_0_86/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_Land_Mean_Reflectance_1_24/Mean": "science",
+    "NOAA20_VIIRS_Land_Mean_Reflectance_1_24/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_Land_Mean_Reflectance_1_24/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_Land_Mean_Reflectance_1_60/Mean": "science",
+    "NOAA20_VIIRS_Land_Mean_Reflectance_1_60/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_Land_Mean_Reflectance_1_60/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_Land_Mean_Reflectance_2_26/Mean": "science",
+    "NOAA20_VIIRS_Land_Mean_Reflectance_2_26/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_Land_Mean_Reflectance_2_26/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_Land_Ocean_Mask/Mean": "science",
+    "NOAA20_VIIRS_Land_Ocean_Mask/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_Land_Ocean_Mask/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_NASADarkTarget_AOD_550/Histogram_Counts": "unclassified",
+    "NOAA20_VIIRS_NASADarkTarget_AOD_550/Mean": "science",
+    "NOAA20_VIIRS_NASADarkTarget_AOD_550/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_NASADarkTarget_AOD_550/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_NASADarkTarget_AOD_550_QF3/Histogram_Counts": "unclassified",
+    "NOAA20_VIIRS_NASADarkTarget_AOD_550_QF3/Mean": "science",
+    "NOAA20_VIIRS_NASADarkTarget_AOD_550_QF3/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_NASADarkTarget_AOD_550_QF3/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_NASADarkTarget_FMF_Land/Histogram_Counts": "unclassified",
+    "NOAA20_VIIRS_NASADarkTarget_FMF_Land/Mean": "science",
+    "NOAA20_VIIRS_NASADarkTarget_FMF_Land/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_NASADarkTarget_FMF_Land/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_NASADarkTarget_FMF_Land_QF3/Histogram_Counts": "unclassified",
+    "NOAA20_VIIRS_NASADarkTarget_FMF_Land_QF3/Mean": "science",
+    "NOAA20_VIIRS_NASADarkTarget_FMF_Land_QF3/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_NASADarkTarget_FMF_Land_QF3/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_NASADarkTarget_FMF_Ocean/Histogram_Counts": "unclassified",
+    "NOAA20_VIIRS_NASADarkTarget_FMF_Ocean/Mean": "science",
+    "NOAA20_VIIRS_NASADarkTarget_FMF_Ocean/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_NASADarkTarget_FMF_Ocean/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_NASADarkTarget_FMF_Ocean_QF3/Histogram_Counts": "unclassified",
+    "NOAA20_VIIRS_NASADarkTarget_FMF_Ocean_QF3/Mean": "science",
+    "NOAA20_VIIRS_NASADarkTarget_FMF_Ocean_QF3/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_NASADarkTarget_FMF_Ocean_QF3/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_NASADeepBlue_AOD_550/Histogram_Counts": "unclassified",
+    "NOAA20_VIIRS_NASADeepBlue_AOD_550/Mean": "science",
+    "NOAA20_VIIRS_NASADeepBlue_AOD_550/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_NASADeepBlue_AOD_550/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_NASADeepBlue_AOD_550_QF3/Histogram_Counts": "unclassified",
+    "NOAA20_VIIRS_NASADeepBlue_AOD_550_QF3/Mean": "science",
+    "NOAA20_VIIRS_NASADeepBlue_AOD_550_QF3/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_NASADeepBlue_AOD_550_QF3/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_NASADeepBlue_FMF_Ocean/Histogram_Counts": "unclassified",
+    "NOAA20_VIIRS_NASADeepBlue_FMF_Ocean/Mean": "science",
+    "NOAA20_VIIRS_NASADeepBlue_FMF_Ocean/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_NASADeepBlue_FMF_Ocean/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_NASADeepBlue_FMF_Ocean_QF3/Histogram_Counts": "unclassified",
+    "NOAA20_VIIRS_NASADeepBlue_FMF_Ocean_QF3/Mean": "science",
+    "NOAA20_VIIRS_NASADeepBlue_FMF_Ocean_QF3/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_NASADeepBlue_FMF_Ocean_QF3/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_NDVI/Mean": "science",
+    "NOAA20_VIIRS_NDVI/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_NDVI/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_Ocean_Aerosol_Cloud_Fraction/Mean": "science",
+    "NOAA20_VIIRS_Ocean_Aerosol_Cloud_Fraction/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_Ocean_Aerosol_Cloud_Fraction/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_Ocean_Mean_Reflectance_0_49/Mean": "science",
+    "NOAA20_VIIRS_Ocean_Mean_Reflectance_0_49/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_Ocean_Mean_Reflectance_0_49/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_Ocean_Mean_Reflectance_0_55/Mean": "science",
+    "NOAA20_VIIRS_Ocean_Mean_Reflectance_0_55/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_Ocean_Mean_Reflectance_0_55/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_Ocean_Mean_Reflectance_0_67/Mean": "science",
+    "NOAA20_VIIRS_Ocean_Mean_Reflectance_0_67/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_Ocean_Mean_Reflectance_0_67/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_Ocean_Mean_Reflectance_0_86/Mean": "science",
+    "NOAA20_VIIRS_Ocean_Mean_Reflectance_0_86/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_Ocean_Mean_Reflectance_0_86/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_Ocean_Mean_Reflectance_1_24/Mean": "science",
+    "NOAA20_VIIRS_Ocean_Mean_Reflectance_1_24/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_Ocean_Mean_Reflectance_1_24/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_Ocean_Mean_Reflectance_1_60/Mean": "science",
+    "NOAA20_VIIRS_Ocean_Mean_Reflectance_1_60/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_Ocean_Mean_Reflectance_1_60/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_Ocean_Mean_Reflectance_2_26/Mean": "science",
+    "NOAA20_VIIRS_Ocean_Mean_Reflectance_2_26/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_Ocean_Mean_Reflectance_2_26/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_scattering_angle/Mean": "science",
+    "NOAA20_VIIRS_scattering_angle/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_scattering_angle/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_solar_zenith_angle/Mean": "science",
+    "NOAA20_VIIRS_solar_zenith_angle/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_solar_zenith_angle/Standard_Deviation": "unclassified",
+    "NOAA20_VIIRS_viewing_zenith_angle/Mean": "science",
+    "NOAA20_VIIRS_viewing_zenith_angle/Pixel_Counts": "unclassified",
+    "NOAA20_VIIRS_viewing_zenith_angle/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_DarkTargetNRLCorrection_Beta_AOD_550/Histogram_Counts": "unclassified",
+    "SNPP_VIIRS_DarkTargetNRLCorrection_Beta_AOD_550/Mean": "science",
+    "SNPP_VIIRS_DarkTargetNRLCorrection_Beta_AOD_550/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_DarkTargetNRLCorrection_Beta_AOD_550/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_DeepBlueNRLCorrection_AOD_550/Histogram_Counts": "unclassified",
+    "SNPP_VIIRS_DeepBlueNRLCorrection_AOD_550/Mean": "science",
+    "SNPP_VIIRS_DeepBlueNRLCorrection_AOD_550/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_DeepBlueNRLCorrection_AOD_550/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_Land_Aerosol_Cloud_Fraction/Mean": "science",
+    "SNPP_VIIRS_Land_Aerosol_Cloud_Fraction/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_Land_Aerosol_Cloud_Fraction/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_Land_Mean_Reflectance_0_49/Mean": "science",
+    "SNPP_VIIRS_Land_Mean_Reflectance_0_49/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_Land_Mean_Reflectance_0_49/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_Land_Mean_Reflectance_0_55/Mean": "science",
+    "SNPP_VIIRS_Land_Mean_Reflectance_0_55/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_Land_Mean_Reflectance_0_55/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_Land_Mean_Reflectance_0_67/Mean": "science",
+    "SNPP_VIIRS_Land_Mean_Reflectance_0_67/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_Land_Mean_Reflectance_0_67/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_Land_Mean_Reflectance_0_86/Mean": "science",
+    "SNPP_VIIRS_Land_Mean_Reflectance_0_86/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_Land_Mean_Reflectance_0_86/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_Land_Mean_Reflectance_1_24/Mean": "science",
+    "SNPP_VIIRS_Land_Mean_Reflectance_1_24/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_Land_Mean_Reflectance_1_24/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_Land_Mean_Reflectance_1_60/Mean": "science",
+    "SNPP_VIIRS_Land_Mean_Reflectance_1_60/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_Land_Mean_Reflectance_1_60/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_Land_Mean_Reflectance_2_26/Mean": "science",
+    "SNPP_VIIRS_Land_Mean_Reflectance_2_26/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_Land_Mean_Reflectance_2_26/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_Land_Ocean_Mask/Mean": "science",
+    "SNPP_VIIRS_Land_Ocean_Mask/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_Land_Ocean_Mask/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_NASADarkTarget_AOD_550/Histogram_Counts": "unclassified",
+    "SNPP_VIIRS_NASADarkTarget_AOD_550/Mean": "science",
+    "SNPP_VIIRS_NASADarkTarget_AOD_550/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_NASADarkTarget_AOD_550/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_NASADarkTarget_AOD_550_QF3/Histogram_Counts": "unclassified",
+    "SNPP_VIIRS_NASADarkTarget_AOD_550_QF3/Mean": "science",
+    "SNPP_VIIRS_NASADarkTarget_AOD_550_QF3/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_NASADarkTarget_AOD_550_QF3/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_NASADarkTarget_FMF_Land/Histogram_Counts": "unclassified",
+    "SNPP_VIIRS_NASADarkTarget_FMF_Land/Mean": "science",
+    "SNPP_VIIRS_NASADarkTarget_FMF_Land/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_NASADarkTarget_FMF_Land/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_NASADarkTarget_FMF_Land_QF3/Histogram_Counts": "unclassified",
+    "SNPP_VIIRS_NASADarkTarget_FMF_Land_QF3/Mean": "science",
+    "SNPP_VIIRS_NASADarkTarget_FMF_Land_QF3/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_NASADarkTarget_FMF_Land_QF3/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_NASADarkTarget_FMF_Ocean/Histogram_Counts": "unclassified",
+    "SNPP_VIIRS_NASADarkTarget_FMF_Ocean/Mean": "science",
+    "SNPP_VIIRS_NASADarkTarget_FMF_Ocean/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_NASADarkTarget_FMF_Ocean/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_NASADarkTarget_FMF_Ocean_QF3/Histogram_Counts": "unclassified",
+    "SNPP_VIIRS_NASADarkTarget_FMF_Ocean_QF3/Mean": "science",
+    "SNPP_VIIRS_NASADarkTarget_FMF_Ocean_QF3/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_NASADarkTarget_FMF_Ocean_QF3/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_NASADeepBlue_AOD_550/Histogram_Counts": "unclassified",
+    "SNPP_VIIRS_NASADeepBlue_AOD_550/Mean": "science",
+    "SNPP_VIIRS_NASADeepBlue_AOD_550/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_NASADeepBlue_AOD_550/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_NASADeepBlue_AOD_550_QF3/Histogram_Counts": "unclassified",
+    "SNPP_VIIRS_NASADeepBlue_AOD_550_QF3/Mean": "science",
+    "SNPP_VIIRS_NASADeepBlue_AOD_550_QF3/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_NASADeepBlue_AOD_550_QF3/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_NASADeepBlue_FMF_Ocean/Histogram_Counts": "unclassified",
+    "SNPP_VIIRS_NASADeepBlue_FMF_Ocean/Mean": "science",
+    "SNPP_VIIRS_NASADeepBlue_FMF_Ocean/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_NASADeepBlue_FMF_Ocean/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_NASADeepBlue_FMF_Ocean_QF3/Histogram_Counts": "unclassified",
+    "SNPP_VIIRS_NASADeepBlue_FMF_Ocean_QF3/Mean": "science",
+    "SNPP_VIIRS_NASADeepBlue_FMF_Ocean_QF3/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_NASADeepBlue_FMF_Ocean_QF3/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_NDVI/Mean": "science",
+    "SNPP_VIIRS_NDVI/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_NDVI/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_Ocean_Aerosol_Cloud_Fraction/Mean": "science",
+    "SNPP_VIIRS_Ocean_Aerosol_Cloud_Fraction/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_Ocean_Aerosol_Cloud_Fraction/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_Ocean_Mean_Reflectance_0_49/Mean": "science",
+    "SNPP_VIIRS_Ocean_Mean_Reflectance_0_49/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_Ocean_Mean_Reflectance_0_49/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_Ocean_Mean_Reflectance_0_55/Mean": "science",
+    "SNPP_VIIRS_Ocean_Mean_Reflectance_0_55/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_Ocean_Mean_Reflectance_0_55/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_Ocean_Mean_Reflectance_0_67/Mean": "science",
+    "SNPP_VIIRS_Ocean_Mean_Reflectance_0_67/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_Ocean_Mean_Reflectance_0_67/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_Ocean_Mean_Reflectance_0_86/Mean": "science",
+    "SNPP_VIIRS_Ocean_Mean_Reflectance_0_86/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_Ocean_Mean_Reflectance_0_86/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_Ocean_Mean_Reflectance_1_24/Mean": "science",
+    "SNPP_VIIRS_Ocean_Mean_Reflectance_1_24/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_Ocean_Mean_Reflectance_1_24/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_Ocean_Mean_Reflectance_1_60/Mean": "science",
+    "SNPP_VIIRS_Ocean_Mean_Reflectance_1_60/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_Ocean_Mean_Reflectance_1_60/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_Ocean_Mean_Reflectance_2_26/Mean": "science",
+    "SNPP_VIIRS_Ocean_Mean_Reflectance_2_26/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_Ocean_Mean_Reflectance_2_26/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_scattering_angle/Mean": "science",
+    "SNPP_VIIRS_scattering_angle/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_scattering_angle/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_solar_zenith_angle/Mean": "science",
+    "SNPP_VIIRS_solar_zenith_angle/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_solar_zenith_angle/Standard_Deviation": "unclassified",
+    "SNPP_VIIRS_viewing_zenith_angle/Mean": "science",
+    "SNPP_VIIRS_viewing_zenith_angle/Pixel_Counts": "unclassified",
+    "SNPP_VIIRS_viewing_zenith_angle/Standard_Deviation": "unclassified",
+    "Terra_MODIS_NASADarkTargetDeepBlue_AOD_550_QF3/Histogram_Counts": "unclassified",
+    "Terra_MODIS_NASADarkTargetDeepBlue_AOD_550_QF3/Mean": "science",
+    "Terra_MODIS_NASADarkTargetDeepBlue_AOD_550_QF3/Pixel_Counts": "unclassified",
+    "Terra_MODIS_NASADarkTargetDeepBlue_AOD_550_QF3/Standard_Deviation": "unclassified",
+    "Terra_MODIS_NASADarkTarget_AOD_550/Histogram_Counts": "unclassified",
+    "Terra_MODIS_NASADarkTarget_AOD_550/Mean": "science",
+    "Terra_MODIS_NASADarkTarget_AOD_550/Pixel_Counts": "unclassified",
+    "Terra_MODIS_NASADarkTarget_AOD_550/Standard_Deviation": "unclassified",
+    "Terra_MODIS_NASADarkTarget_AOD_550_QF3/Histogram_Counts": "unclassified",
+    "Terra_MODIS_NASADarkTarget_AOD_550_QF3/Mean": "science",
+    "Terra_MODIS_NASADarkTarget_AOD_550_QF3/Pixel_Counts": "unclassified",
+    "Terra_MODIS_NASADarkTarget_AOD_550_QF3/Standard_Deviation": "unclassified",
+    "Terra_MODIS_NASADeepBlue_AOD_550_Land/Histogram_Counts": "unclassified",
+    "Terra_MODIS_NASADeepBlue_AOD_550_Land/Mean": "science",
+    "Terra_MODIS_NASADeepBlue_AOD_550_Land/Pixel_Counts": "unclassified",
+    "Terra_MODIS_NASADeepBlue_AOD_550_Land/Standard_Deviation": "unclassified",
+    "Terra_MODIS_NASADeepBlue_AOD_550_Land_QF3/Histogram_Counts": "unclassified",
+    "Terra_MODIS_NASADeepBlue_AOD_550_Land_QF3/Mean": "science",
+    "Terra_MODIS_NASADeepBlue_AOD_550_Land_QF3/Pixel_Counts": "unclassified",
+    "Terra_MODIS_NASADeepBlue_AOD_550_Land_QF3/Standard_Deviation": "unclassified",
+    "Terra_MODIS_NASA_FMF_Land/Histogram_Counts": "unclassified",
+    "Terra_MODIS_NASA_FMF_Land/Mean": "science",
+    "Terra_MODIS_NASA_FMF_Land/Pixel_Counts": "unclassified",
+    "Terra_MODIS_NASA_FMF_Land/Standard_Deviation": "unclassified",
+    "Terra_MODIS_NASA_FMF_Land_QF3/Histogram_Counts": "unclassified",
+    "Terra_MODIS_NASA_FMF_Land_QF3/Mean": "science",
+    "Terra_MODIS_NASA_FMF_Land_QF3/Pixel_Counts": "unclassified",
+    "Terra_MODIS_NASA_FMF_Land_QF3/Standard_Deviation": "unclassified",
+    "Terra_MODIS_NASA_FMF_Ocean/Histogram_Counts": "unclassified",
+    "Terra_MODIS_NASA_FMF_Ocean/Mean": "science",
+    "Terra_MODIS_NASA_FMF_Ocean/Pixel_Counts": "unclassified",
+    "Terra_MODIS_NASA_FMF_Ocean/Standard_Deviation": "unclassified",
+    "Terra_MODIS_NASA_FMF_Ocean_QF3/Histogram_Counts": "unclassified",
+    "Terra_MODIS_NASA_FMF_Ocean_QF3/Mean": "science",
+    "Terra_MODIS_NASA_FMF_Ocean_QF3/Pixel_Counts": "unclassified",
+    "Terra_MODIS_NASA_FMF_Ocean_QF3/Standard_Deviation": "unclassified",
+    "Terra_MODIS_NRLCorrection_AOD_550/Histogram_Counts": "unclassified",
+    "Terra_MODIS_NRLCorrection_AOD_550/Mean": "science",
+    "Terra_MODIS_NRLCorrection_AOD_550/Pixel_Counts": "unclassified",
+    "Terra_MODIS_NRLCorrection_AOD_550/Standard_Deviation": "unclassified",
+    "Terra_MODIS_NRLCorrection_AOD_550_Land/Histogram_Counts": "unclassified",
+    "Terra_MODIS_NRLCorrection_AOD_550_Land/Mean": "science",
+    "Terra_MODIS_NRLCorrection_AOD_550_Land/Pixel_Counts": "unclassified",
+    "Terra_MODIS_NRLCorrection_AOD_550_Land/Standard_Deviation": "unclassified",
+    "Terra_MODIS_NRLCorrection_AOD_550_Ocean/Histogram_Counts": "unclassified",
+    "Terra_MODIS_NRLCorrection_AOD_550_Ocean/Mean": "science",
+    "Terra_MODIS_NRLCorrection_AOD_550_Ocean/Pixel_Counts": "unclassified",
+    "Terra_MODIS_NRLCorrection_AOD_550_Ocean/Standard_Deviation": "unclassified",
+    "Terra_MODIS_aerosol_cloud_fraction_land/Mean": "science",
+    "Terra_MODIS_aerosol_cloud_fraction_land/Pixel_Counts": "unclassified",
+    "Terra_MODIS_aerosol_cloud_fraction_land/Standard_Deviation": "unclassified",
+    "Terra_MODIS_aerosol_cloud_fraction_ocean/Mean": "science",
+    "Terra_MODIS_aerosol_cloud_fraction_ocean/Pixel_Counts": "unclassified",
+    "Terra_MODIS_aerosol_cloud_fraction_ocean/Standard_Deviation": "unclassified",
+    "Terra_MODIS_scattering_angle/Mean": "science",
+    "Terra_MODIS_scattering_angle/Pixel_Counts": "unclassified",
+    "Terra_MODIS_scattering_angle/Standard_Deviation": "unclassified",
+    "Terra_MODIS_solar_zenith_angle/Mean": "science",
+    "Terra_MODIS_solar_zenith_angle/Pixel_Counts": "unclassified",
+    "Terra_MODIS_solar_zenith_angle/Standard_Deviation": "unclassified",
+    "Terra_MODIS_viewing_zenith_angle/Mean": "science",
+    "Terra_MODIS_viewing_zenith_angle/Pixel_Counts": "unclassified",
+    "Terra_MODIS_viewing_zenith_angle/Standard_Deviation": "unclassified",
+    "aeronet_AOD_388/Histogram_Counts": "unclassified",
+    "aeronet_AOD_388/Mean": "science",
+    "aeronet_AOD_388/Pixel_Counts": "unclassified",
+    "aeronet_AOD_388/Standard_Deviation": "unclassified",
+    "aeronet_AOD_412/Histogram_Counts": "unclassified",
+    "aeronet_AOD_412/Mean": "science",
+    "aeronet_AOD_412/Pixel_Counts": "unclassified",
+    "aeronet_AOD_412/Standard_Deviation": "unclassified",
+    "aeronet_AOD_470/Histogram_Counts": "unclassified",
+    "aeronet_AOD_470/Mean": "science",
+    "aeronet_AOD_470/Pixel_Counts": "unclassified",
+    "aeronet_AOD_470/Standard_Deviation": "unclassified",
+    "aeronet_AOD_532/Histogram_Counts": "unclassified",
+    "aeronet_AOD_532/Mean": "science",
+    "aeronet_AOD_532/Pixel_Counts": "unclassified",
+    "aeronet_AOD_532/Standard_Deviation": "unclassified",
+    "aeronet_AOD_550/Histogram_Counts": "unclassified",
+    "aeronet_AOD_550/Mean": "science",
+    "aeronet_AOD_550/Pixel_Counts": "unclassified",
+    "aeronet_AOD_550/Standard_Deviation": "unclassified",
+    "aeronet_AOD_630/Histogram_Counts": "unclassified",
+    "aeronet_AOD_630/Mean": "science",
+    "aeronet_AOD_630/Pixel_Counts": "unclassified",
+    "aeronet_AOD_630/Standard_Deviation": "unclassified",
+    "aeronet_AOD_870/Histogram_Counts": "unclassified",
+    "aeronet_AOD_870/Mean": "science",
+    "aeronet_AOD_870/Pixel_Counts": "unclassified",
+    "aeronet_AOD_870/Standard_Deviation": "unclassified",
+    "aeronet_AOD_coarsemode_338/Histogram_Counts": "unclassified",
+    "aeronet_AOD_coarsemode_338/Mean": "science",
+    "aeronet_AOD_coarsemode_338/Pixel_Counts": "unclassified",
+    "aeronet_AOD_coarsemode_338/Standard_Deviation": "unclassified",
+    "aeronet_AOD_coarsemode_412/Histogram_Counts": "unclassified",
+    "aeronet_AOD_coarsemode_412/Mean": "science",
+    "aeronet_AOD_coarsemode_412/Pixel_Counts": "unclassified",
+    "aeronet_AOD_coarsemode_412/Standard_Deviation": "unclassified",
+    "aeronet_AOD_coarsemode_470/Histogram_Counts": "unclassified",
+    "aeronet_AOD_coarsemode_470/Mean": "science",
+    "aeronet_AOD_coarsemode_470/Pixel_Counts": "unclassified",
+    "aeronet_AOD_coarsemode_470/Standard_Deviation": "unclassified",
+    "aeronet_AOD_coarsemode_532/Histogram_Counts": "unclassified",
+    "aeronet_AOD_coarsemode_532/Mean": "science",
+    "aeronet_AOD_coarsemode_532/Pixel_Counts": "unclassified",
+    "aeronet_AOD_coarsemode_532/Standard_Deviation": "unclassified",
+    "aeronet_AOD_coarsemode_550/Histogram_Counts": "unclassified",
+    "aeronet_AOD_coarsemode_550/Mean": "science",
+    "aeronet_AOD_coarsemode_550/Pixel_Counts": "unclassified",
+    "aeronet_AOD_coarsemode_550/Standard_Deviation": "unclassified",
+    "aeronet_AOD_coarsemode_630/Histogram_Counts": "unclassified",
+    "aeronet_AOD_coarsemode_630/Mean": "science",
+    "aeronet_AOD_coarsemode_630/Pixel_Counts": "unclassified",
+    "aeronet_AOD_coarsemode_630/Standard_Deviation": "unclassified",
+    "aeronet_AOD_coarsemode_870/Histogram_Counts": "unclassified",
+    "aeronet_AOD_coarsemode_870/Mean": "science",
+    "aeronet_AOD_coarsemode_870/Pixel_Counts": "unclassified",
+    "aeronet_AOD_coarsemode_870/Standard_Deviation": "unclassified",
+    "aeronet_AOD_finemode_338/Histogram_Counts": "unclassified",
+    "aeronet_AOD_finemode_338/Mean": "science",
+    "aeronet_AOD_finemode_338/Pixel_Counts": "unclassified",
+    "aeronet_AOD_finemode_338/Standard_Deviation": "unclassified",
+    "aeronet_AOD_finemode_412/Histogram_Counts": "unclassified",
+    "aeronet_AOD_finemode_412/Mean": "science",
+    "aeronet_AOD_finemode_412/Pixel_Counts": "unclassified",
+    "aeronet_AOD_finemode_412/Standard_Deviation": "unclassified",
+    "aeronet_AOD_finemode_470/Histogram_Counts": "unclassified",
+    "aeronet_AOD_finemode_470/Mean": "science",
+    "aeronet_AOD_finemode_470/Pixel_Counts": "unclassified",
+    "aeronet_AOD_finemode_470/Standard_Deviation": "unclassified",
+    "aeronet_AOD_finemode_532/Histogram_Counts": "unclassified",
+    "aeronet_AOD_finemode_532/Mean": "science",
+    "aeronet_AOD_finemode_532/Pixel_Counts": "unclassified",
+    "aeronet_AOD_finemode_532/Standard_Deviation": "unclassified",
+    "aeronet_AOD_finemode_550/Histogram_Counts": "unclassified",
+    "aeronet_AOD_finemode_550/Mean": "science",
+    "aeronet_AOD_finemode_550/Pixel_Counts": "unclassified",
+    "aeronet_AOD_finemode_550/Standard_Deviation": "unclassified",
+    "aeronet_AOD_finemode_630/Histogram_Counts": "unclassified",
+    "aeronet_AOD_finemode_630/Mean": "science",
+    "aeronet_AOD_finemode_630/Pixel_Counts": "unclassified",
+    "aeronet_AOD_finemode_630/Standard_Deviation": "unclassified",
+    "aeronet_AOD_finemode_870/Histogram_Counts": "unclassified",
+    "aeronet_AOD_finemode_870/Mean": "science",
+    "aeronet_AOD_finemode_870/Pixel_Counts": "unclassified",
+    "aeronet_AOD_finemode_870/Standard_Deviation": "unclassified"
+  },
+  "ground_truth_basis": {
+    "note": "REGRESSION BASELINE, not hand-curated ground truth. This product has 432 bands across 121 platform x algorithm x QA-filter groups with only 4 distinct leaf names, so per-band curation is not meaningful here and role correctness for any single band is not asserted. What this fixture does guarantee is that the classification of a 432-band colliding-leaf inventory does not change silently -- the case that historically produced an ambiguous-refusal blowup.",
+    "why_it_is_usable_anyway": "The pinned primary_var resolves the science variable directly, so the agent never has to rank these 432 candidates."
+  }
+}

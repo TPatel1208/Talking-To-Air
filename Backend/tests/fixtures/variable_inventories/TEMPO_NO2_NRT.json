@@ -1,0 +1,288 @@
+{
+  "registry_key": "TEMPO_NO2_NRT",
+  "collection_id": "C3685668637-LARC_CLOUD",
+  "short_name": "TEMPO_NO2_L3_NRT",
+  "source": "describe_dataset detail=True; variable names verified identical to TEMPO_NO2 (V04) 2026-08-02",
+  "primary_var": "vertical_column_troposphere",
+  "quality_flag_var": "main_data_quality_flag",
+  "groups": [
+    "product"
+  ],
+  "variables": [
+    {
+      "name": "geolocation/relative_azimuth_angle",
+      "long_name": "relative azimuth angle at pixel center",
+      "units": "degrees",
+      "standard_name": null
+    },
+    {
+      "name": "geolocation/solar_zenith_angle",
+      "long_name": "solar zenith angle at pixel center",
+      "units": "degrees",
+      "standard_name": null
+    },
+    {
+      "name": "geolocation/viewing_zenith_angle",
+      "long_name": "viewing zenith angle at pixel center",
+      "units": "degrees",
+      "standard_name": null
+    },
+    {
+      "name": "latitude",
+      "long_name": "latitude",
+      "units": "degrees_north",
+      "standard_name": "latitude"
+    },
+    {
+      "name": "longitude",
+      "long_name": "longitude",
+      "units": "degrees_east",
+      "standard_name": "longitude"
+    },
+    {
+      "name": "product/main_data_quality_flag",
+      "long_name": "main data quality flag",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "product/vertical_column_stratosphere",
+      "long_name": "stratosphere nitrogen dioxide vertical column",
+      "units": "molecules/cm^2",
+      "standard_name": null
+    },
+    {
+      "name": "product/vertical_column_troposphere",
+      "long_name": "troposphere nitrogen dioxide vertical column",
+      "units": "molecules/cm^2",
+      "standard_name": null
+    },
+    {
+      "name": "product/vertical_column_troposphere_uncertainty",
+      "long_name": "troposphere nitrogen dioxide vertical column uncertainty",
+      "units": "molecules/cm^2",
+      "standard_name": null
+    },
+    {
+      "name": "qa_statistics/max_vertical_column_stratosphere_sample",
+      "long_name": "stratosphere nitrogen dioxide vertical column",
+      "units": "molecules/cm^2",
+      "standard_name": null
+    },
+    {
+      "name": "qa_statistics/max_vertical_column_total_sample",
+      "long_name": "nitrogen dioxide vertical column",
+      "units": "molecules/cm^2",
+      "standard_name": null
+    },
+    {
+      "name": "qa_statistics/max_vertical_column_troposphere_sample",
+      "long_name": "troposphere nitrogen dioxide vertical column",
+      "units": "molecules/cm^2",
+      "standard_name": null
+    },
+    {
+      "name": "qa_statistics/max_vertical_column_troposphere_uncertainty_sample",
+      "long_name": "troposphere nitrogen dioxide vertical column uncertainty",
+      "units": "molecules/cm^2",
+      "standard_name": null
+    },
+    {
+      "name": "qa_statistics/min_vertical_column_stratosphere_sample",
+      "long_name": "stratosphere nitrogen dioxide vertical column",
+      "units": "molecules/cm^2",
+      "standard_name": null
+    },
+    {
+      "name": "qa_statistics/min_vertical_column_total_sample",
+      "long_name": "nitrogen dioxide vertical column",
+      "units": "molecules/cm^2",
+      "standard_name": null
+    },
+    {
+      "name": "qa_statistics/min_vertical_column_troposphere_sample",
+      "long_name": "troposphere nitrogen dioxide vertical column",
+      "units": "molecules/cm^2",
+      "standard_name": null
+    },
+    {
+      "name": "qa_statistics/min_vertical_column_troposphere_uncertainty_sample",
+      "long_name": "troposphere nitrogen dioxide vertical column uncertainty",
+      "units": "molecules/cm^2",
+      "standard_name": null
+    },
+    {
+      "name": "qa_statistics/num_vertical_column_stratosphere_samples",
+      "long_name": "qa_statistics/num_vertical_column_stratosphere_samples",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "qa_statistics/num_vertical_column_total_samples",
+      "long_name": "qa_statistics/num_vertical_column_total_samples",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "qa_statistics/num_vertical_column_troposphere_samples",
+      "long_name": "qa_statistics/num_vertical_column_troposphere_samples",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "qa_statistics/num_vertical_column_troposphere_uncertainty_samples",
+      "long_name": "qa_statistics/num_vertical_column_troposphere_uncertainty_samples",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "support_data/albedo",
+      "long_name": "surface albedo",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "support_data/amf_cloud_fraction",
+      "long_name": "cloud fraction",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "support_data/amf_cloud_pressure",
+      "long_name": "cloud pressure",
+      "units": "hPa",
+      "standard_name": null
+    },
+    {
+      "name": "support_data/amf_stratosphere",
+      "long_name": "nitrogen dioxide stratospheric air mass factor",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "support_data/amf_total",
+      "long_name": "nitrogen dioxide air mass factor",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "support_data/amf_troposphere",
+      "long_name": "nitrogen dioxide tropospheric air mass factor",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "support_data/eff_cloud_fraction",
+      "long_name": "effective cloud fraction",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "support_data/fitted_slant_column",
+      "long_name": "nitrogen dioxide fitted slant column",
+      "units": "molecules/cm^2",
+      "standard_name": null
+    },
+    {
+      "name": "support_data/fitted_slant_column_uncertainty",
+      "long_name": "nitrogen dioxide fitted slant column uncertainty",
+      "units": "molecules/cm^2",
+      "standard_name": null
+    },
+    {
+      "name": "support_data/pbl_height",
+      "long_name": "planetary boundary layer height",
+      "units": "m",
+      "standard_name": null
+    },
+    {
+      "name": "support_data/snow_ice_fraction",
+      "long_name": "fraction of pixel area covered by snow and/or ice",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "support_data/surface_pressure",
+      "long_name": "surface pressure",
+      "units": "hPa",
+      "standard_name": null
+    },
+    {
+      "name": "support_data/terrain_height",
+      "long_name": "terrain height",
+      "units": "m",
+      "standard_name": null
+    },
+    {
+      "name": "support_data/tropopause_pressure",
+      "long_name": "tropopause pressure",
+      "units": "hPa",
+      "standard_name": null
+    },
+    {
+      "name": "support_data/vertical_column_total",
+      "long_name": "nitrogen dioxide vertical column",
+      "units": "molecules/cm^2",
+      "standard_name": null
+    },
+    {
+      "name": "support_data/vertical_column_total_uncertainty",
+      "long_name": "nitrogen dioxide vertical column uncertainty",
+      "units": "molecules/cm^2",
+      "standard_name": null
+    },
+    {
+      "name": "time",
+      "long_name": "scan start time",
+      "units": "seconds since 1980-01-06T00:00:00Z",
+      "standard_name": "time"
+    },
+    {
+      "name": "weight",
+      "long_name": "sum of area weights",
+      "units": "km^2",
+      "standard_name": null
+    }
+  ],
+  "expected_roles": {
+    "geolocation/relative_azimuth_angle": "context",
+    "geolocation/solar_zenith_angle": "context",
+    "geolocation/viewing_zenith_angle": "context",
+    "latitude": "context",
+    "longitude": "context",
+    "product/main_data_quality_flag": "quality",
+    "product/vertical_column_stratosphere": "science",
+    "product/vertical_column_troposphere": "science",
+    "product/vertical_column_troposphere_uncertainty": "quality",
+    "qa_statistics/max_vertical_column_stratosphere_sample": "quality",
+    "qa_statistics/max_vertical_column_total_sample": "quality",
+    "qa_statistics/max_vertical_column_troposphere_sample": "quality",
+    "qa_statistics/max_vertical_column_troposphere_uncertainty_sample": "quality",
+    "qa_statistics/min_vertical_column_stratosphere_sample": "quality",
+    "qa_statistics/min_vertical_column_total_sample": "quality",
+    "qa_statistics/min_vertical_column_troposphere_sample": "quality",
+    "qa_statistics/min_vertical_column_troposphere_uncertainty_sample": "quality",
+    "qa_statistics/num_vertical_column_stratosphere_samples": "quality",
+    "qa_statistics/num_vertical_column_total_samples": "quality",
+    "qa_statistics/num_vertical_column_troposphere_samples": "quality",
+    "qa_statistics/num_vertical_column_troposphere_uncertainty_samples": "quality",
+    "support_data/albedo": "context",
+    "support_data/amf_cloud_fraction": "retrieval-metadata",
+    "support_data/amf_cloud_pressure": "retrieval-metadata",
+    "support_data/amf_stratosphere": "retrieval-metadata",
+    "support_data/amf_total": "retrieval-metadata",
+    "support_data/amf_troposphere": "retrieval-metadata",
+    "support_data/eff_cloud_fraction": "context",
+    "support_data/fitted_slant_column": "retrieval-metadata",
+    "support_data/fitted_slant_column_uncertainty": "quality",
+    "support_data/pbl_height": "context",
+    "support_data/snow_ice_fraction": "context",
+    "support_data/surface_pressure": "context",
+    "support_data/terrain_height": "context",
+    "support_data/tropopause_pressure": "context",
+    "support_data/vertical_column_total": "science",
+    "support_data/vertical_column_total_uncertainty": "quality",
+    "time": "context",
+    "weight": "unclassified"
+  }
+}
