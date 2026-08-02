@@ -128,18 +128,31 @@ class CubeStoreIsolationTests(unittest.TestCase):
             "suite is reading and writing the same store the application uses"
         )
 
-    def test_the_store_root_is_outside_the_checkout(self) -> None:
+    def test_the_store_root_is_outside_the_app_root(self) -> None:
         """The other real location this has landed in. ``Backend/cube_store/``
         is gitignored, so a polluted store is invisible to ``git status`` and
         survives every branch switch — the worst possible place for state a test
-        result depends on."""
-        checkout = os.path.abspath(os.path.join(TESTS_DIR, "..", ".."))
+        result depends on.
+
+        Anchored on ``APP_ROOT`` rather than ``TESTS_DIR/../..``. That expression
+        gives the repo root on a developer machine, but in the container
+        ``TESTS_DIR`` is ``/app/tests``, so ``../..`` resolves to ``/`` — the
+        filesystem root, which contains every path including the tempdir this
+        test is meant to bless. The assertion could therefore never pass under
+        ``docker compose --profile test``, and reported a correctly-isolated
+        store as pollution. ``APP_ROOT`` is ``Backend/`` in a checkout and
+        ``/app`` in the image: exactly the directory the store must stay out of,
+        in both.
+        """
+        from tta_backend import APP_ROOT
+
+        app_root = os.path.abspath(APP_ROOT)
         root = self._resolved_root()
         try:
-            inside = os.path.commonpath([root, checkout]) == checkout
+            inside = os.path.commonpath([root, app_root]) == app_root
         except ValueError:  # different drives — trivially outside
             inside = False
-        assert not inside, f"the cube store resolves inside the checkout: {root}"
+        assert not inside, f"the cube store resolves inside the app root: {root}"
 
     def test_a_the_store_root_can_be_recorded(self) -> None:
         """Paired with the next one — see the module docstring on the ``a``/``b``
