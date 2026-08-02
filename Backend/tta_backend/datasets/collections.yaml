@@ -154,7 +154,11 @@ TEMPO_HCHO:
   supports_variable_subsetting: true
   units: molecules/cm^2
   fill_value: -1.0e+30
-  valid_min: 0.0
+  # Retrieval noise scatters below zero over clean scenes (31% of TEMPO HCHO,
+  # 25% of OMI HCHO finite pixels, measured 2026-08-02). Those are good-quality
+  # observations, so the floor sits below the noise to catch corrupt values only,
+  # rather than at 0.0 where it censored the low tail and biased the mean high.
+  valid_min: -1.0e+17
   valid_max: .inf
   groups:
     - product
@@ -177,7 +181,11 @@ TEMPO_HCHO_V03:
   supports_variable_subsetting: true
   units: molecules/cm^2
   fill_value: -1.0e+30
-  valid_min: 0.0
+  # Retrieval noise scatters below zero over clean scenes (31% of TEMPO HCHO,
+  # 25% of OMI HCHO finite pixels, measured 2026-08-02). Those are good-quality
+  # observations, so the floor sits below the noise to catch corrupt values only,
+  # rather than at 0.0 where it censored the low tail and biased the mean high.
+  valid_min: -1.0e+17
   valid_max: .inf
   groups:
     - product
@@ -197,7 +205,11 @@ OMI_HCHO:
   supports_variable_subsetting: false
   units: molecules/cm^2
   fill_value: -1.0e+30
-  valid_min: 0.0
+  # Retrieval noise scatters below zero over clean scenes (31% of TEMPO HCHO,
+  # 25% of OMI HCHO finite pixels, measured 2026-08-02). Those are good-quality
+  # observations, so the floor sits below the noise to catch corrupt values only,
+  # rather than at 0.0 where it censored the low tail and biased the mean high.
+  valid_min: -1.0e+17
   valid_max: .inf
   groups:
     - key_science_data

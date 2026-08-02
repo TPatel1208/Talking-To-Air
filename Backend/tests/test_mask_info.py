@@ -259,3 +259,34 @@ class MaskInfoAppliesToAggregationServiceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NegativeRetrievalsAreNotClippedTests(unittest.TestCase):
+    """A trace-gas column retrieval scatters around zero over clean scenes, so
+    a fraction of good-quality pixels are genuinely negative. Measured
+    2026-08-02 on real granules: 9.1% of TEMPO NO2, 31.0% of TEMPO HCHO and
+    25.0% of OMI HCHO finite pixels. Those are noise in the retrieval, not
+    invalid data -- 96.1% of the NO2 ones are flagged "normal".
+
+    ``valid_min: 0.0`` discarded every one of them and biased the reported
+    mean high, while NO2 kept its own with ``valid_min: -1.0e+15``. Two
+    products, opposite policies, neither disclosed. The floor exists to catch
+    corrupt or sentinel values, not to censor the low tail, so it belongs
+    below the noise -- never at zero.
+    """
+
+    def test_no_column_collection_clips_its_negative_tail_at_zero(self):
+        from tta_backend.datasets.registry import load_registry
+
+        clipped = {
+            key: cfg.valid_min
+            for key, cfg in load_registry().items()
+            if cfg.valid_min is not None
+            and cfg.valid_min == 0.0
+            and (cfg.units or "").replace(" ", "") == "molecules/cm^2"
+        }
+
+        self.assertEqual(
+            clipped, {},
+            f"these column products still clip retrieval noise at zero: {clipped}",
+        )
