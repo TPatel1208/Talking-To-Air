@@ -22,9 +22,6 @@ import os
 import sys
 import unittest
 
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 TESTS_DIR = os.path.dirname(__file__)
 if TESTS_DIR not in sys.path:
@@ -39,7 +36,7 @@ REQUIRED_MODULES = ["langchain_mcp_adapters", "fastmcp", "uvicorn"]
 )
 class ToolCacheAllowlistTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        from earthdata_mcp.tool_cache import clear_tool_cache
+        from tta_backend.earthdata_mcp.tool_cache import clear_tool_cache
         from fake_earthdata_mcp import FakeEarthdataMCPServer, build_fake_mcp
 
         clear_tool_cache()
@@ -62,15 +59,15 @@ class ToolCacheAllowlistTests(unittest.IsolatedAsyncioTestCase):
         self.server.start()
         self.addCleanup(self.server.stop)
 
-        from config.settings import Settings
-        from earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
 
         self.tools = await load_raw_mcp_tools(
             Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None)
         )
 
     async def test_describe_dataset_twice_with_identical_args_issues_one_mcp_call(self):
-        from earthdata_mcp.workspace import bind_workspace
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
 
         bound = bind_workspace(self.tools, lambda: "17")
 
@@ -85,7 +82,7 @@ class ToolCacheAllowlistTests(unittest.IsolatedAsyncioTestCase):
         agent's availability answers are tool-grounded on purpose — a cache
         that told a researcher data exists when it doesn't (or the reverse)
         would quietly defeat a rule built deliberately."""
-        from earthdata_mcp.workspace import bind_workspace
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
 
         bound = bind_workspace(self.tools, lambda: "17")
         args = {"dataset_handle": "d1", "aoi_handle": "aoi_1", "time_range": "2024-01-01/2024-01-02"}
@@ -96,7 +93,7 @@ class ToolCacheAllowlistTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.calls), 2)
 
     def test_the_include_and_exclude_lists_are_asserted_not_merely_commented(self):
-        from earthdata_mcp.tool_cache import is_cacheable
+        from tta_backend.earthdata_mcp.tool_cache import is_cacheable
 
         for name in ("describe_dataset", "search_datasets", "define_area_of_interest", "preview_dataset"):
             with self.subTest(cached=name):
@@ -125,7 +122,7 @@ class ToolCacheAllowlistTests(unittest.IsolatedAsyncioTestCase):
     async def test_two_workspaces_never_cross_serve_each_others_entries(self):
         """workspace_id participates in the key even though CMR metadata is
         public, so the T31 entitlement question never has to be answered."""
-        from earthdata_mcp.workspace import bind_workspace
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
 
         await bind_workspace(self.tools, lambda: "17")["describe_dataset"].ainvoke({"dataset_handle": "d1"})
         await bind_workspace(self.tools, lambda: "99")["describe_dataset"].ainvoke({"dataset_handle": "d1"})
@@ -133,7 +130,7 @@ class ToolCacheAllowlistTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.calls), 2)
 
     async def test_different_args_are_different_entries(self):
-        from earthdata_mcp.workspace import bind_workspace
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
 
         bound = bind_workspace(self.tools, lambda: "17")
 
@@ -146,7 +143,7 @@ class ToolCacheAllowlistTests(unittest.IsolatedAsyncioTestCase):
     async def test_the_cache_is_invisible_to_the_model_facing_compaction_wrapper(self):
         """The **raw** result is what is cached, so T13's compaction still runs
         normally and a hit is indistinguishable from a miss downstream."""
-        from earthdata_mcp.workspace import bind_workspace, model_view_describe_dataset
+        from tta_backend.earthdata_mcp.workspace import bind_workspace, model_view_describe_dataset
 
         bound = bind_workspace(self.tools, lambda: "17")
         model_facing = model_view_describe_dataset(bound["describe_dataset"])
@@ -160,8 +157,8 @@ class ToolCacheAllowlistTests(unittest.IsolatedAsyncioTestCase):
     async def test_hit_and_miss_are_counted_per_tool_name(self):
         """Story #6: the cache's value must be measurable rather than
         assumed — and per tool, so it is visible *which* call is repeating."""
-        from earthdata_mcp import tool_cache
-        from earthdata_mcp.workspace import bind_workspace
+        from tta_backend.earthdata_mcp import tool_cache
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
 
         bound = bind_workspace(self.tools, lambda: "17")
 
@@ -182,12 +179,12 @@ class ToolCacheAllowlistTests(unittest.IsolatedAsyncioTestCase):
         """What makes the cache verifiable in a live session: counters live in
         Prometheus, but "did this describe_dataset actually hit?" has to be
         answerable from the backend log."""
-        from earthdata_mcp.workspace import bind_workspace
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
 
         bound = bind_workspace(self.tools, lambda: "17")
 
         await bound["describe_dataset"].ainvoke({"dataset_handle": "d1"})
-        with self.assertLogs("earthdata_mcp.tool_cache", level="INFO") as cm:
+        with self.assertLogs("tta_backend.earthdata_mcp.tool_cache", level="INFO") as cm:
             await bound["describe_dataset"].ainvoke({"dataset_handle": "d1"})
 
         hits = [r for r in cm.records if getattr(r, "_event", None) == "mcp_tool_cache_hit"]
@@ -197,7 +194,7 @@ class ToolCacheAllowlistTests(unittest.IsolatedAsyncioTestCase):
     def test_a_newly_added_mcp_tool_is_uncached_until_deliberately_allowlisted(self):
         """Allowlist, not denylist — writing a new call site must never be
         enough to start caching something."""
-        from earthdata_mcp.tool_cache import is_cacheable
+        from tta_backend.earthdata_mcp.tool_cache import is_cacheable
 
         self.assertFalse(is_cacheable("some_tool_the_mcp_grows_next"))
 
@@ -213,7 +210,7 @@ class ToolCacheNeverStoresErrorsTests(unittest.IsolatedAsyncioTestCase):
     investigation) into a sticky wall for the whole session."""
 
     async def asyncSetUp(self):
-        from earthdata_mcp.tool_cache import clear_tool_cache
+        from tta_backend.earthdata_mcp.tool_cache import clear_tool_cache
         from fake_earthdata_mcp import FakeEarthdataMCPServer, build_fake_mcp
 
         clear_tool_cache()
@@ -233,8 +230,8 @@ class ToolCacheNeverStoresErrorsTests(unittest.IsolatedAsyncioTestCase):
         self.server.start()
         self.addCleanup(self.server.stop)
 
-        from config.settings import Settings
-        from earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
 
         self.tools = await load_raw_mcp_tools(
             Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None)
@@ -243,8 +240,8 @@ class ToolCacheNeverStoresErrorsTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_failed_call_is_not_stored_and_the_next_identical_call_can_succeed(self):
         import json
 
-        from earthdata_mcp.results import parse_tool_result
-        from earthdata_mcp.workspace import bind_workspace
+        from tta_backend.earthdata_mcp.results import parse_tool_result
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
 
         bound = bind_workspace(self.tools, lambda: "17")
 
@@ -266,7 +263,7 @@ class ToolCacheCredentialHygieneTests(unittest.IsolatedAsyncioTestCase):
     used no credential, so it must not report one as used."""
 
     async def asyncSetUp(self):
-        from earthdata_mcp.tool_cache import clear_tool_cache
+        from tta_backend.earthdata_mcp.tool_cache import clear_tool_cache
         from fake_earthdata_mcp import FakeEarthdataMCPServer
         from test_earthdata_mcp_edl_injection import _build_mcp_with_edl_advertising_search
 
@@ -283,8 +280,8 @@ class ToolCacheCredentialHygieneTests(unittest.IsolatedAsyncioTestCase):
         self.server.start()
         self.addCleanup(self.server.stop)
 
-        from config.settings import Settings
-        from earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
 
         self.tools = await load_raw_mcp_tools(
             Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None)
@@ -293,7 +290,7 @@ class ToolCacheCredentialHygieneTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_hit_serves_without_marking_the_credential_used(self):
         from test_earthdata_mcp_edl_injection import _FakeInjector
 
-        from earthdata_mcp.workspace import bind_workspace
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
 
         injector = _FakeInjector(token="decrypted-token-abc")
         bound = bind_workspace(self.tools, lambda: "17", edl_injector=injector)
@@ -307,8 +304,8 @@ class ToolCacheCredentialHygieneTests(unittest.IsolatedAsyncioTestCase):
     async def test_no_decrypted_token_is_retained_anywhere_in_the_cache(self):
         from test_earthdata_mcp_edl_injection import _FakeInjector
 
-        from earthdata_mcp import tool_cache
-        from earthdata_mcp.workspace import bind_workspace
+        from tta_backend.earthdata_mcp import tool_cache
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
 
         injector = _FakeInjector(token="decrypted-token-abc")
         bound = bind_workspace(self.tools, lambda: "17", edl_injector=injector)
@@ -320,7 +317,7 @@ class ToolCacheCredentialHygieneTests(unittest.IsolatedAsyncioTestCase):
     def test_a_call_carrying_a_token_shares_the_entry_of_one_without(self):
         """The token is neither keyed on nor stored, so injection state never
         splits the cache — and no key can carry a credential."""
-        from earthdata_mcp import tool_cache
+        from tta_backend.earthdata_mcp import tool_cache
 
         tool_cache.store("search_datasets", "user-17", {"query": "no2", "edl_token": "secret"}, "body")
 
@@ -335,7 +332,7 @@ class ToolCacheTtlAndBoundTests(unittest.TestCase):
     bind_workspace reads and writes — with the clock under test control."""
 
     def setUp(self):
-        from earthdata_mcp.tool_cache import clear_tool_cache
+        from tta_backend.earthdata_mcp.tool_cache import clear_tool_cache
 
         clear_tool_cache()
         self.addCleanup(clear_tool_cache)
@@ -347,25 +344,25 @@ class ToolCacheTtlAndBoundTests(unittest.TestCase):
     def test_an_entry_past_its_ttl_is_not_served(self):
         from unittest.mock import patch
 
-        from earthdata_mcp import tool_cache
+        from tta_backend.earthdata_mcp import tool_cache
 
         def lookup(n):
             return tool_cache.lookup("describe_dataset", "user-17", self._args(n))
 
         with patch.dict(os.environ, {"MCP_METADATA_CACHE_TTL_SECONDS": "60"}, clear=False):
             self._reload_settings()
-            with patch("earthdata_mcp.tool_cache.time.monotonic", return_value=1000.0):
+            with patch("tta_backend.earthdata_mcp.tool_cache.time.monotonic", return_value=1000.0):
                 tool_cache.store("describe_dataset", "user-17", self._args(1), "cached-body")
                 self.assertEqual(lookup(1), "cached-body")
-            with patch("earthdata_mcp.tool_cache.time.monotonic", return_value=1059.0):
+            with patch("tta_backend.earthdata_mcp.tool_cache.time.monotonic", return_value=1059.0):
                 self.assertEqual(lookup(1), "cached-body")
-            with patch("earthdata_mcp.tool_cache.time.monotonic", return_value=1061.0):
+            with patch("tta_backend.earthdata_mcp.tool_cache.time.monotonic", return_value=1061.0):
                 self.assertIsNone(lookup(1))
 
     def test_exceeding_the_entry_cap_evicts_the_least_recently_used_entry(self):
         from unittest.mock import patch
 
-        from earthdata_mcp import tool_cache
+        from tta_backend.earthdata_mcp import tool_cache
 
         def store(n, body):
             tool_cache.store("describe_dataset", "user-17", self._args(n), body)
@@ -386,7 +383,7 @@ class ToolCacheTtlAndBoundTests(unittest.TestCase):
             self.assertEqual(lookup(3), "three")
 
     def _reload_settings(self):
-        from config.settings import get_settings
+        from tta_backend.config.settings import get_settings
 
         get_settings.cache_clear()
         self.addCleanup(get_settings.cache_clear)

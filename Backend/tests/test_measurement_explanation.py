@@ -16,14 +16,8 @@ compact reliability subset, with NO recomputation and NO error path:
 import asyncio
 import importlib.util
 import json
-import os
-import sys
 import unittest
 from unittest import mock
-
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)
 
 
 def _evidence_payload():
@@ -49,7 +43,7 @@ def _evidence_payload():
 
 class SummarizeMeasurementEvidenceTests(unittest.TestCase):
     def test_payload_with_evidence_returns_evidence_and_qa_status(self):
-        from services.measurement_explanation import summarize_measurement_evidence
+        from tta_backend.services.measurement_explanation import summarize_measurement_evidence
 
         result = summarize_measurement_evidence(_evidence_payload())
 
@@ -66,7 +60,7 @@ class SummarizeMeasurementEvidenceTests(unittest.TestCase):
     def test_returned_evidence_is_the_stored_provenance_evidence_verbatim(self):
         """No recomputation: the returned facts equal the stored list exactly,
         so a confidence explanation is auditable back to P2's single source."""
-        from services.measurement_explanation import summarize_measurement_evidence
+        from tta_backend.services.measurement_explanation import summarize_measurement_evidence
 
         payload = _evidence_payload()
         result = summarize_measurement_evidence(payload)
@@ -74,7 +68,7 @@ class SummarizeMeasurementEvidenceTests(unittest.TestCase):
         self.assertEqual(result["evidence"], payload["provenance"]["evidence"])
 
     def test_science_only_payload_reports_no_evidence_with_a_reason(self):
-        from services.measurement_explanation import summarize_measurement_evidence
+        from tta_backend.services.measurement_explanation import summarize_measurement_evidence
 
         payload = {
             "chart_id": "map_no2only",
@@ -97,7 +91,7 @@ class SummarizeMeasurementEvidenceTests(unittest.TestCase):
         self.assertEqual(result["masking"]["qa_status"], "not applied — semantics unknown")
 
     def test_unknown_chart_returns_no_evidence_and_does_not_raise(self):
-        from services.measurement_explanation import summarize_measurement_evidence
+        from tta_backend.services.measurement_explanation import summarize_measurement_evidence
 
         result = summarize_measurement_evidence(None)
 
@@ -106,7 +100,7 @@ class SummarizeMeasurementEvidenceTests(unittest.TestCase):
         self.assertNotIn("evidence", result)
 
     def test_payload_without_provenance_reports_no_evidence(self):
-        from services.measurement_explanation import summarize_measurement_evidence
+        from tta_backend.services.measurement_explanation import summarize_measurement_evidence
 
         result = summarize_measurement_evidence({"chart_id": "map_x", "variable": "AOD", "units": "1"})
 
@@ -119,7 +113,7 @@ class SummarizeMeasurementEvidenceTests(unittest.TestCase):
         built from an unnamed DataArray: plot_tools stores ``da.name or ""``) is
         a present value and must not be silently overridden by the payload's
         top-level variable — same ``is not None`` semantics the units field has."""
-        from services.measurement_explanation import summarize_measurement_evidence
+        from tta_backend.services.measurement_explanation import summarize_measurement_evidence
 
         payload = _evidence_payload()
         payload["provenance"]["variable"] = ""
@@ -131,7 +125,7 @@ class SummarizeMeasurementEvidenceTests(unittest.TestCase):
 
 class ExplainMeasurementCompositeTests(unittest.TestCase):
     def test_composite_returns_the_stored_subset_for_a_known_chart(self):
-        from services.measurement_explanation import explain_measurement
+        from tta_backend.services.measurement_explanation import explain_measurement
 
         payload = _evidence_payload()
 
@@ -143,7 +137,7 @@ class ExplainMeasurementCompositeTests(unittest.TestCase):
         self.assertEqual(result["evidence"], payload["provenance"]["evidence"])
 
     def test_composite_unknown_id_is_no_evidence_not_error(self):
-        from services.measurement_explanation import explain_measurement
+        from tta_backend.services.measurement_explanation import explain_measurement
 
         async def fake_get_chart(chart_id):
             return None
@@ -153,7 +147,7 @@ class ExplainMeasurementCompositeTests(unittest.TestCase):
         self.assertIn("reason", result)
 
     def test_composite_lookup_failure_degrades_to_no_evidence(self):
-        from services.measurement_explanation import explain_measurement
+        from tta_backend.services.measurement_explanation import explain_measurement
 
         async def boom(chart_id):
             raise RuntimeError("db down")
@@ -174,7 +168,7 @@ class ExplainMeasurementOwnershipTests(unittest.TestCase):
         return payload
 
     def test_another_users_chart_reads_as_not_found(self):
-        from services.measurement_explanation import explain_measurement
+        from tta_backend.services.measurement_explanation import explain_measurement
 
         payload = self._owned_payload()
 
@@ -193,7 +187,7 @@ class ExplainMeasurementOwnershipTests(unittest.TestCase):
         self.assertNotIn("masking", result)
 
     def test_owner_gets_their_evidence(self):
-        from services.measurement_explanation import explain_measurement
+        from tta_backend.services.measurement_explanation import explain_measurement
 
         payload = self._owned_payload()
 
@@ -209,7 +203,7 @@ class ExplainMeasurementOwnershipTests(unittest.TestCase):
     def test_unbound_caller_cannot_read_an_owned_chart(self):
         """Fail closed: an owned chart with no caller user bound is not-found,
         never a bypass."""
-        from services.measurement_explanation import explain_measurement
+        from tta_backend.services.measurement_explanation import explain_measurement
 
         payload = self._owned_payload()
 
@@ -227,8 +221,8 @@ class ExplainMeasurementToolOwnershipTests(unittest.TestCase):
         """The LangChain tool must pass the session's bound user id through to
         the ownership check — the same current_user_id() context every other
         user-scoped tool path uses."""
-        from tools.satellite_tools.retrieval_tools import make_explain_measurement
-        from utils.streaming import user_id_context
+        from tta_backend.tools.satellite_tools.retrieval_tools import make_explain_measurement
+        from tta_backend.utils.streaming import user_id_context
 
         payload = _evidence_payload()
         payload["user_id"] = "owner-1"
@@ -237,7 +231,7 @@ class ExplainMeasurementToolOwnershipTests(unittest.TestCase):
             return payload
 
         tool = make_explain_measurement()
-        with mock.patch("services.measurement_explanation.chart_repository.get_chart", fake_get_chart):
+        with mock.patch("tta_backend.services.measurement_explanation.chart_repository.get_chart", fake_get_chart):
             with user_id_context("intruder-2"):
                 denied = json.loads(asyncio.run(tool.ainvoke({"chart_id": "map_abc123"})))
             with user_id_context("owner-1"):

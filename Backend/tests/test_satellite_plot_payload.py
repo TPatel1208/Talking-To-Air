@@ -1,11 +1,6 @@
 import importlib.util
-import os
-import sys
 import unittest
 
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 REQUIRED_MODULES = ["affine", "cartopy", "langchain", "numpy", "rasterio", "shapely", "xarray"]
 
@@ -19,7 +14,7 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         import numpy as np
         import xarray as xr
         from shapely.geometry import box
-        from utils.plotting import mask_data_by_geometry
+        from tta_backend.utils.plotting import mask_data_by_geometry
 
         da = xr.DataArray(
             np.ones((1, 5, 4)),
@@ -48,7 +43,7 @@ class SatellitePlotPayloadTests(unittest.TestCase):
     def test_payload_preserves_sparse_valid_points(self):
         import numpy as np
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _MAX_GRID_CELLS, _da_to_heatmap_payload
+        from tta_backend.tools.satellite_tools.plot_tools import _MAX_GRID_CELLS, _da_to_heatmap_payload
 
         arr = np.full((120, 120), np.nan)
         arr[3, 5] = 1.25
@@ -65,10 +60,59 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         self.assertEqual(len(payload["points"]["values"]), 2)
         self.assertLessEqual(len(payload["points"]["values"]), _MAX_GRID_CELLS)
 
+    def test_reported_statistics_describe_the_full_field_not_the_rendered_grid(self):
+        """The grid in the payload is thinned to _MAX_GRID_CELLS for rendering,
+        so a peak that falls between kept rows/columns disappears from it. A
+        statistic computed on what survives describes the thumbnail, not the
+        analyzed region: measured 2026-08-01 on a real TEMPO NO2 L3 scene, the
+        true maximum 9.2418e+17 was reported as 6.9003e+16 -- low by 13.4x."""
+        import numpy as np
+        import xarray as xr
+        from tta_backend.tools.satellite_tools.plot_tools import _MAX_GRID_CELLS, _da_to_heatmap_payload
+
+        arr = np.full((200, 200), 1.0)          # 40,000 cells -> thinned
+        arr[1, 1] = 1000.0                      # a peak the stride steps over
+        da = xr.DataArray(
+            arr,
+            dims=("lat", "lon"),
+            coords={"lat": np.linspace(10, 20, 200), "lon": np.linspace(-100, -90, 200)},
+        )
+
+        payload = _da_to_heatmap_payload(da, "Peak", "NO2", "mol/cm2")
+
+        rendered = [v for row in payload["values"] for v in row if v is not None]
+        self.assertLessEqual(len(rendered), _MAX_GRID_CELLS)
+        self.assertNotIn(1000.0, rendered)      # the peak really is dropped
+        self.assertEqual(payload["statistics"]["max"], 1000.0)
+
+    def test_reported_mean_weights_cells_by_latitude(self):
+        """Grid cells shrink toward the poles, so a plain cell average
+        overweights high-latitude cells. The stats and trend tools already
+        report cos(latitude)-weighted means; a map's own reported mean has to
+        agree with them or the same scene answers two different numbers."""
+        import numpy as np
+        import xarray as xr
+        from tta_backend.tools.satellite_tools.plot_tools import _da_to_heatmap_payload
+
+        lats = np.linspace(0.0, 80.0, 100)
+        arr = np.tile(np.where(lats < 40.0, 0.0, 100.0)[:, None], (1, 100))  # 50 rows each way
+        da = xr.DataArray(
+            arr, dims=("lat", "lon"),
+            coords={"lat": lats, "lon": np.linspace(-10, 10, 100)},
+        )
+
+        payload = _da_to_heatmap_payload(da, "Weighted", "NO2", "mol/cm2")
+
+        self.assertEqual(float(arr.mean()), 50.0)          # the unweighted answer
+        weights = np.cos(np.deg2rad(lats))
+        expected = float(np.average(arr.mean(axis=1), weights=weights))
+        self.assertLess(expected, 50.0)                    # weighting must move it
+        self.assertAlmostEqual(payload["statistics"]["mean"], expected, delta=expected * 1e-5)
+
     def test_payload_normalizes_longitudes_and_sanitizes_values(self):
         import numpy as np
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _da_to_heatmap_payload
+        from tta_backend.tools.satellite_tools.plot_tools import _da_to_heatmap_payload
 
         da = xr.DataArray(
             np.array([[np.inf, 4.0, np.nan]]),
@@ -86,8 +130,8 @@ class SatellitePlotPayloadTests(unittest.TestCase):
     def test_payload_attaches_the_resolved_colormap(self):
         import numpy as np
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _da_to_heatmap_payload
-        from utils.colormaps import resolve
+        from tta_backend.tools.satellite_tools.plot_tools import _da_to_heatmap_payload
+        from tta_backend.utils.colormaps import resolve
 
         da = xr.DataArray(
             np.array([[1.0, 2.0], [3.0, 4.0]]),
@@ -104,8 +148,8 @@ class SatellitePlotPayloadTests(unittest.TestCase):
     def test_diverging_payload_attaches_the_diverging_colormap(self):
         import numpy as np
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _da_to_heatmap_payload
-        from utils.colormaps import resolve
+        from tta_backend.tools.satellite_tools.plot_tools import _da_to_heatmap_payload
+        from tta_backend.utils.colormaps import resolve
 
         da = xr.DataArray(
             np.array([[-1.0, 2.0], [3.0, -4.0]]),
@@ -126,7 +170,7 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         # cell on coarse grids and pushing edge rows outside the declared box.
         import numpy as np
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _da_to_heatmap_payload
+        from tta_backend.tools.satellite_tools.plot_tools import _da_to_heatmap_payload
 
         da = xr.DataArray(
             np.ones((3, 4)),
@@ -151,8 +195,8 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         import numpy as np
         import matplotlib.image as mpimg
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _da_to_heatmap_payload
-        from utils.colormaps import resolve
+        from tta_backend.tools.satellite_tools.plot_tools import _da_to_heatmap_payload
+        from tta_backend.utils.colormaps import resolve
 
         da = xr.DataArray(
             np.full((6, 8), 5.0),
@@ -181,7 +225,7 @@ class SatellitePlotPayloadTests(unittest.TestCase):
     def test_percentile_derived_bounds_stamp_a_percentile_scale_the_legend_can_disclose(self):
         import numpy as np
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _da_to_heatmap_payload
+        from tta_backend.tools.satellite_tools.plot_tools import _da_to_heatmap_payload
 
         da = xr.DataArray(
             np.linspace(0.0, 1.0, 12).reshape(3, 4),
@@ -198,7 +242,7 @@ class SatellitePlotPayloadTests(unittest.TestCase):
     def test_explicit_value_range_stamps_an_explicit_scale(self):
         import numpy as np
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _da_to_heatmap_payload
+        from tta_backend.tools.satellite_tools.plot_tools import _da_to_heatmap_payload
 
         da = xr.DataArray(
             np.full((6, 8), 5.0),
@@ -215,7 +259,7 @@ class SatellitePlotPayloadTests(unittest.TestCase):
     def test_value_range_with_a_scale_disclosure_stamps_that_disclosure_not_explicit(self):
         import numpy as np
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _da_to_heatmap_payload
+        from tta_backend.tools.satellite_tools.plot_tools import _da_to_heatmap_payload
 
         da = xr.DataArray(
             np.full((6, 8), 5.0),
@@ -241,7 +285,7 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         import os
         import numpy as np
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _da_to_heatmap_payload
+        from tta_backend.tools.satellite_tools.plot_tools import _da_to_heatmap_payload
 
         da = xr.DataArray(
             np.linspace(0.0, 1.0, 12).reshape(3, 4),
@@ -258,7 +302,7 @@ class SatellitePlotPayloadTests(unittest.TestCase):
 
     def test_reproducibility_metadata_uses_source_handles(self):
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _attach_reproducibility
+        from tta_backend.tools.satellite_tools.plot_tools import _attach_reproducibility
 
         da = xr.DataArray(
             [[1.0]],
@@ -291,7 +335,7 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         """T32: `dataset`/`source` are real registry facts about the
         collection, not a fallback that reuses the plotted variable name."""
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _attach_reproducibility
+        from tta_backend.tools.satellite_tools.plot_tools import _attach_reproducibility
 
         da = xr.DataArray(
             [[1.0]],
@@ -328,7 +372,7 @@ class SatellitePlotPayloadTests(unittest.TestCase):
 
     def test_provenance_attaches_variable_definition_and_qa_methodology(self):
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _attach_reproducibility
+        from tta_backend.tools.satellite_tools.plot_tools import _attach_reproducibility
 
         da = xr.DataArray(
             [[1.0]],
@@ -368,7 +412,7 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         span, and cadence — travels in provenance so the disclosure layer (and
         the Metadata tab) can compare it against what was requested."""
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _attach_reproducibility
+        from tta_backend.tools.satellite_tools.plot_tools import _attach_reproducibility
 
         da = xr.DataArray(
             [[1.0]],
@@ -400,8 +444,8 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         is echoed back into provenance, so a single-day request answered by a
         monthly mean is disclosable end-to-end."""
         import xarray as xr
-        from services import scope_registry
-        from tools.satellite_tools.plot_tools import _attach_reproducibility
+        from tta_backend.services import scope_registry
+        from tta_backend.tools.satellite_tools.plot_tools import _attach_reproducibility
 
         scope_registry.record_pending("job_x", {"location": "California", "time_range": "2024-07-15/2024-07-15"})
         scope_registry.finalize("job_x", "obs_scope_1")
@@ -429,7 +473,7 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         every field the frontend expects is still present, just empty, so
         the UI can render 'Not available' rather than crash on a missing key."""
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _attach_reproducibility
+        from tta_backend.tools.satellite_tools.plot_tools import _attach_reproducibility
 
         da = xr.DataArray(
             [[1.0]],
@@ -458,7 +502,7 @@ class SatellitePlotPayloadTests(unittest.TestCase):
     def test_save_chart_mints_a_map_artifact_id_for_a_heatmap_payload(self):
         import json
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _attach_reproducibility, _save_chart
+        from tta_backend.tools.satellite_tools.plot_tools import _attach_reproducibility, _save_chart
 
         da = xr.DataArray(
             [[1.0]],
@@ -499,7 +543,7 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         import json
         from unittest.mock import patch
         import xarray as xr
-        from tools.satellite_tools.plot_tools import (
+        from tta_backend.tools.satellite_tools.plot_tools import (
             _attach_reproducibility,
             _da_to_heatmap_payload,
             _save_chart,
@@ -522,7 +566,7 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         def fake_emit_chart(full_payload):
             emitted["payload"] = full_payload
 
-        with patch("tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
             result = json.loads(_save_chart(payload, "TEMPO_NO2_NJ"))
 
         # (a) the frontend's chart/artifact pipeline still gets the full grid,
@@ -548,7 +592,7 @@ class SatellitePlotPayloadTests(unittest.TestCase):
     def test_save_chart_mints_a_comparison_artifact_id_for_a_heatmap_multi_payload(self):
         import json
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _attach_reproducibility, _save_chart
+        from tta_backend.tools.satellite_tools.plot_tools import _attach_reproducibility, _save_chart
 
         def _panel(name, handle, lon, lat):
             da = xr.DataArray(
@@ -581,7 +625,7 @@ class SatellitePlotPayloadTests(unittest.TestCase):
 
     def test_save_chart_wires_the_overlay_url_from_the_minted_chart_id(self):
         import json
-        from tools.satellite_tools.plot_tools import _save_chart
+        from tta_backend.tools.satellite_tools.plot_tools import _save_chart
 
         payload = {"type": "heatmap", "title": "Has overlay", "overlay": {"bounds": [0, 0, 1, 1], "_path": "/tmp/x.png"}}
 
@@ -592,7 +636,7 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         self.assertNotIn("overlay", result)
 
     def test_save_chart_leaves_overlay_url_unset_when_render_failed(self):
-        from tools.satellite_tools.plot_tools import _save_chart
+        from tta_backend.tools.satellite_tools.plot_tools import _save_chart
 
         payload = {"type": "heatmap", "title": "No overlay", "overlay": {"bounds": [0, 0, 1, 1]}}
 
@@ -601,7 +645,7 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         self.assertNotIn("url", payload["overlay"])
 
     def test_save_chart_wires_a_per_panel_overlay_url_for_heatmap_multi(self):
-        from tools.satellite_tools.plot_tools import _save_chart
+        from tta_backend.tools.satellite_tools.plot_tools import _save_chart
 
         payload = {
             "type": "heatmap_multi",
@@ -619,7 +663,7 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         self.assertNotIn("url", payload["panels"][1]["overlay"])
 
     def test_save_chart_wires_the_difference_overlay_url_for_heatmap_multi(self):
-        from tools.satellite_tools.plot_tools import _save_chart
+        from tta_backend.tools.satellite_tools.plot_tools import _save_chart
 
         payload = {
             "type": "heatmap_multi",
@@ -636,7 +680,7 @@ class SatellitePlotPayloadTests(unittest.TestCase):
 
     def test_save_chart_omits_artifact_refs_for_an_unmapped_render_type(self):
         import json
-        from tools.satellite_tools.plot_tools import _save_chart
+        from tta_backend.tools.satellite_tools.plot_tools import _save_chart
 
         result = json.loads(_save_chart({"type": "error"}, "n/a"))
 
@@ -664,7 +708,7 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         *reduced* array (time dim already collapsed), and monthly L3 granules
         never had a time coordinate at all. The aggregation meta now carries
         the range; provenance must use it."""
-        from tools.satellite_tools.plot_tools import _provenance
+        from tta_backend.tools.satellite_tools.plot_tools import _provenance
 
         agg_meta = {
             "aggregation_label": "Single Snapshot Mean, 1 monthly granule, 2024-01-01 to 2024-01-31",
@@ -684,7 +728,7 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         self.assertEqual(provenance["granule_dates"], ["2024-01-01"])
 
     def test_query_definition_dates_fall_back_to_aggregation_meta(self):
-        from tools.satellite_tools.plot_tools import _query_definition
+        from tta_backend.tools.satellite_tools.plot_tools import _query_definition
 
         agg_meta = {"start_date": "2024-01-01", "end_date": "2024-01-31", "granule_dates": ["2024-01-01"]}
 
@@ -696,7 +740,7 @@ class SatellitePlotPayloadTests(unittest.TestCase):
     def test_time_range_prefers_the_time_coordinate_over_aggregation_meta(self):
         import numpy as np
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _time_range
+        from tta_backend.tools.satellite_tools.plot_tools import _time_range
 
         da = xr.DataArray(
             np.ones((2, 1, 1)),

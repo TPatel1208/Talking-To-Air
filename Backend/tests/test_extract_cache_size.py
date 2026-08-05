@@ -7,13 +7,9 @@ memory incident.
 import importlib.util
 import os
 import shutil
-import sys
 import tempfile
 import unittest
 
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 REQUIRED_MODULES = ["langchain_mcp_adapters", "fastmcp", "xarray"]
 
@@ -24,7 +20,7 @@ REQUIRED_MODULES = ["langchain_mcp_adapters", "fastmcp", "xarray"]
 )
 class ExtractCacheSizeBytesTests(unittest.TestCase):
     def test_sums_the_bytes_of_files_under_the_extract_cache_directory(self):
-        from services.open_handle import _EXTRACT_CACHE_DIR_NAME, extract_cache_size_bytes
+        from tta_backend.services.open_handle import _EXTRACT_CACHE_DIR_NAME, extract_cache_size_bytes
 
         root = os.path.join(tempfile.gettempdir(), _EXTRACT_CACHE_DIR_NAME)
         os.makedirs(root, exist_ok=True)
@@ -41,9 +37,9 @@ class ExtractCacheSizeBytesTests(unittest.TestCase):
         self.assertGreaterEqual(extract_cache_size_bytes(), 350)
 
     def test_returns_zero_when_the_cache_directory_does_not_exist(self):
-        from services.open_handle import extract_cache_size_bytes
+        from tta_backend.services.open_handle import extract_cache_size_bytes
 
-        import services.open_handle as open_handle_module
+        import tta_backend.services.open_handle as open_handle_module
 
         original = open_handle_module._EXTRACT_CACHE_DIR_NAME
         open_handle_module._EXTRACT_CACHE_DIR_NAME = "tta_bundle_extract_does_not_exist_probe"

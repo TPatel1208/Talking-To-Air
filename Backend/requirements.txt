@@ -35,10 +35,9 @@ dask>=2024.0.0
 PyJWT==2.10.1
 bcrypt>=4.0.1,<6
 cryptography>=42.0.0,<45
-pytest>=8.3.0
-pytest-asyncio>=0.24.0
 fastmcp==3.4.2
 prometheus-client==0.22.1
-ruff>=0.8.0
-mypy>=1.13.0
-coverage>=7.6.0
+
+# Test/lint tooling is NOT here on purpose — the Dockerfile installs this file
+# into /opt/venv and stage 2 copies that venv wholesale, so anything listed here
+# ships in the runtime image. See requirements-dev.txt.

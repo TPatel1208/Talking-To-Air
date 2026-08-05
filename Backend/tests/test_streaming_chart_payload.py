@@ -1,17 +1,11 @@
 import asyncio
-import os
-import sys
 import unittest
 from types import SimpleNamespace
-
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 
 class ChartPayloadStreamingTests(unittest.IsolatedAsyncioTestCase):
     async def test_stream_response_forwards_chart_payload_events(self):
-        from utils.streaming import emit_chart, stream_response
+        from tta_backend.utils.streaming import emit_chart, stream_response
 
         class FakeAgent:
             async def astream(self, input_, config, stream_mode):
@@ -31,7 +25,7 @@ class ChartPayloadStreamingTests(unittest.IsolatedAsyncioTestCase):
         """T23: the overlay (url/bounds) and colormap (name/lut) fields added
         to the heatmap payload must survive the emit_chart -> chart_payload
         SSE round trip unchanged, same as any other payload key."""
-        from utils.streaming import emit_chart, stream_response
+        from tta_backend.utils.streaming import emit_chart, stream_response
 
         overlay = {"url": "/chart/map_1/overlay.png", "bounds": [-100.0, 10.0, -90.0, 20.0]}
         colormap = {"name": "no2_omi", "lut": [[68, 1, 84, 255], [253, 231, 37, 255]]}
@@ -54,7 +48,7 @@ class ChartPayloadStreamingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chart_events[0]["colormap"], colormap)
 
     async def test_emit_chart_is_a_no_op_outside_a_stream_response_context(self):
-        from utils.streaming import emit_chart
+        from tta_backend.utils.streaming import emit_chart
 
         # Should not raise even though no stream_response is active.
         emit_chart({"type": "heatmap"})
@@ -64,7 +58,7 @@ class ChartPayloadStreamingTests(unittest.IsolatedAsyncioTestCase):
         nested stream_response call (the pattern _run_satellite uses to consume
         the satellite sub-agent's own stream) must reach the outer stream_response
         call's queue too, exactly as job_progress events do."""
-        from utils.streaming import emit_chart, stream_response
+        from tta_backend.utils.streaming import emit_chart, stream_response
 
         class InnerAgent:
             async def astream(self, input_, config, stream_mode):

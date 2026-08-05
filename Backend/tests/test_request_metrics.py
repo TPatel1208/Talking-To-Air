@@ -7,14 +7,10 @@ dashboard could never see the slowest thing in the app.
 import asyncio
 import importlib.util
 import os
-import sys
 import unittest
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
 
@@ -28,8 +24,8 @@ _REQUIRED = ["fastapi", "httpx", "jwt", "bcrypt", "langchain", "langgraph"]
 class StreamingRequestMetricsTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         import httpx
-        import api
-        from models.user import User
+        import tta_backend.api as api
+        from tta_backend.models.user import User
 
         self.httpx = httpx
         self.api = api
@@ -52,8 +48,8 @@ class StreamingRequestMetricsTests(unittest.IsolatedAsyncioTestCase):
         async def fake_is_token_revoked(jti):
             return False
 
-        return patch("services.auth_service.get_user_by_id", fake_get_user_by_id), \
-            patch("services.auth_service.is_token_revoked", fake_is_token_revoked)
+        return patch("tta_backend.services.auth_service.get_user_by_id", fake_get_user_by_id), \
+            patch("tta_backend.services.auth_service.is_token_revoked", fake_is_token_revoked)
 
     async def test_chat_stream_duration_covers_the_full_stream_not_just_headers(self):
         sleep_seconds = 0.3

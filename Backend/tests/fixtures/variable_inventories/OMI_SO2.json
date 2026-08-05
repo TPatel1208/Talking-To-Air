@@ -1,0 +1,151 @@
+{
+  "registry_key": "OMI_SO2",
+  "collection_id": "C3756242136-GES_DISC",
+  "short_name": "OMSO2e",
+  "source": "describe_dataset detail=True, cross-checked against a retrieved granule 2026-08-02",
+  "primary_var": "ColumnAmountSO2",
+  "quality_flag_var": "QualityFlags_SO2",
+  "groups": [
+    "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields"
+  ],
+  "variables": [
+    {
+      "name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/CloudRadianceFraction",
+      "long_name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/CloudRadianceFraction",
+      "units": "1",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/ColumnAmountO3",
+      "long_name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/ColumnAmountO3",
+      "units": "DU",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/ColumnAmountSO2",
+      "long_name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/ColumnAmountSO2",
+      "units": "DU",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/Latitude",
+      "long_name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/Latitude",
+      "units": "degrees_north",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/LineNumber",
+      "long_name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/LineNumber",
+      "units": "NoUnits",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/Longitude",
+      "long_name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/Longitude",
+      "units": "degrees_east",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/OrbitNumber",
+      "long_name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/OrbitNumber",
+      "units": "NoUnits",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/QualityFlags_SO2",
+      "long_name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/QualityFlags_SO2",
+      "units": "NoUnits",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/RelativeAzimuthAngle",
+      "long_name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/RelativeAzimuthAngle",
+      "units": "degrees",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/RootMeanSquareFittingResiduals",
+      "long_name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/RootMeanSquareFittingResiduals",
+      "units": "1",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/SceneNumber",
+      "long_name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/SceneNumber",
+      "units": "NoUnits",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/SolarZenithAngle",
+      "long_name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/SolarZenithAngle",
+      "units": "degrees",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/TerrainHeight",
+      "long_name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/TerrainHeight",
+      "units": "m",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/Time",
+      "long_name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/Time",
+      "units": "seconds since 1993-01-01 00:00:00",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/ViewingZenithAngle",
+      "long_name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/ViewingZenithAngle",
+      "units": "degrees",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/XDim",
+      "long_name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/XDim",
+      "units": "degrees_east",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/YDim",
+      "long_name": "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/YDim",
+      "units": "degrees_north",
+      "standard_name": null
+    },
+    {
+      "name": "HDFEOS_INFORMATION/StructMetadata_0",
+      "long_name": "HDFEOS_INFORMATION/StructMetadata_0",
+      "units": null,
+      "standard_name": null
+    }
+  ],
+  "expected_roles": {
+    "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/CloudRadianceFraction": "unclassified",
+    "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/ColumnAmountO3": "science",
+    "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/ColumnAmountSO2": "science",
+    "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/Latitude": "context",
+    "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/LineNumber": "unclassified",
+    "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/Longitude": "context",
+    "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/OrbitNumber": "unclassified",
+    "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/QualityFlags_SO2": "quality",
+    "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/RelativeAzimuthAngle": "context",
+    "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/RootMeanSquareFittingResiduals": "unclassified",
+    "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/SceneNumber": "unclassified",
+    "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/SolarZenithAngle": "context",
+    "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/TerrainHeight": "context",
+    "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/Time": "context",
+    "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields/ViewingZenithAngle": "context",
+    "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/XDim": "context",
+    "HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/YDim": "context",
+    "HDFEOS_INFORMATION/StructMetadata_0": "unclassified"
+  },
+  "classifier_gaps": {
+    "note": "Recorded as 'unclassified' because that is what classify_inventory currently returns. Each entry states the role the band actually warrants; closing these is separate work from registering OMSO2e.",
+    "bands": {
+      "CloudRadianceFraction": "context — the classifier matches 'CloudFraction' (OMI_O3 passes) but not this longer CamelCase form",
+      "RootMeanSquareFittingResiduals": "quality — a spectral fit residual is a retrieval-quality diagnostic",
+      "LineNumber": "retrieval-metadata — source L2 scan line",
+      "SceneNumber": "retrieval-metadata — source L2 scene",
+      "OrbitNumber": "retrieval-metadata — source orbit"
+    }
+  }
+}

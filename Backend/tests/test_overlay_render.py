@@ -1,11 +1,6 @@
 import importlib.util
-import os
-import sys
 import unittest
 
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 REQUIRED_MODULES = ["affine", "matplotlib", "numpy", "rasterio"]
 
@@ -19,8 +14,8 @@ class OverlayRenderTests(unittest.TestCase):
         import io
         import numpy as np
         import matplotlib.image as mpimg
-        from utils.colormaps import resolve
-        from utils.overlay_render import render_overlay_png
+        from tta_backend.utils.colormaps import resolve
+        from tta_backend.utils.overlay_render import render_overlay_png
 
         lats = np.linspace(30.0, 33.0, 12)
         lons = np.linspace(-100.0, -96.0, 16)
@@ -40,8 +35,8 @@ class OverlayRenderTests(unittest.TestCase):
         import io
         import numpy as np
         import matplotlib.image as mpimg
-        from utils.colormaps import resolve
-        from utils.overlay_render import render_overlay_png
+        from tta_backend.utils.colormaps import resolve
+        from tta_backend.utils.overlay_render import render_overlay_png
 
         lats = np.linspace(30.0, 33.0, 12)
         lons = np.linspace(-100.0, -96.0, 16)
@@ -69,8 +64,8 @@ class OverlayRenderTests(unittest.TestCase):
         import io
         import numpy as np
         import matplotlib.image as mpimg
-        from utils.colormaps import resolve
-        from utils.overlay_render import render_overlay_png
+        from tta_backend.utils.colormaps import resolve
+        from tta_backend.utils.overlay_render import render_overlay_png
 
         lats = np.linspace(30.0, 33.0, 12)
         lons = np.linspace(-100.0, -96.0, 16)

@@ -17,9 +17,6 @@ import os
 import sys
 import unittest
 
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 TESTS_DIR = os.path.dirname(__file__)
 if TESTS_DIR not in sys.path:
@@ -35,8 +32,8 @@ REQUIRED_MODULES = ["langchain_mcp_adapters", "fastmcp", "uvicorn"]
 class GetLineageTests(unittest.IsolatedAsyncioTestCase):
     async def _tools(self, handlers):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
 
         server = FakeEarthdataMCPServer(build_fake_mcp(handlers))
         server.start()
@@ -45,7 +42,7 @@ class GetLineageTests(unittest.IsolatedAsyncioTestCase):
         return await load_raw_mcp_tools(settings)
 
     async def test_a_leaf_handle_with_no_lineage_renders_as_a_single_noted_node(self):
-        from services.provenance_service import get_lineage
+        from tta_backend.services.provenance_service import get_lineage
 
         async def get_provenance(handle, workspace_id):
             return {
@@ -66,7 +63,7 @@ class GetLineageTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("no lineage found", node["note"])
 
     async def test_an_observations_ancestors_render_before_it_with_events_oldest_first(self):
-        from services.provenance_service import get_lineage
+        from tta_backend.services.provenance_service import get_lineage
 
         async def get_provenance(handle, workspace_id):
             return {
@@ -100,7 +97,7 @@ class GetLineageTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_a_job_handle_redirect_renders_under_its_resolved_obs_handle(self):
-        from services.provenance_service import get_lineage
+        from tta_backend.services.provenance_service import get_lineage
 
         async def get_provenance(handle, workspace_id):
             return {
@@ -123,7 +120,7 @@ class GetLineageTests(unittest.IsolatedAsyncioTestCase):
         # A T08 comparison artifact's two panels share the same AOI — the
         # merged lineage should list each shared ancestor once, not once per
         # panel that references it.
-        from services.provenance_service import get_lineage
+        from tta_backend.services.provenance_service import get_lineage
 
         provenance = {
             "obs_east": {
@@ -167,8 +164,8 @@ class GetLineageTests(unittest.IsolatedAsyncioTestCase):
 class GetCitationsTests(unittest.IsolatedAsyncioTestCase):
     async def _tools(self, handlers):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
 
         server = FakeEarthdataMCPServer(build_fake_mcp(handlers))
         server.start()
@@ -192,7 +189,7 @@ class GetCitationsTests(unittest.IsolatedAsyncioTestCase):
         }
 
     async def test_cites_the_distinct_dataset_ancestor_behind_a_single_source_handle(self):
-        from services.provenance_service import get_citations
+        from tta_backend.services.provenance_service import get_citations
 
         async def get_provenance(handle, workspace_id):
             return {
@@ -217,7 +214,7 @@ class GetCitationsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(citations[0]["handle"], "dataset_tempo_no2")
 
     async def test_a_dataset_shared_by_two_source_handles_is_cited_only_once(self):
-        from services.provenance_service import get_citations
+        from tta_backend.services.provenance_service import get_citations
 
         provenance = {
             "obs_east": {

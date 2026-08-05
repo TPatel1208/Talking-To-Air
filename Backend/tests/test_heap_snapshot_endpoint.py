@@ -7,15 +7,11 @@ every other route (not listed in PUBLIC_ENDPOINTS).
 import dataclasses
 import importlib.util
 import os
-import sys
 import tracemalloc
 import unittest
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
 
@@ -29,8 +25,8 @@ _REQUIRED = ["fastapi", "httpx", "jwt", "bcrypt"]
 class HeapSnapshotEndpointTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         import httpx
-        import api
-        from models.user import User
+        import tta_backend.api as api
+        from tta_backend.models.user import User
 
         self.httpx = httpx
         self.api = api
@@ -51,8 +47,8 @@ class HeapSnapshotEndpointTests(unittest.IsolatedAsyncioTestCase):
         async def fake_is_token_revoked(jti):
             return False
 
-        return patch("services.auth_service.get_user_by_id", fake_get_user_by_id), \
-            patch("services.auth_service.is_token_revoked", fake_is_token_revoked)
+        return patch("tta_backend.services.auth_service.get_user_by_id", fake_get_user_by_id), \
+            patch("tta_backend.services.auth_service.is_token_revoked", fake_is_token_revoked)
 
     async def test_heap_snapshot_404s_when_the_debug_flag_is_disabled(self):
         transport = self.httpx.ASGITransport(app=self.api.app)

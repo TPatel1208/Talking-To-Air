@@ -10,14 +10,9 @@ sub-continental US quadrants) stay boxes but say so. Sync and async
 resolvers normalize input identically.
 """
 import importlib.util
-import os
-import sys
 import unittest
 from unittest.mock import patch
 
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 REQUIRED_MODULES = ["httpx", "cartopy", "shapely", "rasterio", "affine"]
 
@@ -28,7 +23,7 @@ REQUIRED_MODULES = ["httpx", "cartopy", "shapely", "rasterio", "affine"]
 )
 class RegionResolverFidelityTests(unittest.IsolatedAsyncioTestCase):
     def _resolver(self):
-        from utils.plotting import RegionResolver
+        from tta_backend.utils.plotting import RegionResolver
         return RegionResolver()
 
     def test_box_preset_discloses_bounding_box_type_and_display_name(self):

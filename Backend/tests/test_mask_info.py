@@ -3,17 +3,17 @@ import unittest
 
 class OverrideForTests(unittest.TestCase):
     def test_returns_empty_dict_when_short_name_has_no_override(self):
-        from datasets.mask_info import override_for
+        from tta_backend.datasets.mask_info import override_for
 
         self.assertEqual(override_for("TEMPO_NO2", overrides={}), {})
 
     def test_returns_empty_dict_when_short_name_is_none(self):
-        from datasets.mask_info import override_for
+        from tta_backend.datasets.mask_info import override_for
 
         self.assertEqual(override_for(None), {})
 
     def test_returns_the_recorded_override_for_a_known_quirk(self):
-        from datasets.mask_info import override_for
+        from tta_backend.datasets.mask_info import override_for
 
         overrides = {"TEMPO_NO2_QUIRK": {"fill_value": -1e30, "valid_min": 0.0, "valid_max": 1e16}}
 
@@ -31,13 +31,13 @@ class ColInfoForShortNameTests(unittest.TestCase):
     pinned Tier-1 QA rule reachable at all."""
 
     def test_returns_empty_dict_for_no_short_name(self):
-        from datasets.mask_info import col_info_for_short_name
+        from tta_backend.datasets.mask_info import col_info_for_short_name
 
         self.assertEqual(col_info_for_short_name(None), {})
         self.assertEqual(col_info_for_short_name(""), {})
 
     def test_matches_a_registered_collection_by_short_name_case_insensitively(self):
-        from datasets.mask_info import col_info_for_short_name
+        from tta_backend.datasets.mask_info import col_info_for_short_name
 
         info = col_info_for_short_name("tempo_no2_l3")
 
@@ -46,12 +46,12 @@ class ColInfoForShortNameTests(unittest.TestCase):
         self.assertEqual(info["collection_id"], "C3685896708-LARC_CLOUD")
 
     def test_returns_empty_dict_for_an_unregistered_short_name(self):
-        from datasets.mask_info import col_info_for_short_name
+        from tta_backend.datasets.mask_info import col_info_for_short_name
 
         self.assertEqual(col_info_for_short_name("SOME_UNKNOWN_COLLECTION"), {})
 
     def test_mask_overrides_take_precedence_over_the_registry_match(self):
-        import datasets.mask_info as mask_info_module
+        import tta_backend.datasets.mask_info as mask_info_module
 
         original = dict(mask_info_module.MASK_OVERRIDES)
         mask_info_module.MASK_OVERRIDES["TEMPO_NO2_L3"] = {"fill_value": -42.0}
@@ -72,12 +72,12 @@ class ShortNameFromAttrsTests(unittest.TestCase):
     and the primary_var fallback)."""
 
     def test_reads_the_lowercase_short_name_spelling(self):
-        from datasets.mask_info import short_name_from_attrs
+        from tta_backend.datasets.mask_info import short_name_from_attrs
 
         self.assertEqual(short_name_from_attrs({"short_name": "TEMPO_NO2_L3"}), "TEMPO_NO2_L3")
 
     def test_reads_the_cf_acdd_ShortName_spelling(self):
-        from datasets.mask_info import short_name_from_attrs
+        from tta_backend.datasets.mask_info import short_name_from_attrs
 
         self.assertEqual(
             short_name_from_attrs({"ShortName": "AER_DBDT_D10KM_L3_MODIS_TERRA"}),
@@ -85,7 +85,7 @@ class ShortNameFromAttrsTests(unittest.TestCase):
         )
 
     def test_returns_none_when_no_identity_marker_is_present(self):
-        from datasets.mask_info import short_name_from_attrs
+        from tta_backend.datasets.mask_info import short_name_from_attrs
 
         self.assertIsNone(short_name_from_attrs({"title": "some product", "platform": "TERRA"}))
         self.assertIsNone(short_name_from_attrs(None))
@@ -97,7 +97,7 @@ class ResolveMaskInfoPrecedenceTests(unittest.TestCase):
     attrs -> mask nothing, with every tier's win recorded in provenance."""
 
     def test_cf_attrs_used_and_recorded_when_no_yaml_or_umm_var_info(self):
-        from datasets.mask_info import resolve_mask_info
+        from tta_backend.datasets.mask_info import resolve_mask_info
 
         resolved, provenance = resolve_mask_info(
             yaml_info=None,
@@ -115,7 +115,7 @@ class ResolveMaskInfoPrecedenceTests(unittest.TestCase):
         # valid_max — xarray does not apply it on decode, so ignoring it
         # meant no range mask at all for products publishing only that
         # spelling.
-        from datasets.mask_info import resolve_mask_info
+        from tta_backend.datasets.mask_info import resolve_mask_info
 
         resolved, provenance = resolve_mask_info(
             yaml_info=None,
@@ -129,7 +129,7 @@ class ResolveMaskInfoPrecedenceTests(unittest.TestCase):
         self.assertTrue(provenance["applied"])
 
     def test_a_malformed_valid_range_attr_masks_nothing_rather_than_guessing(self):
-        from datasets.mask_info import resolve_mask_info
+        from tta_backend.datasets.mask_info import resolve_mask_info
 
         resolved, provenance = resolve_mask_info(
             yaml_info=None,
@@ -142,7 +142,7 @@ class ResolveMaskInfoPrecedenceTests(unittest.TestCase):
         self.assertEqual(provenance["valid_range_source"], "none")
 
     def test_umm_var_facts_win_over_cf_attrs_when_no_yaml_override(self):
-        from datasets.mask_info import resolve_mask_info
+        from tta_backend.datasets.mask_info import resolve_mask_info
 
         resolved, provenance = resolve_mask_info(
             yaml_info=None,
@@ -164,7 +164,7 @@ class ResolveMaskInfoPrecedenceTests(unittest.TestCase):
         self.assertTrue(provenance["applied"])
 
     def test_yaml_override_wins_over_umm_var_and_cf_attrs(self):
-        from datasets.mask_info import resolve_mask_info
+        from tta_backend.datasets.mask_info import resolve_mask_info
 
         resolved, provenance = resolve_mask_info(
             yaml_info={"fill_value": -1.0, "valid_min": 0.0, "valid_max": 500.0, "units": "molecules/cm^2"},
@@ -182,7 +182,7 @@ class ResolveMaskInfoPrecedenceTests(unittest.TestCase):
         self.assertTrue(provenance["applied"])
 
     def test_no_source_anywhere_discloses_none_and_unapplied(self):
-        from datasets.mask_info import resolve_mask_info
+        from tta_backend.datasets.mask_info import resolve_mask_info
 
         resolved, provenance = resolve_mask_info(yaml_info=None, umm_var_variable=None, cf_attrs=None)
 
@@ -192,7 +192,7 @@ class ResolveMaskInfoPrecedenceTests(unittest.TestCase):
         self.assertFalse(provenance["applied"])
 
     def test_umm_var_with_no_fill_or_range_falls_through_to_cf_attrs(self):
-        from datasets.mask_info import resolve_mask_info
+        from tta_backend.datasets.mask_info import resolve_mask_info
 
         resolved, provenance = resolve_mask_info(
             yaml_info=None,
@@ -214,7 +214,7 @@ class MaskInfoAppliesToAggregationServiceTests(unittest.TestCase):
         import numpy as np
         import xarray as xr
 
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         da = xr.DataArray(
             [[-999.0, 10.0], [600.0, 20.0]],
@@ -223,7 +223,7 @@ class MaskInfoAppliesToAggregationServiceTests(unittest.TestCase):
             attrs={"_FillValue": -999.0, "valid_min": 0.0, "valid_max": 500.0},
         )
 
-        masked = AggregationService().apply_quality_mask(da, col_info={})
+        masked, _ = AggregationService()._apply_quality_mask(da, col_info={})
 
         values = masked.values
         self.assertTrue(np.isnan(values[0, 0]))  # sentinel fill
@@ -235,8 +235,8 @@ class MaskInfoAppliesToAggregationServiceTests(unittest.TestCase):
         import numpy as np
         import xarray as xr
 
-        from datasets.mask_info import override_for
-        from preprocessing.aggregation_service import AggregationService
+        from tta_backend.datasets.mask_info import override_for
+        from tta_backend.preprocessing.aggregation_service import AggregationService
 
         # The dataset's own attrs are wrong for this (fictional) quirky collection.
         da = xr.DataArray(
@@ -248,7 +248,7 @@ class MaskInfoAppliesToAggregationServiceTests(unittest.TestCase):
         overrides = {"QUIRKY_NO2": {"fill_value": -1.0, "valid_min": 0.0, "valid_max": 500.0}}
 
         col_info = override_for("QUIRKY_NO2", overrides=overrides)
-        masked = AggregationService().apply_quality_mask(da, col_info=col_info)
+        masked, _ = AggregationService()._apply_quality_mask(da, col_info=col_info)
 
         values = masked.values
         self.assertTrue(np.isnan(values[0, 0]))
@@ -259,3 +259,34 @@ class MaskInfoAppliesToAggregationServiceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NegativeRetrievalsAreNotClippedTests(unittest.TestCase):
+    """A trace-gas column retrieval scatters around zero over clean scenes, so
+    a fraction of good-quality pixels are genuinely negative. Measured
+    2026-08-02 on real granules: 9.1% of TEMPO NO2, 31.0% of TEMPO HCHO and
+    25.0% of OMI HCHO finite pixels. Those are noise in the retrieval, not
+    invalid data -- 96.1% of the NO2 ones are flagged "normal".
+
+    ``valid_min: 0.0`` discarded every one of them and biased the reported
+    mean high, while NO2 kept its own with ``valid_min: -1.0e+15``. Two
+    products, opposite policies, neither disclosed. The floor exists to catch
+    corrupt or sentinel values, not to censor the low tail, so it belongs
+    below the noise -- never at zero.
+    """
+
+    def test_no_column_collection_clips_its_negative_tail_at_zero(self):
+        from tta_backend.datasets.registry import load_registry
+
+        clipped = {
+            key: cfg.valid_min
+            for key, cfg in load_registry().items()
+            if cfg.valid_min is not None
+            and cfg.valid_min == 0.0
+            and (cfg.units or "").replace(" ", "") == "molecules/cm^2"
+        }
+
+        self.assertEqual(
+            clipped, {},
+            f"these column products still clip retrieval noise at zero: {clipped}",
+        )

@@ -1,15 +1,9 @@
 import asyncio
 import importlib.util
 import json
-import os
-import sys
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
-
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 
 @unittest.skipIf(importlib.util.find_spec("langchain") is None, "langchain is not installed")
@@ -30,7 +24,7 @@ class AskEarthdataAgentStageForwardingTests(unittest.IsolatedAsyncioTestCase):
     future change (e.g. an explicit on_event re-forward) double-emitting."""
 
     async def _build_ask_earthdata_agent(self, fake_satellite_agent):
-        from agents import supervisor_agent
+        from tta_backend.agents import supervisor_agent
 
         captured = {}
 
@@ -46,7 +40,7 @@ class AskEarthdataAgentStageForwardingTests(unittest.IsolatedAsyncioTestCase):
         return captured["tools"]["ask_earthdata_agent"]
 
     async def test_a_sub_agent_stage_status_reaches_the_outer_stream_response(self):
-        from utils.streaming import emit_status, stream_response
+        from tta_backend.utils.streaming import emit_status, stream_response
 
         envelope = json.dumps({"summary": "Plotted NO2 over NJ.", "artifact_ids": [], "handles": ["obs_1"]})
 
@@ -74,7 +68,7 @@ class AskEarthdataAgentStageForwardingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status_events[0]["message"], "Searching datasets...")
 
     async def test_a_sub_agent_chart_and_job_progress_also_reach_the_outer_stream(self):
-        from utils.streaming import emit_chart, emit_job_progress, stream_response
+        from tta_backend.utils.streaming import emit_chart, emit_job_progress, stream_response
 
         envelope = json.dumps({"summary": "Plotted NO2 over NJ.", "artifact_ids": [], "handles": ["obs_1"]})
 

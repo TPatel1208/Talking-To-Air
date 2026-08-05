@@ -9,7 +9,7 @@ import { MetadataOverview } from './MetadataOverview.jsx'
 import { MetaField } from './metadataPrimitives.jsx'
 import { smallButtonStyle, copyToClipboard } from '../utils/metadataUiHelpers.js'
 import { computeChartStats } from '../utils/chartStats'
-import { resolveMasking, resolveRegionFidelity } from '../utils/maskingProvenance'
+import { resolveMasking, resolveRegionFidelity, formatQaPassRate } from '../utils/maskingProvenance'
 import { evidenceRows } from '../utils/evidenceSummary'
 import { filledCharts } from '../utils/compareMode'
 import { focusChartPayload } from '../utils/compareSlotOverview'
@@ -83,7 +83,9 @@ function MetaChip({ children }) {
   )
 }
 
-function StatCard({ label, value }) {
+// `subtitle` states what a number was computed over. Two percentages in one
+// grid that answer different questions (T55) are only safe when each says so.
+function StatCard({ label, value, subtitle }) {
   return (
     <div style={{
       background: 'var(--bg-card)', border: '1px solid var(--border)',
@@ -91,6 +93,11 @@ function StatCard({ label, value }) {
     }}>
       <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '5px' }}>{label}</div>
       <div style={{ fontSize: '15px', fontWeight: 800, fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>{value}</div>
+      {subtitle && (
+        <div style={{ fontSize: '10.5px', color: 'var(--text-muted)', marginTop: '4px', lineHeight: 1.35 }}>
+          {subtitle}
+        </div>
+      )}
     </div>
   )
 }
@@ -108,9 +115,15 @@ const REGION_TYPE_NOTE = {
   boundary_cells: 'smaller than a grid cell — showing the cells it touches',
 }
 
-function MaskingDisclosure({ chart }) {
-  const masking = useMemo(() => resolveMasking(chart), [chart])
+// `masking` is optional: StatisticsTab hoists one resolveMasking(chart) and
+// shares it with the pass-rate card so both read the identical object. Falls
+// back to resolving its own so the component stays independently usable
+// (MetadataOverview and the compare surface render it standalone).
+function MaskingDisclosure({ chart, masking: hoistedMasking }) {
+  const ownMasking = useMemo(() => resolveMasking(chart), [chart])
+  const masking = hoistedMasking !== undefined ? hoistedMasking : ownMasking
   const region = useMemo(() => resolveRegionFidelity(chart), [chart])
+  const passRate = formatQaPassRate(masking)
   if (!masking && !region) return null
   return (
     <div style={{
@@ -122,8 +135,10 @@ function MaskingDisclosure({ chart }) {
           <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '5px' }}>
             QA-flag masking
           </div>
+          {/* T55: the status and the rate it produced read as one fact --
+              "verified" alone never said how much data the mask discarded. */}
           <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>
-            {masking.qaStatus}
+            {masking.qaStatus}{passRate !== null && ` — ${passRate} of checked pixels passed`}
           </div>
           {masking.qaSource && (
             <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginTop: '4px' }}>
@@ -192,12 +207,48 @@ function EvidenceSection({ chart }) {
   )
 }
 
+// The QA pass-rate card's subtitle: the denominator, stated on screen, so
+// "QA pass rate" and "Valid values" are visibly answering different questions
+// rather than looking interchangeable. A scene with nothing retrievable to
+// check is its own diagnosable state, not "Not applied".
+function qaPassRateCard(masking) {
+  if (!masking) return null
+  const rate = formatQaPassRate(masking)
+  const checked = masking.qaCheckedPixels
+  if (rate === null) {
+    if (checked === 0) return { value: '—', subtitle: 'No retrievable pixels to check' }
+    return { value: 'Not applied', subtitle: masking.qaStatus }
+  }
+  const parts = [`of ${checked?.toLocaleString() ?? '—'} checked pixels`]
+  if (masking.qaFlagMissingPixels) {
+    parts.push(`${masking.qaFlagMissingPixels.toLocaleString()} had no usable flag`)
+  }
+  return { value: rate, subtitle: parts.join(' · ') }
+}
+
+// What extent each figure was counted over, keyed by computeChartStats' basis.
+const VALID_BASIS = {
+  'analyzed-region': 'finite cells in the analyzed region',
+  'rendered-grid': 'finite cells in the rendered grid',
+  series: 'time steps carrying a value',
+}
+const COUNT_BASIS = {
+  'analyzed-region': 'observations in the analyzed region',
+  'rendered-grid': 'cells in the rendered grid, not observations',
+  series: 'time steps',
+}
+
 function StatisticsTab({ chart }) {
   const stats = useMemo(() => computeChartStats(chart), [chart])
+  const masking = useMemo(() => resolveMasking(chart), [chart])
+  const passRate = qaPassRateCard(masking)
   if (!stats) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
         <div style={{ padding: '24px', color: 'var(--text-muted)', fontSize: '13px' }}>No numeric values available for this output.</div>
+        {/* An all-masked scene is exactly when the pass rate matters most --
+            this branch used to show nothing but the sentence above. */}
+        <MaskingDisclosure chart={chart} masking={masking} />
         <EvidenceSection chart={chart} />
       </div>
     )
@@ -209,10 +260,17 @@ function StatisticsTab({ chart }) {
         <StatCard label="Mean" value={`${fmt(stats.mean)} ${stats.units || ''}`} />
         <StatCard label="Max" value={`${fmt(stats.max)} ${stats.units || ''}`} />
         <StatCard label="Min" value={`${fmt(stats.min)} ${stats.units || ''}`} />
-        <StatCard label="Valid values" value={`${stats.validPct.toFixed(1)}%`} />
-        <StatCard label="Sample count" value={stats.count.toLocaleString()} />
+        {/* "Valid values" answers "did we get data at all"; the QA pass rate
+            answers "how much of what we got survived the quality mask". Both
+            stay, and each states its basis so they can't be conflated. The
+            basis is not fixed: statistics computed server-side describe the
+            analyzed region, while an artifact predating that field can only be
+            recomputed from the thinned grid it shipped. */}
+        <StatCard label="Valid values" value={`${stats.validPct.toFixed(1)}%`} subtitle={VALID_BASIS[stats.basis] || VALID_BASIS['rendered-grid']} />
+        {passRate && <StatCard label="QA pass rate" value={passRate.value} subtitle={passRate.subtitle} />}
+        <StatCard label="Sample count" value={stats.count.toLocaleString()} subtitle={COUNT_BASIS[stats.basis] || COUNT_BASIS['rendered-grid']} />
       </div>
-      <MaskingDisclosure chart={chart} />
+      <MaskingDisclosure chart={chart} masking={masking} />
       <EvidenceSection chart={chart} />
     </div>
   )
@@ -272,12 +330,18 @@ function TemporalSection({ chart }) {
 }
 
 function ProvenanceSection({ chart }) {
-  const { qualityFlagVar, qaGoodValues, qaBadValues, fillValueSource, validRangeSource } = qaMethodologyFields(chart)
+  const {
+    qualityFlagVar, qaGoodValues, qaBadValues, fillValueSource, validRangeSource,
+    qaPassRate, qaPassRateBasis,
+  } = qaMethodologyFields(chart)
   return (
     <>
       <MetaField label="Quality flag variable" value={qualityFlagVar} />
       <MetaField label="QA good values" value={qaGoodValues ? JSON.stringify(qaGoodValues) : null} />
       <MetaField label="QA bad values" value={qaBadValues ? JSON.stringify(qaBadValues) : null} />
+      {/* T55: what the rule above actually did to this data. */}
+      <MetaField label="QA pass rate" value={qaPassRate} />
+      <MetaField label="QA pass rate basis" value={qaPassRateBasis} />
       <MetaField label="Fill-value source" value={fillValueSource} />
       <MetaField label="Valid-range source" value={validRangeSource} />
     </>
@@ -717,17 +781,23 @@ export default function OutputPanel({
   const isMetadataTabbedArtifact = artifact?.type === 'table' || artifact?.type === 'timeseries'
 
   const availableTabs = chart ? (CHART_TABS[chart.type] || ['metadata']) : []
-  const [activeTab, setActiveTab] = useState(availableTabs[0])
+  // Reset to the first tab when the focused output -- or its tab set -- changes,
+  // derived during render rather than via an effect. This is what
+  // ArtifactTabsPanel gets for free from the `key` prop its caller passes (see
+  // its comment); the chart tabs live inline here, so the previous
+  // focusedOutput is tracked explicitly instead. Re-focusing the *same* object
+  // keeps the user on their current tab, matching the old effect's deps.
+  const tabsSignature = availableTabs.join(',')
+  const [tabChoice, setTabChoice] = useState({ source: focusedOutput, signature: tabsSignature, tab: availableTabs[0] })
+  const tabChoiceIsStale = tabChoice.source !== focusedOutput || tabChoice.signature !== tabsSignature
+  const activeTab = tabChoiceIsStale ? availableTabs[0] : tabChoice.tab
+  const setActiveTab = tab => setTabChoice({ source: focusedOutput, signature: tabsSignature, tab })
   const [autoScaleEach, setAutoScaleEach] = useState(true)
   // Keyed by compareSessionId (bumped once per enterCompare in App.jsx)
   // rather than a boolean, so a dismissal doesn't leak into the next fresh
   // compare session -- purely derived from props, no effect/ref needed.
   const [hintDismissedForSession, setHintDismissedForSession] = useState(null)
   const plotRootRef = useRef(null)
-
-  useEffect(() => {
-    setActiveTab(availableTabs[0])
-  }, [focusedOutput, availableTabs.join(',')])
 
   const showCollapseHint = shouldShowCollapseHint({
     compareMode, sessionsCollapsed, chatCollapsed, rightPanelCollapsed,

@@ -1,12 +1,6 @@
 import asyncio
-import os
-import sys
 import unittest
 from types import SimpleNamespace
-
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 
 class UserIdContextGuardTests(unittest.IsolatedAsyncioTestCase):
@@ -16,7 +10,7 @@ class UserIdContextGuardTests(unittest.IsolatedAsyncioTestCase):
         override an already-bound _current_user_id, even if (unlike today's
         real callers, which never pass user_id on the nested call) some
         future nested call passes one of its own."""
-        from utils.streaming import current_user_id, stream_response
+        from tta_backend.utils.streaming import current_user_id, stream_response
 
         seen_during_inner = []
 

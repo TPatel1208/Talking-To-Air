@@ -1,5 +1,5 @@
-# ── Stage 1: Builder ──────────────────────────────────────────────────────────
-FROM python:3.11-bullseye AS builder
+# â”€â”€ Stage 1: Builder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+FROM python:3.12-bullseye AS builder
 
 WORKDIR /app
 
@@ -25,8 +25,18 @@ COPY . .
 RUN pip install --no-cache-dir -e .
 
 
-# ── Stage 2: Runtime ──────────────────────────────────────────────────────────
-FROM python:3.11-bullseye AS runtime
+# â”€â”€ Stage 2: Dev tooling (tests/lint only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# pytest/ruff/mypy/coverage live in their own stage so they never reach the
+# runtime venv: stage 3 copies /opt/venv from `builder`, which this stage adds
+# to without mutating. `docker compose --profile test run backend-test` targets
+# this stage; nothing else should.
+FROM builder AS devtools
+
+RUN pip install --no-cache-dir -r requirements-dev.txt
+
+
+# â”€â”€ Stage 3: Runtime â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+FROM python:3.12-bullseye AS runtime
 
 WORKDIR /app
 
@@ -49,7 +59,7 @@ RUN rm -rf tests .pytest_cache
 # the chown below: Docker initializes a fresh named volume from whatever the
 # image has at that path, so a mount point that doesn't exist here produces a
 # root-owned volume that uid 1001 cannot write to. For cube_store that failure
-# is silent — the background writer catches the PermissionError and the cache
+# is silent â€” the background writer catches the PermissionError and the cache
 # appears to work while never storing a cube.
 RUN mkdir -p /app/data /app/outputs /app/overlay_store /app/cube_store
 
@@ -59,5 +69,5 @@ USER appuser
 ENV PORT=8000
 EXPOSE ${PORT}
 
-# Entry point is api.py, app object is named "app"
-CMD ["sh", "-c", "uvicorn api:app --host 0.0.0.0 --port ${PORT} --workers 1 --proxy-headers"]
+# Entry point is tta_backend/api.py, app object is named "app"
+CMD ["sh", "-c", "uvicorn tta_backend.api:app --host 0.0.0.0 --port ${PORT} --workers 1 --proxy-headers"]

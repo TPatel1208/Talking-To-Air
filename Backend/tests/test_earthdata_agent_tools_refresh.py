@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import unittest
 
-from agents.earthdata_agent import refresh_live_tools
+from tta_backend.agents.earthdata_agent import refresh_live_tools
 
 
 class RefreshLiveToolsTests(unittest.TestCase):

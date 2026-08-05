@@ -1,0 +1,501 @@
+# ---------------------------------------------------------------------------
+# Dataset registry — one block per NASA collection.
+#
+# To add a new dataset:
+#   1. Add a block here following the same structure.
+#   2. Restart the backend — no code changes needed.
+#
+# To onboard automatically from CMR, run:
+#   python scripts/generate_collection.py --short-name <NAME> --version <VER>
+#
+# Required fields:
+#   collection_id, primary_var, units, fill_value, valid_min, valid_max
+#
+# Optional fields (default shown):
+#   variables: []                  # subset passed to Harmony; empty = all
+#   groups: []                     # HDF groups to merge (OMI HCHO pattern)
+#   quality_flag_var: null         # variable to use for QA masking
+#   qa_good_values: null           # T25 Tier 1: flag values that pass (pinned, "verified")
+#   qa_bad_values: null            # ...or the values that fail, if easier to state
+#   supports_variable_subsetting: false
+#   description: ""
+#   provider: ""                   # DAAC/agency, e.g. "NASA GES DISC" (T32 provenance display)
+#   instrument: ""                 # instrument/platform, e.g. "MODIS/Terra" (T32 provenance display)
+# ---------------------------------------------------------------------------
+
+# ── NO2 ─────────────────────────────────────────────────────────────────────
+
+OMI_NO2:
+  collection_id: C1266136111-GES_DISC
+  short_name: OMI_MINDS_NO2d
+  version: "1.1"
+  description: OMI NO2 tropospheric column
+  cadence: daily
+  provider: NASA GES DISC
+  instrument: OMI/Aura
+  primary_var: ColumnAmountNO2TropCloudScreened
+  quality_flag_var: null
+  variables:
+    - ColumnAmountNO2
+    - ColumnAmountNO2CloudScreened
+    - ColumnAmountNO2TropCloudScreened
+    - Weight
+  supports_variable_subsetting: false
+  units: molecules/cm^2
+  fill_value: -1.267651e+30
+  valid_min: -1.0e+15
+  valid_max:  1.0e+18
+  groups: []
+
+TROPOMI_NO2:
+  collection_id: C3087325222-GES_DISC
+  short_name: HAQ_TROPOMI_NO2_GLOBAL_M_L3
+  version: "2.4"
+  description: Tropomi NO2 monthly mean
+  cadence: monthly
+  provider: NASA GES DISC
+  instrument: TROPOMI/Sentinel-5P
+  primary_var: Tropospheric_NO2
+  quality_flag_var: null
+  variables:
+    - Tropospheric_NO2
+    - Number_obs
+  supports_variable_subsetting: false
+  units: molecules/cm^2
+  fill_value: -999.0
+  valid_min: -1.0e+15
+  valid_max:  1.0e+18
+  groups: []
+
+TEMPO_NO2:
+  collection_id: C3685896708-LARC_CLOUD
+  short_name: TEMPO_NO2_L3
+  version: V04
+  description: TEMPO tropospheric NO2 vertical column
+  cadence: hourly
+  provider: NASA LARC
+  instrument: TEMPO
+  primary_var: vertical_column_troposphere
+  quality_flag_var: main_data_quality_flag
+  qa_good_values: [0]
+  variables:
+    - product/vertical_column_troposphere
+    - product/main_data_quality_flag
+  supports_variable_subsetting: true
+  units: molecules/cm^2
+  fill_value: -1.0e+30   # np.float32(-1e30)
+  valid_min: -1.0e+15
+  valid_max:  1.0e+18
+  groups:
+    - product
+
+# Near Real-Time twin of TEMPO_NO2. The agent prompt tells the model to reach
+# for an NRT product on any "recent/latest/today" request, and until this entry
+# existed every such retrieval was UNREGISTERED -- which means no pinned rule,
+# and (measured 2026-08-02: Tier-2 CF classification has never fired on a real
+# product) therefore no quality masking at all. The flag was in the file the
+# whole time; nothing pinned it. On the standard V04 twin that mask removes
+# 26.6% of a scene, so the most-asked question was returning the least-masked
+# answer the system could produce.
+#
+# Structure verified against Earthdata 2026-08-02: 39 bands including
+# product/main_data_quality_flag, identical layout to V04.
+#
+# ASSUMPTION, not granule-verified: qa_good_values [0] carries over from V04 on
+# the grounds that this is the same product family. If V02's flag vocabulary
+# differs, this is where to look.
+#
+# Registered as its own key rather than folded into TEMPO_NO2 because the NRT
+# stream is algorithm V02 against the standard stream's V04 -- silently mixing
+# them in one timeseries would compare two different retrievals.
+TEMPO_NO2_NRT:
+  collection_id: C3685668637-LARC_CLOUD
+  short_name: TEMPO_NO2_L3_NRT
+  version: V02
+  description: TEMPO tropospheric NO2 vertical column (Near Real-Time, V02)
+  cadence: hourly
+  provider: NASA LARC
+  instrument: TEMPO
+  primary_var: vertical_column_troposphere
+  quality_flag_var: main_data_quality_flag
+  qa_good_values: [0]
+  variables:
+    - product/vertical_column_troposphere
+    - product/main_data_quality_flag
+  supports_variable_subsetting: true
+  units: molecules/cm^2
+  fill_value: -1.0e+30
+  valid_min: -1.0e+15
+  valid_max:  1.0e+18
+  groups:
+    - product
+
+# ── Ozone ────────────────────────────────────────────────────────────────────
+
+TEMPO_O3TOT:
+  collection_id: C3685896625-LARC_CLOUD
+  short_name: TEMPO_O3TOT_L3
+  version: V04
+  description: TEMPO Level 3 total ozone column
+  cadence: hourly
+  provider: NASA LARC
+  instrument: TEMPO
+  primary_var: column_amount_o3
+  quality_flag_var: null
+  variables:
+    - product/column_amount_o3
+    - product/radiative_cloud_frac
+    - product/fc
+    - product/o3_below_cloud
+    - product/so2_index
+    - product/uv_aerosol_index
+  supports_variable_subsetting: true
+  units: DU
+  fill_value: -1.0e+30   # np.float32(-1e30)
+  valid_min: 50.0
+  valid_max: 700.0
+  groups:
+    - product
+
+OMI_O3:
+  collection_id: C1266136037-GES_DISC
+  short_name: OMDOAO3e
+  version: "003"
+  description: OMI daily total ozone column
+  cadence: daily
+  provider: NASA GES DISC
+  instrument: OMI/Aura
+  primary_var: ColumnAmountO3
+  quality_flag_var: null
+  variables: []
+  supports_variable_subsetting: false
+  units: DU
+  fill_value: -1.267651e+30
+  valid_min: 50.0
+  valid_max: 700.0
+  groups: []
+
+# ── Formaldehyde ─────────────────────────────────────────────────────────────
+
+TEMPO_HCHO:
+  collection_id: C3685897141-LARC_CLOUD
+  short_name: TEMPO_HCHO_L3
+  version: V04
+  description: TEMPO formaldehyde (HCHO) vertical column
+  cadence: hourly
+  provider: NASA LARC
+  instrument: TEMPO
+  primary_var: vertical_column
+  quality_flag_var: main_data_quality_flag
+  qa_good_values: [0]
+  variables:
+    - product/vertical_column
+    - product/vertical_column_uncertainty
+    - product/main_data_quality_flag
+  supports_variable_subsetting: true
+  units: molecules/cm^2
+  fill_value: -1.0e+30
+  # Retrieval noise scatters below zero over clean scenes (31% of TEMPO HCHO,
+  # 25% of OMI HCHO finite pixels, measured 2026-08-02). Those are good-quality
+  # observations, so the floor sits below the noise to catch corrupt values only,
+  # rather than at 0.0 where it censored the low tail and biased the mean high.
+  valid_min: -1.0e+17
+  valid_max: .inf
+  groups:
+    - product
+
+TEMPO_HCHO_V03:
+  collection_id: C2930761273-LARC_CLOUD
+  short_name: TEMPO_HCHO_L3
+  version: V03
+  description: TEMPO formaldehyde (HCHO) vertical column (V03)
+  cadence: hourly
+  provider: NASA LARC
+  instrument: TEMPO
+  primary_var: vertical_column
+  quality_flag_var: main_data_quality_flag
+  qa_good_values: [0]
+  variables:
+    - product/vertical_column
+    - product/vertical_column_uncertainty
+    - product/main_data_quality_flag
+  supports_variable_subsetting: true
+  units: molecules/cm^2
+  fill_value: -1.0e+30
+  # Retrieval noise scatters below zero over clean scenes (31% of TEMPO HCHO,
+  # 25% of OMI HCHO finite pixels, measured 2026-08-02). Those are good-quality
+  # observations, so the floor sits below the noise to catch corrupt values only,
+  # rather than at 0.0 where it censored the low tail and biased the mean high.
+  valid_min: -1.0e+17
+  valid_max: .inf
+  groups:
+    - product
+
+# Near Real-Time twin of TEMPO_HCHO -- see TEMPO_NO2_NRT above for why an
+# unregistered NRT product masks nothing. The stakes are higher here: on the
+# standard V04 twin the quality mask rejects 73.4% of a scene and nearly HALVES
+# the reported mean, so an unmasked NRT HCHO answer was not slightly off.
+#
+# Structure verified against Earthdata 2026-08-02: 24 bands including
+# product/main_data_quality_flag, identical layout to V04. Same V02-vs-V04
+# caveat and the same unverified qa_good_values assumption as TEMPO_NO2_NRT.
+TEMPO_HCHO_NRT:
+  collection_id: C3685668680-LARC_CLOUD
+  short_name: TEMPO_HCHO_L3_NRT
+  version: V02
+  description: TEMPO formaldehyde (HCHO) vertical column (Near Real-Time, V02)
+  cadence: hourly
+  provider: NASA LARC
+  instrument: TEMPO
+  primary_var: vertical_column
+  quality_flag_var: main_data_quality_flag
+  qa_good_values: [0]
+  variables:
+    - product/vertical_column
+    - product/vertical_column_uncertainty
+    - product/main_data_quality_flag
+  supports_variable_subsetting: true
+  units: molecules/cm^2
+  fill_value: -1.0e+30
+  # Same negative-tail doctrine as the standard HCHO entries: 31% of finite
+  # pixels are negative retrieval noise, so the floor sits below them.
+  valid_min: -1.0e+17
+  valid_max: .inf
+  groups:
+    - product
+
+OMI_HCHO:
+  collection_id: C1626121562-GES_DISC
+  short_name: OMHCHOd
+  version: "003"
+  description: OMI HCHO total column daily
+  cadence: daily
+  provider: NASA GES DISC
+  instrument: OMI/Aura
+  primary_var: column_amount
+  quality_flag_var: data_quality_flag
+  qa_bad_values: [2]
+  variables: []
+  supports_variable_subsetting: false
+  units: molecules/cm^2
+  fill_value: -1.0e+30
+  # Retrieval noise scatters below zero over clean scenes (31% of TEMPO HCHO,
+  # 25% of OMI HCHO finite pixels, measured 2026-08-02). Those are good-quality
+  # observations, so the floor sits below the noise to catch corrupt values only,
+  # rather than at 0.0 where it censored the low tail and biased the mean high.
+  valid_min: -1.0e+17
+  valid_max: .inf
+  groups:
+    - key_science_data
+    - qa_statistics
+
+# ── Sulfur dioxide ───────────────────────────────────────────────────────────
+
+# Fills the SO2 gap -- a criteria pollutant with no coverage until now. TEMPO
+# publishes no SO2 product (Earthdata search returned only field campaigns,
+# checked twice on 2026-08-02), so OMI is the option.
+#
+# Granule-verified 2026-08-02 (2025-06-15, North America, one granule):
+#   QualityFlags_SO2  ValidRange [0, 2], MissingValue -2147483648, and NO CF
+#                     flag_values/flag_meanings -- so it is an enumerated flag,
+#                     not the bit mask first assumed, and Tier-2 CF parsing
+#                     still cannot fire (0 for 5 real products now).
+#   Observed          flag=0 on 57,508 cells and flag=1 on 53,288; the finite
+#                     ColumnAmountSO2 count is 57,508 EXACTLY, so flag=0 is the
+#                     retrieved class and flag=1 carries no data at all.
+#   Value 2           never appears in the granule, so its meaning is inferred
+#                     from the sibling OMI L3 product (OMI_HCHO, same GES DISC
+#                     family) where 2 is bad_or_not_computed.
+#
+# qa_bad_values [2] is therefore the minimal-intervention pin: it matches the
+# sibling convention and drops only the class never observed to carry data. On
+# the verified granule either pin is a no-op -- everything outside flag=0 is
+# already fill -- so this cannot silently destroy observations, and masking now
+# reports "verified" instead of "semantics unknown".
+#
+# fill/valid bounds are the file's own: MissingValue -1.2676506e+30 and
+# ValidRange [-10, 2000] DU. The floor is NOT zero -- 45.8% of finite values in
+# the verified granule are negative (min -1.06 DU), the largest negative share
+# of any product measured, so a zero floor would have destroyed nearly half.
+#
+# Two collections share the OMSO2e short name: C3756242136 is V004 (registered
+# here) and C1266136112 is the superseded V003. Checked 2026-08-02 -- searching
+# by short name alone returns both, so match on concept_id.
+OMI_SO2:
+  collection_id: C3756242136-GES_DISC
+  short_name: OMSO2e
+  version: "004"
+  description: OMI total column SO2 daily global L3 (PCA algorithm, best pixel)
+  cadence: daily
+  provider: NASA GES DISC
+  instrument: OMI/Aura
+  primary_var: ColumnAmountSO2
+  quality_flag_var: QualityFlags_SO2
+  qa_bad_values: [2]
+  variables: []
+  supports_variable_subsetting: false
+  units: DU
+  fill_value: -1.2676506002282294e+30
+  valid_min: -10.0
+  valid_max:  2000.0
+  groups:
+    - HDFEOS/GRIDS/OMI_Total_Column_Amount_SO2/Data_Fields
+
+# ── Aerosol ───────────────────────────────────────────────────────────────────
+
+MODIS_AOD_TERRA:
+  collection_id: C3618500076-GES_DISC
+  short_name: AER_DBDT_D10KM_L3_MODIS_TERRA
+  version: "001"
+  description: MODIS Terra AOD at 550nm combined Dark Target + Deep Blue
+  cadence: daily
+  provider: NASA GES DISC
+  instrument: MODIS/Terra
+  primary_var: COMBINE_AOD_550_AVG
+  quality_flag_var: null
+  variables: []
+  supports_variable_subsetting: false
+  units: AOD (550nm)
+  fill_value: -999.0
+  valid_min: -0.05
+  valid_max:  5.0
+  groups: []
+
+# VIIRS is the operational successor to MODIS for this product: Terra and Aqua
+# are both well past design life and Terra's orbit drift moves its equator-
+# crossing time, which degrades the AOD record. Same GES DISC algorithm (Deep
+# Blue + Dark Target), same 0.1-degree daily grid, and -- verified against
+# Earthdata 2026-08-02 -- an identical variable list, so the masking treatment
+# is deliberately identical to the MODIS entries and pinned that way by
+# tests/test_collection_registry_qa_coverage.py. fill/valid bounds are inherited
+# from the MODIS siblings rather than measured; a granule probe should confirm.
+VIIRS_AOD_SNPP:
+  collection_id: C3616854935-GES_DISC
+  short_name: AER_DBDT_D10KM_L3_VIIRS_SNPP
+  version: "001"
+  description: SNPP VIIRS AOD at 550nm combined Dark Target + Deep Blue
+  cadence: daily
+  provider: NASA GES DISC
+  instrument: VIIRS/SNPP
+  primary_var: COMBINE_AOD_550_AVG
+  quality_flag_var: null
+  variables: []
+  supports_variable_subsetting: false
+  units: AOD (550nm)
+  fill_value: -999.0
+  valid_min: -0.05
+  valid_max:  5.0
+  groups: []
+
+VIIRS_AOD_NOAA20:
+  collection_id: C3618498508-GES_DISC
+  short_name: AER_DBDT_D10KM_L3_VIIRS_NOAA20
+  version: "001"
+  description: NOAA-20 VIIRS AOD at 550nm combined Dark Target + Deep Blue
+  cadence: daily
+  provider: NASA GES DISC
+  instrument: VIIRS/NOAA-20
+  primary_var: COMBINE_AOD_550_AVG
+  quality_flag_var: null
+  variables: []
+  supports_variable_subsetting: false
+  units: AOD (550nm)
+  fill_value: -999.0
+  valid_min: -0.05
+  valid_max:  5.0
+  groups: []
+
+# The NRT aerosol product the agent prompt tells the model to reach for on a
+# "recent/latest" AOD request. Granule-verified 2026-08-02 (2026-08-01, one
+# granule) and it is the 432-variable collection behind the historical
+# variable-resolution blowup -- confirmed exactly: 432 bands, 121 product
+# groups, and only 4 distinct leaf names (Mean, Pixel_Counts,
+# Standard_Deviation, Histogram_Counts), so leaves collide 121-deep.
+#
+# Despite the abstract's "single combined product" wording there is NO combined
+# band: the 121 groups are platform x algorithm x QA-filter combinations (Aqua/
+# Terra MODIS, SNPP/NOAA-20 VIIRS, NASA Dark Target vs Deep Blue vs NRL
+# correction, QF3-filtered vs not, land vs ocean), plus aeronet_* ground truth.
+#
+# primary_var is therefore a CHOICE among 121, not a lookup, and pinning it is
+# what keeps this collection out of the ambiguous-refusal path. The pin is
+# NOAA-20 VIIRS NASA Deep Blue: current operational platform, standard NASA
+# algorithm, and the best coverage in the verified granule (38,320 of 64,800
+# cells, against 33,065 for NASA Dark Target and 9,415 for Aqua MODIS NRL).
+# Deep Blue and Dark Target genuinely disagree over bright surfaces, so this is
+# a disclosed scientific choice -- change it deliberately, not incidentally.
+#
+# fill/valid bounds measured from the granule: _FillValue -999.0, and the data
+# is already clipped to [-0.05, 5.0] (observed exact min -0.050, max 5.000).
+AERDA_AOD_NRT:
+  collection_id: C3573648328-ASIPS
+  short_name: AERDA_D3_VIIRS_MODIS_NRT
+  version: "1"
+  description: NRT VIIRS/MODIS combined AOD for data assimilation (24-hour, 1 degree)
+  cadence: daily
+  provider: NASA ASIPS
+  instrument: VIIRS + MODIS
+  primary_var: NOAA20_VIIRS_NASADeepBlue_AOD_550/Mean
+  quality_flag_var: null
+  variables: []
+  supports_variable_subsetting: false
+  units: AOD (550nm)
+  fill_value: -999.0
+  valid_min: -0.05
+  valid_max:  5.0
+  groups: []
+
+# The 3-hourly cut of the same NRT assimilation product as AERDA_AOD_NRT --
+# eight files a day instead of one, which is what makes it useful for tracking
+# a smoke plume or an exceedance through a day rather than after it.
+#
+# Granule-verified 2026-08-02 (2026-08-01T00:00-06:00): structurally IDENTICAL
+# to the 24-hour variant -- 432 bands, 121 groups, the same four colliding leaf
+# names, the same NOAA20_VIIRS_NASADeepBlue_AOD_550/Mean band and the same
+# -999.0 fill. Everything said about the daily entry's primary_var choice
+# applies here unchanged, and a test pins the two to one treatment.
+#
+# CADENCE CAVEAT: this product is 3-hourly and the registry's cadence field
+# only admits hourly/daily/monthly, so none of the three is exact. "hourly" is
+# chosen because it is the only sub-daily option -- it keeps period labels off
+# "Daily" (which would make this indistinguishable from the 24-hour sibling),
+# and because _cadence_weighted_mean floors to the hour, an evenly-spaced
+# 3-hourly series lands one granule per bucket and the weighting degenerates to
+# the plain mean rather than distorting it. Marking it "daily" would instead
+# pool eight granules into one bucket. Neither is the true 3-hour bucket;
+# widening the cadence vocabulary is the real fix.
+AERDA_AOD_NRT_3H:
+  collection_id: C3573647939-ASIPS
+  short_name: AERDA_L3_VIIRS_MODIS_NRT
+  version: "1"
+  description: NRT VIIRS/MODIS combined AOD for data assimilation (3-hour, 1 degree)
+  cadence: hourly
+  provider: NASA ASIPS
+  instrument: VIIRS + MODIS
+  primary_var: NOAA20_VIIRS_NASADeepBlue_AOD_550/Mean
+  quality_flag_var: null
+  variables: []
+  supports_variable_subsetting: false
+  units: AOD (550nm)
+  fill_value: -999.0
+  valid_min: -0.05
+  valid_max:  5.0
+  groups: []
+
+MODIS_AOD_AQUA:
+  collection_id: C3618504061-GES_DISC
+  short_name: AER_DBDT_D10KM_L3_MODIS_AQUA
+  version: "001"
+  description: MODIS Aqua AOD at 550nm combined Dark Target + Deep Blue
+  cadence: daily
+  provider: NASA GES DISC
+  instrument: MODIS/Aqua
+  primary_var: COMBINE_AOD_550_AVG
+  quality_flag_var: null
+  variables: []
+  supports_variable_subsetting: false
+  units: AOD (550nm)
+  fill_value: -999.0
+  valid_min: -0.05
+  valid_max:  5.0
+  groups: []

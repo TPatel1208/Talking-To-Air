@@ -10,9 +10,6 @@ import os
 import sys
 import unittest
 
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 TESTS_DIR = os.path.dirname(__file__)
 if TESTS_DIR not in sys.path:
@@ -28,10 +25,10 @@ REQUIRED_MODULES = ["langchain_mcp_adapters", "fastmcp", "uvicorn"]
 class CoverageStageFailureContextTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_coverage_stage_failure_is_classified_and_leaves_coverage_as_the_last_stage(self):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from earthdata_mcp.workspace import bind_workspace
-        from config.settings import Settings
-        import utils.streaming as streaming
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
+        from tta_backend.config.settings import Settings
+        import tta_backend.utils.streaming as streaming
 
         async def search_datasets(query, filters, workspace_id):
             return {"dataset_handle": "dataset_1", "short_name": query, "title": query}

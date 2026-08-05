@@ -14,15 +14,11 @@ already by test_provenance_endpoint's foreign-chart test.
 """
 import importlib.util
 import os
-import sys
 import unittest
 import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
 
@@ -36,10 +32,10 @@ REQUIRED_MODULES = ["fastapi", "httpx", "jwt", "bcrypt", "langchain_mcp_adapters
 class SessionAuthContractTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         import httpx
-        import api
+        import tta_backend.api as api
         import jwt
-        from config.settings import get_settings
-        from models.user import User
+        from tta_backend.config.settings import get_settings
+        from tta_backend.models.user import User
 
         self.httpx = httpx
         self.api = api
@@ -69,8 +65,8 @@ class SessionAuthContractTests(unittest.IsolatedAsyncioTestCase):
         async def fake_is_token_revoked(jti):
             return revoked
 
-        return patch("services.auth_service.get_user_by_id", fake_get_user_by_id), \
-            patch("services.auth_service.is_token_revoked", fake_is_token_revoked)
+        return patch("tta_backend.services.auth_service.get_user_by_id", fake_get_user_by_id), \
+            patch("tta_backend.services.auth_service.is_token_revoked", fake_is_token_revoked)
 
     async def _client(self):
         transport = self.httpx.ASGITransport(app=self.api.app)

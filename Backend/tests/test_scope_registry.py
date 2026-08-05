@@ -1,10 +1,4 @@
-import os
-import sys
 import unittest
-
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 
 class ScopeRegistryTests(unittest.TestCase):
@@ -13,7 +7,7 @@ class ScopeRegistryTests(unittest.TestCase):
         obs_/cube_ handle a plot will read it back by is only known once the
         job reaches 'ready' — the same two-step handoff variable_choice_registry
         uses."""
-        from services import scope_registry
+        from tta_backend.services import scope_registry
 
         scope = {"location": "California", "time_range": "2024-07-15/2024-07-15"}
         scope_registry.record_pending("job_1", scope)
@@ -22,12 +16,12 @@ class ScopeRegistryTests(unittest.TestCase):
         self.assertEqual(scope_registry.get("obs_abc"), scope)
 
     def test_get_returns_none_for_an_unknown_handle(self):
-        from services import scope_registry
+        from tta_backend.services import scope_registry
 
         self.assertIsNone(scope_registry.get("obs_never_recorded"))
 
     def test_record_pending_is_a_noop_without_a_job_handle_or_scope(self):
-        from services import scope_registry
+        from tta_backend.services import scope_registry
 
         scope_registry.record_pending("", {"location": "X"})
         scope_registry.record_pending("job_2", {})

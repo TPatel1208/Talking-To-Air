@@ -7,14 +7,10 @@ endpoint (jobs, sessions, charts).
 """
 import importlib.util
 import os
-import sys
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
 
@@ -69,10 +65,10 @@ def _make_edl_token(exp_delta=timedelta(days=60)):
 class ConnectorsEndpointTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         import httpx
-        import api
+        import tta_backend.api as api
         from cryptography.fernet import Fernet
-        from models.user import User
-        from utils.connector_crypto import build_multi_fernet
+        from tta_backend.models.user import User
+        from tta_backend.utils.connector_crypto import build_multi_fernet
 
         self.httpx = httpx
         self.api = api
@@ -96,19 +92,19 @@ class ConnectorsEndpointTests(unittest.IsolatedAsyncioTestCase):
             return False
 
         return [
-            patch("services.auth_service.get_user_by_id", fake_get_user_by_id),
-            patch("services.auth_service.is_token_revoked", fake_is_token_revoked),
+            patch("tta_backend.services.auth_service.get_user_by_id", fake_get_user_by_id),
+            patch("tta_backend.services.auth_service.is_token_revoked", fake_is_token_revoked),
         ]
 
     def _repo_patches(self):
         return [
-            patch("api.list_connectors_for_user", self.store.list_connectors_for_user),
-            patch("api.upsert_connector", self.store.upsert_connector),
-            patch("api.delete_connector", self.store.delete_connector),
+            patch("tta_backend.api.list_connectors_for_user", self.store.list_connectors_for_user),
+            patch("tta_backend.api.upsert_connector", self.store.upsert_connector),
+            patch("tta_backend.api.delete_connector", self.store.delete_connector),
         ]
 
     async def _client(self, patches, configured=True):
-        cipher_patch = patch("api.get_connector_cipher", return_value=(self.cipher if configured else None))
+        cipher_patch = patch("tta_backend.api.get_connector_cipher", return_value=(self.cipher if configured else None))
         for p in patches + [cipher_patch]:
             p.start()
             self.addCleanup(p.stop)
@@ -235,7 +231,7 @@ class ConnectorsEndpointTests(unittest.IsolatedAsyncioTestCase):
         """T31: a re-paste must never be shadowed by the injector's
         short-TTL cache of the previous row within the TTL window."""
         raw_token = _make_edl_token()
-        invalidate_patch = patch("api.edl_credential_injector.invalidate")
+        invalidate_patch = patch("tta_backend.api.edl_credential_injector.invalidate")
         with invalidate_patch as invalidate:
             async with await self._client(self._auth_patches() + self._repo_patches()) as client:
                 await client.put("/connectors/earthdata/token", json={"token": raw_token}, headers=self.auth_headers1)
@@ -243,7 +239,7 @@ class ConnectorsEndpointTests(unittest.IsolatedAsyncioTestCase):
         invalidate.assert_called_once_with("user-1")
 
     async def test_disconnect_invalidates_the_edl_credential_injector_cache(self):
-        invalidate_patch = patch("api.edl_credential_injector.invalidate")
+        invalidate_patch = patch("tta_backend.api.edl_credential_injector.invalidate")
         with invalidate_patch as invalidate:
             async with await self._client(self._auth_patches() + self._repo_patches()) as client:
                 await client.delete("/connectors/earthdata", headers=self.auth_headers1)

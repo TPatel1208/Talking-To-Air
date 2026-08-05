@@ -7,9 +7,6 @@ from unittest.mock import patch
 
 import pytest
 
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 TESTS_DIR = os.path.dirname(__file__)
 if TESTS_DIR not in sys.path:
@@ -131,7 +128,7 @@ class StarterPromptEvalCoverageTests(unittest.TestCase):
         glance — a starter list that collapsed to one workflow type would
         pass the id-coverage check above while still failing the product
         intent."""
-        from config.starter_prompts import STARTER_PROMPTS
+        from tta_backend.config.starter_prompts import STARTER_PROMPTS
 
         categories = {entry["category"] for entry in STARTER_PROMPTS}
 
@@ -531,14 +528,14 @@ class RunEvalSuiteIncludesE2ETests(unittest.IsolatedAsyncioTestCase):
 
 
 def _real_groq_key_available() -> bool:
-    from config.settings import get_settings
+    from tta_backend.config.settings import get_settings
 
     key = get_settings().groq_api_key
     return bool(key) and key not in ("test", "your_groq_key")
 
 
 def _real_google_key_available() -> bool:
-    from config.settings import get_settings
+    from tta_backend.config.settings import get_settings
 
     key = get_settings().google_api_key
     return bool(key) and key not in ("test", "your_google_key")
@@ -566,7 +563,7 @@ class EvalSuiteTests(unittest.IsolatedAsyncioTestCase):
         # fires in a healthy workflow — this run is the proof. If it fires
         # here, either a real compaction gap regressed or the ceiling itself
         # needs raising, not the tasks.
-        with self.assertNoLogs("agents.subagent_trim", level="WARNING"):
+        with self.assertNoLogs("tta_backend.agents.subagent_trim", level="WARNING"):
             with tempfile.TemporaryDirectory() as tmpdir:
                 volume = HandleVolume(tmpdir)
                 results = await run_eval_suite(volume)

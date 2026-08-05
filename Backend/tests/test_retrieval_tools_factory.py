@@ -5,9 +5,6 @@ import sys
 import unittest
 from dataclasses import replace
 
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 TESTS_DIR = os.path.dirname(__file__)
 if TESTS_DIR not in sys.path:
@@ -23,8 +20,8 @@ REQUIRED_MODULES = ["langchain_mcp_adapters", "fastmcp", "uvicorn"]
 class RetrievalToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
     async def _tools_for(self, handlers):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
 
         server = FakeEarthdataMCPServer(build_fake_mcp(handlers))
         server.start()
@@ -38,13 +35,13 @@ class RetrievalToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
         return raw_tools, settings
 
     def _built_tool(self, mcp_tools, name):
-        from tools.satellite_tools.factory import build_satellite_tools
+        from tta_backend.tools.satellite_tools.factory import build_satellite_tools
 
         tools = {t.name: t for t in build_satellite_tools(mcp_tools)}
         return tools[name]
 
     async def test_build_satellite_tools_exposes_safe_retrieve_and_await_retrieval(self):
-        from tools.satellite_tools.factory import build_satellite_tools
+        from tta_backend.tools.satellite_tools.factory import build_satellite_tools
 
         mcp_tools, _ = await self._tools_for({})
         names = {t.name for t in build_satellite_tools(mcp_tools)}

@@ -37,13 +37,13 @@ class FakeArtifactRepository:
 
 class ClaimPersistsToRepositoryTests(unittest.IsolatedAsyncioTestCase):
     async def test_claim_upserts_the_artifact_to_the_repository(self):
-        from services.artifact_store import ArtifactStore
+        from tta_backend.services.artifact_store import ArtifactStore
 
         fake_repo = FakeArtifactRepository()
         store = ArtifactStore()
         ref = store.put_table("Sample Table", ["date", "value"], [{"date": "2024-01-01", "value": 10}])
 
-        with patch("services.artifact_store.artifact_repository", fake_repo):
+        with patch("tta_backend.services.artifact_store.artifact_repository", fake_repo):
             await store.claim(ref.id, "user-1", "thread-1")
 
         self.assertIn(ref.id, fake_repo.rows)
@@ -56,13 +56,13 @@ class ClaimPersistsToRepositoryTests(unittest.IsolatedAsyncioTestCase):
         """T39 user story #4: claim-time sweep of DB rows that were somehow
         left unclaimed past the TTL, so the table doesn't grow unboundedly
         from abandoned intermediate results."""
-        from services.artifact_store import ArtifactStore
+        from tta_backend.services.artifact_store import ArtifactStore
 
         fake_repo = FakeArtifactRepository()
         store = ArtifactStore(ttl_seconds=1800)
         ref = store.put_table("Sample Table", ["date", "value"], [{"date": "2024-01-01", "value": 10}])
 
-        with patch("services.artifact_store.artifact_repository", fake_repo):
+        with patch("tta_backend.services.artifact_store.artifact_repository", fake_repo):
             await store.claim(ref.id, "user-1", "thread-1")
 
         self.assertEqual(fake_repo.swept_ttl_seconds, 1800)
@@ -74,11 +74,11 @@ class RestartSurvivalTests(unittest.IsolatedAsyncioTestCase):
         *fresh* instance sharing only the fake repository -- this is exactly
         what a backend restart looks like: the in-memory dict is gone, only
         the durable row survives."""
-        from services.artifact_store import ArtifactStore
+        from tta_backend.services.artifact_store import ArtifactStore
 
         fake_repo = FakeArtifactRepository()
 
-        with patch("services.artifact_store.artifact_repository", fake_repo):
+        with patch("tta_backend.services.artifact_store.artifact_repository", fake_repo):
             first_store = ArtifactStore()
             ref = first_store.put_table(
                 "Sample Table", ["date", "value"], [{"date": "2024-01-01", "value": 10}],
@@ -96,11 +96,11 @@ class RestartSurvivalTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("2024-01-01,10", csv_text)
 
     async def test_wrong_user_is_rejected_even_after_rehydration(self):
-        from services.artifact_store import ArtifactStore
+        from tta_backend.services.artifact_store import ArtifactStore
 
         fake_repo = FakeArtifactRepository()
 
-        with patch("services.artifact_store.artifact_repository", fake_repo):
+        with patch("tta_backend.services.artifact_store.artifact_repository", fake_repo):
             first_store = ArtifactStore()
             ref = first_store.put_table("Sample Table", ["date", "value"], [{"date": "2024-01-01", "value": 10}])
             await first_store.claim(ref.id, "user-1", "thread-1")
@@ -110,12 +110,12 @@ class RestartSurvivalTests(unittest.IsolatedAsyncioTestCase):
                 await second_store.get_page(ref.id, "user-2")
 
     async def test_unknown_artifact_raises_key_error(self):
-        from services.artifact_store import ArtifactStore
+        from tta_backend.services.artifact_store import ArtifactStore
 
         fake_repo = FakeArtifactRepository()
         store = ArtifactStore()
 
-        with patch("services.artifact_store.artifact_repository", fake_repo):
+        with patch("tta_backend.services.artifact_store.artifact_repository", fake_repo):
             with self.assertRaises(KeyError):
                 await store.get_page("tbl_missing", "user-1")
 
@@ -123,14 +123,14 @@ class RestartSurvivalTests(unittest.IsolatedAsyncioTestCase):
 class UnclaimedArtifactExpiryTests(unittest.IsolatedAsyncioTestCase):
     async def test_unclaimed_artifact_expires_after_its_ttl(self):
         import time
-        from services.artifact_store import ArtifactStore
+        from tta_backend.services.artifact_store import ArtifactStore
 
         fake_repo = FakeArtifactRepository()
         store = ArtifactStore(ttl_seconds=0)
         ref = store.put_table("Sample Table", ["date", "value"], [{"date": "2024-01-01", "value": 10}])
         time.sleep(0.01)
 
-        with patch("services.artifact_store.artifact_repository", fake_repo):
+        with patch("tta_backend.services.artifact_store.artifact_repository", fake_repo):
             with self.assertRaises(KeyError):
                 await store.get_page(ref.id, "user-1")
 

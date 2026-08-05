@@ -1,13 +1,7 @@
 import asyncio
-import os
-import sys
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
-
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 
 class HeartbeatTests(unittest.IsolatedAsyncioTestCase):
@@ -17,8 +11,8 @@ class HeartbeatTests(unittest.IsolatedAsyncioTestCase):
     presence/absence of the stage="working" status event."""
 
     async def test_heartbeat_fires_during_a_stalled_tool_and_stops_once_real_events_resume(self):
-        import utils.streaming as streaming
-        from utils.streaming import stream_response
+        import tta_backend.utils.streaming as streaming
+        from tta_backend.utils.streaming import stream_response
 
         class FakeAgent:
             async def astream(self, input_, config, stream_mode):
@@ -41,8 +35,8 @@ class HeartbeatTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(working_events[0]["detail"], int)
 
     async def test_heartbeat_does_not_fire_while_real_events_keep_flowing(self):
-        import utils.streaming as streaming
-        from utils.streaming import emit_status, stream_response
+        import tta_backend.utils.streaming as streaming
+        from tta_backend.utils.streaming import emit_status, stream_response
 
         class FakeAgent:
             async def astream(self, input_, config, stream_mode):

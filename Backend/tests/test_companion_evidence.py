@@ -18,13 +18,8 @@ synthetic TEMPO-O3 / TEMPO-NO2 / MODIS-AOD-shaped Datasets:
   ``related_variables`` intact.
 """
 import importlib.util
-import os
-import sys
 import unittest
 
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)
 
 REQUIRED_MODULES = [
     "numpy", "xarray", "shapely", "rasterio", "cartopy", "affine", "matplotlib",
@@ -56,9 +51,9 @@ class EvidenceComputationTests(unittest.TestCase):
                 return f
         return None
 
-    def test_tempo_o3_shaped_file_yields_context_and_qa_facts(self):
+    def test_tempo_o3_shaped_file_yields_context_facts_but_not_a_duplicate_qa_fact(self):
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _evidence
+        from tta_backend.tools.satellite_tools.plot_tools import _evidence
 
         ds = _dataset(xr, {
             "column_amount_o3": (("lat", "lon"), [[300.0, 310.0], [320.0, 330.0]], {"units": "DU"}),
@@ -76,12 +71,18 @@ class EvidenceComputationTests(unittest.TestCase):
         facts = _evidence(ds, da, col_info, _global_region())
         names = {f["name"] for f in facts}
 
-        # Context bands present as mean facts; QA flag present as a pass-rate fact.
+        # Context bands present as mean facts.
         self.assertIn("radiative_cloud_frac", names)
         self.assertIn("uv_aerosol_index", names)
-        self.assertIn("main_data_quality_flag", names)
         # Never the science variable itself.
         self.assertNotIn("column_amount_o3", names)
+        # T55: the QA pass rate is no longer an evidence fact. It is counted
+        # where the mask is applied and reported once, as masking provenance --
+        # a second computation here could legitimately disagree with it (this
+        # path re-crops the flag band spatially, ignorant of any dim_selector
+        # applied to the plotted array), and two disagreeing quality numbers on
+        # one page are worse than one.
+        self.assertNotIn("main_data_quality_flag", names)
 
         cloud = self._fact(facts, "radiative_cloud_frac")
         self.assertEqual(cloud["role"], "context")
@@ -91,13 +92,6 @@ class EvidenceComputationTests(unittest.TestCase):
         self.assertEqual(cloud["units"], "1")
         self.assertAlmostEqual(cloud["coverage"], 1.0)
 
-        qa = self._fact(facts, "main_data_quality_flag")
-        self.assertEqual(qa["role"], "quality")
-        self.assertEqual(qa["stat"], "pass_rate")
-        # good=[0]: 3 of 4 pixels flag==0 -> 0.75 pass rate, full coverage.
-        self.assertAlmostEqual(qa["value"], 0.75)
-        self.assertAlmostEqual(qa["coverage"], 1.0)
-
     def test_context_band_mean_is_cos_latitude_area_weighted(self):
         """Finding #13: the companion band mean must be cos(latitude)
         area-weighted, the SAME regional-mean definition as the headline
@@ -106,7 +100,7 @@ class EvidenceComputationTests(unittest.TestCase):
         unweighted mean is 5.0; the area-weighted mean is ~8.52 (the equatorial
         cells carry ~5.8x the weight of the shrunken 80N cells)."""
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _evidence
+        from tta_backend.tools.satellite_tools.plot_tools import _evidence
 
         ds = _dataset(
             xr,
@@ -127,7 +121,7 @@ class EvidenceComputationTests(unittest.TestCase):
 
     def test_context_band_fill_lowers_coverage_and_is_excluded_from_the_mean(self):
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _evidence
+        from tta_backend.tools.satellite_tools.plot_tools import _evidence
 
         ds = _dataset(xr, {
             "column_amount_o3": (("lat", "lon"), [[300.0, 310.0], [320.0, 330.0]], {"units": "DU"}),
@@ -151,7 +145,7 @@ class EvidenceComputationTests(unittest.TestCase):
 
     def test_modis_aod_shaped_file_yields_no_evidence(self):
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _evidence
+        from tta_backend.tools.satellite_tools.plot_tools import _evidence
 
         ds = _dataset(xr, {
             "AOD": (("lat", "lon"), [[0.1, 0.2], [0.3, 0.4]], {"units": "1"}),
@@ -162,7 +156,7 @@ class EvidenceComputationTests(unittest.TestCase):
 
     def test_unclassified_band_is_not_invented_as_evidence(self):
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _evidence
+        from tta_backend.tools.satellite_tools.plot_tools import _evidence
 
         ds = _dataset(xr, {
             "column_amount_o3": (("lat", "lon"), [[300.0, 310.0], [320.0, 330.0]], {"units": "DU"}),
@@ -174,9 +168,9 @@ class EvidenceComputationTests(unittest.TestCase):
         facts = _evidence(ds, da, col_info, _global_region())
         self.assertEqual([f["name"] for f in facts], [])
 
-    def test_tempo_no2_shaped_file_yields_qa_and_uncertainty_but_no_invented_context(self):
+    def test_tempo_no2_shaped_file_yields_uncertainty_but_no_invented_context(self):
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _evidence
+        from tta_backend.tools.satellite_tools.plot_tools import _evidence
 
         ds = _dataset(xr, {
             "vertical_column_troposphere": (
@@ -197,7 +191,9 @@ class EvidenceComputationTests(unittest.TestCase):
         facts = _evidence(ds, da, col_info, _global_region())
         by_role = {f["name"]: f["role"] for f in facts}
 
-        self.assertEqual(by_role.get("main_data_quality_flag"), "quality")
+        # T55: the flag itself is excluded from the evidence list -- its pass
+        # rate is reported once, as masking provenance.
+        self.assertNotIn("main_data_quality_flag", by_role)
         # Uncertainty band summarized as a quality mean, with pct-of-science.
         unc = self._fact(facts, "vertical_column_troposphere_uncertainty")
         self.assertIsNotNone(unc)
@@ -220,7 +216,7 @@ class EvidenceComputationTests(unittest.TestCase):
         verdict the describe_dataset inventory reaches from its
         slash-qualified name."""
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _evidence
+        from tta_backend.tools.satellite_tools.plot_tools import _evidence
 
         ds = _dataset(xr, {
             "column_amount_o3": (("lat", "lon"), [[300.0, 310.0], [320.0, 330.0]], {"units": "DU"}),
@@ -247,7 +243,7 @@ class EvidenceComputationTests(unittest.TestCase):
         coverage varies across time, which is exactly this fixture."""
         import numpy as np
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _evidence
+        from tta_backend.tools.satellite_tools.plot_tools import _evidence
 
         unc = np.array([
             [[2.0, 2.0], [2.0, 2.0]],             # t0: all four cells valid
@@ -288,7 +284,7 @@ class EvidenceComputationTests(unittest.TestCase):
         itself must survive (a naive presence-only guard would raise inside
         the best-effort except and silently lose the whole fact)."""
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _evidence
+        from tta_backend.tools.satellite_tools.plot_tools import _evidence
 
         ds = _dataset(xr, {
             # Symmetric within each latitude row so the area-weighted mean is
@@ -309,40 +305,9 @@ class EvidenceComputationTests(unittest.TestCase):
         self.assertAlmostEqual(unc["value"], 0.495311, places=6)  # area-weighted
         self.assertNotIn("pct_of_science", unc)
 
-    def test_qa_pass_rate_reuses_the_same_flag_and_good_values_masking_resolves(self):
-        """The pass-rate fact must be computed with the exact flag var and good
-        values ``resolve_and_mask`` masks with -- not a divergent second QA
-        path. Compare directly against the shared resolution."""
-        import xarray as xr
-        from tools.satellite_tools.plot_tools import _evidence, _aggregation_service
-        from datasets.qa_flags import resolve_qa_info
-
-        ds = _dataset(xr, {
-            "column_amount_o3": (("lat", "lon"), [[300.0, 310.0], [320.0, 330.0]], {"units": "DU"}),
-            "main_data_quality_flag": (("lat", "lon"), [[0, 1], [1, 1]]),
-        })
-        da = ds["column_amount_o3"]
-        col_info = {
-            "short_name": "TEMPO_O3TOT_L3",
-            "primary_var": "column_amount_o3",
-            "quality_flag_var": "main_data_quality_flag",
-            "qa_good_values": [0],
-        }
-
-        # The masking pipeline's own resolution, for comparison.
-        qf_var, flag_attrs = _aggregation_service._resolve_qa_flag_var(ds, da, col_info)
-        qa_col_info, _ = resolve_qa_info(yaml_info=col_info, flag_attrs=flag_attrs)
-        self.assertEqual(qf_var, "main_data_quality_flag")
-        self.assertEqual(qa_col_info["qa_good_values"], [0])
-
-        facts = _evidence(ds, da, col_info, _global_region())
-        qa = self._fact(facts, "main_data_quality_flag")
-        # good=[0]: 1 of 4 pixels passes -> 0.25, over the same flag var.
-        self.assertAlmostEqual(qa["value"], 0.25)
-
     def test_provenance_attaches_evidence_additively(self):
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _provenance
+        from tta_backend.tools.satellite_tools.plot_tools import _provenance
 
         ds = _dataset(xr, {
             "column_amount_o3": (("lat", "lon"), [[300.0, 310.0], [320.0, 330.0]], {"units": "DU"}),
@@ -382,7 +347,7 @@ class EvidenceComputationTests(unittest.TestCase):
         — the opened Dataset — so the chart page can never say "no
         companions" while showing companion-derived evidence facts below."""
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _provenance
+        from tta_backend.tools.satellite_tools.plot_tools import _provenance
 
         ds = _dataset(xr, {
             "vertical_column_troposphere": (
@@ -419,7 +384,7 @@ class EvidenceComputationTests(unittest.TestCase):
 
     def test_related_variables_fall_back_to_the_curated_list_without_a_dataset(self):
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _provenance
+        from tta_backend.tools.satellite_tools.plot_tools import _provenance
 
         ds = _dataset(xr, {
             "vertical_column": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]], {"units": "molecules/cm^2"}),
@@ -445,7 +410,7 @@ class EvidenceComputationTests(unittest.TestCase):
         are region-specific: presenting one panel's as the whole comparison's
         is misleading for exactly the trust judgment they exist to support.
         They stay per-panel; the merged view omits them."""
-        from tools.satellite_tools.plot_tools import _merged_multi_provenance
+        from tta_backend.tools.satellite_tools.plot_tools import _merged_multi_provenance
 
         panels = [
             {"provenance": {
@@ -482,7 +447,7 @@ class EvidenceComputationTests(unittest.TestCase):
         single rasterize call instead of rasterizing an all-ones twin."""
         import xarray as xr
         from shapely.geometry import box
-        from utils.plotting import geometry_mask, mask_data_by_geometry
+        from tta_backend.utils.plotting import geometry_mask, mask_data_by_geometry
 
         ds = _dataset(xr, {
             "column_amount_o3": (("lat", "lon"), [[300.0, 310.0], [320.0, 330.0]], {"units": "DU"}),
@@ -503,7 +468,7 @@ class EvidenceComputationTests(unittest.TestCase):
 
     def test_evidence_is_empty_and_safe_without_a_source_dataset(self):
         import xarray as xr
-        from tools.satellite_tools.plot_tools import _evidence
+        from tta_backend.tools.satellite_tools.plot_tools import _evidence
 
         ds = _dataset(xr, {
             "column_amount_o3": (("lat", "lon"), [[300.0, 310.0], [320.0, 330.0]], {"units": "DU"}),

@@ -1,12 +1,6 @@
 import asyncio
-import os
-import sys
 import unittest
 from types import SimpleNamespace
-
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 
 class TextEventContractTests(unittest.IsolatedAsyncioTestCase):
@@ -19,7 +13,7 @@ class TextEventContractTests(unittest.IsolatedAsyncioTestCase):
         breaking that contract and crashing any consumer (e.g.
         subagent_dispatch.run_satellite's ``data.get("response", "")``) that
         trusted it."""
-        from utils.streaming import stream_response
+        from tta_backend.utils.streaming import stream_response
 
         class FakeAgent:
             async def astream(self, input_, config, stream_mode):

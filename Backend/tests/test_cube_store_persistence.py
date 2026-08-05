@@ -15,8 +15,15 @@ into the background writer's catch-all.
 from __future__ import annotations
 
 import os
+import sys
 
 import yaml
+
+TESTS_DIR = os.path.dirname(__file__)
+if TESTS_DIR not in sys.path:
+    sys.path.insert(0, TESTS_DIR)
+
+from cache_isolation import deployment_cube_store_dir  # noqa: E402 -- needs the TESTS_DIR insert above
 
 # Bind-mounted into the backend-test container (see docker-compose.yml),
 # because docker-compose.yml lives at the repo root, outside the ./Backend
@@ -57,10 +64,11 @@ def _covers(mount_target: str, path: str) -> bool:
 
 
 def test_the_cube_store_is_backed_by_a_persisted_named_volume():
-    from config.settings import Settings
-
     compose = _load_compose()
-    cube_dir = os.path.abspath(Settings().cube_store_dir)
+    # The deployment's path, not the ambient one: the suite redirects
+    # CUBE_STORE_DIR to a tempdir so tests stop reading and writing the real
+    # store, and a tempdir is of course on no named volume.
+    cube_dir = os.path.abspath(deployment_cube_store_dir())
     mounts = _named_volume_mounts(compose["services"]["backend"], compose.get("volumes", {}) or {})
 
     covering = [m for m in mounts if _covers(m[1], cube_dir)]
@@ -90,8 +98,6 @@ def test_the_cube_store_mount_point_is_owned_by_the_runtime_user():
     ownership. This test asserts the ordering, since getting it wrong is
     invisible until someone checks a volume that has already been created.
     """
-    from config.settings import Settings
-
     dockerfile = "/app/Dockerfile"
     if not os.path.isfile(dockerfile):
         import pytest
@@ -101,7 +107,7 @@ def test_the_cube_store_mount_point_is_owned_by_the_runtime_user():
     with open(dockerfile, "r", encoding="utf-8") as f:
         lines = [line.strip() for line in f]
 
-    cube_dir = Settings().cube_store_dir.rstrip("/")
+    cube_dir = deployment_cube_store_dir().rstrip("/")
     created_at = next(
         (i for i, line in enumerate(lines) if line.startswith("RUN mkdir") and cube_dir in line),
         None,

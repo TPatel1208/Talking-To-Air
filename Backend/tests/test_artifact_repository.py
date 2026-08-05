@@ -1,13 +1,10 @@
 import os
 import re
-import sys
 import unittest
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 _SCHEMA_SQL = os.path.abspath(
     os.path.join(BACKEND_DIR, "..", "sql", "init_agent_artifacts.sql")
@@ -50,7 +47,7 @@ def _fake_pg_connection(conn):
 
 class SaveAndGetArtifactTests(unittest.IsolatedAsyncioTestCase):
     async def test_save_then_get_round_trips_the_full_payload(self):
-        from repositories import artifact_repository
+        from tta_backend.repositories import artifact_repository
 
         store = {}
 
@@ -84,7 +81,7 @@ class SaveAndGetArtifactTests(unittest.IsolatedAsyncioTestCase):
         conn.execute = AsyncMock(side_effect=fake_execute)
         conn.commit = AsyncMock()
 
-        with patch("repositories.artifact_repository.pg_connection", _fake_pg_connection(conn)):
+        with patch("tta_backend.repositories.artifact_repository.pg_connection", _fake_pg_connection(conn)):
             await artifact_repository.save_artifact(
                 "tbl_abc123", "user-1", "thread-1", "Sample Table",
                 ["date", "value"], [{"date": "2024-01-01", "value": 10}], {"dataset": "EPA AQS"},
@@ -100,14 +97,14 @@ class SaveAndGetArtifactTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fetched["metadata"], {"dataset": "EPA AQS"})
 
     async def test_get_missing_artifact_returns_none(self):
-        from repositories import artifact_repository
+        from tta_backend.repositories import artifact_repository
 
         cursor = MagicMock()
         cursor.fetchone = AsyncMock(return_value=None)
         conn = MagicMock()
         conn.execute = AsyncMock(return_value=cursor)
 
-        with patch("repositories.artifact_repository.pg_connection", _fake_pg_connection(conn)):
+        with patch("tta_backend.repositories.artifact_repository.pg_connection", _fake_pg_connection(conn)):
             fetched = await artifact_repository.get_artifact("tbl_missing")
 
         self.assertIsNone(fetched)
@@ -124,7 +121,7 @@ class SaveArtifactNonFiniteSanitisationTests(unittest.IsolatedAsyncioTestCase):
     """
 
     async def test_row_and_metadata_non_finite_floats_persist_as_null(self):
-        from repositories import artifact_repository
+        from tta_backend.repositories import artifact_repository
 
         conn = MagicMock()
         conn.execute = AsyncMock()
@@ -133,7 +130,7 @@ class SaveArtifactNonFiniteSanitisationTests(unittest.IsolatedAsyncioTestCase):
         rows = [{"date": "2024-01-01", "value": float("inf")}, {"date": "2024-01-02", "value": float("nan")}]
         metadata = {"dataset": "EPA AQS", "coverage_fraction": float("-inf")}
 
-        with patch("repositories.artifact_repository.pg_connection", _fake_pg_connection(conn)):
+        with patch("tta_backend.repositories.artifact_repository.pg_connection", _fake_pg_connection(conn)):
             await artifact_repository.save_artifact(
                 "tbl_abc123", "user-1", "thread-1", "Sample Table", ["date", "value"], rows, metadata,
             )
@@ -151,13 +148,13 @@ class SaveArtifactNonFiniteSanitisationTests(unittest.IsolatedAsyncioTestCase):
 
 class DeleteArtifactsForSessionTests(unittest.IsolatedAsyncioTestCase):
     async def test_deletes_scoped_to_thread_and_user(self):
-        from repositories import artifact_repository
+        from tta_backend.repositories import artifact_repository
 
         conn = MagicMock()
         conn.execute = AsyncMock()
         conn.commit = AsyncMock()
 
-        with patch("repositories.artifact_repository.pg_connection", _fake_pg_connection(conn)):
+        with patch("tta_backend.repositories.artifact_repository.pg_connection", _fake_pg_connection(conn)):
             await artifact_repository.delete_artifacts_for_session("thread-1", "user-1")
 
         conn.execute.assert_awaited_once()
@@ -168,13 +165,13 @@ class DeleteArtifactsForSessionTests(unittest.IsolatedAsyncioTestCase):
 
 class DeleteExpiredUnclaimedTests(unittest.IsolatedAsyncioTestCase):
     async def test_deletes_rows_unclaimed_past_the_ttl(self):
-        from repositories import artifact_repository
+        from tta_backend.repositories import artifact_repository
 
         conn = MagicMock()
         conn.execute = AsyncMock()
         conn.commit = AsyncMock()
 
-        with patch("repositories.artifact_repository.pg_connection", _fake_pg_connection(conn)):
+        with patch("tta_backend.repositories.artifact_repository.pg_connection", _fake_pg_connection(conn)):
             await artifact_repository.delete_expired_unclaimed(1800)
 
         conn.execute.assert_awaited_once()

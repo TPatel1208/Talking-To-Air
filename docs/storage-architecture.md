@@ -134,16 +134,40 @@ exact columns are the library's to change):
 Backend writes to `/app/outputs`; the same volume is mounted into the
 frontend nginx container at `/usr/share/nginx/html/outputs` and served
 **unauthenticated** at `/outputs` (`StaticFiles` mount,
-[Backend/api.py:162](../Backend/api.py:162)). Holds matplotlib chart PNGs.
+[Backend/tta_backend/api.py:210](../Backend/tta_backend/api.py:210), path from
+`OUTPUT_DIR`). Holds matplotlib chart PNGs.
+
+The `StaticFiles` mount resolves its directory at import, so unlike the overlay
+store this one legitimately has to exist before any request arrives — the
+`os.makedirs` in `api.py` stays, and `OUTPUT_DIR` is what keeps it from landing
+in the checkout during a test run
+([Backend/tests/cache_isolation.py](../Backend/tests/cache_isolation.py)).
+`plot_tools` and `stat_tools` each used to carry their own `APP_ROOT`-relative
+`OUTPUT_DIR` with an import-time `os.makedirs`, neither of which was ever read;
+both were deleted rather than redirected, so `api.py` is now the only
+definition.
 
 ### `overlay_store` — private, backend-only
 Backend writes to `/app/overlay_store/overlays`
-([Backend/tools/satellite_tools/plot_tools.py:114](../Backend/tools/satellite_tools/plot_tools.py:114)).
+([Backend/tta_backend/tools/satellite_tools/plot_tools.py:100](../Backend/tta_backend/tools/satellite_tools/plot_tools.py:100),
+path from `OVERLAY_STORE_DIR`).
 **Not** mounted into the frontend; only reachable through the authenticated
 `GET /chart/{chart_id}/overlay.png` route, which checks chart ownership
 against the requesting user before streaming bytes. Holds server-rendered
 MapLibre heatmap overlay PNGs (T23). Kept out of `plot_outputs` on purpose —
 see the difference table below.
+
+`OVERLAY_STORE_DIR` exists for the same reason as `CUBE_STORE_DIR`: so the test
+suite can redirect the store at a per-process tempdir. Until it did, the path
+was `APP_ROOT`-relative and created at import, so the suite created and wrote
+`Backend/overlay_store/` inside the checkout — gitignored, so the pollution
+survived branch switches and never showed up in `git status`.
+[test_store_isolation.py](../Backend/tests/test_store_isolation.py) guards both
+stores; the deployment mounts are guarded by
+[test_overlay_store_persistence.py](../Backend/tests/test_overlay_store_persistence.py),
+which reads the container paths through `deployment_overlay_store_dir()` /
+`deployment_output_dir()` precisely because the isolation has taken the live
+settings away from it.
 
 ### `cube_store` — private, backend-only
 Backend writes to `/app/cube_store`

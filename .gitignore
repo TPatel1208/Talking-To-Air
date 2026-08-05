@@ -4,14 +4,14 @@
 *.hdf5
 *.h5
 
-# Zarr cache
+# Caches and generated stores (all mounted as docker volumes in deployment).
+# `*.zarr/` covers Backend/cache.zarr and cache_test.zarr; `outputs/` matches at
+# any depth, so Backend/outputs needs no separate line.
 *.zarr/
-Backend/cache.zarr/
-Backend/cache_test.zarr/
-Backend/data/
 outputs/
-Backend/outputs/
+Backend/data/
 Backend/overlay_store/
+Backend/cube_store/
 
 # Python
 __pycache__/
@@ -35,10 +35,13 @@ sentence-transformers/
 .env
 
 # Logs
+logs
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
 
 # Node
 node_modules/
@@ -50,49 +53,26 @@ dist-ssr/
 .ipynb_checkpoints/
 *.ipynb
 
-# IDE
+# Editor / IDE
 .vscode/*
 !.vscode/extensions.json
 .idea/
-
-# OS
-.DS_Store
-Thumbs.db
-*.swp
-*.swo
-
-# Test cache
-.pytest_cache/
-
-# Claude Code local config
-.claude/
-
-# Logs
-logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
-
-node_modules
-dist
-dist-ssr
-*.local
-
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea
-.DS_Store
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
-AGENTS.md
-/prds/
-CLAUDE.md
-docs/prds/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test cache
+.pytest_cache/
+
+# Agent local config and design docs
 .claude/
+AGENTS.md
+CLAUDE.md
+/prds/
+docs/prds/

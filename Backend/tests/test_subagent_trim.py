@@ -1,11 +1,6 @@
 import importlib.util
-import os
-import sys
 import unittest
 
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 REQUIRED_MODULES = ["langchain", "langchain_core"]
 
@@ -29,7 +24,7 @@ class SubagentTrimMiddlewareTests(unittest.IsolatedAsyncioTestCase):
     async def _invoke(self, *, max_tokens: int, messages: list):
         from langchain.agents.middleware import ModelRequest
 
-        from agents.subagent_trim import build_subagent_trim_middleware
+        from tta_backend.agents.subagent_trim import build_subagent_trim_middleware
 
         middleware = build_subagent_trim_middleware("earthdata", max_tokens=max_tokens)
         request = ModelRequest(model=object(), messages=messages, state={"messages": messages})
@@ -47,7 +42,7 @@ class SubagentTrimMiddlewareTests(unittest.IsolatedAsyncioTestCase):
 
         messages = [HumanMessage(content=f"message {i}") for i in range(200)]
 
-        with self.assertLogs("agents.subagent_trim", level="WARNING") as captured:
+        with self.assertLogs("tta_backend.agents.subagent_trim", level="WARNING") as captured:
             result, passed_messages = await self._invoke(max_tokens=50, messages=messages)
 
         # The turn completes — degraded, not dropped/errored.
@@ -60,7 +55,7 @@ class SubagentTrimMiddlewareTests(unittest.IsolatedAsyncioTestCase):
 
         messages = [HumanMessage(content=f"message {i}") for i in range(3)]
 
-        with self.assertNoLogs("agents.subagent_trim", level="WARNING"):
+        with self.assertNoLogs("tta_backend.agents.subagent_trim", level="WARNING"):
             result, passed_messages = await self._invoke(max_tokens=20000, messages=messages)
 
         self.assertEqual(result, "handled")

@@ -85,7 +85,9 @@ services:
     build:
       context: ./Backend
       dockerfile: Dockerfile
-      target: builder
+      # `devtools`, not `builder`: pytest/coverage live only in that stage so
+      # they stay out of the runtime image's venv.
+      target: devtools
     profiles: ["test"]
     working_dir: /app
     environment:
@@ -107,6 +109,12 @@ services:
       # test_overlay_store_persistence.py asserts the deployment persists the
       # overlay store; the compose file is likewise outside the build context.
       - ./docker-compose.yml:/compose/docker-compose.yml:ro
+      # Same reason: .coveragerc is a repo-root file, so the image has never
+      # contained it. Without it `coverage report` below ran unconfigured,
+      # measured all of site-packages, and died on netCDF4's compiled extension
+      # ("No source for code: /app/src/netCDF4/_netCDF4.pyx") -- so this service
+      # exited 1 even when every test passed.
+      - ./.coveragerc:/app/.coveragerc:ro
     command: >
       sh -c "coverage run -m pytest tests/ -v --tb=short && coverage report"
 

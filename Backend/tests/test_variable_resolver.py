@@ -1,11 +1,5 @@
 import importlib.util
-import os
-import sys
 import unittest
-
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 
 @unittest.skipIf(importlib.util.find_spec("xarray") is None, "xarray is not installed")
@@ -25,7 +19,7 @@ class VariableResolverTests(unittest.TestCase):
         science field; its Standard_Deviation sibling is plumbing (category 1)
         and is never the pick. discover -> classify -> score -> rank -> decide,
         end to end."""
-        from preprocessing.variable_resolver import resolve
+        from tta_backend.preprocessing.variable_resolver import resolve
 
         ds = self.xr.Dataset({
             "Terra_MODIS_NASADarkTarget_AOD_550/Mean": self._var([[0.1, 0.2]], {"units": "1"}),
@@ -40,7 +34,7 @@ class VariableResolverTests(unittest.TestCase):
         """A QA flag carries CF flag_values + flag_meanings -- the metadata
         signal (before any name heuristic) marks it category 1, so it is never
         offered as a science variable even when its name looks innocuous."""
-        from preprocessing.variable_resolver import resolve
+        from tta_backend.preprocessing.variable_resolver import resolve
 
         ds = self.xr.Dataset({
             "aod_550/Mean": self._var([[0.1, 0.2]], {"units": "1"}),
@@ -58,7 +52,7 @@ class VariableResolverTests(unittest.TestCase):
         """When metadata is absent, name heuristics catch the plumbing the PRD
         taxonomy enumerates -- geometry angles, reflectances, land/ocean masks,
         NDVI, cloud fraction -- so none is ever the science pick."""
-        from preprocessing.variable_resolver import resolve
+        from tta_backend.preprocessing.variable_resolver import resolve
 
         ds = self.xr.Dataset({
             "aod_550/Mean": self._var([[0.1, 0.2]], {"units": "1"}),
@@ -81,7 +75,7 @@ class VariableResolverTests(unittest.TestCase):
         (which the earlier exact-match tier can't resolve because collision-
         renaming qualified it away from a bare leaf), the resolver surfaces the
         matching implementation var instead of excluding it."""
-        from preprocessing.variable_resolver import resolve
+        from tta_backend.preprocessing.variable_resolver import resolve
 
         ds = self.xr.Dataset({
             "aod_550/Mean": self._var([[0.1, 0.2]], {"units": "1"}),
@@ -97,7 +91,7 @@ class VariableResolverTests(unittest.TestCase):
         standard_name, long_name). A metadata-rich AOD Mean outscores a bare
         field with no units or CF metadata, and candidates come back sorted
         best-first."""
-        from preprocessing.variable_resolver import resolve
+        from tta_backend.preprocessing.variable_resolver import resolve
 
         ds = self.xr.Dataset({
             "bare/Value": self._var([[1.0, 2.0]]),
@@ -119,7 +113,7 @@ class VariableResolverTests(unittest.TestCase):
         Mean groups) is dropped outright, so 'success' always means data on the
         map. Two otherwise-identical Mean fields: the empty one must never be
         the pick nor even a surfaced candidate."""
-        from preprocessing.variable_resolver import resolve
+        from tta_backend.preprocessing.variable_resolver import resolve
 
         ds = self.xr.Dataset({
             "empty_group/Mean": self._var([[self.np.nan, self.np.nan]], {"units": "1"}),
@@ -136,7 +130,7 @@ class VariableResolverTests(unittest.TestCase):
         score: an 87%-valid field is chosen over a 0.2%-valid one even when
         both are geophysical Means. (The pipeline is healthy on the populated
         field -- the whole failure was picking an empty/near-empty one.)"""
-        from preprocessing.variable_resolver import resolve
+        from tta_backend.preprocessing.variable_resolver import resolve
 
         high = self.np.full(100, 0.2)
         high[:13] = self.np.nan  # 87% valid
@@ -171,7 +165,7 @@ class VariableResolverTests(unittest.TestCase):
         swapped-within-band coverage resolve to the SAME name. A materially
         larger (cross-band) gap still reorders, so coverage genuinely wins when
         it matters."""
-        from preprocessing.variable_resolver import resolve
+        from tta_backend.preprocessing.variable_resolver import resolve
 
         a = resolve(self._sensor_ds(0.85, 0.80))  # both band 8
         b = resolve(self._sensor_ds(0.80, 0.85))  # swapped, both still band 8
@@ -188,7 +182,7 @@ class VariableResolverTests(unittest.TestCase):
         AOD with identical coverage: 'Aqua' sorts first alphabetically, but the
         sensor table prefers Terra as the deterministic default, so Terra is
         chosen. (The table is a stable tiebreak, not a quality claim.)"""
-        from preprocessing.variable_resolver import resolve
+        from tta_backend.preprocessing.variable_resolver import resolve
 
         res = resolve(self._sensor_ds(0.85, 0.85))  # both band 8, identical score
 
@@ -201,7 +195,7 @@ class VariableResolverTests(unittest.TestCase):
         high (the sensor choice is a genuine fork) -- so the resolver auto-picks
         the top populated field AND emits a disclosure that names the chosen
         product and its alternatives, rather than refusing or silently guessing."""
-        from preprocessing.variable_resolver import resolve
+        from tta_backend.preprocessing.variable_resolver import resolve
 
         ds = self.xr.Dataset({
             "Terra_MODIS_DarkTarget_AOD_550/Mean": (
@@ -234,7 +228,7 @@ class VariableResolverTests(unittest.TestCase):
         resolver has nothing to resolve on, so it returns name=None rather than
         guessing. (The to_dataarray tail turns that into the P1-bounded refusal
         that asks the researcher to choose.)"""
-        from preprocessing.variable_resolver import resolve
+        from tta_backend.preprocessing.variable_resolver import resolve
 
         ds = self.xr.Dataset({
             "field_alpha": self._var([[1.0, 2.0]]),
@@ -252,7 +246,7 @@ class VariableResolverTests(unittest.TestCase):
         """High confidence, low ambiguity: one populated geophysical Mean (its
         Standard_Deviation sibling excluded as plumbing) is auto-picked with NO
         disclosure -- no fork to surface, so no note to nag with."""
-        from preprocessing.variable_resolver import resolve
+        from tta_backend.preprocessing.variable_resolver import resolve
 
         ds = self.xr.Dataset({
             "aod_550/Mean": self._var([[0.1, 0.2]], {"units": "1", "standard_name": "aerosol_optical_depth"}),
@@ -274,7 +268,7 @@ class VariableResolverTests(unittest.TestCase):
         and lets the researcher pick, rather than inventing a scientific choice.
         (A single such candidate is still pickable; contention is what forces
         the refusal.)"""
-        from preprocessing.variable_resolver import resolve
+        from tta_backend.preprocessing.variable_resolver import resolve
 
         ds = self.xr.Dataset({
             "DT_AOD_550_AVG": self._var([[0.1, 0.2]]),
@@ -292,7 +286,7 @@ class VariableResolverTests(unittest.TestCase):
         geophysical field is still auto-picked -- at medium confidence, with a
         brief note -- rather than refused. (MOD08-style Cloud_Fraction excluded,
         Aerosol_Optical_Depth chosen.)"""
-        from preprocessing.variable_resolver import resolve
+        from tta_backend.preprocessing.variable_resolver import resolve
 
         ds = self.xr.Dataset({
             "Cloud_Fraction": self._var([[0.5, 0.6]]),

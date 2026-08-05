@@ -5,15 +5,12 @@ import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 TESTS_DIR = os.path.dirname(__file__)
 if TESTS_DIR not in sys.path:
     sys.path.insert(0, TESTS_DIR)
 
-from cache_isolation import ProcessCacheIsolation  # noqa: E402
+from cache_isolation import ProcessCacheIsolation  # noqa: E402 -- needs the TESTS_DIR insert above
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
 
@@ -27,12 +24,12 @@ REQUIRED_MODULES = ["fastapi", "httpx", "jwt", "bcrypt", "langchain_mcp_adapters
 class DiscoveryEndpointTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         import httpx
-        import api
+        import tta_backend.api as api
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.toolset import load_earthdata_tools
-        from config.settings import Settings
-        from models.user import User
-        from utils.streaming import current_user_id
+        from tta_backend.earthdata_mcp.toolset import load_earthdata_tools
+        from tta_backend.config.settings import Settings
+        from tta_backend.models.user import User
+        from tta_backend.utils.streaming import current_user_id
 
         self.httpx = httpx
         self.api = api
@@ -151,8 +148,8 @@ class DiscoveryEndpointTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTest
         async def fake_is_token_revoked(jti):
             return False
 
-        return patch("services.auth_service.get_user_by_id", fake_get_user_by_id), \
-            patch("services.auth_service.is_token_revoked", fake_is_token_revoked)
+        return patch("tta_backend.services.auth_service.get_user_by_id", fake_get_user_by_id), \
+            patch("tta_backend.services.auth_service.is_token_revoked", fake_is_token_revoked)
 
     async def test_search_proxies_the_mcp_scoped_to_the_caller(self):
         transport = self.httpx.ASGITransport(app=self.api.app)

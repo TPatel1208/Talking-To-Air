@@ -30,9 +30,6 @@ import sys
 import tempfile
 import unittest
 
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 TESTS_DIR = os.path.dirname(__file__)
 if TESTS_DIR not in sys.path:
@@ -51,8 +48,8 @@ REQUIRED_MODULES = [
 class StatToolsLongitudeNormalizationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from fake_earthdata_mcp import HandleVolume, build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
 
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
@@ -86,7 +83,7 @@ class StatToolsLongitudeNormalizationTests(unittest.IsolatedAsyncioTestCase):
         self.volume.add_zarr("obs_1", make_ds)
 
     async def test_compute_statistic_tool_normalizes_0_360_longitudes_before_masking(self):
-        from tools.satellite_tools.stat_tools import make_compute_statistic_tool
+        from tta_backend.tools.satellite_tools.stat_tools import make_compute_statistic_tool
 
         self._add_us_dataset_on_0_360_longitudes(
             values=[[1.0, 2.0], [3.0, 4.0]], flags=[[0, 1], [0, 1]],
@@ -119,7 +116,7 @@ class StatToolsLongitudeNormalizationTests(unittest.IsolatedAsyncioTestCase):
         plots fine — a user concludes the data doesn't exist."""
         from unittest.mock import patch
         from test_satellite_tools_masking_execution import _tempo_no2_dataset
-        from tools.satellite_tools.plot_tools import make_conduct_temporal_statistic
+        from tta_backend.tools.satellite_tools.plot_tools import make_conduct_temporal_statistic
         import xarray as xr
 
         def make_ds():
@@ -140,7 +137,7 @@ class StatToolsLongitudeNormalizationTests(unittest.IsolatedAsyncioTestCase):
             emitted["payload"] = full_payload
 
         conduct_temporal_statistic = make_conduct_temporal_statistic(self.mcp_tools)
-        with patch("tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
             raw = await conduct_temporal_statistic.ainvoke({
                 "handle": "obs_1", "location": "usa", "stat": "mean",
             })
@@ -152,7 +149,7 @@ class StatToolsLongitudeNormalizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(emitted["payload"]["values"]), 2)
 
     async def test_find_daily_peak_normalizes_0_360_longitudes_before_masking(self):
-        from tools.satellite_tools.stat_tools import make_find_daily_peak
+        from tta_backend.tools.satellite_tools.stat_tools import make_find_daily_peak
 
         # The numerically highest raw value (99.0) carries a bad flag; the
         # true peak once masked is the good-flag 3.0 cell at lat=42, lon=258

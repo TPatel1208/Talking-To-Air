@@ -1,17 +1,11 @@
 import asyncio
-import os
-import sys
 import unittest
 from types import SimpleNamespace
-
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 
 class StageStatusEventTests(unittest.IsolatedAsyncioTestCase):
     async def test_emit_status_carries_stage_and_detail_through_the_status_event(self):
-        from utils.streaming import emit_status, stream_response
+        from tta_backend.utils.streaming import emit_status, stream_response
 
         class FakeAgent:
             async def astream(self, input_, config, stream_mode):
@@ -32,7 +26,7 @@ class StageStatusEventTests(unittest.IsolatedAsyncioTestCase):
         producing a status event with no stage/detail keys at all, so
         frontend handling that only ever read `.message` degrades
         gracefully (Implementation Decisions: additive fields)."""
-        from utils.streaming import emit_status, stream_response
+        from tta_backend.utils.streaming import emit_status, stream_response
 
         class FakeAgent:
             async def astream(self, input_, config, stream_mode):
@@ -48,7 +42,7 @@ class StageStatusEventTests(unittest.IsolatedAsyncioTestCase):
     async def test_nested_stream_response_bubbles_stage_status_to_the_outer_context(self):
         """Mirrors emit_chart/emit_job_progress's bubbling pattern for stage
         status events emitted deep inside a nested stream_response call."""
-        from utils.streaming import emit_status, stream_response
+        from tta_backend.utils.streaming import emit_status, stream_response
 
         class InnerAgent:
             async def astream(self, input_, config, stream_mode):

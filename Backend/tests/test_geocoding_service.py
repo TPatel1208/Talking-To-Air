@@ -6,14 +6,9 @@ and the ground sensor tools' EPA AQS module — instead of each constructing
 its own.
 """
 import importlib.util
-import os
-import sys
 import unittest
 from unittest.mock import patch
 
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 REQUIRED_MODULES = ["httpx", "cartopy", "shapely", "rasterio"]
 
@@ -70,29 +65,29 @@ class GeocodingServiceUnificationTests(unittest.IsolatedAsyncioTestCase):
         _FakeAsyncClient.calls = 0
 
     async def test_get_geocoding_service_returns_one_shared_singleton(self):
-        from utils.plotting import get_geocoding_service
+        from tta_backend.utils.plotting import get_geocoding_service
 
         self.assertIs(get_geocoding_service(), get_geocoding_service())
 
     async def test_region_resolver_defaults_to_the_shared_singleton(self):
-        from utils.plotting import RegionResolver, get_geocoding_service
+        from tta_backend.utils.plotting import RegionResolver, get_geocoding_service
 
         resolver = RegionResolver()
 
         self.assertIs(resolver.geocoding_service, get_geocoding_service())
 
     async def test_epa_aqs_tools_geocoding_service_is_the_shared_singleton(self):
-        from tools.ground_sensor_tools import epa_aqs_tools
-        from utils.plotting import get_geocoding_service
+        from tta_backend.tools.ground_sensor_tools import epa_aqs_tools
+        from tta_backend.utils.plotting import get_geocoding_service
 
         self.assertIs(epa_aqs_tools.geocoding_service, get_geocoding_service())
 
     async def test_two_resolutions_of_the_same_place_share_one_network_call(self):
-        from tools.ground_sensor_tools import epa_aqs_tools
-        from utils.plotting import RegionResolver
+        from tta_backend.tools.ground_sensor_tools import epa_aqs_tools
+        from tta_backend.utils.plotting import RegionResolver
 
         location = "T11 Unification Test Locale"
-        with patch("utils.plotting.httpx.AsyncClient", _FakeAsyncClient):
+        with patch("tta_backend.utils.plotting.httpx.AsyncClient", _FakeAsyncClient):
             resolver = RegionResolver()
             await resolver.aresolve_location(location)
 
@@ -104,9 +99,9 @@ class GeocodingServiceUnificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(_FakeAsyncClient.calls, 1)
 
     async def test_ageocode_sends_a_policy_compliant_user_agent(self):
-        from utils.plotting import NOMINATIM_USER_AGENT, get_geocoding_service
+        from tta_backend.utils.plotting import NOMINATIM_USER_AGENT, get_geocoding_service
 
-        with patch("utils.plotting.httpx.AsyncClient", _FakeAsyncClient):
+        with patch("tta_backend.utils.plotting.httpx.AsyncClient", _FakeAsyncClient):
             await get_geocoding_service().ageocode("T11 User-Agent Test Locale")
 
         self.assertEqual(_FakeAsyncClient.last_headers["User-Agent"], NOMINATIM_USER_AGENT)

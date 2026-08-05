@@ -1,13 +1,7 @@
-import os
-import sys
 import importlib.util
 import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
-
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 
 @unittest.skipIf(importlib.util.find_spec("psycopg") is None, "psycopg is not installed")
@@ -17,7 +11,7 @@ class DbPoolTests(unittest.TestCase):
         self.psycopg = psycopg
 
     def tearDown(self):
-        from utils import db
+        from tta_backend.utils import db
         import asyncio
         asyncio.run(db.close_db_pool())
 
@@ -42,7 +36,7 @@ class DbPoolTests(unittest.TestCase):
         return FakeConnection()
 
     def test_pg_connection_acquires_from_pool_and_restores_autocommit(self):
-        from utils import db
+        from tta_backend.utils import db
         import asyncio
 
         conn = self._make_fake_connection()
@@ -70,7 +64,7 @@ class DbPoolTests(unittest.TestCase):
 
         async def run_test():
             await db.close_db_pool()
-            with patch("utils.db.AsyncConnectionPool", FakePool):
+            with patch("tta_backend.utils.db.AsyncConnectionPool", FakePool):
                 pool = await db.init_db_pool()
                 async with db.pg_connection(autocommit=True) as c:
                     self.assertTrue(c.autocommit)

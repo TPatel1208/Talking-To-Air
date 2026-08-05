@@ -1,17 +1,11 @@
 import asyncio
-import os
-import sys
 import unittest
 from types import SimpleNamespace
-
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 
 class JobProgressStreamingTests(unittest.IsolatedAsyncioTestCase):
     async def test_stream_response_forwards_job_progress_events_in_order(self):
-        from utils.streaming import emit_job_progress, stream_response
+        from tta_backend.utils.streaming import emit_job_progress, stream_response
 
         class FakeAgent:
             # Real polling/model calls always await genuine I/O between emits;
@@ -44,7 +38,7 @@ class JobProgressStreamingTests(unittest.IsolatedAsyncioTestCase):
 
 class UserIdContextTests(unittest.IsolatedAsyncioTestCase):
     async def test_user_id_context_sets_and_resets_current_user_id(self):
-        from utils.streaming import current_user_id, user_id_context
+        from tta_backend.utils.streaming import current_user_id, user_id_context
 
         self.assertIsNone(current_user_id())
         with user_id_context("user-1"):

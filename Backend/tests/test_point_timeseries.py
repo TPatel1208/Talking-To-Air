@@ -21,9 +21,6 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 TESTS_DIR = os.path.dirname(__file__)
 if TESTS_DIR not in sys.path:
@@ -49,8 +46,8 @@ def _make_series_table():
 class PointTimeseriesToolTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from fake_earthdata_mcp import HandleVolume, build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
 
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
@@ -84,7 +81,7 @@ class PointTimeseriesToolTests(unittest.IsolatedAsyncioTestCase):
         self.mcp_tools = await load_raw_mcp_tools(settings)
 
     def _tool(self):
-        from tools.satellite_tools.factory import build_satellite_tools
+        from tta_backend.tools.satellite_tools.factory import build_satellite_tools
 
         tools = {t.name: t for t in build_satellite_tools(self.mcp_tools)}
         return tools["point_timeseries"]
@@ -96,7 +93,7 @@ class PointTimeseriesToolTests(unittest.IsolatedAsyncioTestCase):
             emitted["payload"] = full_payload
 
         tool = self._tool()
-        with patch("tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
             result = await tool.ainvoke({
                 "dataset_handle": "dataset_1",
                 "location": "Newark, NJ",
@@ -125,7 +122,7 @@ class PointTimeseriesToolTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_reuses_the_same_aoi_tool_the_agent_path_uses(self):
         tool = self._tool()
-        with patch("tools.satellite_tools.plot_tools.emit_chart", lambda payload: None):
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", lambda payload: None):
             await tool.ainvoke({
                 "dataset_handle": "dataset_1",
                 "location": "Newark, NJ",
@@ -139,13 +136,13 @@ class PointTimeseriesToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.submit_calls[0]["point_sample"])
 
     async def test_emits_a_jobs_panel_visible_progress_event(self):
-        import utils.streaming as streaming
+        import tta_backend.utils.streaming as streaming
 
         seen = []
         token = streaming._job_progress_emitter.set(lambda data: seen.append(data))
         tool = self._tool()
         try:
-            with patch("tools.satellite_tools.plot_tools.emit_chart", lambda payload: None):
+            with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", lambda payload: None):
                 await tool.ainvoke({
                     "dataset_handle": "dataset_1",
                     "location": "Newark, NJ",
@@ -175,9 +172,9 @@ class PointTimeseriesToolTests(unittest.IsolatedAsyncioTestCase):
 
     async def _build_tool_with(self, *, define_area_of_interest, retrieve_timeseries):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from config.settings import Settings
-        from tools.satellite_tools.factory import build_satellite_tools
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
+        from tta_backend.tools.satellite_tools.factory import build_satellite_tools
 
         server = FakeEarthdataMCPServer(build_fake_mcp({
             "define_area_of_interest": define_area_of_interest,
@@ -255,8 +252,8 @@ class PointTimeseriesToolTests(unittest.IsolatedAsyncioTestCase):
             return {"job_handle": job_handle, "status": "failed", "message": "appeears: provider rejected request"}
 
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
 
         async def define_area_of_interest(location, workspace_id):
             return {"handle": "aoi_1", "location": location}
@@ -274,7 +271,7 @@ class PointTimeseriesToolTests(unittest.IsolatedAsyncioTestCase):
         settings = Settings(earthdata_mcp_url=server.url, earthdata_mcp_token=None)
         mcp_tools = await load_raw_mcp_tools(settings)
 
-        from tools.satellite_tools.factory import build_satellite_tools
+        from tta_backend.tools.satellite_tools.factory import build_satellite_tools
 
         tool = {t.name: t for t in build_satellite_tools(mcp_tools)}["point_timeseries"]
         result = await tool.ainvoke({

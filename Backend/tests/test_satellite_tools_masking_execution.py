@@ -31,9 +31,6 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BACKEND_DIR not in sys.path:
-    sys.path.insert(0, BACKEND_DIR)  # TODO: remove after pyproject.toml install
 
 TESTS_DIR = os.path.dirname(__file__)
 if TESTS_DIR not in sys.path:
@@ -73,8 +70,8 @@ def _tempo_no2_dataset(xr, values, flags, lat=(10.0, 20.0), lon=(30.0, 40.0), ti
 class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from fake_earthdata_mcp import HandleVolume, build_fake_mcp, FakeEarthdataMCPServer
-        from earthdata_mcp.client import load_raw_mcp_tools
-        from config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.config.settings import Settings
 
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
@@ -97,7 +94,7 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_plot_singular_drops_bad_flag_pixels_and_reports_verified_qa(self):
         import xarray as xr
-        from tools.satellite_tools.plot_tools import make_plot_singular
+        from tta_backend.tools.satellite_tools.plot_tools import make_plot_singular
 
         def make_ds():
             return _tempo_no2_dataset(
@@ -112,7 +109,7 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
             emitted["payload"] = full_payload
 
         plot_singular = make_plot_singular(self.mcp_tools)
-        with patch("tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
             raw = await plot_singular.ainvoke({"handle": "obs_1", "location": "global"})
 
         result = json.loads(raw)
@@ -130,7 +127,7 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_compute_statistic_tool_excludes_bad_flag_pixels_from_the_mean(self):
         import xarray as xr
-        from tools.satellite_tools.stat_tools import make_compute_statistic_tool
+        from tta_backend.tools.satellite_tools.stat_tools import make_compute_statistic_tool
 
         def make_ds():
             return _tempo_no2_dataset(
@@ -162,7 +159,7 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
         display_name it resolved, so "mean over the US" is checkable against
         what was actually computed. 'global' is a preset bounding box."""
         import xarray as xr
-        from tools.satellite_tools.stat_tools import make_compute_statistic_tool
+        from tta_backend.tools.satellite_tools.stat_tools import make_compute_statistic_tool
 
         def make_ds():
             return _tempo_no2_dataset(
@@ -186,7 +183,7 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
         display_name it resolved (rides alongside region_name via
         _attach_reproducibility)."""
         import xarray as xr
-        from tools.satellite_tools.plot_tools import make_plot_singular
+        from tta_backend.tools.satellite_tools.plot_tools import make_plot_singular
 
         def make_ds():
             return _tempo_no2_dataset(
@@ -201,7 +198,7 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
             emitted["payload"] = full_payload
 
         plot_singular = make_plot_singular(self.mcp_tools)
-        with patch("tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
             raw = await plot_singular.ainvoke({"handle": "obs_1", "location": "global"})
 
         result = json.loads(raw)
@@ -220,7 +217,7 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
         import xarray as xr
         from shapely.geometry import box
         from unittest.mock import AsyncMock
-        from tools.satellite_tools import stat_tools
+        from tta_backend.tools.satellite_tools import stat_tools
 
         def make_ds():
             return _tempo_no2_dataset(
@@ -250,7 +247,7 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_find_daily_peak_excludes_a_bad_flag_pixel_even_though_it_is_numerically_highest(self):
         import xarray as xr
-        from tools.satellite_tools.stat_tools import make_find_daily_peak
+        from tta_backend.tools.satellite_tools.stat_tools import make_find_daily_peak
 
         def make_ds():
             # The numerically highest raw value (99.0) carries a bad flag;
@@ -271,7 +268,7 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_conduct_temporal_statistic_masks_every_time_step_and_reports_verified_qa(self):
         import xarray as xr
-        from tools.satellite_tools.plot_tools import make_conduct_temporal_statistic
+        from tta_backend.tools.satellite_tools.plot_tools import make_conduct_temporal_statistic
 
         def make_ds():
             return _tempo_no2_dataset(
@@ -289,7 +286,7 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
             emitted["payload"] = full_payload
 
         conduct_temporal_statistic = make_conduct_temporal_statistic(self.mcp_tools)
-        with patch("tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
             raw = await conduct_temporal_statistic.ainvoke({
                 "handle": "obs_1", "location": "global", "stat": "mean",
             })
@@ -311,6 +308,85 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(full["masking"]["qa_status"], "verified")
         self.assertEqual(full["masking"]["qa_source"], "collections_yaml")
 
+    async def test_conduct_temporal_statistic_reports_the_qa_loss_the_plotted_line_cannot_show(self):
+        """T55: masking runs before each timestep collapses to one scalar, so a
+        timestep the mask gutted still contributes a clean finite value. Here
+        every timestep returns -- a naive "timesteps returned" completeness
+        signal reads 100% -- while a quarter of the observations were actually
+        discarded. Only the realized pass rate can say so."""
+        import xarray as xr
+        from tta_backend.tools.satellite_tools.plot_tools import make_conduct_temporal_statistic
+
+        def make_ds():
+            # One bad pixel per timestep, at a different latitude each time, so
+            # the area-weighted rate is exactly 3/4 rather than a cos(lat) skew.
+            return _tempo_no2_dataset(
+                xr,
+                values=[[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]],
+                flags=[[[0, 1], [0, 0]], [[0, 0], [1, 0]]],
+                time=["2024-01-01", "2024-01-02"],
+            )
+
+        self.volume.add_zarr("obs_1", make_ds)
+
+        emitted = {}
+        conduct_temporal_statistic = make_conduct_temporal_statistic(self.mcp_tools)
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
+            raw = await conduct_temporal_statistic.ainvoke({
+                "handle": "obs_1", "location": "global", "stat": "mean",
+            })
+
+        self.assertNotIn("error", json.loads(raw))
+        full = emitted["payload"]
+
+        # Every timestep survived to the chart -- nothing about `values` reveals
+        # the loss.
+        self.assertEqual(len(full["values"]), 2)
+        self.assertTrue(all(isinstance(v, float) for v in full["values"]))
+        # ...but a quarter of the retrievable observations failed QA.
+        self.assertAlmostEqual(full["masking"]["qa_pass_rate"], 0.75, places=6)
+        self.assertEqual(full["masking"]["qa_checked_pixels"], 8)
+        self.assertEqual(full["masking"]["qa_passing_pixels"], 6)
+
+    async def test_a_totally_failed_day_survives_in_the_series_after_dropping_off_the_line(self):
+        """One day at 0% and one at 100% average to the same 0.5 as two days at
+        50% -- and the second is a data-quality event. The 0% day is dropped
+        from the chart entirely (no finite value to plot), which is exactly why
+        the companion series must cover every timestep and not only the plotted
+        ones: otherwise the worst day is the one the report cannot show."""
+        import xarray as xr
+        from tta_backend.tools.satellite_tools.plot_tools import make_conduct_temporal_statistic
+
+        def make_ds():
+            return _tempo_no2_dataset(
+                xr,
+                values=[[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]],
+                flags=[[[1, 1], [1, 1]], [[0, 0], [0, 0]]],
+                time=["2024-01-01", "2024-01-02"],
+            )
+
+        self.volume.add_zarr("obs_1", make_ds)
+
+        emitted = {}
+        conduct_temporal_statistic = make_conduct_temporal_statistic(self.mcp_tools)
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
+            raw = await conduct_temporal_statistic.ainvoke({
+                "handle": "obs_1", "location": "global", "stat": "mean",
+            })
+
+        self.assertNotIn("error", json.loads(raw))
+        masking = emitted["payload"]["masking"]
+
+        # The first day never reaches the chart...
+        self.assertEqual(len(emitted["payload"]["values"]), 1)
+        # ...but the series still reports it, timestamped, as a total loss.
+        self.assertEqual(masking["qa_pass_rate_by_time"], [0.0, 1.0])
+        self.assertEqual(
+            masking["qa_pass_rate_times"],
+            ["2024-01-01T00:00:00", "2024-01-02T00:00:00"],
+        )
+        self.assertAlmostEqual(masking["qa_pass_rate"], 0.5, places=6)
+
     async def test_conduct_temporal_statistic_mean_is_area_weighted_and_agrees_with_stats_tool(self):
         """The per-timestep regional mean must be the SAME cos(latitude)
         area-weighted mean the stats tool computes (area_weighted_mean), not a
@@ -320,8 +396,8 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
         identical region would numerically disagree."""
         import math
         import xarray as xr
-        from tools.satellite_tools.plot_tools import make_conduct_temporal_statistic
-        from tools.satellite_tools.stat_tools import make_compute_statistic_tool
+        from tta_backend.tools.satellite_tools.plot_tools import make_conduct_temporal_statistic
+        from tta_backend.tools.satellite_tools.stat_tools import make_compute_statistic_tool
 
         # A wide latitude band (30..70N) where weighting bites hard, all cells
         # good so masking doesn't confound the comparison.
@@ -344,7 +420,7 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
             emitted["payload"] = full_payload
 
         conduct_temporal_statistic = make_conduct_temporal_statistic(self.mcp_tools)
-        with patch("tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
             raw = await conduct_temporal_statistic.ainvoke({
                 "handle": "obs_trend", "location": "global", "stat": "mean",
             })
@@ -394,7 +470,7 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
         cadence=hourly (collections.yaml), so this also proves cadence is
         threaded through, not just a hardcoded 'daily'."""
         import xarray as xr
-        from tools.satellite_tools.plot_tools import make_conduct_temporal_statistic
+        from tta_backend.tools.satellite_tools.plot_tools import make_conduct_temporal_statistic
 
         def make_ds():
             return _tempo_no2_dataset(
@@ -412,7 +488,7 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
             emitted["payload"] = full_payload
 
         conduct_temporal_statistic = make_conduct_temporal_statistic(self.mcp_tools)
-        with patch("tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
             raw = await conduct_temporal_statistic.ainvoke({
                 "handle": "obs_1", "location": "global", "stat": "mean",
             })
@@ -441,7 +517,7 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
         sorted order, not the pre-sort loop order -- otherwise the Metadata
         tab's date range can disagree with what's actually plotted."""
         import xarray as xr
-        from tools.satellite_tools.plot_tools import make_conduct_temporal_statistic
+        from tta_backend.tools.satellite_tools.plot_tools import make_conduct_temporal_statistic
 
         def make_ds():
             # Source timesteps arrive out of chronological order.
@@ -460,7 +536,7 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
             emitted["payload"] = full_payload
 
         conduct_temporal_statistic = make_conduct_temporal_statistic(self.mcp_tools)
-        with patch("tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
             raw = await conduct_temporal_statistic.ainvoke({
                 "handle": "obs_1", "location": "global", "stat": "mean",
             })
@@ -490,7 +566,7 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
         via the opened granule's short_name attribute -- the same match
         _mask_col_info already performs for masking, not a second lookup."""
         import xarray as xr
-        from tools.satellite_tools.plot_tools import make_conduct_temporal_statistic
+        from tta_backend.tools.satellite_tools.plot_tools import make_conduct_temporal_statistic
 
         def make_ds():
             return _tempo_no2_dataset(
@@ -508,7 +584,7 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
             emitted["payload"] = full_payload
 
         conduct_temporal_statistic = make_conduct_temporal_statistic(self.mcp_tools)
-        with patch("tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
             raw = await conduct_temporal_statistic.ainvoke({
                 "handle": "obs_1", "location": "global", "stat": "mean",
             })
@@ -532,7 +608,7 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
         before this PRD: exactly one, for the one masking resolution the
         tool already performed."""
         import xarray as xr
-        from tools.satellite_tools.plot_tools import make_plot_singular
+        from tta_backend.tools.satellite_tools.plot_tools import make_plot_singular
 
         def make_ds():
             return _tempo_no2_dataset(
@@ -546,7 +622,7 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
         def fake_emit_chart(full_payload):
             emitted["payload"] = full_payload
 
-        import tools.satellite_tools.plot_tools as plot_tools_module
+        import tta_backend.tools.satellite_tools.plot_tools as plot_tools_module
         calls = []
         real_lookup = plot_tools_module.col_info_for_short_name
 
@@ -555,7 +631,7 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
             return real_lookup(short_name)
 
         plot_singular = make_plot_singular(self.mcp_tools)
-        with patch("tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart), \
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart), \
              patch.object(plot_tools_module, "col_info_for_short_name", counting_lookup):
             raw = await plot_singular.ainvoke({"handle": "obs_1", "location": "global"})
 
@@ -571,7 +647,7 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_compare_region_mode_masks_bad_flag_pixels_on_both_sides(self):
         import xarray as xr
-        from tools.satellite_tools import comparison_tools
+        from tta_backend.tools.satellite_tools import comparison_tools
 
         def make_a():
             return _tempo_no2_dataset(
@@ -592,7 +668,7 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
             emitted["payload"] = full_payload
 
         compare = comparison_tools.make_compare(self.mcp_tools)
-        with patch("tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
+        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart):
             raw = await compare.ainvoke({
                 "handle_a": "obs_a", "handle_b": "obs_b", "mode": "region",
                 "label_a": "A", "label_b": "B",
