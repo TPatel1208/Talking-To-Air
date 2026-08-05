@@ -208,14 +208,31 @@ def _area_weighted_mean(arr: np.ndarray, lats: np.ndarray, finite: np.ndarray) -
     """
     lat_vals = np.asarray(lats, dtype=float)
     if lat_vals.ndim != 1 or lat_vals.size != arr.shape[0]:
-        return float(arr[finite].mean())          # not a (lat, lon) grid we can weight
+        # not a (lat, lon) grid we can weight
+        return float(arr[finite].mean(dtype=np.float64))
     weights = np.clip(np.cos(np.deg2rad(lat_vals)), 0.0, None)
     weights = np.where(np.isfinite(weights), weights, 0.0)
-    w = np.broadcast_to(weights[:, None], arr.shape)[finite]
-    total = float(w.sum())
+
+    # Reduce row by row against the 1-D weights instead of broadcasting them
+    # to the full grid. Every cell shares its row's weight, so the row sum is
+    # the same arithmetic -- but the broadcast spelling materialized three
+    # more full-size arrays (the expanded weights, the re-indexed values, and
+    # their product), and it did so while the caller's copy of the field was
+    # still alive. That was the largest single block on the render path.
+    #
+    # ``dtype=np.float64`` is load-bearing, not decoration: the field is
+    # carried at float32 (see _build_heatmap_payload) and this sum runs over
+    # millions of same-signed values, where a float32 accumulator drifts
+    # inside the six significant digits the payload publishes. This mean is
+    # required to agree with the stats and trend tools, so it accumulates in
+    # double regardless of how the field is stored.
+    contribution = np.where(finite, arr, 0.0).sum(axis=1, dtype=np.float64)
+    counted = finite.sum(axis=1, dtype=np.float64)
+
+    total = float((counted * weights).sum())
     if total <= 0.0:
-        return float(arr[finite].mean())
-    return float((arr[finite] * w).sum() / total)
+        return float(arr[finite].mean(dtype=np.float64))
+    return float((contribution * weights).sum() / total)
 
 
 def _points_from_grid(lats: np.ndarray, lons: np.ndarray, arr: np.ndarray):
@@ -296,7 +313,21 @@ def _build_heatmap_payload(
     if da.dims.index(lat_coord) != 0:
         da = da.transpose(lat_coord, lon_coord)
 
-    arr = da.values.astype(float)
+    # float32, not float64. This is the one line that decides the working size
+    # of everything below it -- the percentile bounds, the overlay
+    # rasterization, the statistics and the point list all copy whatever
+    # arrives here, so a needless upcast is paid for five times over. A
+    # native-resolution full-day TEMPO field upcast to float64 is what put the
+    # backend under the OOM killer on 2026-08-05. A retrieval does not carry
+    # float64 precision to begin with, the map is drawn in 8-bit color, and
+    # the payload reports six significant digits; the mantissa being dropped
+    # here was never anything a reader could see. ``copy=False`` because the
+    # common case already arrives as float32 and needs no copy at all.
+    #
+    # Precision that *is* load-bearing -- the area-weighted mean, which has to
+    # agree with the stats and trend tools -- is protected where it is
+    # computed, by accumulating in float64 (_area_weighted_mean).
+    arr = da.values.astype(np.float32, copy=False)
     arr = np.where(np.isfinite(arr), arr, np.nan)
     # A caller may impose a shared/diverging scale across multiple panels
     # (comparison_tools) -- the overlay below must colorize against that

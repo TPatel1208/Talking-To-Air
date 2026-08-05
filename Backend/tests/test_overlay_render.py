@@ -87,5 +87,61 @@ class OverlayRenderTests(unittest.TestCase):
         self.assertNotEqual(min_rgba, max_rgba)
 
 
+    def test_render_holds_a_bounded_multiple_of_the_grid_in_memory(self):
+        """Rendering must not need an unbounded multiple of the grid it draws.
+
+        The render stage OOM-killed the backend (2026-08-05, full-day TEMPO
+        over North America): retrieval and materialization both succeeded, then
+        uvicorn was SIGKILLed by the kernel with ~2.8 GB RSS while rasterizing.
+        Measured cause: the rasterizer allocated 54 bytes per grid cell -- it
+        upcast the caller's float32 grid to float64, reprojected into another
+        float64 buffer, and colorized through six more full-size float64/int64
+        temporaries. At 22.3M cells (TEMPO CONUS native) that is ~1.2 GB for
+        one panel, on top of the aggregation that produced it.
+
+        The ceiling, not the byte count, is the guarantee: a render may hold a
+        handful of working buffers, never a dozen. Expressed per cell so it
+        stays meaningful as grids grow -- which is the whole failure mode.
+        """
+        import tracemalloc
+        import numpy as np
+        from tta_backend.utils.colormaps import resolve
+        from tta_backend.utils.overlay_render import render_overlay_png
+
+        lut = resolve("NO2").lut
+
+        def grid(nlat, nlon):
+            lats = np.linspace(20.0, 55.0, nlat)
+            lons = np.linspace(-130.0, -60.0, nlon)
+            # float32 is what the plot path hands us; a satellite retrieval is
+            # nowhere near float64-precision to begin with.
+            values = np.linspace(0.0, 1.0, nlat * nlon, dtype=np.float32).reshape(nlat, nlon)
+            return lats, lons, values
+
+        # Warm up: matplotlib/rasterio import and their module-level caches
+        # allocate once, and must not be charged to the measured render.
+        render_overlay_png(*grid(40, 50), lut, vmin=0.0, vmax=1.0)
+
+        lats, lons, values = grid(600, 800)
+        cells = values.size
+
+        tracemalloc.start()
+        try:
+            tracemalloc.reset_peak()
+            before = tracemalloc.get_traced_memory()[0]
+            render_overlay_png(lats, lons, values, lut, vmin=0.0, vmax=1.0)
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+
+        bytes_per_cell = (peak - before) / cells
+        self.assertLess(
+            bytes_per_cell, 24.0,
+            f"overlay render peaked at {bytes_per_cell:.1f} bytes per grid cell; "
+            f"at TEMPO CONUS native resolution (22.3M cells) that is "
+            f"{bytes_per_cell * 22.3e6 / 1e9:.2f} GB for a single panel",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
