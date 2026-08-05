@@ -9,7 +9,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import Plotly from 'plotly.js-dist-min'
 import _createPlotlyComponent from 'react-plotly.js/factory'
-import { flattenPayload } from '../utils/flattenPayload.js'
+import { resolveCsvExport, resolveNetcdfExport } from '../utils/chartExport.js'
 import { buildOverlayTraces } from '../utils/timeseriesCompare.js'
 
 const createPlotlyComponent =
@@ -49,36 +49,6 @@ function rowsToCsv(rows) {
     headers.map(csvEscape).join(','),
     ...rows.map(row => headers.map(header => csvEscape(row[header])).join(',')),
   ].join('\n')
-}
-
-function heatmapRows(payload, panelName = '') {
-  const { variable, units } = payload
-  const { lat, lon, val } = flattenPayload(payload)
-  return val.map((value, i) => ({
-    ...(panelName ? { panel: panelName } : {}),
-    variable,
-    latitude: lat[i],
-    longitude: lon[i],
-    value,
-    units,
-  }))
-}
-
-function chartRows(chart) {
-  if (chart.type === 'heatmap') return heatmapRows(chart)
-  if (chart.type === 'heatmap_multi') {
-    return (chart.panels || []).flatMap(panel => heatmapRows(panel, panel.title || panel.provenance?.region_name || 'panel'))
-  }
-  if (chart.type === 'timeseries') {
-    return (chart.times || []).map((time, i) => ({
-      variable: chart.variable,
-      time,
-      stat: chart.stat,
-      value: chart.values?.[i],
-      units: chart.units,
-    }))
-  }
-  return []
 }
 
 function downloadText(filename, content, type) {
@@ -141,26 +111,50 @@ export function ChartToolbar({ chart, plotRootRef, accessToken }) {
 
   const handleCsv = async () => {
     setExportState({ status: 'preparing', message: 'Preparing export' })
-    if (chart.chart_id && chart.export) {
-      try {
-        setExportState({ status: 'progress', message: 'Export in progress' })
-        await downloadFromUrl(`/api/chart/${chart.chart_id}/export.csv`, `${fileBase}.csv`, accessToken)
-        setExportState({ status: 'complete', message: 'Export complete' })
-        window.setTimeout(() => setExportState({ status: '', message: '' }), 2200)
-      } catch (error) {
-        setExportState({ status: 'failed', message: error.message || 'Export failed' })
-      }
+    const resolved = resolveCsvExport(chart)
+
+    if (resolved.kind === 'unavailable') {
+      setExportState({ status: 'failed', message: resolved.message })
       return
     }
 
-    const rows = chartRows(chart)
-    if (!rows.length) {
-      setExportState({ status: 'failed', message: 'No chart rows available to export' })
+    if (resolved.kind === 'client') {
+      downloadText(`${fileBase}.csv`, rowsToCsv(resolved.rows), 'text/csv;charset=utf-8')
+      setExportState({ status: 'complete', message: 'Export complete' })
+      window.setTimeout(() => setExportState({ status: '', message: '' }), 2200)
       return
     }
-    downloadText(`${fileBase}.csv`, rowsToCsv(rows), 'text/csv;charset=utf-8')
-    setExportState({ status: 'complete', message: 'Export complete' })
-    window.setTimeout(() => setExportState({ status: '', message: '' }), 2200)
+
+    try {
+      setExportState({ status: 'progress', message: 'Export in progress' })
+      await downloadFromUrl(resolved.url, `${fileBase}.csv`, accessToken)
+      setExportState({ status: 'complete', message: 'Export complete' })
+      window.setTimeout(() => setExportState({ status: '', message: '' }), 2200)
+    } catch (error) {
+      setExportState({ status: 'failed', message: error.message || 'Export failed' })
+    }
+  }
+
+  const handleNetcdf = async () => {
+    setExportState({ status: 'preparing', message: 'Preparing export' })
+    const resolved = resolveNetcdfExport(chart)
+
+    if (resolved.kind === 'unavailable') {
+      setExportState({ status: 'failed', message: resolved.message })
+      return
+    }
+
+    try {
+      // Conversion happens server-side and can take a while on a large cube,
+      // so this reports progress like the other streamed exports rather than
+      // appearing to hang.
+      setExportState({ status: 'progress', message: 'Converting to NetCDF' })
+      await downloadFromUrl(resolved.url, `${fileBase}.nc`, accessToken)
+      setExportState({ status: 'complete', message: 'Export complete' })
+      window.setTimeout(() => setExportState({ status: '', message: '' }), 2200)
+    } catch (error) {
+      setExportState({ status: 'failed', message: error.message || 'Export failed' })
+    }
   }
 
   const handlePng = async () => {
@@ -228,6 +222,15 @@ export function ChartToolbar({ chart, plotRootRef, accessToken }) {
           disabled={exportBusy}
         >
           Export CSV
+        </button>
+        <button
+          type="button"
+          onClick={handleNetcdf}
+          style={{ ...buttonStyle, opacity: exportBusy ? 0.65 : 1, cursor: exportBusy ? 'wait' : 'pointer' }}
+          disabled={exportBusy}
+          title="Download the source data as NetCDF — keeps the grid, units and CF metadata a CSV drops"
+        >
+          Export NetCDF
         </button>
         <button
           type="button"

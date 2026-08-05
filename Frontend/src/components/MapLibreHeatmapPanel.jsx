@@ -4,19 +4,28 @@
  * Renders a single heatmap chart payload as a NASA-scientific interactive
  * map (T23): a shaded-relief terrain basemap, the data field as a
  * full-native-resolution server-rendered PNG overlay (GPU-bilinear
- * smoothed), region borders, per-cell hover, and a scientific colorbar.
+ * smoothed), region borders, and a scientific colorbar.
  *
- * Visual fidelity (the overlay PNG) and interaction resolution (the
- * shipped lats/lons/values arrays) are deliberately decoupled -- hover and
- * stats read the arrays; only the picture comes from the server render.
+ * Deliberately has NO per-cell readout. One lived here until 2026-08-05 and
+ * was removed on purpose: it answered by nearest-neighbour lookup against
+ * the shipped arrays, and those are thinned to <=8k cells, so on a
+ * native-resolution scene (TEMPO CONUS is 2880x7750) the value it reported
+ * could come from a cell tens of kilometres from the cursor -- printed to
+ * three decimals, with no masking provenance or QA status attached. In a
+ * product where every answer is a scientific claim, a precise-looking
+ * number pulled from the wrong place is worse than no number, and asking
+ * in chat already answers point questions with provenance. The arrays stay
+ * for the canvas fallback and for stats; they are not an inspection
+ * surface. Re-adding a readout means a server-side query at native
+ * resolution, not another nearest-neighbour scan over the thinned grid.
+ *
  * Degrades instead of dying: overlay missing/failed -> client canvas from
  * the arrays; basemap/terrain tiles failed -> flat fill, overlay still
  * shows.
  */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
-import { nearestCell } from '../utils/heatmapHover.js'
 import { colorbarGeometry, scaleClipNote } from '../utils/colorbarGeometry.js'
 import { buildCanvasFallbackFrame } from '../utils/canvasFallback.js'
 import { fetchUsStatesGeoJSON, isConusBounds } from '../utils/regionBorders.js'
@@ -153,18 +162,17 @@ function addBorderLayer(map, geojson) {
 }
 
 export default function MapLibreHeatmapPanel({ payload, height = 420, accessToken, colorScaleOverride = null, hideLegend = false }) {
-  const { title, variable, units, vmin, vmax, colormap, overlay, bounds, lats, lons, scale } = payload
+  const { title, units, vmin, vmax, colormap, overlay, bounds, lats, lons, scale } = payload
   const containerRef = useRef(null)
   const mapRef = useRef(null)
   const drawOverlayRef = useRef(null)
-  const [hover, setHover] = useState(null)
 
   // An externally supplied vmin/vmax/colormap wins over the payload's own --
   // this is the hook compare mode's shared-scale logic (T28) uses to recolor
   // every panel onto one range. The server-rendered overlay PNG is baked
   // with the payload's native scale and can't be recolored client-side, so
   // an override always forces the canvas-fallback path (rendered from the
-  // same lats/lons/values arrays hover already reads).
+  // payload's own lats/lons/values arrays).
   const effectiveVmin = colorScaleOverride?.vmin ?? vmin
   const effectiveVmax = colorScaleOverride?.vmax ?? vmax
   const effectiveColormap = colorScaleOverride?.colormap ?? colormap
@@ -273,12 +281,6 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, accessToke
           })
         }
       })
-
-      map.on('mousemove', (e) => {
-        const cell = nearestCell(e.lngLat.lng, e.lngLat.lat, payload)
-        if (cell) setHover({ ...cell, x: e.point.x, y: e.point.y })
-      })
-      map.on('mouseleave', () => setHover(null))
     })
 
     return () => {
@@ -319,31 +321,6 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, accessToke
       )}
       <div style={{ position: 'relative', width: '100%', height, borderRadius: '8px', overflow: 'hidden' }}>
         <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
-
-        {hover && (
-          <div
-            style={{
-              position: 'absolute',
-              left: Math.min(hover.x + 12, (containerRef.current?.clientWidth || 400) - 160),
-              top: hover.y + 12,
-              background: 'var(--bg-card)',
-              border: '1px solid var(--border)',
-              borderRadius: '6px',
-              padding: '6px 8px',
-              fontSize: '11px',
-              lineHeight: 1.4,
-              color: 'var(--text-secondary)',
-              pointerEvents: 'none',
-              boxShadow: 'var(--shadow-sm)',
-              zIndex: 2,
-            }}
-          >
-            <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
-              {variable}: {Number.isFinite(hover.value) ? hover.value.toExponential(3) : '—'} {units}
-            </div>
-            <div>Lat: {hover.lat.toFixed(3)}, Lon: {hover.lon.toFixed(3)}</div>
-          </div>
-        )}
 
         {!hideLegend && <MapColorbar gradientStops={gradientStops} ticks={ticks} units={units} clipNote={clipNote} />}
       </div>
