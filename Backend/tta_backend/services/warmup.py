@@ -10,6 +10,19 @@ the aggregate-and-render chain downstream of the opens. Nothing about that work
 belongs to the request that happens to arrive first -- it is fixed setup, and a
 process has a whole idle startup in which to do it.
 
+Re-measured 2026-08-07 from a booted process, which is the baseline that
+matters: the dask half is ~0.4 s and still entirely lazy, but the PIL half has
+fallen to ~0.01 s. Both numbers moved for the same reason -- imports migrating
+to module scope -- and the split is worth stating because it is easy to read
+the dask half as already paid for and drop it:
+
+* ``open_handle`` imports top-level ``dask`` at module scope to bound the
+  threaded scheduler. That covers 25 modules, none of them ``dask.array``. The
+  34 ``dask.array.*`` modules a reduction actually goes through are untouched
+  by it, so ``_warm_dask_reduction`` below is doing the same job it always was.
+* ``plot_tools`` imports ``PIL.Image`` at module scope, which is the expensive
+  part of PIL; only 8 format plugins are still lazy.
+
 Warms by *performing* a miniature version of the real work rather than by
 importing a hand-listed set of module names. A list would be written against
 today's call graph and would rot silently the first time the render path
@@ -50,7 +63,8 @@ def warm_render_path() -> bool:
 def _warm_dask_reduction() -> None:
     """A masked, chunked reduction -- the shape every plot, statistic and
     comparison bottoms out in, and what drags in dask's array/scheduler/
-    optimization submodules (34 of them, ~0.44 s)."""
+    optimization submodules (34 of them under ``dask.array.*``, ~0.4 s; the
+    top-level ``dask`` package open_handle already imports is not among them)."""
     import numpy as np
     import xarray as xr
 
@@ -78,7 +92,12 @@ def _warm_dask_reduction() -> None:
 
 def _warm_png_encoder() -> None:
     """Encode one tiny RGBA frame, which is what the map-overlay renderer does
-    at the end of every plot (~0.10 s of PIL imports on first use).
+    at the end of every plot.
+
+    Only ~0.01 s and 8 format plugins now that ``plot_tools`` imports
+    ``PIL.Image`` at module scope. Kept anyway: it is cheap enough that the
+    saving does not have to be large to be worth taking, and dropping it would
+    leave the encoder as the one step of the render path nothing warms.
 
     Deliberately to an in-memory buffer: warming must not write into the
     overlay store, which is real, served content keyed by chart id.

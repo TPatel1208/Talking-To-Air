@@ -1,10 +1,22 @@
 """The render path must not import anything on its first real request.
 
-Diagnosed 2026-08-06: the first `compare` after a restart spent ~0.44 s
-importing dask submodules and ~0.10 s importing PIL, both triggered lazily by
-the aggregate-and-render chain downstream of the opens. That cost is paid by a
-user, once per process, on a request that looks inexplicably slower than every
-one after it.
+Diagnosed 2026-08-06: the first `compare` after a restart spent ~0.4 s importing
+``dask.array`` and its scheduler machinery, triggered lazily by the
+aggregate-and-render chain downstream of the opens. That cost is paid by a user,
+once per process, on a request that looks inexplicably slower than every one
+after it.
+
+Re-measured 2026-08-07, because two of the numbers above had drifted:
+
+* ``open_handle`` imports top-level ``dask`` at module scope (to bound the
+  threaded scheduler to two workers), so 25 dask modules are already resident
+  before any request arrives. That is *not* the cost this file is about: the 34
+  ``dask.array.*`` modules the render path actually reduces through are still
+  imported lazily, and are still the ~0.4 s.
+* PIL is now mostly eager too -- ``plot_tools`` pulls in 19 modules including
+  ``PIL.Image`` at import. Only 8 format plugins arrive lazily, worth ~0.01 s.
+  Kept in the assertion because it is nearly free to warm and it is the half of
+  the render path that would otherwise go unpinned, not because it is expensive.
 
 Every assertion here runs in a **subprocess**. ``sys.modules`` is process-wide,
 so an in-process check would pass or fail on whether some earlier test in the
@@ -62,7 +74,14 @@ def make_ds(v):
     )
 
 async def fake_open(handle, tools):
-    return make_ds(1.0 if handle == "obs_a" else 2.0)
+    # Chunked, i.e. dask-backed, because that is what the real open_handle
+    # returns -- it opens bundles lazily so peak memory is bounded by the chunk
+    # rather than the granule count. An eager numpy-backed Dataset here would
+    # make the comparison reduce in numpy and never touch dask.array at all,
+    # which is a render path no user ever gets, and would leave the warm-up's
+    # dask half asserted by nothing.
+    ds = make_ds(1.0 if handle == "obs_a" else 2.0)
+    return ds.chunk({"lat": 1, "lon": 2})
 
 async def run_one_comparison():
     compare = comparison_tools.make_compare({})
@@ -116,9 +135,16 @@ class RenderPathWarmupTests(unittest.TestCase):
         Without it, that test would keep passing if these imports ever moved to
         module scope, or if the harness stopped exercising the render path at
         all -- reporting "the warm-up works" while it did nothing. This pins
-        that there is real, measurable work for the warm-up to do: 34 dask
-        submodules and 8 from PIL, ~0.44 s and ~0.10 s respectively when a user
-        pays for them."""
+        that there is real, measurable work for the warm-up to do: 34
+        ``dask.array.*`` modules (~0.4 s) and 8 PIL plugins (~0.01 s) when a
+        user pays for them.
+
+        Both failure modes it guards against have since happened. Top-level
+        ``dask`` did move to module scope, and this test is what caught that the
+        remaining lazy cost is ``dask.array``, not ``dask``. And the harness had
+        in fact stopped exercising the render path: it simulated the open with
+        an eager Dataset, so the comparison reduced in numpy and imported no
+        dask at all -- leaving the assertion above vacuously green for dask."""
         new = _run(COMPARE_HARNESS, """
             before = set(sys.modules)
             asyncio.run(run_one_comparison())
