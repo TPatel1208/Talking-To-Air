@@ -50,7 +50,8 @@ from tta_backend.repositories.user_connector_repository import (
 )
 from tta_backend.repositories.user_repository import create_user, ensure_user_table, get_user_by_username
 from tta_backend.repositories.artifact_repository import ensure_artifact_table
-from tta_backend.services import cube_cache
+from tta_backend.services import cube_cache, warmup
+from tta_backend.services.open_handle import OPEN_PIPELINE_VERSION
 from tta_backend.services.auth_service import authenticate_request, create_access_token, hash_password, verify_password
 from tta_backend.services.connector_credential_service import EdlCredentialInjector
 from tta_backend.services.connector_token_service import TokenValidationError, decode_token_expiry
@@ -147,7 +148,15 @@ async def lifespan(app: FastAPI):
     # handle->cube index from the surviving manifests, which is what makes that
     # index derived state — losing the file costs a boot's scan, never an
     # answer.
-    cube_cache.sweep_store()
+    cube_cache.sweep_store(OPEN_PIPELINE_VERSION)
+
+    # Pay the render path's one-time lazy-import cost here rather than charging
+    # it to whoever asks the first question: measured at ~0.44 s of dask and
+    # ~0.10 s of PIL, pulled in by the aggregate-and-render chain the first
+    # time any plot, statistic or comparison runs. Synchronous on purpose --
+    # nothing is being served yet, and a request that arrives mid-warm is no
+    # worse off than it was before this existed.
+    warmup.warm_render_path()
 
     logger.info("startup_begin", extra={"_model": settings.llm_model})
     # T17: the backend boots without the earthdata-retrieval MCP — ground/EPA

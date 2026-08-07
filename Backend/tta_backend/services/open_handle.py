@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import math
 import os
 import threading
 from typing import Any
@@ -331,7 +332,9 @@ def _open_by_media_type(
     if "bundle" in mt:
         return _serve_from_cube_or_open(export, timing, lambda: _open_netcdf_bundle(path, timing))
     if "netcdf" in mt:
-        return _serve_from_cube_or_open(export, timing, lambda: _open_netcdf(path, timing=timing))
+        return _serve_from_cube_or_open(
+            export, timing, lambda: _open_netcdf(path, chunks=_lazy_chunks(), timing=timing)
+        )
     raise OpenHandleError(f"Unsupported media_type '{media_type}' for exported handle.")
 
 
@@ -417,7 +420,7 @@ def _open_netcdf(path: str, chunks: dict | None = None, *, timing: dict | None =
     if _is_zipfile(path):
         return _open_netcdf_bundle(path, timing)
 
-    groups = _open_all_groups(path, chunks)
+    groups = _open_groups_bounded(path, chunks)
     # GPM-style products (IMERG) carry no netCDF dimension scales, so both
     # engines invent placeholder dims (phony_dim_N) and the science variable
     # opens with no lat/lon identity at all. The files DO declare the real
@@ -654,12 +657,18 @@ def _gate_bundle_size(zf: Any, path: str) -> None:
     """Refuse a bundle whose members' total *uncompressed* size exceeds the
     configured cap, before anything is extracted or opened.
 
-    The retrieval-time byte caps (services.retrieval_composites) gate the
-    provider's estimate at submit time; this gate catches what they can't —
-    decompression, dtype widening and multi-granule concatenation all happen
-    at open time. Raising the same structured too_large error the retrieval
-    gates use keeps the failure on the T18 deterministic-error surface (the
-    agent relays "narrow the request") instead of the OOM killer's."""
+    Not a memory bound, despite where it came from. It was written when an
+    ungated open could OOM-kill the process, but ``_open_groups_bounded`` now
+    holds peak RAM to the chunk ceiling regardless of how large the bundle is,
+    so a bundle's total size no longer predicts what opening it costs. What
+    this still bounds is *disk* — every member is extracted into the extract
+    cache, and nothing else limits that — and the retrieval whose size the
+    provider could not estimate, which ``retrieval_composites`` waves through
+    on confirmation while naming this gate as the backstop.
+
+    Raising the same structured too_large error the retrieval gates use keeps
+    the failure on the T18 deterministic-error surface (the agent relays
+    "narrow the request") rather than surfacing as a disk-full OSError."""
     granules = [info for info in zf.infolist() if not info.is_dir()]
     total = sum(info.file_size for info in granules)
     limit = get_settings().bundle_open_max_uncompressed_bytes
@@ -669,17 +678,161 @@ def _gate_bundle_size(zf: Any, path: str) -> None:
         CATEGORY_TOO_LARGE,
         f"This result bundle holds {len(granules)} granule file(s) totalling "
         f"~{total:,} bytes uncompressed, over the {limit:,}-byte limit this "
-        f"deployment can open safely (bundle: '{path}').",
+        f"deployment can extract to local disk (bundle: '{path}').",
         suggestion="Narrow the time range, area of interest, or variable list and retrieve again.",
     )
 
 
+def _open_groups_bounded(path: str, chunks: dict | None) -> dict:
+    """Open every group in ``path`` with no dask chunk larger than
+    ``open_max_chunk_bytes``.
+
+    This is the pipeline's memory bound. ``chunks={}`` is widely read as "one
+    dask chunk per variable per file", but that is not what xarray does: it
+    means *inherit the file's HDF5 chunk grid*, and only degrades to one
+    whole-array chunk when the variable was written contiguously. Measured::
+
+        contiguous              chunks={} -> ((1,), (600,), (900,))
+        hdf5-chunked 1x128x128  chunks={} -> ((1,), (128,...), (128,...))
+
+    So without this function the size of the unit dask allocates — and with
+    it every intermediate a reduction holds — is decided by whichever layout
+    the provider wrote, an uncontrolled external property. A time-mean over
+    contiguous 2950x5771 float64 members, at the shipped 32 MiB budget::
+
+        granules      2      4      8     16
+        before     1072   1819   2484   2874  MiB   <- grows with the day
+        after        295    409    426    492  MiB   <- levels off
+
+    The "before" column is why a 15-granule day — one ordinary day of TEMPO
+    NO2 over North America — SIGKILLed the backend, and why the answer could
+    not be a granule cap: 15 granules is the question, not an abuse of it.
+
+    The ceiling has to be applied *here*, at open. Splitting afterwards with
+    ``.chunk()`` does not bound anything, because each smaller output chunk
+    still has to materialize the whole source chunk it slices — same 8-granule
+    reduction, 272.6 MiB opened bounded vs 1222.6 MiB opened whole and
+    rechunked after.
+
+    The common case (a provider that chunked its file sensibly) is already
+    under budget and returns after the first open, untouched — re-chunking it
+    would only straddle the on-disk grid and re-decompress. Both opens are
+    header-only, so the second one costs no data read."""
+    groups = _narrow_packed_dtypes(_open_all_groups(path, chunks))
+    if chunks is None:  # no dask: nothing is chunked, so nothing to bound
+        return groups
+    spec = _chunk_ceiling_spec(groups, get_settings().open_max_chunk_bytes)
+    if spec is None:
+        return groups
+    for gds in groups.values():
+        gds.close()
+    return _narrow_packed_dtypes(_open_all_groups(path, spec))
+
+
+# float64. Nothing in the read/reduce path materializes anything wider, and
+# most of it reaches this width whatever the file stored (see
+# _chunk_ceiling_spec).
+_WIDEST_WORKING_ITEMSIZE = 8
+
+# Integer on-disk widths whose every value is exactly representable in a
+# float32 mantissa (24 bits). int32 is deliberately absent: 31 bits of
+# magnitude do not fit, so narrowing one would silently round real data.
+_FLOAT32_SAFE_PACKED_ITEMSIZE = 2
+
+
+def _narrow_packed_dtypes(groups: dict) -> dict:
+    """Undo CF unpacking's gratuitous widening to float64.
+
+    ``scale_factor``/``add_offset`` are conventionally written float64, and
+    xarray takes the decoded dtype from the attribute rather than from the
+    stored values — so an int16 variable unpacks to float64 and every
+    downstream intermediate inherits four bytes per cell for information the
+    file never had. int16 resolves ~4.5 decimal digits; float32 holds ~7.
+
+    This is a pure waste-removal and nothing more. A variable stored natively
+    as float64 is left alone: narrowing *that* trades real precision for
+    memory, which is a scientific call belonging to whoever reads the numbers,
+    not to the opener."""
+    import numpy as np
+
+    for gds in groups.values():
+        for name, var in gds.data_vars.items():
+            stored = var.encoding.get("dtype")
+            if stored is None or var.dtype != np.float64:
+                continue
+            stored = np.dtype(stored)
+            if stored.kind not in "iu" or stored.itemsize > _FLOAT32_SAFE_PACKED_ITEMSIZE:
+                continue
+            gds[name] = var.astype("float32", keep_attrs=True)
+            gds[name].encoding = dict(var.encoding)
+    return groups
+
+
+def _chunk_ceiling_spec(groups: dict, limit: int) -> dict | None:
+    """``{dim: size}`` that keeps every variable's chunk within ``limit``
+    bytes, or None when they all already fit.
+
+    Starts from the chunking the file already has and *halves* the largest
+    dimension until the worst variable fits. Halving matters: a size that
+    divides the on-disk chunk keeps whole HDF5 chunks inside one dask chunk,
+    so bounding never turns one read into several overlapping decompressions.
+    Time needs no special case — it is already 1 per bundle member, so the
+    same rule leaves it alone and splits the spatial dims instead."""
+    variables = [var for gds in groups.values() for var in gds.data_vars.values()]
+    if not variables:
+        return None
+    # Floored at the pipeline's widest working dtype, because a chunk's cost is
+    # set by the widest array it passes *through*, not the dtype it settles at.
+    # Two ways a narrower stored dtype still costs eight bytes a cell:
+    # CF unpacking produces the scale_factor's float64 before
+    # _narrow_packed_dtypes casts it down, and the statistics layer promotes to
+    # float64 for its accumulators (see aggregation_service.area_weighted_mean).
+    # Sizing on the settled dtype handed those variables twice the cells for
+    # the same budget -- measured at 8 MiB over a 2048x2048 grid, 56.2 MiB peak
+    # for a packed variable and 46.2 MiB for a native float32 one, against
+    # 33.2 MiB for the float64 whose chunks the ceiling thought were identical.
+    itemsize = max(
+        max((var.dtype.itemsize for var in variables), default=4),
+        _WIDEST_WORKING_ITEMSIZE,
+    )
+
+    spec: dict[Any, int] = {}
+    for var in variables:
+        chunk_sizes = (
+            {dim: max(sizes) for dim, sizes in zip(var.dims, var.chunks)}
+            if var.chunks is not None
+            else dict(var.sizes)
+        )
+        for dim, size in chunk_sizes.items():
+            spec[dim] = max(spec.get(dim, 0), int(size))
+
+    def worst_bytes() -> int:
+        return max(
+            math.prod(spec.get(dim, int(var.sizes[dim])) for dim in var.dims) * itemsize
+            for var in variables
+        )
+
+    if worst_bytes() <= limit:
+        return None
+    while worst_bytes() > limit:
+        widest = max(spec, key=lambda dim: spec[dim])
+        if spec[widest] <= 1:
+            break  # every dim is already singleton; one cell is over budget
+        spec[widest] = max(1, spec[widest] // 2)
+    return spec
+
+
 def _lazy_chunks() -> dict | None:
-    """``chunks={}`` (one dask chunk per variable per file) when dask is
-    installed, so bundle members stay on disk until a compute needs them and
-    reductions stream granule-by-granule; None otherwise, where xarray's
-    plain lazy arrays materialize at concat and the size gate is the only
-    protection."""
+    """The *request* for dask-backed opening — ``{}`` when dask is installed,
+    None otherwise, where xarray's plain lazy arrays materialize whole at the
+    first compute and the size gate is the only protection.
+
+    ``{}`` asks xarray to inherit whatever chunking the file already has; it
+    does NOT mean "one chunk per variable per file", which is only what it
+    degrades to on a contiguously-written variable. What actually bounds the
+    result is :func:`_open_groups_bounded`, which every caller goes through —
+    this function decides *whether* to use dask, not how much a chunk may
+    cost."""
     return None if dask is None else {}
 
 
@@ -1088,11 +1241,27 @@ def _promote_lat_lon_coords(ds: Any) -> Any:
 # sources the old logic could not cube. The pinned fingerprint below makes
 # that enforcement rather than convention: test_cube_cache.py fails if the
 # source moves and this doesn't.
-OPEN_PIPELINE_VERSION = "1"
+#
+# Bumped to "2" for _narrow_packed_dtypes. The open-time chunk ceiling landing
+# in the same change is NOT why: chunking decides how a read is divided, never
+# what it returns, and a cube written before it is bit-identical to one written
+# after. The narrowing is the part that qualifies -- a packed int16 variable
+# now decodes float32 where it used to decode float64, so a warm cube would
+# keep serving the wider dtype for the same source indefinitely. The values
+# agree to float32 precision and the old cube is if anything the more precise
+# of the two, but "same source, different dtype depending on cache warmth" is
+# exactly the silent divergence this version exists to prevent.
+OPEN_PIPELINE_VERSION = "2"
 
 _PIPELINE_SOURCE_FUNCTIONS = (
     _open_netcdf,
     _open_netcdf_bundle,
+    # Decides the dtype a packed variable lands in, so it is interpretation and
+    # belongs under the guard. Its siblings from the same change deliberately
+    # do NOT: _open_groups_bounded and _chunk_ceiling_spec only decide how a
+    # read is divided into tasks, and listing them would evict every cube in
+    # the store for a chunk-budget tweak that cannot change a single value.
+    _narrow_packed_dtypes,
     _apply_declared_dimension_names,
     _promote_lat_lon_coords,
     _synthesize_member_time_coord,
@@ -1113,4 +1282,4 @@ _PIPELINE_SOURCE_FUNCTIONS = (
 # deliberately lives outside these functions (in _open_by_media_type) so this
 # fingerprint tracks interpretation only, and cache plumbing changes don't
 # spuriously invalidate every cube.
-OPEN_PIPELINE_SOURCE_FINGERPRINT = "d31ef34f023b3901e5387e0cd3896e0091dff2dc9ebd2b3e0950aa462058522d"
+OPEN_PIPELINE_SOURCE_FINGERPRINT = "7bf73131d30598bf1d511773e7e5e634386aaa5473028c4925731f8a6e555cb3"

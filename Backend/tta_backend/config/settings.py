@@ -77,7 +77,6 @@ class Settings:
 
     cors_origins: list[str] = field(default_factory=lambda: _csv(os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost")))
     data_fetch_mode: str = field(default_factory=lambda: os.getenv("DATA_FETCH_MODE", "auto").strip().lower())
-    satellite_max_results_cap: int = field(default_factory=lambda: max(1, _int_env("SATELLITE_MAX_RESULTS_CAP", 20)))
     # Bounds the thread pool open_handle uses to extract and lazily open a
     # multi-granule bundle's members concurrently (services/open_handle.py).
     # Both steps are I/O-bound (zip decompression, HDF5/netCDF header reads)
@@ -174,12 +173,66 @@ class Settings:
         default_factory=lambda: max(1, _int_env("RETRIEVAL_MAX_TIMESERIES_DAYS", 366))
     )
     # Gate on a result bundle's *uncompressed* size before open_handle extracts
-    # and opens it. The retrieval byte caps above gate the estimate at submit
-    # time; this one catches what they can't — decompression, dtype widening,
-    # and multi-granule concatenation happen at open time, and an ungated open
-    # OOM-killed the backend on a full-day TEMPO NO2 bundle (live 2026-07-12).
+    # and opens it.
+    #
+    # This was a RAM gate, and is no longer one: open_max_chunk_bytes below
+    # bounds peak memory by the chunk rather than by the bundle, so a bundle's
+    # total size stopped predicting what opening it costs (measured: 16
+    # granules, 2874 MiB before, 492 MiB after, flat in granule count). Two
+    # jobs it still does, which is why it stays:
+    #
+    #   1. Disk. Opening extracts every member into the extract cache under
+    #      tempfile.gettempdir(), where entries outlive the call by design (see
+    #      _extract_bundle_cached) — this is the only thing bounding that.
+    #   2. The un-priced retrieval. The submit-time caps gate the *provider's
+    #      estimate*, and retrieval_composites explicitly proceeds on
+    #      confirmation when that estimate comes back None, naming this gate as
+    #      the backstop. Nothing else stands behind that path.
+    #
+    # Raised 2 -> 8 GiB accordingly: 2 GiB was chosen as a memory number and
+    # silently amounted to a ~40-granule ceiling, which is under two days of
+    # TEMPO NO2 over North America — a limit on ordinary questions, imposed by
+    # a setting whose stated reason no longer applied. 8 GiB is ~160 granules
+    # and sized to the disk it actually protects.
+    #
+    # NOT a granule cap by another name, and there is no other one: the knob
+    # that looked like it (satellite_max_results_cap) was dead code and was
+    # deleted rather than left to imply a guarantee it never made.
     bundle_open_max_uncompressed_bytes: int = field(
-        default_factory=lambda: max(1, _int_env("BUNDLE_OPEN_MAX_UNCOMPRESSED_BYTES", 2 * 1024 ** 3))
+        default_factory=lambda: max(1, _int_env("BUNDLE_OPEN_MAX_UNCOMPRESSED_BYTES", 8 * 1024 ** 3))
+    )
+    # The ceiling on a single dask chunk, and with it the pipeline's whole
+    # memory profile: a chunk is the unit every task allocates, so peak RAM is
+    # roughly this times the in-flight task count (dask num_workers=2, see
+    # services/open_handle.py) times the intermediates one expression holds.
+    # It is what makes memory constant in granule count rather than a property
+    # of the layout the provider happened to write — see _open_groups_bounded.
+    #
+    # Swept on the shape that used to die — a 16-granule time-mean over
+    # contiguous 2950x5771 float64 members. Four interleaved repetitions,
+    # median, so disk-cache drift hits every case alike (a single-shot sweep of
+    # this is worth nothing; the first pass read 14.1 s where the median is
+    # 17.7 s):
+    #
+    #     unbounded -> 3069 MiB, 15.9 s      32 MiB -> 492 MiB, 17.7 s
+    #        16 MiB ->  318 MiB, 22.7 s      64 MiB -> 850 MiB, 15.8 s
+    #
+    # 32 MiB is the default: ~11% wall clock for a 6.2x cut in peak. The
+    # trade gets bad in both directions from there — 16 MiB costs 43% for
+    # another 174 MiB, while 64 MiB buys the last 11% back at 850 MiB, which
+    # is a third of the way to the spike this exists to prevent. Below 16 MiB
+    # is pointless regardless: the floor is the output field itself (~260 MiB
+    # here), not the chunks.
+    #
+    # The number to watch when tuning is concurrency, not the table: this peak
+    # is per in-flight request while dask's num_workers cap is process-wide, so
+    # N researchers plotting continents at once pay it N times. Lower it via
+    # OPEN_MAX_CHUNK_BYTES if that ever bites before the throughput does.
+    #
+    # None of this touches a provider that already chunked its file sensibly:
+    # such a file is under budget, opens once, and is left exactly as written.
+    open_max_chunk_bytes: int = field(
+        default_factory=lambda: max(1, _int_env("OPEN_MAX_CHUNK_BYTES", 32 * 1024 ** 2))
     )
     # The public chart-output directory. Mounted unauthenticated at /outputs
     # (api.py) and shared with the frontend nginx container through the
@@ -219,11 +272,29 @@ class Settings:
     cube_store_max_bytes: int = field(
         default_factory=lambda: max(1, _int_env("CUBE_STORE_MAX_BYTES", 4 * 1024 ** 3))
     )
-    # The per-cube write cap, deliberately BELOW bundle_open_max_uncompressed_
-    # bytes: writing a cube reads, compresses and writes the whole dataset,
-    # which is heavier than the lazy open the bundle cap gates.
-    cube_write_max_bytes: int = field(
-        default_factory=lambda: max(1, _int_env("CUBE_WRITE_MAX_BYTES", 1024 ** 3))
+    # The largest share of the store one cube may occupy, as a fraction of
+    # cube_store_max_bytes.
+    #
+    # A fraction rather than an absolute byte count because the only thing this
+    # still guards is *thrash*: a cube big enough to evict the whole store to
+    # fit itself, and then be evicted by the next one, is worse than never
+    # caching it. That is inherently relative to the store's size, so it should
+    # not have to be retuned whenever the store is resized. At 0.5 at least two
+    # cubes always coexist.
+    #
+    # It replaces cube_write_max_bytes, which was measured against ds.nbytes —
+    # the *uncompressed in-memory* footprint — while the store accounts entries
+    # by real bytes on disk. Zarr writes compressed: 1.9x on incompressible
+    # noise, 5.5x on a fill-heavy TEMPO grid, so the old 1 GiB cap was charging
+    # cubes up to five times what they cost and rejecting them hardest on the
+    # multi-granule retrievals the cache exists for (a 16-granule TEMPO bundle
+    # is 2.855 GiB of nbytes and ~0.5 GiB of disk). Its other stated reason —
+    # that writing is heavier than the lazy open — was true when the source
+    # arrived in granule-sized chunks and is not now: with open_max_chunk_bytes
+    # bounding the read, the same write peaks at 81.6 MiB, in the background,
+    # behind a semaphore.
+    cube_write_max_store_fraction: float = field(
+        default_factory=lambda: min(1.0, max(0.0, _float_env("CUBE_WRITE_MAX_STORE_FRACTION", 0.5)))
     )
     # T54: serve a cube straight off the handle->cube index, skipping the
     # export_result round-trip entirely. Defaults ON — that skip is the whole

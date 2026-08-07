@@ -1,5 +1,6 @@
 import asyncio
 import importlib.util
+import itertools
 import os
 import sys
 import tempfile
@@ -664,6 +665,313 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
             )
 
         return factory
+
+    @staticmethod
+    def _make_wide_granule(day: int, *, lat: int = 64, lon: int = 64, encoding: dict | None = None):
+        """A granule big enough that one chunk per member exceeds a small
+        budget. ``encoding`` controls the *on-disk* layout: ``{}`` writes the
+        variable contiguously (no HDF5 chunk grid at all), which is the case
+        that used to open as a single whole-array dask chunk."""
+        import numpy as np
+        import xarray as xr
+
+        def factory():
+            ds = xr.Dataset(
+                {"no2": (("time", "latitude", "longitude"),
+                         np.full((1, lat, lon), float(day), dtype="float64"))},
+                coords={
+                    "time": [np.datetime64(f"2026-07-{day:02d}T12:00:00")],
+                    "latitude": np.linspace(20.0, 55.0, lat, dtype="float32"),
+                    "longitude": np.linspace(-130.0, -65.0, lon, dtype="float32"),
+                },
+            )
+            ds["no2"].encoding = dict(encoding or {})
+            return ds
+
+        return factory
+
+    @staticmethod
+    def _max_chunk_bytes(da) -> int:
+        import math
+
+        return max(math.prod(sizes) for sizes in itertools.product(*da.chunks)) * da.dtype.itemsize
+
+    async def test_open_handle_bounds_chunk_size_when_members_are_contiguous(self):
+        """The memory contract: no dask chunk may exceed the byte budget,
+        whatever layout the provider chose on disk.
+
+        ``chunks={}`` does not mean "one chunk per variable per file" — it
+        means "inherit the file's HDF5 chunk grid", and *degrades* to one
+        whole-array chunk when the variable was written contiguously. A dask
+        chunk is the unit of memory: every intermediate (`.where`, the dtype
+        upcast, the reduction accumulator) is allocated one chunk at a time,
+        so a granule-sized chunk makes peak RAM granule-sized and the whole
+        pipeline's safety a property of the provider's file layout rather
+        than of this deployment. Measured on the real 2950x5771 TEMPO NA
+        grid, a 16-granule time-mean peaked at 3004 MiB with contiguous
+        members and 268 MiB with the chunks bounded at 2 MiB."""
+        if importlib.util.find_spec("dask") is None:
+            self.skipTest("dask is not installed")
+
+        from unittest.mock import patch
+
+        from tta_backend.config.settings import Settings
+        from tta_backend.services.open_handle import open_handle
+
+        # 64x64 float64 = 32 KiB per member, written contiguously.
+        self.volume.add_netcdf_bundle("obs_bundle_contiguous", {
+            "granule_20260709.nc4": {None: self._make_wide_granule(9, encoding={})},
+            "granule_20260710.nc4": {None: self._make_wide_granule(10, encoding={})},
+        })
+
+        budget = 8 * 1024
+        bounded = Settings(open_max_chunk_bytes=budget)
+        with patch("tta_backend.services.open_handle.get_settings", return_value=bounded):
+            ds = await open_handle("obs_bundle_contiguous", self.tools)
+
+        self.assertIsNotNone(ds["no2"].chunks)
+        self.assertLessEqual(self._max_chunk_bytes(ds["no2"]), budget)
+
+    async def test_open_handle_keeps_an_already_bounded_on_disk_chunk_grid(self):
+        """A provider that chunked its file sensibly must be left alone.
+
+        Bounding is not "impose our shape on everything": a dask chunk that
+        straddles the HDF5 chunk grid makes one read into several overlapping
+        decompressions, so re-chunking a file already under budget would cost
+        throughput and buy no memory. The ceiling is a ceiling, not a
+        target."""
+        if importlib.util.find_spec("dask") is None:
+            self.skipTest("dask is not installed")
+
+        from unittest.mock import patch
+
+        from tta_backend.config.settings import Settings
+        from tta_backend.services.open_handle import open_handle
+
+        # 16x16 float64 = 2 KiB per HDF5 chunk, comfortably under the budget.
+        chunked = {"chunksizes": (1, 16, 16), "zlib": True, "complevel": 1}
+        self.volume.add_netcdf_bundle("obs_bundle_prechunked", {
+            "granule_20260709.nc4": {None: self._make_wide_granule(9, encoding=chunked)},
+            "granule_20260710.nc4": {None: self._make_wide_granule(10, encoding=chunked)},
+        })
+
+        bounded = Settings(open_max_chunk_bytes=8 * 1024)
+        with patch("tta_backend.services.open_handle.get_settings", return_value=bounded):
+            ds = await open_handle("obs_bundle_prechunked", self.tools)
+
+        lat, lon = ds["no2"].dims.index("latitude"), ds["no2"].dims.index("longitude")
+        self.assertEqual(max(ds["no2"].chunks[lat]), 16)
+        self.assertEqual(max(ds["no2"].chunks[lon]), 16)
+
+    async def test_reducing_a_bundle_never_holds_the_whole_bundle_in_memory(self):
+        """The property the whole ceiling exists for: a reduction over N
+        granules must cost a bounded amount of RAM, not N granules' worth.
+
+        This is what a "15+ granule" day (a genuinely ordinary request — one
+        day of TEMPO NO2 over North America) used to do to the backend: the
+        kernel SIGKILLed uvicorn mid-turn, which the frontend renders as
+        "network error". Answering it by capping the granule count would
+        refuse a legitimate question; the fix is for memory not to scale with
+        it in the first place.
+
+        Asserted as "peak stays under the size of the bundle itself" because
+        that is the honest statement of streaming — the reduction reads every
+        byte but never has more than a working set of them live. Measured on
+        this shape: 153 MiB peak unbounded (2.4x the bundle) against 28 MiB
+        bounded."""
+        if importlib.util.find_spec("dask") is None:
+            self.skipTest("dask is not installed")
+
+        import gc
+        import tracemalloc
+        from unittest.mock import patch
+
+        from tta_backend.config.settings import Settings
+        from tta_backend.services.open_handle import open_handle
+
+        members, size = 8, 1024
+        granule_bytes = size * size * 8  # float64
+        self.volume.add_netcdf_bundle("obs_bundle_streaming", {
+            f"granule_2026070{d}.nc4": {None: self._make_wide_granule(d, lat=size, lon=size, encoding={})}
+            for d in range(1, members + 1)
+        })
+
+        bounded = Settings(open_max_chunk_bytes=1024 * 1024)
+        with patch("tta_backend.services.open_handle.get_settings", return_value=bounded):
+            ds = await open_handle("obs_bundle_streaming", self.tools)
+
+        da = ds["no2"]
+        gc.collect()
+        tracemalloc.start()
+        tracemalloc.reset_peak()
+        try:
+            da.where(da > -1).mean(dim="time", skipna=True).values
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+
+        self.assertLess(peak, granule_bytes * members)
+
+    async def test_open_handle_bounds_a_single_granule_export_too(self):
+        """A bare (non-bundle) export gets the same ceiling as a bundle
+        member.
+
+        It cannot grow with granule count, but it was the one path that
+        opened with no dask at all — so a reduction over one continental
+        granule materialized the full float64 grid plus every intermediate
+        eagerly, which is the same spike in miniature and the same
+        one-expression-away-from-OOM shape. There is no reason for the two
+        paths to have different memory behavior."""
+        if importlib.util.find_spec("dask") is None:
+            self.skipTest("dask is not installed")
+
+        from unittest.mock import patch
+
+        from tta_backend.config.settings import Settings
+        from tta_backend.services.open_handle import open_handle
+
+        self.volume.add_netcdf("obs_single_wide", {None: self._make_wide_granule(9, encoding={})})
+
+        budget = 8 * 1024
+        bounded = Settings(open_max_chunk_bytes=budget)
+        with patch("tta_backend.services.open_handle.get_settings", return_value=bounded):
+            ds = await open_handle("obs_single_wide", self.tools)
+        # A lazy single-file open keeps the export file open for as long as the
+        # Dataset lives — that is the point of it — and on Windows an open
+        # handle blocks the volume's tempdir cleanup. A bundle needs no such
+        # care here because its members are read out of the extract cache, not
+        # out of the handle volume.
+        self.addCleanup(ds.close)
+
+        self.assertIsNotNone(ds["no2"].chunks)
+        self.assertLessEqual(self._max_chunk_bytes(ds["no2"]), budget)
+
+    async def test_a_packed_integer_variable_decodes_to_float32_not_float64(self):
+        """CF unpacking must not widen past the precision the file actually
+        holds.
+
+        ``scale_factor``/``add_offset`` are usually stored float64, and
+        xarray takes the decoded dtype from *them*, so an int16-on-disk
+        variable lands in memory as float64 — 4x the bytes for zero extra
+        information, since int16 carries ~4.5 decimal digits and float32
+        holds ~7. Every downstream intermediate then inherits that width.
+
+        Deliberately scoped to integer packing narrower than float32's
+        mantissa. A variable that is *natively* float64 on disk keeps
+        float64: narrowing that would be a scientific decision about
+        precision, not a memory optimization, and it is not one this
+        function is entitled to make (see the sibling test)."""
+        import numpy as np
+        import xarray as xr
+
+        from tta_backend.services.open_handle import open_handle
+
+        def packed():
+            ds = xr.Dataset(
+                {"no2": (("time", "latitude", "longitude"), [[[1.5, 2.5], [3.5, 4.5]]])},
+                coords={
+                    "time": [np.datetime64("2026-07-09T12:00:00")],
+                    "latitude": [40.0, 41.0],
+                    "longitude": [-75.0, -74.0],
+                },
+            )
+            ds["no2"].encoding = {
+                "dtype": "int16",
+                "scale_factor": np.float64(0.001),
+                "_FillValue": np.int16(-999),
+            }
+            return ds
+
+        self.volume.add_netcdf("obs_packed", {None: packed})
+
+        ds = await open_handle("obs_packed", self.tools)
+        self.addCleanup(ds.close)
+
+        self.assertEqual(ds["no2"].dtype, np.dtype("float32"))
+        np.testing.assert_allclose(
+            np.asarray(ds["no2"].values).ravel(), [1.5, 2.5, 3.5, 4.5], rtol=1e-5,
+        )
+
+    async def test_the_chunk_ceiling_budgets_for_the_width_the_decode_materializes(self):
+        """The ceiling must account for the widest array a chunk passes
+        through, not the narrowest one it ends up as.
+
+        CF unpacking reads int16 and produces float64 (the scale_factor's
+        dtype); ``_narrow_packed_dtypes`` then casts that down to float32. The
+        ceiling ran on the narrowed result, so it sized chunks at 4 bytes a
+        cell for a decode that transiently materializes 8 — handing packed
+        variables twice the cells, and twice the memory, of an identically
+        budgeted float64 one. Measured on a 2048x2048 grid at an 8 MiB budget:
+        56.2 MiB peak for the packed variable against 33.2 MiB for the native
+        float64, for chunks the ceiling believed were the same size.
+
+        Asserted as "same cells per chunk" rather than as a memory number: the
+        multiple over the budget is inherent (dask holds several chunks and
+        their intermediates at once) and machine-dependent, but two variables
+        whose cells cost the same to materialize must be divided the same
+        way."""
+        if importlib.util.find_spec("dask") is None:
+            self.skipTest("dask is not installed")
+
+        import math
+
+        import numpy as np
+        import xarray as xr
+        from unittest.mock import patch
+
+        from tta_backend.config.settings import Settings
+        from tta_backend.services.open_handle import open_handle
+
+        def granule(encoding, dtype):
+            def factory():
+                ds = xr.Dataset(
+                    {"no2": (("lat", "lon"), np.full((256, 256), 1.5, dtype=dtype))},
+                    coords={"lat": np.arange(256.0), "lon": np.arange(256.0)},
+                )
+                ds["no2"].encoding = dict(encoding)
+                return ds
+
+            return factory
+
+        packed = {"dtype": "int16", "scale_factor": np.float64(0.001), "_FillValue": np.int16(-999)}
+        self.volume.add_netcdf("obs_packed_chunks", {None: granule(packed, "float32")})
+        self.volume.add_netcdf("obs_f64_chunks", {None: granule({}, "float64")})
+
+        bounded = Settings(open_max_chunk_bytes=16 * 1024)
+        with patch("tta_backend.services.open_handle.get_settings", return_value=bounded):
+            packed_ds = await open_handle("obs_packed_chunks", self.tools)
+            self.addCleanup(packed_ds.close)
+            f64_ds = await open_handle("obs_f64_chunks", self.tools)
+            self.addCleanup(f64_ds.close)
+
+        def cells_per_chunk(da):
+            return max(math.prod(sizes) for sizes in itertools.product(*da.chunks))
+
+        self.assertEqual(
+            cells_per_chunk(packed_ds["no2"]), cells_per_chunk(f64_ds["no2"]),
+        )
+
+    async def test_a_natively_float64_variable_keeps_its_precision(self):
+        """The boundary on the narrowing above, and the reason it is drawn
+        where it is.
+
+        A file that genuinely stores float64 is asserting that it has
+        precision worth storing. Halving it would shave ~9 significant digits
+        off every statistic the pipeline reports in exchange for memory the
+        chunk ceiling already bounds — a trade about scientific meaning, made
+        silently, in the layer furthest from anyone who could judge it."""
+        import numpy as np
+
+        from tta_backend.services.open_handle import open_handle
+
+        self.volume.add_netcdf(
+            "obs_native_f64", {None: self._make_wide_granule(9, lat=4, lon=4, encoding={})},
+        )
+
+        ds = await open_handle("obs_native_f64", self.tools)
+        self.addCleanup(ds.close)
+
+        self.assertEqual(ds["no2"].dtype, np.dtype("float64"))
 
     async def test_open_handle_concats_a_multi_granule_bundle_on_time(self):
         import xarray as xr
@@ -1410,11 +1718,15 @@ class OpenNetcdfUnreadableFileTests(unittest.TestCase):
     "open_handle lazy/eager equivalence test dependencies are not installed",
 )
 class OpenNetcdfLazyVsEagerEquivalenceTests(unittest.TestCase):
-    """T45: a bare (non-bundle) export opens via _open_netcdf(path) eagerly,
-    while a bundle member opens via _open_netcdf(path, chunks={}) with dask
-    chunks. Nothing pinned that the two paths mask/aggregate identically --
-    a dask-related regression in one path could silently diverge from the
-    other, surfacing as a subtly different mean rather than a test failure."""
+    """T45: _open_netcdf can open a file eagerly (chunks=None) or dask-backed,
+    and nothing pinned that the two mask/aggregate identically -- a dask-
+    related regression in one could silently diverge from the other,
+    surfacing as a subtly different mean rather than a test failure.
+
+    Every production caller now passes chunks (the open-time ceiling, see
+    _open_groups_bounded), so the eager mode survives only as the reference
+    the chunked answer is checked against -- which is exactly the job this
+    test gives it."""
 
     def setUp(self):
         import tempfile

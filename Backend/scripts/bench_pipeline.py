@@ -259,7 +259,14 @@ def _cube_and_reopen(ds, variable: str | None):
     from tta_backend.services import cube_cache
 
     store = tempfile.mkdtemp(prefix="bench-cube-store-")
-    with unittest.mock.patch.dict(os.environ, {"CUBE_STORE_DIR": store, "CUBE_WRITE_MAX_BYTES": str(64 * 1024 ** 3)}):
+    # A store big enough that the size policy never fires: the benchmark is
+    # measuring the write, not the cap. The cap is a fraction of the store now,
+    # so raising the store is what disables it.
+    with unittest.mock.patch.dict(os.environ, {
+        "CUBE_STORE_DIR": store,
+        "CUBE_STORE_MAX_BYTES": str(64 * 1024 ** 3),
+        "CUBE_WRITE_MAX_STORE_FRACTION": "1.0",
+    }):
         get_settings.cache_clear()
         try:
             if not cube_cache.write_cube(ds, "bench"):
