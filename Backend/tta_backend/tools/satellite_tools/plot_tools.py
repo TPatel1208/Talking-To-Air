@@ -691,15 +691,22 @@ def _related_variables(da, col_info: dict | None, ds=None) -> dict:
     is the opened DataArray's (leaf) name."""
     col_info = col_info or {}
     variables = col_info.get("variables")
-    if ds is not None and getattr(ds, "data_vars", None):
-        variables = _inventory_records(ds)
-    return related_variables(
-        variables,
-        groups=col_info.get("groups"),
-        primary_var=col_info.get("primary_var"),
-        quality_flag_var=col_info.get("quality_flag_var"),
-        plotted_variable=da.name or "",
-    )
+    # Timed alongside "evidence" because both read the opened Dataset and only
+    # their split says which one owns the provenance cost -- this pass builds
+    # an inventory and classifies it, which touches metadata rather than
+    # values, so a large share here would be a different bug than a large
+    # share there.
+    with phase_timer("related_variables", from_dataset=ds is not None) as timing:
+        if ds is not None and getattr(ds, "data_vars", None):
+            variables = _inventory_records(ds)
+        timing["variables"] = len(variables or [])
+        return related_variables(
+            variables,
+            groups=col_info.get("groups"),
+            primary_var=col_info.get("primary_var"),
+            quality_flag_var=col_info.get("quality_flag_var"),
+            plotted_variable=da.name or "",
+        )
 
 
 def _evi_leaf(name) -> str:
@@ -836,6 +843,66 @@ def _evidence(ds, da, col_info: dict | None, region: dict | None) -> list[dict]:
     """
     if ds is None or not hasattr(ds, "data_vars") or region is None:
         return []
+    with phase_timer("evidence", science_cells=int(getattr(da, "size", 0))) as _timing:
+        facts = _evidence_facts(ds, da, col_info, region, _timing)
+    return facts
+
+
+class _DeferredScienceMean:
+    """The plotted variable's area-weighted mean, computed on first use.
+
+    Only ``pct_of_science`` on an *uncertainty* band reads this, and most
+    products carry no uncertainty band at all. It used to be computed up front
+    for every chart: a live trace on 2026-08-07 (TEMPO NO2, 36 granules)
+    classified 2 bands, read 0, produced 0 facts -- and spent **226 s**, 26%
+    of an 870 s turn, on this one value that nothing then consumed.
+
+    It is that expensive because the aggregation result stays **dask-backed**
+    (verified: ``AggregationService.aggregate`` returns a lazy array), so every
+    pass over it re-runs the whole graph back to the source granules. The old
+    code made three: ``da.values`` for a finiteness pre-check, then
+    ``area_weighted_mean``'s own ``np.asarray(da.values)`` and its weighted
+    reduction. Two of those are removed here --
+
+    * the pre-check is redundant: ``area_weighted_mean`` already raises when
+      nothing is finite, and ``None`` on that is exactly what this returns;
+    * the array is materialized **once** up front, so the two passes inside
+      ``area_weighted_mean`` run against memory rather than the dask graph.
+
+    Materializing is bounded and safe: ``da`` here is the *reduced* 2-D field
+    the chart is drawn from (~17 M cells, ~68 MB at float32), not the hundreds
+    of millions of cells behind it.
+
+    ``None`` means "no finite data" -- the contract the previous code
+    expressed by testing ``finite.size`` first, and preserved here by treating
+    ``area_weighted_mean``'s ValueError the same way. Evidence is purely
+    additive, so a failure here must cost the chart nothing.
+    """
+
+    def __init__(self, da):
+        self._da = da
+        self._value: float | None = None
+        self.computed = False
+
+    def __call__(self) -> float | None:
+        if not self.computed:
+            self.computed = True
+            self._value = self._compute()
+        return self._value
+
+    def _compute(self) -> float | None:
+        try:
+            da = self._da
+            if getattr(da, "chunks", None) is not None:
+                da = da.compute()
+            return area_weighted_mean(da)
+        except Exception:
+            return None
+
+
+def _evidence_facts(ds, da, col_info: dict | None, region: dict | None, timing: dict) -> list[dict]:
+    """The body of :func:`_evidence`, split out only so the timer above can
+    wrap it and still record the band counts learned partway through."""
     col_info = col_info or {}
     facts: list[dict] = []
     science_leaf = _evi_leaf(da.name)
@@ -844,12 +911,10 @@ def _evidence(ds, da, col_info: dict | None, region: dict | None) -> list[dict]:
     # area-weighted (Finding #13) so the pct-of-science ratio divides a
     # weighted band mean by a weighted science mean -- like by like -- rather
     # than mixing a weighted numerator with an unweighted denominator.
-    try:
-        finite = np.asarray(da.values, dtype="float64")
-        finite = finite[np.isfinite(finite)]
-        science_mean = area_weighted_mean(da) if finite.size else None
-    except Exception:
-        science_mean = None
+    #
+    # Deferred (see _DeferredScienceMean): only an *uncertainty* band reads it,
+    # and most products have none.
+    science_mean = _DeferredScienceMean(da)
 
     # Locate the QA-flag variable purely to EXCLUDE it from the context/
     # uncertainty loop below. Its pass rate is not an evidence fact: T55 counts
@@ -872,6 +937,12 @@ def _evidence(ds, da, col_info: dict | None, region: dict | None) -> list[dict]:
     except Exception:
         return facts
 
+    # Counted, not just timed: the per-band pass below reads the *unaggregated*
+    # Dataset, so "how many bands" is what turns this phase's duration into a
+    # per-band cost -- and a per-band cost is the number that says whether the
+    # fix is to read fewer bands or to read each one over less data.
+    timing["bands_classified"] = len(classified)
+    bands_read = 0
     for entry in classified:
         role, confidence, name = entry["role"], entry["confidence"], entry["name"]
         leaf, norm = entry["leaf"], _evi_leaf(entry["leaf"])
@@ -888,16 +959,24 @@ def _evidence(ds, da, col_info: dict | None, region: dict | None) -> list[dict]:
         # defined summary -- omit rather than invent one.
         if role == "quality" and not is_uncertainty:
             continue
+        bands_read += 1
+        timing["band_cells"] = timing.get("band_cells", 0) + int(getattr(ds[name], "size", 0))
         try:
             fact = _band_mean_fact(
                 ds[name], leaf, role, region,
-                pct_of_science=science_mean if is_uncertainty else None,
+                pct_of_science=science_mean() if is_uncertainty else None,
             )
         except Exception:
             fact = None
         if fact:
             facts.append(fact)
 
+    timing["bands_read"] = bands_read
+    timing["facts"] = len(facts)
+    # Whether the deferred mean was actually forced. The live trace that
+    # motivated this recorded bands_read=0 -- so a "true" here alongside a
+    # zero band count would mean the deferral had regressed.
+    timing["science_mean_computed"] = science_mean.computed
     return facts
 
 
@@ -1005,9 +1084,14 @@ def _attach_reproducibility(
     ds=None,
 ) -> dict:
     aggregation_label = agg_meta["aggregation_label"] if agg_meta else aggregation
-    payload["provenance"] = _provenance(
-        handles, da, region_name, aggregation_label, agg_meta, col_info, ds=ds, region=region,
-    )
+    # The outer span. It runs *after* the "render" timer closes and before the
+    # tool returns, which is precisely the window that read as a hole in the
+    # 2026-08-07 traces (107s on 18 granules, 303s on 36) -- charged to no
+    # phase because every phase then was either data work or the model.
+    with phase_timer("provenance", science_cells=int(getattr(da, "size", 0))):
+        payload["provenance"] = _provenance(
+            handles, da, region_name, aggregation_label, agg_meta, col_info, ds=ds, region=region,
+        )
     payload["query"] = _query_definition(da, region, aggregation_label, chart_parameters, agg_meta)
     payload["export"] = {
         "type": payload.get("type"),
