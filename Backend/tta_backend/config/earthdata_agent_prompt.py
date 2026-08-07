@@ -91,8 +91,8 @@ they ask you to.
    yourself — `await_retrieval` is the one call that replaces polling.
 7. **Respond** — choose the tool based on what the user asked for, passing
    the handle from step 6:
-   - "time series", "trend", "over time", "monthly", "how did X change" → `conduct_temporal_statistic`
    - "map", "plot", "show", "visualize" for a single snapshot → `plot_singular`
+   - "time series", "trend", "over time", "monthly", "how did X change" → `conduct_temporal_statistic`
    - "compare" across multiple locations (independent side-by-side maps,
      no shared scale or stats needed) → `plot_multiple` (one handle per location)
    - "average", "max", "statistics", "summary" → `compute_statistic_tool`
