@@ -1,4 +1,7 @@
+import asyncio
 import logging
+import threading
+import time
 from contextvars import ContextVar
 
 from langchain.tools import tool
@@ -29,6 +32,34 @@ DEFAULT_PARAM_CODE = "42602"  # NO2
 # Each asyncio Task (one per HTTP request) gets its own copy via ContextVar
 # isolation, so cache entries never leak across requests.
 _request_cache: ContextVar[dict | None] = ContextVar("_aqs_request_cache", default=None)
+
+# EPA AQS enforces "no more than 10 requests per minute" per key and reserves
+# the right to disable an account without notice for violating it
+# (https://aqs.epa.gov/aqsweb/documents/data_api.html). AQS_EMAIL/AQS_KEY are
+# one shared app-level credential (settings.aqs_api_email/aqs_api_key), not
+# per-user, so this pacing must be process-wide, not per-caller — otherwise
+# concurrent chat sessions each pass their own unthrottled check and the
+# *sum* blows the ceiling. 6.5s keeps every caller under 10/min with margin
+# even at the boundary of a rolling window. Mirrors
+# GeocodingService._reserve_throttle_slot (utils/plotting.py) for the
+# identical reason: a threading.Lock (not asyncio.Lock) so the sync geocode()
+# equivalent isn't needed here, but the read-modify-write race it guards
+# against is the same one — two concurrent calls both reading a stale
+# "last request" timestamp and both passing the gate at once.
+_AQS_MIN_INTERVAL_SECONDS = 6.5
+_aqs_throttle_lock = threading.Lock()
+_aqs_last_request = 0.0
+
+
+def _reserve_aqs_throttle_slot() -> float:
+    """Atomically claim the next allowed AQS request slot and return how long
+    the caller must still wait for it."""
+    global _aqs_last_request
+    with _aqs_throttle_lock:
+        now = time.monotonic()
+        next_slot = max(now, _aqs_last_request + _AQS_MIN_INTERVAL_SECONDS)
+        _aqs_last_request = next_slot
+        return max(0.0, next_slot - now)
 
 # Initial bbox half-width for street-level addresses (degrees, ~17 miles).
 # Nominatim returns a ~10m box for a street address which AQS returns empty for;
@@ -73,6 +104,9 @@ async def _aqs_get(endpoint: str, params: Dict[str, Any]) -> Dict[str, Any]:
         _request_cache.set(cache)
     if cache_key in cache:
         return cache[cache_key]
+    wait_seconds = _reserve_aqs_throttle_slot()
+    if wait_seconds > 0:
+        await asyncio.sleep(wait_seconds)
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.get(f"{AQS_BASE_URL}/{endpoint}", params=full_params)
     if resp.status_code >= 400:
