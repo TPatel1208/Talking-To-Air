@@ -210,6 +210,22 @@ def _no_data_message(kind: str, param_code: str, bdate_obj: date, edate_obj: dat
     )
 
 
+def _no_data_response(message: str) -> Dict[str, Any]:
+    """Structured empty-result tool response, not a raised exception.
+
+    LangGraph's ToolNode only converts a ToolInvocationError (bad tool args)
+    into a ToolMessage automatically; any other exception — including
+    RuntimeError, and ToolException isn't special-cased in this version
+    either — escapes _execute_tool_async and kills the whole agent turn
+    (live 2026-08-07: a stale date banner made "this week" resolve into an
+    unpublished window, and the resulting RuntimeError crashed the ground
+    sensor agent instead of letting it read the message and apply its own
+    monitor-fallback rules). Returning this dict keeps the message on the
+    normal tool-result path the model actually sees.
+    """
+    return {"Header": [{"status": "no_data", "note": message}], "Body": []}
+
+
 async def _fetch_active_monitors(bbox, param_code, bdate_str, edate_str, k=1):
     best = []
     for expansion in _BBOX_EXPANSIONS:
@@ -750,11 +766,14 @@ async def get_daily_summary(
             "returning quarterly period rows instead. Call with a shorter range for daily detail."
         )
 
-    records, endpoint, _ = await _fetch_summary(
-        fetch_prefix, param_code, bdate_obj, edate_obj, bdate_str, edate_str,
-        state_code, county_code, site_number, cbsa_code,
-        minlat, maxlat, minlon, maxlon, cbdate, cedate, pollutant_standard,
-    )
+    try:
+        records, endpoint, _ = await _fetch_summary(
+            fetch_prefix, param_code, bdate_obj, edate_obj, bdate_str, edate_str,
+            state_code, county_code, site_number, cbsa_code,
+            minlat, maxlat, minlon, maxlon, cbdate, cedate, pollutant_standard,
+        )
+    except RuntimeError as exc:
+        return _no_data_response(str(exc))
     body, total_sites, total_periods = _aggregate_summary_records(records, requested_period)
     header = _build_summary_header(len(body), endpoint, param_code, bdate_obj, edate_obj, pollutant_standard)
     header[0]["total_sites_matched"] = total_sites
@@ -802,11 +821,14 @@ async def get_quarterly_summary(
     min, max, peak quarter/value, and coverage.
     """
     bdate_obj, edate_obj, bdate_str, edate_str = _resolve_dates(bdate, edate)
-    records, endpoint, _ = await _fetch_summary(
-        "quarterlyData", param_code, bdate_obj, edate_obj, bdate_str, edate_str,
-        state_code, county_code, site_number, cbsa_code,
-        minlat, maxlat, minlon, maxlon, cbdate, cedate, pollutant_standard,
-    )
+    try:
+        records, endpoint, _ = await _fetch_summary(
+            "quarterlyData", param_code, bdate_obj, edate_obj, bdate_str, edate_str,
+            state_code, county_code, site_number, cbsa_code,
+            minlat, maxlat, minlon, maxlon, cbdate, cedate, pollutant_standard,
+        )
+    except RuntimeError as exc:
+        return _no_data_response(str(exc))
     body, total_sites, total_periods = _aggregate_summary_records(records, "quarterly")
     header = _build_summary_header(len(body), endpoint, param_code, bdate_obj, edate_obj, pollutant_standard)
     header[0]["total_sites_matched"] = total_sites
@@ -852,11 +874,14 @@ async def get_annual_summary(
     peak year/value, and coverage.
     """
     bdate_obj, edate_obj, bdate_str, edate_str = _resolve_dates(bdate, edate)
-    records, endpoint, _ = await _fetch_summary(
-        "annualData", param_code, bdate_obj, edate_obj, bdate_str, edate_str,
-        state_code, county_code, site_number, cbsa_code,
-        minlat, maxlat, minlon, maxlon, cbdate, cedate, pollutant_standard,
-    )
+    try:
+        records, endpoint, _ = await _fetch_summary(
+            "annualData", param_code, bdate_obj, edate_obj, bdate_str, edate_str,
+            state_code, county_code, site_number, cbsa_code,
+            minlat, maxlat, minlon, maxlon, cbdate, cedate, pollutant_standard,
+        )
+    except RuntimeError as exc:
+        return _no_data_response(str(exc))
     body, total_sites, total_periods = _aggregate_summary_records(records, "annual")
     header = _build_summary_header(len(body), endpoint, param_code, bdate_obj, edate_obj, pollutant_standard)
     header[0]["total_sites_matched"] = total_sites
@@ -939,11 +964,14 @@ async def find_exceedance_days(
     if (edate_obj - bdate_obj).days > 365:
         edate_obj = bdate_obj + timedelta(days=365)
         edate_str = edate_obj.strftime("%Y%m%d")
-    records, endpoint, filter_params = await _fetch_summary(
-        "dailyData", param_code, bdate_obj, edate_obj, bdate_str, edate_str,
-        state_code, county_code, site_number, cbsa_code,
-        minlat, maxlat, minlon, maxlon, None, None, pollutant_standard,
-    )
+    try:
+        records, endpoint, filter_params = await _fetch_summary(
+            "dailyData", param_code, bdate_obj, edate_obj, bdate_str, edate_str,
+            state_code, county_code, site_number, cbsa_code,
+            minlat, maxlat, minlon, maxlon, None, None, pollutant_standard,
+        )
+    except RuntimeError as exc:
+        return _no_data_response(str(exc))
 
     # Extract the measurement value for each day
     def _val(r):
@@ -1057,7 +1085,7 @@ async def get_sample_data(
 
     if not records:
         logger.info("aqs_no_data endpoint=%s params=%r", endpoint, filter_params)
-        raise RuntimeError(
+        return _no_data_response(
             _no_data_message("hourly sample", param_code, bdate_obj, edate_obj)
         )
 

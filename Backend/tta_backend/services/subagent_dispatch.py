@@ -122,7 +122,7 @@ async def run_ground(
             record_agent_request("ground_sensor", outcome)
         return AgentResult(text=text, artifacts=artifact_refs)
 
-    enriched_task = _inject_ground_context(task, monitor_context)
+    enriched_task = _inject_ground_context(_current_date_preamble() + task, monitor_context)
     result = await _invoke(enriched_task)
     if _is_ground_tool_failure(result.text):
         logger.warning(
@@ -807,7 +807,8 @@ def _task_specifies_new_area(task: str) -> bool:
 
 
 def _current_date_preamble(now: datetime | None = None) -> str:
-    """Authoritative current-date banner prepended to every satellite task.
+    """Authoritative current-date banner prepended to every satellite and
+    ground-sensor task.
 
     Root cause A (live 2026-07-19): the sub-agent runs on a fast model whose
     training prior can trail the real clock by years. Shown only a bare
@@ -817,7 +818,17 @@ def _current_date_preamble(now: datetime | None = None) -> str:
     date is stated as authoritative ground truth, with the future-refusal
     wording explicitly disarmed and doubt routed to a tool check, not a
     refusal from memory. The system prompt (earthdata_agent_prompt) reinforces
-    the same rule; this banner is what makes the concrete date available."""
+    the same rule; this banner is what makes the concrete date available.
+
+    Root cause B (live 2026-08-07): the ground sensor agent had no equivalent
+    banner at all and instead relied on a hardcoded "TODAY IS ..." literal
+    baked into its system prompt at process boot (ground_sensor_agent_prompt),
+    which went stale the moment real time moved past it — a relative
+    expression like "this week" silently resolved against the wrong month and
+    the AQS tools correctly rejected the resulting not-yet-published date
+    range. Reusing this same per-turn banner for ground tasks keeps both
+    sub-agents' notion of "now" accurate without a second stale constant to
+    maintain."""
     now = now or datetime.now(timezone.utc)
     stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     return (
