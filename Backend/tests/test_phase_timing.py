@@ -172,7 +172,21 @@ class PhaseLabelsetTests(unittest.TestCase):
             # qa_pass_rate (T55) is its own phase, not part of "mask": it is an
             # eager reduction added to the masking path, and the whole point of
             # timing it separately is to see what the honesty feature costs.
-            {"export", "extract", "open", "crop", "mask", "aggregate", "render", "qa_pass_rate"},
+            #
+            # llm_call/llm_retry_sleep/agent_step sit *above* the data
+            # pipeline (see tests/test_llm_timing.py): a 2026-08-07 trace left
+            # 29% of a 372s turn attributable to nothing because every phase
+            # here was data work and model latency had nowhere to land.
+            #
+            # provenance/evidence/related_variables (tests/test_provenance_timing.py)
+            # close the last hole those two traces left: 303s of an 870s turn
+            # spent building provenance from the unaggregated Dataset, after
+            # the render timer had already closed.
+            {
+                "export", "extract", "open", "crop", "mask", "aggregate", "render",
+                "qa_pass_rate", "llm_call", "llm_retry_sleep", "agent_step",
+                "provenance", "evidence", "related_variables",
+            },
         )
 
 

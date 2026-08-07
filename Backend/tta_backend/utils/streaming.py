@@ -20,6 +20,7 @@ from typing import Any, Callable, Optional
 
 from tta_backend.config.workflow_stages import STAGE_WORKING
 from tta_backend.utils.message_utils import flatten_text_content
+from tta_backend.utils.phase_timing import record_phase
 
 logger = logging.getLogger(__name__)
 
@@ -322,6 +323,15 @@ async def stream_response(
         # If it didn't (e.g. model returned a complete message without streaming),
         # the updates fallback below will carry the response instead.
         emitted_message_tokens = False
+        # One LangGraph superstep's wall clock, and how many text chunks
+        # streamed inside it. The count is the diagnostic half: a node that
+        # streamed 400 chunks over 40s was working the whole time, whereas
+        # one that streamed *nothing* for 107s and then delivered a finished
+        # message was blocked on a single provider call -- and those two look
+        # identical in a duration alone. The silent case is the one that
+        # went unattributed in the 2026-08-07 trace.
+        step_started = loop.time()
+        streamed_chunks = 0
         try:
             async for stream_mode, chunk in agent.astream(
                 {"messages": [{"role": "user", "content": user_input}]},
@@ -338,11 +348,25 @@ async def stream_response(
                     text = _message_text_chunk(message)
                     if text:
                         emitted_message_tokens = True
+                        streamed_chunks += 1
                         await publish("text", text)
                     continue
 
                 if stream_mode != "updates":
                     continue
+
+                # Recorded once per chunk rather than once per node: the
+                # duration is the gap since the previous superstep, and
+                # charging it again to each node in a multi-node chunk would
+                # inflate the histogram by the fan-out.
+                record_phase(
+                    "agent_step",
+                    loop.time() - step_started,
+                    node=",".join(chunk) or "unknown",
+                    streamed_chunks=streamed_chunks,
+                )
+                step_started = loop.time()
+                streamed_chunks = 0
 
                 # updates stream owns tool calls, tool results, and images only.
                 # AIMessage content is intentionally not published here — the

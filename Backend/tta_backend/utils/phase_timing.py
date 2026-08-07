@@ -25,6 +25,39 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def record_phase(phase: str, duration_seconds: float, /, **context: Any) -> None:
+    """Record an already-measured span for ``phase``.
+
+    The context-manager form below cannot express a span whose start and end
+    arrive as two *separate* events -- a LangChain ``on_llm_start`` /
+    ``on_llm_end`` callback pair, or the gap between two chunks of an
+    ``astream``. Those call sites hold the duration and nothing else, so this
+    is the seam they record through, and :meth:`_PhaseTimer._finish` routes
+    here too rather than duplicating the log shape.
+
+    ``phase`` and ``duration_seconds`` are positional-only so a context key
+    may be named either without colliding with the parameter.
+
+    Never raises: this is on the hot path, and a telemetry failure must not
+    be the reason a turn fails. Every step (the metrics backend, the log
+    call) is inside the guard.
+    """
+    try:
+        from tta_backend.utils.metrics import observe_phase_duration
+
+        observe_phase_duration(phase, duration_seconds)
+        extra = {
+            "_event": "phase_timing",
+            "_phase": phase,
+            "_duration_seconds": round(duration_seconds, 6),
+            "_thread_id": threading.get_ident(),
+        }
+        extra.update({f"_{key}": value for key, value in context.items()})
+        logger.info("phase_timing", extra=extra)
+    except Exception:  # pragma: no cover -- defensive; see docstring
+        pass
+
+
 class _PhaseTimer:
     """Times one phase. Usable as either a sync or an async context manager --
     the pipeline crosses ``asyncio.to_thread`` boundaries, and a monotonic
@@ -48,26 +81,9 @@ class _PhaseTimer:
         return self.context
 
     def _finish(self) -> None:
-        # Never raise: this wraps the hot path, and a telemetry failure must
-        # not be the reason a turn fails. Every step below (the clock, the
-        # metrics backend, the log call) is inside the guard.
-        try:
-            if self._started is None:  # pragma: no cover -- defensive
-                return
-            duration = time.monotonic() - self._started
-            from tta_backend.utils.metrics import observe_phase_duration
-
-            observe_phase_duration(self.phase, duration)
-            extra = {
-                "_event": "phase_timing",
-                "_phase": self.phase,
-                "_duration_seconds": round(duration, 6),
-                "_thread_id": threading.get_ident(),
-            }
-            extra.update({f"_{key}": value for key, value in self.context.items()})
-            logger.info("phase_timing", extra=extra)
-        except Exception:  # pragma: no cover -- defensive; see docstring
-            pass
+        if self._started is None:  # pragma: no cover -- defensive
+            return
+        record_phase(self.phase, time.monotonic() - self._started, **self.context)
 
     def __enter__(self) -> dict[str, Any]:
         return self._start()
