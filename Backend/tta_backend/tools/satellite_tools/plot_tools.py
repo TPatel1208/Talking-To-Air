@@ -60,7 +60,7 @@ from pydantic import Field
 
 from tta_backend.config.settings import get_settings
 from tta_backend.config.workflow_stages import STAGE_RENDER
-from tta_backend.datasets.mask_info import col_info_for_short_name, resolve_mask_info, short_name_from_attrs
+from tta_backend.datasets.mask_info import col_info_for_variable, resolve_mask_info
 from tta_backend.datasets.variable_roles import classify_inventory, related_variables
 from tta_backend.earthdata_mcp.results import MCPToolError
 from tta_backend.services import scope_registry
@@ -537,25 +537,6 @@ def _build_dim_selector(dimension: str | None, dimension_value: float | None) ->
     return {dimension: dimension_value}
 
 
-def _mask_col_info(da, ds=None) -> dict:
-    """The collections.yaml/registry masking metadata for a variable,
-    resolved by the collection's short_name global attribute (T25
-    masking-execution fix) -- collection identity is a dataset-level fact,
-    so ``ds.attrs`` (the opened Dataset) is checked before the per-variable
-    ``da.attrs``. ``short_name_from_attrs`` tolerates both the lowercase
-    ``short_name`` and the CF/ACDD ``ShortName`` spelling real granules use.
-    Falls back to the variable's own name when neither carries an identity
-    marker, so a MASK_OVERRIDES quirk keyed on it still applies.
-    """
-    short_name = (
-        short_name_from_attrs(ds.attrs if ds is not None else None)
-        or short_name_from_attrs(da.attrs)
-        or da.name
-        or ""
-    )
-    return col_info_for_short_name(str(short_name).upper())
-
-
 def _time_range(da, agg_meta: dict | None = None) -> tuple[str, str]:
     """Temporal range of ``da`` -- from its time coordinate when it still has
     one, else from the aggregation meta. The fallback matters twice over: the
@@ -592,10 +573,10 @@ def _query_definition(da, region: dict | None, aggregation: str, chart_parameter
 def _dataset_facts(col_info: dict | None) -> dict:
     """Registry facts about the *collection* (T32) -- distinct from
     ``provenance["variable"]``, which names the science variable plotted,
-    not the dataset it came from. ``col_info`` is whatever ``_mask_col_info``
-    already resolved for the masking pipeline (collections.yaml, matched by
-    the opened granule's short_name attr), so this is a read of data already
-    in hand, never a new lookup."""
+    not the dataset it came from. ``col_info`` is whatever
+    ``col_info_for_variable`` already resolved for the masking pipeline
+    (collections.yaml, matched by the opened granule's short_name attr), so
+    this is a read of data already in hand, never a new lookup."""
     col_info = col_info or {}
     provider = col_info.get("provider") or ""
     instrument = col_info.get("instrument") or ""
@@ -1199,7 +1180,7 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
 
             units = masked.attrs.get("units", "")
             variable_name = masked.name or ""
-            col_info = _mask_col_info(masked, ds)
+            col_info = col_info_for_variable(masked, ds)
             try:
                 aggregation = _aggregation_service.aggregate(
                     masked,
@@ -1352,7 +1333,7 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
 
                 resolved_variable_name = masked.name or variable_name
                 units = masked.attrs.get("units", "")
-                col_info = _mask_col_info(masked, ds)
+                col_info = col_info_for_variable(masked, ds)
 
                 try:
                     aggregation = _aggregation_service.aggregate(
@@ -1545,7 +1526,7 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
             # source_ds=ds) and discloses it honestly, the same as
             # plot/stat, rather than a parallel copy that always claimed
             # "not applied".
-            col_info = _mask_col_info(masked, ds)
+            col_info = col_info_for_variable(masked, ds)
             masked, masking_provenance = _aggregation_service.resolve_and_mask(
                 masked, variable=variable_name, col_info=col_info, source_ds=ds,
             )

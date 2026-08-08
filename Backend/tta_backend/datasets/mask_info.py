@@ -78,6 +78,31 @@ def col_info_for_short_name(short_name: str | None) -> dict[str, Any]:
     return {**registry_info, **override_for(normalized)}
 
 
+def col_info_for_variable(da: Any, ds: Any = None) -> dict[str, Any]:
+    """The pinned registry entry for the variable ``da``, resolved from its
+    collection's identity marker.
+
+    Collection identity is a *dataset-level* fact, so the opened Dataset's
+    attrs are checked before the per-variable ``da.attrs``: xarray does not
+    propagate a Dataset's global attrs onto a DataArray pulled out of it, and
+    real NASA products carry the marker only on the Dataset (live-verified
+    2026-07-12: MODIS AER_DBDT AOD). A caller holding both must therefore pass
+    both -- resolving from ``da`` alone finds no collection for those
+    products, so no quality_flag_var reaches the mask and quality masking
+    silently never runs (T25 masking-execution fix).
+
+    Falls back to the variable's own name when neither carries an identity
+    marker, so a MASK_OVERRIDES quirk keyed on it still applies.
+    """
+    short_name = (
+        short_name_from_attrs(ds.attrs if ds is not None else None)
+        or short_name_from_attrs(da.attrs)
+        or da.name
+        or ""
+    )
+    return col_info_for_short_name(str(short_name).upper())
+
+
 def resolve_mask_info(
     yaml_info: dict[str, Any] | None = None,
     umm_var_variable: dict[str, Any] | None = None,

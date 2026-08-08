@@ -64,6 +64,73 @@ class ColInfoForShortNameTests(unittest.TestCase):
         self.assertEqual(info["qa_good_values"], [0])
 
 
+class ColInfoForVariableTests(unittest.TestCase):
+    """The one seam every satellite tool resolves masking metadata through.
+
+    Four tools each carried their own copy of this resolution; the copy in
+    validation_tools took only the DataArray, so for a product whose identity
+    marker lives at dataset level it resolved no collection and the pinned
+    quality mask silently never ran. Collection identity being a
+    *dataset-level* fact is the invariant this seam exists to hold.
+    """
+
+    def _dataset(self, ds_attrs, var_attrs, name="vertical_column_troposphere"):
+        import xarray as xr
+
+        return xr.Dataset(
+            {name: (("lat",), [1.0, 2.0], dict(var_attrs))},
+            coords={"lat": [10.0, 20.0]},
+            attrs=dict(ds_attrs),
+        )
+
+    def test_resolves_identity_the_dataset_carries_but_the_variable_does_not(self):
+        from tta_backend.datasets.mask_info import col_info_for_variable
+
+        ds = self._dataset({"short_name": "TEMPO_NO2_L3"}, {})
+
+        info = col_info_for_variable(ds["vertical_column_troposphere"], ds)
+
+        self.assertEqual(info["quality_flag_var"], "main_data_quality_flag")
+        self.assertEqual(info["qa_good_values"], [0])
+
+    def test_dataset_identity_wins_over_a_conflicting_variable_level_marker(self):
+        """Precedence, not merely fallback: the Dataset is the authority on
+        which collection a granule belongs to, so a stale or narrower marker
+        on the variable must not decide which pinned QA rule applies."""
+        from tta_backend.datasets.mask_info import col_info_for_variable
+
+        ds = self._dataset({"short_name": "TEMPO_NO2_L3"}, {"short_name": "TEMPO_O3TOT_L3"})
+
+        info = col_info_for_variable(ds["vertical_column_troposphere"], ds)
+
+        self.assertEqual(info["short_name"], "TEMPO_NO2_L3")
+
+    def test_falls_back_to_the_variable_marker_when_the_dataset_has_none(self):
+        from tta_backend.datasets.mask_info import col_info_for_variable
+
+        ds = self._dataset({}, {"ShortName": "TEMPO_NO2_L3"})
+
+        info = col_info_for_variable(ds["vertical_column_troposphere"], ds)
+
+        self.assertEqual(info["quality_flag_var"], "main_data_quality_flag")
+
+    def test_resolves_nothing_when_no_marker_and_the_variable_name_is_not_a_collection(self):
+        from tta_backend.datasets.mask_info import col_info_for_variable
+
+        ds = self._dataset({}, {})
+
+        self.assertEqual(col_info_for_variable(ds["vertical_column_troposphere"], ds), {})
+
+    def test_a_caller_holding_only_the_variable_may_omit_the_dataset(self):
+        from tta_backend.datasets.mask_info import col_info_for_variable
+
+        ds = self._dataset({}, {"short_name": "TEMPO_NO2_L3"})
+
+        info = col_info_for_variable(ds["vertical_column_troposphere"])
+
+        self.assertEqual(info["quality_flag_var"], "main_data_quality_flag")
+
+
 class ShortNameFromAttrsTests(unittest.TestCase):
     """AOD misrouting follow-up (2026-07-12): real granules spell the identity
     marker differently. The AER_DBDT AOD export carries CF/ACDD ``ShortName``

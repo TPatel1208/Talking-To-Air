@@ -32,6 +32,15 @@ identically whether it covered a continent or one cell until the counted extent 
 
 ### Data quality
 
+**Collection identity**:
+The marker on an opened granule naming which registered collection it belongs to, spelled either
+`short_name` or the CF/ACDD `ShortName`. It is a *dataset-level* fact and is read from the Dataset
+before the variable: xarray does not carry a Dataset's global attributes onto a variable taken out
+of it, and real products carry the marker only on the Dataset. Resolving it is what makes a pinned
+masking rule reachable at all — the tool layer has no collection id, and a science variable's name
+is not a registry key — so failing to resolve it does not raise, it silently masks nothing.
+_Avoid_: short name (only one of its two spellings), collection id (a different identifier)
+
 **Quality flag variable**:
 The sibling variable in a granule that records per-pixel retrieval quality. Identified from a
 pinned registry rule, the CF `ancillary_variables` attribute, or a single unambiguous sibling —

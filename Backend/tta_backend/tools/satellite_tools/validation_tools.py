@@ -24,7 +24,7 @@ from langchain.tools import tool
 from langchain_core.tools import BaseTool
 
 from tta_backend.config.workflow_stages import STAGE_RENDER
-from tta_backend.datasets.mask_info import col_info_for_short_name, short_name_from_attrs
+from tta_backend.datasets.mask_info import col_info_for_variable
 from tta_backend.earthdata_mcp.results import MCPToolError
 from tta_backend.preprocessing.aggregation_service import AggregationService
 from tta_backend.services.artifact_registry import build_artifact_reference
@@ -170,11 +170,6 @@ def _correlation_stats(paired: list[dict], total_ground_days: int | None = None)
     }
 
 
-def _mask_col_info(da) -> dict:
-    short_name = short_name_from_attrs(da.attrs) or da.name or ""
-    return col_info_for_short_name(str(short_name).upper())
-
-
 def _time_range(da) -> tuple[str, str]:
     if "time" not in da.coords:
         return "", ""
@@ -303,7 +298,7 @@ def make_validate_against_ground(mcp_tools: dict[str, BaseTool]):
             ground_by_site.setdefault(row["site_id"], {})[row["period"]] = row["mean"]
             ground_units_by_site.setdefault(row["site_id"], row.get("units") or "")
 
-        col_info = _mask_col_info(da)
+        col_info = col_info_for_variable(da, ds)
         satellite_units = da.attrs.get("units", "")
         variable_name = da.name or ""
 
@@ -491,7 +486,7 @@ def make_exceedance_overlay(mcp_tools: dict[str, BaseTool]):
         except RuntimeError as e:
             return json.dumps({"error": f"No ground data found over '{location}': {e}"})
 
-        col_info = _mask_col_info(da)
+        col_info = col_info_for_variable(da, ds)
         satellite_units = da.attrs.get("units", "")
         variable_name = da.name or ""
 
