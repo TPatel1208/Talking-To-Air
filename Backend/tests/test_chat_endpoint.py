@@ -210,6 +210,56 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(png_response.headers["content-type"], "image/png")
         self.assertEqual(png_response.content, b"\x89PNG\r\n\x1a\n")
 
+    async def test_chart_csv_export_keeps_the_user_bound_for_every_streamed_chunk(self):
+        """Not just the first one.
+
+        The handler returns as soon as materialize_first_chunk has the opening
+        chunk; StreamingResponse pulls the rest afterwards, outside anything
+        the handler wrapped. This export opens a source handle per panel, so a
+        heatmap_multi comparison reaches panel B on a later pull -- and a
+        workspace-bound MCP tool called with no user refuses outright
+        (earthdata_mcp/workspace.py: "refusing to mint a shared 'user-None'
+        workspace"), which _replay_then_stream turns into a silently truncated
+        download carrying an "EXPORT INCOMPLETE" trailer.
+        """
+        payload = {
+            "chart_id": "chart-1",
+            "title": "TEMPO over Texas",
+            "export": {"type": "heatmap_multi"},
+            "user_id": self.user.id,
+        }
+        self.api.app.state.earthdata_mcp_manager = SimpleNamespace(state="ready", tools={})
+        self.addCleanup(setattr, self.api.app.state, "earthdata_mcp_manager", None)
+
+        # Read where the real generator would open the next panel's handle:
+        # inside the body, as each chunk is produced.
+        bound_at_each_chunk = []
+
+        async def recording_chunks(payload_, tools, chunk_size=64 * 1024):
+            for index in range(3):
+                bound_at_each_chunk.append(self.api.current_user_id())
+                yield f"panel-{index}\n".encode("utf-8")
+
+        transport = self.httpx.ASGITransport(app=self.api.app)
+
+        async def fake_get_chart(chart_id):
+            return payload
+
+        auth_patches = self._auth_patch()
+        with auth_patches[0], auth_patches[1], \
+             patch.object(self.api.chart_service, "get_chart", fake_get_chart), \
+             patch.object(self.api.export_service, "iter_chart_csv_chunks", recording_chunks):
+            async with self.httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                response = await client.get("/chart/chart-1/export.csv", headers=self.auth_headers)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"panel-0\npanel-1\npanel-2\n")
+        # The later entries were None when only the first chunk was bound.
+        self.assertEqual(bound_at_each_chunk, [self.user.id] * 3)
+
     async def test_chart_csv_export_503s_with_the_taxonomy_body_when_the_mcp_is_not_ready(self):
         # T37: export.csv must go through the same T17 readiness gate as
         # every other MCP-backed endpoint — never fail inside the

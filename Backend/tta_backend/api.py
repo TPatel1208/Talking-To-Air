@@ -81,7 +81,7 @@ from tta_backend.utils.metrics import (
     render_prometheus_metrics,
     set_db_pool_connections_active,
 )
-from tta_backend.utils.streaming import current_user_id, user_id_context
+from tta_backend.utils.streaming import current_user_id, iter_with_user_id, user_id_context
 
 agent = None
 settings = get_settings()
@@ -611,11 +611,20 @@ async def export_chart_csv(chart_id: str, request: Request):
     # common failures (missing handle, evicted export) raise here as a clean
     # 4xx/5xx instead of truncating the download mid-stream. An MCPToolError
     # propagates to the shared taxonomy handler.
+    #
+    # iter_with_user_id wraps the row generator rather than a `with
+    # user_id_context(...)` wrapping only this await: StreamingResponse pulls
+    # every chunk after the first one *outside* the handler, and this export
+    # opens a handle per panel — a heatmap_multi comparison reaches panel B
+    # long after the first 64 KiB chunk went out. Bound at the innermost seam,
+    # so every pull, first or last, carries the request's user.
     try:
-        with user_id_context(request.state.current_user.id):
-            stream = await materialize_first_chunk(
-                export_service.iter_chart_csv_chunks(payload, tools)
+        stream = await materialize_first_chunk(
+            iter_with_user_id(
+                request.state.current_user.id,
+                export_service.iter_chart_csv_chunks(payload, tools),
             )
+        )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
