@@ -614,7 +614,7 @@ async def export_chart_csv(chart_id: str, request: Request):
     try:
         with user_id_context(request.state.current_user.id):
             stream = await materialize_first_chunk(
-                export_service.iter_chart_csv_chunks_async(payload, tools)
+                export_service.iter_chart_csv_chunks(payload, tools)
             )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -635,7 +635,7 @@ async def export_chart_png(chart_id: str, request: Request):
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
     try:
         with user_id_context(request.state.current_user.id):
-            content = await export_service.build_chart_png_async(payload, request.app.state.earthdata_mcp_tools)
+            content = await export_service.build_chart_png(payload, request.app.state.earthdata_mcp_tools)
     except Exception as e:
         raise HTTPException(status_code=422, detail=str(e))
     return Response(

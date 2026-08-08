@@ -12,14 +12,20 @@ def _echo_saved_chart(thread_id, payload, user_id):
 
 
 class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
-    def test_export_service_safe_name_and_missing_export(self):
+    async def test_export_service_safe_name_and_missing_export(self):
+        """A payload with no export metadata must refuse with a message that
+        says so, rather than streaming an empty or truncated download.
+
+        Asserted on the async row iterator because that is the one the CSV
+        download actually goes through (api.py -> iter_chart_csv_chunks).
+        """
         from tta_backend.services.export_service import ExportService
 
         service = ExportService(csv_export_max_granules=2)
 
         self.assertEqual(service.safe_export_name({"title": "TEMPO over Texas!"}, "csv"), "tempo-over-texas.csv")
         with self.assertRaisesRegex(ValueError, "full-resolution export metadata"):
-            list(service.iter_chart_csv_rows({}))
+            [row async for row in service.iter_chart_csv_rows({}, {})]
 
     def test_chart_service_parses_agent_result_and_persists(self):
         from tta_backend.models import AgentResult, ChartPayload, agent_result_to_json

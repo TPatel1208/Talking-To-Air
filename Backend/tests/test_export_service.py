@@ -77,7 +77,7 @@ class PointSampleTimeseriesExportTests(unittest.IsolatedAsyncioTestCase):
         from tta_backend.services.export_service import ExportService
 
         service = ExportService()
-        rows = await service._timeseries_rows_async(self.payload["export"], self.tools)
+        rows = await service._timeseries_rows(self.payload["export"], self.tools)
 
         self.assertEqual(rows, [
             ["no2", "2024-01-01T00:00:00", "point sample", 1.0, "mol/m^2"],
@@ -88,7 +88,7 @@ class PointSampleTimeseriesExportTests(unittest.IsolatedAsyncioTestCase):
         from tta_backend.services.export_service import ExportService
 
         service = ExportService()
-        rows = [row async for row in service.iter_chart_csv_rows_async(self.payload, self.tools)]
+        rows = [row async for row in service.iter_chart_csv_rows(self.payload, self.tools)]
 
         self.assertEqual(rows[0], ["variable", "time", "stat", "value", "units"])
         self.assertEqual(rows[1:], [
@@ -101,7 +101,7 @@ class PointSampleTimeseriesExportTests(unittest.IsolatedAsyncioTestCase):
 
         service = ExportService()
         chunks = [
-            chunk async for chunk in service.iter_chart_csv_chunks_async(self.payload, self.tools)
+            chunk async for chunk in service.iter_chart_csv_chunks(self.payload, self.tools)
         ]
         csv_text = b"".join(chunks).decode("utf-8")
 
@@ -112,7 +112,7 @@ class PointSampleTimeseriesExportTests(unittest.IsolatedAsyncioTestCase):
         from tta_backend.services.export_service import ExportService
 
         service = ExportService()
-        png_bytes = await service.build_chart_png_async(self.payload, self.tools)
+        png_bytes = await service.build_chart_png(self.payload, self.tools)
 
         self.assertGreater(len(png_bytes), 0)
         self.assertTrue(png_bytes.startswith(b"\x89PNG"))
@@ -125,7 +125,7 @@ class PointSampleTimeseriesExportTests(unittest.IsolatedAsyncioTestCase):
         export["source_handles"] = []
 
         with self.assertRaises(ValueError):
-            await service._timeseries_rows_async(export, self.tools)
+            await service._timeseries_rows(export, self.tools)
 
 
 @unittest.skipIf(
@@ -204,7 +204,7 @@ class MultiVariableExportResolutionTests(unittest.IsolatedAsyncioTestCase):
         self._add_science_plus_flag_handle("obs_multi")
         export = {"variable": None, "units": "mol/m^2", "source_handles": ["obs_multi"]}
 
-        da = await ExportService()._export_data_array_async(export, self.tools, collapse_to_2d=False)
+        da = await ExportService()._export_data_array(export, self.tools, collapse_to_2d=False)
 
         self.assertEqual(da.name, "vertical_column_troposphere")
 
@@ -218,7 +218,7 @@ class MultiVariableExportResolutionTests(unittest.IsolatedAsyncioTestCase):
         export = {"variable": None, "units": "mol/m^2", "source_handles": ["obs_ambiguous"]}
 
         with self.assertRaises(ValueError):
-            await ExportService()._export_data_array_async(export, self.tools, collapse_to_2d=False)
+            await ExportService()._export_data_array(export, self.tools, collapse_to_2d=False)
 
     async def test_export_inherits_a_recorded_choice_via_the_source_handle(self):
         """The handle is threaded through, so a choice recorded at retrieval
@@ -233,7 +233,7 @@ class MultiVariableExportResolutionTests(unittest.IsolatedAsyncioTestCase):
 
         export = {"variable": None, "units": "mol/m^2", "source_handles": ["obs_recorded"]}
 
-        da = await ExportService()._export_data_array_async(export, self.tools, collapse_to_2d=False)
+        da = await ExportService()._export_data_array(export, self.tools, collapse_to_2d=False)
 
         self.assertEqual(da.name, "hcho")
 
