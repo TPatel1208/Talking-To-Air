@@ -40,18 +40,38 @@ export function resolveCsvExport(chart) {
 // xarray or Panoply. The endpoint (GET /chart/{id}/export.nc) has existed
 // since T10 with conversion and chunk-streaming already in place.
 export function resolveNetcdfExport(chart) {
-  // Mirror the backend's own gate (_chart_source_handles in api.py) so the
-  // button is offered exactly when the download can succeed.
+  // Resolved the way the backend resolves it (_chart_source_handles in
+  // api.py): metadata.source_handles, falling back to provenance's.
   const handles =
     chart?.metadata?.source_handles?.length
       ? chart.metadata.source_handles
       : chart?.provenance?.source_handles
 
-  if (chart?.chart_id && handles?.length) {
-    return { kind: 'server', url: `/api/chart/${chart.chart_id}/export.nc` }
+  if (!chart?.chart_id || !handles?.length) {
+    return {
+      kind: 'unavailable',
+      message: 'This chart does not include a source handle to export.',
+    }
   }
-  return {
-    kind: 'unavailable',
-    message: 'This chart does not include a source handle to export.',
+
+  // Exactly one handle, not "at least one". The endpoint converts
+  // `source_handles[0]` and nothing else, so on a chart built from several
+  // inputs it delivers one of them under the whole chart's filename: a
+  // two-region comparison (metadata.source_handles = [a, b, aligned]) would
+  // download region A named after the comparison, and nothing in the file or
+  // its name would say which side the reader was looking at. That is the
+  // shape of mistake this product refuses elsewhere -- a plausible artifact
+  // sourced from somewhere other than where it claims. Offering NetCDF for
+  // multi-source charts needs the endpoint to bundle every handle first.
+  if (handles.length > 1) {
+    return {
+      kind: 'unavailable',
+      message:
+        `This chart is built from ${handles.length} sources; NetCDF export ` +
+        'delivers a single one, so it would not be the chart you are looking at. ' +
+        'Export each source chart on its own.',
+    }
   }
+
+  return { kind: 'server', url: `/api/chart/${chart.chart_id}/export.nc` }
 }

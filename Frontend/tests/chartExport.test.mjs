@@ -94,6 +94,24 @@ test('NetCDF export falls back to provenance source handles', () => {
   assert.equal(resolveNetcdfExport(chart).kind, 'server')
 })
 
+test('a multi-source chart offers no NetCDF export', () => {
+  // /chart/{id}/export.nc converts source_handles[0] and only that one. A
+  // comparison carries [region_a, region_b, aligned], so offering the button
+  // would hand the reader region A's granule named after the whole
+  // comparison -- an artifact that misrepresents its own provenance, with
+  // nothing on screen or in the filename to catch it.
+  const chart = {
+    type: 'heatmap_multi',
+    chart_id: 'abc123',
+    metadata: { source_handles: ['cube_a', 'cube_b', 'cube_aligned'] },
+  }
+
+  const resolved = resolveNetcdfExport(chart)
+
+  assert.equal(resolved.kind, 'unavailable')
+  assert.match(resolved.message, /3 sources/)
+})
+
 test('a chart with no source handles offers no NetCDF export', () => {
   // The backend 422s this case ("does not include a source handle to
   // export"), so offering the button would only produce a failed download.
