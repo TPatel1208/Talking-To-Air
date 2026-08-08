@@ -384,6 +384,21 @@ def _no_data_message(kind: str, param_code: str, bdate_obj: date, edate_obj: dat
     )
 
 
+class AqsNoDataError(RuntimeError):
+    """EPA answered, and has no rows matching the query.
+
+    A distinct type because the summary tools have to tell this apart from
+    ``_aqs_get``'s failures, which are also RuntimeError: "EPA has nothing for
+    those dates" and "EPA did not answer" are opposite facts, and reporting
+    the second as the first tells a researcher no measurements exist when the
+    service was merely down.
+
+    Subclasses RuntimeError so existing handlers that catch the broad type --
+    validation_tools' ground-fetch fallbacks, which want either -- keep
+    working unchanged.
+    """
+
+
 def _no_data_response(message: str) -> Dict[str, Any]:
     """Structured empty-result tool response, not a raised exception.
 
@@ -396,8 +411,26 @@ def _no_data_response(message: str) -> Dict[str, Any]:
     sensor agent instead of letting it read the message and apply its own
     monitor-fallback rules). Returning this dict keeps the message on the
     normal tool-result path the model actually sees.
+
+    Reserved for :class:`AqsNoDataError` — an actual empty result set. See
+    :func:`_upstream_error_response` for the other half.
     """
     return {"Header": [{"status": "no_data", "note": message}], "Body": []}
+
+
+def _upstream_error_response(message: str) -> Dict[str, Any]:
+    """Structured *failure* tool response — EPA was unreachable, rejected the
+    credentials, or returned an error status.
+
+    Kept off the exception path for the same reason as ``_no_data_response``:
+    a raised RuntimeError kills the whole ground turn. But it must never wear
+    that function's ``no_data`` status. "No monitors reported NO2 there" is a
+    scientific claim; an AQS 503 is not evidence for it, and an agent handed
+    ``no_data`` has no way to tell the difference. This status says plainly
+    that the question is unanswered, so the model relays a service failure
+    and can retry rather than reporting an absence that was never measured.
+    """
+    return {"Header": [{"status": "upstream_error", "note": message}], "Body": []}
 
 
 async def _fetch_active_monitors(bbox, param_code, bdate_str, edate_str, k=1):
@@ -698,7 +731,7 @@ async def _fetch_summary(
             "aqs_no_data endpoint=%s params=%r pollutant_standard=%r",
             endpoint, filter_params, pollutant_standard,
         )
-        raise RuntimeError(
+        raise AqsNoDataError(
             _no_data_message(_SUMMARY_KINDS.get(prefix, prefix), param_code, bdate_obj, edate_obj)
         )
     return records, endpoint, filter_params
@@ -946,8 +979,10 @@ async def get_daily_summary(
             state_code, county_code, site_number, cbsa_code,
             minlat, maxlat, minlon, maxlon, cbdate, cedate, pollutant_standard,
         )
-    except RuntimeError as exc:
+    except AqsNoDataError as exc:
         return _no_data_response(str(exc))
+    except RuntimeError as exc:
+        return _upstream_error_response(str(exc))
     body, total_sites, total_periods = _aggregate_summary_records(records, requested_period)
     header = _build_summary_header(len(body), endpoint, param_code, bdate_obj, edate_obj, pollutant_standard)
     header[0]["total_sites_matched"] = total_sites
@@ -1001,8 +1036,10 @@ async def get_quarterly_summary(
             state_code, county_code, site_number, cbsa_code,
             minlat, maxlat, minlon, maxlon, cbdate, cedate, pollutant_standard,
         )
-    except RuntimeError as exc:
+    except AqsNoDataError as exc:
         return _no_data_response(str(exc))
+    except RuntimeError as exc:
+        return _upstream_error_response(str(exc))
     body, total_sites, total_periods = _aggregate_summary_records(records, "quarterly")
     header = _build_summary_header(len(body), endpoint, param_code, bdate_obj, edate_obj, pollutant_standard)
     header[0]["total_sites_matched"] = total_sites
@@ -1054,8 +1091,10 @@ async def get_annual_summary(
             state_code, county_code, site_number, cbsa_code,
             minlat, maxlat, minlon, maxlon, cbdate, cedate, pollutant_standard,
         )
-    except RuntimeError as exc:
+    except AqsNoDataError as exc:
         return _no_data_response(str(exc))
+    except RuntimeError as exc:
+        return _upstream_error_response(str(exc))
     body, total_sites, total_periods = _aggregate_summary_records(records, "annual")
     header = _build_summary_header(len(body), endpoint, param_code, bdate_obj, edate_obj, pollutant_standard)
     header[0]["total_sites_matched"] = total_sites
@@ -1144,8 +1183,10 @@ async def find_exceedance_days(
             state_code, county_code, site_number, cbsa_code,
             minlat, maxlat, minlon, maxlon, None, None, pollutant_standard,
         )
-    except RuntimeError as exc:
+    except AqsNoDataError as exc:
         return _no_data_response(str(exc))
+    except RuntimeError as exc:
+        return _upstream_error_response(str(exc))
 
     # Extract the measurement value for each day
     def _val(r):

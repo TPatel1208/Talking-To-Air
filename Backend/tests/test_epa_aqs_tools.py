@@ -571,5 +571,60 @@ class AqsRateLimitTests(unittest.TestCase):
         self.assertEqual(own_key_wait, 0.0)
 
 
+class SummaryFailureClassificationTests(unittest.IsolatedAsyncioTestCase):
+    """"EPA has no rows" and "EPA did not answer" must not share a status.
+
+    The summary tools return a structured dict instead of raising, because a
+    raised RuntimeError escapes ToolNode and kills the whole ground turn. But
+    _aqs_get raises RuntimeError for transport and API failures too, so a
+    catch-all handler reported an AQS outage or a rejected credential as
+    ``no_data`` -- and the agent, reading a successful empty result, told the
+    researcher no monitoring data exists. That is a scientific claim the
+    service outage is no evidence for.
+    """
+
+    async def _daily_summary_header(self, error):
+        from unittest.mock import AsyncMock, patch
+
+        with patch.object(_epa, "_fetch_summary", AsyncMock(side_effect=error)):
+            result = await _epa.get_daily_summary(
+                param_code="42602", bdate="20200101", edate="20200107", state_code="34",
+            )
+        return result["Header"][0]
+
+    async def test_an_empty_result_set_is_reported_as_no_data(self):
+        header = await self._daily_summary_header(
+            _epa.AqsNoDataError("No EPA daily summary measurements for 2020-01-01 to 2020-01-07.")
+        )
+
+        self.assertEqual(header["status"], "no_data")
+        self.assertIn("No EPA daily summary measurements", header["note"])
+
+    async def test_an_upstream_failure_is_not_reported_as_no_data(self):
+        """The exact shape _aqs_get raises for an HTTP error. Reported as
+        no_data, this became "there are no NO2 measurements there" in the
+        answer -- indistinguishable from a real empty result."""
+        header = await self._daily_summary_header(
+            RuntimeError("AQS HTTP 503 on dailyData/byState: service unavailable")
+        )
+
+        self.assertNotEqual(header["status"], "no_data")
+        self.assertEqual(header["status"], "upstream_error")
+        self.assertIn("503", header["note"])
+
+    async def test_a_rejected_credential_is_not_reported_as_no_data(self):
+        header = await self._daily_summary_header(
+            RuntimeError("EPA AQS request failed: invalid email/key combination")
+        )
+
+        self.assertEqual(header["status"], "upstream_error")
+
+    async def test_the_no_data_type_still_satisfies_broad_runtime_error_handlers(self):
+        """validation_tools' ground fetches catch RuntimeError to fall back on
+        either kind, so the new type must stay a subclass rather than becoming
+        a sibling."""
+        self.assertTrue(issubclass(_epa.AqsNoDataError, RuntimeError))
+
+
 if __name__ == "__main__":
     unittest.main()

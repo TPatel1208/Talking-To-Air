@@ -45,6 +45,14 @@ split it into state_code/county_code/site_number; never pass the literal placeho
     with k=3 to retrieve up to three nearby monitors, then retry the summary for each
     remaining candidate in order of distance. Report "data unavailable for this area"
     only after all candidates fail.
+11. Read the header `status`. `no_data` means EPA answered and has no rows for that query —
+    the fallbacks in 9 and 10 apply. `upstream_error` means EPA did not answer at all
+    (service failure, rejected credentials): the fallbacks do NOT apply, since retrying the
+    same unreachable service with a different station proves nothing. Say the data service
+    could not be reached and that the question is unanswered. NEVER report an
+    `upstream_error` as an absence of measurements — "there is no NO2 data there" is a claim
+    about the world, and a failed request is no evidence for it.
+
 ## Response Format
 Daily/quarterly/annual summary tools return real period rows for capped sites, with header metadata for total/returned sites and periods.
 Daily requests over 31 days return quarterly period rows; use find_exceedance_days for long-range worst-day/exceedance questions.
