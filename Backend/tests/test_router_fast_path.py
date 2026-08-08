@@ -138,6 +138,39 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Agent consulted: SATELLITE", joined)
         self.assertIn("event: done", joined)
 
+    async def test_satellite_fast_path_suppresses_the_sub_agents_own_text_and_tool_result(self):
+        """The fast path forwards live progress but never the sub-agent's own
+        text/tool_result events, even though on_event receives every one of
+        them (subagent_dispatch.run_satellite forwards the whole stream).
+
+        The sub-agent's "text" is its raw AgentResult envelope -- here the JSON
+        {"summary": ...} FakeSatelliteAgent yields. Forwarding it would stream
+        that JSON to the researcher and then repeat the same answer again as
+        the synthesized final message (T14 Out of Scope: no sub-agent token
+        streaming through this path). Exactly one text event may reach the
+        wire: the finalized answer under its "Agent consulted" header.
+        """
+        from tta_backend.services.chat_stream_service import ChatStreamService
+        from tta_backend.services.chart_service import ChartService
+
+        satellite_agent = FakeSatelliteAgent()
+        service = ChatStreamService(ChartService(), long_request_seconds=999)
+
+        events = [
+            event
+            async for event in service.stream_chat_events(
+                AsyncMock(), UntouchedAgent(), satellite_agent,
+                "Plot TROPOMI NO2 over New Jersey for 2024-01-15", "thread-1", "user-1", "req-1",
+            )
+        ]
+
+        joined = "".join(events)
+        self.assertEqual(joined.count("event: text"), 1, joined)
+        self.assertNotIn("event: tool_result", joined)
+        # The one text event is the synthesized answer, not the raw envelope.
+        self.assertIn("Agent consulted: SATELLITE", joined)
+        self.assertNotIn('\\"summary\\"', joined)
+
     async def test_satellite_fast_path_forwards_the_stage_and_detail_fields_over_sse(self):
         """T19: chat_stream_service must not rebuild the status SSE payload
         as message-only — a stage-tagged emit_status call deep in the
