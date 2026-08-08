@@ -194,6 +194,54 @@ class ListJobsTests(unittest.IsolatedAsyncioTestCase):
             ["job_real_active", "job_dead_1", "job_dead_2", "job_real_terminal"],
         )
 
+    async def test_list_jobs_sorts_a_failed_status_read_into_the_terminal_group(self):
+        """A handle whose get_retrieval_status call raises is fault-isolated
+        into a synthesized ``{"status": "error"}`` row. That row is finished
+        for panel purposes -- the backend has nothing further to report and
+        there is no live job underneath a cancel could reach -- so it must
+        sort with the terminal jobs, not ahead of a genuinely running one.
+
+        The frontend's sortJobs already treats "error" this way and documents
+        itself as mirroring this ordering (Frontend/src/utils/jobCard.js); the
+        backend set it claims to mirror omitted "error", so the two disagreed
+        by exactly one status.
+
+        job_error is the NEWEST row here, so sorting it as active would put it
+        first -- ahead of the only actually-running job.
+        """
+        from tta_backend.services.jobs_service import list_jobs
+
+        async def list_workspace(workspace_id):
+            return {
+                "handles": [
+                    {"handle": "job_error", "type": "job", "created_at": "2026-02-05T00:00:00Z", "summary": {}},
+                    {"handle": "job_terminal", "type": "job", "created_at": "2026-02-04T00:00:00Z", "summary": {}},
+                    {"handle": "job_active", "type": "job", "created_at": "2026-02-01T00:00:00Z", "summary": {}},
+                ]
+            }
+
+        async def get_retrieval_status(job_handle, workspace_id):
+            if job_handle == "job_error":
+                raise RuntimeError("provider status call blew up")
+            return {
+                "job_handle": job_handle,
+                "status": "ready" if job_handle == "job_terminal" else "running",
+            }
+
+        tools = await self._tools({
+            "list_workspace": list_workspace,
+            "get_retrieval_status": get_retrieval_status,
+        })
+
+        jobs = await list_jobs(tools)
+
+        by_handle = {job["job_handle"]: job for job in jobs}
+        self.assertEqual(by_handle["job_error"]["status"], "error")
+        self.assertEqual(
+            [job["job_handle"] for job in jobs],
+            ["job_active", "job_error", "job_terminal"],
+        )
+
     async def test_list_jobs_passes_through_the_mcps_failed_status_message_verbatim(self):
         from tta_backend.services.jobs_service import list_jobs
 
@@ -502,6 +550,46 @@ class CancelJobTests(unittest.IsolatedAsyncioTestCase):
         result = await cancel_job("job_1", tools)
 
         self.assertEqual(result["upstream"], "requested")
+
+
+class FinishedRowStatusContractTests(unittest.TestCase):
+    """"Which job rows are finished" is one concept that has to exist on both
+    sides of the Python/JS seam, where neither side can import the other.
+
+    The frontend's copy documents itself as mirroring list_jobs' ordering, but
+    the backend set it named omitted the synthesized "error" status, so the two
+    definitions disagreed by exactly one value. Reading the literal out of the
+    source is the only way to make that claim enforceable rather than aspirational;
+    no MCP dependency, so it runs even where the fan-out tests skip.
+    """
+
+    def _frontend_terminal_statuses(self) -> set[str]:
+        import re
+
+        job_card = os.path.normpath(os.path.join(
+            TESTS_DIR, os.pardir, os.pardir, "Frontend", "src", "utils", "jobCard.js",
+        ))
+        self.assertTrue(os.path.isfile(job_card), f"jobCard.js not found at {job_card}")
+        source = open(job_card, encoding="utf-8").read()
+        match = re.search(r"export const TERMINAL_STATUSES = new Set\(\[(.*?)\]\)", source, re.S)
+        self.assertIsNotNone(match, "TERMINAL_STATUSES literal not found in jobCard.js")
+        return set(re.findall(r"'([^']*)'", match.group(1)))
+
+    def test_frontend_terminal_statuses_match_the_backend_finished_row_set(self):
+        from tta_backend.services.jobs_service import FINISHED_ROW_STATUSES
+
+        self.assertEqual(self._frontend_terminal_statuses(), set(FINISHED_ROW_STATUSES))
+
+    def test_the_synthesized_read_failure_is_finished_but_never_cacheable(self):
+        """The two sets differ by exactly this status, and that difference is
+        load-bearing: a failed status read is finished for display but must be
+        re-tried on the next poll, never served from the terminal cache."""
+        from tta_backend.services.jobs_service import (
+            FINISHED_ROW_STATUSES, STATUS_READ_FAILED, _CACHEABLE_STATUSES,
+        )
+
+        self.assertIn(STATUS_READ_FAILED, FINISHED_ROW_STATUSES)
+        self.assertNotIn(STATUS_READ_FAILED, _CACHEABLE_STATUSES)
 
 
 if __name__ == "__main__":
