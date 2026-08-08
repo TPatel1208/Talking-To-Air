@@ -46,6 +46,13 @@ function rawCellValues(payload) {
   if (Array.isArray(payload.values) && Array.isArray(payload.values[0])) {
     return payload.values.flat()
   }
+  // Legacy read path only. `points` was a flattened duplicate of the same
+  // field that the backend stopped emitting (plot_tools._build_heatmap_payload)
+  // once nothing rendered from it. Charts are durable rows in Postgres, so
+  // payloads that shipped it — and predate `statistics`, or this branch is
+  // never reached — are still openable and this is the only value array they
+  // carry. Note it holds finite cells only, so an old chart's validPct reads
+  // 100%; that is what those payloads have always reported here.
   const points = payload.points
   if (points && Array.isArray(points.values)) return points.values
   return []

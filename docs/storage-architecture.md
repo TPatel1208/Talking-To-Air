@@ -18,13 +18,20 @@ CREATE TABLE agent_charts (
     id          TEXT PRIMARY KEY,   -- content-hash uuid5, or prefixed ids like map_52fd40b2e418
     thread_id   TEXT NOT NULL,
     user_id     TEXT NOT NULL DEFAULT '__legacy__',
-    payload     JSONB NOT NULL,     -- full chart payload (grid/points/overlay._path/etc.)
+    payload     JSONB NOT NULL,     -- full chart payload (grid/statistics/overlay._path/etc.)
     metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_agent_charts_thread_created ON agent_charts (thread_id, created_at);
 CREATE INDEX idx_agent_charts_user_id        ON agent_charts (user_id);
 ```
+
+Rows are durable and never rewritten, so the payload shape is append-only in
+practice: readers must tolerate every shape ever written, not just the current
+one. Heatmaps written before 2026-08-08 also carry a `points` key — a flattened
+lat/lon/value duplicate of the same field, ~270 KB per chart — which the backend
+no longer emits. `chartStats.rawCellValues` still reads it as a fallback for
+those rows; nothing else does.
 Holds every chart/plot the agent has emitted, keyed by an id the frontend
 cites back to fetch it. `payload` includes the `overlay._path` pointer that
 the `/chart/{id}/overlay.png` route resolves against `overlay_store`.

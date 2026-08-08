@@ -135,7 +135,19 @@ def _percentile_bounds(arr: np.ndarray):
     return vmin, vmax
 
 
-_MAX_GRID_CELLS = 8_000   # match the frontend MAX_POINTS constant
+# Ceiling on the cells serialized into a payload's `values` grid. Not a display
+# limit -- the map draws the full-native-resolution overlay PNG, and this grid
+# is what buildCanvasFallbackFrame rasterizes when that PNG is unavailable. So
+# it is a payload-size budget, and 8,000 cells is roughly the point past which
+# the JSON costs more to ship and parse than the fallback render gains in
+# detail. Anything a reader is *told* (statistics, vmin/vmax) is computed on
+# the full field before this thinning, so raising or lowering it changes
+# fallback sharpness and payload size only -- never a reported number.
+#
+# It used to be documented as matching a frontend MAX_POINTS constant. That
+# constant went away with the per-cell map readout on 2026-08-05; nothing on
+# either side has to agree with this number any more.
+_MAX_GRID_CELLS = 8_000
 
 
 def _normalize_longitudes(da, lon_coord):
@@ -235,25 +247,6 @@ def _area_weighted_mean(arr: np.ndarray, lats: np.ndarray, finite: np.ndarray) -
     return float((contribution * weights).sum() / total)
 
 
-def _points_from_grid(lats: np.ndarray, lons: np.ndarray, arr: np.ndarray):
-    row_idx, col_idx = np.where(np.isfinite(arr))
-    count = len(row_idx)
-    if count == 0:
-        return {"lats": [], "lons": [], "values": []}
-
-    if count > _MAX_GRID_CELLS:
-        take = np.linspace(0, count - 1, _MAX_GRID_CELLS, dtype=int)
-        row_idx = row_idx[take]
-        col_idx = col_idx[take]
-
-    point_values = arr[row_idx, col_idx]
-    return {
-        "lats": [round(float(lats[i]), 6) for i in row_idx],
-        "lons": [round(float(lons[i]), 6) for i in col_idx],
-        "values": [float(f"{v:.6e}") for v in point_values],
-    }
-
-
 def _render_and_store_overlay(lats: np.ndarray, lons: np.ndarray, arr: np.ndarray, lut: list, vmin: float, vmax: float) -> str | None:
     """Render the full-native-resolution overlay PNG and persist it to the
     overlay store. Returns the stored path, or None on failure -- a
@@ -315,8 +308,8 @@ def _build_heatmap_payload(
 
     # float32, not float64. This is the one line that decides the working size
     # of everything below it -- the percentile bounds, the overlay
-    # rasterization, the statistics and the point list all copy whatever
-    # arrives here, so a needless upcast is paid for five times over. A
+    # rasterization and the statistics all copy whatever arrives here, so a
+    # needless upcast is paid for several times over. A
     # native-resolution full-day TEMPO field upcast to float64 is what put the
     # backend under the OOM killer on 2026-08-05. A retrieval does not carry
     # float64 precision to begin with, the map is drawn in 8-bit color, and
@@ -349,7 +342,6 @@ def _build_heatmap_payload(
 
     lats_out = da[lat_coord].values
     lons_out = da[lon_coord].values
-    points = _points_from_grid(lats_out, lons_out, arr)
 
     # Full-native-resolution extent, captured before downsampling, for the
     # server-rendered overlay PNG (T23) — visual fidelity and interaction
@@ -394,7 +386,6 @@ def _build_heatmap_payload(
         "lats":     [round(float(v), 6) for v in lats_out],
         "lons":     [round(float(v), 6) for v in lons_out],
         "values":   values_json,
-        "points":   points,
         "statistics": statistics,
         "vmin": float(f"{vmin:.6e}"),
         "vmax": float(f"{vmax:.6e}"),
@@ -413,9 +404,9 @@ def _heatmap_dims(payload: dict | None) -> list[int] | None:
 
 
 def _summary_dims_and_range(payload: dict, render_type: str | None):
-    """Grid/point dimensions and value range for the compact model-facing
-    summary — enough for the agent to describe the chart (T13 story #4)
-    without re-reading the raw grid/points arrays."""
+    """Grid dimensions and value range for the compact model-facing summary —
+    enough for the agent to describe the chart (T13 story #4) without
+    re-reading the raw grid."""
     if render_type == "heatmap":
         return _heatmap_dims(payload), payload.get("vmin"), payload.get("vmax")
 
@@ -445,7 +436,7 @@ def _chart_model_summary(payload: dict) -> dict:
     """The compact, model-facing view of a chart payload (T13): render type,
     title, variable, units, dimensions, value range, artifact id, and source
     handles — everything the agent needs to describe the chart and cite it,
-    never the raw grid/points the frontend renders from ``emit_chart``."""
+    never the raw grid the frontend renders from ``emit_chart``."""
     render_type = payload.get("type")
     grid_dims, vmin, vmax = _summary_dims_and_range(payload, render_type)
     metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
@@ -500,7 +491,7 @@ def _save_chart(payload: dict, name: str) -> str:
     so the id is visible to both the calling LLM (to cite in its envelope,
     see config/earthdata_agent_prompt.py) and the gallery — mirroring the
     `_artifact_refs` convention EPA table tools already use. The full
-    payload (grid/points/provenance/query/export) is emitted via
+    payload (grid/provenance/query/export) is emitted via
     ``emit_chart`` for the existing chart/artifact pipeline to persist and
     render; the model only ever sees the compact summary.
     """

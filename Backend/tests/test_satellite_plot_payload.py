@@ -40,7 +40,44 @@ class SatellitePlotPayloadTests(unittest.TestCase):
             np.sort(uncropped.values[np.isfinite(uncropped.values)]),
         )
 
-    def test_payload_preserves_sparse_valid_points(self):
+    def test_payload_omits_the_vestigial_points_array(self):
+        """``points`` was a second, flattened copy of the same field -- up to
+        8,000 lat/lon/value triples, ~270 KB of JSON on every heatmap, stored
+        durably in Postgres alongside the grid it duplicated.
+
+        Nothing renders from it. The map draws the server-rendered overlay PNG,
+        and falls back to the 2-D ``values`` grid (buildCanvasFallbackFrame);
+        the Statistics tab reads ``statistics``. Its last reader was
+        chartStats.rawCellValues, and only for payloads predating
+        ``statistics`` -- a read-path fallback that stays, because old charts
+        are durable rows. New payloads simply stop paying for it.
+        """
+        import numpy as np
+        import xarray as xr
+        from tta_backend.tools.satellite_tools.plot_tools import _da_to_heatmap_payload
+
+        da = xr.DataArray(
+            np.array([[1.0, 2.0], [3.0, 4.0]]),
+            dims=("lat", "lon"),
+            coords={"lat": [40.0, 41.0], "lon": [-75.0, -74.0]},
+        )
+
+        payload = _da_to_heatmap_payload(da, "Compact", "NO2", "mol/cm2")
+
+        self.assertNotIn("points", payload)
+        # the grid the frontend actually renders from is untouched
+        self.assertEqual(payload["values"], [[1.0, 2.0], [3.0, 4.0]])
+
+    def test_sparse_valid_cells_survive_thinning_in_the_statistics(self):
+        """A sparse field is exactly where the render grid's uniform stride is
+        lossiest -- here it steps over both valid cells and the rendered grid
+        comes back empty. ``points`` used to be what preserved them.
+
+        Nothing consumed that preservation: what a reader is actually told
+        about a sparse scene comes from ``statistics``, computed on the full
+        field before ``_downsample_grid`` thins it. That is the guarantee this
+        test pins, and it holds without a second copy of the array.
+        """
         import numpy as np
         import xarray as xr
         from tta_backend.tools.satellite_tools.plot_tools import _MAX_GRID_CELLS, _da_to_heatmap_payload
@@ -56,9 +93,13 @@ class SatellitePlotPayloadTests(unittest.TestCase):
 
         payload = _da_to_heatmap_payload(da, "Sparse", "NO2", "mol/cm2")
 
-        self.assertEqual(payload["points"]["values"], [1.25, 2.5])
-        self.assertEqual(len(payload["points"]["values"]), 2)
-        self.assertLessEqual(len(payload["points"]["values"]), _MAX_GRID_CELLS)
+        rendered = [v for row in payload["values"] for v in row if v is not None]
+        self.assertLessEqual(len(rendered), _MAX_GRID_CELLS)
+        self.assertEqual(rendered, [])            # the stride really drops both
+
+        self.assertEqual(payload["statistics"]["count"], 2)
+        self.assertEqual(payload["statistics"]["min"], 1.25)
+        self.assertEqual(payload["statistics"]["max"], 2.5)
 
     def test_reported_statistics_describe_the_full_field_not_the_rendered_grid(self):
         """The grid in the payload is thinned to _MAX_GRID_CELLS for rendering,
@@ -122,7 +163,7 @@ class SatellitePlotPayloadTests(unittest.TestCase):
 
         payload = _da_to_heatmap_payload(da, "Wrapped", "NO2", "mol/cm2")
 
-        self.assertEqual(payload["points"]["values"], [4.0])
+        self.assertEqual(payload["values"], [[None, 4.0, None]])
         self.assertEqual(payload["lons"], [-10.0, -5.0, 5.0])
         self.assertLess(payload["vmin"], 4.0)
         self.assertGreater(payload["vmax"], 4.0)

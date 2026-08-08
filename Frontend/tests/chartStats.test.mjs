@@ -83,6 +83,35 @@ test('stats declare whether they describe the analyzed region or the rendered gr
   assert.equal(computeChartStats(series).basis, 'series')
 })
 
+// The backend stopped emitting `points` — a flattened duplicate of the same
+// field — but charts are durable rows in Postgres, so payloads that shipped it
+// and predate `statistics` are still out there and still open. For those the
+// flattened list is the only value array they carry, and it must keep working.
+test('legacy points-only payload still yields stats', () => {
+  const chart = {
+    type: 'heatmap',
+    units: 'mol/cm2',
+    points: {
+      lats: [10, 10, 11],
+      lons: [20, 21, 20],
+      values: [1.0, 2.0, 3.0],
+    },
+  }
+  const stats = computeChartStats(chart)
+  assert.ok(stats, 'an old persisted chart must still report its own numbers')
+  assert.equal(stats.count, 3)
+  assert.equal(stats.mean, 2.0)
+  assert.equal(stats.min, 1.0)
+  assert.equal(stats.max, 3.0)
+  assert.equal(stats.basis, 'rendered-grid')
+})
+
+// A payload with neither grid, points, nor statistics must return null rather
+// than throw — the read path sees whatever shape was persisted, not a contract.
+test('payload with no value array at all returns null', () => {
+  assert.equal(computeChartStats({ type: 'heatmap', units: 'DU' }), null)
+})
+
 test('heatmap_multi validPct uses first panel grid including nulls', () => {
   const chart = {
     type: 'heatmap_multi',
