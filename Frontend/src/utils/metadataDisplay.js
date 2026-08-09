@@ -100,6 +100,68 @@ export function citationString(provenance) {
   return parts.join(', ')
 }
 
+// Where a product sits in its provider's validation lifecycle, and the caveat
+// that comes with it (T57).
+//
+// Returns null for an unstated maturity, deliberately. "unknown" means nobody
+// checked, which is a different thing from a checked clean bill of health --
+// rendering it as a field would read like the latter. A `cautionary` level is
+// one whose provider tells you not to publish on it yet, and it is flagged so
+// the UI can weight it rather than listing it beside the version number.
+const CAUTIONARY_MATURITY = new Set(['beta', 'provisional'])
+
+export function maturityFields(chart) {
+  const level = chart?.provenance?.maturity
+  if (!level || level === 'unknown') return null
+  return {
+    level,
+    note: chart?.provenance?.maturity_note || '',
+    cautionary: CAUTIONARY_MATURITY.has(level),
+  }
+}
+
+// Which layer a physical level request resolved to, and how much of an
+// approximation that was (T58 D5).
+//
+// Two INDEPENDENT facts, because either can be perfect while the other is poor:
+// how much of the analyzed region agrees on this layer, and how far the layer
+// actually sits from what was asked. The spike measured a 300 hPa request
+// landing 40 hPa away at 83% agreement, and an 850 hPa request landing 46 hPa
+// away at 100% -- a panel showing only agreement would call the second one
+// perfect. Returns null for a chart that selected no physical level, so the
+// section is absent rather than a row of "Not available" on every ordinary map.
+const LEVEL_DECIMALS = 2
+
+function roundedLevel(value) {
+  return Number(value.toFixed(LEVEL_DECIMALS))
+}
+
+export function levelResolutionFields(chart) {
+  const level = chart?.provenance?.level_resolution
+  if (!level) return null
+  const units = level.units || ''
+  const withUnits = value => `${roundedLevel(value)}${units ? ` ${units}` : ''}`
+  const pct = fraction => `${Number((fraction * 100).toFixed(1))}%`
+  const hasRunnerUp = level.runner_up !== null && level.runner_up !== undefined
+  return {
+    kind: level.kind || null,
+    requested: `${Number(level.requested)}${units ? ` ${units}` : ''}`,
+    resolved: `${withUnits(level.resolved_level)} (layer ${level.index})`,
+    // Stated even when zero: "not shown" and "exact" read identically to
+    // someone scanning the panel, and they are different facts.
+    levelError: level.level_error
+      ? `${withUnits(level.level_error)} from the level requested`
+      : 'exactly the level requested',
+    agreement:
+      `${pct(level.dominant_fraction)} of ${Number(level.n_pixels).toLocaleString('en-US')} ` +
+      `analyzed pixels resolve to layer ${level.index}`,
+    runnerUp: hasRunnerUp
+      ? `${pct(level.runner_up_fraction)} resolve to layer ${level.runner_up} instead`
+      : null,
+    axisVariable: level.axis_variable || null,
+  }
+}
+
 export function datasetLandingUrl(collectionId) {
   return collectionId ? `https://cmr.earthdata.nasa.gov/search/concepts/${collectionId}.html` : null
 }

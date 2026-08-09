@@ -1187,6 +1187,32 @@ class AggregationService:
             return None
         return flags
 
+    def temporal_mean(self, da: xr.DataArray, time_dim: str, cadence: str) -> xr.DataArray:
+        """Collapse ``time_dim`` to "the average over the period".
+
+        The public form of the cadence-bucket weighting below, for a caller
+        that has already reduced space itself and only needs time collapsed --
+        the vertical profile, whose reduction runs space-then-time (T56 D4) and
+        so arrives here holding a (timestep x layer) matrix rather than a field.
+        Without this the profile would have to reach into a private method or,
+        worse, spell its own ``mean(dim=time)`` and quietly reintroduce the
+        clustered-sampling bias Finding #11 removed.
+        """
+        return self._cadence_weighted_mean(da, time_dim, cadence)
+
+    def cadence_for(
+        self,
+        data: xr.Dataset | xr.DataArray,
+        *,
+        collection_id: str | None = None,
+        variable: str | None = None,
+        col_info: dict[str, Any] | None = None,
+    ) -> str:
+        """The product's publishing cadence, or ``"unknown"``. Public because
+        ``temporal_mean`` needs one and only this module knows how it is
+        resolved (data attrs -> col_info -> registry)."""
+        return self._cadence(data, collection_id, variable, col_info)
+
     # Cadence -> the pandas offset a timestamp is floored to when grouping
     # granules into the buckets a temporal mean must weight equally (#11).
     _CADENCE_FLOOR = {"hourly": "h", "daily": "D"}

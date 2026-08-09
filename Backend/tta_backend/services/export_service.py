@@ -46,6 +46,15 @@ async def _replay_then_stream(first: bytes | None, rest: AsyncIterator[bytes]) -
         yield f"\n# EXPORT INCOMPLETE — {CATEGORY_CONTRACT}\n".encode("utf-8")
 
 
+def _at(values: Any, index: int):
+    """``values[index]`` when it exists, else None — so one short array (an
+    axis a product doesn't publish, say) leaves a blank cell rather than
+    truncating or misaligning every column after it."""
+    if not isinstance(values, (list, tuple)) or index >= len(values):
+        return None
+    return values[index]
+
+
 class ExportService:
     def __init__(self, csv_export_max_granules: int = 50):
         self.csv_export_max_granules = csv_export_max_granules
@@ -108,6 +117,8 @@ class ExportService:
             ax.set_xlabel("Time")
             ax.set_ylabel(f"{export.get('aggregation', 'value')} ({export.get('units', '')})")
             ax.tick_params(axis="x", rotation=30)
+        elif export_type == "profile":
+            fig = self._plot_profile_figure(payload, export, plt)
         else:
             from tta_backend.utils.plotting import RegionResolver, plot_map
 
@@ -157,6 +168,9 @@ class ExportService:
             yield ["variable", "time", "stat", "value", "units"]
             for row in await self._timeseries_rows(export, tools):
                 yield row
+        elif export_type == "profile":
+            for row in self._profile_rows(export):
+                yield row
         else:
             if export.get("aggregation_meta", {}).get("n_granules", 1) > 1:
                 async for row in self._iter_aggregated_heatmap_csv_rows(export, tools):
@@ -165,6 +179,83 @@ class ExportService:
                 yield ["variable", "latitude", "longitude", "value", "units"]
                 async for row in self._iter_heatmap_csv_rows(export, tools):
                     yield row
+
+    # ── Vertical profile (T56) ──────────────────────────────────────────────
+    #
+    # Both profile exports read the payload and nothing else. Every other chart
+    # type re-opens its source granule because what it displays is a thinned
+    # version of what it measured; a profile's 24 numbers per axis ARE the
+    # measurement, so a re-read could only reproduce them -- and the export
+    # keeps working after the source handle is evicted, which no other type
+    # manages.
+
+    _PROFILE_AXES = ("pressure", "altitude")
+
+    def _profile_rows(self, export: dict[str, Any]):
+        """One row per layer, carrying BOTH vertical axes and the per-layer
+        spread of each.
+
+        The spread column is the honest half of a regional profile: the vertical
+        grid is fixed aloft and terrain-following near the surface, so the
+        regional-mean axis is exact for the upper layers and an approximation
+        below, and only a per-layer number distinguishes them. A CSV without it
+        reads as though every layer sat at a single, definite pressure.
+        """
+        axes = export.get("vertical") or {}
+        header = ["variable", "layer", "value", "units"]
+        for kind in self._PROFILE_AXES:
+            header += [kind, f"{kind}_units", f"{kind}_spread"]
+        header.append("valid_fraction")
+        yield header
+
+        variable = export.get("variable") or ""
+        units = export.get("units") or ""
+        layers = export.get("layers") or []
+        values = export.get("values") or []
+        valid = export.get("valid_fraction") or []
+        for index, layer in enumerate(layers):
+            row = [variable, layer, _at(values, index), units]
+            for kind in self._PROFILE_AXES:
+                axis = axes.get(kind) or {}
+                row += [
+                    _at(axis.get("values"), index),
+                    axis.get("units", ""),
+                    _at(axis.get("spread"), index),
+                ]
+            row.append(_at(valid, index))
+            yield row
+
+    def _plot_profile_figure(self, payload: dict[str, Any], export: dict[str, Any], plt):
+        """The profile as a static line chart, drawn against its physical axis.
+
+        Plotting against the axis rather than the layer index is what makes the
+        orientation right: TEMPO_O3PROF stores layer 0 at the TOP, so a chart
+        that trusts the index draws the atmosphere upside down and looks
+        entirely plausible doing it. With pressures on y and the axis reversed,
+        the surface lands at the bottom whichever order the array arrived in --
+        so the payload's measured ``layer_order`` is disclosure for the reader,
+        never an input here. Pressure additionally gets a log scale: the top
+        layer sits three orders of magnitude below the surface, and linearly the
+        whole upper atmosphere collapses onto one pixel. Altitude needs neither,
+        since it already increases upward.
+        """
+        kind = export.get("default_axis") or "pressure"
+        axis = (export.get("vertical") or {}).get(kind) or {}
+        values = export.get("values") or []
+        axis_values = axis.get("values") or list(range(len(values)))
+
+        fig, ax = plt.subplots(figsize=(6, 8))
+        ax.plot(values, axis_values, marker="o", linewidth=1.5)
+        ax.set_title(payload.get("title") or export.get("variable") or "Vertical profile")
+        ax.set_xlabel(f"{export.get('variable', 'value')} ({export.get('units', '')})")
+        ax.set_ylabel(f"{kind} ({axis.get('units', '')})")
+        if kind == "pressure":
+            positive = [v for v in axis_values if isinstance(v, (int, float)) and v > 0]
+            if len(positive) == len(axis_values) and positive:
+                ax.set_yscale("log")
+            ax.invert_yaxis()  # pressure falls with height
+        ax.grid(True, which="both", alpha=0.3)
+        return fig
 
     def _export_lat_lon_names(self, da):
         lat_coord = next((c for c in ["lat", "latitude", "Latitude"] if c in da.coords), None)

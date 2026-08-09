@@ -11,7 +11,8 @@ import { useMemo, useState } from 'react'
 import { resolveMasking } from '../utils/maskingProvenance'
 import {
   NOT_AVAILABLE, fmt, dateRangeLabel, granuleSummary, maskingStatusColor,
-  citationString, datasetLandingUrl, regionLabel, hasProvenance,
+  citationString, datasetLandingUrl, regionLabel, hasProvenance, maturityFields,
+  levelResolutionFields,
 } from '../utils/metadataDisplay'
 import { MetaField } from './metadataPrimitives.jsx'
 import { smallButtonStyle, copyToClipboard } from '../utils/metadataUiHelpers.js'
@@ -22,6 +23,8 @@ export function MetadataOverview({ chart, onViewStatistics, onViewFullMetadata, 
   const [copyState, setCopyState] = useState('')
   const landingUrl = datasetLandingUrl(provenance.collection_id)
   const dateRange = dateRangeLabel(provenance)
+  const maturity = useMemo(() => maturityFields(chart), [chart])
+  const level = useMemo(() => levelResolutionFields(chart), [chart])
 
   if (!hasProvenance(chart)) {
     return (
@@ -56,6 +59,33 @@ export function MetadataOverview({ chart, onViewStatistics, onViewFullMetadata, 
           <MetaField label="Granules" value={granuleSummary(chart)} />
         </div>
       </div>
+
+      {/* T58 D5: a map built from a physical-level request is "the nearest
+          available layer to 300 hPa", never "a 300 hPa map" -- and only this
+          block distinguishes them. Sits ABOVE data quality because it qualifies
+          what the chart depicts, not how well it was measured. Absent entirely
+          on an ordinary map, so it never becomes a row of "Not available". */}
+      {level && (
+        <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: '10px', padding: '11px 13px' }}>
+          <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '5px' }}>
+            Vertical level
+          </div>
+          <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>
+            {level.resolved}
+          </div>
+          <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginTop: '4px', lineHeight: 1.5 }}>
+            Requested {level.requested} — {level.levelError}.
+          </div>
+          <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginTop: '4px', lineHeight: 1.5 }}>
+            {level.agreement}{level.runnerUp ? `; ${level.runnerUp}` : '.'}
+          </div>
+          {level.axisVariable && (
+            <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
+              Resolved against {level.axisVariable}
+            </div>
+          )}
+        </div>
+      )}
 
       <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: '10px', padding: '11px 13px' }}>
         <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '5px' }}>
@@ -102,6 +132,26 @@ export function MetadataOverview({ chart, onViewStatistics, onViewFullMetadata, 
         <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginTop: '4px' }}>
           Version {fmt(provenance.dataset_version)} · {fmt(provenance.source)}
         </div>
+        {/* T57: maturity sits INSIDE the source-dataset block, above the
+            citation button, because it qualifies exactly what that button
+            copies. A cautionary level (the provider saying "don't publish on
+            this yet") is weighted rather than listed beside the version
+            number -- a caveat rendered as one more grey fact is a caveat
+            nobody reads. */}
+        {maturity && (
+          <div style={{
+            marginTop: '8px', padding: '7px 9px', borderRadius: '7px',
+            fontSize: '11.5px', lineHeight: 1.5,
+            background: maturity.cautionary ? 'var(--amber-bg, #fff8e6)' : 'var(--bg-card)',
+            border: `1px solid ${maturity.cautionary ? 'var(--amber, #d99100)' : 'var(--border)'}`,
+            color: 'var(--text-secondary)',
+          }}>
+            <span style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
+              Maturity: {maturity.level}
+            </span>
+            {maturity.note && <span> — {maturity.note}</span>}
+          </div>
+        )}
         <div style={{ display: 'flex', gap: '10px', marginTop: '8px', alignItems: 'center' }}>
           {landingUrl && (
             <a href={landingUrl} target="_blank" rel="noreferrer" style={{ fontSize: '11px', color: 'var(--teal-text)', fontWeight: 700 }}>

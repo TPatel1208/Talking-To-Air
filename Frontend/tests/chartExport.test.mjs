@@ -122,3 +122,55 @@ test('a chart with no source handles offers no NetCDF export', () => {
   assert.equal(resolved.kind, 'unavailable')
   assert.match(resolved.message, /source handle/i)
 })
+
+test('a profile with no server export still exports every layer client-side', () => {
+  // A profile payload is not thinned: 24 numbers per axis IS the measurement,
+  // so a browser-built CSV loses nothing -- the same reason a timeseries
+  // qualifies and a heatmap does not.
+  const chart = {
+    type: 'profile',
+    variable: 'ozone_profile',
+    units: 'DU',
+    layers: [0, 1],
+    values: [0.23, 30.0],
+    valid_fraction: [0.5, 1],
+    default_axis: 'pressure',
+    vertical: {
+      pressure: { units: 'hPa', values: [0.175, 902], spread: [0, 43.1] },
+      altitude: { units: 'km', values: [60, 1], spread: [0.06, 0.42] },
+    },
+  }
+
+  const resolved = resolveCsvExport(chart)
+
+  assert.equal(resolved.kind, 'client')
+  assert.equal(resolved.rows.length, 2)
+  assert.deepEqual(resolved.rows[0], {
+    variable: 'ozone_profile',
+    layer: 0,
+    value: 0.23,
+    units: 'DU',
+    pressure: 0.175,
+    pressure_units: 'hPa',
+    pressure_spread: 0,
+    altitude: 60,
+    altitude_units: 'km',
+    altitude_spread: 0.06,
+    valid_fraction: 0.5,
+  })
+})
+
+test('a profile CSV never labels a pressure as a time', () => {
+  // Sharing the timeseries export path would put hPa in a `time` column -- the
+  // concrete reason `profile` is a payload type of its own (T56 D2).
+  const chart = {
+    type: 'profile', variable: 'o3', units: 'DU',
+    layers: [0], values: [1], default_axis: 'pressure',
+    vertical: { pressure: { units: 'hPa', values: [900], spread: [0] } },
+  }
+
+  const [row] = resolveCsvExport(chart).rows
+
+  assert.equal('time' in row, false)
+  assert.equal(row.pressure, 900)
+})

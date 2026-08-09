@@ -440,16 +440,27 @@ def _open_netcdf(path: str, chunks: dict | None = None, *, timing: dict | None =
     # priors). Stamp each variable's source group as a ``group_path`` attr so
     # post-open classification sees the same group a describe_dataset
     # inventory's slash-qualified name carries.
+    #
+    # A group with no data_vars of its own is kept, not skipped. It can still
+    # be carrying the coordinates that make a science variable interpretable:
+    # TEMPO_O3PROF_L3 declares its per-pixel vertical axes
+    # (ozone_profile_pressure in hPa, ozone_profile_altitude in km, both
+    # (time, lat, lon, layer)) as CF AUXILIARY COORDINATES in /support_data,
+    # so that whole group opens with data_vars empty. Skipping it dropped both
+    # axes silently -- the retrieval asked for three variables, Harmony
+    # delivered three, and the opened Dataset had one. Nothing raises in that
+    # state: ``ozone_profile`` still opens 4-D with ``layer`` intact, there is
+    # simply nothing left to say what altitude a layer is at. The root group
+    # was already exempted from this skip for the same reason (see the merge
+    # below); the root is just the case that happened to be found first.
     group_datasets = []
     for group_key, gds in groups.items():
-        if not gds.data_vars:
-            continue
         group_path = group_key.strip("/")
         if group_path:
             for var in gds.data_vars.values():
                 var.attrs.setdefault("group_path", group_path)
         group_datasets.append((group_path, gds))
-    if not group_datasets:
+    if not any(gds.data_vars for _, gds in group_datasets):
         return root if root is not None else xr.Dataset()
 
     # A leaf name that appears in MORE than one group must not be merged by
@@ -1079,15 +1090,38 @@ def _has_real_time_coord(ds: Any) -> bool:
 
 
 def _strip_concat_unsafe_coord_attrs(ds: Any) -> Any:
-    """Drop ``units``/``calendar`` from coords so cross-granule concat doesn't
-    trip xarray's attribute-equality check when granules were written at
-    different times. Time values are already decoded to datetime64 per member,
-    so nothing downstream needs these attrs to interpret the axis."""
+    """Drop ``units``/``calendar`` from TIME coords so cross-granule concat
+    doesn't trip xarray's attribute-equality check when granules were written
+    against different epochs ("seconds since <this granule's start>"). Time
+    values are already decoded to datetime64 per member, so nothing downstream
+    needs these attrs to interpret the axis.
+
+    That last sentence is the whole justification, and it is true of time and
+    nothing else. Applied to EVERY coordinate — as it was until 2026-08-08 —
+    it took ``hPa`` off TEMPO_O3PROF's pressure axis and ``km`` off its
+    altitude axis. Units are precisely how a vertical axis is identified
+    (``geo_utils.vertical_axis_kind``), so the profile came back with 24 values
+    and nothing to plot them against: no error, no empty result, just a missing
+    axis. And only on a multi-granule bundle, since a single-member bundle
+    returns before this runs — which is why it survived a full synthetic suite
+    and surfaced on the first live retrieval.
+
+    A coordinate counts as time if it decoded to datetime64 or still carries a
+    CF "<unit> since <epoch>" encoding (an undecoded axis). Nothing else is
+    touched.
+    """
+    import numpy as np
+
     ds = ds.copy()
     for coord in ds.coords:
+        var = ds[coord]
+        units = str(var.attrs.get("units", "") or var.encoding.get("units", "") or "")
+        is_time = np.issubdtype(var.dtype, np.datetime64) or " since " in units.lower()
+        if not is_time:
+            continue
         for attr in ("units", "calendar"):
-            ds[coord].attrs.pop(attr, None)
-            ds[coord].encoding.pop(attr, None)
+            var.attrs.pop(attr, None)
+            var.encoding.pop(attr, None)
     return ds
 
 
@@ -1251,7 +1285,16 @@ def _promote_lat_lon_coords(ds: Any) -> Any:
 # agree to float32 precision and the old cube is if anything the more precise
 # of the two, but "same source, different dtype depending on cache warmth" is
 # exactly the silent divergence this version exists to prevent.
-OPEN_PIPELINE_VERSION = "2"
+#
+# Bumped to "3" for keeping coordinate-only groups, and again to "4" for
+# stripping units from time coordinates only. Both qualify for the same reason:
+# a cube written by the old logic is missing something a reader needs and
+# carries no sign of it. "3" lost every auxiliary coordinate that lived in a
+# coordinate-only group (for TEMPO_O3PROF, both vertical axes); "4" kept the
+# coordinates but stripped the units that identify them as vertical axes at
+# all. Either way a warm cube would keep serving an unplottable profile
+# forever, with values that look entirely correct.
+OPEN_PIPELINE_VERSION = "4"
 
 _PIPELINE_SOURCE_FUNCTIONS = (
     _open_netcdf,
@@ -1282,4 +1325,4 @@ _PIPELINE_SOURCE_FUNCTIONS = (
 # deliberately lives outside these functions (in _open_by_media_type) so this
 # fingerprint tracks interpretation only, and cache plumbing changes don't
 # spuriously invalidate every cube.
-OPEN_PIPELINE_SOURCE_FINGERPRINT = "7bf73131d30598bf1d511773e7e5e634386aaa5473028c4925731f8a6e555cb3"
+OPEN_PIPELINE_SOURCE_FINGERPRINT = "0682d593fca8bc02f86dd6850218764f6ec4753d12365722419f69f29b21b5fe"

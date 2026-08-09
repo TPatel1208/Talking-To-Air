@@ -194,6 +194,44 @@ object, never a string you construct yourself.
   `variable`/`dimension`/`dimension_value` param, or ask the researcher to
   choose, listing the exact candidates from the error — never retry blindly
   or invent a choice.
+- When a `dimension_choice_required` error says the refused dimension is a
+  VERTICAL axis, that is usually the researcher's actual question. Reach for
+  `plot_vertical_profile` — it reduces latitude, longitude and time and charts
+  every layer at once — instead of picking one level out of the profile. Use it
+  on a layered product (e.g. TEMPO_O3PROF_L3, the ozone profile) when the
+  question is about the shape of the profile, where in the atmosphere something
+  is, which altitude or pressure a maximum sits at, or the stratosphere /
+  troposphere / boundary layer as regions.
+  - But when the researcher NAMES a specific altitude or level — "the ozone
+    at 26 km", "NO2 at 500 hPa" — they are asking for a MAP at that one level,
+    not the profile. That is `plot_singular` with the `level` parameter.
+    The profile answers "which level?"; naming one already answers it.
+  - Pass the level EXACTLY as the researcher expressed it, units and all:
+    `level="26 km"`, `level="500 hPa"`. The units are not decoration — a
+    layered product can publish both pressure and altitude, and the unit is
+    the only thing saying which one was meant. Never strip them, never convert
+    to a layer number, and never pass a bare `level="500"`; that is refused on
+    purpose.
+  - If the researcher gave a NUMBER WITH NO UNITS ("plot the ozone at 500"),
+    STOP and ask which they meant. Do not supply units yourself, and do not
+    infer them from the number's magnitude or from an earlier chart in the
+    conversation. "500" is 500 hPa in the mid-troposphere and 500 km in outer
+    space, and picking for them puts a unit they never said into the chart's
+    own disclosure, where it then reads as their request. Ask: "Did you mean
+    500 hPa (pressure) or 500 km (altitude)?" — naming both axes this product
+    publishes. This is the one case where asking beats proceeding.
+  - Do NOT use `dimension_value` for a physical height. On a layered product
+    whose vertical dimension carries no coordinate values of its own
+    (TEMPO_O3PROF's `layer` is a bare 0–23 index; the physical altitude and
+    pressure live in per-pixel companion variables), `dimension_value` is a
+    layer INDEX — passing 26 there asks for layer 26, not 26 km. Use
+    `dimension`/`dimension_value` only when the researcher named a layer
+    number, and `level` whenever they named a height or a pressure.
+  - The result discloses which layer the level resolved to and how far that
+    layer sits from what was asked. Relay that: "nearest available layer to
+    300 hPa" is a different claim from "a 300 hPa map".
+  Do NOT use `plot_vertical_profile` for a map (`plot_singular`) or for change
+  over time (`conduct_temporal_statistic`).
 - `compare` requires the *same variable* on both sides — never call it with
   handles from two different variables/datasets (e.g. NO2 vs HCHO); retrieve
   the same variable for both regions/periods first.

@@ -1,8 +1,9 @@
 /**
  * ChartMessage.jsx
  * ----------------
- * The Plotly time-series panel (TimeSeriesPanel/TimeSeriesOverlayPanel) and
- * the shared chart toolbar (query/CSV/PNG export, ChartToolbar) consumed by
+ * The Plotly line panels -- time-series (TimeSeriesPanel/
+ * TimeSeriesOverlayPanel) and vertical profile (ProfilePanel) -- and the
+ * shared chart toolbar (query/CSV/PNG export, ChartToolbar) consumed by
  * OutputPanel.jsx. Geo charts render via MapLibreHeatmapPanel/
  * HeatmapMultiPanel directly, not through this file.
  */
@@ -11,6 +12,7 @@ import Plotly from 'plotly.js-dist-min'
 import _createPlotlyComponent from 'react-plotly.js/factory'
 import { resolveCsvExport, resolveNetcdfExport } from '../utils/chartExport.js'
 import { buildOverlayTraces } from '../utils/timeseriesCompare.js'
+import { availableAxes, profileLayout, profileTraces, spreadCaveat } from '../utils/verticalProfile.js'
 
 const createPlotlyComponent =
   typeof _createPlotlyComponent === 'function'
@@ -289,6 +291,74 @@ export function TimeSeriesPanel({ payload }) {
   return (
     <Plot data={data} layout={layout} config={BASE_CONFIG} revision={revision}
       style={{ width: '100%' }} useResizeHandler />
+  )
+}
+
+// The vertical profile (T56): one value per atmospheric layer, plotted against
+// the layer's physical pressure or altitude rather than its index.
+//
+// Everything decidable about this chart lives in utils/verticalProfile.js --
+// which axis to draw, which way up, whether a log scale is safe, and how much
+// of an approximation the regional-mean axis is. That split is deliberate:
+// "layer 0 is the top of the atmosphere" is the one thing here that can be
+// silently wrong, and it has to be testable without a DOM.
+export function ProfilePanel({ payload }) {
+  const [axisKind, setAxisKind] = useState(payload?.default_axis || 'pressure')
+  const axes = useMemo(() => availableAxes(payload), [payload])
+  // Derived during render rather than reset in an effect: focusing a different
+  // chart whose axis this one doesn't publish must fall back immediately, not
+  // after a frame of drawing against nothing.
+  const activeAxis = axes.includes(axisKind) ? axisKind : (payload?.default_axis || axes[0])
+
+  const [revision, setRevision] = useState(0)
+  const mounted = useRef(false)
+  useEffect(() => {
+    if (!mounted.current) { mounted.current = true; requestAnimationFrame(() => setRevision(r => r + 1)) }
+  }, [])
+
+  const data = useMemo(() => profileTraces(payload, activeAxis), [payload, activeAxis])
+  const layout = useMemo(
+    () => ({ ...profileLayout(payload, activeAxis), datarevision: revision }),
+    [payload, activeAxis, revision],
+  )
+  const caveat = useMemo(() => spreadCaveat(payload, activeAxis), [payload, activeAxis])
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      {axes.length > 1 && (
+        <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+          <span style={{ fontSize: '11.5px', fontWeight: 700, color: 'var(--text-muted)' }}>
+            Vertical axis
+          </span>
+          {axes.map(kind => (
+            <button
+              key={kind}
+              onClick={() => setAxisKind(kind)}
+              style={{
+                fontSize: '11.5px', fontWeight: 700, cursor: 'pointer',
+                padding: '4px 10px', borderRadius: '7px',
+                border: `1px solid ${kind === activeAxis ? 'var(--teal)' : 'var(--border)'}`,
+                background: kind === activeAxis ? 'var(--teal)' : 'var(--bg-secondary)',
+                color: kind === activeAxis ? '#ffffff' : 'var(--text-secondary)',
+              }}
+            >
+              {kind}
+            </button>
+          ))}
+        </div>
+      )}
+      <Plot data={data} layout={layout} config={BASE_CONFIG} revision={revision}
+        style={{ width: '100%' }} useResizeHandler />
+      {caveat && (
+        <div style={{
+          fontSize: '11.5px', color: 'var(--text-muted)', lineHeight: 1.5,
+          background: 'var(--bg-secondary)', border: '1px solid var(--border)',
+          borderRadius: '7px', padding: '8px 10px',
+        }}>
+          {caveat.text}
+        </div>
+      )}
+    </div>
   )
 }
 

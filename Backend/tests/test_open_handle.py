@@ -613,6 +613,116 @@ class OpenHandleGroupedNetcdfTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(find_lat_coord(da), "latitude")
         self.assertEqual(find_lon_coord(da), "longitude")
 
+    async def test_concatenating_a_bundle_keeps_a_non_time_coordinates_units(self):
+        """Before concat, ``units``/``calendar`` are dropped from coordinates so
+        granules written against different epochs don't trip xarray's
+        attribute-equality check. That reasoning is entirely about TIME -- its
+        values are already decoded to datetime64, so nothing downstream needs
+        the attr to read the axis. It is not true of any other coordinate.
+
+        Stripping them all took ``hPa`` off TEMPO_O3PROF's pressure axis and
+        ``km`` off its altitude axis, and units are exactly how a vertical axis
+        is IDENTIFIED (geo_utils.vertical_axis_kind). The profile then rendered
+        with values and no axis to plot them against -- silently, and only on a
+        multi-granule bundle, because a single-member bundle returns before the
+        concat ever happens. Found live on a 3-granule TEMPO_O3PROF retrieval,
+        2026-08-08; every synthetic single-granule test passed throughout."""
+        import numpy as np
+        import xarray as xr
+
+        from tta_backend.services.open_handle import open_handle
+
+        def member(day):
+            def factory():
+                return xr.Dataset(
+                    {"ozone_profile": (
+                        ("time", "lat", "lon", "layer"),
+                        np.ones((1, 2, 2, 3)),
+                        {"units": "DU"},
+                    )},
+                    coords={
+                        # A per-granule epoch, the case the strip exists for.
+                        "time": ("time", np.array([f"2025-10-0{day}"], dtype="datetime64[ns]")),
+                        "lat": [10.0, 20.0],
+                        "lon": [30.0, 40.0],
+                        "pressure": (("layer",), [0.175, 130.0, 902.0], {"units": "hPa"}),
+                    },
+                )
+            return factory
+
+        self.volume.add_netcdf_bundle("obs_bundle_units", {
+            "a.nc4": {None: member(1)},
+            "b.nc4": {None: member(2)},
+        })
+
+        ds = await open_handle("obs_bundle_units", self.tools)
+
+        self.assertEqual(ds.sizes["time"], 2, "both granules should have concatenated")
+        self.assertEqual(ds["pressure"].attrs.get("units"), "hPa")
+
+    async def test_open_handle_keeps_a_sibling_groups_auxiliary_coordinates(self):
+        """The root group is not the only place a coordinate-only group turns
+        up. TEMPO_O3PROF_L3 puts its science variable in /product and the two
+        variables that give the vertical axis physical meaning -- per-pixel
+        pressure (hPa) and altitude (km) -- in /support_data, where the file
+        declares them as CF auxiliary coordinates rather than data variables.
+        That group therefore has NO data_vars, and the group-merge loop skipped
+        it outright: the retrieval requested all three variables, Harmony
+        delivered all three, and the opened Dataset carried one.
+
+        The damage is silent and specific to a product like this. Nothing
+        raises -- ``ozone_profile`` opens 4-D with ``layer`` intact -- there is
+        simply no axis to plot the 24 values against, and ``layer`` is a bare
+        index. Live-verified against
+        276663155_TEMPO_O3PROF_L3_V04_20251001T120743Z_S002_subsetted.nc4."""
+        import xarray as xr
+
+        from tta_backend.services.open_handle import open_handle
+
+        def make_root():
+            return xr.Dataset(coords={
+                "longitude": ("longitude", [-75.0, -74.0]),
+                "latitude": ("latitude", [40.0, 41.0]),
+                "time": ("time", [0]),
+            })
+
+        def make_product_group():
+            return xr.Dataset({
+                "ozone_profile": (
+                    ("time", "latitude", "longitude", "layer"),
+                    [[[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]]],
+                ),
+            })
+
+        def make_support_group():
+            # Coordinate-only, exactly as the real granule presents it.
+            return xr.Dataset(coords={
+                "ozone_profile_pressure": (
+                    ("time", "latitude", "longitude", "layer"),
+                    [[[[0.175, 902.0], [0.175, 902.0]], [[0.175, 902.0], [0.175, 902.0]]]],
+                ),
+                "ozone_profile_altitude": (
+                    ("time", "latitude", "longitude", "layer"),
+                    [[[[60.0, 1.0], [60.0, 1.0]], [[60.0, 1.0], [60.0, 1.0]]]],
+                ),
+            })
+
+        self.volume.add_netcdf("obs_o3prof", {
+            None: make_root,
+            "product": make_product_group,
+            "support_data": make_support_group,
+        })
+
+        ds = await open_handle("obs_o3prof", self.tools)
+
+        self.assertIn("ozone_profile", ds.data_vars)
+        self.assertIn("ozone_profile_pressure", ds.variables)
+        self.assertIn("ozone_profile_altitude", ds.variables)
+        self.assertEqual(
+            ds["ozone_profile_pressure"].dims,
+            ("time", "latitude", "longitude", "layer"),
+        )
+
 
 @unittest.skipIf(
     any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES)

@@ -62,11 +62,15 @@ from tta_backend.config.settings import get_settings
 from tta_backend.config.workflow_stages import STAGE_RENDER
 from tta_backend.datasets.mask_info import col_info_for_variable, resolve_mask_info
 from tta_backend.datasets.variable_roles import classify_inventory, related_variables
-from tta_backend.earthdata_mcp.results import MCPToolError
+from tta_backend.earthdata_mcp.results import (
+    CATEGORY_DIMENSION_CHOICE_REQUIRED,
+    CATEGORY_TOO_LARGE,
+    MCPToolError,
+)
 from tta_backend.services import scope_registry
 from tta_backend.services.artifact_registry import build_artifact_reference
 from tta_backend.services.open_handle import OpenHandleError, open_handle
-from tta_backend.utils.geo_utils import find_lat_coord, find_lon_coord
+from tta_backend.utils.geo_utils import find_lat_coord, find_lon_coord, vertical_axis_kind
 from tta_backend.utils.colormaps import resolve as resolve_colormap
 from tta_backend.utils.overlay_render import render_overlay_png
 from tta_backend.utils.phase_timing import phase_timer
@@ -91,7 +95,9 @@ from tta_backend.preprocessing.variable_choice_builder import emit_variable_choi
 
 logger = logging.getLogger(__name__)
 
-_RENDER_TYPE_TO_ARTIFACT_PREFIX = {"heatmap": "map", "heatmap_multi": "cmp", "timeseries": "ts"}
+_RENDER_TYPE_TO_ARTIFACT_PREFIX = {
+    "heatmap": "map", "heatmap_multi": "cmp", "timeseries": "ts", "profile": "prof",
+}
 
 _resolver = RegionResolver()
 _aggregation_service = AggregationService()
@@ -421,10 +427,11 @@ def _summary_dims_and_range(payload: dict, render_type: str | None):
             dims = [len(panels), *dims]
         return dims, (first.get("vmin") if first else None), (first.get("vmax") if first else None)
 
-    if render_type == "timeseries":
-        times = payload.get("times") or []
+    if render_type in ("timeseries", "profile"):
+        axis = payload.get("times") if render_type == "timeseries" else payload.get("layers")
+        axis = axis or []
         values = [v for v in (payload.get("values") or []) if isinstance(v, (int, float))]
-        dims = [len(times)] if times else None
+        dims = [len(axis)] if axis else None
         vmin = min(values) if values else None
         vmax = max(values) if values else None
         return dims, vmin, vmax
@@ -588,6 +595,12 @@ def _dataset_facts(col_info: dict | None) -> dict:
         "provider": provider,
         "instrument": instrument,
         "source": " — ".join(part for part in (provider, instrument) if part),
+        # T57: where the product sits in its provider's validation lifecycle,
+        # and that provider's own caveat. Rides in provenance so it reaches the
+        # chart disclosure and, from there, methods.md -- a "don't publish on
+        # this" warning is worthless if it only ever appears in chat.
+        "maturity": col_info.get("maturity") or "unknown",
+        "maturity_note": col_info.get("maturity_note") or "",
     }
 
 
@@ -1040,6 +1053,13 @@ def _provenance(
             # rides into provenance, so the dispatch layer can append the
             # deterministic note naming the chosen product + alternatives.
             provenance["variable_resolution"] = agg_meta["variable_resolution"]
+        if agg_meta.get("level_resolution"):
+            # T58 D5: which layer a physical level resolved to, how much of the
+            # analyzed region agrees with that layer, and how far the layer
+            # actually sits from what was asked. Travels with the result because
+            # "nearest available layer to 300 hPa" and "a 300 hPa map" are
+            # different claims, and only the disclosure distinguishes them.
+            provenance["level_resolution"] = agg_meta["level_resolution"]
     return provenance
 
 
@@ -1082,6 +1102,221 @@ def _attach_reproducibility(
     return payload
 
 
+# ── Vertical profile (T56) ────────────────────────────────────────────────────
+
+# What counts as a physical vertical axis is decided in ONE place
+# (geo_utils.vertical_axis_kind), by CF metadata rather than by name -- the same
+# doctrine T24 applied to lat/lon. Bound here rather than re-spelled: the other
+# reader of that decision is ``_dimension_choice_error``, which points a refused
+# vertical dimension at this tool, and two definitions that drift would send a
+# researcher to a tool that then tells them the dimension isn't vertical.
+_axis_kind = vertical_axis_kind
+
+# Post-narrowing ceiling on the cells a profile reduces over (T56 D11). The
+# reduction is a mean that dask streams at num_workers=2, so peak memory stays
+# chunk-bounded no matter how large this gets -- what runs away is wall clock. A
+# regional profile is nowhere near it (a New Jersey box is ~38x38x24 per
+# granule); a full-domain one is 137M cells per variable per scan, which would
+# spend minutes producing 24 numbers. Refused as the same structured too_large
+# error every other size gate raises, so the agent relays "narrow the request"
+# instead of the researcher watching a turn time out.
+_MAX_PROFILE_CELLS = 40_000_000
+
+
+def _vertical_dim(da, time_dim: str | None) -> tuple[str | None, list[str]]:
+    """The dimension a profile is plotted against: the one left after latitude,
+    longitude and time. Returns ``(dim, all_candidates)`` so a caller can refuse
+    an ambiguous file by naming what it found rather than picking one."""
+    lat_coord = find_lat_coord(da)
+    lon_coord = find_lon_coord(da)
+    spatial = {name for name in (lat_coord, lon_coord, time_dim) if name}
+    candidates = [str(d) for d in da.dims if d not in spatial]
+    return (candidates[0] if len(candidates) == 1 else None), candidates
+
+
+def _vertical_axis_candidates(narrowed, ds, vertical_dim: str, region: dict) -> dict[str, object]:
+    """The physical vertical axes available for ``vertical_dim``, keyed
+    ``"pressure"``/``"altitude"``, each already narrowed to ``region``.
+
+    The narrowed science array is searched FIRST. That is not a fallback
+    ordering, it is where these actually live: the granule declares them as CF
+    auxiliary coordinates, so they have already ridden through the same
+    ``.where`` and crop the science variable received -- co-located
+    pixel-for-pixel, with no second alignment to get wrong.
+
+    A product that publishes them as ordinary data variables is still
+    supported, through the opened Dataset -- but that copy is on the FULL
+    granule grid, so it is narrowed here with the same geometry mask and crop
+    (``_crop_band_to_region``, the seam the companion-evidence bands already
+    use). Reading it straight off ``ds`` would report a "regional" axis
+    averaged over a continent.
+    """
+    found: dict[str, object] = {}
+    for name, var in narrowed.coords.items():
+        if vertical_dim not in getattr(var, "dims", ()):
+            continue
+        kind = vertical_axis_kind(var)
+        if kind and kind not in found:
+            found[kind] = var
+    if ds is None or getattr(ds, "data_vars", None) is None:
+        return found
+    for name, var in ds.data_vars.items():
+        if vertical_dim not in getattr(var, "dims", ()) or name == narrowed.name:
+            continue
+        kind = vertical_axis_kind(var)
+        if not kind or kind in found:
+            continue
+        cropped, in_region = _crop_band_to_region(var, region)
+        if cropped is not None and in_region:
+            found[kind] = cropped
+    return found
+
+
+def _layer_order(axis_values: list, kind: str) -> str:
+    """Whether index 0 of the vertical axis is the TOP of the atmosphere or the
+    bottom -- MEASURED off the axis, never assumed.
+
+    TEMPO_O3PROF orders its layers top-down (layer 0 at ~0.175 hPa / 60 km,
+    layer 23 at the surface), so an index-increasing-upward plot renders the
+    atmosphere inverted. Deriving this from the physical axis instead of pinning
+    it means a product ordered the other way is drawn correctly too, and a chart
+    reading this key can be right without knowing which product it came from.
+    """
+    finite = [v for v in axis_values if v is not None]
+    if len(finite) < 2 or finite[0] == finite[-1]:
+        return "unknown"
+    # Pressure falls with height; altitude rises. Both agree on the answer.
+    rising = finite[-1] > finite[0]
+    if kind == "pressure":
+        return "top_down" if rising else "bottom_up"
+    return "bottom_up" if rising else "top_down"
+
+
+def _rounded(values) -> list:
+    return [None if not np.isfinite(v) else float(f"{float(v):.6g}") for v in np.asarray(values).ravel()]
+
+
+def _profile_axis_block(axis_da, vertical_dim: str, kind: str) -> dict:
+    """One physical vertical axis reduced to the analyzed region, with the
+    per-layer spread that says how much of an approximation that is.
+
+    Finding 4: the grid is fixed aloft and terrain-following only near the
+    surface, so a regional-mean axis is *exact* for the upper layers and
+    approximate in the boundary layer. The size of that approximation depends
+    entirely on the region -- a box over the Rockies looks nothing like one over
+    New Jersey -- so it is measured per request and disclosed, never assumed.
+    """
+    from tta_backend.preprocessing.regional_reduction import reduce_keeping_axes
+
+    keep = (vertical_dim,)
+    mean = reduce_keeping_axes(axis_da, keep=keep, stat="mean")
+    highest = reduce_keeping_axes(axis_da, keep=keep, stat="max")
+    lowest = reduce_keeping_axes(axis_da, keep=keep, stat="min")
+    spread = np.asarray(highest.values, dtype="float64") - np.asarray(lowest.values, dtype="float64")
+    return {
+        "kind": kind,
+        "units": axis_da.attrs.get("units", "") or "",
+        "values": _rounded(mean.values),
+        "spread": _rounded(spread),
+        "layer_order": _layer_order(_rounded(mean.values), kind),
+    }
+
+
+def _per_layer_valid_fraction(masked, vertical_dim: str, region_cells: int | None = None) -> list:
+    """What fraction of the analyzed region's cells actually held a value at
+    each layer. A profile drawn from one surviving pixel at 60 km and ten
+    thousand at the surface is two different measurements sharing an axis, and
+    nothing about the line itself says so.
+
+    The denominator is the REGION's cell count (``region_cells``, recorded by
+    ``mask_data_by_geometry`` where the rasterized mask exists), times however
+    many timesteps were reduced -- not the cropped array's size, which is the
+    bounding box. For any region that isn't a rectangle those differ a lot: a
+    complete retrieval over the continental US measured 60% by the bounding
+    box, because the Atlantic counted as missing observations. Falls back to
+    the array's own size when no footprint was recorded, which is exact for a
+    box-shaped region and is what the caller had before.
+    """
+    finite = np.isfinite(masked)
+    collapsed = [d for d in masked.dims if d != vertical_dim]
+    counts = finite.sum(collapsed).values
+    spatial_cells = region_cells if region_cells else None
+    if spatial_cells is None:
+        spatial_cells = 1
+        for dim in collapsed:
+            spatial_cells *= int(masked.sizes[dim])
+        total = spatial_cells
+    else:
+        lat_coord, lon_coord = find_lat_coord(masked), find_lon_coord(masked)
+        total = spatial_cells
+        for dim in collapsed:
+            if dim not in (lat_coord, lon_coord):
+                total *= int(masked.sizes[dim])
+    if total <= 0:
+        return [0.0] * int(masked.sizes[vertical_dim])
+    # Clamped: the recorded footprint is measured on the pre-QA grid, so a
+    # rounding difference must never publish a fraction above 1.
+    return [min(1.0, round(float(c) / total, 6)) for c in np.atleast_1d(counts)]
+
+
+def _resolve_level_selector(masked, level: str, dimension, dimension_value):
+    """Turn a physical ``level`` request into the ``(dim, value)`` pair the
+    existing selection seam takes, plus the disclosure that travels with it.
+
+    Raises the same structured :class:`MCPToolError` every other refusal in this
+    module raises, so a level that cannot honestly be resolved reaches the
+    researcher as a specific answer rather than as a plausible wrong map.
+    """
+    from dataclasses import asdict
+
+    from tta_backend.preprocessing.level_resolver import resolve_level
+    from tta_backend.utils.geo_utils import identify_time
+
+    if dimension_value is not None:
+        raise MCPToolError(
+            CATEGORY_DIMENSION_CHOICE_REQUIRED,
+            f"Both 'level' ({level!r}) and 'dimension_value' ({dimension_value!r}) were "
+            "given for the same selection. They are different requests -- 'level' names a "
+            "physical level, 'dimension_value' names a coordinate value or an index -- and "
+            "guessing which was meant is what this parameter exists to avoid.",
+            suggestion="Pass 'level' for a physical level, or 'dimension'/'dimension_value' for a layer.",
+        )
+
+    time_dim = identify_time(masked)
+    vertical_dim, candidates = _vertical_dim(masked, time_dim)
+    if vertical_dim is None:
+        # Deliberately two different refusals. Nothing to select from is a
+        # different problem to too many things to select from, and telling a
+        # researcher to "narrow the region" when the file has no vertical axis
+        # at all would send them somewhere that cannot help.
+        if not candidates:
+            raise MCPToolError(
+                CATEGORY_DIMENSION_CHOICE_REQUIRED,
+                f"This variable has no vertical dimension, so {level!r} cannot be "
+                "resolved against it.",
+                suggestion="Drop the 'level' parameter, or plot a layered product.",
+            )
+        raise MCPToolError(
+            CATEGORY_DIMENSION_CHOICE_REQUIRED,
+            f"This variable has more than one non-spatial dimension ({', '.join(candidates)}), "
+            f"so {level!r} does not say which one to resolve against.",
+            suggestion=f"Select the others with 'dimension'/'dimension_value' first: {', '.join(candidates)}.",
+        )
+
+    resolution = resolve_level(masked, vertical_dim, level)
+    return vertical_dim, resolution.selector_value, asdict(resolution)
+
+
+def _profile_scale_guard(narrowed) -> str | None:
+    cells = int(getattr(narrowed, "size", 0))
+    if cells <= _MAX_PROFILE_CELLS:
+        return None
+    return (
+        f"This profile would reduce over ~{cells:,} cells, above the "
+        f"{_MAX_PROFILE_CELLS:,}-cell limit for a single request."
+    )
+
+
 # ── Tools ─────────────────────────────────────────────────────────────────────
 
 
@@ -1098,6 +1333,7 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
         variable: Optional[str] = None,
         dimension: Optional[str] = None,
         dimension_value: Optional[float] = None,
+        level: Optional[str] = None,
     ) -> str:
         """
         Plot a spatial heatmap of a variable over a single location at one point in time.
@@ -1121,6 +1357,16 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
                                "dimension_choice_required" error naming one.
             dimension_value : Coordinate value to select from ``dimension``
                                (nearest match), e.g. a pressure level in hPa.
+                               On a dimension with no coordinate values this is
+                               an integer INDEX, not a physical value — use
+                               ``level`` instead to name a physical level.
+            level    : A physical vertical level, WITH its units, e.g.
+                       "500 hPa", "26 km", "50000 Pa". Use this when the user
+                       names an altitude or pressure ("ozone at 26 km"). The
+                       units are required: they are what says whether pressure
+                       or altitude was meant, so a bare number is refused.
+                       Resolves to the nearest available layer and discloses how
+                       close it is. Do not combine with ``dimension_value``.
 
         Returns:
             JSON string — chart payload for the frontend to render interactively.
@@ -1181,7 +1427,20 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
             units = masked.attrs.get("units", "")
             variable_name = masked.name or ""
             col_info = col_info_for_variable(masked, ds)
+            # T58 D7 -- resolve early, select late. The vertical axes ride the
+            # time dimension, so aggregate() destroys them; a physical level has
+            # to be turned into an index HERE, on the narrowed pre-aggregation
+            # array. The index then goes through the SAME selection seam a
+            # direct dimension/dimension_value request uses, which is what keeps
+            # the two ways of asking for one layer agreeing about n_granules,
+            # date range and provenance (Architectural Constraint).
+            selected_dim, selected_value = dimension, dimension_value
+            level_disclosure = None
             try:
+                if level is not None:
+                    selected_dim, selected_value, level_disclosure = _resolve_level_selector(
+                        masked, level, dimension, dimension_value,
+                    )
                 aggregation = _aggregation_service.aggregate(
                     masked,
                     variable=variable_name,
@@ -1190,10 +1449,14 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
                     source_ds=ds,
                 )
                 reduced = next(iter(aggregation.ds.data_vars.values()))
-                reduced = _normalize_to_2d(reduced, dim_selector=_build_dim_selector(dimension, dimension_value))
+                reduced = _normalize_to_2d(
+                    reduced, dim_selector=_build_dim_selector(selected_dim, selected_value),
+                )
             except MCPToolError as e:
                 return "resolve", None, None, e.to_dict()
             agg_meta = aggregation.meta
+            if level_disclosure is not None:
+                agg_meta["level_resolution"] = level_disclosure
             # T48: the variable-resolution disclosure was stashed on ``da`` by
             # to_dataarray, but masking's ``.where`` above stripped it before
             # aggregate() saw ``masked`` -- so carry it across from the
@@ -1446,6 +1709,7 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
             JSON string — time-series chart payload for the frontend to render interactively.
         """
         import pandas as pd
+        from tta_backend.preprocessing.regional_reduction import reduce_keeping_axes
         from tta_backend.utils.geo_utils import identify_time
 
         try:
@@ -1531,23 +1795,27 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
                 masked, variable=variable_name, col_info=col_info, source_ds=ds,
             )
 
+            # One reduction, retaining time (T56 Phase 2). The regional mean is
+            # the cos(latitude) area-weighted mean -- the SAME definition the
+            # stats tool and the vertical profile use -- so a trend line, a
+            # single-value stats mean and a profile over the identical region
+            # can never disagree. A plain per-cell mean over-weights high
+            # latitudes (cells shrink by cos(lat) toward the poles), biasing
+            # continental trends; median/std/max/min stay per-cell.
+            #
+            # This replaced a per-timestep Python loop. The arithmetic is the
+            # same, but the loop forced one walk of the lazily-opened bundle's
+            # dask graph PER GRANULE -- 36 walks on an ordinary TEMPO day, for
+            # 36 numbers.
+            reduced = reduce_keeping_axes(masked, keep=(time_dim,), stat=stat)
+
             times, values, valid_time_indices = [], [], []
-            for i in range(masked.sizes[time_dim]):
-                slice_da = masked.isel({time_dim: i})
-                try:
-                    if stat == "mean":
-                        # The regional mean is the cos(latitude) area-weighted
-                        # mean (area_weighted_mean) -- the SAME definition the
-                        # stats tool uses -- so the trend line and the single-
-                        # value stats mean for the identical region can never
-                        # disagree. A plain np.nanmean over grid cells over-
-                        # weights high latitudes (cells shrink by cos(lat)
-                        # toward the poles), biasing continental/global trends.
-                        # median/std/max/min stay per-cell (compute_values_stat).
-                        value = area_weighted_mean(slice_da)
-                    else:
-                        value = _aggregation_service.compute_values_stat(slice_da.values, stat)
-                except ValueError:
+            for i, value in enumerate(np.atleast_1d(np.asarray(reduced.values))):
+                # NaN is "this timestep had nothing left after masking" -- it
+                # drops off the line rather than plotting as a very clean zero.
+                # (The companion QA series still covers it: T55 reports every
+                # timestep, including the ones the chart cannot show.)
+                if not np.isfinite(value):
                     continue
                 raw_time = masked[time_dim].values[i]
                 timestamp = pd.Timestamp(raw_time).isoformat()
@@ -1608,3 +1876,224 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
         return _save_chart(ts_payload, f"{variable_name}_{stat}_{location}")
 
     return conduct_temporal_statistic
+
+
+def make_plot_vertical_profile(mcp_tools: dict[str, BaseTool]):
+    @tool
+    async def plot_vertical_profile(
+        handle: Annotated[str, Field(description="An obs_/cube_ handle from a retrieval or transform tool.")],
+        location: str,
+        title: str = "",
+        variable: Optional[str] = None,
+    ) -> str:
+        """
+        Show how a variable is distributed with ALTITUDE — a vertical profile
+        line chart, one value per atmospheric layer, averaged over a region and
+        a period.
+
+        Use this for a layered product (e.g. an ozone profile) when the user
+        asks about the shape of the profile, where in the atmosphere something
+        is, the stratospheric maximum, boundary-layer amounts, or "at what
+        altitude/pressure". It is also the answer when another chart tool
+        refuses with a "dimension_choice_required" error naming a vertical
+        dimension: that error means the variable HAS a vertical axis, and this
+        tool shows it instead of picking one level out of it.
+
+        Do NOT use it for a single map (plot_singular) or for change over time
+        (conduct_temporal_statistic). Latitude, longitude and time are all
+        reduced away here — what survives is the vertical axis.
+
+        Args:
+            handle   : obs_/cube_ handle from a retrieval or transform tool.
+            location : Place name to average over, e.g. 'New Jersey'.
+            title    : Chart title. Auto-generated from variable + location if omitted.
+            variable : Science variable to profile, for a multi-variable file
+                        with no variable chosen at retrieval time.
+
+        Returns:
+            JSON string — profile chart payload for the frontend to render.
+        """
+        from tta_backend.preprocessing.regional_reduction import reduce_keeping_axes
+        from tta_backend.utils.geo_utils import identify_time
+        from tta_backend.utils.plotting import _dimension_choice_error
+
+        try:
+            ds = await open_handle(handle, mcp_tools)
+            # Same convention as every other tool: normalize the whole opened
+            # Dataset's longitude before extraction, so the science variable
+            # and anything still reached through ``ds`` share one coordinate
+            # convention (T25 masking-execution fix).
+            ds_lon_coord = find_lon_coord(ds)
+            if ds_lon_coord:
+                ds = _normalize_longitudes(ds, ds_lon_coord)
+            da = _open_dataarray(ds, handle=handle, variable=variable)
+        except VariableChoiceRequired as e:
+            emit_variable_choice_payload(e.resolution, ds)
+            emit_status("Waiting for a variable choice.", stage=STAGE_RENDER)
+            return json.dumps({"error": e.mcp_error.to_dict()})
+        except MCPToolError as e:
+            emit_status("Visualization failed while opening data.", stage=STAGE_RENDER)
+            return json.dumps({"error": e.to_dict()})
+        except OpenHandleError as e:
+            emit_status("Visualization failed while opening data.", stage=STAGE_RENDER)
+            return json.dumps({"error": f"Failed to open handle '{handle}': {e}"})
+
+        time_dim = identify_time(da)
+        vertical_dim, candidates = _vertical_dim(da, time_dim)
+        if vertical_dim is None:
+            if not candidates:
+                return json.dumps({"error": (
+                    f"'{da.name}' has no vertical dimension to profile (dims: "
+                    f"{list(da.dims)}). Use plot_singular for a map, or "
+                    "conduct_temporal_statistic for a time series."
+                )})
+            # More than one non-spatial, non-time axis: which one is "vertical"
+            # is a scientific choice, and the T25 doctrine is to refuse rather
+            # than guess. The existing structured error already lists the
+            # candidate's values, which is what a caller needs to choose.
+            return json.dumps({"error": _dimension_choice_error(da, candidates[0]).to_dict()})
+
+        emit_status("Resolving requested location...", stage=STAGE_RENDER)
+        region = await _resolver.aresolve_location(location)
+        if region is None:
+            emit_status("Location lookup failed.", stage=STAGE_RENDER)
+            return json.dumps({"error": f"Could not geocode location: '{location}'"})
+
+        emit_status("Computing vertical profile...", stage=STAGE_RENDER)
+
+        def _narrow_mask_reduce():
+            # CPU-bound narrow -> mask -> reduce chain (T16), run off the event
+            # loop via asyncio.to_thread below.
+            lat_coord = find_lat_coord(da)
+            lon_coord = find_lon_coord(da)
+            if lat_coord is None or lon_coord is None:
+                return "error", f"Cannot find lat/lon coords. Available: {list(da.coords)}"
+
+            # Narrow BEFORE masking (the standing order), so everything counted
+            # during masking describes the region the answer is about. The
+            # vertical-axis coordinates ride along on ``narrowed`` -- they share
+            # its lat/lon dims, so the same ``.where`` and crop narrow them
+            # identically, with no second alignment to get wrong.
+            narrowed = mask_data_by_geometry(da, region["geometry"])
+            apply_mask_region_type(narrowed, region)  # T42
+            # The region's own footprint on this grid, captured before the bbox
+            # crop and before masking strips attrs -- the honest denominator for
+            # per-layer coverage (see _per_layer_valid_fraction).
+            region_cells = narrowed.attrs.get("region_cells")
+            narrowed = _sel_bounds(narrowed, lat_coord, lon_coord, region["bounds"])
+
+            # T56 D11: bounded AFTER narrowing, because narrowing is what makes
+            # the ordinary regional case small. Peak memory is chunk-bounded
+            # either way; what this protects is the researcher's wall clock.
+            oversized = _profile_scale_guard(narrowed)
+            if oversized:
+                return "too_large", MCPToolError(
+                    CATEGORY_TOO_LARGE, oversized,
+                    suggestion="Narrow the region or the time period and try again.",
+                ).to_dict()
+
+            variable_name = narrowed.name or ""
+            col_info = col_info_for_variable(narrowed, ds)
+            masked, masking_provenance = _aggregation_service.resolve_and_mask(
+                narrowed, variable=variable_name, col_info=col_info, source_ds=ds,
+            )
+
+            # D4 space-then-time: one area-weighted mean per (timestep, layer)
+            # first, then the cadence-bucket-weighted mean over time. The
+            # intermediate matrix is deliberately not kept -- that is the
+            # curtain view, and nothing here reads it.
+            keep = tuple(d for d in (time_dim, vertical_dim) if d and d in masked.dims)
+            per_slice = reduce_keeping_axes(masked, keep=keep, stat="mean")
+
+            cadence = _aggregation_service.cadence_for(masked, col_info=col_info)
+            if time_dim and time_dim in per_slice.dims:
+                spatial_of_matrix = [d for d in per_slice.dims if d != time_dim]
+                valid_indices = [
+                    i for i, ok in enumerate(
+                        np.atleast_1d(np.isfinite(per_slice).any(spatial_of_matrix).values)
+                    ) if bool(ok)
+                ]
+                if not valid_indices:
+                    return "error", f"No valid data found for '{location}' at any layer."
+                per_slice = per_slice.isel({time_dim: valid_indices})
+                profile = _aggregation_service.temporal_mean(per_slice, time_dim, cadence)
+            else:
+                valid_indices = [0]
+                profile = per_slice
+
+            values = _rounded(profile.values)
+            if not any(v is not None for v in values):
+                return "error", f"No valid data found for '{location}' at any layer."
+
+            axes = _vertical_axis_candidates(masked, ds, vertical_dim, region)
+            vertical = {
+                kind: _profile_axis_block(axis_da, vertical_dim, kind)
+                for kind, axis_da in axes.items()
+            }
+            # Pressure is the default because it is the axis with the smallest
+            # derived-ness caveat (finding 4: exactly constant across the region
+            # for the upper half of the layers) and because it puts the
+            # tropopause where a reader expects it. Altitude is a frontend
+            # toggle over data already in this payload.
+            default_axis = "pressure" if "pressure" in vertical else next(iter(vertical), None)
+
+            agg_meta = _aggregation_service.timeseries_aggregation_meta(
+                masked, valid_indices, "mean", time_dim, col_info=col_info,
+            )
+            agg_meta["masking"] = masking_provenance
+            if da.attrs.get(VARIABLE_RESOLUTION_ATTR):
+                agg_meta["variable_resolution"] = da.attrs[VARIABLE_RESOLUTION_ATTR]
+
+            resolved_title = title or f"{variable_name} vertical profile over {region['name']}"
+            payload = {
+                "type": "profile",
+                "title": resolved_title,
+                "variable": variable_name,
+                "units": masked.attrs.get("units", ""),
+                "stat": "mean",
+                "vertical_dim": vertical_dim,
+                "layers": list(range(int(masked.sizes[vertical_dim]))),
+                "values": values,
+                "vertical": vertical,
+                "default_axis": default_axis,
+                "layer_order": (vertical.get(default_axis) or {}).get("layer_order", "unknown"),
+                "valid_fraction": _per_layer_valid_fraction(masked, vertical_dim, region_cells),
+                "masking": masking_provenance,
+                "aggregation_meta": agg_meta,
+            }
+            _attach_reproducibility(
+                payload,
+                [handle],
+                masked,
+                region["name"],
+                "mean",
+                {"chart_type": "profile", "location": location},
+                agg_meta,
+                region,
+                col_info,
+                ds=ds,
+            )
+            # A profile's export is self-contained: 24 numbers per axis IS the
+            # full resolution, so the arrays travel in the export block rather
+            # than being re-derived from the source granule the way a heatmap's
+            # are. That also keeps the CSV/PNG working after the handle is
+            # evicted -- the one chart type for which that is true.
+            payload["export"].update({
+                "layers": payload["layers"],
+                "values": payload["values"],
+                "valid_fraction": payload["valid_fraction"],
+                "vertical": vertical,
+                "default_axis": default_axis,
+                "layer_order": payload["layer_order"],
+            })
+            return None, (payload, resolved_title)
+
+        status, result = await asyncio.to_thread(_narrow_mask_reduce)
+        if status in ("error", "too_large"):
+            emit_status("Vertical profile failed.", stage=STAGE_RENDER)
+            return json.dumps({"error": result})
+        payload, resolved_title = result
+        emit_status("Preparing response...", stage=STAGE_RENDER)
+        return _save_chart(payload, resolved_title)
+
+    return plot_vertical_profile

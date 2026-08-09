@@ -43,6 +43,20 @@ class CollectionConfig(BaseModel):
     # "<provider> — <instrument>" in the Metadata tab's Source dataset block.
     provider:      str = ""
     instrument:    str = ""
+    # ── Scientific maturity (T57) ────────────────────────────────────────────
+    # Where the product sits in its provider's validation lifecycle, and the
+    # caveat that comes with that. This is scientific provenance, not
+    # descriptive metadata: a Beta product's own user guide can say publication
+    # is "not recommended and highly discouraged", and that sentence has to
+    # reach the artifacts someone pulls while writing a paper -- methods.md and
+    # the chart's disclosure -- not just a tooltip they saw once.
+    #
+    # "unknown" is the default and stays meaningfully different from
+    # "validated": it says nobody checked, which is not the same as a checked
+    # clean bill of health. maturity_note carries the provider's own wording so
+    # the caveat is quotable rather than paraphrased.
+    maturity:      Literal["beta", "provisional", "validated", "unknown"] = "unknown"
+    maturity_note: str = ""
 
     # ── Variable selection ────────────────────────────────────────────────
     primary_var:                 str
@@ -53,6 +67,14 @@ class CollectionConfig(BaseModel):
     # qa_flags.py::resolve_qa_info).
     qa_good_values:               Optional[list[int]] = None
     qa_bad_values:                Optional[list[int]] = None
+    # The per-pixel physical vertical axes a LAYERED product's science variable
+    # is uninterpretable without -- pressure and/or altitude. Same standing as
+    # quality_flag_var and enforced by the same guard
+    # (retrieval_composites._pinned_companion_variables): a subset that drops
+    # these comes back with values and nothing to plot them against, which
+    # renders as a bare layer index and, since layer 0 is the top of the
+    # atmosphere, upside down. Empty for every non-layered product.
+    vertical_axis_vars:          list[str]     = []
     variables:                   list[str]     = []
     supports_variable_subsetting: bool         = False
     groups:                      list[str]     = []
@@ -144,6 +166,17 @@ COLLECTIONS_WITHOUT_QUALITY_FLAG: dict[str, str] = {
     "TEMPO_O3TOT": (
         "granule-verified 2026-08-02 (TEMPO_O3TOT_L3_V04_20260802T011507Z_S017): "
         "16 merged bands, none carrying CF flag_values/flag_meanings"
+    ),
+    "TEMPO_O3PROF": (
+        "granule-verified 2026-08-08 (TEMPO_O3PROF_L3_V04_20251001T120743Z_S002): the "
+        "file's only groups are geolocation / product / support_data -- there is no "
+        "qa_statistics group and no band carrying CF flag_values/flag_meanings. Absence "
+        "is by design: the user guide states the L3 producer already screened on "
+        "fit_RMS, avg_residual and retrieval_exit_status BEFORE gridding. It recommends "
+        "further screening on eff_cloud_fraction and the zenith angles, which are "
+        "continuous thresholds rather than an enumerated flag, so they are a declarative "
+        "threshold mask (T56 D6) and not something the good/bad-values doctrine can "
+        "express"
     ),
     "MODIS_AOD_AQUA": (
         "inventory-verified (describe_dataset): L3 AOD is quality-screened at L2 "

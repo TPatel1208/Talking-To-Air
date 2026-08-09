@@ -456,15 +456,23 @@ class EvidenceComputationTests(unittest.TestCase):
         geometry = box(25.0, 5.0, 36.0, 16.0)  # covers only the lower-left cell
 
         mask = geometry_mask(band, geometry)
-        xr.testing.assert_identical(
-            band.where(mask), mask_data_by_geometry(band, geometry, crop=False)
-        )
+        # ``assert_equal``, not ``assert_identical``: the seam additionally
+        # RECORDS what it rasterized (``region_cells``, and ``region_type``
+        # when the mask self-heals), which a bare ``where()`` has no way to
+        # know. The claim under test is that the two keep the same cells.
+        uncropped = mask_data_by_geometry(band, geometry, crop=False)
+        xr.testing.assert_equal(band.where(mask), uncropped)
         # With T50's crop the seam returns that same array narrowed to the
         # mask's footprint -- the same rasterization, fewer cells carried.
         cropped = mask_data_by_geometry(band, geometry)
-        xr.testing.assert_identical(band.where(mask).sel(cropped.coords), cropped)
-        # The footprint count is readable straight off the mask.
+        xr.testing.assert_equal(band.where(mask).sel(cropped.coords), cropped)
+        # The footprint count is readable straight off the mask -- and the seam
+        # reports the same number, so a caller needing the region's own cell
+        # count (per-layer coverage, T56) never re-rasterizes on cropped axes,
+        # whose float32 step differs in the 8th digit and flips boundary cells.
         self.assertEqual(int(mask.sum()), 1)
+        self.assertEqual(uncropped.attrs["region_cells"], 1)
+        self.assertEqual(cropped.attrs["region_cells"], 1)
 
     def test_evidence_is_empty_and_safe_without_a_source_dataset(self):
         import xarray as xr

@@ -67,6 +67,35 @@ class TimeseriesArtifactMetadata(BaseModel):
         return v
 
 
+class ProfileArtifactMetadata(BaseModel):
+    """A vertical profile: one value per atmospheric layer, with the physical
+    axis those layers sit on.
+
+    Deliberately not a ``timeseries`` (T56 D2). The two look alike -- a label
+    and a list of numbers -- but reusing that vocabulary would let the export
+    and compare paths treat pressures as timestamps: a CSV with a ``time``
+    column full of hPa, and an overlay putting a profile on the same axis as a
+    trend line. ``layer_order`` travels with the metadata because which end of
+    the array is the sky is a fact about the product, not a rendering choice.
+    """
+
+    variable: str
+    units: str
+    layer_count: int
+    vertical_axis: str
+    vertical_units: str
+    layer_order: Literal["top_down", "bottom_up", "unknown"] = "unknown"
+    source_handles: list[str] = Field(default_factory=list)
+    masking: dict[str, Any] | None = None
+
+    @field_validator("layer_count")
+    @classmethod
+    def _at_least_two_layers(cls, v: int) -> int:
+        if v < 2:
+            raise ValueError("a vertical profile needs at least 2 layers")
+        return v
+
+
 class ArtifactReference(BaseModel):
     id: str
     type: str

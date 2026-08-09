@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect, useRef } from 'react'
-import { TimeSeriesPanel, ChartToolbar } from './ChartMessage'
+import { TimeSeriesPanel, ProfilePanel, ChartToolbar } from './ChartMessage'
 import MapLibreHeatmapPanel from './MapLibreHeatmapPanel.jsx'
 import HeatmapMultiPanel from './HeatmapMultiPanel.jsx'
 import CompareGrid from './CompareGrid.jsx'
@@ -641,6 +641,11 @@ const CHART_TABS = {
   heatmap: ['map', 'statistics', 'metadata'],
   heatmap_multi: ['map', 'metadata'],
   timeseries: ['chart', 'statistics', 'metadata'],
+  // No Statistics tab: that tab summarizes a field (sample count, min/max over
+  // cells), and a profile has already reduced its field away. Its 24 numbers
+  // ARE the summary, and its per-layer coverage is disclosed on the chart
+  // itself -- a second "statistics" view could only restate them less well.
+  profile: ['chart', 'metadata'],
 }
 // Table artifacts keep their existing grid alongside the new Metadata tab;
 // ground-validation timeseries artifacts have no chartable series data of
@@ -909,6 +914,7 @@ export default function OutputPanel({
         {activeTab === 'map' && chart.type === 'heatmap' && <MapLibreHeatmapPanel payload={chart} height={480} accessToken={accessToken} />}
         {activeTab === 'map' && chart.type === 'heatmap_multi' && <HeatmapMultiPanel payload={chart} accessToken={accessToken} />}
         {activeTab === 'chart' && chart.type === 'timeseries' && <TimeSeriesPanel payload={chart} />}
+        {activeTab === 'chart' && chart.type === 'profile' && <ProfilePanel payload={chart} />}
         {(activeTab === 'map' || activeTab === 'chart') && (
           <RelatedVariablesPanel chart={chart} onSend={onSend} />
         )}

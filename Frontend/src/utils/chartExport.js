@@ -28,6 +28,32 @@ export function resolveCsvExport(chart) {
     if (rows.length) return { kind: 'client', rows }
   }
 
+  // A profile qualifies for the same reason and no other: its 24 numbers per
+  // axis ARE the measurement, so nothing is lost by writing them here. It gets
+  // its own columns rather than reusing the timeseries ones -- routed as a
+  // timeseries these rows would carry hPa under a `time` header, which is
+  // precisely why `profile` is a payload type of its own.
+  if (chart?.type === 'profile') {
+    const rows = (chart.layers || []).map((layer, i) => {
+      const row = {
+        variable: chart.variable,
+        layer,
+        value: chart.values?.[i],
+        units: chart.units,
+      }
+      for (const kind of ['pressure', 'altitude']) {
+        const axis = chart.vertical?.[kind]
+        if (!axis) continue
+        row[kind] = axis.values?.[i]
+        row[`${kind}_units`] = axis.units
+        row[`${kind}_spread`] = axis.spread?.[i]
+      }
+      row.valid_fraction = chart.valid_fraction?.[i]
+      return row
+    })
+    if (rows.length) return { kind: 'client', rows }
+  }
+
   return {
     kind: 'unavailable',
     message: 'This chart does not include full-resolution export metadata.',
