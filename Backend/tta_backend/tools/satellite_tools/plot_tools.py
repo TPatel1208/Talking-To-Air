@@ -1104,14 +1104,6 @@ def _attach_reproducibility(
 
 # ── Vertical profile (T56) ────────────────────────────────────────────────────
 
-# What counts as a physical vertical axis is decided in ONE place
-# (geo_utils.vertical_axis_kind), by CF metadata rather than by name -- the same
-# doctrine T24 applied to lat/lon. Bound here rather than re-spelled: the other
-# reader of that decision is ``_dimension_choice_error``, which points a refused
-# vertical dimension at this tool, and two definitions that drift would send a
-# researcher to a tool that then tells them the dimension isn't vertical.
-_axis_kind = vertical_axis_kind
-
 # Post-narrowing ceiling on the cells a profile reduces over (T56 D11). The
 # reduction is a mean that dask streams at num_workers=2, so peak memory stays
 # chunk-bounded no matter how large this gets -- what runs away is wall clock. A
@@ -1140,9 +1132,15 @@ def _vertical_axis_candidates(narrowed, ds, vertical_dim: str, region: dict) -> 
 
     The narrowed science array is searched FIRST. That is not a fallback
     ordering, it is where these actually live: the granule declares them as CF
-    auxiliary coordinates, so they have already ridden through the same
-    ``.where`` and crop the science variable received -- co-located
-    pixel-for-pixel, with no second alignment to get wrong.
+    auxiliary coordinates, so they arrive co-located pixel-for-pixel with the
+    science variable, with no second alignment to get wrong.
+
+    They ride the CROP, though, not the ``.where``: xarray's ``.where`` masks
+    the data and leaves auxiliary coordinates alone, so an axis taken straight
+    off the narrowed array still spans the whole bounding box. This function's
+    docstring used to claim otherwise, and the profile's per-layer ``spread``
+    was a bounding-box max-minus-min because of it. Callers must restrict to the
+    cells the science variable actually kept -- see ``_profile_axis_block``.
 
     A product that publishes them as ordinary data variables is still
     supported, through the opened Dataset -- but that copy is on the FULL
@@ -1196,7 +1194,7 @@ def _rounded(values) -> list:
     return [None if not np.isfinite(v) else float(f"{float(v):.6g}") for v in np.asarray(values).ravel()]
 
 
-def _profile_axis_block(axis_da, vertical_dim: str, kind: str) -> dict:
+def _profile_axis_block(axis_da, vertical_dim: str, kind: str, region_mask=None) -> dict:
     """One physical vertical axis reduced to the analyzed region, with the
     per-layer spread that says how much of an approximation that is.
 
@@ -1207,6 +1205,13 @@ def _profile_axis_block(axis_da, vertical_dim: str, kind: str) -> dict:
     New Jersey -- so it is measured per request and disclosed, never assumed.
     """
     from tta_backend.preprocessing.regional_reduction import reduce_keeping_axes
+
+    # Restricted to the cells the science variable actually kept. The axis rode
+    # the crop but not the geometry ``.where`` (see _vertical_axis_candidates),
+    # so without this the spread is a BOUNDING-BOX max-minus-min and reports
+    # variation from pixels the profile is not about.
+    if region_mask is not None:
+        axis_da = axis_da.where(region_mask.broadcast_like(axis_da))
 
     keep = (vertical_dim,)
     mean = reduce_keeping_axes(axis_da, keep=keep, stat="mean")
@@ -1259,7 +1264,7 @@ def _per_layer_valid_fraction(masked, vertical_dim: str, region_cells: int | Non
     return [min(1.0, round(float(c) / total, 6)) for c in np.atleast_1d(counts)]
 
 
-def _resolve_level_selector(masked, level: str, dimension, dimension_value):
+def _resolve_level_selector(masked, level: str, dimension, dimension_value, ds=None):
     """Turn a physical ``level`` request into the ``(dim, value)`` pair the
     existing selection seam takes, plus the disclosure that travels with it.
 
@@ -1272,18 +1277,29 @@ def _resolve_level_selector(masked, level: str, dimension, dimension_value):
     from tta_backend.preprocessing.level_resolver import resolve_level
     from tta_backend.utils.geo_utils import identify_time
 
-    if dimension_value is not None:
+    time_dim = identify_time(masked)
+    vertical_dim, candidates = _vertical_dim(masked, time_dim)
+    # Only a selector aimed at the SAME dimension conflicts. Refusing any
+    # dimension_value at all locked every product with a vertical axis plus a
+    # second non-spatial dimension (an ensemble member, a retrieval attempt, a
+    # wavelength) out of `level` entirely -- and the multi-dimension refusal
+    # below then told the caller to pass dimension_value first, which this
+    # refusal rejected. No call satisfied both.
+    if dimension_value is not None and (dimension is None or dimension == vertical_dim):
         raise MCPToolError(
             CATEGORY_DIMENSION_CHOICE_REQUIRED,
             f"Both 'level' ({level!r}) and 'dimension_value' ({dimension_value!r}) were "
-            "given for the same selection. They are different requests -- 'level' names a "
-            "physical level, 'dimension_value' names a coordinate value or an index -- and "
-            "guessing which was meant is what this parameter exists to avoid.",
+            "given for the same vertical dimension. They are different requests -- 'level' "
+            "names a physical level, 'dimension_value' names a coordinate value or an index "
+            "-- and guessing which was meant is what this parameter exists to avoid.",
             suggestion="Pass 'level' for a physical level, or 'dimension'/'dimension_value' for a layer.",
         )
-
-    time_dim = identify_time(masked)
-    vertical_dim, candidates = _vertical_dim(masked, time_dim)
+    if vertical_dim is None and dimension is not None and dimension_value is not None:
+        # The other dimensions have a selector, so the vertical one is whatever
+        # is left once they are applied.
+        remaining = [d for d in candidates if d != dimension]
+        vertical_dim = remaining[0] if len(remaining) == 1 else None
+        candidates = remaining
     if vertical_dim is None:
         # Deliberately two different refusals. Nothing to select from is a
         # different problem to too many things to select from, and telling a
@@ -1303,7 +1319,7 @@ def _resolve_level_selector(masked, level: str, dimension, dimension_value):
             suggestion=f"Select the others with 'dimension'/'dimension_value' first: {', '.join(candidates)}.",
         )
 
-    resolution = resolve_level(masked, vertical_dim, level)
+    resolution = resolve_level(masked, vertical_dim, level, dataset=ds)
     return vertical_dim, resolution.selector_value, asdict(resolution)
 
 
@@ -1439,7 +1455,7 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
             try:
                 if level is not None:
                     selected_dim, selected_value, level_disclosure = _resolve_level_selector(
-                        masked, level, dimension, dimension_value,
+                        masked, level, dimension, dimension_value, ds=ds,
                     )
                 aggregation = _aggregation_service.aggregate(
                     masked,
@@ -2027,7 +2043,7 @@ def make_plot_vertical_profile(mcp_tools: dict[str, BaseTool]):
 
             axes = _vertical_axis_candidates(masked, ds, vertical_dim, region)
             vertical = {
-                kind: _profile_axis_block(axis_da, vertical_dim, kind)
+                kind: _profile_axis_block(axis_da, vertical_dim, kind, region_mask=np.isfinite(masked))
                 for kind, axis_da in axes.items()
             }
             # Pressure is the default because it is the axis with the smallest

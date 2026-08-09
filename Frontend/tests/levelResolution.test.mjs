@@ -22,6 +22,8 @@ function chartWithLevel(overrides = {}) {
         runner_up_fraction: 0.169,
         margin: 0.662,
         n_pixels: 2688,
+        excluded_fraction: 0,
+        resolved_level_spread: 0,
         axis_variable: 'ozone_profile_pressure',
         ...overrides,
       },
@@ -51,8 +53,11 @@ test('agreement is reported with its runner-up, not as a bare percentage', () =>
   // different done properly.
   const fields = levelResolutionFields(chartWithLevel())
 
-  assert.equal(fields.agreement, '83.1% of 2,688 analyzed pixels resolve to layer 19')
-  assert.equal(fields.runnerUp, '16.9% resolve to layer 20 instead')
+  assert.equal(
+    fields.agreement,
+    '83.1% of the analyzed area resolves to layer 19 (2,688 pixel-columns sampled)',
+  )
+  assert.equal(fields.runnerUp, '16.9% resolves to layer 20 instead')
 })
 
 test('unanimous agreement says so instead of naming an absent runner-up', () => {
@@ -60,7 +65,10 @@ test('unanimous agreement says so instead of naming an absent runner-up', () => 
     dominant_fraction: 1.0, runner_up: null, runner_up_fraction: 0.0, margin: 1.0,
   }))
 
-  assert.equal(fields.agreement, '100% of 2,688 analyzed pixels resolve to layer 19')
+  assert.equal(
+    fields.agreement,
+    '100% of the analyzed area resolves to layer 19 (2,688 pixel-columns sampled)',
+  )
   assert.equal(fields.runnerUp, null)
 })
 
@@ -92,4 +100,36 @@ test('the axis variable the level was resolved against is named', () => {
   const fields = levelResolutionFields(chartWithLevel())
 
   assert.equal(fields.axisVariable, 'ozone_profile_pressure')
+})
+
+test('an error too small to display is reported as a band, not rounded to zero', () => {
+  // "0 hPa from the level requested" contradicts itself, and it collapses the
+  // exact-vs-approximate distinction the zero branch exists to preserve.
+  const fields = levelResolutionFields(chartWithLevel({ level_error: 0.004 }))
+
+  assert.equal(fields.levelError, 'less than 0.005 hPa from the level requested')
+})
+
+test('a partial payload degrades to missing lines rather than throwing', () => {
+  // This block renders outside fmt()/NOT_AVAILABLE, so an unguarded field takes
+  // the whole Metadata tab down instead of leaving one row blank.
+  const fields = levelResolutionFields({ provenance: { level_resolution: { index: 1 } } })
+
+  assert.equal(fields.resolved, null)
+  assert.equal(fields.levelError, null)
+  assert.equal(fields.agreement, null)
+})
+
+test('the excluded fraction of the region is surfaced when it is non-zero', () => {
+  assert.equal(levelResolutionFields(chartWithLevel()).excluded, null)
+
+  const sparse = levelResolutionFields(chartWithLevel({ excluded_fraction: 0.42 }))
+  assert.equal(sparse.excluded, '42% of the region had no usable vertical coordinate')
+})
+
+test('a layer that varies across the region says so', () => {
+  assert.equal(levelResolutionFields(chartWithLevel()).spread, null)
+
+  const varying = levelResolutionFields(chartWithLevel({ resolved_level_spread: 38.4 }))
+  assert.equal(varying.spread, 'This layer itself ranges 38.4 hPa across the region')
 })

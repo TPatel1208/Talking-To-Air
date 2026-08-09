@@ -632,11 +632,34 @@ class VerticalAxisIdentificationTests(unittest.TestCase):
     def test_there_is_one_definition_shared_by_both_readers(self):
         """The profile tool and the dimension-refusal suggestion must agree
         about what "vertical" means, or a refusal points at a tool that then
-        says the dimension isn't vertical after all."""
-        from tta_backend.tools.satellite_tools import plot_tools
-        from tta_backend.utils import geo_utils
+        says the dimension isn't vertical after all.
 
-        self.assertIs(plot_tools._axis_kind, geo_utils.vertical_axis_kind)
+        Asserted on BEHAVIOUR over real arrays. This used to compare a module
+        alias against the function it was assigned from -- a tautology that
+        stayed green no matter what the two readers actually did, and which
+        pinned an alias nothing used."""
+        import numpy as np
+        import xarray as xr
+
+        from tta_backend.utils.geo_utils import is_vertical_dim, vertical_axes_for_dim
+
+        def field(axis_attrs):
+            da = xr.DataArray(
+                np.zeros((2, 2, 3)), dims=("latitude", "longitude", "layer"),
+                coords={"latitude": [40.0, 41.0], "longitude": [-75.0, -74.0]},
+                name="ozone",
+            )
+            return da.assign_coords(p=(da.dims, np.zeros((2, 2, 3)), axis_attrs))
+
+        vertical = field({"units": "hPa"})
+        self.assertTrue(is_vertical_dim(vertical, "layer"))
+        self.assertEqual(vertical_axes_for_dim(vertical, "layer"), {"pressure": "p"})
+
+        # A wavelength axis: the refusal must NOT point at the profile tool, and
+        # the profile tool must NOT claim an axis for it.
+        spectral = field({"units": "nm"})
+        self.assertFalse(is_vertical_dim(spectral, "layer"))
+        self.assertEqual(vertical_axes_for_dim(spectral, "layer"), {})
 
 
 @unittest.skipIf(

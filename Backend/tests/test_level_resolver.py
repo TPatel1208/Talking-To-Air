@@ -456,20 +456,40 @@ class RefusingAnAxisWhoseScaleIsUnknownTests(unittest.TestCase):
             {"units": "kPa", "standard_name": "air_pressure"},
         ))
 
-    def test_an_axis_in_units_the_converter_cannot_read_is_refused(self):
-        """1..101 kPa is 10..1010 hPa -- a whole atmosphere. A 50 hPa request
-        (5 kPa, layer 1) landed on layer 3 at 50 kPa = 500 hPa: off by a factor
-        of ten, disclosed as unanimous. Refuse instead of guessing parity."""
-        from tta_backend.earthdata_mcp.results import MCPToolError
+    def test_kilopascals_are_converted_rather_than_refused(self):
+        """kPa was the unit that exposed the original bug and it is a real CF
+        unit, so the fix was to teach the converter, not to refuse it. 1..101 kPa
+        is 10..1010 hPa -- a whole atmosphere -- and a 50 hPa request is 5 kPa,
+        which is layer 1. Before the fix it answered layer 3 (50 kPa = 500 hPa),
+        off by a factor of ten and disclosed as unanimous."""
         from tta_backend.preprocessing.level_resolver import resolve_level
 
         narrowed = self._kpa_axis([1.0, 5.0, 20.0, 50.0, 85.0, 101.0])
 
+        resolution = resolve_level(narrowed, "layer", "50 hPa")
+
+        self.assertEqual(resolution.index, 1)
+        self.assertAlmostEqual(resolution.resolved_level, 5.0)
+        self.assertEqual(resolution.units, "kPa")
+
+    def test_an_axis_in_units_the_converter_cannot_read_is_refused(self):
+        """The remaining route to an unconvertible axis is ``standard_name``,
+        which wins over units outright -- so a variable can be classified as
+        pressure while carrying a unit no table knows. Guessing parity there is
+        the factor-of-ten bug; refuse instead."""
+        from tta_backend.earthdata_mcp.results import MCPToolError
+        from tta_backend.preprocessing.level_resolver import resolve_level
+
+        narrowed = self._kpa_axis([1.0, 5.0, 20.0, 50.0, 85.0, 101.0])
+        narrowed = narrowed.assign_coords(p=(
+            narrowed["p"].dims, narrowed["p"].values,
+            {"units": "torr", "standard_name": "air_pressure"},
+        ))
+
         with self.assertRaises(MCPToolError) as caught:
             resolve_level(narrowed, "layer", "50 hPa")
 
-        message = caught.exception.to_dict()["message"]
-        self.assertIn("kPa", message)
+        self.assertIn("torr", caught.exception.to_dict()["message"])
 
     def test_the_conversion_table_covers_every_unit_the_classifier_accepts(self):
         """Two hand-maintained vocabularies that must agree. A unit added to
@@ -751,3 +771,371 @@ class AskingPlotSingularForAPhysicalLevelTests(unittest.IsolatedAsyncioTestCase)
         _, payload = await self._plot(dimension="layer", dimension_value=21)
 
         self.assertNotIn("level_resolution", payload["provenance"])
+
+
+class MeasuringTheAnalyzedRegionAndNotItsBoundingBoxTests(unittest.TestCase):
+    """Review finding A1, found by both reviewers independently.
+
+    ``mask_data_by_geometry`` ends in ``data_array.where(mask)``, and xarray's
+    ``.where`` masks the DATA while leaving auxiliary coordinates untouched. The
+    vertical axis rides along as an auxiliary coordinate, so every number the
+    disclosure reported -- the regional-mean level, the level error, the
+    dominance vote, and the majority refusal that is this feature's safety
+    mechanism -- was computed over the cropped BOUNDING BOX, including cells the
+    map renders as no-data.
+
+    T56's "valid_fraction denominator was the bbox" defect landing again in a
+    new place, and a contradiction of CONTEXT.md's own definition of dominance
+    as a fraction *of the analyzed region*.
+    """
+
+    def _split_region(self):
+        """A bbox whose western half is outside the analyzed region. The
+        in-region half sits at 850 hPa exactly; the out-of-region half is
+        400-600 hPa, far enough that including it changes the answer."""
+        import numpy as np
+        import xarray as xr
+
+        shape = (1, 2, 4, 3)
+        axis = np.empty(shape, dtype="float64")
+        axis[:, :, :2, :] = np.asarray([400.0, 500.0, 600.0])    # western, outside
+        axis[:, :, 2:, :] = np.asarray([700.0, 850.0, 1000.0])   # eastern, inside
+
+        science = np.full(shape, 5.0)
+        science[:, :, :2, :] = np.nan  # what the geometry mask did to the data
+
+        da = xr.DataArray(
+            science,
+            dims=("time", "latitude", "longitude", "layer"),
+            coords={
+                "time": np.array(["2025-10-01"], dtype="datetime64[ns]"),
+                "latitude": ("latitude", [40.0, 41.0], {"units": "degrees_north"}),
+                "longitude": ("longitude", [-77.0, -76.0, -75.0, -74.0], {"units": "degrees_east"}),
+            },
+            name="ozone",
+        )
+        return da.assign_coords(p=(da.dims, axis, {"units": "hPa"}))
+
+    def test_a_level_every_in_region_pixel_sits_on_resolves(self):
+        """Every pixel the map actually shows is at exactly 850 hPa. Scored over
+        the bounding box the axis runs 550-800 hPa, and an 850 hPa request was
+        refused as out of range -- a refusal caused entirely by pixels that are
+        not in the region."""
+        from tta_backend.preprocessing.level_resolver import resolve_level
+
+        resolution = resolve_level(self._split_region(), "layer", "850 hPa")
+
+        self.assertEqual(resolution.index, 1)
+        self.assertAlmostEqual(resolution.resolved_level, 850.0)
+        self.assertAlmostEqual(resolution.level_error, 0.0)
+
+    def test_out_of_region_pixels_do_not_vote_on_dominance(self):
+        """The majority rule is the safety mechanism, so the population it
+        counts has to be the analyzed region."""
+        from tta_backend.preprocessing.level_resolver import resolve_level
+
+        resolution = resolve_level(self._split_region(), "layer", "850 hPa")
+
+        self.assertEqual(resolution.dominant_fraction, 1.0)
+        self.assertIsNone(resolution.runner_up)
+        # 2 latitudes x 2 in-region longitudes x 1 timestep.
+        self.assertEqual(resolution.n_pixels, 4)
+
+
+class ToleratingAnIncompleteVerticalColumnTests(unittest.TestCase):
+    """Review finding A2. Dropping every column with ANY non-finite layer means
+    one all-fill layer refuses every level request for the whole product --
+    routine in profile retrievals, where the top layer fails at high solar
+    zenith angle and the bottom sits below terrain. The regional mean already
+    handled it correctly; only the all-or-nothing column filter broke."""
+
+    def _with_dead_layer(self, dead):
+        import numpy as np
+
+        narrowed = _narrowed_profile()
+        axis = narrowed["ozone_profile_pressure"].values.copy()
+        axis[..., dead] = np.nan
+        return narrowed.assign_coords(
+            ozone_profile_pressure=(narrowed.dims, axis, {"units": "hPa"}),
+        )
+
+    def test_one_dead_layer_does_not_refuse_a_level_the_others_resolve(self):
+        from tta_backend.preprocessing.level_resolver import resolve_level
+
+        for dead in (0, 23):
+            with self.subTest(dead_layer=dead):
+                resolution = resolve_level(self._with_dead_layer(dead), "layer", "500 hPa")
+                self.assertEqual(resolution.index, 21)
+                self.assertGreater(resolution.n_pixels, 0)
+
+    def test_a_region_with_no_usable_column_at_all_still_refuses(self):
+        """The existing refusal is right for a region with nothing in it; it was
+        only firing far too eagerly."""
+        import numpy as np
+
+        from tta_backend.earthdata_mcp.results import MCPToolError
+        from tta_backend.preprocessing.level_resolver import resolve_level
+
+        narrowed = _narrowed_profile()
+        narrowed = narrowed.assign_coords(ozone_profile_pressure=(
+            narrowed.dims,
+            np.full_like(narrowed["ozone_profile_pressure"].values, np.nan),
+            {"units": "hPa"},
+        ))
+
+        with self.assertRaises(MCPToolError):
+            resolve_level(narrowed, "layer", "500 hPa")
+
+
+class RefusingWhenTheAxisScaleIsNotKnowableTests(unittest.TestCase):
+    """Review finding #1: the companion door to the kPa bug already fixed.
+
+    When the axis publishes NO units, ``axis_units`` fell back to the REQUEST's
+    units, making the conversion an identity -- so a Pa-valued axis declaring
+    only ``standard_name: air_pressure`` answered a 500 hPa request with the
+    470 Pa layer, disclosed as 100% agreement and 29 hPa of error. The
+    vocabulary drift-guard structurally cannot catch this: there is no unit to
+    be missing from the table."""
+
+    def _pascal_axis(self, attrs):
+        import numpy as np
+        import xarray as xr
+
+        pascals = [17.49, 41.6, 58.84, 83.21, 117.67, 166.41, 235.34, 332.83, 470.69, 665.65]
+        shape = (1, 2, 2, len(pascals))
+        da = xr.DataArray(
+            np.full(shape, 5.0),
+            dims=("time", "latitude", "longitude", "layer"),
+            coords={
+                "time": np.array(["2025-10-01"], dtype="datetime64[ns]"),
+                "latitude": ("latitude", [40.0, 41.0], {"units": "degrees_north"}),
+                "longitude": ("longitude", [-75.0, -74.0], {"units": "degrees_east"}),
+            },
+            name="ozone",
+        )
+        return da.assign_coords(p=(
+            da.dims, np.broadcast_to(np.asarray(pascals), shape).copy(), attrs,
+        ))
+
+    def test_an_axis_that_publishes_no_units_is_refused(self):
+        from tta_backend.earthdata_mcp.results import MCPToolError
+        from tta_backend.preprocessing.level_resolver import resolve_level
+
+        with self.assertRaises(MCPToolError) as caught:
+            resolve_level(self._pascal_axis({"standard_name": "air_pressure"}), "layer", "500 hPa")
+
+        self.assertIn("unit", caught.exception.to_dict()["message"].lower())
+
+    def test_an_axis_with_blank_units_is_refused_too(self):
+        from tta_backend.earthdata_mcp.results import MCPToolError
+        from tta_backend.preprocessing.level_resolver import resolve_level
+
+        with self.assertRaises(MCPToolError):
+            resolve_level(
+                self._pascal_axis({"standard_name": "air_pressure", "units": "   "}),
+                "layer", "500 hPa",
+            )
+
+
+class ARequestThatTheProductCannotActuallyResolveTests(unittest.TestCase):
+    """Review finding A4: level error is unbounded, and it is ANTI-correlated
+    with the statistic that is bounded. Agreement is high precisely because the
+    layers are far apart, so the worst level errors arrive at 100% dominance --
+    a 130 hPa request returns a 107 hPa map, unanimously.
+
+    The scale-free way to ask "could this product have done better?" is the
+    error as a fraction of the local layer spacing. Above half a gap the request
+    sits nearer the middle of the gap than to any layer the product has."""
+
+    def test_a_level_almost_exactly_between_two_layers_says_so(self):
+        """Layers 17 and 18 sit at 107.4 and 167.2 hPa, so 138 hPa is nearly
+        halfway between them and neither layer is much of an answer.
+
+        DISCLOSED, not refused. The PRD's own worked example -- 300 hPa
+        resolving to layer 19 with 40 hPa of error -- has to keep resolving, and
+        it scores 0.86 against this request's 0.98. Any refusal threshold lives
+        in that narrow band, which is precisely the invented number D6 rejects.
+        The honest artifact here is the number."""
+        from tta_backend.preprocessing.level_resolver import resolve_level
+
+        resolution = resolve_level(_narrowed_profile(), "layer", "138 hPa")
+
+        self.assertEqual(resolution.index, 18)
+        self.assertGreater(resolution.level_error_fraction_of_gap, 0.9)
+
+    def test_the_prds_worked_example_still_resolves(self):
+        """300 hPa -> layer 19, 40 hPa away. D5 names this as the case where the
+        honest artifact is a number rather than a refusal, so a level-error gate
+        that broke it would be a regression against the spec."""
+        from tta_backend.preprocessing.level_resolver import resolve_level
+
+        resolution = resolve_level(_narrowed_profile(), "layer", "300 hPa")
+
+        self.assertEqual(resolution.index, 19)
+        self.assertLess(resolution.level_error_fraction_of_gap, 0.9)
+
+    def test_a_level_close_to_a_real_layer_still_resolves(self):
+        from tta_backend.preprocessing.level_resolver import resolve_level
+
+        resolution = resolve_level(_narrowed_profile(), "layer", "500 hPa")
+
+        self.assertEqual(resolution.index, 21)
+
+    def test_the_resolution_discloses_the_error_against_the_layer_spacing(self):
+        """A bare "4.8 hPa" means nothing without knowing the layers are ~140
+        hPa apart there. The normalized figure is what makes it readable, and it
+        is what the refusal is gated on."""
+        from tta_backend.preprocessing.level_resolver import resolve_level
+
+        resolution = resolve_level(_narrowed_profile(), "layer", "500 hPa")
+
+        self.assertLess(resolution.level_error_fraction_of_gap, 0.5)
+        self.assertGreater(resolution.level_error_fraction_of_gap, 0.0)
+
+
+class DisclosingHowFarApartThePixelsActuallyAreTests(unittest.TestCase):
+    """Review findings A3 and B1/B8.
+
+    D6's majority floor is necessary but not sufficient: the escape is the
+    MULTI-modal region, not the bimodal one the derivation examined. A 51/25/24
+    split across three vertical grids passes both criteria while 49% of the area
+    sits ~150 hPa from what was asked, because the two minority groups pull the
+    mean in opposite directions -- exactly when a mean is least representative.
+
+    A non-adjacent runner-up needs no threshold to be alarming: on every real
+    measurement the runner-up was the neighbouring layer."""
+
+    def _tri_modal(self):
+        """51% plain / 25% valley / 25% plateau -- an ordinary terrain-following
+        product over a mountain front."""
+        import numpy as np
+        import xarray as xr
+
+        plain = [1000.0, 850.0, 700.0]
+        valley = [1100.0, 1000.0, 850.0]
+        plateau = [850.0, 700.0, 550.0]
+        columns = [plain] * 6 + [valley] * 3 + [plateau] * 3
+        shape = (1, 1, len(columns), 3)
+        axis = np.asarray(columns, dtype="float64").reshape(1, 1, len(columns), 3)
+
+        da = xr.DataArray(
+            np.full(shape, 5.0),
+            dims=("time", "latitude", "longitude", "layer"),
+            coords={
+                "time": np.array(["2025-10-01"], dtype="datetime64[ns]"),
+                "latitude": ("latitude", [40.0], {"units": "degrees_north"}),
+                "longitude": ("longitude", np.linspace(-77.0, -74.0, len(columns)), {"units": "degrees_east"}),
+            },
+            name="ozone",
+        )
+        return da.assign_coords(p=(da.dims, axis, {"units": "hPa"}))
+
+    def test_a_multi_modal_region_is_refused_by_the_majority_floor(self):
+        """The 51/25/24 escape the review constructed: three vertical grids, the
+        two minority groups pulling the mean in opposite directions so it lands
+        somewhere no large group actually is."""
+        from tta_backend.earthdata_mcp.results import MCPToolError
+        from tta_backend.preprocessing.level_resolver import resolve_level
+
+        with self.assertRaises(MCPToolError):
+            resolve_level(self._tri_modal(), "layer", "850 hPa")
+
+    def test_a_non_adjacent_runner_up_is_refused_even_with_a_clear_majority(self):
+        """Isolated from the majority floor: 60/40 clears it comfortably, but
+        the two groups are fourteen layers apart. On every real measurement the
+        runner-up was the NEIGHBOURING layer, so a distant one is evidence the
+        region has two unrelated vertical structures in it -- and no threshold
+        is needed to say that one index cannot describe both."""
+        import numpy as np
+        import xarray as xr
+
+        from tta_backend.earthdata_mcp.results import MCPToolError
+        from tta_backend.preprocessing.level_resolver import resolve_level
+
+        near = list(MEASURED_PRESSURE_HPA)
+        far = list(MEASURED_PRESSURE_HPA)
+        # Six columns resolve 500 hPa to layer 21; four to layer 7, by shifting
+        # those columns so layer 7 carries the 500 hPa value.
+        far[7] = 500.0
+        columns = [near] * 6 + [far] * 4
+        shape = (1, 1, len(columns), len(near))
+        axis = np.asarray(columns, dtype="float64").reshape(shape)
+        da = xr.DataArray(
+            np.full(shape, 5.0),
+            dims=("time", "latitude", "longitude", "layer"),
+            coords={
+                "time": np.array(["2025-10-01"], dtype="datetime64[ns]"),
+                "latitude": ("latitude", [40.0], {"units": "degrees_north"}),
+                "longitude": ("longitude", np.linspace(-77.0, -74.0, len(columns)), {"units": "degrees_east"}),
+            },
+            name="ozone",
+        )
+        da = da.assign_coords(p=(da.dims, axis, {"units": "hPa"}))
+
+        with self.assertRaises(MCPToolError) as caught:
+            resolve_level(da, "layer", "500 hPa")
+
+        self.assertIn("apart", caught.exception.to_dict()["message"])
+
+    def test_the_resolution_discloses_the_spread_of_the_layer_it_chose(self):
+        """Dominance near 100% only bounds the spread relative to the layer GAP.
+        On a product with 100 hPa gaps a layer ranging 260-340 hPa across the
+        region still scores ~100%, and "270.9 hPa, 100% agreement" hides it.
+        ``_profile_axis_block`` already discloses this for the profile."""
+        from tta_backend.preprocessing.level_resolver import resolve_level
+
+        resolution = resolve_level(_narrowed_profile(), "layer", "500 hPa")
+
+        self.assertEqual(resolution.resolved_level_spread, 0.0)
+
+    def test_a_layer_that_varies_across_the_region_reports_its_spread(self):
+
+        from tta_backend.preprocessing.level_resolver import resolve_level
+
+        narrowed = _narrowed_profile(column_pressures=[MEASURED_PRESSURE_HPA] * 3)
+        axis = narrowed["ozone_profile_pressure"].values.copy()
+        # Layer 21 alone made to vary by +-20 hPa across longitude.
+        axis[:, :, 0, 21] -= 20.0
+        axis[:, :, -1, 21] += 20.0
+        narrowed = narrowed.assign_coords(
+            ozone_profile_pressure=(narrowed.dims, axis, {"units": "hPa"}),
+        )
+
+        resolution = resolve_level(narrowed, "layer", "500 hPa")
+
+        self.assertEqual(resolution.index, 21)
+        self.assertAlmostEqual(resolution.resolved_level_spread, 40.0, places=6)
+
+
+class ReportingTheSampleWithoutMisstatingItTests(unittest.TestCase):
+    """Review finding A5: ``dominant_fraction`` is cos(latitude)-weighted while
+    ``n_pixels`` is a raw count, and both landed in one sentence -- "91.3% of 40
+    analyzed pixels". By count it is 50%. The count is a fine field; it must not
+    be the denominator of an area percentage."""
+
+    def test_the_excluded_fraction_of_the_region_is_disclosed(self):
+        """Review finding B3: with scattered fill, n_pixels fell 40 -> 4 while
+        dominance stayed 1.000 and the message never changed. "100% of 4
+        analyzed pixels" beside a map built from 40 needs its denominator."""
+        import numpy as np
+
+        from tta_backend.preprocessing.level_resolver import resolve_level
+
+        narrowed = _narrowed_profile(column_pressures=[MEASURED_PRESSURE_HPA] * 4)
+        axis = narrowed["ozone_profile_pressure"].values.copy()
+        axis[:, :, 0, :] = np.nan  # one of four longitude columns entirely fill
+        narrowed = narrowed.assign_coords(
+            ozone_profile_pressure=(narrowed.dims, axis, {"units": "hPa"}),
+        )
+
+        resolution = resolve_level(narrowed, "layer", "500 hPa")
+
+        self.assertGreater(resolution.excluded_fraction, 0.0)
+        self.assertLess(resolution.excluded_fraction, 1.0)
+
+    def test_a_complete_region_excludes_nothing(self):
+        from tta_backend.preprocessing.level_resolver import resolve_level
+
+        resolution = resolve_level(_narrowed_profile(), "layer", "500 hPa")
+
+        self.assertEqual(resolution.excluded_fraction, 0.0)

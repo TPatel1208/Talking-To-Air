@@ -153,7 +153,13 @@ export function spreadCaveat(chart, requested) {
   const axis = profileAxis(chart, requested)
   if (!axis.kind || !axis.spread.length) return null
 
-  const spreads = axis.spread.map(v => (typeof v === 'number' ? v : 0))
+  // A layer whose spread could not be measured emits null (_rounded turns a
+  // non-finite value into one). Coercing that to 0 counted it as EXACTLY
+  // constant across the region -- reporting a missing measurement as a perfect
+  // one, the same absent-vs-exact conflation the level panel guards against.
+  // Unmeasured layers are dropped from both the count and its denominator.
+  const spreads = axis.spread.filter(v => typeof v === 'number' && Number.isFinite(v))
+  if (!spreads.length) return null
   const exactLayers = spreads.filter(v => v === 0).length
   const maxSpread = Math.max(...spreads)
   const rounded = Number(maxSpread.toPrecision(3))

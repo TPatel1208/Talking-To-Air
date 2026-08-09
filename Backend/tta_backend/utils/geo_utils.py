@@ -136,8 +136,14 @@ def identify_time(obj: Any) -> str | None:
 # ``ozone_profile_pressure``/``ozone_profile_altitude``, MERRA-2 spells its
 # ``lev``, and the next layered product will spell them something else again --
 # but they all publish hPa or km.
-PRESSURE_UNITS = frozenset({"hpa", "mb", "mbar", "millibar", "millibars", "pa", "pascal", "atm"})
-ALTITUDE_UNITS = frozenset({"km", "kilometer", "kilometers", "kilometre", "m", "metre", "meter", "meters"})
+PRESSURE_UNITS = frozenset({
+    "hpa", "hectopascal", "hectopascals", "mb", "mbar", "millibar", "millibars",
+    "pa", "pascal", "pascals", "kpa", "kilopascal", "kilopascals", "atm",
+})
+ALTITUDE_UNITS = frozenset({
+    "km", "kilometer", "kilometers", "kilometre", "kilometres",
+    "m", "metre", "metres", "meter", "meters",
+})
 
 # Values producers write into a standard_name they never set. A placeholder is
 # an ABSENCE, not a declaration, and reading it as one short-circuits the units
@@ -148,11 +154,30 @@ _PLACEHOLDER_STANDARD_NAMES = frozenset({
     "", "-", "--", "n/a", "na", "none", "null", "nil", "unknown", "unspecified", "unset", "tbd",
 })
 
+# CF standard names that name a physical vertical coordinate. Deliberately a
+# CLOSED set with a hard veto: a variable that has declared itself something
+# else is not reconsidered on its units, because "m" is a length whether it
+# measures height or an easting.
+#
+# The cost of the veto is that a real CF name missing from here silently kills a
+# genuine axis, so the list has to actually be complete for the names products
+# use. ``height_above_mean_sea_level`` and ``height_above_geopotential_datum``
+# are both real CF names published in metres and were both missing.
+#
+# ``geopotential_height`` is mapped to altitude knowingly: it is geopotential,
+# not geometric, height -- they differ by ~0.3% at 10 km and ~1.5% at 50 km.
+# Treating them as one is right for selecting a layer and wrong for a precise
+# altitude, which is why the resolution discloses which variable answered.
 _VERTICAL_STANDARD_NAMES = {
     "air_pressure": "pressure",
+    "air_pressure_at_mean_sea_level": "pressure",
     "atmosphere_pressure_coordinate": "pressure",
+    "atmosphere_ln_pressure_coordinate": "pressure",
     "altitude": "altitude",
     "height": "altitude",
+    "height_above_mean_sea_level": "altitude",
+    "height_above_geopotential_datum": "altitude",
+    "height_above_reference_ellipsoid": "altitude",
     "geopotential_height": "altitude",
 }
 

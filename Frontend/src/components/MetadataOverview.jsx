@@ -71,14 +71,28 @@ export function MetadataOverview({ chart, onViewStatistics, onViewFullMetadata, 
             Vertical level
           </div>
           <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>
-            {level.resolved}
+            {level.resolved || NOT_AVAILABLE}
           </div>
-          <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginTop: '4px', lineHeight: 1.5 }}>
-            Requested {level.requested} — {level.levelError}.
-          </div>
-          <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginTop: '4px', lineHeight: 1.5 }}>
-            {level.agreement}{level.runnerUp ? `; ${level.runnerUp}` : '.'}
-          </div>
+          {level.requested && level.levelError && (
+            <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginTop: '4px', lineHeight: 1.5 }}>
+              Requested {level.requested} — {level.levelError}.
+            </div>
+          )}
+          {level.agreement && (
+            <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginTop: '4px', lineHeight: 1.5 }}>
+              {level.agreement}{level.runnerUp ? `; ${level.runnerUp}` : '.'}
+            </div>
+          )}
+          {level.spread && (
+            <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginTop: '4px', lineHeight: 1.5 }}>
+              {level.spread}.
+            </div>
+          )}
+          {level.excluded && (
+            <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginTop: '4px', lineHeight: 1.5 }}>
+              {level.excluded}.
+            </div>
+          )}
           {level.axisVariable && (
             <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
               Resolved against {level.axisVariable}
