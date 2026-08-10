@@ -321,6 +321,15 @@ def _count_qa_pixels(da: xr.DataArray, qf: xr.DataArray, condition: xr.DataArray
             "flag_missing": flag_missing.sum(),
             "checked_area": checked_area.sum(),
             "passing_area": passing_area.sum(),
+            # The field's extremes, measured here because this walk is already
+            # happening. A quantile is not a streaming reduction, so the frame
+            # stack's pooled colour scale (T59 D9) cannot choose its histogram
+            # bins until the range is known -- a real data dependency, and
+            # without this it would buy the answer with a second full I/O pass
+            # over a lazily-opened bundle. Taken on the fill/valid-masked field
+            # BEFORE the QA mask, so it stays a superset of what survives.
+            "value_min": da.min(skipna=True),
+            "value_max": da.max(skipna=True),
         }
         # Per-timestep rates, reduced over the spatial dims of the SAME
         # pre/post arrays, so a day the mask gutted stays visible instead of
@@ -346,6 +355,10 @@ def _count_qa_pixels(da: xr.DataArray, qf: xr.DataArray, condition: xr.DataArray
         "flag_missing": int(reduced["flag_missing"]),
         "counted_extent": counted_extent,
     }
+    for key in ("value_min", "value_max"):
+        extreme = float(reduced[key])
+        if np.isfinite(extreme):
+            counts[key] = extreme
     area_checked = float(reduced["checked_area"])
     if area_checked > 0:
         counts["pass_rate"] = float(reduced["passing_area"]) / area_checked
@@ -353,6 +366,15 @@ def _count_qa_pixels(da: xr.DataArray, qf: xr.DataArray, condition: xr.DataArray
         counts["pass_rate_by_time"] = _by_time_rates(
             reduced["passing_area_by_time"], reduced["checked_area_by_time"],
         )
+        # The undivided areas, alongside the rates they produced. A per-bucket
+        # roll-up (T59 finding 12) has to SUM these and divide once -- averaging
+        # the quotients above would weight a scan that clipped the region's
+        # corner exactly as heavily as one that covered all of it -- and a
+        # quotient cannot be unmixed back into its terms. Re-deriving them
+        # instead would be a second full walk of a lazily-opened bundle for
+        # numbers this graph has already paid for.
+        for key in ("checked_area_by_time", "passing_area_by_time"):
+            counts[key] = [float(v) for v in np.asarray(reduced[key].values)]
         counts["times"] = [
             pd.Timestamp(t).isoformat() for t in np.asarray(reduced[time_dim].values)
         ]

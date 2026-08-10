@@ -724,6 +724,24 @@ def mask_data_by_geometry(
     # over the continental US reads 60% covered, and the reader sees a data
     # problem that does not exist.
     masked.attrs["region_cells"] = int(mask_da.sum())
+    # ...and how much AREA those cells cover, cos(latitude)-weighted with the
+    # one weight definition (``cos_lat_weights``). A count and an area are not
+    # interchangeable denominators: cells shrink toward the poles, so a
+    # coverage figure whose numerator is area-weighted and whose denominator is
+    # a cell count describes two different fields at once -- Finding #13's
+    # mismatch, arriving through the denominator instead of the numerator. The
+    # frame stack's ``valid_fraction`` (T59 D10) needs the area; T56's
+    # per-layer coverage still reads the count.
+    #
+    # Imported here rather than at module scope: aggregation_service reaches
+    # back into this module's masking helpers, and a top-level import would
+    # close the cycle.
+    from tta_backend.preprocessing.aggregation_service import cos_lat_weights
+
+    weights = cos_lat_weights(mask_da)
+    masked.attrs["region_area"] = float(
+        (mask_da if weights is None else mask_da * weights).sum()
+    )
     return masked
 
 
