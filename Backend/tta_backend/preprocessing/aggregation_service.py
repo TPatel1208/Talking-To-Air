@@ -1222,13 +1222,32 @@ class AggregationService:
         not each granule (Finding #11) -- so 'average over the period' is not
         biased toward days sampled more densely than the cadence.
 
-        Each timestep's weight is ``1 / (granules in its cadence bucket)``, so
-        every bucket contributes weight 1 to the mean regardless of how many
-        granules landed in it. Buckets come from flooring the timestamp to the
-        product's cadence (hour/day/month). An unknown or unbucketable cadence
-        can't define a period, so it falls back to the plain unweighted mean --
-        as does an evenly-cadenced series, where every bucket holds exactly one
-        granule and the weights are already uniform.
+        Each timestep's weight is ``1 / (granules in its bucket that have a
+        value AT THIS PIXEL)``, so every bucket contributes weight 1 to the
+        mean regardless of how many granules landed in it. Buckets come from
+        flooring the timestamp to the product's cadence (hour/day/month). An
+        unknown or unbucketable cadence can't define a period, so it falls back
+        to the plain unweighted mean -- as does an evenly-cadenced series,
+        where every bucket holds exactly one granule and the weights are
+        already uniform.
+
+        The denominator counts CONTRIBUTING granules, not granules, and that
+        distinction is the whole of T59 D4. ``.weighted(w).mean(skipna=True)``
+        renormalizes per pixel over the timesteps that survived masking, so a
+        fixed ``1 / (granules in bucket)`` weight let a bucket whose granules
+        mostly missed this pixel vote with a fraction of a bucket: where a
+        4-granule hour kept one granule, that hour counted a quarter. Measured
+        on two materialized TEMPO NO2 bundles, that put 2.7% and 2.3% on the
+        partial-coverage population -- and disabling QA made it LARGER, because
+        the NaNs come from swath tiles covering different slices of the domain,
+        not from quality masking.
+
+        Counting contributors instead makes the renormalization divide by
+        exactly the number of buckets that contributed, which is the mean of
+        the per-bucket means -- Finding #11's stated intent, and identical to
+        the old arithmetic wherever a bucket is wholly covered. Expressed as a
+        weight rather than a ``groupby(...).mean().mean("bucket")`` so the
+        reduction keeps its shape: same laziness, same dim order, same attrs.
         """
         if cadence not in ("hourly", "daily", "monthly"):
             return da.reduce(np.nanmean, dim=time_dim)
@@ -1238,15 +1257,24 @@ class AggregationService:
                 buckets = stamps.to_period("M")
             else:
                 buckets = stamps.floor(self._CADENCE_FLOOR[cadence])
-            counts = pd.Series(1, index=buckets).groupby(level=0).transform("size")
+            labels = np.asarray([str(b) for b in buckets])
         except Exception:
             # Non-datetime or otherwise unbucketable time axis -- never fatal.
             return da.reduce(np.nanmean, dim=time_dim)
-        weights = xr.DataArray(
-            1.0 / np.asarray(counts.values, dtype=float),
-            dims=[time_dim],
-            coords={time_dim: da[time_dim]},
+        bucket_of = xr.DataArray(
+            labels, dims=[time_dim], coords={time_dim: da[time_dim]},
+        ).rename("bucket")
+        # Per pixel, per timestep: how many granules in THIS timestep's bucket
+        # have a finite value HERE. ``.sel(bucket=bucket_of)`` scatters the
+        # per-bucket count back across the timesteps that share a bucket.
+        contributing = (
+            np.isfinite(da).groupby(bucket_of).sum(dim=time_dim).sel(bucket=bucket_of)
         )
+        # ``.where`` before the reciprocal, not after: dividing by a zero count
+        # would warn and produce an inf that ``fillna`` would then miss. A pixel
+        # no granule covered gets weight 0 in every bucket, so the weights sum
+        # to 0 and the mean is NaN -- the same absence the old form reported.
+        weights = (1.0 / contributing.where(contributing > 0)).fillna(0.0)
         return da.weighted(weights).mean(dim=time_dim, skipna=True)
 
     def _collection_info(self, collection_id: str | None, variable: str | None) -> dict[str, Any]:
