@@ -777,6 +777,12 @@ async def chart_methods_endpoint(chart_id: str, request: Request):
             time_window=_methods_time_window(provenance),
             lineage=lineage,
             citations=citations,
+            # T59 D12: the whole payload, not the provenance sub-dict — the
+            # frames disclosure reads two blocks that live at the top level
+            # (``frames``/``frames_unavailable`` and ``export.frames``), and
+            # the precedence rule between them belongs in one place rather
+            # than split across this endpoint.
+            chart=payload,
         )
     except MCPToolError:
         raise

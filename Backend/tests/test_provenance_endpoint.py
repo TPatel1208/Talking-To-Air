@@ -213,6 +213,54 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("materialized (2026-07-01T00:12:00Z)", response.text)
         self.assertIn("- 2026-07-01", response.text, "retrieval date derives from the materialized event")
 
+    async def test_methods_endpoint_discloses_the_charts_temporal_frames(self):
+        # T59 Phase 7 / D12: the bucketing disclosure is mandatory, and it is
+        # the whole chart payload — not the provenance sub-dict — that carries
+        # both frames blocks. Without this wiring the disclosure exists and
+        # never reaches a reader.
+        self.chart_payload["units"] = "molecules/cm^2"
+        self.chart_payload["frames"] = {
+            "cadence": "hourly",
+            "tier": "coarsened",
+            "buckets_per_frame": 5,
+            "delta": {"headline": 0.2227, "max_abs": 9.58e16, "basis": "weighted ratio"},
+            "frames": [
+                {"n_granules": 0, "qa_pass_rate": None},
+                {"n_granules": 2, "qa_pass_rate": 0.35},
+            ],
+        }
+        self.chart_payload["export"] = {
+            "frames": {
+                "spec": {
+                    "cadence": "hourly", "tier": "coarsened", "n_frames": 2,
+                    "buckets_per_frame": 5, "cells_per_frame": 19107,
+                    "coarsen_k": [5, 5], "boundary": "pad",
+                },
+                "exports": "period aggregate",
+            }
+        }
+
+        async def fake_get_chart(chart_id):
+            return self.chart_payload
+
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        auth_patches = self._auth_patch()
+        with auth_patches[0], auth_patches[1], patch.object(self.api.chart_service, "get_chart", fake_get_chart):
+            async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                response = await client.get("/chart/chart-1/methods.md", headers=self.auth_headers)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("### Temporal frames", response.text)
+        self.assertIn("Each frame is the mean of its 5 hourly intervals' means", response.text)
+        self.assertIn("boundary `pad`", response.text)
+        self.assertIn("1 with nothing retrieved", response.text)
+        self.assertIn("**period aggregate**", response.text)
+        self.assertIn("they disagree by 22.3% of the map's own magnitude", response.text)
+        self.assertLess(
+            response.text.index("### Frame–map agreement"),
+            response.text.index("### References"),
+        )
+
     async def test_methods_endpoint_answers_on_taxonomy_when_assembly_crashes(self):
         # QA 2026-07-17 blocker: a KeyError inside the methods assembly
         # escaped as a bare ExceptionGroup ("RuntimeError: No response
