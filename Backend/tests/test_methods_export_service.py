@@ -257,6 +257,94 @@ class TemporalFramesDisclosureTests(unittest.TestCase):
         self.assertNotIn("quality screening", markdown)
 
 
+class SharedDeltaThresholdTests(unittest.TestCase):
+    """T59 Phase 8. One number, two languages: ``_DELTA_HIGH`` here and
+    ``severityOf``'s ``high`` edge in ``frameDelta.js``.
+
+    Until Phase 8 the only thing joining them was a comment naming the other
+    file, and a comment is not a check — measured 2026-08-11 by editing the JS
+    edge to 0.15 and watching all 339 frontend tests and all 24 tests in this
+    file stay green. The screen resolves three severity bands and this document
+    two, so only the ``high`` edge is shared; that edge is what this reads out
+    of the JS source and compares.
+
+    The JS file lives outside ``./Backend``, this image's build context, so
+    ``Frontend/src/utils`` is bind-mounted into the ``backend-test`` service at
+    the path the repo-relative lookup already resolves to — the ``.coveragerc``
+    / ``docker-compose.yml`` / ``init_agent_charts.sql`` precedent, and the same
+    resolution ``test_jobs_service.FinishedRowStatusContractTests`` uses for
+    ``jobCard.js``. One mount serves both; a skip when it is absent would let
+    that mount disappear silently, so the mount itself is asserted below,
+    against the compose file that declares it.
+    """
+
+    #: Resolved relative to this file, so the same expression works on the host
+    #: and — via the bind mount — inside the test container.
+    REPO_PATH = "../../Frontend/src/utils/frameDelta.js"
+    COMPOSE_PATH = "/compose/docker-compose.yml"
+
+    def _js_source(self) -> str:
+        import os
+
+        path = os.path.normpath(
+            os.path.join(os.path.dirname(__file__), self.REPO_PATH)
+        )
+        self.assertTrue(
+            os.path.isfile(path),
+            f"frameDelta.js not found at {path} — the shared delta threshold "
+            "cannot be checked, which is the same as not checking it.",
+        )
+        with open(path, "r", encoding="utf-8") as handle:
+            return handle.read()
+
+    def test_the_high_edge_is_the_same_number_the_screen_uses(self):
+        import re
+
+        from tta_backend.services.methods_export_service import _DELTA_HIGH
+
+        source = self._js_source()
+        match = re.search(
+            r"if\s*\(\s*headline\s*>=\s*([0-9.]+)\s*\)\s*return\s*'high'", source,
+        )
+        self.assertIsNotNone(
+            match,
+            "severityOf's 'high' edge could not be found in frameDelta.js. If "
+            "the function was renamed or restructured, this check must be "
+            "re-pointed rather than deleted — the two constants are still two.",
+        )
+        self.assertEqual(
+            float(match.group(1)),
+            _DELTA_HIGH,
+            "methods_export_service._DELTA_HIGH and frameDelta.js:severityOf's "
+            "'high' edge have drifted apart. They are the one threshold the "
+            "document and the screen share; two values means a delta the "
+            "scrubber calls high that the methods document states plainly.",
+        )
+
+    def test_the_compose_file_mounts_the_js_sources_into_the_test_service(self):
+        # Without the mount, every Python-reads-JS check in this repo fails on a
+        # missing file rather than on a real drift, and a reader of that failure
+        # has to work out which of the two it is. That is not hypothetical:
+        # FinishedRowStatusContractTests was written against jobCard.js and the
+        # mount was never added, so it had never once run in the container.
+        import os
+
+        import yaml
+
+        if not os.path.exists(self.COMPOSE_PATH):
+            self.skipTest(
+                f"{self.COMPOSE_PATH} not mounted (run via docker compose backend-test)"
+            )
+        with open(self.COMPOSE_PATH, "r", encoding="utf-8") as handle:
+            compose = yaml.safe_load(handle)
+
+        volumes = compose["services"]["backend-test"].get("volumes") or []
+        self.assertIn(
+            "./Frontend/src/utils:/Frontend/src/utils:ro",
+            [str(entry) for entry in volumes],
+        )
+
+
 class FrameMapAgreementTests(unittest.TestCase):
     """T59 D16 / Risk 4. Markdown has no colour and no border, so the only
     hierarchy available is placement and weight: the delta gets its own section

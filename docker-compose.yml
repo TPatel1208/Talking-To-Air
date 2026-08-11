@@ -118,6 +118,18 @@ services:
       # test_overlay_store_persistence.py asserts the deployment persists the
       # overlay store; the compose file is likewise outside the build context.
       - ./docker-compose.yml:/compose/docker-compose.yml:ro
+      # The Python-reads-JS contract tests. Neither side can import the other,
+      # so a concept living on both sides of the seam is enforced by reading the
+      # literal out of the JS source: FinishedRowStatusContractTests against
+      # jobCard.js's TERMINAL_STATUSES, and SharedDeltaThresholdTests (T59
+      # Phase 8) against frameDelta.js's severityOf edge, which is the same
+      # number as _DELTA_HIGH. Both resolve the file relative to Backend/tests,
+      # so the mount lands at the absolute path that resolution produces in the
+      # container and the same expression works on the host. ./Frontend is
+      # outside the ./Backend build context, same as the two SQL files above —
+      # and without this mount those tests fail on a missing file rather than on
+      # a drift, which is exactly what jobCard.js's had been doing.
+      - ./Frontend/src/utils:/Frontend/src/utils:ro
       # Same reason: .coveragerc is a repo-root file, so the image has never
       # contained it. Without it `coverage report` below ran unconfigured,
       # measured all of site-packages, and died on netCDF4's compiled extension
