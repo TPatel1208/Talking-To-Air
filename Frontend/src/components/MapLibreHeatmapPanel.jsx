@@ -118,9 +118,12 @@ function canvasCornersFromArrays(lats, lons) {
   ]
 }
 
-function addCanvasFallbackOverlay(map, payload) {
+function addCanvasFallbackOverlay(map, payload, { animate = false } = {}) {
   const { lats, lons, values, vmin, vmax, colormap } = payload
-  if (!Array.isArray(lats) || !Array.isArray(lons) || !Array.isArray(values)) return
+  // `values` is either the payload's nested rows or a T59 frame's flat float32
+  // VIEW over the shared stack buffer -- handed straight through, never copied.
+  const haveValues = Array.isArray(values) || ArrayBuffer.isView(values)
+  if (!Array.isArray(lats) || !Array.isArray(lons) || !haveValues) return
 
   const frame = buildCanvasFallbackFrame({ lats, lons, values, vmin, vmax, lut: colormap?.lut })
   if (!frame.width || !frame.height) return
@@ -135,11 +138,19 @@ function addCanvasFallbackOverlay(map, payload) {
   if (map.getSource('overlay')) map.removeSource('overlay')
   if (map.getSource('overlay-canvas')) map.removeSource('overlay-canvas')
 
+  // `animate` is set only while a T59 frame is showing. A canvas source with
+  // animate:false uploads its texture once on add, so swapping a frame's
+  // pixels into an existing canvas would draw nothing; animate:true makes
+  // MapLibre re-upload on its own render loop. Deliberately not a
+  // requestAnimationFrame play/pause dance -- useChat's rAF loop already
+  // taught this codebase that a backgrounded tab stops delivering those, and
+  // an overlay that depends on one never firing is an overlay that silently
+  // keeps showing the previous hour.
   map.addSource('overlay-canvas', {
     type: 'canvas',
     canvas,
     coordinates: canvasCornersFromArrays(lats, lons),
-    animate: false,
+    animate,
   })
   map.addLayer({
     id: 'overlay',
@@ -161,7 +172,7 @@ function addBorderLayer(map, geojson) {
   })
 }
 
-export default function MapLibreHeatmapPanel({ payload, height = 420, accessToken, colorScaleOverride = null, hideLegend = false }) {
+export default function MapLibreHeatmapPanel({ payload, height = 420, accessToken, colorScaleOverride = null, hideLegend = false, frame = null }) {
   const { title, units, vmin, vmax, colormap, overlay, bounds, lats, lons, scale } = payload
   const containerRef = useRef(null)
   const mapRef = useRef(null)
@@ -180,6 +191,13 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, accessToke
   const overrideRef = useRef(colorScaleOverride)
   useEffect(() => { overrideRef.current = colorScaleOverride }, [colorScaleOverride])
 
+  // The T59 frame currently selected on the scrubber: `{ values, lats, lons }`,
+  // where `values` is a zero-copy view over one plane of the frame stack.
+  // Null outside scrubber mode, and null while the blob is still in flight --
+  // in which case the aggregate stays drawn, on whatever scale is current.
+  const frameRef = useRef(frame)
+  useEffect(() => { frameRef.current = frame }, [frame])
+
   const [minx, miny, maxx, maxy] = bounds || [
     Math.min(...(lons || [])), Math.min(...(lats || [])),
     Math.max(...(lons || [])), Math.max(...(lats || [])),
@@ -197,7 +215,8 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, accessToke
     // payload's arrays at the effective vmin/vmax/colormap.
     const drawOverlay = (map) => {
       const override = overrideRef.current
-      if (resolveOverlayMode(override, overlay?.url) === 'native') {
+      const activeFrame = frameRef.current
+      if (resolveOverlayMode(override, overlay?.url, activeFrame) === 'native') {
         if (map.getLayer('overlay')) map.removeLayer('overlay')
         if (map.getSource('overlay-canvas')) map.removeSource('overlay-canvas')
         if (!map.getSource('overlay')) {
@@ -217,12 +236,16 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, accessToke
         }
         return
       }
+      // A frame brings its own grid: the frame stack's block-meaned lats/lons,
+      // not the payload's thinned ones. Its `values` is a subarray view over
+      // the shared stack buffer and is handed to the canvas builder as-is.
       addCanvasFallbackOverlay(map, {
         ...payload,
+        ...(activeFrame ? { lats: activeFrame.lats, lons: activeFrame.lons, values: activeFrame.values } : {}),
         vmin: override?.vmin ?? vmin,
         vmax: override?.vmax ?? vmax,
         colormap: override?.colormap ?? colormap,
-      })
+      }, { animate: Boolean(activeFrame) })
     }
     drawOverlayRef.current = drawOverlay
 
@@ -304,13 +327,15 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, accessToke
     // showing must rebuild the native image source, not leave the stale
     // shared-scale canvas in place while the legend above it moves on.
     drawOverlayRef.current?.(map)
-  }, [colorScaleOverride])
+  }, [colorScaleOverride, frame])
 
   const { gradientStops, ticks } = colorbarGeometry({ vmin: effectiveVmin, vmax: effectiveVmax, lut: effectiveColormap?.lut, tickCount: 5 })
   // Only disclose the payload's percentile clip when the shown scale is still
   // the payload's own -- an active colorScaleOverride (compare auto-scale)
-  // replaces vmin/vmax, so that clip no longer describes what's rendered.
-  const clipNote = colorScaleOverride ? null : scaleClipNote(scale)
+  // replaces vmin/vmax, so that clip no longer describes what's rendered. An
+  // override that states its OWN basis (T59's pooled 2-98) says so in the same
+  // place, so the legend never goes quiet about which scale is drawn.
+  const clipNote = colorScaleOverride ? (colorScaleOverride.legendNote || null) : scaleClipNote(scale)
 
   return (
     <div style={{ width: '100%' }}>

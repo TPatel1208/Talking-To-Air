@@ -5,10 +5,16 @@ import HeatmapMultiPanel from './HeatmapMultiPanel.jsx'
 import CompareGrid from './CompareGrid.jsx'
 import ArtifactMessage, { TableArtifactMessage } from './ArtifactMessage'
 import RelatedVariablesPanel from './RelatedVariablesPanel.jsx'
+import MapScrubber from './MapScrubber.jsx'
+import { useFrameStack } from '../hooks/useFrameStack.js'
+import { resolveFrameState } from '../utils/frameAxis.js'
+import { resolveScrubberScale } from '../utils/frameScale.js'
+import { resolveFrameDelta } from '../utils/frameDelta.js'
+import { statsForStop, formatFrameQaRate } from '../utils/frameStats.js'
+import { selectFrame } from '../utils/frameStack.js'
 import { MetadataOverview } from './MetadataOverview.jsx'
 import { MetaField } from './metadataPrimitives.jsx'
 import { smallButtonStyle, copyToClipboard } from '../utils/metadataUiHelpers.js'
-import { computeChartStats } from '../utils/chartStats'
 import { resolveMasking, resolveRegionFidelity, formatQaPassRate } from '../utils/maskingProvenance'
 import { evidenceRows } from '../utils/evidenceSummary'
 import { filledCharts } from '../utils/compareMode'
@@ -226,6 +232,15 @@ function qaPassRateCard(masking) {
   return { value: rate, subtitle: parts.join(' · ') }
 }
 
+// The same card for one T59 interval. `qa_pass_rate` is null when QA never ran
+// on that interval and 0.0 when it ran and rejected everything -- two states a
+// blank map cannot tell apart on its own (D10), so the card names which.
+function framePassRateCard(stop) {
+  const rate = formatFrameQaRate(stop?.qaPassRate)
+  if (rate === null) return { value: 'Not applied', subtitle: 'QA never ran on this interval' }
+  return { value: rate, subtitle: 'of the checkable area in this interval' }
+}
+
 // What extent each figure was counted over, keyed by computeChartStats' basis.
 const VALID_BASIS = {
   'analyzed-region': 'finite cells in the analyzed region',
@@ -238,10 +253,16 @@ const COUNT_BASIS = {
   series: 'time steps',
 }
 
-function StatisticsTab({ chart }) {
-  const stats = useMemo(() => computeChartStats(chart), [chart])
+// `stop` is the scrubber's current position (T59 D11): statistics and QA
+// disclosure follow the slider, while masking provenance and evidence below
+// describe the ARTIFACT and stay put -- provenance flickering per frame would
+// imply the source changed. `stop` is null, or the aggregate, whenever the
+// scrubber is closed or parked, and then this renders exactly what it always did.
+function StatisticsTab({ chart, stop }) {
+  const stats = useMemo(() => statsForStop(chart, stop), [chart, stop])
   const masking = useMemo(() => resolveMasking(chart), [chart])
-  const passRate = qaPassRateCard(masking)
+  const isInterval = stop?.kind === 'interval'
+  const passRate = isInterval ? framePassRateCard(stop) : qaPassRateCard(masking)
   if (!stats) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
@@ -256,6 +277,11 @@ function StatisticsTab({ chart }) {
   const fmt = (n) => Number.isFinite(n) ? n.toExponential(3) : '—'
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+      {isInterval && (
+        <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-secondary)' }}>
+          {stats.scope} — one interval of {chart.frames?.cadence || 'the'} cadence, not the period aggregate
+        </div>
+      )}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px' }}>
         <StatCard label="Mean" value={`${fmt(stats.mean)} ${stats.units || ''}`} />
         <StatCard label="Max" value={`${fmt(stats.max)} ${stats.units || ''}`} />
@@ -804,6 +830,39 @@ export default function OutputPanel({
   const [hintDismissedForSession, setHintDismissedForSession] = useState(null)
   const plotRootRef = useRef(null)
 
+  // ── T59 scrubber state ────────────────────────────────────────────────────
+  // Keyed by the focused output the same way tabChoice is, so focusing a
+  // different chart drops back to the period aggregate without an effect
+  // resyncing it. Lifted to this level (not into MapLibreHeatmapPanel) because
+  // D11 makes the Statistics tab follow the slider, and that tab is a sibling.
+  const [scrubChoice, setScrubChoice] = useState({ source: null, on: false, index: 0 })
+  const scrubStale = scrubChoice.source !== focusedOutput
+  const scrubbing = !scrubStale && scrubChoice.on
+  const frameLoad = useFrameStack(chart?.frames || null, accessToken, scrubbing)
+  const frameState = useMemo(
+    () => resolveFrameState(chart, frameLoad.loadState),
+    [chart, frameLoad.loadState],
+  )
+  const scrubStops = frameState?.axis?.stops || null
+  // Decision 2: parked on the aggregate whenever the slider cannot move -- the
+  // only stop whose pixels are on screen while the blob is in flight or gone.
+  const scrubIndex = frameState?.sliderEnabled && !scrubStale
+    ? Math.min(scrubChoice.index, (scrubStops?.length ?? 1) - 1)
+    : 0
+  const currentStop = scrubbing && scrubStops ? scrubStops[scrubIndex] : null
+  const scrubScale = useMemo(() => resolveScrubberScale(chart, scrubbing), [chart, scrubbing])
+  const frameDelta = useMemo(() => resolveFrameDelta(chart), [chart])
+  const stopStats = useMemo(() => statsForStop(chart, currentStop), [chart, currentStop])
+  // A zero-copy `subarray` view over the one flat stack, never a slice -- Phase
+  // 2 measured 100 copies at +7.64 MB, a full duplicate. Recomputed per stop,
+  // which costs nothing: the view is a window, not an allocation.
+  const activeFrame = useMemo(
+    () => (scrubbing ? selectFrame(chart, frameLoad.stack, currentStop) : null),
+    [scrubbing, chart, frameLoad.stack, currentStop],
+  )
+  const toggleScrub = () => setScrubChoice({ source: focusedOutput, on: !scrubbing, index: 0 })
+  const selectStop = (index) => setScrubChoice({ source: focusedOutput, on: true, index })
+
   const showCollapseHint = shouldShowCollapseHint({
     compareMode, sessionsCollapsed, chatCollapsed, rightPanelCollapsed,
   }) && hintDismissedForSession !== compareSessionId
@@ -911,14 +970,35 @@ export default function OutputPanel({
       </div>
 
       <div ref={plotRootRef} style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '18px 22px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-        {activeTab === 'map' && chart.type === 'heatmap' && <MapLibreHeatmapPanel payload={chart} height={480} accessToken={accessToken} />}
+        {activeTab === 'map' && chart.type === 'heatmap' && (
+          <>
+            <MapLibreHeatmapPanel
+              payload={chart}
+              height={480}
+              accessToken={accessToken}
+              colorScaleOverride={scrubScale}
+              frame={activeFrame}
+            />
+            {/* T59: the scrubber lives INSIDE the Map tab. CHART_TABS.heatmap
+                is unchanged and payload.type stays "heatmap" (D15). */}
+            <MapScrubber
+              state={frameState}
+              delta={frameDelta}
+              stop={currentStop}
+              stats={stopStats}
+              scrubbing={scrubbing}
+              onToggle={toggleScrub}
+              onSelect={selectStop}
+            />
+          </>
+        )}
         {activeTab === 'map' && chart.type === 'heatmap_multi' && <HeatmapMultiPanel payload={chart} accessToken={accessToken} />}
         {activeTab === 'chart' && chart.type === 'timeseries' && <TimeSeriesPanel payload={chart} />}
         {activeTab === 'chart' && chart.type === 'profile' && <ProfilePanel payload={chart} />}
         {(activeTab === 'map' || activeTab === 'chart') && (
           <RelatedVariablesPanel chart={chart} onSend={onSend} />
         )}
-        {activeTab === 'statistics' && <StatisticsTab chart={chart} />}
+        {activeTab === 'statistics' && <StatisticsTab chart={chart} stop={currentStop} />}
         {activeTab === 'metadata' && (
           <MetadataTab
             chart={chart}
