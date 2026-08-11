@@ -182,6 +182,60 @@ class CubeStoreIsolationTests(unittest.TestCase):
         )
 
 
+class FrameStoreIsolationTests(unittest.TestCase):
+    """T59's frame store leaks the same way the cube store does, and worse.
+
+    Same default shape — ``FRAME_STORE_DIR`` falling back to a deployment
+    volume, which on a Windows checkout resolves against the current drive — so
+    the same two bugs follow: the suite mutates a store the application also
+    uses, and reads it back.
+
+    The "worse" is eviction. The cube store's failure mode was a test *adding*
+    cubes a developer would later hit; this store has an LRU sweeper, so a test
+    that writes past ``FRAME_STORE_MAX_BYTES`` **deletes** whatever is coldest.
+    Pointed at a real store, a single eviction test would silently strip the
+    scrubber off charts nobody touched — and D8 forbids rebuilding them.
+    """
+
+    @staticmethod
+    def _resolved_root() -> str:
+        from tta_backend.services import frame_store
+
+        return os.path.abspath(frame_store._store_root())
+
+    def test_the_store_root_is_never_the_deployment_volume(self) -> None:
+        from cache_isolation import deployment_frame_store_dir
+
+        assert self._resolved_root() != os.path.abspath(deployment_frame_store_dir()), (
+            "the frame store resolves to the deployment volume during tests — an "
+            "eviction test would delete stacks the application is serving"
+        )
+
+    def test_the_store_root_is_outside_the_app_root(self) -> None:
+        from tta_backend import APP_ROOT
+
+        app_root = os.path.abspath(APP_ROOT)
+        root = self._resolved_root()
+        try:
+            inside = os.path.commonpath([root, app_root]) == app_root
+        except ValueError:  # different drives — trivially outside
+            inside = False
+        assert not inside, f"the frame store resolves inside the app root: {root}"
+
+    def test_the_deployment_path_is_still_answerable_from_inside_the_suite(self) -> None:
+        """``test_frame_store_persistence`` asserts the volume and ownership
+        contracts against this value; were it to follow the redirect those tests
+        would be checking a tempdir — passing, and guarding nothing."""
+        from cache_isolation import deployment_frame_store_dir
+
+        deployment = os.path.abspath(deployment_frame_store_dir())
+        assert deployment != self._resolved_root()
+        assert not deployment.startswith(os.path.abspath(tempfile.gettempdir())), (
+            f"the deployment frame store reads as a temp directory ({deployment}) — "
+            "the redirect has leaked into the answer the contract tests rely on"
+        )
+
+
 class ClearProcessCachesTests(unittest.TestCase):
     """The shared policy itself: one function, every process-global cache.
 

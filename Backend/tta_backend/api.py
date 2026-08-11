@@ -50,7 +50,7 @@ from tta_backend.repositories.user_connector_repository import (
 )
 from tta_backend.repositories.user_repository import create_user, ensure_user_table, get_user_by_username
 from tta_backend.repositories.artifact_repository import ensure_artifact_table
-from tta_backend.services import cube_cache, warmup
+from tta_backend.services import cube_cache, frame_store, warmup
 from tta_backend.services.open_handle import OPEN_PIPELINE_VERSION
 from tta_backend.services.auth_service import authenticate_request, create_access_token, hash_password, verify_password
 from tta_backend.services.connector_credential_service import EdlCredentialInjector
@@ -149,6 +149,12 @@ async def lifespan(app: FastAPI):
     # index derived state — losing the file costs a boot's scan, never an
     # answer.
     cube_cache.sweep_store(OPEN_PIPELINE_VERSION)
+
+    # T59 D8: the same reclaim for the frame store. Frames are never served or
+    # rebuilt across a version change, so after a bump every stack in there is
+    # unreachable — but its manifest is still valid, so nothing else would ever
+    # drop it and its bytes would go on counting against the cap.
+    frame_store.sweep_store(OPEN_PIPELINE_VERSION)
 
     # Pay the render path's one-time lazy-import cost here rather than charging
     # it to whoever asks the first question: measured at ~0.44 s of dask and
@@ -680,6 +686,60 @@ async def chart_overlay_png(chart_id: str, request: Request, panel: int | None =
         raise HTTPException(status_code=404, detail="This chart has no rendered overlay.")
     content = await asyncio.to_thread(_read_overlay_bytes, overlay_path)
     return Response(content=content, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+
+# T59 D13. A deliberate divergence from overlay.png's `no-store` above, and it
+# rests entirely on D8: a frame blob is never regenerated in place, so this
+# URL's bytes cannot change and a cache that keeps them forever can never serve
+# a stale field. `private` because charts are ownership-scoped — every route
+# here goes through `_get_owned_chart`, there is no shared cache to warm, and
+# no cross-user entry for one researcher's region to leak into.
+_FRAME_CACHE_CONTROL = "private, immutable, max-age=31536000"
+
+
+def _if_none_match(request: Request) -> set[str]:
+    header = request.headers.get("if-none-match", "")
+    return {tag.strip().removeprefix("W/") for tag in header.split(",") if tag.strip()}
+
+
+@app.get("/chart/{chart_id}/frames.f32.gz")
+async def chart_frames(chart_id: str, request: Request):
+    """The float32 frame stack behind a chart's scrubber (T59).
+
+    Serves the stored bytes still gzipped, so the browser inflates them
+    natively and no client-side decompressor stands between the checked bytes
+    and the canvas. Everything needed to *label* the scrub — the axis, the
+    intervals, coverage, QA rates, per-frame statistics — travels in the chart
+    payload instead, which is why a 404 here degrades the slider rather than
+    breaking the chart (D8: an evicted stack disables the scrubber with the
+    axis still drawn, and is never rebuilt in place).
+    """
+    payload = await _get_owned_chart(chart_id, request.state.current_user.id)
+    frames = payload.get("frames")
+    key = frames.get("_key") if isinstance(frames, dict) else None
+    if not key:
+        raise HTTPException(status_code=404, detail="This chart has no stored frame stack.")
+
+    # Off the event loop for the same reason the overlay read is (T45): a slow
+    # volume must not stall every other in-flight stream for the read's
+    # duration, and this one hashes what it reads as well.
+    blob = await asyncio.to_thread(
+        frame_store.read_frames, key, pipeline_version=OPEN_PIPELINE_VERSION
+    )
+    if blob is None:
+        raise HTTPException(
+            status_code=404, detail="The frame values for this chart are no longer available."
+        )
+
+    etag = f'"{blob.etag}"'
+    headers = {"ETag": etag, "Cache-Control": _FRAME_CACHE_CONTROL}
+    if etag in _if_none_match(request):
+        return Response(status_code=304, headers=headers)
+    return Response(
+        content=blob.gzipped,
+        media_type="application/octet-stream",
+        headers={**headers, "Content-Encoding": "gzip"},
+    )
 
 
 @app.get("/chart/{chart_id}/provenance")

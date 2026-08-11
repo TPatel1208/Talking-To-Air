@@ -62,6 +62,15 @@ services:
       # help" rather than as a missing volume. Bounded by CUBE_STORE_MAX_BYTES,
       # not by free space.
       - cube_store:/app/cube_store
+      # T59 frame blob store — the float32 stack behind a chart's time
+      # scrubber. Its own volume rather than a corner of overlay_store, which
+      # has no eviction policy and grows forever: an LRU sweeper sharing a
+      # directory with an unbounded store would evict frames to make room for
+      # PNGs that never leave. Bounded by FRAME_STORE_MAX_BYTES (1 GiB), not by
+      # free space. Without a volume, a container recreate strips the scrubber
+      # off every chart ever plotted while the frame axis persists in Postgres
+      # and goes on advertising it — and D8 forbids rebuilding the blob.
+      - frame_store:/app/frame_store
       # earthdata-retrieval MCP's materialization volume, read-only, mounted
       # at the same absolute path (/data) the MCP stack uses internally so
       # `export_result`'s file:// URIs resolve as a plain filesystem read.
@@ -167,6 +176,8 @@ volumes:
   overlay_store:
     driver: local
   cube_store:
+    driver: local
+  frame_store:
     driver: local
   # Owned by the harmony-retrieval-mcp stack (its `data` volume, fixed name
   # `earthdata_data`); joined here as external, read-only, so this stack is

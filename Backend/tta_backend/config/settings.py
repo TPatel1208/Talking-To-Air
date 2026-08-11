@@ -296,6 +296,29 @@ class Settings:
     cube_write_max_store_fraction: float = field(
         default_factory=lambda: min(1.0, max(0.0, _float_env("CUBE_WRITE_MAX_STORE_FRACTION", 0.5)))
     )
+    # T59 Phase 4: the frame blob store (services/frame_store.py). Its own
+    # backend-only named volume, and deliberately NOT inside overlay_store:
+    # that store has no eviction policy and grows forever, which is precisely
+    # why frames get a separate *bounded* one instead of joining it.
+    frame_store_dir: str = field(
+        default_factory=lambda: os.getenv("FRAME_STORE_DIR", "/app/frame_store")
+    )
+    # A quarter of cube_store's cap, and fixed bytes for the same reason: a
+    # percentage of free space silently expands to fill any disk, which is how
+    # docker_data.vhdx reached 296 GB. The proportion is the right one — a
+    # frame stack is a rendering convenience D8 already refuses to regenerate,
+    # while a cube is minutes of recompute.
+    #
+    # Entry size is bounded by construction (D7 caps frames at 60, D5 caps
+    # cells at 20,000, so an entry is at most 60 x 20,000 x 4 = 4.58 MiB raw),
+    # so this store needs an LRU sweeper and *no per-entry cap*: the thrash
+    # cube_write_max_store_fraction guards against — one entry big enough to
+    # evict the whole store to fit itself — cannot occur at 4.58 MiB against
+    # 1 GiB. Measured typical entries are 1.30-1.41 MB gzipped, ~300-760
+    # charts' worth.
+    frame_store_max_bytes: int = field(
+        default_factory=lambda: max(1, _int_env("FRAME_STORE_MAX_BYTES", 1024 ** 3))
+    )
     # T54: serve a cube straight off the handle->cube index, skipping the
     # export_result round-trip entirely. Defaults ON — that skip is the whole
     # point, and it is what makes an upstream eviction or a crash-restart cost

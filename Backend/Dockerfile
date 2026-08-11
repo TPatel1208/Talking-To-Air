@@ -61,7 +61,7 @@ RUN rm -rf tests .pytest_cache
 # root-owned volume that uid 1001 cannot write to. For cube_store that failure
 # is silent â€” the background writer catches the PermissionError and the cache
 # appears to work while never storing a cube.
-RUN mkdir -p /app/data /app/outputs /app/overlay_store /app/cube_store
+RUN mkdir -p /app/data /app/outputs /app/overlay_store /app/cube_store /app/frame_store
 
 RUN useradd -m -u 1001 appuser && chown -R appuser:appuser /app
 USER appuser
