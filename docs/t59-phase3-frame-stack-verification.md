@@ -166,6 +166,32 @@ that `aggregate()` already produced — Phase 1b made `_cadence_weighted_mean` a
 mean of the per-bucket means, verified here at 0.000002%, so accepting it from the caller would
 remove duplicated work regardless of whether it helps the peak.
 
+### RESOLVED in Phase 5, by the extent gate — `MAX_FRAME_NATIVE_CELLS = 4,000,000`
+
+**Route taken: the gate, not a cheaper reduction.** The two levers above are still unmeasured,
+and measuring them honestly needs one arm per process — ~40 minutes of full-domain I/O each, in
+a container that OOMs on the attempt and has wedged Docker Desktop twice. Buying an unbounded
+scrub with an unmeasured claim is exactly the trade §7 warns against, so Phase 5 refuses instead
+and says so.
+
+The constant is the **largest extent measured to complete**, rounded up, not a guess with a
+safety factor: the CONUS crop (1250×3000 = 3.75 M cells) finished at 1,342 MB and the next
+measured point up (17.0 M cells) was OOM-killed. It is enforced on the **narrowed** field, where
+`_profile_scale_guard` takes its reading and for the same reason.
+
+**What it costs:** the full-domain scrub, outright. A TEMPO request that is not narrowed to a
+region gets its map and an explicit `extent_too_large` refusal instead of a slider. Either lever
+above can raise the constant later — with a number attached.
+
+A second backstop, on **span**, was added beside it: `MAX_BUCKETS_PER_FRAME = 24`, so
+`MAX_SPAN_BUCKETS = 1,440`. D14's coarsening has no ceiling of its own and will fold a decade of
+hourly buckets into 60 stops; expressing the limit as buckets *per frame* rather than as a
+duration keeps a stop an interval a reader asked for (hourly reaches 60 days, daily ~4 years).
+
+The period-map duplication was **not** removed. It is a change to `build_frame_stack`'s contract
+and its 48 tests, taken for a memory saving nobody has measured, on a path the gate now bounds.
+It stays available as the third lever.
+
 ---
 
 ## 8. Decisions taken in Phase 3
@@ -181,9 +207,11 @@ remove duplicated work regardless of whether it helps the peak.
 
 ## 9. Open, not settled here
 
-- **The full-domain memory limit** (§7). The failure is measured; the term is not. Blocks
-  nothing in Phase 3 — every correctness claim above was measured on data that fits — but
-  Phase 5 cannot ship the auto-upgrade without either an extent gate or a cheaper chunking.
+- ~~**The full-domain memory limit** (§7).~~ **CLOSED in Phase 5** by the extent gate
+  (`MAX_FRAME_NATIVE_CELLS = 4,000,000`), not by isolating the term. The responsible consumer is
+  still unknown and the two cheaper-reduction levers are still unmeasured; what changed is that
+  a request above the largest measured-safe extent is now refused out loud instead of reaching a
+  reduction the kernel kills. See §7.
 - **Whether 60 is the right frame budget** (Risk 3), now with §2's threshold attached.
 - **How prominently a double-digit D16 delta must be shown** (Phase 7, Risk 4).
 - **`plot_singular` wiring, the gate and the refusal** — Phase 5, deliberately untouched.

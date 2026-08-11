@@ -139,6 +139,13 @@ PIPELINE_PHASES = (
     "provenance",
     "evidence",
     "related_variables",
+    # "frames" is T59's bucketed reduction, the one behind a map's scrubber.
+    # Its own phase for the same reason "qa_pass_rate" is: it is a whole extra
+    # graph walk over a lazily-opened bundle -- Phase 3 measured 9.2 s against
+    # a 12-15 s open+mask on a real regional TEMPO bundle -- so a plot that
+    # gains a scrubber gains that time, and a feature's cost has to be visible
+    # rather than smeared across "aggregate".
+    "frames",
     # "agent_step" is one LangGraph superstep: the wall-clock gap between
     # consecutive `updates` chunks, attributed to the node that produced the
     # later one. Deliberately not folded into "llm_call" -- it also covers

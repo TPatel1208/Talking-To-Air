@@ -40,6 +40,21 @@ VARIABLE_RESOLUTION_ATTR = "_variable_resolution"
 class AggregatedResult:
     ds: xr.Dataset
     meta: dict[str, Any]
+    #: The masked, still-time-resolved field this reduction was computed FROM,
+    #: and the QA counters the mask recorded on its way through (T59 Phase 5).
+    #:
+    #: Handed out because a caller that wants a second reduction over the same
+    #: time axis -- the frame stack is the one that exists -- would otherwise
+    #: have to re-resolve and re-apply the mask to get it, which is a second
+    #: masking resolution AND a second counter compute over a lazily-opened
+    #: bundle. It is a reference to a lazy array and a dict already in hand, so
+    #: carrying it costs nothing; every consumer that ignores it is unaffected.
+    #:
+    #: D5a is why the counters ride along rather than being re-derived: every
+    #: scientific quantity a frame discloses comes off the NATIVE field, and a
+    #: number the caller forgets to pass is a second full I/O pass with nothing
+    #: saying so.
+    masked: "MaskedField | None" = None
 
 
 class MaskedField(NamedTuple):
@@ -47,11 +62,18 @@ class MaskedField(NamedTuple):
 
     ``counts`` is the raw QA counter block ``_apply_quality_mask`` recorded,
     empty when QA masking never ran. It is deliberately absent from the public
-    ``resolve_and_mask`` interface: ``aggregate`` is its only consumer -- it
-    reuses the per-timestep reduction rather than force a second I/O pass over
-    a lazily-opened bundle (T55) -- and every fact an outside caller needs is
-    already summarized into ``provenance``. Handing it out publicly would widen
-    the interface for a reuse channel nobody outside can act on.
+    ``resolve_and_mask`` interface: that returns the masked array and its
+    provenance, which is everything a caller who only wants a masked array
+    needs, and widening it would put the counters in front of six callers who
+    have no use for them.
+
+    They ARE reachable, on ``AggregatedResult.masked``, by a caller that
+    reduces the same masked field a second way -- ``aggregate`` reusing the
+    per-timestep reduction for its valid-timestep scan (T55), and
+    ``plot_singular`` handing the counters to the frame stack rather than
+    buying ``checked_area_by_time``/``passing_area_by_time``/``value_min``/
+    ``value_max`` again with a second full I/O pass (T59 D5a). The seam is the
+    aggregation the counters were computed during, not a public masking call.
     """
 
     data: xr.DataArray
@@ -621,7 +643,7 @@ class AggregationService:
         if variable_resolution:
             meta["variable_resolution"] = variable_resolution
 
-        return AggregatedResult(ds=result_ds, meta=meta)
+        return AggregatedResult(ds=result_ds, meta=meta, masked=masked)
 
     def timeseries_aggregation_meta(
         self,

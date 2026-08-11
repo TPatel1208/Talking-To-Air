@@ -69,7 +69,11 @@ from tta_backend.earthdata_mcp.results import (
 )
 from tta_backend.services import scope_registry
 from tta_backend.services.artifact_registry import build_artifact_reference
-from tta_backend.services.open_handle import OpenHandleError, open_handle
+from tta_backend.services.open_handle import (
+    OPEN_PIPELINE_VERSION,
+    OpenHandleError,
+    open_handle,
+)
 from tta_backend.utils.geo_utils import find_lat_coord, find_lon_coord, vertical_axis_kind
 from tta_backend.utils.colormaps import resolve as resolve_colormap
 from tta_backend.utils.overlay_render import render_overlay_png
@@ -461,7 +465,31 @@ def _chart_model_summary(payload: dict) -> dict:
     summary = {k: v for k, v in summary.items() if v is not None}
     if payload.get("_artifact_refs"):
         summary["_artifact_refs"] = payload["_artifact_refs"]
+    summary.update(_frames_summary(payload))
     return summary
+
+
+def _frames_summary(payload: dict) -> dict:
+    """What the model is told about the chart's time axis (T59 D7/D3).
+
+    Compact, in T13's posture -- the axis itself is up to 60 labeled intervals
+    with coverage and QA rates on each, and the agent needs none of that to say
+    "you can scrub this". What it does need is the two facts it cannot see any
+    other way: that a scrubber exists, and, when one does not, WHICH refusal
+    was hit. A disclosure that never leaves the payload is a disclosure nobody
+    is told, because the agent only ever sees this summary.
+    """
+    frames = payload.get("frames")
+    if isinstance(frames, dict) and frames.get("frames"):
+        return {
+            "frames": {
+                "n_frames": len(frames["frames"]),
+                "cadence": frames.get("cadence"),
+                "tier": frames.get("tier"),
+            },
+        }
+    unavailable = payload.get("frames_unavailable")
+    return {"frames_unavailable": unavailable} if unavailable else {}
 
 
 def _wire_overlay_url(overlay: dict | None, url: str) -> None:
@@ -517,6 +545,7 @@ def _save_chart(payload: dict, name: str) -> str:
             payload["_artifact_refs"] = [ref.model_dump(exclude_none=True)]
 
     _wire_overlay_urls(payload)
+    _wire_frames_url(payload)
 
     emit_chart(payload)
     return json.dumps(_chart_model_summary(payload))
@@ -1102,6 +1131,140 @@ def _attach_reproducibility(
     return payload
 
 
+# ── Frame stack (T59 Phase 5) ─────────────────────────────────────────────────
+
+#: Which gate refusals a reader is told about, and which pass in silence.
+#:
+#: The split is not squeamishness about noise. These three are requests that
+#: COULD have been scrubbed and were not, and they are three different facts: a
+#: span past the backstop, a product whose cadence is not registered, and a
+#: region too large for the reduction to survive. Someone who asked for a week
+#: of TEMPO and got no slider deserves to know which one they hit, because only
+#: one of them is fixed by narrowing the map.
+#:
+#: The rest -- a single granule, everything inside one interval, a field still
+#: carrying a vertical axis -- withhold nothing the request implied. There is
+#: no time axis to browse, and saying so on every single-granule map would be
+#: noise about a feature nobody asked for.
+_DISCLOSED_FRAME_REFUSALS = ("cadence_unknown", "span_too_long", "extent_too_large")
+
+
+def _attach_frames(payload: dict, result, masked, agg_meta: dict) -> None:
+    """D7's auto-upgrade: give ``payload`` a browsable time axis, or say why not.
+
+    Additive and optional, always (D15). ``type`` stays ``"heatmap"``, the
+    aggregate stays exactly what it was, and every unupgraded consumer --
+    ``CHART_TABS``, ``_RENDER_TYPE_TO_ARTIFACT_TYPE``, export's ``heatmap_multi``
+    branches -- keeps reading the aggregate and stays correct. That is the
+    fallback, not a bug.
+
+    ``result`` is the ``AggregatedResult``, which carries the masked field the
+    map was reduced from and the QA counters the mask recorded on the way.
+    ``masked`` is the pre-QA geometry-masked array, the only place
+    ``region_area`` exists. Both are handed over rather than re-derived: D5a
+    binds here, and a number the caller forgets to pass is a second full I/O
+    pass over a lazily-opened bundle with nothing saying so.
+
+    Never raises. A frame stack is a rendering convenience, and nothing about
+    building one may cost a researcher the chart they asked for -- the same
+    posture ``_render_and_store_overlay`` takes toward a failed PNG render.
+    """
+    from tta_backend.preprocessing import frame_stack as frame_stack_module
+    from tta_backend.preprocessing.frame_stack import (
+        FRAME_CELL_CEILING,
+        MAX_FRAMES,
+        frame_gate,
+    )
+    from tta_backend.services import frame_store
+    from tta_backend.utils.geo_utils import identify_time
+
+    field = getattr(result, "masked", None)
+    if field is None:
+        return
+    cadence = agg_meta.get("cadence") or "unknown"
+    time_dim = identify_time(field.data)
+
+    refusal = frame_gate(field.data, time_dim=time_dim, cadence=cadence)
+    if refusal is not None:
+        if refusal.reason in _DISCLOSED_FRAME_REFUSALS:
+            disclosure = {"reason": refusal.reason, "detail": refusal.detail}
+            payload["frames_unavailable"] = disclosure
+            # Into the recipe as well, not only the render payload: a jsonb row
+            # that simply lacks a frame block cannot say whether frames were
+            # refused or never attempted.
+            payload.setdefault("export", {})["frames"] = {"unavailable": disclosure}
+        return
+
+    try:
+        with phase_timer("frames", cells_in=int(getattr(field.data, "size", 0))):
+            stack = frame_stack_module.build_frame_stack(
+                field.data,
+                time_dim=time_dim,
+                cadence=cadence,
+                # Every scientific quantity off the NATIVE field (D5a). The
+                # region's own cos(latitude)-weighted footprint denominates
+                # coverage -- without it a frame is denominated on the BOUNDING
+                # BOX, and a complete retrieval over the continental US reads
+                # 60% covered because the Atlantic counts as missing
+                # observations. The counters carry the per-timestep areas
+                # finding 12's roll-up needs, and the value bracket the pooled
+                # 2-98 histogram would otherwise buy with a second full pass.
+                region_area=masked.attrs.get("region_area"),
+                qa_counts=field.counts,
+            )
+        block = frame_store.store_frame_stack(
+            stack, pipeline_version=OPEN_PIPELINE_VERSION,
+        )
+    except Exception:  # noqa: BLE001 — degrade to a chart with no scrubber
+        logger.warning("frame_stack_failed", exc_info=True)
+        return
+
+    payload["frames"] = block
+    payload.setdefault("export", {})["frames"] = {
+        # The recipe, beside source_handles/variable/region_name/
+        # aggregation_meta, so the jsonb row reproduces the stack rather than
+        # merely holding it.
+        "spec": {
+            "cadence": stack.cadence,
+            "tier": stack.tier,
+            "n_frames": len(stack.frames),
+            "buckets_per_frame": stack.buckets_per_frame,
+            "max_frames": MAX_FRAMES,
+            "target_cells": FRAME_CELL_CEILING,
+            "cells_per_frame": stack.cells_per_frame,
+            "coarsen_k": [int(k) for k in stack.coarsen_k],
+            "boundary": "pad",
+            "statistic": "mean",
+            "dtype": "float32",
+            "span": [stack.frames[0].t_start, stack.frames[-1].t_end],
+            "pipeline_version": OPEN_PIPELINE_VERSION,
+        },
+        # D12, said in the row rather than only in JSX: export is the period
+        # aggregate and is unchanged by any of this. The frame grid is a
+        # rendering resolution -- a 20,000-cell block mean that has already
+        # lost 16% of its own p98 at k=8 -- and exporting it would put a
+        # downsampled field into someone's paper.
+        "exports": "period aggregate",
+    }
+
+
+def _wire_frames_url(payload: dict) -> None:
+    """Turn a stored stack's internal ``_key`` into a servable url, now that
+    ``_save_chart`` has minted ``chart_id`` -- ``_wire_overlay_urls``' rule, for
+    the same reason: the stack is built inside ``asyncio.to_thread``, before a
+    ``chart_id`` exists, and the key addresses the blob store directly rather
+    than being anything the frontend may hold.
+
+    No ``_key`` means the axis is drawn and the values did not land, which is a
+    state D8 already requires the frontend to handle: a labeled, unscrubbable
+    axis. It is also exactly what an evicted chart looks like later.
+    """
+    frames = payload.get("frames")
+    chart_id = payload.get("chart_id")
+    if chart_id and isinstance(frames, dict) and frames.get("_key"):
+        frames["url"] = f"/chart/{chart_id}/frames.f32.gz"
+
+
 # ── Vertical profile (T56) ────────────────────────────────────────────────────
 
 # Post-narrowing ceiling on the cells a profile reduces over (T56 D11). The
@@ -1507,6 +1670,11 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
                 )
             except Exception as e:
                 return "payload", None, None, f"Failed to build chart payload: {e}"
+
+            # T59 D7: the time axis this map collapsed, kept and browsable --
+            # after the reproducibility block, because the frame spec lands
+            # beside it in ``payload["export"]``.
+            _attach_frames(payload, aggregation, masked, agg_meta)
 
             return None, payload, resolved_title, None
 

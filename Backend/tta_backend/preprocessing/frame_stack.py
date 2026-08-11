@@ -43,6 +43,42 @@ FRAME_CELL_CEILING = 20_000
 # second tier.
 MAX_FRAMES = 60
 
+# D3's backstop, on SPATIAL EXTENT -- the term D7 does not bound. Phase 3 §7
+# measured a production-shaped ``build_frame_stack`` being OOM-killed by the
+# kernel on the full TEMPO domain in the 3.9 GB container, while Phase 2's bare
+# ``groupby().mean().coarsen().mean()`` survives the same bundle at 1,363 MB.
+# So the reduction's own consumers are what push it over, and a frame-count
+# gate lets a full-domain request straight through to a reduction that dies.
+#
+# The number is the largest extent MEASURED to complete, rounded up, not a
+# guess with a safety factor:
+#
+#   535 x 658   =   352 k cells, 54 hourly buckets ->   385 MB   completed
+#   1250 x 3000 =  3.75 M cells, 54 hourly buckets -> 1,342 MB   completed
+#   2950 x 5771 = 17.0 M cells, 54 hourly buckets -> OOM-KILLED
+#
+# Two cheaper-reduction levers exist and NEITHER is measured: rechunking the
+# grouped intermediate spatially before the fused consumers (each chunk is a
+# full 2950x5771x8 = 136 MB slab today), and unfusing the pooled histogram back
+# into its own pass. Either could raise this constant -- with a number attached.
+# Until one of them is measured, a full-domain scrub is refused out loud rather
+# than attempted and killed.
+MAX_FRAME_NATIVE_CELLS = 4_000_000
+
+# D3's other backstop, on SPAN, sitting above D14's coarsening rather than
+# instead of it. Coarsening is what fits a long span into the frame budget and
+# Phase 3 §2 measured it as the common case (a 2.2-day TEMPO retrieval is
+# already 54 hourly frames), but it has no ceiling of its own: it will fold a
+# decade of hourly buckets into 60 stops and label each one a scrub position.
+#
+# The limit is expressed as buckets PER FRAME rather than as a duration,
+# because that is the quantity that decides whether a stop is still an interval
+# a reader asked for. At 24 an hourly scrub reaches 60 days with frames never
+# coarser than a day, and a daily scrub reaches ~4 years with frames never
+# coarser than 24 days.
+MAX_BUCKETS_PER_FRAME = 24
+MAX_SPAN_BUCKETS = MAX_FRAMES * MAX_BUCKETS_PER_FRAME
+
 #: D14's two tiers, named so a payload consumer can branch on them.
 #: ``cadence`` -- the frames ARE the cadence buckets and the period map is
 #: derived from them exactly. ``coarsened`` -- the frames are a DIFFERENT
@@ -79,6 +115,139 @@ _CADENCE_FLOOR = {"hourly": "h", "daily": "D"}
 _CADENCE_STEP = {"hourly": "h", "daily": "D", "monthly": "MS"}
 
 BUCKETABLE_CADENCES = tuple(_CADENCE_STEP)
+
+
+@dataclass(frozen=True)
+class FrameRefusal:
+    """Why a request may not be framed.
+
+    ``reason`` is machine-readable and ``detail`` is the sentence a reader
+    gets. The two are separate because the caller decides which refusals are
+    worth telling anyone about, and that policy is the TOOL's, not the
+    reduction's: a single-granule map was never going to have a time axis to
+    browse, while a week of full-domain TEMPO is a request that could have been
+    framed and was not.
+    """
+
+    reason: str
+    detail: str
+
+
+def frame_gate(
+    da: xr.DataArray,
+    *,
+    time_dim: str | None,
+    cadence: str,
+    span: tuple[str, str] | None = None,
+    max_frames: int = MAX_FRAMES,
+) -> FrameRefusal | None:
+    """Whether ``da`` may be handed to :func:`build_frame_stack`. ``None`` = yes.
+
+    The gate lives here rather than in the tool because every limit it enforces
+    is a fact about the reduction, measured on the reduction. What the tool owns
+    is what to SAY about a refusal.
+    """
+    # ``time_dim in da.coords`` is not belt-and-braces on top of ``in da.dims``:
+    # a dimension can exist with no coordinate on it -- TEMPO's O3PROF ``layer``
+    # does exactly that -- and without the check the axis is built from
+    # positions rather than timestamps, which floors to 1970 and labels the
+    # scrubber with intervals that never happened. ``_apply_quality_mask``
+    # guards its own per-timestep counters the same way, for the same reason.
+    if (
+        time_dim is None
+        or time_dim not in da.dims
+        or time_dim not in da.coords
+        or da.sizes[time_dim] < 2
+    ):
+        return FrameRefusal(
+            "no_time_axis",
+            "This map has no browsable time axis: it was built from a single "
+            "granule, or its time dimension carries no timestamps.",
+        )
+    if cadence not in BUCKETABLE_CADENCES:
+        return FrameRefusal(
+            "cadence_unknown",
+            f"This product's cadence is {cadence!r}, so a frame axis has no "
+            "interval width to use; frames need one of "
+            f"{', '.join(BUCKETABLE_CADENCES)}.",
+        )
+
+    # A frame is one 2-D field per interval, and the blob's ``(1 + N, ny, nx)``
+    # layout says so. Anything else -- a vertical axis the caller has not
+    # selected a layer from, above all -- would reduce to a stack that reshapes
+    # cleanly and renders the wrong plane.
+    spatial = [dim for dim in da.dims if dim != time_dim]
+    try:
+        grid = _spatial_dims(da, spatial)
+    except ValueError as exc:
+        return FrameRefusal("no_spatial_grid", str(exc))
+    extra = [dim for dim in spatial if dim not in grid]
+    if extra:
+        return FrameRefusal(
+            "extra_dimensions",
+            "A frame axis needs one 2-D field per interval, and this one still "
+            f"carries {', '.join(extra)}.",
+        )
+
+    # Measured on the NARROWED field, the one that actually reaches the
+    # reduction -- the same place ``_profile_scale_guard`` takes its reading,
+    # and for the same reason: narrowing is what makes the ordinary regional
+    # case small.
+    cells = _native_cells(da, time_dim)
+    if cells > MAX_FRAME_NATIVE_CELLS:
+        return FrameRefusal(
+            "extent_too_large",
+            f"A frame axis over this region would reduce {cells:,} cells per "
+            f"interval, above the {MAX_FRAME_NATIVE_CELLS:,}-cell limit a frame "
+            "stack is built within.",
+        )
+
+    n_buckets = len(_axis_starts(_span_of(da, time_dim, span), cadence))
+    if n_buckets < 2:
+        return FrameRefusal(
+            "single_interval",
+            f"Every granule here falls inside one {cadence} interval, which is "
+            "one stop -- there is nothing to scrub between.",
+        )
+    if n_buckets > max_frames * MAX_BUCKETS_PER_FRAME:
+        return FrameRefusal(
+            "span_too_long",
+            f"This span covers {n_buckets:,} {cadence} intervals, above the "
+            f"{max_frames * MAX_BUCKETS_PER_FRAME:,} a frame axis is built "
+            f"within -- past it each of the {max_frames} frames would average "
+            f"more than {MAX_BUCKETS_PER_FRAME} intervals together.",
+        )
+    return None
+
+
+def _native_cells(da: xr.DataArray, time_dim: str) -> int:
+    """Cells in ONE interval's field: everything but the time axis.
+
+    Per interval rather than in total, because that is the shape the grouped
+    intermediate holds -- one native plane per bucket, and the plane is what
+    the fused consumers each fan out from.
+    """
+    cells = 1
+    for dim, size in da.sizes.items():
+        if dim != time_dim:
+            cells *= int(size)
+    return cells
+
+
+def _span_of(
+    da: xr.DataArray, time_dim: str, span: tuple[str, str] | None,
+) -> tuple[str, str]:
+    """The interval the frame axis covers: what the caller asked for, or the
+    extent of ``da``'s own time axis when it did not say.
+
+    Shared by the gate and the reduction on purpose. A gate that counted
+    buckets over a different span than the one the stack is built on would
+    admit exactly the requests it exists to stop.
+    """
+    if span is not None:
+        return span
+    stamps = pd.to_datetime(np.asarray(da[time_dim].values))
+    return stamps.min().isoformat(), stamps.max().isoformat()
 
 
 @dataclass(frozen=True)
@@ -234,9 +403,7 @@ def build_frame_stack(
         )
 
     stamps = pd.to_datetime(np.asarray(da[time_dim].values))
-    if span is None:
-        span = (stamps.min().isoformat(), stamps.max().isoformat())
-    axis = _axis_starts(span, cadence)
+    axis = _axis_starts(_span_of(da, time_dim, span), cadence)
     axis_labels = [start.isoformat() for start in axis]
 
     grouper = xr.DataArray(

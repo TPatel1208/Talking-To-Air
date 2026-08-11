@@ -182,10 +182,16 @@ class PhaseLabelsetTests(unittest.TestCase):
             # close the last hole those two traces left: 303s of an 870s turn
             # spent building provenance from the unaggregated Dataset, after
             # the render timer had already closed.
+            #
+            # "frames" (T59 Phase 5) is the bucketed reduction behind a map's
+            # scrubber. Its own phase for the same reason "qa_pass_rate" is:
+            # it adds a whole extra graph walk over a lazily-opened bundle --
+            # measured at 9.2 s against a 12-15 s open+mask -- and what an
+            # honesty feature costs is exactly what must stay visible.
             {
                 "export", "extract", "open", "crop", "mask", "aggregate", "render",
                 "qa_pass_rate", "llm_call", "llm_retry_sleep", "agent_step",
-                "provenance", "evidence", "related_variables",
+                "provenance", "evidence", "related_variables", "frames",
             },
         )
 
