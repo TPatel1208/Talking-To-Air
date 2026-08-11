@@ -26,6 +26,8 @@ def build_methods_markdown(
     time_window: str,
     lineage: dict[str, Any],
     citations: list[dict[str, Any]],
+    maturity: str | None = None,
+    maturity_note: str | None = None,
     chart: dict[str, Any] | None = None,
 ) -> str:
     nodes = lineage.get("nodes") or []
@@ -62,6 +64,15 @@ def build_methods_markdown(
         lines.append(f"- {date}")
 
     lines += _frames_section(chart or {})
+
+    # T57: stated ABOVE the references, because it qualifies everything the
+    # reader is about to cite. Emitted only when the maturity is actually
+    # known: printing a "Data maturity: unknown" heading would read as a
+    # finding, and an unstated maturity must never become a reassuring one.
+    if maturity and maturity != "unknown":
+        lines += ["", "### Data maturity", "", f"- Product maturity: **{maturity}**"]
+        if maturity_note:
+            lines.append(f"- {maturity_note}")
 
     lines += ["", "### References", ""]
     for index, citation in enumerate(citations, start=1):

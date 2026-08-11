@@ -777,6 +777,8 @@ async def chart_methods_endpoint(chart_id: str, request: Request):
             time_window=_methods_time_window(provenance),
             lineage=lineage,
             citations=citations,
+            maturity=provenance.get("maturity"),
+            maturity_note=provenance.get("maturity_note"),
             # T59 D12: the whole payload, not the provenance sub-dict — the
             # frames disclosure reads two blocks that live at the top level
             # (``frames``/``frames_unavailable`` and ``export.frames``), and
