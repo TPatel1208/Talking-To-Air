@@ -51,6 +51,12 @@ export function buildScrubAxis(chart) {
     stops,
     cadence,
     tier: block.tier || null,
+    //: Published rather than recomputed downstream. It decides whether a stop
+    //: may be called an interval at all, and anything else asking that question
+    //: has to ask it with the SAME two witnesses -- a second copy keyed to
+    //: `tier` alone would call 48 three-hour frames "48 intervals" on a payload
+    //: whose tier field went missing.
+    coarsened,
     cellsPerFrame: Number.isFinite(block.cells_per_frame) ? block.cells_per_frame : null,
   }
 }
@@ -169,6 +175,16 @@ function intervalLabel(start, end, cadence, coarsened) {
 
 function dayOf(at) {
   return `${String(at.getUTCDate()).padStart(2, '0')} ${MONTHS[at.getUTCMonth()]}`
+}
+
+// The calendar day a stamp falls on, in UTC, or null if it cannot be read.
+// Exported so the track's day labels use THIS parse rather than a second one:
+// the naive-stamp-is-UTC rule above is the kind of fact that goes wrong quietly
+// when it has two homes, and a track labelled in local time would disagree with
+// the stop labels directly above it by the viewer's own offset.
+export function utcDayLabel(stamp) {
+  const at = parseUtc(stamp)
+  return at ? dayOf(at) : null
 }
 
 function timeOf(at) {

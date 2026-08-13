@@ -59,4 +59,61 @@ html, body, #root {
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+/* T59 Phase 10 -- the scrub track carries what the axis already knows.
+ *
+ * The empty runs are painted by a layer BEHIND this input, so the input's own
+ * track has to get out of the way. Webkit only honours ::-webkit-slider-
+ * runnable-track once `appearance: none` is set, and that also removes the
+ * native thumb -- so the thumb below is ours on webkit and stays the browser's
+ * on Firefox, where the track alone can be made transparent.
+ *
+ * What this deliberately does NOT change: the element is still an
+ * <input type="range">, so arrow keys, Home/End and PageUp/PageDown behave
+ * exactly as before -- styling cannot reach keyboard semantics. The focus ring
+ * is made explicit rather than inherited, because a control whose track we have
+ * taken over should not be relying on a UA default we may have disturbed. What
+ * IS lost is the OS-drawn fill, which was never ours and differed per machine;
+ * the progress fill below replaces it with one that is the same everywhere. */
+.frame-scrub {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 18px;
+  margin: 0;
+  background: transparent;
+  position: relative;
+}
+
+.frame-scrub::-webkit-slider-runnable-track { background: transparent; height: 18px; }
+.frame-scrub::-moz-range-track { background: transparent; height: 18px; }
+
+.frame-scrub::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  margin-top: 2.5px;
+  border-radius: 50%;
+  background: var(--teal, #0f766e);
+  border: 2px solid var(--bg-card, #fff);
+  box-shadow: 0 0 0 1px var(--border);
+  cursor: pointer;
+}
+
+.frame-scrub::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--teal, #0f766e);
+  border: 2px solid var(--bg-card, #fff);
+  box-shadow: 0 0 0 1px var(--border);
+  cursor: pointer;
+}
+
+.frame-scrub:disabled::-webkit-slider-thumb { background: var(--border); cursor: not-allowed; }
+.frame-scrub:disabled::-moz-range-thumb { background: var(--border); cursor: not-allowed; }
+
+.frame-scrub:focus { outline: none; }
+.frame-scrub:focus-visible { outline: 2px solid var(--teal, #0f766e); outline-offset: 2px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--border-hover); }
