@@ -95,16 +95,47 @@ is today's 284 rounded down to where density is unchanged (5.3 px/stop at 49 sto
 smallest run real data produces — two stops — is still ~11 px. Measured at Phase 9's own
 repro, a 556 px viewport with all three panels open: **the track is 232 px, not 0**.
 
-### Phase 9's 0 px finding, re-attributed
+### Phase 9's 0 px finding, re-attributed — and then fixed
 
 Phase 9 recorded *"the slider renders at 0 px wide while still reporting `disabled: false`"*.
-Measured at the same viewport, the truth is larger and not the scrubber's: **the entire output
-panel is 0 px wide and pushed off-screen at `left: 634`** — `.maplibregl-map` measures 0 px
-too. The map collapses with it. The slider was where it was noticed, not what was wrong.
+Measured at the same viewport, the truth was larger and not the scrubber's: **the entire output
+panel was 0 px wide and pushed off-screen at `left: 634`** — `.maplibregl-map` measured 0 px
+too. The map collapsed with it. The slider was where it was noticed, not what was wrong.
 
-Giving the output panel its own floor is an app-layout change affecting every artifact type,
-so it is **not** made here. What is fixed is the narrower claim tension 4 actually stated: an
-interactive control can no longer report zero width while claiming to be enabled.
+The arithmetic, once the panels are read rather than guessed at: `SessionSidebar` 232 px,
+chat 380 px, `RightPanel` 308 px, **all three `flexShrink: 0`** — 920 px of fixed width. The
+output panel is the *only* flexible child, so it gets `viewport − 920`, and `minWidth: 0`
+(written out on all five of its render branches) let that resolve to 0 rather than to its
+content's minimum. The app root's `overflow: hidden` then made the result invisible *and*
+unreachable.
+
+Both halves are fixed, because a floor alone only moves the defect right:
+
+1. **`PANEL_MIN_WIDTH` on every panel root**, derived rather than chosen —
+   `SCRUB_TRACK_MIN_WIDTH + 2 × PANEL_PADDING_X` = **304 px**. The panel exists to contain the
+   track, so its floor follows from the track's floor instead of being a second number picked
+   to look compatible; two independently chosen widths is how the inner one quietly stops
+   fitting inside the outer one. Both constants live in `src/utils/panelLayout.js`, and the
+   five branches now share one style object rather than five copies of the shape.
+2. **The app root scrolls horizontally instead of clipping** (`overflowX: 'auto'`). When the
+   panels genuinely do not fit, the row has more content than width and has to say so.
+
+**Deliberately not solved by auto-collapsing a panel at a breakpoint.** That is what this
+layout used to do, and App.jsx:308 records it being removed because it "made the layout jump
+around outside the user's control". Scrolling leaves the choice with the reader, and the three
+manual collapse toggles remain the way to make it fit.
+
+Measured after, at the same 556 px viewport with all three panels open:
+
+| | before | after |
+|---|---|---|
+| output panel | **0 px** | **304 px** |
+| `.maplibregl-map` | **0 px** | **256 px** |
+| slider | **0 px**, `disabled: false` | **232 px** |
+| reachable? | no — clipped and off-screen | **yes** — root `scrollWidth` 1224 vs client 556; `scrollIntoView` puts the slider fully on screen at 162–394 |
+
+At 1280 px nothing changes: no horizontal scrollbar, slider still 284 px, marks still
+59/12/59 px.
 
 ---
 
@@ -163,9 +194,17 @@ Live after the fix: `13 of the 48 frames` / `22 of the 48 intervals`.
 
 ## 5. Tests
 
-**19 new**, all in `Frontend/tests/frameTrack.test.mjs`. Frontend suite **373 passed, 0
-failed** (354 before). ESLint clean. No backend change: the only Frontend files `backend-test`
-reads are `frameDelta.js` and `jobCard.js`, neither touched.
+**25 new** — 19 in `Frontend/tests/frameTrack.test.mjs` and 6 in
+`Frontend/tests/outputPanelLayout.test.mjs`. Frontend suite **379 passed, 0 failed** (354
+before). ESLint clean. No backend change: the only Frontend files `backend-test` reads are
+`frameDelta.js` and `jobCard.js`, neither touched.
+
+The layout six are source-reading contract tests for the same reason as the rest — a width is
+a DOM measurement and there is no jsdom. They ban the *shape* rather than checking the branches
+that exist today (`flex: 1` with `minWidth: 0` anywhere fails), assert all five branches reach
+for the shared style so a **new** branch with its own inline root fails rather than silently
+reintroducing the collapse on one screen, and pin the reasoning the fix rests on: all three
+side panels are `flexShrink: 0`, which is *why* the output panel needs a floor of its own.
 
 The fixtures are the real distributions — the 48-stop TEMPO axis with its 22 empty stops in
 both kinds, and a fully populated 13-stop axis for the control case — and every axis is built
@@ -219,7 +258,6 @@ human-supplied capture is the only way, as in Phases 8 and 9.
   it in makes the diff about two things — the same reasoning Phase 9 used to defer the slider.
 - **A thumb-following label.** The header already names the current stop and updates; at
   5.9 px/stop a label at the thumb collides constantly.
-- **The output panel's own collapse** — real, re-attributed in §2, and an app-layout change.
 - Everything in the PRD's Non-Goals, unchanged: no playback, no skipping empty stops, no
   change to `MAX_FRAMES`, no backend change or new payload field, no per-frame export, no
   variable switching, no statistic but mean, no scrubbers on `plot_multiple`, no

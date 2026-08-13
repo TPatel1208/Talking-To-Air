@@ -12,6 +12,7 @@ import { resolveScrubberScale } from '../utils/frameScale.js'
 import { resolveFrameDelta } from '../utils/frameDelta.js'
 import { statsForStop, formatFrameQaRate } from '../utils/frameStats.js'
 import { selectFrame } from '../utils/frameStack.js'
+import { PANEL_MIN_WIDTH } from '../utils/panelLayout.js'
 import { MetadataOverview } from './MetadataOverview.jsx'
 import { MetaField } from './metadataPrimitives.jsx'
 import { smallButtonStyle, copyToClipboard } from '../utils/metadataUiHelpers.js'
@@ -30,6 +31,25 @@ import {
   groundValidationOverviewFields, groundValidationDetailsFields,
   rawArtifactMetadataJson,
 } from '../utils/artifactMetadataDisplay'
+
+// Every render branch of this panel is the same flex child of the app's one
+// row, so every one of them needs the same floor. It used to be `minWidth: 0`
+// written out five times -- and `minWidth: 0` is precisely what defeats the
+// automatic minimum content size, so with the three fixed-width side panels
+// open at a 556 px viewport this column resolved to 0 px and went off-screen,
+// map included. Five literals is five chances for one branch to keep the bug;
+// the one that keeps it is the branch nobody opens on a narrow screen.
+const panelRootStyle = {
+  flex: 1,
+  minWidth: `${PANEL_MIN_WIDTH}px`,
+  display: 'flex',
+  flexDirection: 'column',
+  background: 'var(--bg-primary)',
+}
+
+// Most branches also clip their own overflow; the empty state deliberately does
+// not, because it centres its content rather than scrolling it.
+const panelRootClipped = { ...panelRootStyle, overflow: 'hidden' }
 
 function compactDate(value) {
   if (!value) return ''
@@ -779,7 +799,7 @@ function ArtifactTabsPanel({ artifact, accessToken, compareControlProps }) {
   const [activeTab, setActiveTab] = useState(tabs[0])
 
   return (
-    <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', overflow: 'hidden' }}>
+    <div style={panelRootClipped}>
       <div style={{ padding: '14px 22px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
         <div style={{ fontSize: '16px', fontWeight: 800, color: 'var(--text-primary)' }}>{artifact.title || 'Output'}</div>
         <CompareControl {...compareControlProps} />
@@ -875,7 +895,7 @@ export default function OutputPanel({
 
   if (compareMode === 'active') {
     return (
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', overflow: 'hidden' }}>
+      <div style={panelRootClipped}>
         <div style={{ padding: '14px 22px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
           <div style={{ fontSize: '16px', fontWeight: 800, color: 'var(--text-primary)' }}>Compare</div>
           <CompareControl {...compareControlProps} />
@@ -906,12 +926,12 @@ export default function OutputPanel({
 
   if (!focusedOutput) {
     return (
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)' }}>
+      <div style={panelRootStyle}>
         <div style={{ padding: '14px 22px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexShrink: 0 }}>
           <CompareControl {...compareControlProps} />
         </div>
         <div style={{
-          flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column',
+          flex: 1, display: 'flex', flexDirection: 'column',
           alignItems: 'center', justifyContent: 'center', textAlign: 'center',
           color: 'var(--text-muted)', padding: '0 24px',
         }}>
@@ -932,7 +952,7 @@ export default function OutputPanel({
 
   if (artifact && !chart) {
     return (
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', overflow: 'hidden' }}>
+      <div style={panelRootClipped}>
         <div style={{ padding: '14px 22px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexShrink: 0 }}>
           <CompareControl {...compareControlProps} />
         </div>
@@ -951,7 +971,7 @@ export default function OutputPanel({
   const metaChips = chartMetaChips(chart)
 
   return (
-    <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', overflow: 'hidden' }}>
+    <div style={panelRootClipped}>
       <div style={{ padding: '14px 22px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
         <div style={{ fontSize: '16px', fontWeight: 800, color: 'var(--text-primary)' }}>{title}</div>
         <CompareControl {...compareControlProps} />

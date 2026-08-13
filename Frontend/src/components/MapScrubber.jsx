@@ -18,6 +18,7 @@
 import { aggregateAnchor } from '../utils/frameDelta.js'
 import { formatFrameQaRate } from '../utils/frameStats.js'
 import { buildDayBoundaries, buildTrackMarks, trackLegend } from '../utils/frameTrack.js'
+import { SCRUB_TRACK_MIN_WIDTH } from '../utils/panelLayout.js'
 
 // The floor exists so the layout CANNOT produce the 0 px case, rather than so
 // something can detect it afterwards. Measured live: the output panel carries
@@ -30,16 +31,16 @@ import { buildDayBoundaries, buildTrackMarks, trackLegend } from '../utils/frame
 //
 // A width is a DOM measurement no util can see and there is no jsdom here to
 // fake one, so the alternative -- measure the track and disable below a
-// threshold -- would be a guard no test in this repo could reach. 260 px is
-// today's 284 px rounded down to where the density is unchanged (5.3 px per
-// stop at 49 stops) and the smallest run real data produces, two stops, is
-// still ~11 px wide. Below that the track cannot answer honestly, and the fix
-// is to never get there.
+// threshold -- would be a guard no test in this repo could reach.
+//
+// The number is shared with the panel that has to CONTAIN this, and lives
+// there: a floor the scrubber picks for itself and a floor the output panel
+// picks for itself are two numbers that quietly stop fitting inside each other.
 const boxStyle = {
   border: '1px solid var(--border)', borderRadius: '10px',
   background: 'var(--bg-card)', padding: '11px 13px',
   display: 'flex', flexDirection: 'column', gap: '9px',
-  minWidth: '260px',
+  minWidth: `${SCRUB_TRACK_MIN_WIDTH}px`,
 }
 
 const toggleStyle = (active) => ({
