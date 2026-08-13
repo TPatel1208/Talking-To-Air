@@ -898,10 +898,17 @@ def _frame_grid_delta(
 # disagreeing. The word doing the work is "stored" -- that is the entire
 # difference from ``DELTA_BASIS``' "at native resolution", and it is what makes
 # the two impossible to confuse in a payload that carries both.
+#
+# It says "stored frame grid", NOT "block-mean frame grid": a region under the
+# cell ceiling does not coarsen, and naming the grid after a reduction that did
+# not run would assert a mechanism a k=(1,1) chart does not have. Where the
+# block mean IS real, ``_grid_rule`` prints the realized factors, which is the
+# right home for a fact that is only sometimes true. One basis, accurate in
+# both regimes, rather than a basis with two forms.
 FRAME_GRID_DELTA_BASIS = (
     "cos(latitude)-weighted sum of |mean of the stored frame planes - the stored period "
-    "plane| over the same weighted sum of |the stored period plane|, on the block-mean "
-    "frame grid the browser downloads, over cells finite in both"
+    "plane| over the same weighted sum of |the stored period plane|, on the stored frame "
+    "grid the browser downloads, over cells finite in both"
 )
 
 

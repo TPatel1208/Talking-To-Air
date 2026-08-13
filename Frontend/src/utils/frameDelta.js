@@ -44,10 +44,15 @@ export function resolveFrameDelta(chart) {
   const grid = figureOf(block.frame_grid_delta, units)
   const coarsened = block.tier === 'coarsened'
   const native = coarsened ? figureOf(block.delta, units) : null
+  const downsampled = isDownsampled(block.coarsen_k)
 
   return {
     kind: coarsened ? 'approximate' : 'exact',
     severity: severityFor(native, grid, coarsened),
+    //: Whether a block mean actually ran. Read by `aggregateAnchor` so the two
+    //: adjacent sentences cannot describe the same array differently -- which
+    //: they did, live, before this existed.
+    downsampled,
     headlinePct: native?.pct ?? null,
     maxAbs: native?.maxAbs ?? null,
     basis: native?.basis ?? null,
@@ -55,27 +60,51 @@ export function resolveFrameDelta(chart) {
     gridMaxAbs: grid?.maxAbs ?? null,
     gridBasis: grid?.basis ?? null,
     summary: coarsened
-      ? coarsenedSummary(perFrame, cadence, native, grid)
-      : cadenceSummary(cadence, grid),
+      ? coarsenedSummary(perFrame, cadence, native, grid, downsampled)
+      : cadenceSummary(cadence, grid, downsampled),
   }
+}
+
+// Whether a block mean actually ran. An absent `coarsen_k` reads as
+// downsampled: a payload that cannot say is one whose frames may well have
+// been, and claiming the stronger "same grid" property for it would invent
+// exactly the kind of thing this file exists to stop inventing.
+function isDownsampled(factors) {
+  if (!Array.isArray(factors) || !factors.length) return true
+  return factors.some((k) => Number.isFinite(k) && k > 1)
 }
 
 // Stop 0's anchor: the sentence a reader uses to re-orient, and the one place
 // both of Phase 8's presentation caveats land at once. It used to read "the
-// same field the Map tab shows, on the frame grid", which was carrying two
-// unstated differences -- the plane is block-meaned to the rendering
-// resolution and the Map tab's is not, and the ramp is D9's pooled 2-98, which
-// Phase 8 measured at 1.99-2.09x the Map tab's own clip, so entering this mode
-// roughly halves the apparent intensity of everything.
+// same field the Map tab shows, on the frame grid", which glossed the grid
+// difference in BOTH directions and said nothing about the ramp.
+//
+// Neither array is native. `_downsample_grid` strides the map payload to 8,000
+// cells; the frames block-mean to 20,000, or stay native when the region is
+// under the ceiling. Measured live on a New Jersey chart: the Map tab drew
+// 64x42 = 2,688 cells beside a 128x83 = 10,624-cell frame plane, so at k=(1,1)
+// the scrubber's plane is the FINER of the two. A sentence naming only the
+// frames' reduction implies the other array had none.
+//
+// And the ramp is D9's pooled 2-98, which Phase 8 measured at 1.99-2.09x the
+// Map tab's own clip -- entering this mode roughly halves the apparent
+// intensity of everything on screen.
 //
 // The NUMBER is deliberately not here. It belongs to the delta line directly
 // beneath this one, and one measurement with two homes on one screen is how
 // two homes start disagreeing.
-export function aggregateAnchor() {
+export function aggregateAnchor(delta) {
+  // Unknown reads as downsampled, the same way `isDownsampled` treats an
+  // absent `coarsen_k`: claiming the stronger "native resolution" property for
+  // a chart that cannot say is inventing the thing this sentence exists to
+  // stop inventing.
+  const grid = delta && delta.downsampled === false
+    ? 'at native resolution on the frame grid'
+    : 'block-meaned onto the frame grid'
   return (
-    'The period aggregate — the Map tab’s field on the frame grid: block-meaned ' +
-    'to the rendering resolution, and coloured on the pooled scale rather than ' +
-    'the Map tab’s own.'
+    `The period aggregate — the same field the Map tab shows, ${grid} where the ` +
+    'Map tab strides onto a coarser one of its own, and coloured on the pooled ' +
+    'scale rather than the Map tab’s clip.'
   )
 }
 
@@ -83,15 +112,15 @@ export function aggregateAnchor() {
 // it is exactly true of them at the resolution the map is computed at. It was
 // never a fact about the two arrays on screen, and saying "the map above is
 // their average" told a reader it was.
-function cadenceSummary(cadence, grid) {
+function cadenceSummary(cadence, grid, downsampled) {
   const lead =
     `Each frame is one ${cadence} interval of this product, and the map above ` +
     'is their equally-weighted average at native resolution.'
   if (!grid) return lead
-  return `${lead} ${shippedSentence(grid)}`
+  return `${lead} ${shippedSentence(grid, downsampled)}`
 }
 
-function coarsenedSummary(perFrame, cadence, native, grid) {
+function coarsenedSummary(perFrame, cadence, native, grid, downsampled) {
   const parts = [
     `Each frame averages ${perFrame} ${cadence} intervals, so the frames are a ` +
     'different temporal aggregation from the map above.',
@@ -102,7 +131,7 @@ function coarsenedSummary(perFrame, cadence, native, grid) {
       : 'The size of that difference could not be measured for this map.',
   )
   if (grid) {
-    parts.push(shippedSentence(grid))
+    parts.push(shippedSentence(grid, downsampled))
     if (native?.pct) {
       parts.push(
         'Those are measured on different arrays and neither bounds the other.',
@@ -112,11 +141,22 @@ function coarsenedSummary(perFrame, cadence, native, grid) {
   return parts.join(' ')
 }
 
-function shippedSentence(grid) {
+// The causal clause follows `coarsen_k`, not the tier. A region under the
+// 20,000-cell ceiling does not coarsen at all -- New Jersey is 10,624 native
+// cells -- and telling that reader their frames were block-meaned describes a
+// mechanism their chart does not have. Found on live data, in this function's
+// first draft, which is the same mistake one level along from the one this
+// file was rewritten to fix.
+function shippedSentence(grid, downsampled) {
+  const cause = downsampled
+    ? 'they are block-meaned to the frame grid and the map is not'
+    // NOT "they sit on the map's own grid" -- the Map tab draws a stride-thinned
+    // array, so "the map's grid" is ambiguous between the period map's native
+    // one and the one on screen. Name the resolution instead.
+    : 'these frames are not downsampled, so both are at native resolution'
   return (
     `Averaging the frames you can download misses the aggregate by ${grid.pct}` +
-    `${grid.maxAbs ? `, up to ${grid.maxAbs} at the worst pixel` : ''}: they are ` +
-    'block-meaned to the frame grid and the map is not.'
+    `${grid.maxAbs ? `, up to ${grid.maxAbs} at the worst pixel` : ''}: ${cause}.`
   )
 }
 

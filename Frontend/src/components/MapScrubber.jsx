@@ -104,19 +104,25 @@ export default function MapScrubber({
           to someone scrubbing for an event. */}
       {state.detail && <div style={noteStyle}>{state.detail}</div>}
 
-      <StopReadout stop={stop} stats={stats} />
+      {/* `delta` reaches BOTH: the anchor reads `downsampled` off it, and
+          these two sentences render one above the other. Passing it to only
+          one of them let the anchor claim a block mean on a k=(1,1) chart
+          while the line beneath it said the frames were not downsampled --
+          adjacent, contradictory, and invisible to a util test that hands the
+          argument over by hand. */}
+      <StopReadout stop={stop} stats={stats} delta={delta} />
       <DeltaDisclosure delta={delta} />
     </div>
   )
 }
 
-function StopReadout({ stop, stats }) {
+function StopReadout({ stop, stats, delta }) {
   // The anchor sentence lives in frameDelta.js, not here. With no jsdom, a
   // sentence written in a component is a sentence no test can read -- which is
   // how "the same field the Map tab shows" went two phases carrying an
   // unstated block mean and an unstated 2x colour ramp (Phase 8 §1, §9).
   if (!stop || stop.kind === 'aggregate') {
-    return <div style={noteStyle}>{aggregateAnchor()}</div>
+    return <div style={noteStyle}>{aggregateAnchor(delta)}</div>
   }
 
   const qa = formatFrameQaRate(stats?.qaPassRate)

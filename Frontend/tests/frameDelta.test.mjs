@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { aggregateAnchor, resolveFrameDelta } from '../src/utils/frameDelta.js'
 
 const DELTA_BASIS = 'cos(latitude)-weighted sum of |frame-derived period mean - period map| over the same weighted sum of |period map|, at native resolution over cells finite in both'
-const GRID_BASIS = 'cos(latitude)-weighted sum of |mean of the stored frame planes - the stored period plane| over the same weighted sum of |the stored period plane|, on the block-mean frame grid the browser downloads, over cells finite in both'
+const GRID_BASIS = 'cos(latitude)-weighted sum of |mean of the stored frame planes - the stored period plane| over the same weighted sum of |the stored period plane|, on the stored frame grid the browser downloads, over cells finite in both'
 
 // Phase 8 measured this on `map_2ea3dd7b34cf`, a real regional TEMPO chart at
 // k=(5,5): the CADENCE tier, whose temporal relationship is an exact identity
@@ -57,6 +58,32 @@ test('a tier-one chart whose blocks were seen evenly still says so plainly', () 
 
   assert.equal(delta.gridPct, 'under 0.1%')
   assert.equal(delta.severity, 'low')
+})
+
+test('an undownsampled chart is never told its frames were block-meaned', () => {
+  // Found on live data 2026-08-13, in a sentence written by this phase. A New
+  // Jersey retrieval is 10,624 native cells -- under the 20,000-cell ceiling --
+  // so coarsen_k is (1,1) and there is NO block mean. The summary said "they
+  // are block-meaned to the frame grid and the map is not", which describes a
+  // mechanism this figure does not have. Small regions are most regions.
+  const delta = resolveFrameDelta(chartWith({
+    tier: 'cadence', cadence: 'hourly', buckets_per_frame: 1, delta: null,
+    coarsen_k: [1, 1],
+    frame_grid_delta: { headline: 2.2915e-8, max_abs: 6.6076e8, basis: GRID_BASIS },
+  }))
+
+  assert.doesNotMatch(delta.summary, /block-meaned/)
+  assert.match(delta.summary, /these frames are not downsampled/)
+  assert.match(delta.summary, /misses the aggregate by under 0\.1%/)
+})
+
+test('a downsampled chart still names the block mean, because it has one', () => {
+  const delta = resolveFrameDelta(chartWith({
+    tier: 'cadence', cadence: 'hourly', buckets_per_frame: 1, delta: null,
+    coarsen_k: [5, 5], frame_grid_delta: SHIPPED,
+  }))
+
+  assert.match(delta.summary, /block-meaned to the frame grid and the map is not/)
 })
 
 test('a tier-one chart predating the measurement keeps the old quiet note', () => {
@@ -169,21 +196,74 @@ test('severity follows the larger disagreement, whichever one it is', () => {
 test("stop 0's anchor names the two ways it is not the Map tab", () => {
   // Phase 8 §9: entering scrubber mode roughly halves the apparent intensity
   // of everything, because the pooled ramp is 1.99-2.09x the Map tab's -- and
-  // the plane itself is block-meaned to the frame grid while the Map tab's is
-  // not. "The same field the Map tab shows" was carrying both silently, at
-  // exactly the stop a reader uses to re-orient.
+  // the plane itself is on a different grid from the one the Map tab draws.
+  // "The same field the Map tab shows" was carrying both silently, at exactly
+  // the stop a reader uses to re-orient.
   const anchor = aggregateAnchor(resolveFrameDelta(chartWith({
     tier: 'cadence', cadence: 'hourly', buckets_per_frame: 1,
-    delta: null, frame_grid_delta: SHIPPED,
+    delta: null, coarsen_k: [5, 5], frame_grid_delta: SHIPPED,
   })))
 
   assert.match(anchor, /block-meaned/)
   assert.match(anchor, /pooled/)
+  // The Map tab does not draw its native field either -- `_downsample_grid`
+  // strides it to 8,000 cells. Measured live on `map_f06a59b99afb`: the Map
+  // tab drew 64x42 = 2,688 cells beside a 128x83 = 10,624-cell frame plane.
+  // A sentence naming only the frames' reduction implies the other array had
+  // none.
+  assert.match(anchor, /strides/)
   // The number itself belongs to the delta line directly beneath, and putting
   // it here too would be one measurement with two homes on one screen.
   assert.doesNotMatch(anchor, /1\.9%/)
 })
 
+test('an undownsampled chart\'s anchor does not invent a block mean either', () => {
+  // The SAME defect as `shippedSentence` had, in the sentence directly above
+  // it -- caught only by rendering both at once on a k=(1,1) chart, where the
+  // screen read "block-meaned to the rendering resolution" one line above
+  // "these frames are not downsampled". Two adjacent sentences contradicting
+  // each other about the same array.
+  const anchor = aggregateAnchor(resolveFrameDelta(chartWith({
+    tier: 'cadence', cadence: 'hourly', buckets_per_frame: 1, delta: null,
+    coarsen_k: [1, 1],
+    frame_grid_delta: { headline: 2.2915e-8, max_abs: 6.6076e8, basis: GRID_BASIS },
+  })))
+
+  assert.doesNotMatch(anchor, /block-meaned/)
+  assert.match(anchor, /native resolution/)
+  // Still not the Map tab's array: at k=(1,1) the frame plane is the FINER of
+  // the two, which the sentence must not leave a reader guessing about.
+  assert.match(anchor, /strides/)
+  assert.match(anchor, /pooled/)
+})
+
 test('the anchor still stands when nothing about the frames was measured', () => {
   assert.match(aggregateAnchor(null), /period aggregate/)
+})
+
+test('MapScrubber actually hands the anchor its argument', () => {
+  // The bug this exists for shipped to a live page: `aggregateAnchor()` was
+  // called with no argument, so it always took the "unknown reads as
+  // downsampled" branch and told a k=(1,1) chart its frames were block-meaned
+  // -- directly above a line saying they were not.
+  //
+  // A util test cannot see this, because it hands the argument over itself,
+  // and there is no jsdom here to render the component. So the source is read
+  // instead, the same way test_jobs_service and SharedDeltaThresholdTests read
+  // JS constants out of their files: a seam no test can reach is a seam that
+  // gets one this way or not at all.
+  const source = readFileSync(
+    new URL('../src/components/MapScrubber.jsx', import.meta.url), 'utf-8',
+  )
+
+  assert.match(
+    source, /aggregateAnchor\(\s*delta\s*\)/,
+    'MapScrubber calls aggregateAnchor without passing `delta`, so the anchor '
+    + 'cannot tell whether this chart was downsampled and will assume it was.',
+  )
+  assert.match(
+    source, /<StopReadout[^>]*delta=\{delta\}/,
+    'StopReadout is not given `delta`, so the anchor inside it has nothing to '
+    + 'read.',
+  )
 })

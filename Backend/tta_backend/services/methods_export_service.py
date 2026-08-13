@@ -325,21 +325,51 @@ def _pct(headline: float) -> str:
 
 
 def _agreement_lead(recipe: dict[str, Any], cadence: str, coarsened: bool) -> str:
-    """What kind of relationship the frames have to the map, per tier."""
+    """What kind of relationship the frames have to the map, per tier — and,
+    in tier one, whether there is a block mean at all.
+
+    The k=(1,1) branch is not a corner case. A New Jersey retrieval is 10,624
+    native cells, under the 20,000-cell ceiling, so it does not coarsen — and
+    small regions are most regions. Telling that reader their frames were
+    "block-meaned to the rendering resolution" describes a mechanism their
+    figure does not have, which is the exact failure this section was added to
+    remove. Found on live data, in this function's first draft.
+    """
     if coarsened:
         return (
             f"Each frame averages {_count_phrase(recipe) or 'several '}{cadence} "
             "intervals, so the frames are a coarser temporal aggregation than "
             "the map, which is computed independently at native resolution."
         )
-    return (
+    same = (
         f"Each frame is one {cadence} interval and the period map is their "
         "equally-weighted mean, so the frames and the map are the same "
-        "temporal aggregation. They are not on the same grid: the frame planes "
-        "are block-meaned to the rendering resolution and the map is not, and "
-        "a block mean does not commute with an average over intervals wherever "
+        "temporal aggregation."
+    )
+    if not _is_downsampled(recipe):
+        return (
+            f"{same} They are also on the same grid — these frames are not "
+            "downsampled — so the residual below is float32 storage precision: "
+            "the frames were narrowed individually and the map was narrowed "
+            "after averaging."
+        )
+    return (
+        f"{same} They are not on the same grid: the frame planes are "
+        "block-meaned to the rendering resolution and the map is not, and a "
+        "block mean does not commute with an average over intervals wherever "
         "coverage is uneven."
     )
+
+
+def _is_downsampled(recipe: dict[str, Any]) -> bool:
+    """Whether a block mean actually ran. Absent ``coarsen_k`` reads as
+    downsampled: a row that cannot say is a row whose frames may well have
+    been, and claiming the stronger "same grid" property for it would be
+    inventing the thing this branch exists to stop inventing."""
+    factors = recipe.get("coarsen_k")
+    if not isinstance(factors, (list, tuple)) or not factors:
+        return True
+    return any((_as_int(k) or 1) > 1 for k in factors)
 
 
 def _loud_lead(headline: float, coarsened: bool) -> str:

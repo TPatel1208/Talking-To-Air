@@ -612,6 +612,7 @@ class FrameMapAgreementTests(unittest.TestCase):
                         "headline": 2e-8, "max_abs": 1.5e8, "basis": "…",
                     },
                 },
+                spec={"coarsen_k": [1, 1]},
             )
         )
 
@@ -620,6 +621,45 @@ class FrameMapAgreementTests(unittest.TestCase):
             "beside them: **under 0.1%**",
             markdown,
         )
+
+    def test_an_undownsampled_chart_is_never_told_its_frames_were_block_meaned(self):
+        """Found on live data 2026-08-13, in a sentence written by this phase.
+
+        A New Jersey retrieval is 10,624 native cells — under the 20,000-cell
+        ceiling — so `coarsen_k` is (1,1) and there is **no block mean at all**.
+        The tier-one lead nonetheless said "They are not on the same grid: the
+        frame planes are block-meaned to the rendering resolution and the map
+        is not", which is a mechanism that does not exist for this figure.
+        Small regions are not a corner case; they are most of them.
+
+        Exactly the failure this phase was written to remove — a sentence
+        stating something about the arrays that the arrays do not satisfy — so
+        it is pinned rather than patched.
+        """
+        # BOTH blocks, because `_attach_frames` writes them together and the
+        # precedence rule lets the spec win — a fixture that moves only the
+        # render block is a row that cannot occur, and it silently kept the
+        # 5×5 recipe this test is about.
+        markdown = _markdown_for(
+            _cadence_tier_chart(
+                render={
+                    "coarsen_k": [1, 1],
+                    "frame_grid_delta": {
+                        "headline": 2.2915e-8, "max_abs": 6.6076e8, "basis": "…",
+                    },
+                },
+                spec={"coarsen_k": [1, 1]},
+            )
+        )
+        section = _section(markdown, "Frame–map agreement")
+
+        self.assertNotIn("block-mean", section)
+        self.assertNotIn("not on the same grid", section)
+        self.assertIn("these frames are not downsampled", section)
+        # And the residual is named for what it actually is at k=(1,1): the one
+        # remaining difference is that the frames were narrowed to float32
+        # individually and the map was narrowed after averaging.
+        self.assertIn("float32 storage precision", section)
 
     def test_a_row_predating_the_shipped_array_measurement_stays_silent(self):
         """A chart written before Phase 9 has no such measurement, and the
