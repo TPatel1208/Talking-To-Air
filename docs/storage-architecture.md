@@ -195,11 +195,34 @@ guards the mount.
 
 Bounded by `CUBE_STORE_MAX_BYTES` (default 4 GiB), evicted LRU by last access
 before each write. A fixed byte cap, not a share of free space: a percentage
-silently expands to fill any disk. Per-cube writes are separately capped by
-`CUBE_WRITE_MAX_BYTES` (default 1 GiB), which must stay below
-`BUNDLE_OPEN_MAX_UNCOMPRESSED_BYTES`. Every entry is disposable — a cube that
-fails its per-hit integrity sweep is deleted and the answer comes from the
-lazy path instead.
+silently expands to fill any disk. A single cube is separately capped at
+`CUBE_WRITE_MAX_STORE_FRACTION` (default 0.5) of the store's total limit — a
+share rather than an absolute byte count, so it does not need retuning
+whenever the store is resized, and so one cube can never evict the whole
+store to fit itself only to be evicted by the next write. Every entry is
+disposable — a cube that fails its per-hit integrity sweep is deleted and the
+answer comes from the lazy path instead.
+
+### `frame_store` — private, backend-only
+Backend writes to `/app/frame_store`
+([Backend/tta_backend/services/frame_store.py](../Backend/tta_backend/services/frame_store.py),
+path from `FRAME_STORE_DIR`). **Not** mounted into the frontend and served by
+no route directly — the float32 values behind a chart's T59 time scrubber.
+Deliberately its own volume rather than a corner of `overlay_store`: that
+store has no eviction policy and grows forever, and an LRU sweeper sharing a
+directory with an unbounded store would evict frames to make room for PNGs
+that never leave.
+
+Split by durability (D13): the frame **axis** and every per-frame disclosure
+(valid fraction, QA pass rate, statistics) live in the chart's Postgres jsonb
+row and always survive; only the gzipped float32 **values** live here. An
+eviction degrades a chart to a labeled but unscrubbable axis rather than
+breaking it — the axis was never at risk. Bounded by `FRAME_STORE_MAX_BYTES`
+(default 1 GiB), evicted LRU by last access, same policy shape as
+`cube_store` but measured in real gzipped bytes on disk rather than
+`ds.nbytes`. Each entry's key is a random UUID, not content-addressed —
+charts are ownership-scoped, so two charts are never allowed to share one
+blob.
 
 ### `earthdata_data` — external, read-only
 Declared `external: true` in [docker-compose.yml:154](../docker-compose.yml).
@@ -246,7 +269,7 @@ designer — they can't read the code, so this spells out every fact needed:
 > bidirectional arrow: "Frontend (React/Vite, nginx)" and "Backend (FastAPI +
 > LangGraph)".
 >
-> **Tier 2 — Persistent storage** (Docker named volumes), five boxes below
+> **Tier 2 — Persistent storage** (Docker named volumes), six boxes below
 > tier 1, each with an arrow up to Backend:
 > 1. **PostgreSQL + PostGIS** (volume `pg_data`) — list inside: `users`,
 >    `session_metadata`, `agent_charts`, `agent_artifacts`, `revoked_tokens`, and LangGraph's own
@@ -259,7 +282,10 @@ designer — they can't read the code, so this spells out every fact needed:
 >    `plot_outputs` because that one is public.
 > 4. **cube_store** volume — cached Zarr cubes of opened datasets; Backend-only,
 >    served by no route at all, size-capped and LRU-evicted.
-> 5. **earthdata_data** volume — dotted/foreign-styled box, "external,
+> 5. **frame_store** volume — float32 values behind a chart's time scrubber;
+>    Backend-only, size-capped and LRU-evicted, its own volume separate from
+>    `overlay_store` specifically because that one has no eviction policy.
+> 6. **earthdata_data** volume — dotted/foreign-styled box, "external,
 >    read-only, owned by a different repo/stack (harmony-retrieval-mcp)";
 >    mounted read-only at `/data`.
 >
