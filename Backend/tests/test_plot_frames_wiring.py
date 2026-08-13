@@ -677,8 +677,148 @@ class PlotSingularFrameWiringTests(unittest.IsolatedAsyncioTestCase):
         for panel in payload["panels"]:
             self.assertNotIn("frames", panel)
 
+    def _uneven_coverage(self, n_times, ny, nx, seed=59):
+        """A field whose blocks are seen in DIFFERENT intervals -- the coverage
+        pattern that makes the two reductions stop commuting.
+
+        A rotating one-in-four column stripe, which is a crude stand-in for
+        what swath tiling does to a real product: within any 2x2 block, one
+        native column is observed in a timestep the other is not, so the block
+        mean weights each native cell by how many intervals saw it while the
+        across-frame mean weights each interval equally. A uniformly covered
+        field would agree exactly at any k and would test nothing.
+        """
+        import numpy as np
+
+        rng = np.random.default_rng(seed)
+        values = rng.normal(4.0e15, 5.0e14, size=(n_times, ny, nx))
+        for step in range(n_times):
+            values[step][:, (np.arange(nx) + step) % 4 == 0] = np.nan
+        return values
+
+    def _blob_planes(self, frames):
+        """The float32 planes the browser downloads, read back through the
+        store -- not the in-process arrays. This is the blob Phase 8 fetched
+        from ``GET /chart/{id}/frames.f32.gz``, and the whole point of the
+        quantity under test is that it describes THESE."""
+        import gzip
+
+        import numpy as np
+        from tta_backend.services import frame_store
+        from tta_backend.services.open_handle import OPEN_PIPELINE_VERSION
+
+        blob = frame_store.read_frames(
+            frames["_key"], pipeline_version=OPEN_PIPELINE_VERSION,
+        )
+        return np.frombuffer(
+            gzip.decompress(blob.gzipped), dtype="float32",
+        ).reshape(frames["shape"])
+
+    def _measured_disagreement(self, frames):
+        """``probe_t59_phase8_arrays.py``'s calculation, independently: average
+        the frame planes, compare to the period plane, weight by cos(lat).
+
+        Written with ``nanmean`` rather than the reduction's own finite-mask
+        arithmetic on purpose -- a reference that shares its implementation
+        asserts that one thing agrees with itself.
+        """
+        import warnings
+
+        import numpy as np
+
+        planes = self._blob_planes(frames)
+        period = np.asarray(planes[frames["period_index"]], dtype="float64")
+        others = np.asarray(
+            np.delete(planes, frames["period_index"], axis=0), dtype="float64",
+        )
+        with warnings.catch_warnings():
+            # An all-absent cell has no mean. That is the fixture working.
+            warnings.simplefilter("ignore", RuntimeWarning)
+            averaged = np.nanmean(others, axis=0)
+
+        both = np.isfinite(averaged) & np.isfinite(period)
+        weights = np.cos(np.deg2rad(np.asarray(frames["lats"]))).reshape(-1, 1)
+        numerator = float((np.where(both, np.abs(averaged - period), 0.0) * weights).sum())
+        denominator = float((np.where(both, np.abs(period), 0.0) * weights).sum())
+        return numerator / denominator
+
+    async def test_the_disclosed_disagreement_is_the_one_the_blob_actually_has(self):
+        """The test that would have caught Phase 8's finding, in the regime
+        real charts are in.
+
+        Every identity test written before this one runs where the block mean
+        is the identity function -- the fixture below it pins ``coarsen_k ==
+        [1, 1]`` explicitly. A real regional TEMPO retrieval is 352,181 native
+        cells and lands at k=(5,5), 25x over the ceiling, and there the two
+        arrays that ship disagree by 1.876%. So: a grid that actually
+        coarsens, and an assertion that the number in the payload is the number
+        a reader gets by averaging the download.
+
+        Both halves matter. That it AGREES is the contract. That it is
+        materially non-zero is what makes the assertion capable of failing --
+        a quantity hardcoded to zero would satisfy the first half forever.
+        """
+        self.add_bundle(ny=200, nx=200, values=self._uneven_coverage(3, 200, 200))
+
+        _summary, payload = await self.plot()
+        frames = payload["frames"]
+
+        # 40,000 native cells against D5's 20,000-cell ceiling: the regime.
+        self.assertEqual(frames["coarsen_k"], [2, 2])
+        self.assertEqual(frames["tier"], "cadence")
+        # No temporal disagreement to disclose -- and an array disagreement
+        # regardless. That pairing is the entire Phase 8 finding.
+        self.assertIsNone(frames["delta"])
+
+        disclosed = frames["frame_grid_delta"]["headline"]
+        self.assertAlmostEqual(
+            disclosed, self._measured_disagreement(frames), places=9,
+        )
+        self.assertGreater(
+            disclosed, 0.001,
+            "the fixture no longer breaks the identity, so this asserts nothing",
+        )
+
+    async def test_a_coarsened_chart_discloses_two_numbers_and_they_differ(self):
+        """Phase 8 §2's mirror: tier two measured its delta natively and
+        published it beside arrays that disagreed by a different amount, with
+        neither bounding the other and the smaller one on screen.
+
+        61 hourly buckets past the 60-frame budget, on a grid that also
+        coarsens -- both reductions active at once, which is what a real
+        multi-day regional retrieval is.
+        """
+        times = [f"2024-06-01T{hour:02d}:30" for hour in range(24)]
+        times += [f"2024-06-02T{hour:02d}:30" for hour in range(24)]
+        times += [f"2024-06-03T{hour:02d}:30" for hour in range(13)]
+        self.add_bundle(
+            ny=200, nx=200, times=times,
+            values=self._uneven_coverage(len(times), 200, 200),
+        )
+
+        _summary, payload = await self.plot()
+        frames = payload["frames"]
+
+        self.assertEqual(frames["tier"], "coarsened")
+        self.assertGreater(frames["buckets_per_frame"], 1)
+        self.assertEqual(frames["coarsen_k"], [2, 2])
+
+        native = frames["delta"]["headline"]
+        shipped = frames["frame_grid_delta"]["headline"]
+        self.assertAlmostEqual(
+            shipped, self._measured_disagreement(frames), places=9,
+        )
+        # Two measurements, not one copied twice. Publishing only the native
+        # figure told a reader something false about the arrays on screen; a
+        # `frame_grid_delta` that merely echoed it would do the same thing more
+        # convincingly.
+        self.assertNotAlmostEqual(native, shipped, places=6)
+        self.assertNotEqual(
+            frames["delta"]["basis"], frames["frame_grid_delta"]["basis"],
+        )
+
     async def test_frame_zero_is_the_map_the_chart_already_shows(self):
-        """D5's frame 0 and D4's guarantee, on the two arrays a user can touch.
+        """D5's frame 0 and D4's guarantee, where the block mean is a no-op.
 
         Parking the scrubber at frame 0 must reproduce the Map tab exactly --
         that is what makes "the period map is the average of what you scrub"
@@ -687,7 +827,13 @@ class PlotSingularFrameWiringTests(unittest.IsolatedAsyncioTestCase):
         and any disagreement is arithmetic, not resolution.
 
         Phase 3 measured the residual at 0.000002% on a real bundle: float32
-        storage noise, which is the floor."""
+        storage noise, which is the floor.
+
+        **Kept, and its `coarsen_k == [1, 1]` assertion kept too.** It pins a
+        real property in a real regime. What it does not pin is the regime a
+        real chart is in, which is why
+        ``test_the_disclosed_disagreement_is_the_one_the_blob_actually_has``
+        sits above it rather than replacing it."""
         import gzip
 
         import numpy as np

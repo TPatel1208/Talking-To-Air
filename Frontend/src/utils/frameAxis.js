@@ -21,6 +21,12 @@ export function buildScrubAxis(chart) {
   }
 
   const cadence = block.cadence || 'unknown'
+  // Two witnesses, the same pair `_is_coarsened` uses in the export service:
+  // what this decides is whether a stop may be labelled as one interval, and
+  // that is a category error when it is wrong -- understating a frame's width
+  // by the coarsening factor -- so it must not turn on one field surviving.
+  const coarsened = block.tier === 'coarsened'
+    || (Number.isFinite(block.buckets_per_frame) && block.buckets_per_frame > 1)
   const stops = [
     { kind: 'aggregate', index: 0, plane: periodPlane, label: 'Period aggregate' },
     ...block.frames.map((frame, i) => ({
@@ -37,7 +43,7 @@ export function buildScrubAxis(chart) {
       qaPassRate: numberOrNull(frame.qa_pass_rate),
       statistics: frame.statistics || null,
       state: bucketState(frame),
-      label: intervalLabel(frame.t_start, cadence),
+      label: intervalLabel(frame.t_start, frame.t_end, cadence, coarsened),
     })),
   ]
 
@@ -131,18 +137,42 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 // interval by the viewer's offset -- a reader in New York would be told
 // TEMPO's 01:00 UTC scan is 21:00 the previous day, with nothing on screen
 // saying so. Parsed as UTC and labelled as UTC, both explicitly.
-function intervalLabel(stamp, cadence) {
-  const at = parseUtc(stamp)
-  if (!at) return String(stamp ?? '')
+// In tier one a frame IS one cadence bucket, so its start names it exactly and
+// the weighting disclosure already states the width. In tier two a frame
+// averages several, and `_frame_intervals` ships `t_end` for a stated reason:
+// "a stop labeled with one day's timestamp while showing three days averaged
+// is a lie the picture itself cannot correct". This is the axis honouring
+// that -- before Phase 9 it read `t_start` and dropped the end, leaving the
+// delta sentence as the only thing on screen carrying a frame's width.
+function intervalLabel(start, end, cadence, coarsened) {
+  const at = parseUtc(start)
+  if (!at) return String(start ?? '')
+  const clock = cadence === 'hourly' || cadence === 'sub_hourly' || cadence === 'sub-hourly'
+  const until = coarsened ? parseUtc(end) : null
+  if (!until) return clock ? `${dayOf(at)} ${timeOf(at)} UTC` : `${dayOf(at)} ${at.getUTCFullYear()}`
 
-  const day = `${String(at.getUTCDate()).padStart(2, '0')} ${MONTHS[at.getUTCMonth()]}`
-  // A sub-daily cadence needs the clock; a daily-or-coarser one does not, and
-  // printing "00:00" for a whole day invites reading it as an instant.
-  if (cadence === 'hourly' || cadence === 'sub_hourly' || cadence === 'sub-hourly') {
-    const time = `${String(at.getUTCHours()).padStart(2, '0')}:${String(at.getUTCMinutes()).padStart(2, '0')}`
-    return `${day} ${time} UTC`
+  if (clock) {
+    // `t_end` is exclusive, and for a clock range that is exactly how a reader
+    // reads it: 03:00-06:00 is three hours. Compact only inside one day --
+    // TEMPO's gaps are diurnal, so a 3-hour frame across midnight is ordinary.
+    return dayOf(at) === dayOf(until)
+      ? `${dayOf(at)} ${timeOf(at)}–${timeOf(until)} UTC`
+      : `${dayOf(at)} ${timeOf(at)} – ${dayOf(until)} ${timeOf(until)} UTC`
   }
-  return `${day} ${at.getUTCFullYear()}`
+  // For whole days the exclusive end has to come back a day, or a 3-day frame
+  // reads as four. Which is the same lie, one unit up.
+  const last = new Date(until.getTime() - 86_400_000)
+  return dayOf(at) === dayOf(last)
+    ? `${dayOf(at)} ${at.getUTCFullYear()}`
+    : `${dayOf(at)} – ${dayOf(last)} ${last.getUTCFullYear()}`
+}
+
+function dayOf(at) {
+  return `${String(at.getUTCDate()).padStart(2, '0')} ${MONTHS[at.getUTCMonth()]}`
+}
+
+function timeOf(at) {
+  return `${String(at.getUTCHours()).padStart(2, '0')}:${String(at.getUTCMinutes()).padStart(2, '0')}`
 }
 
 function parseUtc(stamp) {

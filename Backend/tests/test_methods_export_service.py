@@ -29,7 +29,14 @@ def _frames_chart(*, render: dict | None = None, spec: dict | None = None, **ext
 
 def _cadence_tier_chart(**overrides) -> dict:
     """Tier one: a frame IS one of the product's own cadence buckets, and the
-    period map is their average. Twelve hourly frames, all observed."""
+    period map is their average. Twelve hourly frames, all observed.
+
+    ``coarsen_k`` is 5x5, deliberately — the regime a real regional retrieval
+    lands in (Phase 8: 352,181 native cells), and the regime in which "the map
+    is the mean of the frames" stops being true of the arrays themselves.
+    """
+    from tta_backend.preprocessing.frame_stack import FRAME_GRID_DELTA_BASIS
+
     render = {
         "cadence": "hourly",
         "tier": "cadence",
@@ -66,23 +73,51 @@ def _cadence_tier_chart(**overrides) -> dict:
         "span": ["2025-06-14T00:00:00", "2025-06-14T12:00:00"],
         "pipeline_version": "t59-1",
     }
+    # Phase 8's measurement on `map_2ea3dd7b34cf`: a cadence-tier chart has no
+    # `delta` — its frames ARE its cadence buckets — and still misses the
+    # period plane by 1.876% on the arrays it hands the browser, because the
+    # block mean and the across-frame mean do not commute under partial
+    # coverage. The tier with nothing to disclose was the tier stating the
+    # flattest identity.
+    render.setdefault("frame_grid_delta", {
+        "headline": 0.018760,
+        "max_abs": 2.72e15,
+        "basis": FRAME_GRID_DELTA_BASIS,
+    })
     render.update(overrides.pop("render", {}))
     spec.update(overrides.pop("spec", {}))
     return _frames_chart(render=render, spec=spec, **overrides)
 
 
-def _coarsened_tier_chart(*, headline, max_abs, buckets_per_frame=5, **overrides) -> dict:
+def _coarsened_tier_chart(
+    *, headline, max_abs, buckets_per_frame=5,
+    grid_headline=0.0328, grid_max_abs=1.953e15, **overrides,
+) -> dict:
     """Tier two: a frame averages several cadence buckets, so the frames are a
     DIFFERENT temporal aggregation from the map, which D14 computes
     independently. Phase 3 measured that disagreement at 22.3% and 5.4% on two
     real TEMPO bundles, and the 60-frame budget is reached at ~2.5 days — so
-    this is the common case, not the edge."""
-    from tta_backend.preprocessing.frame_stack import DELTA_BASIS
+    this is the common case, not the edge.
+
+    The two defaults for the shipped-array figure are Phase 8's measurement on
+    `map_1531e35a0e18`, where the disclosed 3.74% sat beside arrays that
+    disagreed by 3.28%: the block mean partly CANCELLED the coarsening term
+    there rather than compounding it, so neither number bounds the other and
+    the smaller one was the one on screen.
+    """
+    from tta_backend.preprocessing.frame_stack import (
+        DELTA_BASIS, FRAME_GRID_DELTA_BASIS,
+    )
 
     render = {
         "tier": "coarsened",
         "buckets_per_frame": buckets_per_frame,
         "delta": {"headline": headline, "max_abs": max_abs, "basis": DELTA_BASIS},
+        "frame_grid_delta": {
+            "headline": grid_headline,
+            "max_abs": grid_max_abs,
+            "basis": FRAME_GRID_DELTA_BASIS,
+        },
         **overrides.pop("render", {}),
     }
     spec = {
@@ -130,9 +165,16 @@ class TemporalFramesDisclosureTests(unittest.TestCase):
                 "This figure also carries a browsable time axis of **12 hourly "
                 "frames**, spanning 2025-06-14T00:00:00 to 2025-06-14T12:00:00.",
                 "",
+                # "of those intervals at native resolution", not "of the
+                # frames". A frame is an array on the rendering grid and an
+                # interval is a span of time; the equal weighting is a fact
+                # about the second, and stating it about the first told the
+                # reader they could check it by averaging a download. Phase 8
+                # did exactly that and got 1.876%.
                 "- Each frame is one hourly interval of this product, and the period "
-                "map is the equally-weighted mean of the frames: every interval "
-                "counts once, however many granules it holds.",
+                "map is the equally-weighted mean of those intervals at native "
+                "resolution: every interval counts once, however many granules it "
+                "holds.",
                 "- Frames are rendered on a block-mean grid of 19,107 cells per "
                 "frame — the mean over 5 × 5 native blocks, boundary `pad` — which "
                 "is a rendering resolution, not a scientific product.",
@@ -321,6 +363,36 @@ class SharedDeltaThresholdTests(unittest.TestCase):
             "scrubber calls high that the methods document states plainly.",
         )
 
+    def test_the_reporting_floor_is_the_same_number_the_screen_uses(self):
+        """Phase 9's second shared constant, pinned the moment it appeared.
+
+        Both languages refuse to print a percentage below 0.1% — an
+        undownsampled chart's arrays agree to float32 storage noise, and "0.0%"
+        overstates that while reading like a measurement that found nothing.
+        Two floors would put "0.0%" in the document beside "under 0.1%" on the
+        screen for one chart. Less severe than a drifted ``_DELTA_HIGH``, and
+        exactly the same failure: the repo now has the idiom, so the second
+        instance is pinned rather than commented.
+        """
+        import re
+
+        from tta_backend.services.methods_export_service import (
+            _DELTA_FLOOR, _DELTA_FLOOR_TEXT,
+        )
+
+        source = self._js_source()
+        match = re.search(
+            r"headline\s*>=\s*([0-9.]+)\s*\?\s*`\$\{\(headline", source,
+        )
+        self.assertIsNotNone(
+            match,
+            "formatPct's floor could not be found in frameDelta.js. If the "
+            "function was renamed or restructured, re-point this check rather "
+            "than delete it — the two constants are still two.",
+        )
+        self.assertEqual(float(match.group(1)), _DELTA_FLOOR)
+        self.assertIn(f"'{_DELTA_FLOOR_TEXT}'", source)
+
     def test_the_compose_file_mounts_the_js_sources_into_the_test_service(self):
         # Without the mount, every Python-reads-JS check in this repo fails on a
         # missing file rather than on a real drift, and a reader of that failure
@@ -356,7 +428,9 @@ class FrameMapAgreementTests(unittest.TestCase):
     def test_a_double_digit_delta_leads_the_section_in_bold_above_the_references(self):
         # job_52a95bb4cb79e2ee, measured 2026-08-10: headline 22.27%,
         # max|F-M| 9.58e16 molecules/cm², at 5 hourly buckets per frame.
-        from tta_backend.preprocessing.frame_stack import DELTA_BASIS
+        from tta_backend.preprocessing.frame_stack import (
+            DELTA_BASIS, FRAME_GRID_DELTA_BASIS,
+        )
 
         markdown = _markdown_for(
             _coarsened_tier_chart(headline=0.2227, max_abs=9.58e16)
@@ -374,12 +448,44 @@ class FrameMapAgreementTests(unittest.TestCase):
                 "- Disagreement: **22.3%**, largest absolute difference "
                 "9.580e+16 molecules/cm^2.",
                 f"- Basis: {DELTA_BASIS}.",
+                "- Averaging the frame planes and comparing them to the period "
+                "plane beside them: **3.3%**, largest absolute difference "
+                "1.953e+15 molecules/cm^2.",
+                f"- Basis: {FRAME_GRID_DELTA_BASIS}.",
+                # Phase 8 §2, in one line, because a reader given two numbers
+                # will otherwise assume the larger one contains the smaller.
+                "- The two are measured on different arrays and neither bounds "
+                "the other: the block mean can cancel part of the coarsening as "
+                "easily as compound it.",
             ]),
         )
         self.assertLess(
             markdown.index("### Frame–map agreement"),
             markdown.index("### References"),
         )
+
+    def test_the_shipped_figure_is_never_labelled_with_the_native_basis(self):
+        """Phase 8 §2's mirror gap: tier two disclosed 3.74% under a basis
+        reading "at native resolution" while the arrays on screen disagreed by
+        3.28%. Two quantities under one account of themselves is the same
+        failure ``DELTA_BASIS`` was written to prevent, wearing the other
+        shoe."""
+        from tta_backend.preprocessing.frame_stack import (
+            DELTA_BASIS, FRAME_GRID_DELTA_BASIS,
+        )
+
+        markdown = _markdown_for(
+            _coarsened_tier_chart(headline=0.0374, max_abs=3.127e15)
+        )
+        section = _section(markdown, "Frame–map agreement")
+
+        native, shipped = section.index("**3.7%**"), section.index("**3.3%**")
+        self.assertLess(native, shipped)
+        # Each figure's basis is the line under that figure, and they are not
+        # the same line.
+        self.assertLess(native, section.index(DELTA_BASIS))
+        self.assertLess(section.index(DELTA_BASIS), shipped)
+        self.assertLess(shipped, section.index(FRAME_GRID_DELTA_BASIS))
 
     def test_a_single_digit_delta_is_stated_plainly_without_the_bolded_lead(self):
         # job_c1122dfd051c15ee, measured 2026-08-10: 5.43% at 4 buckets/frame.
@@ -419,17 +525,114 @@ class FrameMapAgreementTests(unittest.TestCase):
             _markdown_for(_coarsened_tier_chart(headline=0.0999, max_abs=1.0)),
         )
 
-    def test_the_cadence_tier_states_the_identity_rather_than_a_measurement(self):
-        # A frame IS a cadence bucket here and the map is their average, so
-        # there is no disagreement to report. Printing "0%" would claim a
-        # measurement that was never taken — and the identity itself is already
-        # stated in the Temporal frames section.
+    def test_the_loud_treatment_follows_the_larger_disagreement_whichever_it_is(self):
+        """One escalation rule, over everything disclosed. Keying the bold off
+        the native figure alone would leave the tier that has no native figure
+        unable to raise its voice at all — and tier one is exactly where a
+        double-digit block-mean disagreement would be most surprising, because
+        the temporal aggregation there is an exact identity."""
+        markdown = _markdown_for(
+            _cadence_tier_chart(
+                render={"frame_grid_delta": {
+                    "headline": 0.14, "max_abs": 9.0e15, "basis": "…",
+                }},
+            )
+        )
+
+        self.assertIn(
+            "**Averaging this figure's frame planes does not reproduce the "
+            "period plane: they differ by 14.0% of the map's own magnitude.**",
+            markdown,
+        )
+
+    def test_a_coarsened_row_below_the_edge_natively_still_shouts_for_its_arrays(self):
+        """The two figures are independent, so the escalation cannot be read
+        off either one alone. Phase 8 measured them going in opposite
+        directions on the same chart."""
+        bolded = "**The frames and the period map are answering"
+
+        self.assertIn(
+            bolded,
+            _markdown_for(
+                _coarsened_tier_chart(
+                    headline=0.02, max_abs=1.0, grid_headline=0.31,
+                    grid_max_abs=4.0e15,
+                )
+            ),
+        )
+
+    def test_the_cadence_tier_reports_what_averaging_its_own_download_gives(self):
+        """The Phase 8 finding, in the document that stated it flattest.
+
+        A cadence-tier frame IS a cadence bucket, so there is no temporal
+        disagreement and ``delta`` is rightly absent — but the frames a reader
+        can download have been block-meaned to the rendering grid and the map
+        has not, and those two reductions do not commute where coverage is
+        uneven. On the chart this fixture is taken from that is 1.9%, with a
+        worst pixel most of the way across the map's own colour ramp.
+        """
+        from tta_backend.preprocessing.frame_stack import FRAME_GRID_DELTA_BASIS
+
         markdown = _markdown_for(_cadence_tier_chart())
 
-        self.assertNotIn("Frame–map agreement", markdown)
-        self.assertIn(
-            "the period map is the equally-weighted mean of the frames", markdown,
+        self.assertEqual(
+            _section(markdown, "Frame–map agreement"),
+            "\n".join([
+                "Each frame is one hourly interval and the period map is their "
+                "equally-weighted mean, so the frames and the map are the same "
+                "temporal aggregation. They are not on the same grid: the frame "
+                "planes are block-meaned to the rendering resolution and the map "
+                "is not, and a block mean does not commute with an average over "
+                "intervals wherever coverage is uneven.",
+                "",
+                "- Averaging the frame planes and comparing them to the period "
+                "plane beside them: **1.9%**, largest absolute difference "
+                "2.720e+15 molecules/cm^2.",
+                f"- Basis: {FRAME_GRID_DELTA_BASIS}.",
+            ]),
         )
+        # The temporal identity is still stated, and still true — of the
+        # intervals, at the resolution it is computed at.
+        self.assertIn(
+            "the period map is the equally-weighted mean of those intervals at "
+            "native resolution",
+            markdown,
+        )
+
+    def test_an_undownsampled_chart_reports_the_floor_rather_than_a_bare_zero(self):
+        """At k=(1,1) the block mean is the identity function and the two
+        arrays agree to float32 storage noise — Phase 3's 0.000002%. Printing
+        "0.0%" would overstate that to a precision the document does not have,
+        and printing nothing would drop the one tier where the check passes."""
+        markdown = _markdown_for(
+            _cadence_tier_chart(
+                render={
+                    "coarsen_k": [1, 1],
+                    "frame_grid_delta": {
+                        "headline": 2e-8, "max_abs": 1.5e8, "basis": "…",
+                    },
+                },
+            )
+        )
+
+        self.assertIn(
+            "- Averaging the frame planes and comparing them to the period plane "
+            "beside them: **under 0.1%**",
+            markdown,
+        )
+
+    def test_a_row_predating_the_shipped_array_measurement_stays_silent(self):
+        """A chart written before Phase 9 has no such measurement, and the
+        section is built from what was measured rather than from what would be
+        nice to say. The scoped weighting sentence carries that row on its own:
+        it is true at native resolution whether or not anyone checked the
+        arrays."""
+        markdown = _markdown_for(
+            _cadence_tier_chart(render={"frame_grid_delta": None})
+        )
+
+        self.assertNotIn("Frame–map agreement", markdown)
+        self.assertIn("equally-weighted mean of those intervals", markdown)
 
     def test_a_coarsened_tier_with_no_measured_delta_says_so(self):
         # Coarsened but unmeasured is not the same as agreeing. Omitting the
@@ -442,6 +645,16 @@ class FrameMapAgreementTests(unittest.TestCase):
             markdown,
         )
         self.assertNotIn("Disagreement: **", markdown)
+        # ...and the figure that WAS measured is still reported. One missing
+        # measurement must not suppress the other, or a row that lost the
+        # native term would silently lose the arrays term with it.
+        self.assertIn(
+            "- Averaging the frame planes and comparing them to the period plane "
+            "beside them: **3.3%**",
+            markdown,
+        )
+        # The "neither bounds the other" line needs two numbers to be about.
+        self.assertNotIn("neither bounds the other", markdown)
 
 
 class ExportLabelTests(unittest.TestCase):

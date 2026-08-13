@@ -15,6 +15,7 @@
  * for the pooled scale, frameDelta for the tier disclosure, frameStats for the
  * per-stop readout, frameStack for the zero-copy layout.
  */
+import { aggregateAnchor } from '../utils/frameDelta.js'
 import { formatFrameQaRate } from '../utils/frameStats.js'
 
 const boxStyle = {
@@ -110,12 +111,12 @@ export default function MapScrubber({
 }
 
 function StopReadout({ stop, stats }) {
+  // The anchor sentence lives in frameDelta.js, not here. With no jsdom, a
+  // sentence written in a component is a sentence no test can read -- which is
+  // how "the same field the Map tab shows" went two phases carrying an
+  // unstated block mean and an unstated 2x colour ramp (Phase 8 §1, §9).
   if (!stop || stop.kind === 'aggregate') {
-    return (
-      <div style={noteStyle}>
-        The period aggregate — the same field the Map tab shows, on the frame grid.
-      </div>
-    )
+    return <div style={noteStyle}>{aggregateAnchor()}</div>
   }
 
   const qa = formatFrameQaRate(stats?.qaPassRate)
@@ -145,7 +146,13 @@ function StopReadout({ stop, stats }) {
 function DeltaDisclosure({ delta }) {
   if (!delta) return null
 
-  if (delta.kind === 'exact') {
+  // Presentation follows SEVERITY, not tier. Phase 8 found the cadence tier --
+  // the one this used to render as a plain unbordered note, because its
+  // temporal relationship is an exact identity -- disagreeing by 1.876% on the
+  // arrays it ships. A tier cannot be trusted to imply how loud its own
+  // caveat should be; the largest measured disagreement can, and `severity`
+  // is that, over both figures.
+  if (delta.severity === 'none') {
     return <div style={noteStyle}>{delta.summary}</div>
   }
 
@@ -158,10 +165,9 @@ function DeltaDisclosure({ delta }) {
       borderLeft: `3px solid ${loud ? 'var(--amber, #b45309)' : 'var(--border)'}`,
       paddingLeft: '8px',
     }}>
+      {/* Composed in frameDelta.js, whole. Assembling the tail here is what
+          kept it out of reach of every test in this repo. */}
       {delta.summary}
-      {delta.headlinePct
-        ? ` They differ from it by ${delta.headlinePct}${delta.maxAbs ? `, up to ${delta.maxAbs} at the worst pixel` : ''}.`
-        : ' The size of that difference could not be measured for this map.'}
     </div>
   )
 }

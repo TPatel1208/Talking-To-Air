@@ -464,6 +464,14 @@ def _axis_block(stack: Any, *, pipeline_version: str) -> dict:
         "buckets_per_frame": int(stack.buckets_per_frame),
         "coarsen_k": [int(k) for k in stack.coarsen_k],
         "delta": stack.delta,
+        # The second delta, beside the first and never folded into it. `delta`
+        # asks whether the coarser temporal aggregation is a different
+        # measurement (natively, so a +1.2 and a -1.2 in one block cannot
+        # cancel); this asks whether the two planes in THIS blob are each
+        # other's average. Phase 8 measured 3.74% and 3.28% for the same chart
+        # — neither bounds the other, and the smaller one was the one on
+        # screen.
+        "frame_grid_delta": stack.frame_grid_delta,
         "value_range": (
             None if stack.value_range is None
             else [float(v) for v in stack.value_range]

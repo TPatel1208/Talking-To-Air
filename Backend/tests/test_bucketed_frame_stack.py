@@ -582,8 +582,16 @@ class CadenceTierIsExactTests(unittest.TestCase):
     ARE the cadence buckets and the period map is derived from them.
 
     D4's guarantee, made structural rather than hoped for -- the map is the
-    average of what the user scrubs, on the two arrays the user can actually
-    touch.
+    average of what the user scrubs.
+
+    **This grid does not coarsen**, and that is a scope limit rather than an
+    incidental fixture choice. Everything below holds where the block mean is
+    the identity function; above the cell ceiling it does not, because the
+    block mean and the across-frame mean do not commute under partial coverage
+    (Phase 8 §1, measured at 1.876% on a real regional TEMPO chart). The
+    property IS real in this regime and these tests pin it -- but the regime
+    real charts are in is ``ShippedArrayAgreementTests``', and that is where
+    the claim a reader is shown gets checked.
     """
 
     def setUp(self):
@@ -629,9 +637,15 @@ class CadenceTierIsExactTests(unittest.TestCase):
         self.assertEqual(len(stack.frames), 2)
 
     def test_the_period_map_is_the_average_of_the_frames(self):
-        """The claim a reader can check for themselves: average the stack, get
-        the map. Frame 0 sits on the same grid by the same method precisely so
-        this is verifiable on the arrays that ship."""
+        """Average the stack, get the map -- exactly, on a grid that does not
+        coarsen. Frame 0 sits on the same grid by the same method so the two
+        arrays are directly comparable at all.
+
+        Kept as it was, and deliberately not generalized: at k=(1,1) this is a
+        true property with a real mechanism behind it. What it is not is a
+        statement about a downloaded blob, whose grid has been block-meaned --
+        ``frame_grid_delta`` is the quantity that speaks to that, and the
+        sentences a reader sees are written from it, not from here."""
         np = self.np
         stack = self._stack()
 
@@ -851,6 +865,166 @@ class CoarsenedTierAndItsDeltaTests(unittest.TestCase):
             reduced.delta["headline"], native.delta["headline"], places=12,
         )
         self.assertGreater(reduced.delta["headline"], 0.0)
+
+
+@unittest.skipIf(importlib.util.find_spec("xarray") is None, "xarray is not installed")
+class ShippedArrayAgreementTests(unittest.TestCase):
+    """``frame_grid_delta``: what a reader gets by averaging the blob they
+    downloaded, against the plane that ships beside it.
+
+    A DIFFERENT question from ``delta``, which is why it is a different field.
+    ``delta`` asks whether the coarser temporal aggregation is a different
+    measurement, and answers it at native resolution because a +1.2 and a -1.2
+    inside one block must not be allowed to cancel. This asks whether the two
+    arrays in the payload satisfy the identity the payload claims for them --
+    and the only honest place to ask that is on the arrays themselves.
+
+    Phase 8 measured the gap this exists to close: on a real regional TEMPO
+    retrieval (352,181 native cells, k=(5,5)) averaging the shipped planes
+    misses the shipped period plane by **1.876%**, worst pixel 2.72e15 against
+    a map ramp of 5.7e14-3.3e15, where the same bundle at native resolution
+    reproduces Phase 3's 0.000002%. The block mean and the across-frame mean do
+    not commute under partial coverage: ``period_values`` is
+    ``block_mean(mean over buckets)`` and the frames are
+    ``mean over buckets of block_mean(...)``, so inside a block whose native
+    cells were seen in different intervals the two weight different things.
+    Phase 1b's mechanism one level down, reintroduced by the rendering
+    downsample.
+    """
+
+    def setUp(self):
+        import numpy as np
+        import xarray as xr
+
+        self.np, self.xr = np, xr
+
+    def _days(self, *days, lats=(0.0, 1.0)):
+        """One daily granule per argument, over a 2x2 grid that coarsens to a
+        single cell -- the smallest grid on which a block can be seen unevenly.
+        """
+        np = self.np
+        return self.xr.DataArray(
+            np.stack([np.asarray(day, dtype=float) for day in days]),
+            dims=("time", "lat", "lon"),
+            coords={
+                "time": np.array(
+                    [f"2024-01-{d + 1:02d}T12:00" for d in range(len(days))],
+                    dtype="datetime64[ns]",
+                ),
+                "lat": np.asarray(lats, dtype=float),
+                "lon": [-75.0, -74.0],
+            },
+            name="no2",
+        )
+
+    def _two_days(self, day_one, day_two):
+        return self._days(day_one, day_two)
+
+    def _stack(self, field, *, target_cells=1, **kwargs):
+        from tta_backend.preprocessing.frame_stack import build_frame_stack
+
+        return build_frame_stack(
+            field, time_dim="time", cadence="daily",
+            target_cells=target_cells, **kwargs,
+        )
+
+    def test_the_shipped_arrays_disagree_where_a_block_was_seen_unevenly(self):
+        """The tracer bullet, and the smallest reproduction of Phase 8 §1.
+
+        One 2x2 block. Both cells of the top row are seen on day one; only the
+        left one is seen again on day two. Averaging the two shipped frames
+        gives (10 + 20) / 2 = **15**. The period plane block-means the native
+        per-cell means -- (10+20)/2 = 15 on the left, 10 on the right -- and
+        gives **12.5**. A 20% disagreement between two arrays the payload says
+        are each other's average.
+        """
+        nan = self.np.nan
+        field = self._two_days(
+            [[10.0, 10.0], [nan, nan]],
+            [[20.0, nan], [nan, nan]],
+        )
+
+        stack = self._stack(field)
+
+        self.assertEqual(stack.tier, "cadence")
+        self.assertEqual(stack.coarsen_k, (2, 2))
+        self.assertAlmostEqual(stack.frame_grid_delta["headline"], 0.2, places=6)
+        self.assertAlmostEqual(stack.frame_grid_delta["max_abs"], 2.5, places=6)
+
+    def test_the_identity_is_exact_when_the_block_mean_is_a_no_op(self):
+        """The property the k=1 tests pin, now MEASURED rather than asserted.
+
+        Same field, same uneven coverage, no coarsening: the block mean is the
+        identity function, the two reductions commute trivially, and the
+        disagreement is a real 0.0 rather than an unexamined claim. This is
+        what makes the number safe to publish in tier one -- it does not go
+        non-zero because a scrubber exists, only because a block was averaged.
+        """
+        nan = self.np.nan
+        field = self._two_days(
+            [[10.0, 10.0], [nan, nan]],
+            [[20.0, nan], [nan, nan]],
+        )
+
+        stack = self._stack(field, target_cells=10_000)
+
+        self.assertEqual(stack.coarsen_k, (1, 1))
+        self.assertEqual(stack.frame_grid_delta["headline"], 0.0)
+        self.assertEqual(stack.frame_grid_delta["max_abs"], 0.0)
+
+    def test_tier_two_publishes_two_numbers_and_neither_is_the_other(self):
+        """Phase 8 §2's gap: the coarsened tier discloses a delta measured at
+        native resolution while the arrays on screen disagree by a different
+        amount, and the smaller one was the one printed.
+
+        Four days, two buckets per frame, one 2x2 block. Worked by hand: cell A
+        is seen on days 1-3 and cell B on days 1, 3 and 4, so the frames come
+        out (12.5, 32.5) on the shipped grid against a period plane of 23.33 --
+        **1/28**. At native resolution the same field gives **1/7**. Four times
+        apart, in the direction that flatters the arrays on screen. Neither
+        number bounds the other, which is the whole reason both are published.
+        """
+        nan = self.np.nan
+        field = self._days(
+            [[10.0, 10.0], [nan, nan]],
+            [[20.0, nan], [nan, nan]],
+            [[30.0, 30.0], [nan, nan]],
+            [[nan, 40.0], [nan, nan]],
+        )
+
+        stack = self._stack(field, max_frames=2)
+
+        self.assertEqual(stack.tier, "coarsened")
+        self.assertEqual(stack.buckets_per_frame, 2)
+        self.assertAlmostEqual(stack.delta["headline"], 1 / 7, places=6)
+        self.assertAlmostEqual(stack.frame_grid_delta["headline"], 1 / 28, places=6)
+
+    def test_the_two_deltas_never_share_a_basis_string(self):
+        """``DELTA_BASIS`` exists because a quantity with two accounts of itself
+        is how the screen and the document start disagreeing. Two quantities
+        sharing ONE account is the same failure wearing the other shoe: a
+        reader given "at native resolution" beside a number measured on the
+        frame grid has been told something false about a real measurement."""
+        from tta_backend.preprocessing.frame_stack import (
+            DELTA_BASIS, FRAME_GRID_DELTA_BASIS,
+        )
+
+        nan = self.np.nan
+        stack = self._stack(
+            self._days(
+                [[10.0, 10.0], [nan, nan]],
+                [[20.0, nan], [nan, nan]],
+                [[30.0, 30.0], [nan, nan]],
+                [[nan, 40.0], [nan, nan]],
+            ),
+            max_frames=2,
+        )
+
+        self.assertNotEqual(DELTA_BASIS, FRAME_GRID_DELTA_BASIS)
+        self.assertEqual(stack.delta["basis"], DELTA_BASIS)
+        self.assertEqual(stack.frame_grid_delta["basis"], FRAME_GRID_DELTA_BASIS)
+        self.assertIn("native resolution", DELTA_BASIS)
+        self.assertIn("stored", FRAME_GRID_DELTA_BASIS)
 
 
 @unittest.skipIf(importlib.util.find_spec("xarray") is None, "xarray is not installed")
@@ -1110,6 +1284,36 @@ class OneGraphWalkTests(unittest.TestCase):
         )
 
         self.assertEqual(len(stack.frames), 3)
+        self.assertEqual(
+            sorted(loads), [0, 1, 2],
+            f"bundle read {len(loads)} times across 3 granules, want 3 (1 pass): {loads}",
+        )
+
+    def test_the_shipped_array_delta_costs_no_extra_pass(self):
+        """Phase 9's quantity is free, and this is what "free" has to mean.
+
+        Both arrays it compares are materialized side by side by the walk that
+        was happening anyway, so it is arithmetic on bytes already in hand --
+        one pass over three granules, exactly as without it. Written as a read
+        counter rather than as a comment because the tempting refactor
+        (expressing it as lazy terms beside ``_delta_terms``, for symmetry)
+        would put a second reduction on the graph, and nothing else here would
+        notice.
+        """
+        import numpy as np
+
+        from tta_backend.preprocessing.frame_stack import build_frame_stack
+
+        loads = []
+        field = self._lazy_days([np.full((2, 2), float(d)) for d in range(3)], loads)
+
+        stack = build_frame_stack(
+            field, time_dim="time", cadence="daily", value_bracket=(0.0, 2.0),
+            target_cells=1,
+        )
+
+        self.assertEqual(stack.coarsen_k, (2, 2))
+        self.assertIsNotNone(stack.frame_grid_delta["headline"])
         self.assertEqual(
             sorted(loads), [0, 1, 2],
             f"bundle read {len(loads)} times across 3 granules, want 3 (1 pass): {loads}",

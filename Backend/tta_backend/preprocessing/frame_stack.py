@@ -312,6 +312,14 @@ class FrameStack:
     #: ``None`` in the cadence tier -- the relationship there is identity, and
     #: saying so is different from measuring it and finding nothing.
     delta: dict | None
+    #: The same metric applied to ``values`` and ``period_values`` themselves:
+    #: what a reader gets by averaging the blob against the plane beside it.
+    #: Present in BOTH tiers, because the block mean disagrees with the
+    #: across-frame mean under partial coverage whatever the temporal tier is
+    #: -- 1.876% on a real regional TEMPO chart whose native delta is
+    #: 0.000002%. Never interchangeable with ``delta``; neither bounds the
+    #: other.
+    frame_grid_delta: dict
     #: The scrubber's pooled 2-98 clip (D9), or ``None`` when nothing survived.
     #: The Map tab's own range is untouched: deriving it from the stack would
     #: make a map's colours depend on whether frames happened to be built.
@@ -464,6 +472,24 @@ def build_frame_stack(
     coverage = _valid_fractions(computed, da, (lat_dim, lon_dim), region_area)
     qa_rates = _qa_pass_rates(qa_counts, axis_labels, cadence, group, n_frames)
 
+    # The one place float64 becomes float32, deliberately and at the edge: the
+    # whole pipeline above is float64, and this halves what the blob stores
+    # while staying ~5 orders of magnitude finer than TEMPO's own retrieval
+    # uncertainty. Narrowed HERE rather than in the constructor so the
+    # shipped-array delta below can be measured on the bytes that actually
+    # ship rather than on their float64 ancestors.
+    shipped = np.asarray(values.values, dtype="float32")
+    shipped_period = np.asarray(
+        computed["period_values"].transpose(lat_dim, lon_dim).values, dtype="float32",
+    )
+    # The ONE weight definition, the same one ``_delta_terms`` uses natively --
+    # a second cos(lat) here would make the two deltas incomparable by
+    # construction. Imported locally for the reason every other call site in
+    # this module does: ``aggregation_service`` reaches back this way.
+    from tta_backend.preprocessing.aggregation_service import cos_lat_weights
+
+    frame_weights = cos_lat_weights(values)
+
     return FrameStack(
         frames=[
             Frame(
@@ -478,14 +504,8 @@ def build_frame_stack(
                 intervals, counts, coverage, qa_rates, statistics,
             )
         ],
-        # The one place float64 becomes float32, deliberately and at the edge:
-        # the whole pipeline above is float64, and this halves what the blob
-        # stores while staying ~5 orders of magnitude finer than TEMPO's own
-        # retrieval uncertainty.
-        values=np.asarray(values.values, dtype="float32"),
-        period_values=np.asarray(
-            computed["period_values"].transpose(lat_dim, lon_dim).values, dtype="float32",
-        ),
+        values=shipped,
+        period_values=shipped_period,
         lats=np.asarray(values[lat_dim].values),
         lons=np.asarray(values[lon_dim].values),
         coarsen_k=(k_lat, k_lon),
@@ -494,6 +514,10 @@ def build_frame_stack(
         buckets_per_frame=group,
         tier=CADENCE_TIER if group == 1 else COARSENED_TIER,
         delta=_delta(computed, group),
+        frame_grid_delta=_frame_grid_delta(
+            shipped, shipped_period,
+            None if frame_weights is None else np.asarray(frame_weights.values),
+        ),
         value_range=_pooled_range(computed["pooled_histogram"].values, edges),
     )
 
@@ -803,6 +827,81 @@ def _delta(computed: xr.Dataset, group: int) -> dict | None:
 DELTA_BASIS = (
     "cos(latitude)-weighted sum of |frame-derived period mean - period map| over the "
     "same weighted sum of |period map|, at native resolution over cells finite in both"
+)
+
+
+def _frame_grid_delta(
+    values: np.ndarray, period_values: np.ndarray, weights: np.ndarray | None,
+) -> dict:
+    """D16's metric applied to the arrays that SHIP -- a second quantity beside
+    ``_delta``, never a replacement for it.
+
+    The two answer different questions and a reader has both. ``_delta`` asks
+    whether the coarser temporal aggregation is a different measurement, and
+    measures NATIVELY because a +1.2 and a -1.2 inside one block must not be
+    allowed to cancel. This asks whether the two float32 planes in the same
+    blob satisfy the identity the payload claims for them, and the only honest
+    place to ask that is on the planes themselves.
+
+    Neither bounds the other, which is why both are published rather than one
+    standing in for the other: on a real 6-day TEMPO retrieval the native
+    figure is 3.74% and this one is 3.28% -- the block mean partly CANCELS the
+    time-coarsening term there, and compounds it elsewhere.
+
+    Present in both tiers, unlike ``_delta``. In the cadence tier the temporal
+    relationship really is identity and measuring it would find nothing; the
+    block mean's disagreement is a separate fact, and at k=(1,1) a measured
+    0.0% is the check performed rather than a claim about nothing.
+
+    Plain numpy, after ``.compute()`` and after the float32 narrowing, on
+    purpose: these arrays are at most 60 x 20,000 cells and already in hand, so
+    this needs no lazy terms and cannot add a second graph walk. Accumulated in
+    float64 from the float32 planes -- the float32 is what a reader downloads,
+    but summing it in float32 would fold our own rounding into a number whose
+    whole subject is somebody else's.
+    """
+    frames = np.asarray(values, dtype="float64")
+    period = np.asarray(period_values, dtype="float64")
+
+    # An explicit finite mask rather than ``nanmean``: an all-empty cell is the
+    # normal case on a swath-tiled product, not an exception worth warning
+    # about, and it must land as NaN so the ``both`` mask below excludes it.
+    finite = np.isfinite(frames)
+    contributing = finite.sum(axis=0)
+    total = np.where(finite, frames, 0.0).sum(axis=0)
+    frames_period = np.divide(
+        total, contributing,
+        out=np.full(period.shape, np.nan),
+        where=contributing > 0,
+    )
+
+    both = np.isfinite(frames_period) & np.isfinite(period)
+    difference = np.where(both, np.abs(frames_period - period), 0.0)
+    magnitude = np.where(both, np.abs(period), 0.0)
+    column = (
+        np.ones((period.shape[0], 1)) if weights is None
+        else np.asarray(weights, dtype="float64").reshape(-1, 1)
+    )
+
+    denominator = float((magnitude * column).sum())
+    numerator = float((difference * column).sum())
+    worst = float(difference.max()) if both.any() else float("nan")
+    return {
+        "headline": numerator / denominator if denominator > 0 else None,
+        "max_abs": worst if np.isfinite(worst) else None,
+        "basis": FRAME_GRID_DELTA_BASIS,
+    }
+
+
+# The companion to ``DELTA_BASIS``, and it exists for the same reason: a
+# quantity with two accounts of itself is how the screen and the document start
+# disagreeing. The word doing the work is "stored" -- that is the entire
+# difference from ``DELTA_BASIS``' "at native resolution", and it is what makes
+# the two impossible to confuse in a payload that carries both.
+FRAME_GRID_DELTA_BASIS = (
+    "cos(latitude)-weighted sum of |mean of the stored frame planes - the stored period "
+    "plane| over the same weighted sum of |the stored period plane|, on the block-mean "
+    "frame grid the browser downloads, over cells finite in both"
 )
 
 

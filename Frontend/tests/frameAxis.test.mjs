@@ -105,6 +105,70 @@ test('a daily cadence labels the day, not a spurious midnight', () => {
   assert.equal(daily.stops[1].label, '14 Jun 2025')
 })
 
+test('a coarsened stop is labelled with the span it covers, not its first instant', () => {
+  // `_frame_intervals` already says why it ships `t_end`: "a stop labeled with
+  // one day's timestamp while showing three days averaged is a lie the picture
+  // itself cannot correct". The axis was throwing the end away, so in tier two
+  // the only thing carrying a frame's width was the delta sentence -- and a
+  // reader who read "14 Jun 03:00 UTC" had no way to know it meant three
+  // hours.
+  const coarse = buildScrubAxis({
+    ...chart,
+    frames: {
+      ...framesBlock,
+      tier: 'coarsened',
+      buckets_per_frame: 3,
+      frames: [{ ...framesBlock.frames[0], t_start: '2025-06-14T03:00:00', t_end: '2025-06-14T06:00:00' }],
+      shape: [2, 2, 3],
+    },
+  })
+
+  assert.equal(coarse.stops[1].label, '14 Jun 03:00–06:00 UTC')
+})
+
+test('a coarsened frame that crosses midnight names both days', () => {
+  // The compact form is only unambiguous inside one day. TEMPO's frames are
+  // hourly and its gaps are diurnal, so a 3-hour frame straddling midnight is
+  // an ordinary stop, not a corner case.
+  const coarse = buildScrubAxis({
+    ...chart,
+    frames: {
+      ...framesBlock,
+      tier: 'coarsened',
+      buckets_per_frame: 3,
+      frames: [{ ...framesBlock.frames[0], t_start: '2025-06-14T22:00:00', t_end: '2025-06-15T01:00:00' }],
+      shape: [2, 2, 3],
+    },
+  })
+
+  assert.equal(coarse.stops[1].label, '14 Jun 22:00 – 15 Jun 01:00 UTC')
+})
+
+test('a coarsened daily frame names the days it spans', () => {
+  const coarse = buildScrubAxis({
+    ...chart,
+    frames: {
+      ...framesBlock,
+      cadence: 'daily',
+      tier: 'coarsened',
+      buckets_per_frame: 3,
+      frames: [{ ...framesBlock.frames[0], t_start: '2025-06-14T00:00:00', t_end: '2025-06-17T00:00:00' }],
+      shape: [2, 2, 3],
+    },
+  })
+
+  assert.equal(coarse.stops[1].label, '14 Jun – 16 Jun 2025')
+})
+
+test('tier one keeps the single instant, because a frame there IS that interval', () => {
+  // Not a cosmetic difference. In tier one a frame is exactly one cadence
+  // bucket, and printing "00:00-01:00" for every stop would spend the slider's
+  // only two printed labels on a width the weighting bullet already states.
+  const [, observed] = buildScrubAxis(chart).stops
+
+  assert.equal(observed.label, '14 Jun 00:00 UTC')
+})
+
 test('a period_index elsewhere in the stack moves the buckets around it', () => {
   // Nothing in the payload promises the aggregate is plane 0 -- the contract
   // is that period_index says which plane it is. A frontend that hardcodes

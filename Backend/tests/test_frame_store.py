@@ -58,7 +58,9 @@ def make_frame_stack(n_frames: int = 24, ny: int = 60, nx: int = 80):
     interval among the populated ones, and a NaN-heavy float32 array."""
     import numpy as np
 
-    from tta_backend.preprocessing.frame_stack import CADENCE_TIER, Frame, FrameStack
+    from tta_backend.preprocessing.frame_stack import (
+        CADENCE_TIER, FRAME_GRID_DELTA_BASIS, Frame, FrameStack,
+    )
 
     rng = np.random.default_rng(59)
     values = rng.normal(4.0e15, 1.0e15, size=(n_frames, ny, nx)).astype("float32")
@@ -99,6 +101,16 @@ def make_frame_stack(n_frames: int = 24, ny: int = 60, nx: int = 80):
         buckets_per_frame=1,
         tier=CADENCE_TIER,
         delta=None,
+        # Phase 8's own measurement on `map_2ea3dd7b34cf`, a real regional
+        # TEMPO chart at k=(5,5): the cadence tier discloses no `delta` because
+        # the temporal relationship there IS identity, and still disagrees by
+        # 1.876% on the arrays it ships. That is the pair this block has to
+        # carry without collapsing into one.
+        frame_grid_delta={
+            "headline": 0.018760,
+            "max_abs": 2.72e15,
+            "basis": FRAME_GRID_DELTA_BASIS,
+        },
         value_range=(-3.14e14, 6.21e15),
     )
 
@@ -151,6 +163,18 @@ class ChartRowCarriesTheAxisTests(FrameStoreTestCase):
         self.assertEqual(block["buckets_per_frame"], 1)
         self.assertEqual(block["coarsen_k"], [5, 5])
         self.assertEqual(block["value_range"], [-3.14e14, 6.21e15])
+
+        # Both deltas, side by side and never merged. `delta` is absent here
+        # because a cadence-tier frame IS a cadence bucket; the shipped-array
+        # disagreement is a separate fact that survives that identity, and a
+        # block carrying only the first would let the tier that has no delta
+        # go on claiming an identity its own arrays do not satisfy.
+        self.assertIsNone(block["delta"])
+        self.assertAlmostEqual(block["frame_grid_delta"]["headline"], 0.018760)
+        self.assertAlmostEqual(block["frame_grid_delta"]["max_abs"], 2.72e15)
+        self.assertEqual(
+            block["frame_grid_delta"]["basis"], stack.frame_grid_delta["basis"],
+        )
 
         # The scale explains itself wherever the payload goes, the same reason
         # QA_PASS_RATE_BASIS exists and the same way Phase 3's delta already

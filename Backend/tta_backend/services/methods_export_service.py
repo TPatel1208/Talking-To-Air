@@ -198,62 +198,169 @@ _DELTA_HIGH = 0.10
 def _delta_section(
     render: dict[str, Any], recipe: dict[str, Any], cadence: str, units: Any,
 ) -> list[str]:
-    """D16's delta, as its own section — or nothing at all.
+    """The two disagreements, as one section — or nothing at all.
 
-    Emitted only in the coarsened tier, where the frames and the map really are
-    different aggregations — measured or not, since "coarsened but unmeasured"
-    is itself worth saying. In the cadence tier a frame IS a cadence bucket and
-    the relationship is identity: there is no number, and printing "0%" would
-    claim a measurement that was never taken. That identity is already stated
-    in ``_weighting_rule``, which is different from measuring nothing.
+    **Two, because there are two questions and a reader has both.** ``delta``
+    (D16) asks whether the frames are a different temporal aggregation from the
+    map, and answers it at native resolution so a +1.2 and a -1.2 inside one
+    block cannot cancel. ``frame_grid_delta`` asks whether the two arrays in
+    the payload are each other's average, and answers it on the arrays. Phase 8
+    measured 3.74% and 3.28% for one chart: the block mean partly cancelled the
+    coarsening term there, so neither number bounds the other and publishing
+    only one leaves the reader with the wrong bound in an unknown direction.
+
+    Emitted in BOTH tiers now. In the cadence tier ``delta`` is rightly absent
+    — a frame IS a cadence bucket and measuring their difference would find
+    nothing — but the frames were still block-meaned to the rendering grid and
+    the map was not, so a figure with no temporal disagreement can and does
+    have an array disagreement. That is the gap Phase 8 found: the tier with
+    nothing to disclose was the tier stating the flattest identity.
+
+    Silent when nothing at all was measured and the tier is exact, which is
+    every row written before this was measured. A section built from what was
+    measured rather than from what would be nice to say.
 
     The T57 maturity block's placement, for the T57 reason: above the
     References, because it qualifies everything the reader is about to cite.
     """
-    if not _is_coarsened(recipe):
+    coarsened = _is_coarsened(recipe)
+    native = _delta_figure(render.get("delta"), units)
+    shipped = _delta_figure(render.get("frame_grid_delta"), units)
+    if not coarsened and shipped is None:
         return []
-    delta = render.get("delta")
+
+    lead = _agreement_lead(recipe, cadence, coarsened)
+    if coarsened and native is None:
+        # Coarsened, but the temporal disagreement was not measured. Saying so
+        # is the honest state; omitting it would let a reader assume the frames
+        # and the map are the same aggregation.
+        lead += (
+            " The size of that disagreement was not measured for this figure."
+        )
+
+    loudest = max(
+        (figure[0] for figure in (native, shipped) if figure is not None),
+        default=None,
+    )
+    if loudest is not None and loudest >= _DELTA_HIGH:
+        lead = f"{_loud_lead(loudest, coarsened)} {lead}"
+
+    lines = ["", "### Frame–map agreement", "", lead, ""]
+    if native is not None:
+        lines += _figure_lines(f"Disagreement: **{_pct(native[0])}**", native)
+    if shipped is not None:
+        lines += _figure_lines(
+            "Averaging the frame planes and comparing them to the period plane "
+            f"beside them: **{_pct(shipped[0])}**",
+            shipped,
+        )
+    if native is not None and shipped is not None:
+        # Phase 8 §2, in one line, because a reader handed two numbers will
+        # otherwise assume the larger one contains the smaller.
+        lines.append(
+            "- The two are measured on different arrays and neither bounds the "
+            "other: the block mean can cancel part of the coarsening as easily "
+            "as compound it."
+        )
+    return lines
+
+
+def _delta_figure(
+    delta: Any, units: Any,
+) -> tuple[float, str, str | None] | None:
+    """One measured disagreement as ``(headline, largest-clause, basis)``, or
+    ``None`` when it was not measured. Shared by both so the two figures cannot
+    acquire different formatting and read as different kinds of quantity."""
     delta = delta if isinstance(delta, dict) else {}
     headline = _as_float(delta.get("headline"))
-
-    lead = (
-        f"Each frame averages {_count_phrase(recipe) or 'several '}{cadence} "
-        "intervals, so the frames are a coarser temporal aggregation than the "
-        "map, which is computed independently at native resolution."
-    )
     if headline is None:
-        # Coarsened, but the disagreement was not measured. Saying so is the
-        # honest state; omitting the section would let a reader assume the
-        # frames and the map agree.
-        return [
-            "", "### Frame–map agreement", "",
-            f"{lead} The size of that disagreement was not measured for this "
-            "figure.",
-        ]
-
-    pct = f"{headline * 100:.1f}%"
-    if headline >= _DELTA_HIGH:
-        lead = (
-            "**The frames and the period map are answering materially "
-            f"different questions: they disagree by {pct} of the map's own "
-            f"magnitude.** {lead}"
-        )
-    lines = ["", "### Frame–map agreement", "", lead, ""]
-
+        return None
     max_abs = _as_float(delta.get("max_abs"))
     largest = ""
     if max_abs is not None:
         unit_suffix = f" {units}" if units else ""
         largest = f", largest absolute difference {max_abs:.3e}{unit_suffix}"
-    lines.append(f"- Disagreement: **{pct}**{largest}.")
-
-    # Quoted, never paraphrased: restating the basis in different words would
-    # create a second definition of the same quantity, which is exactly what
-    # DELTA_BASIS exists to prevent.
     basis = delta.get("basis")
+    return headline, largest, str(basis) if basis else None
+
+
+def _figure_lines(label: str, figure: tuple[float, str, str | None]) -> list[str]:
+    """A figure and, directly beneath it, the account of what it measured.
+
+    Quoted, never paraphrased, and never shared between the two: restating a
+    basis in different words creates a second definition of one quantity, and
+    reusing one basis across two quantities tells the reader something false
+    about a real measurement. Both are the failure ``DELTA_BASIS`` exists to
+    prevent.
+    """
+    _headline, largest, basis = figure
+    lines = [f"- {label}{largest}."]
     if basis:
         lines.append(f"- Basis: {basis}.")
     return lines
+
+
+# The second number this document shares with the screen, after
+# ``_DELTA_HIGH`` — and it is here as a named constant for the same reason that
+# one is. Phase 8 measured what an unpinned shared value is worth: editing the
+# JS edge to 0.15 left every test in both languages green, because a comment
+# naming the other file is not a check. ``frameDelta.js:formatPct`` draws the
+# floor in the same place, and ``SharedDeltaThresholdTests`` reads it out of
+# the JS source and compares.
+_DELTA_FLOOR = 0.001
+_DELTA_FLOOR_TEXT = "under 0.1%"
+
+
+def _pct(headline: float) -> str:
+    """One decimal place, or an honest floor.
+
+    Under 0.1% the document cannot resolve the number it would be printing:
+    an undownsampled chart's arrays agree to float32 storage noise (Phase 3's
+    0.000002%), and rendering that as "0.0%" claims a precision this document
+    does not have while reading like a measurement that found nothing.
+    """
+    if headline < _DELTA_FLOOR:
+        return _DELTA_FLOOR_TEXT
+    return f"{headline * 100:.1f}%"
+
+
+def _agreement_lead(recipe: dict[str, Any], cadence: str, coarsened: bool) -> str:
+    """What kind of relationship the frames have to the map, per tier."""
+    if coarsened:
+        return (
+            f"Each frame averages {_count_phrase(recipe) or 'several '}{cadence} "
+            "intervals, so the frames are a coarser temporal aggregation than "
+            "the map, which is computed independently at native resolution."
+        )
+    return (
+        f"Each frame is one {cadence} interval and the period map is their "
+        "equally-weighted mean, so the frames and the map are the same "
+        "temporal aggregation. They are not on the same grid: the frame planes "
+        "are block-meaned to the rendering resolution and the map is not, and "
+        "a block mean does not commute with an average over intervals wherever "
+        "coverage is uneven."
+    )
+
+
+def _loud_lead(headline: float, coarsened: bool) -> str:
+    """The bolded escalation, keyed to the LARGEST disclosed disagreement.
+
+    One rule over everything disclosed, rather than one per figure. Keying it
+    to the native delta alone would leave the cadence tier — which has no
+    native delta at all — unable to raise its voice, and that is precisely the
+    tier where a double-digit array disagreement is most surprising, because
+    the temporal relationship there is an exact identity.
+    """
+    if coarsened:
+        return (
+            "**The frames and the period map are answering materially "
+            f"different questions: they disagree by {_pct(headline)} of the "
+            "map's own magnitude.**"
+        )
+    return (
+        "**Averaging this figure's frame planes does not reproduce the period "
+        f"plane: they differ by {_pct(headline)} of the map's own magnitude.**"
+    )
 
 
 def _as_float(value: Any) -> float | None:
@@ -356,10 +463,18 @@ def _weighting_rule(recipe: dict[str, Any], cadence: str, coarsened: bool) -> st
     spans does not reintroduce granule weighting where sampling is most uneven.
     """
     if not coarsened:
+        # "of those INTERVALS at NATIVE RESOLUTION", not "of the frames". A
+        # frame is an array on the rendering grid; an interval is a span of
+        # time. The equal weighting is a fact about the second, and stating it
+        # about the first invited a reader to check it by averaging their
+        # download — which Phase 8 did, and got 1.876% instead of nothing.
+        # ``_delta_section`` now reports that figure; this sentence goes back
+        # to describing the reduction, which is what it is true of.
         return (
             f"- Each frame is one {cadence} interval of this product, and the "
-            "period map is the equally-weighted mean of the frames: every "
-            "interval counts once, however many granules it holds."
+            "period map is the equally-weighted mean of those intervals at "
+            "native resolution: every interval counts once, however many "
+            "granules it holds."
         )
     return (
         f"- Each frame is the mean of its {_count_phrase(recipe)}{cadence} "
