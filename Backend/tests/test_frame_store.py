@@ -115,6 +115,91 @@ def make_frame_stack(n_frames: int = 24, ny: int = 60, nx: int = 80):
     )
 
 
+def with_planes(stack, statistics=("max", "min")):
+    """The same stack, carrying its own max/min planes (T59 Phase 12).
+
+    Each plane's arrays are the mean's offset by a constant large enough that
+    no finite value appears in two planes, so a test that silently read the
+    *mean's* entry where it asked for a plane's fails rather than passes. The
+    offset preserves the fixture's NaN pattern, because ``NaN + x`` is NaN —
+    the planes stay as absent as the field they came from, which is the state
+    the round trip has to carry.
+    """
+    from dataclasses import replace
+
+    from tta_backend.preprocessing.frame_stack import (
+        EXTENT_OVERSTATEMENT_BASIS, PLANE_AGREEMENT_BASIS, StatisticPlane,
+    )
+
+    offsets = {"max": 5.0e15, "min": -5.0e15}
+    planes = {}
+    for name in statistics:
+        offset = offsets[name]
+        planes[name] = StatisticPlane(
+            values=(stack.values + offset).astype("float32"),
+            period_values=(stack.period_values + offset).astype("float32"),
+            # D6a decision 8's exact zero: a selection plane's frames and its
+            # period plane agree bit for bit, and Phase 12 measured exactly
+            # that on two live bundles.
+            frame_grid_delta={
+                "headline": 0.0, "max_abs": 0.0,
+                "basis": PLANE_AGREEMENT_BASIS[name],
+            },
+            # This plane's own pooled 2-98 (D9), never the mean's.
+            value_range=(-3.14e14 + offset, 6.21e15 + offset),
+            # D6a decision 9, on the max plane alone. Phase 12's live figure.
+            extent_overstatement=None if name != "max" else {
+                "headline": 24.6985, "worst_frame": 24.8599, "ceiling": 25,
+                "basis": EXTENT_OVERSTATEMENT_BASIS,
+            },
+        )
+    return replace(stack, planes=planes)
+
+
+@requires_numpy
+class TheMeanEntryIsUntouchedTests(FrameStoreTestCase):
+    """D6a decision 5, read as a test rather than as an intention.
+
+    *"The mean entry keeps its exact shape, URL and cost"* is what lets D15's
+    additive-and-optional rule hold **literally** — an unupgraded consumer is
+    not merely compatible with a three-plane chart, it is reading the identical
+    bytes at the identical URL for the identical price. That is a claim about
+    the mean entry, so it is checkable on the mean entry, and it is the
+    regression this phase is most likely to cause and least likely to notice.
+    """
+
+    def test_attaching_planes_moves_nothing_about_the_mean_entry(self):
+        from tta_backend.services.frame_store import read_frames, store_frame_stack
+
+        plain = store_frame_stack(self.make_stack(), pipeline_version="4")
+        planed = store_frame_stack(
+            with_planes(self.make_stack()), pipeline_version="4",
+        )
+
+        # The blob, byte for byte — and therefore the ETag, which is its
+        # digest. Two entries, two minted keys, one identical body.
+        before = read_frames(plain["_key"], pipeline_version="4")
+        after = read_frames(planed["_key"], pipeline_version="4")
+        self.assertEqual(before.gzipped, after.gzipped, "the mean blob's bytes moved")
+        self.assertEqual(before.etag, after.etag, "the mean blob's ETag moved")
+
+        # And the block: every key the mean chart already had, equal, with the
+        # new one the only difference. `_key` is exempt because it is minted
+        # per write and was never derived from the content (Phase 4 note 2).
+        self.assertEqual(set(planed) - set(plain), {"planes"})
+        for key in plain:
+            if key == "_key":
+                continue
+            self.assertEqual(plain[key], planed[key], f"the mean block's {key!r} moved")
+
+        # A chart with no planes carries no `planes` key at all, rather than an
+        # empty one. Nothing in this phase produces a plane — `_attach_frames`
+        # still asks for the mean alone — so every payload on the wire has to
+        # be byte-identical to the one that shipped before it, and an
+        # always-present empty key would be a wire change on every chart.
+        self.assertNotIn("planes", plain)
+
+
 @requires_numpy
 class ChartRowCarriesTheAxisTests(FrameStoreTestCase):
     """D13, first half: what goes in Postgres."""
@@ -283,6 +368,244 @@ class BlobRoundTripTests(FrameStoreTestCase):
 
 
 @requires_numpy
+class PlaneBlobRoundTripTests(FrameStoreTestCase):
+    """D6a decision 5, second half: *one store entry per statistic*.
+
+    Per statistic, not per chart — that is the whole of the decision. Each
+    plane is independently addressable so it can be fetched lazily (nobody pays
+    for a max they never toggle to), and independently evictable so losing one
+    degrades that statistic through the existing ``expired``/self-heal path
+    rather than taking the chart's scrubber with it.
+    """
+
+    def test_each_plane_round_trips_through_an_entry_of_its_own(self):
+        import gzip
+
+        import numpy as np
+
+        from tta_backend.services.frame_store import read_frames, store_frame_stack
+
+        stack = with_planes(self.make_stack(n_frames=4, ny=20, nx=20))
+        block = store_frame_stack(stack, pipeline_version="4")
+
+        n_frames, ny, nx = stack.values.shape
+        keys = {block["_key"]}
+        for name, plane in stack.planes.items():
+            key = block["planes"][name]["_key"]
+            self.assertNotIn(key, keys, f"the {name} plane shares an entry")
+            keys.add(key)
+
+            blob = read_frames(key, pipeline_version="4", statistic=name)
+            self.assertIsNotNone(blob, f"the {name} plane's values did not land")
+            stored = np.frombuffer(
+                gzip.decompress(blob.gzipped), dtype="float32",
+            ).reshape(n_frames + 1, ny, nx)
+
+            # The same layout the mean's entry uses — the period plane at
+            # `period_index`, the frames in axis order after it — because a
+            # plane is a fourth entry speaking the existing protocol, not a
+            # reason to invent a second one.
+            self.assertTrue(
+                np.array_equal(stored[0], plane.period_values, equal_nan=True),
+                f"plane 0 is not the {name} plane's period values",
+            )
+            self.assertTrue(
+                np.array_equal(stored[1:], plane.values, equal_nan=True),
+                f"the {name} plane's frames did not survive the round trip",
+            )
+            # Not vacuous. Every finite value here is offset clear of the mean
+            # field's, so an entry that quietly served the mean instead would
+            # reshape cleanly, render plausibly, and fail exactly here — which
+            # is the whole reason the fixture is built that way.
+            self.assertFalse(
+                np.array_equal(stored[1:], stack.values, equal_nan=True),
+                f"the {name} plane's key served the mean's values",
+            )
+            # The absent cells are still absent: NaN needs no sentinel in a
+            # plane either.
+            self.assertTrue(np.isnan(stored[2]).all())
+
+    def test_a_planes_block_carries_its_own_numbers_and_none_of_the_axis(self):
+        """The four fields that genuinely differ per plane, and nothing else.
+
+        The axis is plane-independent and it must stay one axis. A block that
+        repeated `t_start` or `valid_fraction` or `statistics` per plane would
+        be keeping a second account of a quantity that has exactly one, and the
+        two accounts would be free to disagree — which is the failure mode
+        `DELTA_BASIS`, `FRAME_GRID_DELTA_BASIS` and `EXTENT_OVERSTATEMENT_BASIS`
+        already exist in triplicate to prevent one level up.
+        """
+        from tta_backend.services.frame_store import store_frame_stack
+
+        stack = with_planes(self.make_stack(n_frames=4, ny=20, nx=20))
+
+        block = store_frame_stack(stack, pipeline_version="4")
+
+        self.assertEqual(sorted(block["planes"]), ["max", "min"])
+        # The mean is not a plane. It stays in the top-level fields where it
+        # has always been, which is what makes decision 5's "keeps its exact
+        # shape, URL and cost" true at the Python level and not only on a wire.
+        self.assertNotIn("mean", block["planes"])
+
+        maximum = block["planes"]["max"]
+        self.assertEqual(
+            sorted(maximum),
+            ["_key", "extent_overstatement", "frame_grid_delta", "value_range"],
+        )
+        # Its own clip, not the mean's — the two are disjoint in this fixture.
+        self.assertEqual(maximum["value_range"], [-3.14e14 + 5.0e15, 6.21e15 + 5.0e15])
+        self.assertNotEqual(maximum["value_range"], block["value_range"])
+        # Its own agreement figure, under its own basis. D6a decision 8's
+        # exact zero, and a basis string that says which reduction produced it.
+        self.assertEqual(maximum["frame_grid_delta"]["headline"], 0.0)
+        self.assertNotEqual(
+            maximum["frame_grid_delta"]["basis"], block["frame_grid_delta"]["basis"],
+        )
+        # D6a decision 9, on the max plane alone. A minimum has no analogous
+        # overstatement story, and measuring one to be symmetric would be
+        # inventing a number.
+        self.assertAlmostEqual(maximum["extent_overstatement"]["headline"], 24.6985)
+        self.assertIsNone(block["planes"]["min"]["extent_overstatement"])
+
+        # None of the axis, in any plane, in any spelling.
+        for name, plane_block in block["planes"].items():
+            for field in (
+                "frames", "shape", "dtype", "period_index", "lats", "lons",
+                "cells_per_frame", "coarsen_k", "cadence", "tier",
+                "buckets_per_frame", "delta", "scale_basis", "pipeline_version",
+            ):
+                self.assertNotIn(field, plane_block, f"{name} restates {field!r}")
+
+        # jsonb, so the whole thing still has to survive serialization.
+        self.assertEqual(json.loads(json.dumps(block)), block)
+
+
+@requires_numpy
+class StatisticGuardTests(FrameStoreTestCase):
+    """An entry is only served to a request for the statistic it holds.
+
+    This is T54's "content_digest ALONE is an unsafe cube key" lesson arriving
+    at a third axis, and it is the *only* guard that catches this failure.
+    Every plane of one chart has the same shape, the same dtype, the same grid
+    and the same pipeline version, so serving the max blob where the mean was
+    asked for passes every other check the store makes and renders a believable
+    field with the wrong numbers in it. ``_intact`` asks whether these are the
+    bytes that were *written*; nothing else asks whether they are the bytes
+    that were *asked for*.
+    """
+
+    def test_a_plane_entry_is_not_served_to_a_request_for_another_statistic(self):
+        from tta_backend.services.frame_store import read_frames, store_frame_stack
+
+        stack = with_planes(self.make_stack(n_frames=4, ny=20, nx=20))
+        block = store_frame_stack(stack, pipeline_version="4")
+        max_key = block["planes"]["max"]["_key"]
+
+        self.assertIsNone(read_frames(max_key, pipeline_version="4"))
+        self.assertIsNone(
+            read_frames(max_key, pipeline_version="4", statistic="min"),
+        )
+        # The other direction, and the one a defaulted argument would miss.
+        self.assertIsNone(
+            read_frames(block["_key"], pipeline_version="4", statistic="max"),
+        )
+
+    def test_a_refused_statistic_is_logged_where_a_wrong_field_would_not_be(self):
+        """The failure this guard prevents is silent by construction — a
+        plausible field, correctly shaped, with the wrong numbers in it. So the
+        refusal has to say so somewhere a person will look, under the same
+        event name the store's other read failures already use."""
+        from tta_backend.services.frame_store import read_frames, store_frame_stack
+
+        block = store_frame_stack(
+            with_planes(self.make_stack(n_frames=4, ny=20, nx=20)),
+            pipeline_version="4",
+        )
+        max_key = block["planes"]["max"]["_key"]
+
+        with self.assertLogs("tta_backend.services.frame_store", level="WARNING") as logs:
+            read_frames(max_key, pipeline_version="4")
+
+        self.assertTrue(
+            any("frame_read_failed" in record.getMessage() for record in logs.records),
+        )
+        self.assertTrue(
+            any(getattr(record, "_reason", "").startswith("statistic_mismatch")
+                for record in logs.records),
+            f"the mismatch is not named in the log: {[r.__dict__ for r in logs.records]}",
+        )
+
+    def test_a_refused_statistic_leaves_the_entry_where_it_is(self):
+        """Refused, never dropped — and this is the one place this module
+        deliberately parts company with its own ``pipeline_version`` guard.
+
+        That guard *drops* because the version only moves forward, so no future
+        request can ever match the entry and keeping it would charge the cap for
+        something unreachable. The premise is inverted here: an entry refused
+        for the wrong statistic is perfectly servable to the right one. A
+        mismatch means the *request* is wrong, and dropping would let a buggy
+        read of the mean permanently destroy a healthy max — turning one
+        degraded statistic into two, on a path whose whole job is to degrade
+        narrowly.
+        """
+        import os
+
+        from tta_backend.services.frame_store import read_frames, store_frame_stack
+
+        block = store_frame_stack(
+            with_planes(self.make_stack(n_frames=4, ny=20, nx=20)),
+            pipeline_version="4",
+        )
+        max_key = block["planes"]["max"]["_key"]
+
+        self.assertIsNone(read_frames(max_key, pipeline_version="4"))
+
+        self.assertTrue(os.path.exists(os.path.join(self.store_root, max_key)))
+        self.assertIsNotNone(
+            read_frames(max_key, pipeline_version="4", statistic="max"),
+            "a wrong-statistic read destroyed an entry that was never wrong",
+        )
+
+    def test_an_entry_written_before_statistics_existed_reads_as_the_mean(self):
+        """Every entry written before this phase is a mean entry, by
+        construction — no other kind could be produced. So a manifest with no
+        ``statistic`` is not ambiguous and must not be treated as one: reading
+        it as anything else would strip the scrubber off every chart already in
+        a deployed store, for a version bump that never happened.
+        """
+        import json
+        import os
+
+        from tta_backend.services.frame_store import read_frames, write_frames
+
+        key = write_frames(self.make_stack(n_frames=4, ny=20, nx=20), pipeline_version="4")
+        path = os.path.join(self.store_root, key, "manifest.json")
+        with open(path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+        del manifest["statistic"]
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f)
+
+        self.assertIsNotNone(read_frames(key, pipeline_version="4"))
+        # And it is still not a max entry.
+        self.assertIsNone(read_frames(key, pipeline_version="4", statistic="max"))
+
+    def test_the_stores_statistic_names_are_the_reductions_own(self):
+        """``STORABLE_STATISTICS`` is a mirror, not a second opinion.
+
+        It exists so ``api.py`` can constrain a URL segment without importing
+        ``frame_stack``, which would drag xarray into API startup. A mirror that
+        can drift is worse than the import it avoids, so it is pinned here —
+        where importing the reduction costs nothing.
+        """
+        from tta_backend.preprocessing.frame_stack import PLANE_STATISTICS
+        from tta_backend.services.frame_store import MEAN_STATISTIC, STORABLE_STATISTICS
+
+        self.assertEqual(tuple(STORABLE_STATISTICS), tuple(PLANE_STATISTICS))
+        self.assertIn(MEAN_STATISTIC, STORABLE_STATISTICS)
+
+
+@requires_numpy
 class EvictionTests(FrameStoreTestCase):
     """The store is bounded by an explicit byte cap, and an LRU sweeper is the
     whole of its policy.
@@ -410,6 +733,125 @@ class EvictionTests(FrameStoreTestCase):
 
 
 @requires_numpy
+class PlaneEvictionTests(FrameStoreTestCase):
+    """One entry per statistic means one *eviction* per statistic.
+
+    That is the half of D6a decision 5 that costs something: three entries per
+    chart reach the cap three times as fast, and the LRU will pull them apart.
+    A partially-resident chart is therefore a normal state rather than a
+    corrupt one, and it has to degrade the way an evicted mean already does —
+    per statistic, through the existing miss-and-disable path.
+    """
+
+    def test_an_evicted_plane_costs_that_statistic_and_nothing_else(self):
+        """The chart keeps scrubbing in every statistic that is still there.
+
+        This is the state Phase 15's toggle will actually meet, and the reason
+        the block keeps naming a key the store no longer holds: the axis lives
+        in Postgres where nothing evicts it, so the frontend can still label
+        the max as a statistic this chart *has* and report it unavailable —
+        which is a different and more honest thing to draw than a chart that
+        never had one.
+        """
+        import shutil
+
+        from tta_backend.services.frame_store import read_frames, store_frame_stack
+
+        block = store_frame_stack(
+            with_planes(self.make_stack(n_frames=4, ny=20, nx=20)),
+            pipeline_version="4",
+        )
+        max_key = block["planes"]["max"]["_key"]
+
+        shutil.rmtree(os.path.join(self.store_root, max_key))
+
+        self.assertIsNone(read_frames(max_key, pipeline_version="4", statistic="max"))
+        # The default statistic is untouched, which is the one that matters:
+        # it is what every existing consumer reads.
+        self.assertIsNotNone(read_frames(block["_key"], pipeline_version="4"))
+        self.assertIsNotNone(
+            read_frames(block["planes"]["min"]["_key"], pipeline_version="4",
+                        statistic="min"),
+        )
+        # And the axis is whole — every stop still labeled, in every mode.
+        self.assertEqual(len(block["frames"]), 4)
+        self.assertEqual(block["planes"]["max"]["extent_overstatement"]["ceiling"], 25)
+
+    def test_a_charts_own_planes_never_evict_its_own_mean(self):
+        """Three writes, one cap, and the LRU would do this silently.
+
+        ``write_frames`` evicts to fit before every write, so a chart storing
+        three planes near the cap can have its **max** entry evict its own
+        **mean** — correctly, by LRU's own rules, and disastrously, because
+        mean is the default and the statistic every existing consumer reads.
+        The chart would scrub in max mode and be dead in the mode nobody
+        toggled to. So a chart's entries are protected from *its own* writes,
+        and only from those: the cold entry below is still evicted, because
+        that is what the cap is for.
+
+        The store may sit briefly over the cap as a result, which is the same
+        shape of bound ``evict_to_fit``'s docstring already describes for an
+        entry larger than the store: the next unprotected write reclaims it.
+        """
+        from tta_backend.services.frame_store import (
+            read_frames, store_frame_stack, store_size_bytes, write_frames,
+        )
+
+        cold = write_frames(self.make_stack(n_frames=4, ny=20, nx=20), pipeline_version="4")
+        one_entry = store_size_bytes()
+        # Room for two entries, against a chart that is about to write three.
+        self.set_env(FRAME_STORE_MAX_BYTES=one_entry * 2)
+
+        block = store_frame_stack(
+            with_planes(self.make_stack(n_frames=4, ny=20, nx=20)),
+            pipeline_version="4",
+        )
+
+        # The cap is still enforced against everything else in the store.
+        self.assertIsNone(
+            read_frames(cold, pipeline_version="4"),
+            "the cold entry survived, so this test never reached the cap",
+        )
+        # And the chart that did the writing is whole, in every statistic.
+        self.assertIsNotNone(
+            read_frames(block["_key"], pipeline_version="4"),
+            "a chart's own plane evicted its own mean",
+        )
+        for name in ("max", "min"):
+            self.assertIsNotNone(
+                read_frames(block["planes"][name]["_key"], pipeline_version="4",
+                            statistic=name),
+                f"a chart's own write evicted its own {name} plane",
+            )
+
+    def test_protection_does_not_outlive_the_write_that_asked_for_it(self):
+        """The next chart evicts the last one, exactly as before.
+
+        Protection is scoped to a single ``store_frame_stack`` call — it stops
+        a chart cannibalizing itself mid-write and nothing more. If it leaked
+        beyond that, entries would become permanently unevictable and the cap
+        would stop being a cap.
+        """
+        from tta_backend.services.frame_store import (
+            read_frames, store_frame_stack, store_size_bytes,
+        )
+
+        first = store_frame_stack(
+            with_planes(self.make_stack(n_frames=4, ny=20, nx=20)),
+            pipeline_version="4",
+        )
+        self.set_env(FRAME_STORE_MAX_BYTES=store_size_bytes())
+
+        second = store_frame_stack(
+            with_planes(self.make_stack(n_frames=4, ny=20, nx=20)),
+            pipeline_version="4",
+        )
+
+        self.assertIsNone(read_frames(first["_key"], pipeline_version="4"))
+        self.assertIsNotNone(read_frames(second["_key"], pipeline_version="4"))
+
+
+@requires_numpy
 class SelfHealTests(FrameStoreTestCase):
     """``cube_cache``'s posture, borrowed: any integrity failure drops the
     entry and returns a MISS rather than serving something subtly wrong.
@@ -516,6 +958,67 @@ class PipelineVersionGuardTests(FrameStoreTestCase):
         self.assertFalse(os.path.exists(staging))
         self.assertFalse(os.path.exists(headless))
         self.assertTrue(os.path.exists(os.path.join(self.store_root, current)))
+
+    def test_a_plane_entry_is_never_served_across_a_version_change_either(self):
+        """D8 is about an *interpretation of the source files*, so it binds
+        every plane reduced from them, not just the one that shipped first."""
+        from tta_backend.services.frame_store import read_frames, store_frame_stack
+
+        block = store_frame_stack(
+            with_planes(self.make_stack(n_frames=4, ny=20, nx=20)),
+            pipeline_version="4",
+        )
+        max_key = block["planes"]["max"]["_key"]
+
+        self.assertIsNone(read_frames(max_key, pipeline_version="5", statistic="max"))
+        self.assertFalse(os.path.exists(os.path.join(self.store_root, max_key)))
+
+    def test_a_startup_sweep_reclaims_plane_entries_too(self):
+        """Otherwise a version bump leaves *three* unservable entries per chart
+        counting against the cap instead of one, and the store degrades three
+        times as fast as the failure this sweep was written for.
+
+        The mixed chart is the case worth constructing: one chart whose planes
+        straddle the version boundary cannot arise from a single
+        ``store_frame_stack``, which stamps them all alike — but it is exactly
+        what a half-finished deploy leaves on disk, and the sweep has to judge
+        each entry on its own manifest rather than by whatever chart it
+        belongs to.
+        """
+        from tta_backend.services.frame_store import (
+            store_frame_stack, sweep_store, write_frames,
+        )
+
+        stale = store_frame_stack(
+            with_planes(self.make_stack(n_frames=4, ny=20, nx=20)),
+            pipeline_version="3",
+        )
+        current = store_frame_stack(
+            with_planes(self.make_stack(n_frames=4, ny=20, nx=20)),
+            pipeline_version="4",
+        )
+        mixed = with_planes(self.make_stack(n_frames=4, ny=20, nx=20))
+        mixed_mean = write_frames(mixed, pipeline_version="4")
+        mixed_max = write_frames(
+            mixed.planes["max"], pipeline_version="3", statistic="max",
+        )
+
+        sweep_store("4")
+
+        def resident(key):
+            return os.path.exists(os.path.join(self.store_root, key))
+
+        for name in ("max", "min"):
+            self.assertFalse(resident(stale["planes"][name]["_key"]),
+                             f"a superseded {name} plane survived the sweep")
+            self.assertTrue(resident(current["planes"][name]["_key"]),
+                            f"the sweep reclaimed a current {name} plane")
+        self.assertFalse(resident(stale["_key"]))
+        self.assertTrue(resident(current["_key"]))
+        # Judged per entry: the half-deployed chart keeps the plane that is
+        # still servable and loses only the one that is not.
+        self.assertTrue(resident(mixed_mean))
+        self.assertFalse(resident(mixed_max))
 
     def test_the_endpoint_reads_at_the_version_the_open_pipeline_is_actually_on(self):
         """Not a literal in two places. The store is handed

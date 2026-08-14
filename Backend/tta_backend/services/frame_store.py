@@ -26,6 +26,7 @@ import os
 import shutil
 import tempfile
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -45,6 +46,19 @@ _GZIP_LEVEL = 6
 #: The values, laid out as ``(1 + n_frames, ny, nx)`` float32: the period mean
 #: is plane 0 — D5's "frame 0" — and the frames follow in axis order.
 _PERIOD_INDEX = 0
+
+#: The statistic a ``FrameStack``'s own top-level values are, and so the one an
+#: entry holds unless it was told otherwise. It is a plain string rather than a
+#: sentinel because it is written into manifests that outlive this process.
+MEAN_STATISTIC = "mean"
+
+#: The statistics an entry may hold, mirrored from
+#: ``frame_stack.PLANE_STATISTICS`` rather than imported from it: ``api.py``
+#: imports this module at module scope and ``frame_stack`` imports xarray, so a
+#: real import would pull the whole scientific stack into API startup — the
+#: same cost ``_axis_block`` takes a local import to avoid. A test pins the two
+#: tuples equal, so the mirror cannot drift.
+STORABLE_STATISTICS = ("mean", "max", "min")
 
 
 @dataclass(frozen=True)
@@ -74,16 +88,45 @@ def store_frame_stack(stack: Any, *, pipeline_version: str) -> dict:
     values actually landed — a caller holding a block without one has a chart
     with a drawn, labeled, unscrubbable axis, which is also exactly what an
     evicted chart looks like later.
+
+    Each of ``stack.planes`` (D6a decision 5) gets **its own entry**, written
+    the same way and listed under ``block["planes"][statistic]`` with a ``_key``
+    under the same rule: present only if that plane's values landed. So the
+    property the frontend already relies on holds per statistic — an absent
+    plane key means *that statistic* is unavailable, never that the chart is
+    broken.
     """
     block = _axis_block(stack, pipeline_version=pipeline_version)
     key = write_frames(stack, pipeline_version=pipeline_version)
+    # The mean goes first and is protected from every write that follows it.
+    # Order matters on a store near the cap: the default statistic is the one
+    # every existing consumer reads, so it is the one that must survive a
+    # chart that turns out to be too big for what is left.
+    landed: set[str] = set() if key is None else {key}
     if key is not None:
         block["_key"] = key
+    for name, plane in (getattr(stack, "planes", None) or {}).items():
+        plane_key = write_frames(
+            plane, pipeline_version=pipeline_version, statistic=name,
+            protect=landed,
+        )
+        if plane_key is not None:
+            block["planes"][name]["_key"] = plane_key
+            landed.add(plane_key)
     return block
 
 
-def write_frames(stack: Any, *, pipeline_version: str) -> str | None:
-    """Persist ``stack``'s float32 planes. Returns the entry key, or None.
+def write_frames(
+    source: Any, *, pipeline_version: str, statistic: str = MEAN_STATISTIC,
+    protect: Iterable[str] = (),
+) -> str | None:
+    """Persist ``source``'s float32 planes. Returns the entry key, or None.
+
+    ``source`` is a ``FrameStack`` or one of its ``StatisticPlane``s — anything
+    carrying ``values`` and ``period_values``, which is all an entry is. A
+    plane is deliberately *not* made to quack like a stack: it has those two
+    arrays and none of the axis, because the axis is shared by every plane of a
+    chart and a second copy of it would be a second account of one quantity.
 
     Never raises. A frame stack is a rendering convenience, and nothing about
     storing one may cost a caller the chart they asked for — the same posture
@@ -94,19 +137,20 @@ def write_frames(stack: Any, *, pipeline_version: str) -> str | None:
     (every route goes through ``_get_owned_chart``): sharing a blob between
     them would manufacture exactly the cross-user cache this feature's
     ``private`` caching says does not exist. Identity is instead recorded *in*
-    the entry — the pipeline version it was produced under, and the shape it
-    holds — and checked on the way out.
+    the entry — the pipeline version it was produced under, the statistic it
+    holds, and the shape it holds — and checked on the way out.
     """
     try:
-        payload = _pack(stack)
+        payload = _pack(source)
         # Before the write, and against the REAL bytes, which are known here
         # because the entry is already compressed: no estimate, no optimistic
         # and conservative pair of guesses, nothing to self-correct on the
         # following write.
-        evict_to_fit(len(payload))
+        evict_to_fit(len(payload), protect=protect)
         key = uuid.uuid4().hex
         _write_entry(
-            key, payload, pipeline_version=pipeline_version, shape=_shape(stack),
+            key, payload, pipeline_version=pipeline_version,
+            statistic=statistic, shape=_shape(source),
         )
         return key
     except Exception:  # noqa: BLE001 — degrade to a chart with no scrubber
@@ -114,7 +158,9 @@ def write_frames(stack: Any, *, pipeline_version: str) -> str | None:
         return None
 
 
-def read_frames(key: str, *, pipeline_version: str) -> FrameBlob | None:
+def read_frames(
+    key: str, *, pipeline_version: str, statistic: str = MEAN_STATISTIC,
+) -> FrameBlob | None:
     """Serve the stored blob for ``key``, or None on a miss.
 
     Transparently fallible, in ``cube_cache``'s posture: no failure on this
@@ -130,6 +176,16 @@ def read_frames(key: str, *, pipeline_version: str) -> FrameBlob | None:
     is the completion marker, so its absence is indistinguishable from a write
     still in flight, and :func:`sweep_store` reclaims the genuinely abandoned
     ones at startup where that ambiguity does not exist.
+
+    ``statistic`` says which plane the caller is asking for, and an entry
+    holding a different one is refused. Nothing else can catch that mistake:
+    every plane of a chart has the same shape, dtype, grid and pipeline
+    version, so the max blob served where the mean was asked for passes every
+    check above and renders a believable field with the wrong numbers in it.
+    The refusal is deliberately *not* a drop, and that is the one place this
+    diverges from the version guard above — that entry can never be served to
+    anyone again, while this one is perfectly good to a correct request.
+    Dropping it would let a mis-keyed read of the mean destroy a healthy max.
     """
     if not key:
         return None
@@ -142,6 +198,14 @@ def read_frames(key: str, *, pipeline_version: str) -> FrameBlob | None:
     # would charge the store for bytes no request can ever reach.
     if str(manifest.get("pipeline_version") or "") != pipeline_version:
         _invalidate(key, "pipeline_version_superseded")
+        return None
+    # Absent means the mean, and it is not a guess: every entry written before
+    # this field existed was a mean entry, because no other kind could be
+    # produced. Treating the absence as unknown instead would strip the
+    # scrubber off every chart already sitting in a deployed store.
+    held = str(manifest.get("statistic") or MEAN_STATISTIC)
+    if held != statistic:
+        _refuse(key, f"statistic_mismatch: holds {held!r}, asked for {statistic!r}")
         return None
     try:
         with open(_blob_path(key), "rb") as f:
@@ -175,11 +239,23 @@ def _intact(payload: bytes, manifest: dict) -> bool:
     return hashlib.sha256(payload).hexdigest() == manifest.get("blob_sha256")
 
 
-def _invalidate(key: str, reason: str) -> None:
+def _refuse(key: str, reason: str) -> None:
+    """Record a read that will not be served, without touching the entry.
+
+    Under the same event name as the drops below, because the thing an operator
+    watches for is "a read that was supposed to work did not" and that is one
+    question regardless of what the store did about it afterwards.
+    """
     logger.warning(
         "frame_read_failed",
         extra={"_event": "frame_read_failed", "_frame_key": key, "_reason": reason},
     )
+
+
+def _invalidate(key: str, reason: str) -> None:
+    """Refuse the read *and* drop the entry — for the failures where no future
+    request could ever be served either, so the bytes are pure cap pressure."""
+    _refuse(key, reason)
     shutil.rmtree(_entry_dir(key), ignore_errors=True)
 
 
@@ -277,9 +353,23 @@ def store_size_bytes() -> int:
     return sum(size for _access, size, _key in _entries())
 
 
-def evict_to_fit(incoming_bytes: int) -> int:
+def evict_to_fit(incoming_bytes: int, *, protect: Iterable[str] = ()) -> int:
     """Evict coldest-first until ``incoming_bytes`` fits under the cap.
     Returns how many entries were evicted.
+
+    ``protect`` names entries this write must not evict, and exists for exactly
+    one caller: a chart storing several planes writes them one at a time
+    against a single cap, so without it a chart's **max** entry can evict that
+    chart's own **mean** — silently, and correctly by LRU's own rules. The
+    result would be a chart that scrubs in max mode and is dead in the default
+    one, which is the worst available way for this to fail. Protection is
+    per-call and never persisted; nothing in the store is permanently
+    unevictable, or the cap would stop being one.
+
+    A write whose protected set leaves nothing to evict still proceeds, and the
+    store sits over the cap until the next unprotected write reclaims it. That
+    is the same shape of bound as the oversized-entry corollary below, and the
+    same answer: a frame stack is never worth failing a caller's chart over.
 
     LRU by last access rather than by age: a stack being scrubbed right now is
     the one that must survive, and an age TTL cannot tell it from an abandoned
@@ -289,19 +379,26 @@ def evict_to_fit(incoming_bytes: int) -> int:
     ``cube_write_max_store_fraction`` exists to stop an entry big enough to
     evict the whole store to fit itself and then be evicted by the next write;
     D7 caps frames at 60 and D5 caps cells at 20,000, so an entry is at most
-    4.58 MiB raw against a 1 GiB store and that thrash cannot occur. Adding a
-    cap anyway would be cargo-culting the store this one borrowed from. The
+    4.58 MiB raw against a 1 GiB store and that thrash cannot occur. A chart
+    carrying all three statistics is three such entries rather than one, so it
+    reaches the cap three times as fast — but the thrash argument rests on the
+    size of a single *entry*, which a plane does not change, and one chart's
+    planes cannot evict each other. Adding a cap anyway would be cargo-culting
+    the store this one borrowed from. The
     corollary, stated so nobody has to rediscover it: an entry larger than the
     entire store would clear the store and still not fit — unreachable at 0.4%
     of the cap, and the shape of the bound, not a case to code around.
     """
     limit = get_settings().frame_store_max_bytes
+    spared = frozenset(protect)
     entries = sorted(_entries())  # oldest access first
     total = sum(size for _access, size, _key in entries)
     evicted = 0
     for _access, size, key in entries:
         if total + incoming_bytes <= limit:
             break
+        if key in spared:
+            continue
         shutil.rmtree(_entry_dir(key), ignore_errors=True)
         total -= size
         evicted += 1
@@ -322,8 +419,11 @@ def _touch(key: str) -> None:
         pass
 
 
-def _pack(stack: Any) -> bytes:
+def _pack(source: Any) -> bytes:
     """The planes, gzipped, as one buffer.
+
+    ``source`` is a ``FrameStack`` or a ``StatisticPlane``: the two arrays read
+    here are the entire intersection of the two types, and deliberately so.
 
     Compressed streaming-wise rather than by concatenating the arrays first:
     the period plane and the frames are written into the same compressor, so
@@ -335,13 +435,14 @@ def _pack(stack: Any) -> bytes:
 
     buffer = io.BytesIO()
     with gzip.GzipFile(fileobj=buffer, mode="wb", compresslevel=_GZIP_LEVEL, mtime=0) as gz:
-        for plane in (stack.period_values[np.newaxis, ...], stack.values):
+        for plane in (source.period_values[np.newaxis, ...], source.values):
             gz.write(np.ascontiguousarray(plane, dtype="float32").tobytes())
     return buffer.getvalue()
 
 
 def _write_entry(
-    key: str, payload: bytes, *, pipeline_version: str, shape: list[int],
+    key: str, payload: bytes, *, pipeline_version: str, statistic: str,
+    shape: list[int],
 ) -> None:
     """Stage, fsync, rename, then manifest — the cube store's write protocol.
 
@@ -359,6 +460,10 @@ def _write_entry(
             f.write(payload)
         manifest = {
             "pipeline_version": pipeline_version,
+            # Which statistic these bytes are. Every plane of a chart has the
+            # same shape, dtype, grid and pipeline version, so nothing else in
+            # this manifest can tell them apart — see `read_frames`.
+            "statistic": statistic,
             "shape": shape,
             "blob_bytes": len(payload),
             "blob_sha256": hashlib.sha256(payload).hexdigest(),
@@ -416,8 +521,11 @@ def _fsync(path: str) -> None:
         os.close(fd)
 
 
-def _shape(stack: Any) -> list[int]:
-    n_frames, ny, nx = (int(v) for v in stack.values.shape)
+def _shape(source: Any) -> list[int]:
+    """The stored layout of a stack *or* a plane — and identical for every
+    plane of one chart, which is exactly why it cannot be the thing that tells
+    two of them apart."""
+    n_frames, ny, nx = (int(v) for v in source.values.shape)
     return [n_frames + 1, ny, nx]
 
 
@@ -433,7 +541,7 @@ def _axis_block(stack: Any, *, pipeline_version: str) -> dict:
     # cost ``warmup.warm_render_path`` exists to schedule deliberately.
     from tta_backend.preprocessing.frame_stack import POOLED_SCALE_BASIS
 
-    return {
+    block = {
         "frames": [
             {
                 "t_start": frame.t_start,
@@ -486,4 +594,51 @@ def _axis_block(stack: Any, *, pipeline_version: str) -> dict:
         # D8: frames are never served or rebuilt across a version change, and
         # the stamp is what makes that checkable on a chart written months ago.
         "pipeline_version": pipeline_version,
+    }
+    planes = {
+        name: _plane_block(plane)
+        for name, plane in (getattr(stack, "planes", None) or {}).items()
+    }
+    # Absent, not empty, on a chart with no planes. Nothing upstream asks for
+    # one yet, so every payload on the wire must stay byte-identical to the one
+    # that shipped before this — and an always-present `"planes": {}` would be
+    # a change to every chart ever plotted, in service of saving one `?? {}` in
+    # a consumer that has to handle the key's absence on old rows regardless.
+    if planes:
+        block["planes"] = planes
+    return block
+
+
+def _plane_block(plane: Any) -> dict:
+    """One statistic's metadata: ``StatisticPlane`` minus the arrays.
+
+    Exactly the fields that genuinely differ per plane, and deliberately no
+    others. ``t_start``/``t_end``/``n_granules``/``valid_fraction``/
+    ``qa_pass_rate`` describe the *interval* and ``statistics`` is the per-frame
+    regional scalar off the **mean** field — a measurably different number from
+    this plane's peak (50.5 against 100.0 on Phase 12's fixture). The grid,
+    the shape, the block size, the cadence and the tier are shared by
+    construction: every plane of a chart is the same blocks of the same grid
+    over the same axis. Copying any of them here would give a quantity that has
+    one account a second one, which is the failure the three separate basis
+    strings in ``frame_stack`` exist to prevent, wearing a fourth shoe.
+    """
+    return {
+        # This plane's own pooled 2-98 (D9), never the mean's: one colour has
+        # to mean one value at every stop of a scrub, and a max plane rendered
+        # against the mean's clip saturates at exactly the stops someone
+        # switched to it to see.
+        "value_range": (
+            None if plane.value_range is None
+            else [float(v) for v in plane.value_range]
+        ),
+        # Reduced across frames by THIS plane's own statistic, and carrying its
+        # own basis string saying so. A shared basis would be a particularly
+        # quiet falsehood: a selection plane's figure is 0.0 under its own
+        # basis and large under the mean's.
+        "frame_grid_delta": plane.frame_grid_delta,
+        # D6a decision 9, on the max plane alone. Explicitly None elsewhere,
+        # the same way `delta` is None in the cadence tier: "measured, and there
+        # is no such quantity here" is a different statement from silence.
+        "extent_overstatement": plane.extent_overstatement,
     }

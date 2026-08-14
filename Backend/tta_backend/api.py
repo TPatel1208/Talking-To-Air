@@ -731,6 +731,64 @@ async def chart_frames(chart_id: str, request: Request):
             status_code=404, detail="The frame values for this chart are no longer available."
         )
 
+    return _frame_blob_response(blob, request)
+
+
+@app.get("/chart/{chart_id}/frames.{statistic}.f32.gz")
+async def chart_frame_plane(chart_id: str, statistic: str, request: Request):
+    """One additional statistic's frame stack (T59 D6a decision 5).
+
+    A path per statistic rather than a query parameter on the mean's URL. A
+    parameter would make one URL serve several bodies, which every cache
+    between the browser and this app then has to be told about with `Vary`, and
+    would turn `_FRAME_CACHE_CONTROL`'s `immutable` into a claim about a URL
+    whose content is no longer fixed. A distinct path is a distinct cache entry
+    needing no coordination at all — and it leaves `frames.f32.gz` untouched
+    outright rather than untouched-as-long-as-nobody-passes-the-parameter,
+    which is what decision 5's "the mean entry keeps its exact shape, URL and
+    cost" actually asks for.
+
+    Every failure here is a 404: an unknown statistic, one this chart never
+    computed, and one whose entry has been evicted are all "there is no such
+    blob", and the frontend's answer to each is the same — offer the statistics
+    that are there. The axis is in Postgres either way, so the scrubber stays
+    drawn and labeled (D8).
+    """
+    # Constrained to the statistics the reduction actually produces, so the
+    # segment can never become an arbitrary key lookup into the chart's block.
+    if statistic not in frame_store.STORABLE_STATISTICS:
+        raise HTTPException(status_code=404, detail="Unknown frame statistic.")
+
+    payload = await _get_owned_chart(chart_id, request.state.current_user.id)
+    frames = payload.get("frames")
+    planes = frames.get("planes") if isinstance(frames, dict) else None
+    plane = planes.get(statistic) if isinstance(planes, dict) else None
+    # `mean` is never a key in there — its blob is the chart's own, at the URL
+    # above — so it falls out as a miss with no special case for it.
+    key = plane.get("_key") if isinstance(plane, dict) else None
+    if not key:
+        raise HTTPException(
+            status_code=404, detail="This chart has no stored frames for that statistic."
+        )
+
+    blob = await asyncio.to_thread(
+        frame_store.read_frames, key,
+        pipeline_version=OPEN_PIPELINE_VERSION, statistic=statistic,
+    )
+    if blob is None:
+        raise HTTPException(
+            status_code=404,
+            detail="The frame values for that statistic are no longer available.",
+        )
+    return _frame_blob_response(blob, request)
+
+
+def _frame_blob_response(blob, request: Request) -> Response:
+    """The stored bytes, still gzipped, under the ETag they were stored with.
+
+    Shared by the mean's route and every plane's, so the two cannot drift into
+    serving the same kind of thing under different cache rules.
+    """
     etag = f'"{blob.etag}"'
     headers = {"ETag": etag, "Cache-Control": _FRAME_CACHE_CONTROL}
     if etag in _if_none_match(request):

@@ -148,11 +148,18 @@ def test_the_frame_store_mount_point_is_owned_by_the_runtime_user():
 
 
 def test_the_frame_store_is_not_reachable_without_authentication():
-    """Frames are served only through ``/chart/{id}/frames.f32.gz``, which
-    checks chart ownership first. ``/app/outputs`` is handed to nginx wholesale
-    and served unauthenticated, so a frame store resolving inside it would make
-    every researcher's field world-readable — an access-control regression
-    neither path's own tests would notice, because both would keep working.
+    """Frames are served only through ``/chart/{id}/frames.f32.gz`` and
+    ``/chart/{id}/frames.{statistic}.f32.gz``, both of which check chart
+    ownership first. ``/app/outputs`` is handed to nginx wholesale and served
+    unauthenticated, so a frame store resolving inside it would make every
+    researcher's field world-readable — an access-control regression neither
+    path's own tests would notice, because both would keep working.
+
+    T59 Phase 13 turned that into a *set* of routes rather than one, which is
+    the argument for guarding this at the volume rather than only at each
+    route: the number of ways to reach these bytes grows with the number of
+    statistics, and a store outside the public tree is one fact that holds
+    however many of them there turn out to be.
     """
     compose = _load_compose()
     output_path = deployment_output_dir().rstrip("/")
