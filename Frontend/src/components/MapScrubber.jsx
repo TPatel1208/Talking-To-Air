@@ -17,6 +17,7 @@
  */
 import { aggregateAnchor } from '../utils/frameDelta.js'
 import { formatFrameQaRate } from '../utils/frameStats.js'
+import { STATISTIC_LABELS } from '../utils/frameStatistic.js'
 import { buildDayBoundaries, buildTrackMarks, trackLegend } from '../utils/frameTrack.js'
 import { SCRUB_TRACK_MIN_WIDTH } from '../utils/panelLayout.js'
 
@@ -53,6 +54,19 @@ const toggleStyle = (active) => ({
 
 const noteStyle = { fontSize: '11px', color: 'var(--text-muted)', lineHeight: 1.45 }
 
+// The statistic toggle (T59 D6a decision 7 / Phase 15). Smaller than the mode
+// button beside it, because entering scrubber mode is the decision and this is
+// a choice made inside it.
+const statisticStyle = (active, enabled) => ({
+  fontSize: '11px', fontWeight: 700,
+  cursor: enabled ? 'pointer' : 'not-allowed',
+  borderRadius: '6px', padding: '3px 9px',
+  color: active ? 'var(--teal-text)' : 'var(--text-secondary)',
+  background: active ? 'var(--teal-light)' : 'var(--bg-primary)',
+  border: `1px solid ${active ? 'var(--teal)' : 'var(--border)'}`,
+  opacity: enabled ? 1 : 0.6,
+})
+
 // D10: an empty bucket is a first-class rendered state, and the two kinds of
 // empty are different measurements. A blank map reads as zero, and zero is a
 // measurement -- so the readout says which blank this is.
@@ -63,6 +77,7 @@ const EMPTY_STATE_TEXT = {
 
 export default function MapScrubber({
   state, delta, stop, stats, scrubbing, onToggle, onSelect,
+  choice, overstatement, onSelectStatistic,
 }) {
   // Nothing to say: the ordinary single-granule map (no frames block, no
   // refusal beside it).
@@ -100,6 +115,12 @@ export default function MapScrubber({
         <button type="button" onClick={onToggle} style={toggleStyle(true)}>Show period aggregate</button>
       </div>
 
+      {/* Every string here is composed in a util. The toggle changes four
+          sentences at once (the anchor, the delta, the legend caption and the
+          Statistics tab's scoping) and Phase 8 §1 is what happens when one of
+          them is assembled where no test can read it. */}
+      <StatisticChoice choice={choice} onSelect={onSelectStatistic} />
+
       <ScrubTrack
         axis={state.axis}
         stops={stops}
@@ -123,6 +144,47 @@ export default function MapScrubber({
           argument over by hand. */}
       <StopReadout stop={stop} stats={stats} delta={delta} />
       <DeltaDisclosure delta={delta} />
+      {/* D6a decision 9 / Phase 11 G4, beside the max-mode scrubber as G4 asked
+          (`methods.md` is Phase 16's). Resolved from the chart's own measured
+          `headline` upstream, so this renders whatever there is and nothing
+          when there is none. */}
+      {overstatement && <div style={noteStyle}>{overstatement}</div>}
+    </div>
+  )
+}
+
+// D6a decision 7's toggle, and Phase 5 decision 2's rule one level in: a chart
+// above `MAX_PLANE_NATIVE_CELLS` gets the control DISABLED with the backend's
+// own sentence beside it, never a silently missing one. A reader who finds no
+// toggle and no reason is exactly the person the disclosure exists to keep out
+// of that position.
+//
+// A chart that never had planes gets neither -- `offered` is false and this
+// renders nothing, so its scrubber is what shipped before this phase.
+function StatisticChoice({ choice, onSelect }) {
+  if (!choice || !choice.offered) return null
+  const enabled = choice.options.length > 1
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+      <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Show</span>
+      {choice.options.map((name) => (
+        <button
+          key={name}
+          type="button"
+          disabled={!enabled}
+          aria-pressed={choice.selected === name}
+          onClick={() => onSelect(name)}
+          style={statisticStyle(choice.selected === name, enabled)}
+        >
+          {STATISTIC_LABELS[name] || name}
+        </button>
+      ))}
+      {/* The backend's own words, relayed -- the same posture the three
+          disclosed frame refusals are relayed in. */}
+      {choice.refusal?.detail && (
+        <span style={{ ...noteStyle, flexBasis: '100%' }}>{choice.refusal.detail}</span>
+      )}
     </div>
   )
 }

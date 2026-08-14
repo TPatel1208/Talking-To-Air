@@ -11,6 +11,9 @@ import { resolveFrameState } from '../utils/frameAxis.js'
 import { resolveScrubberScale } from '../utils/frameScale.js'
 import { resolveFrameDelta } from '../utils/frameDelta.js'
 import { statsForStop, formatFrameQaRate } from '../utils/frameStats.js'
+import {
+  extentOverstatementNote, resolveScrubStop, resolveStatisticChoice, resolveStatisticSource,
+} from '../utils/frameStatistic.js'
 import { selectFrame } from '../utils/frameStack.js'
 import { PANEL_MIN_WIDTH } from '../utils/panelLayout.js'
 import { MetadataOverview } from './MetadataOverview.jsx'
@@ -278,8 +281,13 @@ const COUNT_BASIS = {
 // describe the ARTIFACT and stay put -- provenance flickering per frame would
 // imply the source changed. `stop` is null, or the aggregate, whenever the
 // scrubber is closed or parked, and then this renders exactly what it always did.
-function StatisticsTab({ chart, stop }) {
-  const stats = useMemo(() => statsForStop(chart, stop), [chart, stop])
+// `statistic` is D6a's toggle (Phase 15). It changes no number here -- these
+// are the per-frame REGIONAL scalars off the mean field, and Phase 13 decision
+// 2 kept them out of the per-plane block on purpose -- so it only scopes the
+// three cards those numbers belong to. `count`, `validPct` and the pass rate
+// are facts about the interval and stay uncaveated.
+function StatisticsTab({ chart, stop, statistic = 'mean' }) {
+  const stats = useMemo(() => statsForStop(chart, stop, statistic), [chart, stop, statistic])
   const masking = useMemo(() => resolveMasking(chart), [chart])
   const isInterval = stop?.kind === 'interval'
   const passRate = isInterval ? framePassRateCard(stop) : qaPassRateCard(masking)
@@ -303,9 +311,14 @@ function StatisticsTab({ chart, stop }) {
         </div>
       )}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px' }}>
-        <StatCard label="Mean" value={`${fmt(stats.mean)} ${stats.units || ''}`} />
-        <StatCard label="Max" value={`${fmt(stats.max)} ${stats.units || ''}`} />
-        <StatCard label="Min" value={`${fmt(stats.min)} ${stats.units || ''}`} />
+        {/* `fieldNote` is absent entirely in mean mode, so these three render
+            exactly as they always have. In a plane mode it names the field
+            they are of -- the regional max of the MEAN field is a different
+            number from the max plane's peak (50.5 against 100.0 on Phase 12's
+            fixture), and they wear the same word. */}
+        <StatCard label="Mean" value={`${fmt(stats.mean)} ${stats.units || ''}`} subtitle={stats.fieldNote} />
+        <StatCard label="Max" value={`${fmt(stats.max)} ${stats.units || ''}`} subtitle={stats.fieldNote} />
+        <StatCard label="Min" value={`${fmt(stats.min)} ${stats.units || ''}`} subtitle={stats.fieldNote} />
         {/* "Valid values" answers "did we get data at all"; the QA pass rate
             answers "how much of what we got survived the quality mask". Both
             stay, and each states its basis so they can't be conflated. The
@@ -855,24 +868,62 @@ export default function OutputPanel({
   // different chart drops back to the period aggregate without an effect
   // resyncing it. Lifted to this level (not into MapLibreHeatmapPanel) because
   // D11 makes the Statistics tab follow the slider, and that tab is a sibling.
-  const [scrubChoice, setScrubChoice] = useState({ source: null, on: false, index: 0 })
+  // `statistic` is D6a's toggle (Phase 15) and rides the same key: focusing a
+  // different chart drops back to the mean as well as to the aggregate, since
+  // the plane a reader chose on one chart says nothing about the next.
+  const [scrubChoice, setScrubChoice] = useState({ source: null, on: false, index: 0, statistic: 'mean' })
   const scrubStale = scrubChoice.source !== focusedOutput
   const scrubbing = !scrubStale && scrubChoice.on
-  const frameLoad = useFrameStack(chart?.frames || null, accessToken, scrubbing)
+  const askedStatistic = scrubStale ? 'mean' : scrubChoice.statistic
+  // One url in flight at a time, which is also the eviction policy: the hook
+  // holds one result keyed by one url, so switching statistic drops the
+  // previous stack rather than accumulating three. Coming back is an HTTP
+  // cache hit (`private, immutable, max-age=31536000`) and costs a re-decode,
+  // not a re-download.
+  const frameSource = useMemo(
+    () => resolveStatisticSource(chart, askedStatistic),
+    [chart, askedStatistic],
+  )
+  const frameLoad = useFrameStack(frameSource, accessToken, scrubbing)
+  // `selected` is what the reader asked for; `rendered` is what is actually on
+  // screen. Everything that SPEAKS keys off `rendered`, so the mean's pixels
+  // can never sit under a max label while the bytes are in flight.
+  const statistic = useMemo(
+    () => resolveStatisticChoice(chart, askedStatistic, frameLoad.loadState),
+    [chart, askedStatistic, frameLoad.loadState],
+  )
   const frameState = useMemo(
-    () => resolveFrameState(chart, frameLoad.loadState),
-    [chart, frameLoad.loadState],
+    () => resolveFrameState(chart, frameLoad.loadState, statistic.selected),
+    [chart, frameLoad.loadState, statistic.selected],
   )
   const scrubStops = frameState?.axis?.stops || null
   // Decision 2: parked on the aggregate whenever the slider cannot move -- the
   // only stop whose pixels are on screen while the blob is in flight or gone.
-  const scrubIndex = frameState?.sliderEnabled && !scrubStale
-    ? Math.min(scrubChoice.index, (scrubStops?.length ?? 1) - 1)
-    : 0
-  const currentStop = scrubbing && scrubStops ? scrubStops[scrubIndex] : null
-  const scrubScale = useMemo(() => resolveScrubberScale(chart, scrubbing), [chart, scrubbing])
-  const frameDelta = useMemo(() => resolveFrameDelta(chart), [chart])
-  const stopStats = useMemo(() => statsForStop(chart, currentStop), [chart, currentStop])
+  // The remembered index is NOT reset by any of that, so a statistic switch
+  // returns the reader to the stop they were on once the pixels land.
+  const currentStop = scrubbing
+    ? resolveScrubStop({
+      stops: scrubStops,
+      index: scrubChoice.index,
+      sliderEnabled: Boolean(frameState?.sliderEnabled) && !scrubStale,
+    })
+    : null
+  const scrubScale = useMemo(
+    () => resolveScrubberScale(chart, scrubbing, statistic.rendered),
+    [chart, scrubbing, statistic.rendered],
+  )
+  const frameDelta = useMemo(
+    () => resolveFrameDelta(chart, statistic.rendered),
+    [chart, statistic.rendered],
+  )
+  const stopStats = useMemo(
+    () => statsForStop(chart, currentStop, statistic.rendered),
+    [chart, currentStop, statistic.rendered],
+  )
+  const overstatement = useMemo(
+    () => extentOverstatementNote(chart, statistic.rendered),
+    [chart, statistic.rendered],
+  )
   // A zero-copy `subarray` view over the one flat stack, never a slice -- Phase
   // 2 measured 100 copies at +7.64 MB, a full duplicate. Recomputed per stop,
   // which costs nothing: the view is a window, not an allocation.
@@ -880,8 +931,14 @@ export default function OutputPanel({
     () => (scrubbing ? selectFrame(chart, frameLoad.stack, currentStop) : null),
     [scrubbing, chart, frameLoad.stack, currentStop],
   )
-  const toggleScrub = () => setScrubChoice({ source: focusedOutput, on: !scrubbing, index: 0 })
-  const selectStop = (index) => setScrubChoice({ source: focusedOutput, on: true, index })
+  const toggleScrub = () => setScrubChoice({ source: focusedOutput, on: !scrubbing, index: 0, statistic: 'mean' })
+  const selectStop = (index) => setScrubChoice({ ...scrubChoice, source: focusedOutput, on: true, index })
+  // The stop is deliberately CARRIED, not reset. Finding a peak is the whole
+  // reason the max plane exists, so someone who scrubbed to hour 17 and then
+  // asked for its maximum has done exactly the thing that must not send them
+  // back to stop 0. `resolveScrubStop` parks the DISPLAY on the aggregate
+  // while the pixels are absent and hands this index back when they land.
+  const selectStatistic = (name) => setScrubChoice({ ...scrubChoice, source: focusedOutput, on: true, statistic: name })
 
   const showCollapseHint = shouldShowCollapseHint({
     compareMode, sessionsCollapsed, chatCollapsed, rightPanelCollapsed,
@@ -1009,6 +1066,9 @@ export default function OutputPanel({
               scrubbing={scrubbing}
               onToggle={toggleScrub}
               onSelect={selectStop}
+              choice={statistic}
+              overstatement={overstatement}
+              onSelectStatistic={selectStatistic}
             />
           </>
         )}
@@ -1018,7 +1078,10 @@ export default function OutputPanel({
         {(activeTab === 'map' || activeTab === 'chart') && (
           <RelatedVariablesPanel chart={chart} onSend={onSend} />
         )}
-        {activeTab === 'statistics' && <StatisticsTab chart={chart} stop={currentStop} />}
+        {/* D11: the tab follows the slider. It also has to follow the TOGGLE,
+            because `stop.statistics` are the regional scalars of the MEAN
+            field whichever plane the map is drawing. */}
+        {activeTab === 'statistics' && <StatisticsTab chart={chart} stop={currentStop} statistic={statistic.rendered} />}
         {activeTab === 'metadata' && (
           <MetadataTab
             chart={chart}

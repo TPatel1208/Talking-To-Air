@@ -34,20 +34,35 @@
 // The delta is shown, not offered (Risk 4 is that it becomes a badge nobody
 // reads), and `severity` exists so a double-digit disagreement cannot render
 // as the same quiet footnote a sub-1% one does.
-export function resolveFrameDelta(chart) {
+export function resolveFrameDelta(chart, statistic = 'mean') {
   const block = chart?.frames
   if (!block || !block.tier) return null
 
   const cadence = block.cadence || 'unknown'
   const perFrame = Number.isFinite(block.buckets_per_frame) ? block.buckets_per_frame : 1
   const units = chart.units || ''
-  const grid = figureOf(block.frame_grid_delta, units)
   const coarsened = block.tier === 'coarsened'
-  const native = coarsened ? figureOf(block.delta, units) : null
   const downsampled = isDownsampled(block.coarsen_k)
+
+  // A selection plane is a different disclosure, not a differently-worded one
+  // (T59 Phase 15). BOTH of the block's figures belong to the mean: `delta`
+  // is its temporal disagreement and `frame_grid_delta` its shipped-array one,
+  // and a max plane has neither -- max is associative and invariant to
+  // weighting, so Phase 11 G5 measured both identities bit-exact. Passing the
+  // mean's numbers through would attribute a mean-only disagreement to a plane
+  // that does not have it, and passing the plane's own zero through
+  // `formatPct` would print "under 0.1%" for an identity that holds exactly --
+  // which is D6a's own example of the failure `_DELTA_FLOOR` exists to prevent.
+  if (statistic !== 'mean') {
+    return selectionDelta(block, statistic, { cadence, perFrame, coarsened, downsampled, units })
+  }
+
+  const grid = figureOf(block.frame_grid_delta, units)
+  const native = coarsened ? figureOf(block.delta, units) : null
 
   return {
     kind: coarsened ? 'approximate' : 'exact',
+    statistic,
     severity: severityFor(native, grid, coarsened),
     //: Whether a block mean actually ran. Read by `aggregateAnchor` so the two
     //: adjacent sentences cannot describe the same array differently -- which
@@ -62,6 +77,50 @@ export function resolveFrameDelta(chart) {
     summary: coarsened
       ? coarsenedSummary(perFrame, cadence, native, grid, downsampled)
       : cadenceSummary(cadence, grid, downsampled),
+  }
+}
+
+// How a selection plane relates to the frames beside it, and to the map above.
+//
+// The figure is ASSERTED FROM THE PAYLOAD, never from the operation's name. If
+// a plane ever ships a real disagreement, printing "exactly" because max is
+// associative in theory would be the same class of falsehood Phase 8 caught in
+// this file -- a sentence that was true of the mechanism and false of the
+// arrays. The exact branch is the one the backend measures today (Phase 11 G5,
+// `0.0` max abs diff on both identities, both bundles); the other exists so it
+// cannot silently become wrong.
+const SELECTION_VERB = { max: 'highest', min: 'lowest' }
+const SELECTION_NOUN = { max: 'maximum', min: 'minimum' }
+
+function selectionDelta(block, statistic, { cadence, perFrame, coarsened, downsampled, units }) {
+  const plane = block.planes?.[statistic] || {}
+  const grid = figureOf(plane.frame_grid_delta, units)
+  const verb = SELECTION_VERB[statistic] || statistic
+  const exact = !grid || grid.headline === 0
+
+  const frameIs = coarsened
+    ? `Each frame is the ${verb} value across ${perFrame} ${cadence} intervals of this product.`
+    : `Each frame is the ${verb} value in one ${cadence} interval of this product.`
+  const relationship = exact
+    // The whole point, and why there is no figure: a selection is associative,
+    // so combining the frames reproduces the period plane rather than
+    // approximating it. Stated about the arrays the browser actually holds,
+    // because that is the claim Phase 8 found the mean tier getting wrong.
+    ? `Taking the ${verb} of the frames you can download reproduces the period plane at stop 0 exactly — a ${SELECTION_NOUN[statistic] || statistic} selects one of the values it is given rather than combining them, so there is no disagreement here to measure.`
+    : `Combining the frames you can download misses the period plane at stop 0 by ${grid.pct}${grid.maxAbs ? `, up to ${grid.maxAbs} at the worst pixel` : ''} — which this statistic is not supposed to be able to do, so read it as a defect rather than as a caveat.`
+
+  return {
+    kind: 'selection',
+    statistic,
+    severity: exact ? 'none' : severityOf(grid.headline),
+    downsampled,
+    headlinePct: null,
+    maxAbs: null,
+    basis: null,
+    gridPct: exact ? null : grid.pct,
+    gridMaxAbs: exact ? null : grid.maxAbs,
+    gridBasis: plane.frame_grid_delta?.basis || null,
+    summary: `${frameIs} ${relationship}`,
   }
 }
 
@@ -93,7 +152,21 @@ function isDownsampled(factors) {
 // The NUMBER is deliberately not here. It belongs to the delta line directly
 // beneath this one, and one measurement with two homes on one screen is how
 // two homes start disagreeing.
+//
+// D11 GAINS AN EXPLICIT EXCEPTION in a selection mode (D6a decision 3), and it
+// inverts this sentence rather than qualifying it. `plot_singular` has no
+// statistic parameter, so the Map tab is always a period mean: stop 0 in max
+// mode is the period MAX and is emphatically not the field above it. The Map
+// tab does not follow the toggle in any mode, ever, and saying so here is
+// cheaper than a reader inferring it wrongly from a picture that changed.
+//
+// The spatial reducer changes with it. D6a decision 4 makes block MAX the
+// reducer for a selection plane -- every rendered value is one some native
+// cell actually held, where a block mean invents values none did -- so
+// "block-meaned onto the frame grid" would name a mechanism this plane does
+// not have. That is `shippedSentence`'s own bug, one tier along.
 export function aggregateAnchor(delta) {
+  if (delta && delta.kind === 'selection') return selectionAnchor(delta)
   // Unknown reads as downsampled, the same way `isDownsampled` treats an
   // absent `coarsen_k`: claiming the stronger "native resolution" property for
   // a chart that cannot say is inventing the thing this sentence exists to
@@ -105,6 +178,20 @@ export function aggregateAnchor(delta) {
     `The period aggregate — the same field the Map tab shows, ${grid} where the ` +
     'Map tab strides onto a coarser one of its own, and coloured on the pooled ' +
     'scale rather than the Map tab’s clip.'
+  )
+}
+
+function selectionAnchor(delta) {
+  const verb = SELECTION_VERB[delta.statistic] || delta.statistic
+  const noun = SELECTION_NOUN[delta.statistic] || delta.statistic
+  const grid = delta.downsampled === false
+    ? 'at native resolution on the frame grid'
+    : `block-${verb === 'highest' ? 'maxed' : 'minned'} onto the frame grid, so each rendered cell holds a value some native cell in that block actually had`
+  return (
+    `The period ${noun} — the ${verb} value any interval holds at each cell, ${grid}. ` +
+    'This is NOT the field the Map tab shows: that stays the period mean whichever ' +
+    'statistic this toggle is on. Coloured on this plane’s own pooled scale rather ' +
+    'than the Map tab’s clip.'
   )
 }
 

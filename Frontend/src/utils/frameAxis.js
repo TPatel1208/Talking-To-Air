@@ -79,7 +79,15 @@ function bucketState(frame) {
 //
 // `loadState` is the blob fetch: 'idle' | 'loading' | 'loaded' | 'expired'
 // (a 404 -- evicted, or superseded pipeline version) | 'failed'.
-export function resolveFrameState(chart, loadState = 'idle') {
+//
+// `statistic` (T59 Phase 15) changes only the WORDING of the three degraded
+// details, and only away from the mean. `store_frame_stack` degrades one
+// statistic at a time and protects the mean from its own planes' evictions, so
+// "the frame values for this map have expired" is false of a chart whose mean
+// is sitting there intact -- and the sentence has to say what IS on screen,
+// which during any non-mean degradation is the period mean the Map tab draws.
+export function resolveFrameState(chart, loadState = 'idle', statistic = 'mean') {
+  const plane = statistic !== 'mean' ? statistic : null
   const axis = buildScrubAxis(chart)
 
   if (!axis) {
@@ -111,13 +119,17 @@ export function resolveFrameState(chart, loadState = 'idle') {
   if (loadState === 'expired') {
     return {
       ...base, mode: 'axis-only', sliderEnabled: false, reason: 'expired',
-      detail: 'The frame values for this map have expired and are no longer stored, so the time axis is labelled but cannot be scrubbed. Frames are never rebuilt after the fact.',
+      detail: plane
+        ? `The ${plane} frames for this map have expired and are no longer stored, so this statistic cannot be scrubbed — the map below is the period mean. Frames are never rebuilt after the fact; switch back to the mean to scrub.`
+        : 'The frame values for this map have expired and are no longer stored, so the time axis is labelled but cannot be scrubbed. Frames are never rebuilt after the fact.',
     }
   }
   if (loadState === 'failed') {
     return {
       ...base, mode: 'axis-only', sliderEnabled: false, reason: 'fetch-failed',
-      detail: 'The frame values could not be loaded, so the time axis is labelled but cannot be scrubbed.',
+      detail: plane
+        ? `The ${plane} frames could not be loaded, so this statistic cannot be scrubbed — the map below is the period mean. Switch back to the mean to scrub.`
+        : 'The frame values could not be loaded, so the time axis is labelled but cannot be scrubbed.',
     }
   }
   if (loadState === 'loaded') {
@@ -128,7 +140,9 @@ export function resolveFrameState(chart, loadState = 'idle') {
   // someone scrubbing for an event.
   return {
     ...base, mode: 'pending', sliderEnabled: false, reason: 'loading',
-    detail: 'Loading frame values — the time axis is ready, the pixels are still arriving.',
+    detail: plane
+      ? `Loading the ${plane} frames — the time axis is ready, and the map below is still the period mean until they arrive.`
+      : 'Loading frame values — the time axis is ready, the pixels are still arriving.',
   }
 }
 

@@ -13,7 +13,12 @@ import { resolveMasking } from './maskingProvenance.js'
 // grid (D5a): at k=8 a frame has already lost 16% of its own p98 and 70% of
 // its max, so recomputing a maximum from the pixels on screen would understate
 // exactly the peak the scrubber exists to find.
-export function statsForStop(chart, stop) {
+//
+// `statistic` is D6a's toggle (Phase 15), and it does NOT change a single
+// number here -- see `FIELD_NOTE`. It only says which field they are of.
+export function statsForStop(chart, stop, statistic = 'mean') {
+  const scoping = FIELD_NOTE[statistic] ? { fieldNote: FIELD_NOTE[statistic] } : null
+
   if (!stop || stop.kind === 'aggregate') {
     const today = computeChartStats(chart)
     // Null stays null: the Statistics tab's "no numeric values" branch is what
@@ -26,6 +31,7 @@ export function statsForStop(chart, stop) {
       scope: 'Period aggregate',
       state: 'observed',
       empty: false,
+      ...scoping,
     }
   }
 
@@ -47,7 +53,34 @@ export function statsForStop(chart, stop) {
     scope: stop.label,
     state: stop.state,
     empty,
+    ...scoping,
   }
+}
+
+// Design tension 1, resolved by SCOPING THE LABEL rather than by asking the
+// backend for more or by deriving anything from the pixels.
+//
+// `stop.statistics` is `_FRAME_STATS` -- the per-frame REGIONAL scalars,
+// computed off the MEAN field, shipping since Phase 3. Phase 13 decision 2 kept
+// them out of the per-plane block on purpose (they describe the interval and
+// the mean field, not the plane), and that reasoning is right. So in max mode
+// the row reading `Max` is the regional max of the mean field, which is a
+// measurably different number from the max plane's peak -- 50.5 against 100.0
+// on Phase 12's own fixture, which is why `PLANE_STATISTICS`' docstring exists.
+//
+// The other two options were rejected with reasons. WITHHOLDING leaves the
+// tab's most useful row empty exactly when someone has gone looking for a peak.
+// RECOMPUTING from the rendered array is what D5a forbids outright: at k=8 a
+// frame has already lost 16% of its own p98 and 70% of its max, so it would
+// understate precisely the peak the scrubber exists to find (see :12-15).
+//
+// Scoped NARROWLY, and only these three. `count`, `validPct`, `qaPassRate`, the
+// granule count and the empty state are facts about the INTERVAL, equally true
+// under any plane; caveating them too would be noise that hides the one row
+// that needs it.
+const FIELD_NOTE = {
+  max: 'of the mean field — not the max plane the map is showing',
+  min: 'of the mean field — not the min plane the map is showing',
 }
 
 // A frame's QA pass rate as a display percentage, floored at both ends so

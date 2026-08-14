@@ -23,13 +23,18 @@
 // Returns the same shape MapLibreHeatmapPanel's `colorScaleOverride` already
 // takes, plus the basis line the legend discloses instead of the payload's own
 // percentile note (which no longer describes what is drawn).
-export function resolveScrubberScale(chart, scrubbing) {
+// `statistic` is D6a's toggle (Phase 15). Each plane pools its OWN 2-98 --
+// the mean's clip on a max plane saturates at exactly the stops someone
+// switched to max to see, which is the one thing that mode exists to show.
+export function resolveScrubberScale(chart, scrubbing, statistic = 'mean') {
   if (!scrubbing) return null
 
-  const range = chart?.frames?.value_range
-  // Null when nothing in the stack survived masking. There is no pooled clip
-  // to show, and inventing one from the map's range would label the scrubber
-  // with a scale it was not built on.
+  const source = statisticRange(chart?.frames, statistic)
+  const range = source?.value_range
+  // Null when nothing in the stack survived masking, and null again when the
+  // named statistic has no pooled range of its own. There is no clip to show,
+  // and inventing one -- from the map's range, or from the mean's -- would
+  // label the scrubber with a scale it was not built on.
   if (!Array.isArray(range) || range.length !== 2) return null
   const [vmin, vmax] = range
   if (!Number.isFinite(vmin) || !Number.isFinite(vmax)) return null
@@ -42,9 +47,35 @@ export function resolveScrubberScale(chart, scrubbing) {
     // and belongs in the disclosure block; the legend gets a caption that fits
     // under a 180px colorbar, because a legend that goes quiet about which of
     // the two scales is drawn is precisely Risk 5's legibility hazard.
-    legendNote: SCRUBBER_LEGEND_NOTE,
+    legendNote: legendNoteFor(statistic),
     basis: chart.frames.scale_basis || null,
   }
 }
 
+// The pooled range for one statistic. The mean's is the chart's own top-level
+// entry (D6a decision 5 -- it is not a `planes` key); a plane's is on its own
+// block, because `value_range` is one of the four things Phase 13 decision 2
+// found genuinely differ per plane.
+function statisticRange(block, statistic) {
+  if (!block) return null
+  if (statistic === 'mean') return block
+  return block.planes?.[statistic] || null
+}
+
+// Under a 180px colorbar, so the statistic goes in as a word and the pooling
+// stays the clause it always was.
+//
+// The mean's caption is UNCHANGED, deliberately: D6a decision 5 keeps the mean
+// entry exactly as it was, and a chart that gained planes must not have its
+// default mode reworded by the existence of modes the reader has not opened.
+// What disambiguates the mean is the same click Risk 5's mitigation already
+// rests on -- the toggle, the numbers and this caption all move together.
 const SCRUBBER_LEGEND_NOTE = '2nd–98th pct, pooled across frames'
+const PLANE_LEGEND_NOTE = {
+  max: '2nd–98th pct, pooled across the max frames',
+  min: '2nd–98th pct, pooled across the min frames',
+}
+
+function legendNoteFor(statistic) {
+  return PLANE_LEGEND_NOTE[statistic] || SCRUBBER_LEGEND_NOTE
+}

@@ -77,3 +77,69 @@ test('the legend gets a caption it can actually fit, the disclosure gets the who
   assert.match(scale.legendNote, /pooled/)
   assert.ok(scale.basis.length > 100)
 })
+
+// ── T59 Phase 15: each plane's own pooled clip (D9) ───────────────────────────
+
+const planed = {
+  ...chart,
+  frames: {
+    ...chart.frames,
+    planes: {
+      max: { value_range: [1.0e14, 2.46e16], url: '/chart/c1/frames.max.f32.gz' },
+      min: { value_range: [-6.49e14, 1.2e15], url: '/chart/c1/frames.min.f32.gz' },
+    },
+  },
+}
+
+test('the max plane is drawn on its own pooled clip, never the mean’s', () => {
+  // D9, one level in. The mean's pooled range tops out at 6.21e15 and the max
+  // plane reaches 2.46e16, so drawing the max on the mean's clip saturates it
+  // at exactly the stops a reader switched to max to see -- flat colour over
+  // every peak, which is the one thing this mode exists to show.
+  const max = resolveScrubberScale(planed, true, 'max')
+
+  assert.equal(max.vmin, 1.0e14)
+  assert.equal(max.vmax, 2.46e16)
+  assert.notEqual(max.vmax, planed.frames.value_range[1])
+})
+
+test('the min plane gets its own clip too, and the mean keeps the one it had', () => {
+  const min = resolveScrubberScale(planed, true, 'min')
+  const mean = resolveScrubberScale(planed, true, 'mean')
+
+  assert.equal(min.vmin, -6.49e14)
+  assert.deepEqual([mean.vmin, mean.vmax], planed.frames.value_range)
+})
+
+test('the legend caption says which statistic it pooled', () => {
+  // Risk 5's mitigation is that the legend's numbers, its caption and the
+  // button all change on the same click. This phase adds a third and a fourth
+  // ramp to one field, so a caption that names no statistic leaves the reader
+  // with four scales and one sentence.
+  const max = resolveScrubberScale(planed, true, 'max')
+  const min = resolveScrubberScale(planed, true, 'min')
+
+  assert.match(max.legendNote, /max/i)
+  assert.match(min.legendNote, /min/i)
+  assert.notEqual(max.legendNote, min.legendNote)
+  assert.ok(max.legendNote.length < 60)
+})
+
+test('the mean’s caption is byte-identical whether or not the chart has planes', () => {
+  // D6a decision 5: the mean entry keeps its exact shape and cost. A chart
+  // that gained planes must not have its default mode reworded by them.
+  assert.equal(
+    resolveScrubberScale(planed, true, 'mean').legendNote,
+    resolveScrubberScale(chart, true).legendNote,
+  )
+})
+
+test('a statistic with no pooled range of its own gets no ramp, not the mean’s', () => {
+  // Same rule as the source url. Falling back would put the max plane's
+  // pixels on the mean's ramp with the legend saying "max" -- a picture that
+  // is wrong everywhere and looks entirely plausible.
+  const blind = { ...planed, frames: { ...planed.frames, planes: { max: { url: '/x' } } } }
+
+  assert.equal(resolveScrubberScale(blind, true, 'max'), null)
+  assert.equal(resolveScrubberScale(planed, true, 'p99'), null)
+})

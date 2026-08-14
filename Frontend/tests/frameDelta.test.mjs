@@ -267,3 +267,138 @@ test('MapScrubber actually hands the anchor its argument', () => {
     + 'read.',
   )
 })
+
+// ── T59 Phase 15: the sentences that stop being true when the toggle flips ────
+
+// A selection plane's own agreement figure, as Phase 11 G5 measured it and
+// Phase 14 shipped it: bit-exact on both identities, both bundles.
+const EXACT = { headline: 0.0, max_abs: 0.0, basis: GRID_BASIS }
+
+function planedChart(frames, planes) {
+  const chart = chartWith(frames)
+  chart.frames.planes = planes
+  return chart
+}
+
+test('a selection plane never prints "under 0.1%" for an identity that holds exactly', () => {
+  // D6a: "Printing 'under 0.1 %' here would be exactly the failure
+  // `_DELTA_FLOOR` exists to prevent." A measurement that found nothing and an
+  // identity that holds exactly are different claims, and this tier's is the
+  // second.
+  const delta = resolveFrameDelta(planedChart(
+    { tier: 'cadence', cadence: 'hourly', buckets_per_frame: 1, delta: null, frame_grid_delta: SHIPPED },
+    { max: { frame_grid_delta: EXACT, url: '/chart/c1/frames.max.f32.gz' } },
+  ), 'max')
+
+  assert.doesNotMatch(delta.summary, /under 0\.1%/)
+  assert.doesNotMatch(delta.summary, /0\.0%/)
+  assert.equal(delta.gridPct, null)
+})
+
+test('a selection plane states the identity instead of measuring one', () => {
+  // D6a decision 8 asks for one sentence stating the identity. `max` selects
+  // a value rather than combining values, so it is associative and invariant
+  // to weighting -- there is no number here to print.
+  const delta = resolveFrameDelta(planedChart(
+    { tier: 'cadence', cadence: 'hourly', buckets_per_frame: 1, delta: null, frame_grid_delta: SHIPPED },
+    { max: { frame_grid_delta: EXACT, url: '/chart/c1/frames.max.f32.gz' } },
+  ), 'max')
+
+  assert.match(delta.summary, /exactly/)
+  assert.equal(delta.severity, 'none')
+})
+
+test('a selection plane does not describe the frames as being averaged', () => {
+  // "the map above is their equally-weighted average" is not a relationship a
+  // max plane has. Under a selection the relationship is not an average at
+  // all, and it is the associativity that makes the figure zero.
+  const max = resolveFrameDelta(planedChart(
+    { tier: 'cadence', cadence: 'hourly', buckets_per_frame: 1, delta: null, frame_grid_delta: SHIPPED },
+    { max: { frame_grid_delta: EXACT, url: '/x' } },
+  ), 'max')
+  const min = resolveFrameDelta(planedChart(
+    { tier: 'coarsened', cadence: 'hourly', buckets_per_frame: 3, delta: SHIPPED, frame_grid_delta: SHIPPED },
+    { min: { frame_grid_delta: EXACT, url: '/x' } },
+  ), 'min')
+
+  assert.doesNotMatch(max.summary, /average|averag/i)
+  assert.doesNotMatch(min.summary, /average|averag/i)
+  // Deleted rather than reworded would leave the max tier saying nothing about
+  // a relationship the mean tier explains at length.
+  assert.match(max.summary, /hourly/)
+  assert.match(min.summary, /3 hourly/)
+})
+
+test('the coarsened tier’s temporal delta is not carried onto a selection plane', () => {
+  // `delta` and `frame_grid_delta` on the block are the MEAN's. Both are
+  // structurally zero for a selection, in both tiers, and reporting the mean's
+  // 3.74% beside a max picture would attribute a mean-only disagreement to a
+  // plane that does not have it.
+  const delta = resolveFrameDelta(planedChart(
+    { tier: 'coarsened', cadence: 'hourly', buckets_per_frame: 3, delta: SHIPPED, frame_grid_delta: SHIPPED },
+    { max: { frame_grid_delta: EXACT, url: '/x' } },
+  ), 'max')
+
+  assert.equal(delta.headlinePct, null)
+  assert.doesNotMatch(delta.summary, /1\.9%|3\.7%|1\.876|under 0\.1%/)
+})
+
+test('a plane whose own figure is NOT zero reports it, rather than claiming the identity', () => {
+  // The identity is asserted from the payload, not from the operation's name.
+  // If a plane ever ships a real disagreement, saying "exactly" would be the
+  // same class of falsehood Phase 8 caught in this file.
+  const delta = resolveFrameDelta(planedChart(
+    { tier: 'cadence', cadence: 'hourly', buckets_per_frame: 1, delta: null, frame_grid_delta: SHIPPED },
+    { max: { frame_grid_delta: { headline: 0.021, max_abs: 3e15, basis: GRID_BASIS }, url: '/x' } },
+  ), 'max')
+
+  assert.doesNotMatch(delta.summary, /exactly/)
+  assert.match(delta.summary, /2\.1%/)
+  assert.equal(delta.severity, 'moderate')
+})
+
+test('stop 0 in max mode does not claim to be the field the Map tab shows', () => {
+  // D11's explicit exception. `plot_singular` has no statistic parameter, so
+  // the Map tab is always a mean and stop 0 in max mode is the period MAX --
+  // emphatically not the field above it. This is the same KIND of falsehood
+  // Phase 8 §1 caught in this exact function.
+  const delta = resolveFrameDelta(planedChart(
+    { tier: 'cadence', cadence: 'hourly', buckets_per_frame: 1, coarsen_k: [2, 2], delta: null, frame_grid_delta: SHIPPED },
+    { max: { frame_grid_delta: EXACT, url: '/x' } },
+  ), 'max')
+
+  const anchor = aggregateAnchor(delta)
+
+  assert.doesNotMatch(anchor, /the same field the Map tab shows/)
+  assert.match(anchor, /Map tab/)
+  assert.match(anchor, /maximum|highest/i)
+})
+
+test('the anchor does not call a block MAX a block mean', () => {
+  // D6a decision 4: block max is the spatial reducer for a selection plane,
+  // and every rendered value is one some native cell actually held. "Block-
+  // meaned onto the frame grid" names a mechanism this plane does not have --
+  // the same mistake `shippedSentence` was rewritten to stop making one tier
+  // along.
+  const downsampled = resolveFrameDelta(planedChart(
+    { tier: 'cadence', cadence: 'hourly', buckets_per_frame: 1, coarsen_k: [5, 5], delta: null, frame_grid_delta: SHIPPED },
+    { max: { frame_grid_delta: EXACT, url: '/x' } },
+  ), 'max')
+
+  const anchor = aggregateAnchor(downsampled)
+
+  assert.doesNotMatch(anchor, /block-meaned/)
+  assert.match(anchor, /block-max/i)
+})
+
+test('the mean’s own sentences are untouched by the toggle existing', () => {
+  // Deliverable 1: a chart read as the mean renders exactly what shipped
+  // before this phase, whether or not planes sit beside it.
+  const frames = { tier: 'cadence', cadence: 'hourly', buckets_per_frame: 1, coarsen_k: [1, 1], delta: null, frame_grid_delta: SHIPPED }
+  const bare = resolveFrameDelta(chartWith(frames))
+  const withPlanes = resolveFrameDelta(planedChart(frames, { max: { frame_grid_delta: EXACT, url: '/x' } }), 'mean')
+
+  assert.equal(withPlanes.summary, bare.summary)
+  assert.equal(aggregateAnchor(withPlanes), aggregateAnchor(bare))
+  assert.match(aggregateAnchor(bare), /the same field the Map tab shows/)
+})

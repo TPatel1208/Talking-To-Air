@@ -258,3 +258,52 @@ test('the axis carries the block\'s own descriptors, for the control to label it
   assert.equal(axis.tier, 'cadence')
   assert.equal(axis.cellsPerFrame, 6)
 })
+
+// ── T59 Phase 15: the degradation sentences name the plane that degraded ─────
+
+test('a plane still arriving says the map is showing the mean, not that the map is empty', () => {
+  // Design tension 3's other half. `useFrameStack` holds one stack, so during
+  // a switch the canvas falls back to the chart's own period aggregate -- the
+  // MEAN. Saying only "the pixels are still arriving" leaves the reader
+  // looking at a mean field with a max button lit and no sentence connecting
+  // the two.
+  const pending = resolveFrameState(chart, 'loading', 'max')
+
+  assert.equal(pending.mode, 'pending')
+  assert.equal(pending.sliderEnabled, false)
+  assert.match(pending.detail, /max/)
+  assert.match(pending.detail, /mean/)
+})
+
+test('one statistic expiring does not report the whole map’s frames as gone', () => {
+  // `store_frame_stack` degrades one statistic at a time and protects the mean
+  // from its own planes' evictions, so "the frame values for this map have
+  // expired" is false of a chart whose mean is sitting there intact.
+  const expired = resolveFrameState(chart, 'expired', 'max')
+
+  assert.equal(expired.mode, 'axis-only')
+  assert.equal(expired.reason, 'expired')
+  assert.match(expired.detail, /max/)
+  assert.doesNotMatch(expired.detail, /The frame values for this map have expired/)
+})
+
+test('a failed plane fetch points back at the statistic that still works', () => {
+  const failed = resolveFrameState(chart, 'failed', 'min')
+
+  assert.match(failed.detail, /min/)
+  assert.match(failed.detail, /mean/)
+})
+
+test('the mean’s own degradation sentences are exactly the ones that shipped', () => {
+  // Deliverable 1. These three strings are what a chart with no planes reads,
+  // and nothing about the toggle existing may reword them.
+  for (const loadState of ['loading', 'expired', 'failed']) {
+    assert.equal(
+      resolveFrameState(chart, loadState, 'mean').detail,
+      resolveFrameState(chart, loadState).detail,
+      loadState,
+    )
+  }
+  assert.match(resolveFrameState(chart, 'expired').detail, /^The frame values for this map have expired/)
+  assert.match(resolveFrameState(chart, 'loading').detail, /^Loading frame values/)
+})
