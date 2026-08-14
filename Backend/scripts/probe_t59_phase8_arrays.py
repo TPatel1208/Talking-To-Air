@@ -46,7 +46,7 @@ def main(payload_path, blob_path):
     ok = np.isfinite(mean_of_frames) & np.isfinite(period)
     headline = d16(mean_of_frames, period, lats)
     rel = (np.abs(mean_of_frames - period) / np.abs(period))[ok]
-    print(f"\nmean(frames) vs frame 0, ON THE SHIPPED ARRAYS")
+    print("\nmean(frames) vs frame 0, ON THE SHIPPED ARRAYS")
     print(f"  D16 headline           : {headline:.4f} %")
     print(f"  max |F-M|              : {np.abs(mean_of_frames - period)[ok].max():.4e} {payload.get('units','')}")
     print(f"  cells compared         : {int(ok.sum())} of {period.size}")
@@ -57,7 +57,7 @@ def main(payload_path, blob_path):
 
     ramp_map = payload["vmax"] - payload["vmin"]
     lo, hi = block["value_range"]
-    print(f"\nRisk 5, the two ramps for one field")
+    print("\nRisk 5, the two ramps for one field")
     print(f"  Map tab  {payload['vmin']:.4e} .. {payload['vmax']:.4e}  (width {ramp_map:.4e})")
     print(f"  scrubber {lo:.4e} .. {hi:.4e}  (width {hi - lo:.4e})")
     print(f"  scrubber ramp is {(hi - lo) / ramp_map:.2f}x the Map tab's")

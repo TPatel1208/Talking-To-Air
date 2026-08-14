@@ -53,7 +53,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from tta_backend.preprocessing.aggregation_service import AggregationService, cos_lat_weights
+from tta_backend.preprocessing.aggregation_service import AggregationService
 from tta_backend.services.open_handle import _open_netcdf_bundle
 from tta_backend.utils.geo_utils import find_lat_coord, find_lon_coord, identify_time
 
@@ -350,7 +350,7 @@ def _native_stats_dataset(common: dict) -> xr.Dataset:
         "block_min_of_min": _bare_grid(
             block_reduce(g_min, lat, lon, k_lat, k_lon, "min"), lat, lon),
     })
-    with Stage("compute [native + block, mean/max/min]") as st:
+    with Stage("compute [native + block, mean/max/min]"):
         out = ds.compute()
     print(f"  materialized {mb(sum(out[v].nbytes for v in out.data_vars))} total")
     for v in out.data_vars:
@@ -468,7 +468,7 @@ def g3(computed: xr.Dataset, common: dict) -> dict:
 
     # Trailing block, the specific edge probe_t59_coarsen_edge.py used for mean.
     native_max = np.asarray(computed["native_max"].values, dtype="float64")
-    k_lat, k_lon = common["k_lat"], common["k_lon"]
+    k_lat = common["k_lat"]
     out_lat = block_max.shape[-2]
     tail_native = native_max[:, (out_lat - 1) * k_lat:, :]
     n_finite_tail = int(np.isfinite(tail_native).sum())
@@ -608,7 +608,6 @@ def g5(computed: xr.Dataset, common: dict) -> dict:
         )
 
     both_finite = np.isfinite(method_a) & np.isfinite(method_b)
-    both_nan = np.isnan(method_a) & np.isnan(method_b)
     agree_shape = method_a.shape == method_b.shape
     exact_on_finite = bool(np.array_equal(method_a[both_finite], method_b[both_finite]))
     nan_pattern_matches = bool(np.array_equal(np.isnan(method_a), np.isnan(method_b)))
@@ -663,7 +662,6 @@ def g5(computed: xr.Dataset, common: dict) -> dict:
             temporal_first = np.where(
                 np.isfinite(padded_native).reshape(native_grouped_shape).any(axis=1), temporal_first, np.nan,
             )
-        padded_lat, padded_lon = temporal_first.shape[-2], temporal_first.shape[-1]
         blocks_d = np.pad(
             temporal_first, ((0, 0), (0, pad_lat), (0, pad_lon)), constant_values=np.nan,
         ).reshape(n_frames, out_lat, k_lat, out_lon, k_lon)

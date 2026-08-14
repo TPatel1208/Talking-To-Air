@@ -87,7 +87,6 @@ def main() -> int:
 
     # --- G2: retention of the native per-bucket max, block max vs block mean.
     # The native reference, computed here the way the gate did.
-    lat, lon = find_lat_coord(field), find_lon_coord(field)
     stamps = pd.to_datetime(np.asarray(field[time_dim].values))
     floor = {"hourly": "h", "daily": "D"}.get(cadence)
     starts = (
@@ -157,7 +156,7 @@ def main() -> int:
                   f"{np.array_equal(after[both], before[both])}  max abs diff={worst}")
 
     # --- G4: the extent overstatement.
-    print(f"\n  G4 extent overstatement (gate: 24.699x pooled, ceiling 25):")
+    print("\n  G4 extent overstatement (gate: 24.699x pooled, ceiling 25):")
     print(f"    {plane.extent_overstatement}")
 
     # --- G5: both identities, and the mean's own for contrast.
