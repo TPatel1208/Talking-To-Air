@@ -812,8 +812,14 @@ def sweep_store(current_pipeline_version: str) -> None:
             manifest is not None
             and str(manifest.get("pipeline_version", "")) != current_pipeline_version
         )
-        if entry.name.startswith(_STAGING_PREFIX) or not (manifest is not None or refused):
+        if entry.name.startswith(_STAGING_PREFIX):
             shutil.rmtree(entry.path, ignore_errors=True)
+        elif manifest is None:
+            # Manifest-less and not a refusal: the write never completed. The
+            # two are separate arms rather than one disjunction so that the
+            # version case below reads on a manifest mypy knows is there.
+            if not refused:
+                shutil.rmtree(entry.path, ignore_errors=True)
         elif superseded:
             logger.info(
                 "cube_reclaimed_stale_pipeline_version",
