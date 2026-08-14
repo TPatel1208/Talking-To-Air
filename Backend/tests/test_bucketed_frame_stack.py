@@ -1028,6 +1028,663 @@ class ShippedArrayAgreementTests(unittest.TestCase):
 
 
 @unittest.skipIf(importlib.util.find_spec("xarray") is None, "xarray is not installed")
+class PlaneAgreementIdentityTests(unittest.TestCase):
+    """D6a decision 8: the selection planes' two associativity identities hold
+    EXACTLY, and the test says so with ``assertEqual`` rather than a tolerance.
+
+    Phase 11's G5 measured both on real float64 planes from two live bundles
+    and got ``0.0`` max abs difference on every one, including at partially
+    covered and all-NaN cells. There was no floating-point reason to expect
+    otherwise: ``max`` and ``min`` SELECT a value rather than accumulating one,
+    so there is no summation order for rounding to depend on, and the float32
+    narrowing rounds the same number the mean plane's cells were rounded from.
+    A tolerance here would be hiding a bug rather than accommodating noise that
+    does not exist.
+
+    These reuse ``ShippedArrayAgreementTests``' fixtures deliberately. The
+    sharpest possible demonstration that these are different statistics with
+    different guarantees is the SAME field, where the mean's own disagreement
+    is a real 20% and the selections' is a real zero.
+    """
+
+    def setUp(self):
+        import numpy as np
+        import xarray as xr
+
+        self.np, self.xr = np, xr
+
+    def _days(self, *days):
+        np = self.np
+        return self.xr.DataArray(
+            np.stack([np.asarray(day, dtype=float) for day in days]),
+            dims=("time", "lat", "lon"),
+            coords={
+                "time": np.array(
+                    [f"2024-01-{d + 1:02d}T12:00" for d in range(len(days))],
+                    dtype="datetime64[ns]",
+                ),
+                "lat": np.array([0.0, 1.0]),
+                "lon": np.array([-75.0, -74.0]),
+            },
+            name="no2",
+        )
+
+    def _stack(self, field, **kwargs):
+        from tta_backend.preprocessing.frame_stack import build_frame_stack
+
+        return build_frame_stack(
+            field, time_dim="time", cadence="daily", target_cells=1,
+            statistics=("mean", "max", "min"), **kwargs,
+        )
+
+    def _unevenly_seen_block(self):
+        """Phase 9's own fixture: both top-row cells seen on day one, only the
+        left one seen again on day two. One 2x2 block, seen unevenly."""
+        nan = self.np.nan
+        return self._days(
+            [[10.0, 10.0], [nan, nan]],
+            [[20.0, nan], [nan, nan]],
+        )
+
+    def test_the_selection_planes_agree_exactly_where_the_mean_plane_does_not(self):
+        """Identity A, on the field that makes the mean's version non-trivial.
+
+        Averaging the mean plane's two frames gives 15 against a period plane
+        of 12.5 -- 20%, because the block mean and the across-frame mean do not
+        commute under partial coverage. Taking the MAX of the max plane's two
+        frames gives 20, and its period plane is 20, because max commutes with
+        everything. Same field, same block, same coverage: the disagreement is
+        a property of the statistic, not of the data.
+        """
+        stack = self._stack(self._unevenly_seen_block())
+
+        self.assertEqual(stack.coarsen_k, (2, 2))
+        self.assertAlmostEqual(stack.frame_grid_delta["headline"], 0.2, places=6)
+        for name in ("max", "min"):
+            plane = stack.planes[name]
+            self.assertEqual(
+                plane.frame_grid_delta["headline"], 0.0,
+                f"{name} plane disagreed with its own period plane",
+            )
+            self.assertEqual(plane.frame_grid_delta["max_abs"], 0.0)
+
+    def test_the_period_plane_is_the_period_extreme_not_the_period_mean(self):
+        """What the identity above is an identity BETWEEN. Stop 0 in max mode
+        is the period max (D6a decision 3) -- 20 here, the largest value any
+        native cell in the block ever held -- and emphatically not the Map
+        tab's 12.5, which is what a stack that reused the mean's period plane
+        would render at the same stop."""
+        stack = self._stack(self._unevenly_seen_block())
+
+        self.assertEqual(float(stack.planes["max"].period_values[0, 0]), 20.0)
+        self.assertEqual(float(stack.planes["min"].period_values[0, 0]), 10.0)
+        self.assertAlmostEqual(float(stack.period_values[0, 0]), 12.5, places=4)
+
+    def test_grouping_before_or_after_the_block_max_gives_the_same_answer(self):
+        """Identity B, and it needs ``group > 1`` to exist at all.
+
+        Four days into two frames. One stack groups the cadence buckets
+        temporally and then block-maxes; the other is built at the cadence tier
+        and its frames are grouped afterwards, here, by hand. Max is
+        associative, so the orders cannot disagree -- and the check is
+        ``array_equal`` on the shipped float32 bytes, not ``allclose``.
+        """
+        np = self.np
+        nan = np.nan
+        field = self._days(
+            [[10.0, 10.0], [nan, nan]],
+            [[20.0, nan], [nan, nan]],
+            [[30.0, 30.0], [nan, nan]],
+            [[nan, 40.0], [nan, nan]],
+        )
+
+        grouped = self._stack(field, max_frames=2)
+        per_bucket = self._stack(field, max_frames=4)
+
+        self.assertEqual(grouped.tier, "coarsened")
+        self.assertEqual(grouped.buckets_per_frame, 2)
+        self.assertEqual(per_bucket.tier, "cadence")
+
+        for name, reducer in (("max", np.max), ("min", np.min)):
+            after = grouped.planes[name].values
+            before = np.stack([
+                reducer(per_bucket.planes[name].values[pair:pair + 2], axis=0)
+                for pair in (0, 2)
+            ])
+            self.assertTrue(
+                np.array_equal(after, before),
+                f"{name}: grouping after the block reduction gave {after.ravel()}, "
+                f"grouping before gave {before.ravel()}",
+            )
+
+    def test_the_coarsened_tier_selection_planes_still_agree_exactly(self):
+        """The tier whose whole reason for existing is that its temporal
+        aggregation is a DIFFERENT measurement -- the mean plane discloses
+        1/28 on these arrays -- and the selection planes are still exactly
+        zero, because grouping buckets is one more max over the same values."""
+        nan = self.np.nan
+        stack = self._stack(
+            self._days(
+                [[10.0, 10.0], [nan, nan]],
+                [[20.0, nan], [nan, nan]],
+                [[30.0, 30.0], [nan, nan]],
+                [[nan, 40.0], [nan, nan]],
+            ),
+            max_frames=2,
+        )
+
+        self.assertAlmostEqual(stack.frame_grid_delta["headline"], 1 / 28, places=6)
+        for name in ("max", "min"):
+            self.assertEqual(stack.planes[name].frame_grid_delta["headline"], 0.0)
+
+    def test_a_selection_plane_never_carries_the_means_account_of_itself(self):
+        """``FRAME_GRID_DELTA_BASIS`` says "mean of the stored frame planes",
+        and for a max plane that sentence is false about a real measurement --
+        the number beside it was reduced with ``max``. Two quantities under one
+        basis string is the failure ``DELTA_BASIS`` exists to prevent wearing
+        yet another shoe, and it would be an easy one to ship, because the
+        wrong basis and the right one describe numbers that are both zero."""
+        from tta_backend.preprocessing.frame_stack import (
+            FRAME_GRID_DELTA_BASIS, PLANE_AGREEMENT_BASIS,
+        )
+
+        stack = self._stack(self._unevenly_seen_block())
+
+        self.assertEqual(stack.frame_grid_delta["basis"], FRAME_GRID_DELTA_BASIS)
+        self.assertEqual(PLANE_AGREEMENT_BASIS["mean"], FRAME_GRID_DELTA_BASIS)
+        bases = {name: stack.planes[name].frame_grid_delta["basis"] for name in ("max", "min")}
+        self.assertEqual(len(set(bases.values()) | {FRAME_GRID_DELTA_BASIS}), 3)
+        self.assertIn("max of the stored frame planes", bases["max"])
+        self.assertIn("min of the stored frame planes", bases["min"])
+
+
+@unittest.skipIf(importlib.util.find_spec("xarray") is None, "xarray is not installed")
+class BlockMaxAndMinPlaneTests(unittest.TestCase):
+    """D6a decision 4: a max plane's SPATIAL reducer is the block max, not the
+    block mean.
+
+    The distinction is invisible on a smooth field and is the whole product on
+    a sharp one, so every fixture here is a single hot cell against a cold or
+    empty block -- Phase 11's own trap, restated. It is also all at k=(2,2) or
+    larger, never k=(1,1), where every block reduction is the identity function
+    and a passing test proves only that ``coarsen`` was not called (Phase 9's
+    lesson: both of its original identity tests pinned ``coarsen_k == [1, 1]``,
+    which is the regime no real regional retrieval is in).
+    """
+
+    def setUp(self):
+        import numpy as np
+        import xarray as xr
+
+        self.np, self.xr = np, xr
+
+    def _field(self, *days, lats=(0.0, 1.0, 2.0, 3.0)):
+        """One daily granule per argument over a 4x4 grid, which coarsens to
+        2x2 -- big enough that the blocks differ from each other rather than
+        the whole region being one block."""
+        np = self.np
+        return self.xr.DataArray(
+            np.stack([np.asarray(day, dtype=float) for day in days]),
+            dims=("time", "lat", "lon"),
+            coords={
+                "time": np.array(
+                    [f"2024-01-{d + 1:02d}T12:00" for d in range(len(days))],
+                    dtype="datetime64[ns]",
+                ),
+                "lat": np.asarray(lats, dtype=float),
+                "lon": np.array([-100.0, -99.0, -98.0, -97.0]),
+            },
+            name="no2",
+        )
+
+    def _sharp_day(self):
+        """Block (0,0) is one hot cell against three cold ones; block (0,1) was
+        never observed at all; block (1,0) is flat; block (1,1) has its own
+        smaller peak."""
+        nan = self.np.nan
+        return [
+            [100.0, 1.0, nan, nan],
+            [1.0, 1.0, nan, nan],
+            [2.0, 2.0, 3.0, 9.0],
+            [2.0, 2.0, 3.0, 3.0],
+        ]
+
+    def _stack(self, field, *, statistics=("mean", "max", "min"), target_cells=4, **kwargs):
+        from tta_backend.preprocessing.frame_stack import build_frame_stack
+
+        return build_frame_stack(
+            field, time_dim="time", cadence="daily", target_cells=target_cells,
+            statistics=statistics, **kwargs,
+        )
+
+    def test_the_max_plane_renders_the_peak_the_mean_plane_averages_away(self):
+        """The tracer bullet for the reduction itself.
+
+        One native cell held 100 in a block whose other three held 1. The mean
+        plane renders 25.75 -- a value no cell ever had, and a quarter of the
+        peak. The max plane renders 100.0 exactly, which is the entire reason
+        D6a asks for a second plane rather than a second colour ramp.
+        """
+        stack = self._stack(self._field(self._sharp_day(), [[5.0] * 4] * 4))
+
+        self.assertEqual(stack.coarsen_k, (2, 2))
+        self.assertEqual(float(stack.planes["max"].values[0][0, 0]), 100.0)
+        self.assertAlmostEqual(float(stack.values[0][0, 0]), 25.75, places=4)
+
+    def test_the_min_plane_renders_the_trough_the_mean_plane_averages_away(self):
+        """Min is not an afterthought (D6a decision 2): the same block whose
+        peak is 100 has a floor of 1, and the mean plane's 25.75 is 25 times
+        it. A layout that generalizes to three statistics has to be exercised
+        by three statistics, or decision 2 is a claim nothing checks."""
+        stack = self._stack(self._field(self._sharp_day(), [[5.0] * 4] * 4))
+
+        self.assertEqual(float(stack.planes["min"].values[0][0, 0]), 1.0)
+        self.assertEqual(float(stack.planes["min"].values[0][1, 1]), 3.0)
+
+    def test_every_block_of_the_max_plane_is_a_value_some_native_cell_held(self):
+        """The property that separates a selection from a computation, checked
+        on the whole frame rather than at the one cell the fixture was built
+        around. A block mean invents values none of its cells had; a block max
+        cannot, and that is what makes a peak readable off the picture."""
+        np = self.np
+        day = self._sharp_day()
+        stack = self._stack(self._field(day, [[5.0] * 4] * 4))
+
+        frame = stack.planes["max"].values[0]
+        self.assertTrue(np.array_equal(
+            np.nan_to_num(frame, nan=-1.0),
+            np.array([[100.0, -1.0], [2.0, 9.0]], dtype="float32"),
+        ))
+        # And the mean's own frame is a different array, so the assertion above
+        # is not passing because the two planes are the same bytes.
+        self.assertNotAlmostEqual(
+            float(stack.values[0][1, 1]), float(frame[1, 1]), places=4,
+        )
+
+    def test_a_block_nothing_was_observed_in_stays_absent_on_both_planes(self):
+        """G3, made permanent. ``coarsen(...).max(skipna=True)`` over an
+        all-NaN block returns the reducer's identity element in some array
+        libraries -- ``-inf`` for max, ``+inf`` for min -- which would render
+        as the hottest and coldest pixel on the chart at exactly the places
+        nothing was measured. It does not here, on either plane, and this is
+        the test that keeps it that way."""
+        np = self.np
+        stack = self._stack(self._field(self._sharp_day()))
+
+        for name in ("max", "min"):
+            frame = stack.planes[name].values[0]
+            self.assertTrue(
+                np.isnan(frame[0, 1]), f"{name} plane rendered {frame[0, 1]}",
+            )
+            self.assertFalse(np.isinf(frame).any(), f"{name} plane leaked an inf")
+
+    def test_the_pad_is_skipped_rather_than_reduced_with_the_block(self):
+        """``boundary="pad"`` on a grid k does not divide. The synthetic control
+        Phase 11 ran (``[1,2,3,4,5]`` at k=3 -> ``[3.0, 5.0]`` for max and
+        ``[1.0, 4.0]`` for min) reproduced through the public interface: a 5-row
+        grid at k=(3,3) keeps its short trailing block instead of trimming the
+        region edge away, and the NaN pad neither wins the max nor loses the
+        min."""
+        np = self.np
+        rows = [[float(r + 1)] * 5 for r in range(5)]
+        field = self.xr.DataArray(
+            np.asarray(rows, dtype=float)[None, ...],
+            dims=("time", "lat", "lon"),
+            coords={
+                "time": np.array(["2024-01-01T12:00"], dtype="datetime64[ns]"),
+                "lat": np.arange(5.0), "lon": np.arange(5.0),
+            },
+            name="no2",
+        )
+
+        stack = self._stack(field, target_cells=3)
+
+        self.assertEqual(stack.coarsen_k, (3, 3))
+        self.assertEqual(
+            [float(v) for v in stack.planes["max"].values[0][:, 0]], [3.0, 5.0],
+        )
+        self.assertEqual(
+            [float(v) for v in stack.planes["min"].values[0][:, 0]], [1.0, 4.0],
+        )
+
+
+@unittest.skipIf(importlib.util.find_spec("xarray") is None, "xarray is not installed")
+class PlanesAreOptionalTests(unittest.TestCase):
+    """D6a decision 5, read at the Python level: "the mean entry keeps its
+    exact current shape, URL and cost."
+
+    Everything in this repository until Phase 13 asks for the mean and nothing
+    else, so the shape of the win is that those callers cannot tell this phase
+    happened. Not "stayed compatible" -- unchanged, field for field and byte
+    for byte, including the numbers that would be the easiest to perturb by
+    accident (a delta reduced over a dataset that now carries more variables,
+    a pooled scale pooled over more histograms).
+    """
+
+    def setUp(self):
+        import numpy as np
+        import xarray as xr
+
+        self.np, self.xr = np, xr
+
+    def _field(self):
+        """Two granules per day for two days, so a bucket's mean, max and min
+        are three different fields rather than three names for the granule --
+        which they are wherever a bucket holds one granule, and which would
+        make every assertion below pass for the wrong reason."""
+        np = self.np
+        hot = np.full((4, 4), 1.0)
+        hot[0, 0], hot[3, 3] = 100.0, 5.0
+        cold = np.full((4, 4), 1.0)
+        cold[3, 3] = -5.0
+        flat = np.full((4, 4), 1.0)
+        return self.xr.DataArray(
+            np.stack([hot, cold, flat, flat]),
+            dims=("time", "lat", "lon"),
+            coords={
+                "time": np.array(
+                    ["2024-01-01T00:00", "2024-01-01T12:00",
+                     "2024-01-02T00:00", "2024-01-02T12:00"],
+                    dtype="datetime64[ns]",
+                ),
+                "lat": np.array([0.0, 1.0, 2.0, 3.0]),
+                "lon": np.array([-100.0, -99.0, -98.0, -97.0]),
+            },
+            name="no2",
+        )
+
+    def _stack(self, **kwargs):
+        from tta_backend.preprocessing.frame_stack import build_frame_stack
+
+        return build_frame_stack(
+            self._field(), time_dim="time", cadence="daily", target_cells=4,
+            **kwargs,
+        )
+
+    def test_a_caller_that_asks_for_nothing_new_gets_nothing_new(self):
+        """The default is today's behaviour exactly, and ``planes`` is empty
+        rather than holding a mean nobody asked for."""
+        stack = self._stack()
+
+        self.assertEqual(stack.planes, {})
+
+    def test_the_mean_tiers_own_numbers_are_untouched_by_the_extra_planes(self):
+        """The regression this phase is most likely to cause and least likely
+        to notice: two more statistics join the fused dataset the mean's delta,
+        pooled scale and per-frame statistics are all read out of."""
+        np = self.np
+        plain = self._stack()
+        widened = self._stack(statistics=("mean", "max", "min"))
+
+        self.assertTrue(np.array_equal(
+            np.nan_to_num(plain.values, nan=-1.0),
+            np.nan_to_num(widened.values, nan=-1.0),
+        ))
+        self.assertTrue(np.array_equal(plain.period_values, widened.period_values))
+        self.assertEqual(plain.frame_grid_delta, widened.frame_grid_delta)
+        self.assertEqual(plain.delta, widened.delta)
+        self.assertEqual(plain.value_range, widened.value_range)
+        self.assertEqual(
+            [f.statistics for f in plain.frames],
+            [f.statistics for f in widened.frames],
+        )
+
+    def test_each_plane_gets_its_own_pooled_scale(self):
+        """D9, per plane. One colour has to mean one value at every stop of a
+        scrub, and a max plane scrubbed against the MEAN's clip would saturate
+        at every stop that has a peak in it -- which is every stop anyone
+        switched to the max plane to look at. Pooled at native resolution
+        before the block reduction, the same as the mean's (D5a)."""
+        stack = self._stack(statistics=("mean", "max", "min"))
+
+        self.assertIsNotNone(stack.value_range)
+        self.assertGreater(
+            stack.planes["max"].value_range[1], stack.value_range[1],
+            "the max plane's clip did not reach above the mean plane's",
+        )
+        self.assertLess(
+            stack.planes["min"].value_range[0], stack.value_range[0],
+            "the min plane's clip did not reach below the mean plane's",
+        )
+
+    def test_a_statistic_with_no_plane_behind_it_is_refused(self):
+        """A typo, or a caller reaching for a statistic this reduction has
+        never measured. The alternative is a stack that silently ships one
+        fewer plane than it was asked for -- and the caller finding out in the
+        frontend, where the toggle is simply missing."""
+        with self.assertRaises(ValueError) as raised:
+            self._stack(statistics=("mean", "median"))
+
+        self.assertIn("median", str(raised.exception))
+
+    def test_the_plane_statistics_are_not_the_per_frame_scalars(self):
+        """The name collision this phase had to walk around. ``_FRAME_STATS``
+        is the per-frame REGIONAL SCALAR -- one number for the whole region,
+        which every frame has carried since Phase 3 -- and ``PLANE_STATISTICS``
+        is a field, one value per pixel. They are still, deliberately, two
+        objects: a chart can carry a max plane while every frame's scalar max
+        is exactly what it always was, and this asserts both live at once
+        rather than one having quietly become the other.
+
+        The two are not even the same NUMBER on this fixture, which is the
+        cleanest possible refutation of "max is max". Frame 0's scalar max is
+        **50.5** -- the largest value on the frame's MEAN field, where the hot
+        cell's 100 and its own 1 twelve hours later have already been averaged.
+        The max plane's peak is **100.0**, because it never took that mean. A
+        readout that had been quietly re-pointed at the plane would print 100
+        where it has always printed 50.5.
+        """
+        from tta_backend.preprocessing import frame_stack as module
+
+        stack = self._stack(statistics=("mean", "max"))
+
+        self.assertIsNot(module.PLANE_STATISTICS, module._FRAME_STATS)
+        # The regional scalar max of frame 0: one number, off the native MEAN
+        # field, exactly as every frame has carried since Phase 3.
+        self.assertEqual(stack.frames[0].statistics["max"], 50.5)
+        # The max PLANE's frame 0: a grid, and its own top-left block.
+        self.assertEqual(stack.planes["max"].values[0].shape, (2, 2))
+        self.assertEqual(float(stack.planes["max"].values[0][0, 0]), 100.0)
+
+
+@unittest.skipIf(importlib.util.find_spec("xarray") is None, "xarray is not installed")
+class ExtentOverstatementTests(unittest.TestCase):
+    """D6a decision 9, and the max tier's one real cost.
+
+    Block max paints a block's peak across every cell the block covers, so a
+    peak one native cell held is rendered at k^2 cells' worth of area. Phase 11
+    measured it at **24.7x** pooled on both live bundles at k=(5,5) -- 99% of
+    the k^2=25 ceiling, with the per-frame spread under half a percentage
+    point. Not a tail risk on a few hot frames: what block max costs on
+    essentially every finite block.
+
+    D16's rules apply to it whole: a ratio of weighted SUMS, never a mean of
+    per-block ratios, never signed. It gates nothing -- disclosure is the
+    posture the mean tier already took with its own deltas, and D5a's rule
+    ("nothing is derived from the reduced array without the reader being told")
+    is what makes it mandatory rather than optional.
+
+    Max only. The mean plane's equivalent question is a different one entirely
+    -- a block mean does not paint any cell's value anywhere -- and a minimum
+    has no analogous overstatement story, since nobody reads a trough as an
+    extent. Measuring it for them would be inventing a number to be symmetric
+    with, which is exactly what D6a decision 8 refuses for the agreement
+    figure in the other direction.
+    """
+
+    def setUp(self):
+        import numpy as np
+        import xarray as xr
+
+        self.np, self.xr = np, xr
+
+    def _days(self, *days, lats=(0.0, 60.0)):
+        """A 2x2 grid whose two rows are deliberately at cos(lat) 1.0 and 0.5,
+        so a metric that counted CELLS instead of AREA gets a different answer
+        from a metric that weights them -- and the fixture can tell."""
+        np = self.np
+        return self.xr.DataArray(
+            np.stack([np.asarray(day, dtype=float) for day in days]),
+            dims=("time", "lat", "lon"),
+            coords={
+                "time": np.array(
+                    [f"2024-01-{d + 1:02d}T12:00" for d in range(len(days))],
+                    dtype="datetime64[ns]",
+                ),
+                "lat": np.asarray(lats, dtype=float),
+                "lon": np.array([-75.0, -74.0]),
+            },
+            name="no2",
+        )
+
+    def _stack(self, field, *, target_cells=1, **kwargs):
+        from tta_backend.preprocessing.frame_stack import build_frame_stack
+
+        return build_frame_stack(
+            field, time_dim="time", cadence="daily", target_cells=target_cells,
+            statistics=("mean", "max", "min"), **kwargs,
+        )
+
+    def test_one_hot_cell_is_painted_across_its_whole_blocks_area(self):
+        """The exact fixture number, not "roughly k^2".
+
+        One 2x2 block, one cell at 9 against three at 1, on both days. The
+        block covers cos(0)+cos(0)+cos(60)+cos(60) = 1+1+0.5+0.5 = **3.0**
+        cells' worth of weighted area, and the area actually holding the
+        block's own peak is the single equatorial cell's **1.0**. So the
+        rendered peak overstates its extent by exactly **3.0x** -- not the
+        4.0x an unweighted k^2 count would report, which is what makes this
+        fixture able to fail on a metric that forgot cos(latitude).
+        """
+        stack = self._stack(self._days(
+            [[9.0, 1.0], [1.0, 1.0]],
+            [[9.0, 1.0], [1.0, 1.0]],
+        ))
+
+        overstatement = stack.planes["max"].extent_overstatement
+        self.assertEqual(stack.coarsen_k, (2, 2))
+        self.assertAlmostEqual(overstatement["headline"], 3.0, places=9)
+        self.assertAlmostEqual(overstatement["worst_frame"], 3.0, places=9)
+        self.assertEqual(overstatement["ceiling"], 4)
+
+    def test_the_same_peak_at_a_poleward_cell_overstates_twice_as_much(self):
+        """Move the hot cell to the cos(60) row and nothing else. The block's
+        rendered area is the same 3.0 and the area at peak is now 0.5, so the
+        figure is **6.0x**. A cell-counting metric would report 4.0x for both
+        this fixture and the one above."""
+        stack = self._stack(self._days(
+            [[1.0, 1.0], [9.0, 1.0]],
+            [[1.0, 1.0], [9.0, 1.0]],
+        ))
+
+        self.assertAlmostEqual(
+            stack.planes["max"].extent_overstatement["headline"], 6.0, places=9,
+        )
+
+    def test_a_tie_at_the_block_max_is_area_that_really_held_the_peak(self):
+        """Two cells at 9, both equatorial: 2.0 of the block's 3.0 really is at
+        the rendered value, so the overstatement is **1.5x**. The metric counts
+        the area at the block's own max, not "one cell" -- which matters
+        because at native TEMPO resolution with continuous float64 values a tie
+        is rare, and that rarity is precisely WHY Phase 11 measured ~99% of the
+        k^2 ceiling rather than something comfortably below it."""
+        stack = self._stack(self._days(
+            [[9.0, 9.0], [1.0, 1.0]],
+            [[9.0, 9.0], [1.0, 1.0]],
+        ))
+
+        self.assertAlmostEqual(
+            stack.planes["max"].extent_overstatement["headline"], 1.5, places=9,
+        )
+
+    def test_a_block_paints_the_ground_it_covers_not_the_ground_it_observed(self):
+        """The definitional choice, pinned. Three of the block's four cells were
+        never observed, and the rendered pixel still covers all four cells'
+        worth of ground at the one value that was -- so the figure is the same
+        **3.0x**. Denominating on observed area instead would make a sparse
+        frame look BETTER than a dense one, when the sparse frame is exactly
+        where a reader is most likely to mistake one cell's plume for a
+        region-wide one."""
+        nan = self.np.nan
+        stack = self._stack(self._days(
+            [[9.0, nan], [nan, nan]],
+            [[9.0, nan], [nan, nan]],
+        ))
+
+        self.assertAlmostEqual(
+            stack.planes["max"].extent_overstatement["headline"], 3.0, places=9,
+        )
+
+    def test_the_pooled_figure_is_a_ratio_of_sums_not_a_mean_of_ratios(self):
+        """D16's rule, and the fixture is built so the two answers differ.
+
+        Day one's peak is the equatorial cell (3.0x); day two's is the poleward
+        one (6.0x). Pooled over both frames the answer is
+        (3.0 + 3.0) / (1.0 + 0.5) = **4.0x**, where averaging the two per-frame
+        ratios would give 4.5x. The worst frame is disclosed BESIDE the pooled
+        figure rather than folded into it, the same way ``delta`` carries a
+        headline and a worst pixel.
+        """
+        stack = self._stack(self._days(
+            [[9.0, 1.0], [1.0, 1.0]],
+            [[1.0, 1.0], [9.0, 1.0]],
+        ))
+
+        overstatement = stack.planes["max"].extent_overstatement
+        self.assertAlmostEqual(overstatement["headline"], 4.0, places=9)
+        self.assertNotAlmostEqual(overstatement["headline"], 4.5, places=6)
+        self.assertAlmostEqual(overstatement["worst_frame"], 6.0, places=9)
+
+    def test_nothing_is_overstated_where_no_block_reduction_ran(self):
+        """At k=(1,1) every rendered pixel IS a native cell, so there is no
+        extent to overstate and the honest answer is absence rather than a
+        1.0x that reads like a measurement. The same reason ``delta`` is
+        ``None`` in the cadence tier."""
+        stack = self._stack(
+            self._days([[9.0, 1.0], [1.0, 1.0]], [[9.0, 1.0], [1.0, 1.0]]),
+            target_cells=10_000,
+        )
+
+        self.assertEqual(stack.coarsen_k, (1, 1))
+        self.assertIsNone(stack.planes["max"].extent_overstatement)
+
+    def test_only_the_max_plane_carries_it(self):
+        """Decision 9 is about the max tier. A min plane reporting the same
+        ratio would be answering a question about troughs that nobody has
+        asked and nobody has measured."""
+        stack = self._stack(self._days(
+            [[9.0, 1.0], [1.0, 1.0]],
+            [[9.0, 1.0], [1.0, 1.0]],
+        ))
+
+        self.assertIsNone(stack.planes["min"].extent_overstatement)
+        self.assertIsNotNone(stack.planes["max"].extent_overstatement)
+
+    def test_it_carries_its_own_account_of_itself(self):
+        """A third quantity beside ``delta`` and ``frame_grid_delta``, and it
+        measures something neither of them does -- area painted versus area
+        observed, not value agreement. Three quantities, three basis strings,
+        for the reason ``DELTA_BASIS`` was written down in the first place."""
+        from tta_backend.preprocessing.frame_stack import (
+            DELTA_BASIS, EXTENT_OVERSTATEMENT_BASIS, FRAME_GRID_DELTA_BASIS,
+        )
+
+        stack = self._stack(self._days(
+            [[9.0, 1.0], [1.0, 1.0]],
+            [[9.0, 1.0], [1.0, 1.0]],
+        ))
+
+        self.assertEqual(
+            stack.planes["max"].extent_overstatement["basis"],
+            EXTENT_OVERSTATEMENT_BASIS,
+        )
+        self.assertEqual(
+            len({DELTA_BASIS, FRAME_GRID_DELTA_BASIS, EXTENT_OVERSTATEMENT_BASIS}), 3,
+        )
+        self.assertIn("area", EXTENT_OVERSTATEMENT_BASIS)
+
+
+@unittest.skipIf(importlib.util.find_spec("xarray") is None, "xarray is not installed")
 class PooledColourScaleTests(unittest.TestCase):
     """D9: one 2-98 clip pooled across every frame including frame 0, for the
     scrubber only.
@@ -1317,6 +1974,45 @@ class OneGraphWalkTests(unittest.TestCase):
         self.assertEqual(
             sorted(loads), [0, 1, 2],
             f"bundle read {len(loads)} times across 3 granules, want 3 (1 pass): {loads}",
+        )
+
+    def test_a_second_and_third_plane_cost_no_extra_pass(self):
+        """Phase 11's G1, ported from the probe into a permanent test.
+
+        The gate already answered this on real data (an exact 6-read parity on
+        synthetic loads, 1.5-1.9x wall-clock on two live bundles, never 3x);
+        what a test adds is that it STAYS answered. The whole plane design
+        rests on it: D6a decision 6 keeps the build eager precisely because
+        three statistics ride one graph walk, and the tempting refactor --
+        computing each plane in its own ``.compute()``, which reads far more
+        naturally -- would be a fresh I/O pass per statistic over a lazily
+        opened bundle, and nothing else here would notice.
+        """
+        import numpy as np
+
+        from tta_backend.preprocessing.frame_stack import build_frame_stack
+
+        def _reads(statistics):
+            loads = []
+            field = self._lazy_days(
+                [np.full((2, 2), float(d)) for d in range(3)], loads,
+            )
+            stack = build_frame_stack(
+                field, time_dim="time", cadence="daily", value_bracket=(0.0, 2.0),
+                target_cells=1, statistics=statistics,
+            )
+            return stack, sorted(loads)
+
+        _, mean_only = _reads(("mean",))
+        stack, three_planes = _reads(("mean", "max", "min"))
+
+        self.assertEqual(stack.coarsen_k, (2, 2))
+        self.assertEqual(set(stack.planes), {"max", "min"})
+        self.assertEqual(mean_only, [0, 1, 2])
+        self.assertEqual(
+            three_planes, mean_only,
+            f"three planes read the bundle {three_planes}, one plane {mean_only}: "
+            "a statistic bought itself its own pass",
         )
 
     def test_without_a_measured_range_the_pooled_scale_costs_a_second_pass(self):

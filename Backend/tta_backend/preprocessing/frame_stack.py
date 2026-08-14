@@ -24,7 +24,7 @@ lives in one place, so a frame's mean cannot drift from the map's.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 
 import numpy as np
 import pandas as pd
@@ -115,6 +115,32 @@ _CADENCE_FLOOR = {"hourly": "h", "daily": "D"}
 _CADENCE_STEP = {"hourly": "h", "daily": "D", "monthly": "MS"}
 
 BUCKETABLE_CADENCES = tuple(_CADENCE_STEP)
+
+#: D6a decision 1: the statistics a stack can carry as a FIELD -- one value per
+#: pixel per frame, ``groupby(bucket).max(time)`` block-maxed onto the frame
+#: grid.
+#:
+#: **This is NOT ``_FRAME_STATS``, and the two must never be merged.** That
+#: tuple, further down, is the per-frame REGIONAL SCALAR: one number for the
+#: whole region, which ``Frame.statistics["max"]`` has carried since Phase 3 and
+#: which already renders in the readout. This one is a PLANE. They share three
+#: words and nothing else -- a chart can show the max plane while every frame's
+#: scalar max is unchanged, and the scalar max of the max plane is not even the
+#: same number as the scalar max of the mean plane. Naming them alike is how a
+#: quantity acquires two accounts of itself, which is the failure
+#: ``DELTA_BASIS``' own docstring exists to prevent, wearing a third shoe.
+#:
+#: ``"mean"`` is in this tuple because it is a legal request, not because it
+#: lands in ``FrameStack.planes``: the mean plane is the one this module has
+#: always shipped and it stays in the top-level fields (D6a decision 5 -- "the
+#: mean entry keeps its exact current shape, URL and cost").
+PLANE_STATISTICS = ("mean", "max", "min")
+
+# Grid-neutral dim names a non-mean plane wears inside the fused dataset.
+# Names rather than the real lat/lon dims because that is the whole point of
+# ``_bare_grid``: no coordinate, nothing to align on, nothing to outer-join.
+_PLANE_LAT_DIM = "plane_lat"
+_PLANE_LON_DIM = "plane_lon"
 
 
 @dataclass(frozen=True)
@@ -282,6 +308,43 @@ class Frame:
 
 
 @dataclass(frozen=True)
+class StatisticPlane:
+    """One additional statistic's own pair of rendered planes (D6a).
+
+    The mean is NOT one of these. It lives in ``FrameStack``'s own top-level
+    fields where it always has, so a caller that never asks for a second
+    statistic sees a stack byte-identical to the one this module shipped before
+    max existed -- decision 5's "the mean entry keeps its exact current shape,
+    URL and cost", read at the Python level and not only at the wire level.
+
+    Everything here is the same KIND of quantity as its top-level counterpart
+    and none of it is the same NUMBER: a block max is not a block mean, and the
+    agreement figure beside it answers a different question with a different
+    across-frame reduction (see ``_frame_grid_delta``'s ``combine``).
+    """
+
+    values: np.ndarray
+    period_values: np.ndarray
+    #: The same quantity ``FrameStack.frame_grid_delta`` carries, reduced
+    #: across frames by THIS plane's own statistic (see ``_frame_grid_delta``'s
+    #: ``combine``). D6a decision 8 expects an exact ``0.0`` here on every
+    #: selection plane in both tiers, and Phase 11 G5 measured exactly that on
+    #: two live bundles. It is computed rather than asserted because a promised
+    #: zero and a measured one are different claims -- the same reason
+    #: ``frame_grid_delta`` exists at all.
+    frame_grid_delta: dict
+    #: THIS plane's own pooled 2-98 clip (D9), never the mean plane's: one
+    #: colour has to mean one value at every stop of a scrub, and a max plane
+    #: rendered against the mean's clip saturates at exactly the stops someone
+    #: switched to it to see.
+    value_range: tuple[float, float] | None
+    #: D6a decision 9, on the ``"max"`` plane only: how much ground a rendered
+    #: peak claims (see ``_extent_overstatement``). ``None`` on every other
+    #: plane, and on a chart that never coarsened.
+    extent_overstatement: dict | None = None
+
+
+@dataclass(frozen=True)
 class FrameStack:
     """The frame axis and the float32 array the frontend renders.
 
@@ -324,6 +387,11 @@ class FrameStack:
     #: The Map tab's own range is untouched: deriving it from the stack would
     #: make a map's colours depend on whether frames happened to be built.
     value_range: tuple[float, float] | None
+    #: D6a's additional planes, keyed by statistic -- ``"max"`` and ``"min"``,
+    #: never ``"mean"``. Empty unless the caller asked for them, which is what
+    #: keeps every existing caller's stack unchanged rather than merely
+    #: compatible.
+    planes: dict[str, StatisticPlane] = dataclass_field(default_factory=dict)
 
 
 def coarsen_factors(n_lat: int, n_lon: int, target_cells: int) -> tuple[int, int]:
@@ -380,6 +448,7 @@ def build_frame_stack(
     region_area: float | None = None,
     qa_counts: dict | None = None,
     value_bracket: tuple[float, float] | None = None,
+    statistics: tuple[str, ...] = ("mean",),
 ) -> FrameStack:
     """Reduce ``da`` to one field per interval of the requested span.
 
@@ -397,6 +466,12 @@ def build_frame_stack(
     the grouped-then-coarsened intermediate would need. Do not rewrite it as a
     chunked or hand-rolled reduction; that adds real complexity to solve a
     measured non-problem.
+
+    ``statistics`` names the PLANES to build (D6a). It defaults to the mean
+    alone, which is this module's whole history: the mean's planes stay in the
+    top-level fields under their own names, and anything else asked for lands
+    in ``FrameStack.planes``. Extra statistics join the same fused graph rather
+    than getting one each -- see ``_plane_terms``.
     """
     # An unknown or unbucketable cadence cannot define a period, and it is not
     # a corner case: a Harmony bundle member carries no ``short_name``, so an
@@ -408,6 +483,12 @@ def build_frame_stack(
         raise ValueError(
             f"Cannot build a frame axis at cadence {cadence!r}; frames need one of "
             f"{', '.join(BUCKETABLE_CADENCES)}."
+        )
+    unknown = [name for name in statistics if name not in PLANE_STATISTICS]
+    if unknown:
+        raise ValueError(
+            f"Cannot build a frame plane for {', '.join(unknown)}; planes are one "
+            f"of {', '.join(PLANE_STATISTICS)}."
         )
 
     stamps = pd.to_datetime(np.asarray(da[time_dim].values))
@@ -446,12 +527,15 @@ def build_frame_stack(
     frames_native, frame_granules = _group_buckets(buckets, bucket_granules, group)
 
     k_lat, k_lon = coarsen_factors(da.sizes[lat_dim], da.sizes[lon_dim], target_cells)
-    coarse = _block_mean(frames_native, lat_dim, lon_dim, k_lat, k_lon)
-    period_coarse = _block_mean(period_native, lat_dim, lon_dim, k_lat, k_lon)
+    coarse = _block_reduce(frames_native, lat_dim, lon_dim, k_lat, k_lon)
+    period_coarse = _block_reduce(period_native, lat_dim, lon_dim, k_lat, k_lon)
     edges = _pooled_bin_edges(da, value_bracket, qa_counts)
+    extra_planes = tuple(name for name in statistics if name != "mean")
 
     # ONE compute for the whole stack: the frames the user renders, and every
-    # number the user is shown, walk the same graph once.
+    # number the user is shown, walk the same graph once. Every additional
+    # plane joins THIS dataset for the same reason -- a statistic with its own
+    # compute is a second I/O pass over a lazily-opened bundle.
     computed = xr.Dataset({
         "values": coarse,
         "period_values": period_coarse,
@@ -462,6 +546,11 @@ def build_frame_stack(
         ),
         **_native_statistics(frames_native, (lat_dim, lon_dim)),
         **_delta_terms(frames_native, period_native, group),
+        **_plane_terms(
+            da, grouper=grouper, time_dim=time_dim, axis_labels=axis_labels,
+            group=group, lat_dim=lat_dim, lon_dim=lon_dim,
+            k_lat=k_lat, k_lon=k_lon, edges=edges, statistics=extra_planes,
+        ),
     }).compute()
 
     n_frames = frames_native.sizes["bucket"]
@@ -489,6 +578,7 @@ def build_frame_stack(
     from tta_backend.preprocessing.aggregation_service import cos_lat_weights
 
     frame_weights = cos_lat_weights(values)
+    weights = None if frame_weights is None else np.asarray(frame_weights.values)
 
     return FrameStack(
         frames=[
@@ -514,12 +604,103 @@ def build_frame_stack(
         buckets_per_frame=group,
         tier=CADENCE_TIER if group == 1 else COARSENED_TIER,
         delta=_delta(computed, group),
-        frame_grid_delta=_frame_grid_delta(
-            shipped, shipped_period,
-            None if frame_weights is None else np.asarray(frame_weights.values),
-        ),
+        frame_grid_delta=_frame_grid_delta(shipped, shipped_period, weights),
         value_range=_pooled_range(computed["pooled_histogram"].values, edges),
+        planes=_planes(
+            computed, extra_planes, weights, (k_lat, k_lon), edges,
+        ),
     )
+
+
+def _planes(
+    computed: xr.Dataset,
+    statistics: tuple[str, ...],
+    weights: np.ndarray | None,
+    k: tuple[int, int],
+    edges: np.ndarray,
+) -> dict[str, StatisticPlane]:
+    """The computed non-mean planes, narrowed to the bytes that ship.
+
+    float32 at the same edge and for the same reason the mean's planes are
+    narrowed there -- except that for a selection statistic the narrowing costs
+    nothing even in principle: ``max`` picks a value some native cell held
+    rather than computing one, and rounding a selection to float32 rounds the
+    same number the mean plane's own cells were rounded from. Where the mean
+    carries Phase 3's 0.000002% storage noise, this carries none.
+    """
+    planes: dict[str, StatisticPlane] = {}
+    for name in statistics:
+        values = computed[f"plane_{name}_values"].transpose(
+            "bucket", _PLANE_LAT_DIM, _PLANE_LON_DIM,
+        )
+        period = computed[f"plane_{name}_period_values"].transpose(
+            _PLANE_LAT_DIM, _PLANE_LON_DIM,
+        )
+        shipped = np.asarray(values.values, dtype="float32")
+        shipped_period = np.asarray(period.values, dtype="float32")
+        planes[name] = StatisticPlane(
+            values=shipped,
+            period_values=shipped_period,
+            frame_grid_delta=_frame_grid_delta(
+                shipped, shipped_period, weights, combine=name,
+            ),
+            value_range=_pooled_range(
+                computed[f"plane_{name}_histogram"].values, edges,
+            ),
+            extent_overstatement=(
+                _extent_overstatement(computed, k) if name == "max" else None
+            ),
+        )
+    return planes
+
+
+def _extent_overstatement(computed: xr.Dataset, k: tuple[int, int]) -> dict | None:
+    """D6a decision 9's disclosure: how much ground a rendered peak claims.
+
+    ``headline`` pools every finite block of every frame into ONE ratio of
+    weighted sums; ``worst_frame`` is the single frame that stretched a peak
+    furthest, disclosed beside the pooled figure rather than folded into it,
+    the same way ``delta`` carries a headline and a worst pixel. ``ceiling`` is
+    k^2 -- the value the pooled figure would take if exactly one native cell
+    reached each block's max and no block ran short of real cells, which Phase
+    11 measured as very nearly the case on both live bundles (24.70x and 24.75x
+    against a ceiling of 25).
+
+    It gates nothing, for the reason ``_delta`` gates nothing: whether painting
+    a peak across 25 cells' worth of ground invalidates a particular reading is
+    the reader's judgment, and the honest thing is to hand them the number.
+    """
+    if "overstatement_painted_area" not in computed:
+        return None
+    painted = np.atleast_1d(
+        np.asarray(computed["overstatement_painted_area"].values, dtype="float64"),
+    )
+    peak = np.atleast_1d(
+        np.asarray(computed["overstatement_peak_area"].values, dtype="float64"),
+    )
+    measurable = np.isfinite(painted) & np.isfinite(peak) & (peak > 0)
+    if not measurable.any():
+        return None
+    per_frame = painted[measurable] / peak[measurable]
+    return {
+        "headline": float(painted[measurable].sum() / peak[measurable].sum()),
+        "worst_frame": float(per_frame.max()),
+        "ceiling": int(k[0] * k[1]),
+        "basis": EXTENT_OVERSTATEMENT_BASIS,
+    }
+
+
+# The third basis string in this module, and the only one that is not about
+# values agreeing. ``DELTA_BASIS`` and ``FRAME_GRID_DELTA_BASIS`` both ask
+# whether two ways of reducing the same field give the same number; this asks
+# how much GROUND a rendered pixel claims for a value one cell of it held. A
+# reader handed the wrong one of the three has been told something false about
+# a real measurement, which is why there are three of them and not one.
+EXTENT_OVERSTATEMENT_BASIS = (
+    "cos(latitude)-weighted area every finite block of the stored max planes paints, "
+    "over the same weighted area of the native cells that actually held each block's "
+    "own maximum, pooled across every frame at native resolution"
+)
 
 
 def _bracket_from_counts(qa_counts: dict | None) -> tuple[float, float] | None:
@@ -652,20 +833,166 @@ def _group_buckets(
     reintroduce granule weighting exactly where sampling is most uneven, which
     is the bias D4 was fixed to remove.
 
-    ``boundary="pad"`` again, so a span that does not divide evenly keeps its
-    last, shorter frame instead of dropping it. The bucket labels are dropped
-    first: they are strings, and a coarsen would try to average them.
+    The field's own reducer is the mean and the granule counts' is the sum,
+    which is the one thing about this fold that does NOT follow the plane's
+    statistic: a max plane's frame still holds however many granules its
+    cadence buckets held.
+    """
+    return (
+        _grouped_by(buckets, group, "mean"),
+        _grouped_by(bucket_granules, group, "sum"),
+    )
+
+
+def _grouped_by(buckets: xr.DataArray, group: int, how: str) -> xr.DataArray:
+    """Fold ``group`` consecutive cadence buckets into one frame, under ``how``.
+
+    ``boundary="pad"``, so a span that does not divide evenly keeps its last,
+    shorter frame instead of dropping it. The bucket labels are dropped first:
+    they are strings, and a coarsen would try to reduce them.
     """
     if group == 1:
-        return buckets, bucket_granules
+        return buckets
     labelless = buckets.drop_vars("bucket")
-    frames = labelless.coarsen(bucket=group, boundary="pad").mean(skipna=True)
-    granules = (
-        bucket_granules.drop_vars("bucket")
-        .coarsen(bucket=group, boundary="pad")
-        .sum(skipna=True)
-    )
-    return frames, granules
+    coarsened = labelless.coarsen(bucket=group, boundary="pad")
+    return getattr(coarsened, how)(skipna=True)
+
+
+def _plane_terms(
+    da: xr.DataArray,
+    *,
+    grouper: xr.DataArray,
+    time_dim: str,
+    axis_labels: list[str],
+    group: int,
+    lat_dim: str,
+    lon_dim: str,
+    k_lat: int,
+    k_lon: int,
+    edges: np.ndarray,
+    statistics: tuple[str, ...],
+) -> dict[str, xr.DataArray]:
+    """The lazy terms for every plane beyond the mean, for the SAME dataset.
+
+    Not their own ``.compute()``, and the read-counter test is what holds that
+    open: dask fuses all three groupby-then-coarsen reductions off one read of
+    each source chunk exactly as it already fuses ``period_values``,
+    ``n_granules``, ``observed_area`` and ``_delta_terms``, so a second
+    statistic is arithmetic on chunks that were being read anyway. Phase 11's
+    G1 measured it both ways -- an exact 6-read parity on synthetic loads, and
+    1.5-1.9x (never 3x) wall-clock and peak RSS on two live bundles.
+
+    Every block-reduced term goes through ``_bare_grid`` before it lands in the
+    dataset, for the reason that function's docstring gives at length: three
+    differently-reduced arrays under one coordinate name is a silent outer
+    join, not an error.
+    """
+    terms: dict[str, xr.DataArray] = {}
+    for name in statistics:
+        buckets = getattr(da.groupby(grouper), name)(
+            dim=time_dim, skipna=True,
+        ).reindex(bucket=axis_labels)
+        # The period plane is DERIVED from the cadence buckets, exactly as the
+        # mean's is (D4): each bucket counts once. For a selection statistic
+        # that is a distinction without a difference -- the max of the bucket
+        # maxima is the max of everything -- but deriving it the same way keeps
+        # one rule rather than two, and keeps stop 0 reproducible from the
+        # stack a reader downloaded (D6a decision 3).
+        period_native = getattr(buckets, name)(dim="bucket", skipna=True)
+        frames_native = _grouped_by(buckets, group, name)
+        terms[f"plane_{name}_values"] = _bare_grid(
+            _block_reduce(frames_native, lat_dim, lon_dim, k_lat, k_lon, name),
+            lat_dim, lon_dim,
+        )
+        terms[f"plane_{name}_period_values"] = _bare_grid(
+            _block_reduce(period_native, lat_dim, lon_dim, k_lat, k_lon, name),
+            lat_dim, lon_dim,
+        )
+        # Its OWN pooled 2-98 clip (D9), over its own frames and its own period
+        # plane. A max plane scrubbed against the mean plane's clip would
+        # saturate at every stop with a peak in it, which is every stop anyone
+        # switched to it to look at. Native resolution, before the block
+        # reduction, exactly as the mean's is (D5a and ``POOLED_SCALE_BASIS``).
+        terms[f"plane_{name}_histogram"] = (
+            _histogram(frames_native, edges) + _histogram(period_native, edges)
+        )
+        if name == "max":
+            terms.update(_overstatement_terms(
+                frames_native, lat_dim, lon_dim, k_lat, k_lon,
+            ))
+    return terms
+
+
+def _overstatement_terms(
+    frames_native: xr.DataArray,
+    lat_dim: str,
+    lon_dim: str,
+    k_lat: int,
+    k_lon: int,
+) -> dict[str, xr.DataArray]:
+    """D6a decision 9's two lazy sums, per frame, at NATIVE resolution.
+
+    A block max paints one cell's value across every cell its block covers, so
+    the rendered peak claims k^2 cells' worth of ground for an observation that
+    holds at one. The numerator is the area the block PAINTS -- every real
+    native cell it covers, observed or not, because that is the ground the
+    pixel colours -- and the denominator is the area that actually held the
+    block's own maximum. Both cos(latitude)-weighted, both summed before
+    anything is divided (D16: a ratio of weighted sums, never a mean of
+    per-block ratios, never signed).
+
+    ``coarsen(...).construct(...)`` rather than a reduction, because the
+    numerator needs each native cell compared against ITS OWN block's max --
+    the block max has to come back down to native resolution to be compared,
+    and construct is the reshape that makes both live in one lazy expression.
+    It is a view, not a materialization: the sums collapse it straight back
+    down, so this rides the graph walk the frames were already paying for --
+    which is what Phase 11 G4 means by measuring the overstatement "in the same
+    walk that already materializes the native max field", and what the
+    read-counter test holds open.
+
+    Nothing is emitted at k=(1,1): every rendered pixel IS a native cell there,
+    and a ``1.0x`` would read as a measurement of an extent that was never
+    stretched.
+    """
+    if (k_lat, k_lon) == (1, 1):
+        return {}
+    from tta_backend.preprocessing.aggregation_service import cos_lat_weights
+
+    window = {
+        lat_dim: ("plane_block_lat", "plane_cell_lat"),
+        lon_dim: ("plane_block_lon", "plane_cell_lon"),
+    }
+    blocks = {lat_dim: k_lat, lon_dim: k_lon}
+    fine = ["plane_block_lat", "plane_cell_lat", "plane_block_lon", "plane_cell_lon"]
+
+    # The area of every REAL cell of the grid: ones over the spatial footprint,
+    # weighted by cos(latitude). The pad ``construct`` adds is NaN here as well
+    # as in the data, which is exactly how a padded cell is told apart from a
+    # real cell that simply holds no observation.
+    footprint = xr.ones_like(frames_native.isel({"bucket": 0}, drop=True))
+    weights = cos_lat_weights(frames_native)
+    if weights is not None:
+        footprint = footprint * weights
+
+    cells = frames_native.coarsen(blocks, boundary="pad").construct(window)
+    areas = footprint.coarsen(blocks, boundary="pad").construct(window)
+
+    block_max = cells.max(["plane_cell_lat", "plane_cell_lon"], skipna=True)
+    # A block nothing was observed in paints nothing, so it belongs in neither
+    # sum -- it renders as absent, not as an overstated peak.
+    observed = np.isfinite(block_max)
+    # NaN compares false against everything, so this already excludes both the
+    # pad and the unobserved cells without a second mask.
+    at_peak = cells == block_max
+    return {
+        "overstatement_painted_area": (
+            areas.where(areas.notnull() & observed, 0.0).sum(fine)
+        ),
+        "overstatement_peak_area": (
+            areas.where(at_peak, 0.0).sum(fine)
+        ),
+    }
 
 
 def _frame_intervals(
@@ -685,8 +1012,13 @@ def _frame_intervals(
     return intervals
 
 
-def _block_mean(
-    field: xr.DataArray, lat_dim: str, lon_dim: str, k_lat: int, k_lon: int,
+def _block_reduce(
+    field: xr.DataArray,
+    lat_dim: str,
+    lon_dim: str,
+    k_lat: int,
+    k_lon: int,
+    how: str = "mean",
 ) -> xr.DataArray:
     """The spatial reduction, composed onto the lazy graph rather than applied
     to a materialized result.
@@ -697,12 +1029,45 @@ def _block_mean(
     The pad is NaN and ``skipna=True`` skips it, verified on real bundles and
     against a synthetic control; an all-NaN block correctly stays NaN rather
     than becoming 0.
+
+    ``how`` is the block reducer, and it is the SAME reducer as the plane's
+    temporal one on purpose (D6a decision 4): a max plane block-MAXES, because
+    a block mean of a per-pixel max would render a smoothed field and defeat
+    the product -- D5a measured the block mean keeping a p50 of 29.8% of a
+    single-cell max at k=8, where Phase 11 measured block max keeping 100.0% at
+    every percentile of every frame of both live bundles. The pad and all-NaN
+    guarantees above were re-measured for ``max``/``min`` in that same gate
+    (G3): the pad is skipped and an all-NaN block stays NaN rather than
+    collapsing to the ``-inf``/``+inf`` identity element.
     """
     if (k_lat, k_lon) == (1, 1):
         return field
-    return field.coarsen({lat_dim: k_lat, lon_dim: k_lon}, boundary="pad").mean(
-        skipna=True,
-    )
+    coarsened = field.coarsen({lat_dim: k_lat, lon_dim: k_lon}, boundary="pad")
+    return getattr(coarsened, how)(skipna=True)
+
+
+def _bare_grid(field: xr.DataArray, lat_dim: str, lon_dim: str) -> xr.DataArray:
+    """Strip a block-reduced array's lat/lon coordinate and rename its dims.
+
+    ``coarsen(...).max()`` reduces the lat/lon COORDINATE with the same reducer
+    as the data, so a block max's coarse latitude is numerically a different
+    number from a block mean's or a block min's for the very same block. Packing
+    those arrays into one ``xr.Dataset`` under the shared names
+    ``latitude``/``longitude`` makes xarray align them on those coordinate
+    VALUES -- an outer join onto the union of all three label sets, which
+    silently reindexes EVERY variable in the dataset, including ones nobody
+    touched, onto a mostly-NaN grid, and raises nothing. Phase 11's own probe
+    script hit it and caught it only because a printed shape stopped matching
+    the crop two lines above.
+
+    The blocks are identical across statistics -- same ``k``, same padding --
+    so there is one right answer for what to label them, and it is the mean
+    plane's, which is already ``FrameStack.lats``/``lons``. Renaming to dims
+    carrying no index at all sidesteps alignment entirely: plain positional
+    stacking onto the grid the stack already publishes.
+    """
+    renamed = field.rename({lat_dim: _PLANE_LAT_DIM, lon_dim: _PLANE_LON_DIM})
+    return renamed.drop_vars([_PLANE_LAT_DIM, _PLANE_LON_DIM], errors="ignore")
 
 
 def _observed_area(native: xr.DataArray, spatial: tuple[str, str]) -> xr.DataArray:
@@ -831,7 +1196,11 @@ DELTA_BASIS = (
 
 
 def _frame_grid_delta(
-    values: np.ndarray, period_values: np.ndarray, weights: np.ndarray | None,
+    values: np.ndarray,
+    period_values: np.ndarray,
+    weights: np.ndarray | None,
+    *,
+    combine: str = "mean",
 ) -> dict:
     """D16's metric applied to the arrays that SHIP -- a second quantity beside
     ``_delta``, never a replacement for it.
@@ -859,21 +1228,42 @@ def _frame_grid_delta(
     float64 from the float32 planes -- the float32 is what a reader downloads,
     but summing it in float32 would fold our own rounding into a number whose
     whole subject is somebody else's.
+
+    ``combine`` is the ACROSS-FRAME reduction, and it has to be a parameter
+    because the identity being checked is the plane's own. The mean plane
+    claims its period plane is the average of its frames; the max plane claims
+    the period plane is their maximum. Running the mean's combiner over a max
+    plane would compute a real number that answers a question nobody asked --
+    and it would be large, not zero, so it would look exactly like the max tier
+    failing an identity it in fact satisfies. The mean path below is unchanged
+    to the bit.
     """
     frames = np.asarray(values, dtype="float64")
     period = np.asarray(period_values, dtype="float64")
 
-    # An explicit finite mask rather than ``nanmean``: an all-empty cell is the
-    # normal case on a swath-tiled product, not an exception worth warning
-    # about, and it must land as NaN so the ``both`` mask below excludes it.
+    # An explicit finite mask rather than ``nanmean``/``nanmax``: an all-empty
+    # cell is the normal case on a swath-tiled product, not an exception worth
+    # warning about, and it must land as NaN so the ``both`` mask below excludes
+    # it. (``np.nanmax`` over an all-NaN column warns AND returns ``-inf``,
+    # which is the same +-inf leak ``_block_reduce``'s pad guarantee exists to
+    # prevent, arriving from the other direction.)
     finite = np.isfinite(frames)
-    contributing = finite.sum(axis=0)
-    total = np.where(finite, frames, 0.0).sum(axis=0)
-    frames_period = np.divide(
-        total, contributing,
-        out=np.full(period.shape, np.nan),
-        where=contributing > 0,
-    )
+    seen = finite.any(axis=0)
+    if combine == "mean":
+        contributing = finite.sum(axis=0)
+        total = np.where(finite, frames, 0.0).sum(axis=0)
+        frames_period = np.divide(
+            total, contributing,
+            out=np.full(period.shape, np.nan),
+            where=contributing > 0,
+        )
+    else:
+        # The identity element as the fill, so an absent cell can never win the
+        # selection: -inf for a max, +inf for a min.
+        identity = -np.inf if combine == "max" else np.inf
+        selected = np.where(finite, frames, identity)
+        picked = selected.max(axis=0) if combine == "max" else selected.min(axis=0)
+        frames_period = np.where(seen, picked, np.nan)
 
     both = np.isfinite(frames_period) & np.isfinite(period)
     difference = np.where(both, np.abs(frames_period - period), 0.0)
@@ -889,7 +1279,7 @@ def _frame_grid_delta(
     return {
         "headline": numerator / denominator if denominator > 0 else None,
         "max_abs": worst if np.isfinite(worst) else None,
-        "basis": FRAME_GRID_DELTA_BASIS,
+        "basis": PLANE_AGREEMENT_BASIS[combine],
     }
 
 
@@ -910,6 +1300,32 @@ FRAME_GRID_DELTA_BASIS = (
     "plane| over the same weighted sum of |the stored period plane|, on the stored frame "
     "grid the browser downloads, over cells finite in both"
 )
+
+
+def _plane_agreement_basis(combine: str) -> str:
+    """``FRAME_GRID_DELTA_BASIS`` for the plane reduced with ``combine``.
+
+    One sentence per plane rather than one shared sentence, because the word
+    that changes is the one carrying the whole claim. A reader shown "mean of
+    the stored frame planes" beside a number produced by taking their MAXIMUM
+    has been told something false about a real measurement -- and it is a
+    particularly quiet falsehood here, because the max plane's number is zero
+    under its own basis and would be a large non-zero under the mean's, so the
+    printed value would not even hint at the mismatch.
+    """
+    return FRAME_GRID_DELTA_BASIS.replace(
+        "mean of the stored frame planes", f"{combine} of the stored frame planes", 1,
+    )
+
+
+#: The basis string each plane's agreement figure carries, keyed by the
+#: across-frame reduction that produced it. ``"mean"`` is ``FRAME_GRID_DELTA_BASIS``
+#: itself, unchanged and identical -- a payload and a methods.md that already
+#: quote it keep quoting the same bytes.
+PLANE_AGREEMENT_BASIS = {
+    combine: FRAME_GRID_DELTA_BASIS if combine == "mean" else _plane_agreement_basis(combine)
+    for combine in PLANE_STATISTICS
+}
 
 
 def _qa_pass_rates(
