@@ -379,11 +379,32 @@ class IntegrityTests(StoreTestCase):
     def test_startup_sweep_removes_orphaned_staging_dirs_and_manifestless_entries(self):
         os.makedirs(os.path.join(self.store_root, "staging-abc-123"), exist_ok=True)
         os.makedirs(os.path.join(self.store_root, "deadbeef"), exist_ok=True)
-        self.cube_cache.write_cube(self.make_dataset(), "good")
+        self.cube_cache.write_cube(self.make_dataset(), "good", pipeline_version="7")
 
-        self.cube_cache.sweep_store()
+        self.cube_cache.sweep_store("7")
 
         self.assertEqual(self._entry_dirs(), ["good"])
+
+    def test_startup_sweep_reclaims_cubes_from_a_superseded_pipeline_version(self):
+        """A pipeline-version bump is meant to cost the cache once. It should
+        not also leave the store carrying the corpses.
+
+        ``cache_key`` mixes ``OPEN_PIPELINE_VERSION`` in, so after a bump every
+        older cube is unreachable by construction — no key will ever name one
+        again. But they keep valid manifests, so the sweep left them alone and
+        ``_entries`` went on counting their bytes against
+        ``cube_store_max_bytes``: a store full of cubes that can never be read,
+        crowding out ones that can, and reclaimed only as LRU eviction grinds
+        them out one write at a time. Reclaiming them at startup is what makes
+        "evicts the cache once" true rather than "degrades the cache until it
+        happens to churn"."""
+        self.cube_cache.write_cube(self.make_dataset(), "stale", pipeline_version="0")
+        self.cube_cache.write_cube(self.make_dataset(), "current", pipeline_version="7")
+
+        self.cube_cache.sweep_store("7")
+
+        self.assertEqual(self._entry_dirs(), ["current"])
+        self.assertIsNone(self.cube_cache.lookup("stale"))
 
     def test_a_missing_chunk_reads_as_fill_values_which_is_why_the_sweep_must_precede_the_serve(self):
         """Measured, and worse than assumed: Zarr does **not** raise on a
@@ -541,23 +562,117 @@ class EvictionTests(StoreTestCase):
 
         self.assertIsNotNone(self.cube_cache.lookup("hot"))
 
-    def test_a_dataset_over_the_per_cube_write_cap_is_skipped(self):
-        """Writing a cube reads, compresses and writes the whole dataset —
-        heavier than the lazy open ``bundle_open_max_uncompressed_bytes``
-        gates, so it gets its own, lower cap."""
-        self.set_limits(CUBE_WRITE_MAX_BYTES=1)
+    def _compressible_dataset(self, cells: int = 224):
+        """Fill-dominated, so its on-disk size collapses while ``nbytes``
+        stays large — the TEMPO L3 shape, where the geostationary scan only
+        partly covers the grid. Measured on the real 2950x5771 grid: 2.03 GiB
+        of nbytes lands at 0.37 GiB on disk (5.5x) at 75% fill, and even
+        incompressible noise gets 1.9x."""
+        import numpy as np
+        import xarray as xr
 
-        self.assertFalse(self.cube_cache.write_cube(self.make_dataset(), "toobig"))
+        return xr.Dataset(
+            {"no2": (("lat", "lon"), np.zeros((cells, cells), dtype="float64"))},
+            coords={"lat": np.arange(float(cells)), "lon": np.arange(float(cells))},
+        )
+
+    def test_a_cube_is_capped_on_the_disk_it_uses_not_on_its_in_memory_size(self):
+        """The per-cube cap protects the store, so it must be measured in the
+        unit the store is accounted in: bytes on disk.
+
+        ``ds.nbytes`` is the uncompressed in-memory footprint, and Zarr writes
+        compressed — 1.9x on incompressible noise, 5.5x on a fill-heavy TEMPO
+        grid. Gating disk with that number rejected cubes costing a fifth of
+        what it charged them, and it did so hardest on exactly the expensive-
+        to-rebuild multi-granule retrievals the cache exists for: a 16-granule
+        TEMPO bundle is 2.855 GiB of nbytes and roughly 0.5 GiB of disk."""
+        self.set_limits(CUBE_STORE_MAX_BYTES=200_000, CUBE_WRITE_MAX_STORE_FRACTION=0.5)
+        ds = self._compressible_dataset()
+
+        # Over the 100,000-byte cap in memory, far under it once written.
+        self.assertGreater(ds.nbytes, 100_000)
+
+        self.assertTrue(self.cube_cache.write_cube(ds, "compressible"))
+        self.assertIsNotNone(self.cube_cache.lookup("compressible"))
+
+    def test_a_write_that_will_be_discarded_cannot_empty_the_store(self):
+        """Eviction may never clear more than one cube is allowed to occupy.
+
+        The pre-filter and the eviction estimate deliberately lean opposite
+        ways -- optimistic so a write is only skipped when hopeless,
+        conservative so room is genuinely made -- and between them sits a band
+        where they disagree by more than the whole store. At the shipped
+        4 GiB/0.5 defaults that band is roughly 7.6-40 GiB of ``nbytes``: the
+        pre-filter waves it through, ``evict_to_fit`` is asked to clear more
+        bytes than the store holds and drains every cube in it, and then the
+        finished cube fails the real on-disk check and is discarded anyway.
+        Every cached cube destroyed for a write that never landed.
+
+        Capping the request at the per-cube limit is what closes it: a cube
+        allowed at most ``limit`` bytes can never justify clearing more than
+        ``limit``, whatever the estimate says."""
+        self.set_limits(CUBE_STORE_MAX_BYTES=100_000, CUBE_WRITE_MAX_STORE_FRACTION=0.5)
+        self.cube_cache.write_cube(self._big_dataset(1), "cold")
+        self.cube_cache.write_cube(self._big_dataset(2), "hot")
+
+        # nbytes in the divergence band: /20 clears the 50,000 pre-filter,
+        # /1.9 asks for more than the whole 100,000-byte store.
+        import numpy as np
+        import xarray as xr
+
+        rng = np.random.default_rng(9)
+        huge = xr.Dataset(
+            {"v": (("y", "x"), rng.random((256, 256)))},  # 524,288 bytes, incompressible
+            coords={"y": np.arange(256.0), "x": np.arange(256.0)},
+        )
+        self.assertFalse(self.cube_cache.write_cube(huge, "never_lands"))
+
+        self.assertIsNone(self.cube_cache.lookup("never_lands"))
+        # The store still holds cached work; the discarded write did not take
+        # everything down with it.
+        survivors = [k for k in ("cold", "hot") if self.cube_cache.lookup(k) is not None]
+        self.assertNotEqual(survivors, [])
+
+    def test_a_cube_whose_written_size_exceeds_the_cap_is_discarded_not_promoted(self):
+        """The cap that actually binds is the one on the finished cube.
+
+        The pre-filter ahead of it works from an estimate and is deliberately
+        optimistic, so a cube that compresses worse than hoped can still reach
+        the staging directory over-sized. It must be thrown away there rather
+        than promoted — otherwise a single cube could occupy the store, evict
+        everything else to fit, and be evicted by the next write: the thrash
+        this cap exists to prevent."""
+        # Incompressible, so the written cube really is ~nbytes: the estimate
+        # lets it through and only the exact check can catch it.
+        self.set_limits(CUBE_STORE_MAX_BYTES=20_000, CUBE_WRITE_MAX_STORE_FRACTION=0.5)
+        ds = self._big_dataset(7)
+
+        self.assertFalse(self.cube_cache.write_cube(ds, "toobig"))
         self.assertIsNone(self.cube_cache.lookup("toobig"))
         # Not a contract failure — the source is fine, it is merely large, so
         # it must not be blacklisted until the next pipeline-version bump.
         self.assertFalse(self.cube_cache.is_refused("toobig"))
+        # And the abandoned write leaves nothing behind: it is discarded at the
+        # one point in write_cube that has no `finally`, so the cleanup is
+        # explicit and worth pinning.
+        leftovers = [n for n in os.listdir(self.store_root) if n.startswith("staging-")]
+        self.assertEqual(leftovers, [])
 
-    def test_the_write_cap_stays_below_the_bundle_open_cap(self):
+    def test_one_cube_can_never_occupy_the_whole_store(self):
+        """The invariant the per-cube cap is really defending.
+
+        It used to be stated as "below bundle_open_max_uncompressed_bytes",
+        on the reasoning that writing a cube is heavier than opening a bundle.
+        That reasoning retired with the open-time chunk ceiling — the write
+        peaks at 81.6 MiB now, in the background — and the two caps measure
+        different things anyway (one disk, one memory), so comparing them was
+        never meaningful. What matters is that a cube leaves room for another."""
         from tta_backend.config.settings import Settings
+        from tta_backend.services.cube_cache import per_cube_disk_limit
 
         settings = Settings()
-        self.assertLess(settings.cube_write_max_bytes, settings.bundle_open_max_uncompressed_bytes)
+        self.assertLessEqual(settings.cube_write_max_store_fraction, 0.5)
+        self.assertLess(per_cube_disk_limit(settings), settings.cube_store_max_bytes)
 
 
 @requires_stack
@@ -756,13 +871,23 @@ class PipelineVersionEnforcementTests(unittest.TestCase):
     def test_every_interpreting_function_is_covered_by_the_fingerprint(self):
         """The guard is only as good as its list. These are the functions that
         *interpret* a file rather than merely read it — each has been wrong and
-        then fixed at least once."""
+        then fixed at least once.
+
+        The line the roster draws is "could editing this change a value the
+        pipeline reports". ``_narrow_packed_dtypes`` can: it decides the dtype
+        an int16-packed variable lands in. The open-time chunk ceiling that
+        arrived with it cannot — ``_open_groups_bounded`` and
+        ``_chunk_ceiling_spec`` divide a read into tasks and nothing more, so
+        enrolling them would evict every cube in the store each time the chunk
+        budget is retuned, for a change that is bit-identical by
+        construction."""
         from tta_backend.services.open_handle import _PIPELINE_SOURCE_FUNCTIONS
 
         self.assertEqual(
             sorted(fn.__name__ for fn in _PIPELINE_SOURCE_FUNCTIONS),
             [
                 "_apply_declared_dimension_names",
+                "_narrow_packed_dtypes",
                 "_open_netcdf",
                 "_open_netcdf_bundle",
                 "_order_bundle_time",

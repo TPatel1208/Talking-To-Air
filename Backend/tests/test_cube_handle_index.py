@@ -96,7 +96,9 @@ class HandleIndexTests(unittest.TestCase):
         self._write("obs_2", "key2")
         os.remove(os.path.join(self.store_root, "handle_index.json"))
 
-        self.cube_cache.sweep_store()
+        # _write leaves write_cube's default pipeline_version (""), so sweeping
+        # for that same version is what "nothing here is superseded" looks like.
+        self.cube_cache.sweep_store("")
 
         self.assertEqual(self.cube_cache.key_for_handle("obs_1"), "key1")
         self.assertEqual(self.cube_cache.key_for_handle("obs_2"), "key2")

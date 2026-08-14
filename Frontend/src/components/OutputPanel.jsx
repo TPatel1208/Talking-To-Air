@@ -1,14 +1,24 @@
 import { useMemo, useState, useEffect, useRef } from 'react'
-import { TimeSeriesPanel, ChartToolbar } from './ChartMessage'
+import { TimeSeriesPanel, ProfilePanel, ChartToolbar } from './ChartMessage'
 import MapLibreHeatmapPanel from './MapLibreHeatmapPanel.jsx'
 import HeatmapMultiPanel from './HeatmapMultiPanel.jsx'
 import CompareGrid from './CompareGrid.jsx'
 import ArtifactMessage, { TableArtifactMessage } from './ArtifactMessage'
 import RelatedVariablesPanel from './RelatedVariablesPanel.jsx'
+import MapScrubber from './MapScrubber.jsx'
+import { useFrameStack } from '../hooks/useFrameStack.js'
+import { resolveFrameState } from '../utils/frameAxis.js'
+import { resolveScrubberScale } from '../utils/frameScale.js'
+import { resolveFrameDelta } from '../utils/frameDelta.js'
+import { statsForStop, formatFrameQaRate } from '../utils/frameStats.js'
+import {
+  extentOverstatementNote, resolveScrubStop, resolveStatisticChoice, resolveStatisticSource,
+} from '../utils/frameStatistic.js'
+import { selectFrame } from '../utils/frameStack.js'
+import { PANEL_MIN_WIDTH } from '../utils/panelLayout.js'
 import { MetadataOverview } from './MetadataOverview.jsx'
 import { MetaField } from './metadataPrimitives.jsx'
 import { smallButtonStyle, copyToClipboard } from '../utils/metadataUiHelpers.js'
-import { computeChartStats } from '../utils/chartStats'
 import { resolveMasking, resolveRegionFidelity, formatQaPassRate } from '../utils/maskingProvenance'
 import { evidenceRows } from '../utils/evidenceSummary'
 import { filledCharts } from '../utils/compareMode'
@@ -24,6 +34,25 @@ import {
   groundValidationOverviewFields, groundValidationDetailsFields,
   rawArtifactMetadataJson,
 } from '../utils/artifactMetadataDisplay'
+
+// Every render branch of this panel is the same flex child of the app's one
+// row, so every one of them needs the same floor. It used to be `minWidth: 0`
+// written out five times -- and `minWidth: 0` is precisely what defeats the
+// automatic minimum content size, so with the three fixed-width side panels
+// open at a 556 px viewport this column resolved to 0 px and went off-screen,
+// map included. Five literals is five chances for one branch to keep the bug;
+// the one that keeps it is the branch nobody opens on a narrow screen.
+const panelRootStyle = {
+  flex: 1,
+  minWidth: `${PANEL_MIN_WIDTH}px`,
+  display: 'flex',
+  flexDirection: 'column',
+  background: 'var(--bg-primary)',
+}
+
+// Most branches also clip their own overflow; the empty state deliberately does
+// not, because it centres its content rather than scrolling it.
+const panelRootClipped = { ...panelRootStyle, overflow: 'hidden' }
 
 function compactDate(value) {
   if (!value) return ''
@@ -226,6 +255,15 @@ function qaPassRateCard(masking) {
   return { value: rate, subtitle: parts.join(' · ') }
 }
 
+// The same card for one T59 interval. `qa_pass_rate` is null when QA never ran
+// on that interval and 0.0 when it ran and rejected everything -- two states a
+// blank map cannot tell apart on its own (D10), so the card names which.
+function framePassRateCard(stop) {
+  const rate = formatFrameQaRate(stop?.qaPassRate)
+  if (rate === null) return { value: 'Not applied', subtitle: 'QA never ran on this interval' }
+  return { value: rate, subtitle: 'of the checkable area in this interval' }
+}
+
 // What extent each figure was counted over, keyed by computeChartStats' basis.
 const VALID_BASIS = {
   'analyzed-region': 'finite cells in the analyzed region',
@@ -238,10 +276,21 @@ const COUNT_BASIS = {
   series: 'time steps',
 }
 
-function StatisticsTab({ chart }) {
-  const stats = useMemo(() => computeChartStats(chart), [chart])
+// `stop` is the scrubber's current position (T59 D11): statistics and QA
+// disclosure follow the slider, while masking provenance and evidence below
+// describe the ARTIFACT and stay put -- provenance flickering per frame would
+// imply the source changed. `stop` is null, or the aggregate, whenever the
+// scrubber is closed or parked, and then this renders exactly what it always did.
+// `statistic` is D6a's toggle (Phase 15). It changes no number here -- these
+// are the per-frame REGIONAL scalars off the mean field, and Phase 13 decision
+// 2 kept them out of the per-plane block on purpose -- so it only scopes the
+// three cards those numbers belong to. `count`, `validPct` and the pass rate
+// are facts about the interval and stay uncaveated.
+function StatisticsTab({ chart, stop, statistic = 'mean' }) {
+  const stats = useMemo(() => statsForStop(chart, stop, statistic), [chart, stop, statistic])
   const masking = useMemo(() => resolveMasking(chart), [chart])
-  const passRate = qaPassRateCard(masking)
+  const isInterval = stop?.kind === 'interval'
+  const passRate = isInterval ? framePassRateCard(stop) : qaPassRateCard(masking)
   if (!stats) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
@@ -256,10 +305,20 @@ function StatisticsTab({ chart }) {
   const fmt = (n) => Number.isFinite(n) ? n.toExponential(3) : '—'
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+      {isInterval && (
+        <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-secondary)' }}>
+          {stats.scope} — one interval of {chart.frames?.cadence || 'the'} cadence, not the period aggregate
+        </div>
+      )}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px' }}>
-        <StatCard label="Mean" value={`${fmt(stats.mean)} ${stats.units || ''}`} />
-        <StatCard label="Max" value={`${fmt(stats.max)} ${stats.units || ''}`} />
-        <StatCard label="Min" value={`${fmt(stats.min)} ${stats.units || ''}`} />
+        {/* `fieldNote` is absent entirely in mean mode, so these three render
+            exactly as they always have. In a plane mode it names the field
+            they are of -- the regional max of the MEAN field is a different
+            number from the max plane's peak (50.5 against 100.0 on Phase 12's
+            fixture), and they wear the same word. */}
+        <StatCard label="Mean" value={`${fmt(stats.mean)} ${stats.units || ''}`} subtitle={stats.fieldNote} />
+        <StatCard label="Max" value={`${fmt(stats.max)} ${stats.units || ''}`} subtitle={stats.fieldNote} />
+        <StatCard label="Min" value={`${fmt(stats.min)} ${stats.units || ''}`} subtitle={stats.fieldNote} />
         {/* "Valid values" answers "did we get data at all"; the QA pass rate
             answers "how much of what we got survived the quality mask". Both
             stay, and each states its basis so they can't be conflated. The
@@ -641,6 +700,11 @@ const CHART_TABS = {
   heatmap: ['map', 'statistics', 'metadata'],
   heatmap_multi: ['map', 'metadata'],
   timeseries: ['chart', 'statistics', 'metadata'],
+  // No Statistics tab: that tab summarizes a field (sample count, min/max over
+  // cells), and a profile has already reduced its field away. Its 24 numbers
+  // ARE the summary, and its per-layer coverage is disclosed on the chart
+  // itself -- a second "statistics" view could only restate them less well.
+  profile: ['chart', 'metadata'],
 }
 // Table artifacts keep their existing grid alongside the new Metadata tab;
 // ground-validation timeseries artifacts have no chartable series data of
@@ -748,7 +812,7 @@ function ArtifactTabsPanel({ artifact, accessToken, compareControlProps }) {
   const [activeTab, setActiveTab] = useState(tabs[0])
 
   return (
-    <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', overflow: 'hidden' }}>
+    <div style={panelRootClipped}>
       <div style={{ padding: '14px 22px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
         <div style={{ fontSize: '16px', fontWeight: 800, color: 'var(--text-primary)' }}>{artifact.title || 'Output'}</div>
         <CompareControl {...compareControlProps} />
@@ -799,6 +863,83 @@ export default function OutputPanel({
   const [hintDismissedForSession, setHintDismissedForSession] = useState(null)
   const plotRootRef = useRef(null)
 
+  // ── T59 scrubber state ────────────────────────────────────────────────────
+  // Keyed by the focused output the same way tabChoice is, so focusing a
+  // different chart drops back to the period aggregate without an effect
+  // resyncing it. Lifted to this level (not into MapLibreHeatmapPanel) because
+  // D11 makes the Statistics tab follow the slider, and that tab is a sibling.
+  // `statistic` is D6a's toggle (Phase 15) and rides the same key: focusing a
+  // different chart drops back to the mean as well as to the aggregate, since
+  // the plane a reader chose on one chart says nothing about the next.
+  const [scrubChoice, setScrubChoice] = useState({ source: null, on: false, index: 0, statistic: 'mean' })
+  const scrubStale = scrubChoice.source !== focusedOutput
+  const scrubbing = !scrubStale && scrubChoice.on
+  const askedStatistic = scrubStale ? 'mean' : scrubChoice.statistic
+  // One url in flight at a time, which is also the eviction policy: the hook
+  // holds one result keyed by one url, so switching statistic drops the
+  // previous stack rather than accumulating three. Coming back is an HTTP
+  // cache hit (`private, immutable, max-age=31536000`) and costs a re-decode,
+  // not a re-download.
+  const frameSource = useMemo(
+    () => resolveStatisticSource(chart, askedStatistic),
+    [chart, askedStatistic],
+  )
+  const frameLoad = useFrameStack(frameSource, accessToken, scrubbing)
+  // `selected` is what the reader asked for; `rendered` is what is actually on
+  // screen. Everything that SPEAKS keys off `rendered`, so the mean's pixels
+  // can never sit under a max label while the bytes are in flight.
+  const statistic = useMemo(
+    () => resolveStatisticChoice(chart, askedStatistic, frameLoad.loadState),
+    [chart, askedStatistic, frameLoad.loadState],
+  )
+  const frameState = useMemo(
+    () => resolveFrameState(chart, frameLoad.loadState, statistic.selected),
+    [chart, frameLoad.loadState, statistic.selected],
+  )
+  const scrubStops = frameState?.axis?.stops || null
+  // Decision 2: parked on the aggregate whenever the slider cannot move -- the
+  // only stop whose pixels are on screen while the blob is in flight or gone.
+  // The remembered index is NOT reset by any of that, so a statistic switch
+  // returns the reader to the stop they were on once the pixels land.
+  const currentStop = scrubbing
+    ? resolveScrubStop({
+      stops: scrubStops,
+      index: scrubChoice.index,
+      sliderEnabled: Boolean(frameState?.sliderEnabled) && !scrubStale,
+    })
+    : null
+  const scrubScale = useMemo(
+    () => resolveScrubberScale(chart, scrubbing, statistic.rendered),
+    [chart, scrubbing, statistic.rendered],
+  )
+  const frameDelta = useMemo(
+    () => resolveFrameDelta(chart, statistic.rendered),
+    [chart, statistic.rendered],
+  )
+  const stopStats = useMemo(
+    () => statsForStop(chart, currentStop, statistic.rendered),
+    [chart, currentStop, statistic.rendered],
+  )
+  const overstatement = useMemo(
+    () => extentOverstatementNote(chart, statistic.rendered),
+    [chart, statistic.rendered],
+  )
+  // A zero-copy `subarray` view over the one flat stack, never a slice -- Phase
+  // 2 measured 100 copies at +7.64 MB, a full duplicate. Recomputed per stop,
+  // which costs nothing: the view is a window, not an allocation.
+  const activeFrame = useMemo(
+    () => (scrubbing ? selectFrame(chart, frameLoad.stack, currentStop) : null),
+    [scrubbing, chart, frameLoad.stack, currentStop],
+  )
+  const toggleScrub = () => setScrubChoice({ source: focusedOutput, on: !scrubbing, index: 0, statistic: 'mean' })
+  const selectStop = (index) => setScrubChoice({ ...scrubChoice, source: focusedOutput, on: true, index })
+  // The stop is deliberately CARRIED, not reset. Finding a peak is the whole
+  // reason the max plane exists, so someone who scrubbed to hour 17 and then
+  // asked for its maximum has done exactly the thing that must not send them
+  // back to stop 0. `resolveScrubStop` parks the DISPLAY on the aggregate
+  // while the pixels are absent and hands this index back when they land.
+  const selectStatistic = (name) => setScrubChoice({ ...scrubChoice, source: focusedOutput, on: true, statistic: name })
+
   const showCollapseHint = shouldShowCollapseHint({
     compareMode, sessionsCollapsed, chatCollapsed, rightPanelCollapsed,
   }) && hintDismissedForSession !== compareSessionId
@@ -811,7 +952,7 @@ export default function OutputPanel({
 
   if (compareMode === 'active') {
     return (
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', overflow: 'hidden' }}>
+      <div style={panelRootClipped}>
         <div style={{ padding: '14px 22px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
           <div style={{ fontSize: '16px', fontWeight: 800, color: 'var(--text-primary)' }}>Compare</div>
           <CompareControl {...compareControlProps} />
@@ -842,12 +983,12 @@ export default function OutputPanel({
 
   if (!focusedOutput) {
     return (
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)' }}>
+      <div style={panelRootStyle}>
         <div style={{ padding: '14px 22px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexShrink: 0 }}>
           <CompareControl {...compareControlProps} />
         </div>
         <div style={{
-          flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column',
+          flex: 1, display: 'flex', flexDirection: 'column',
           alignItems: 'center', justifyContent: 'center', textAlign: 'center',
           color: 'var(--text-muted)', padding: '0 24px',
         }}>
@@ -868,7 +1009,7 @@ export default function OutputPanel({
 
   if (artifact && !chart) {
     return (
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', overflow: 'hidden' }}>
+      <div style={panelRootClipped}>
         <div style={{ padding: '14px 22px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexShrink: 0 }}>
           <CompareControl {...compareControlProps} />
         </div>
@@ -887,7 +1028,7 @@ export default function OutputPanel({
   const metaChips = chartMetaChips(chart)
 
   return (
-    <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', overflow: 'hidden' }}>
+    <div style={panelRootClipped}>
       <div style={{ padding: '14px 22px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
         <div style={{ fontSize: '16px', fontWeight: 800, color: 'var(--text-primary)' }}>{title}</div>
         <CompareControl {...compareControlProps} />
@@ -906,13 +1047,41 @@ export default function OutputPanel({
       </div>
 
       <div ref={plotRootRef} style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '18px 22px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-        {activeTab === 'map' && chart.type === 'heatmap' && <MapLibreHeatmapPanel payload={chart} height={480} accessToken={accessToken} />}
+        {activeTab === 'map' && chart.type === 'heatmap' && (
+          <>
+            <MapLibreHeatmapPanel
+              payload={chart}
+              height={480}
+              accessToken={accessToken}
+              colorScaleOverride={scrubScale}
+              frame={activeFrame}
+            />
+            {/* T59: the scrubber lives INSIDE the Map tab. CHART_TABS.heatmap
+                is unchanged and payload.type stays "heatmap" (D15). */}
+            <MapScrubber
+              state={frameState}
+              delta={frameDelta}
+              stop={currentStop}
+              stats={stopStats}
+              scrubbing={scrubbing}
+              onToggle={toggleScrub}
+              onSelect={selectStop}
+              choice={statistic}
+              overstatement={overstatement}
+              onSelectStatistic={selectStatistic}
+            />
+          </>
+        )}
         {activeTab === 'map' && chart.type === 'heatmap_multi' && <HeatmapMultiPanel payload={chart} accessToken={accessToken} />}
         {activeTab === 'chart' && chart.type === 'timeseries' && <TimeSeriesPanel payload={chart} />}
+        {activeTab === 'chart' && chart.type === 'profile' && <ProfilePanel payload={chart} />}
         {(activeTab === 'map' || activeTab === 'chart') && (
           <RelatedVariablesPanel chart={chart} onSend={onSend} />
         )}
-        {activeTab === 'statistics' && <StatisticsTab chart={chart} />}
+        {/* D11: the tab follows the slider. It also has to follow the TOGGLE,
+            because `stop.statistics` are the regional scalars of the MEAN
+            field whichever plane the map is drawing. */}
+        {activeTab === 'statistics' && <StatisticsTab chart={chart} stop={currentStop} statistic={statistic.rendered} />}
         {activeTab === 'metadata' && (
           <MetadataTab
             chart={chart}

@@ -6,6 +6,7 @@ from tta_backend.models.artifact import (
     ArtifactReference,
     ComparisonArtifactMetadata,
     MapArtifactMetadata,
+    ProfileArtifactMetadata,
     TimeseriesArtifactMetadata,
 )
 
@@ -17,6 +18,7 @@ _RENDER_TYPE_TO_ARTIFACT_TYPE = {
     "heatmap": "map",
     "heatmap_multi": "comparison",
     "timeseries": "timeseries",
+    "profile": "profile",
 }
 
 
@@ -62,6 +64,19 @@ def _build_metadata(artifact_type: str, payload: dict[str, Any]):
             mode=payload.get("mode", "n-panel"),
             panels=panels,
             source_handles=source_handles,
+        )
+    if artifact_type == "profile":
+        default_axis = payload.get("default_axis") or ""
+        axis = (payload.get("vertical") or {}).get(default_axis) or {}
+        return ProfileArtifactMetadata(
+            variable=payload.get("variable"),
+            units=payload.get("units"),
+            layer_count=len(payload.get("layers") or []),
+            vertical_axis=default_axis,
+            vertical_units=axis.get("units", ""),
+            layer_order=payload.get("layer_order", "unknown"),
+            source_handles=source_handles,
+            masking=payload.get("masking"),
         )
     series = (payload.get("metadata") or {}).get("series")
     stats = payload.get("stats")

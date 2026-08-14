@@ -18,6 +18,7 @@ from tta_backend.tools.satellite_tools.plot_tools import (
     make_conduct_temporal_statistic,
     make_plot_multiple,
     make_plot_singular,
+    make_plot_vertical_profile,
 )
 from tta_backend.tools.satellite_tools.retrieval_tools import (
     make_await_retrieval,
@@ -38,6 +39,7 @@ def _handle_tools(mcp_tools: dict[str, BaseTool]) -> list[BaseTool]:
         make_explain_measurement(),
         make_plot_singular(mcp_tools),
         make_plot_multiple(mcp_tools),
+        make_plot_vertical_profile(mcp_tools),
         make_compute_statistic_tool(mcp_tools),
         make_conduct_temporal_statistic(mcp_tools),
         make_find_daily_peak(mcp_tools),

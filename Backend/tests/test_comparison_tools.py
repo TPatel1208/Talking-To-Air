@@ -952,9 +952,19 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
         """Opening handle A and handle B are independent MCP round trips
         (export -> download/open); compare must gather them instead of
         awaiting one after another, so the wall-clock wait is close to the
-        slower side alone, not the sum of both."""
+        slower side alone, not the sum of both.
+
+        Asserted by *overlap* — B starts before A finishes — rather than by
+        timing the whole call against a budget. The budget version of this
+        test measured a window that also contained ~0.45 s of first-use dask
+        submodule imports (triggered by the aggregation downstream of the
+        opens) and ~0.10 s of PIL, so it passed only when some earlier test in
+        the same process had already paid for them: green in a full run, red
+        3/3 in isolation, and never once because of the property it names.
+        Overlap is what "concurrently" actually means, and it needs no
+        threshold, so it cannot be re-broken by a slow machine, a cold import,
+        or a heavier render path."""
         import asyncio
-        import time
         from unittest.mock import AsyncMock
 
         import xarray as xr
@@ -966,21 +976,28 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
                 coords={"lat": [10.0, 20.0], "lon": [30.0, 40.0]},
             )
 
-        async def slow_open(handle, tools):
-            await asyncio.sleep(0.3)
+        spans: dict[str, list[float]] = {}
+
+        async def tracked_open(handle, tools):
+            spans[handle] = [asyncio.get_running_loop().time(), float("inf")]
+            # Long enough that a sequential implementation cannot interleave by
+            # accident, short enough to stay cheap; no assertion depends on it.
+            await asyncio.sleep(0.05)
+            spans[handle][1] = asyncio.get_running_loop().time()
             return make_ds(1.0 if handle == "obs_a" else 2.0)
 
         compare = comparison_tools.make_compare(self.mcp_tools)
         with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", lambda p: None), \
-             patch.object(comparison_tools, "open_handle", AsyncMock(side_effect=slow_open)):
-            start = time.monotonic()
+             patch.object(comparison_tools, "open_handle", AsyncMock(side_effect=tracked_open)):
             raw = await compare.ainvoke({"handle_a": "obs_a", "handle_b": "obs_b", "mode": "region"})
-            elapsed = time.monotonic() - start
 
         result = json.loads(raw)
         self.assertNotIn("error", result)
-        # Sequential opens would take >=0.6s; concurrent should land near 0.3s.
-        self.assertLess(elapsed, 0.5)
+        self.assertEqual(sorted(spans), ["obs_a", "obs_b"])
+        (a_start, a_end), (b_start, b_end) = spans["obs_a"], spans["obs_b"]
+        # Sequential awaits put one side's whole span before the other's.
+        self.assertLess(b_start, a_end, "B waited for A to finish — the opens are not gathered")
+        self.assertLess(a_start, b_end, "A waited for B to finish — the opens are not gathered")
 
     async def test_compare_does_not_emit_a_picker_for_a_side_discarded_after_the_other_fails(self):
         """Both sides now run concurrently via asyncio.gather, so side B still

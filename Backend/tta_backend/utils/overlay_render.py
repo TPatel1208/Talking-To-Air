@@ -28,9 +28,20 @@ def render_overlay_png(
     vmin: float,
     vmax: float,
 ) -> bytes:
+    # The axes are 1-D and negligible; keep them in full precision, since the
+    # affine transform below is built from differences between them.
     lats = np.asarray(lats, dtype=float)
     lons = np.asarray(lons, dtype=float)
-    values = np.asarray(values, dtype=float)
+    # The grid is not: it is the whole scene, and forcing it to float64 here
+    # doubled a caller's float32 field before anything had been drawn. Every
+    # value on this path ends up quantized to one of 256 LUT entries, so the
+    # extra mantissa buys nothing a reader could ever see. Preserve whatever
+    # float the caller has (no copy in the common case) and only convert when
+    # it is not floating point at all -- NaN is the no-data sentinel below, so
+    # an integer grid genuinely cannot be used as-is.
+    values = np.asarray(values)
+    if not np.issubdtype(values.dtype, np.floating):
+        values = values.astype(np.float32)
 
     # GDAL/rasterio convention: row 0 is the north (top) edge, i.e. a
     # negative per-row latitude step. Flip when the source is south->north.
@@ -51,7 +62,10 @@ def render_overlay_png(
     )
 
     nodata = np.nan
-    destination = np.full((dst_height, dst_width), nodata, dtype=np.float64)
+    # Match the source dtype: rasterio requires it, and a float64 destination
+    # for a float32 source would reintroduce the doubling avoided above -- the
+    # reprojected grid is the larger of the two arrays.
+    destination = np.full((dst_height, dst_width), nodata, dtype=values.dtype)
     reproject(
         source=values,
         destination=destination,
@@ -79,10 +93,33 @@ def _colorize(arr: np.ndarray, lut: list[list[int]], vmin: float, vmax: float) -
     valid = np.isfinite(arr)
 
     span = (vmax - vmin) or 1.0
-    safe_arr = np.where(valid, arr, vmin)
-    normalized = np.clip((safe_arr - vmin) / span, 0.0, 1.0)
-    idx = np.clip((normalized * (n - 1)).round().astype(int), 0, n - 1)
 
-    rgba = np.zeros((*arr.shape, 4), dtype=np.uint8)
-    rgba[valid] = lut_arr[idx[valid]]
+    # Normalize through a single working buffer. The arithmetic is unchanged;
+    # only the number of live copies is. Written out as
+    #   np.clip((np.where(...) - vmin) / span, 0, 1) * (n-1) ... .astype(int)
+    # every operator materializes another full-size array -- six of them, at
+    # the reprojected grid's size -- and they are all alive at once. That,
+    # plus an int64 index for a value that never exceeds 255, is most of what
+    # made a native-resolution render cost tens of bytes per cell.
+    # np.where fills no-data with vmin (not NaN) so nothing invalid survives
+    # into the integer cast below; those pixels are zeroed out afterwards.
+    scaled = np.where(valid, arr, vmin)
+    scaled -= vmin
+    scaled /= span
+    np.clip(scaled, 0.0, 1.0, out=scaled)
+    scaled *= n - 1
+    np.round(scaled, out=scaled)
+    # Clipped to [0, 1] before scaling, so the index is already in range --
+    # the outer np.clip this replaces was guarding arithmetic that cannot
+    # leave the interval. A LUT is 256 entries (utils.colormaps), so the
+    # index fits a byte; numpy's default int is int64, eight times wider.
+    idx = scaled.astype(np.uint8 if n <= 256 else np.uint16)
+    del scaled
+
+    # Gather straight into the output rather than allocating zeros and filling
+    # the valid pixels through a second fancy-index (which built two more
+    # temporaries sized by the valid count).
+    rgba = lut_arr[idx]
+    np.logical_not(valid, out=valid)
+    rgba[valid] = 0          # no-data stays fully transparent, as before
     return rgba

@@ -5,10 +5,12 @@ These tests cover the class of bugs where leading zeros are stripped from
 EPA site/county/state codes, causing bySite queries to return
 "No data matched your selection" even for valid monitors.
 """
+import asyncio
 import importlib.util
 import os
 import sys
 import unittest
+import unittest.mock
 from unittest.mock import MagicMock
 
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -347,6 +349,281 @@ class NoDataMessageTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("dailyData/bySite", text)
         self.assertNotIn("{'state'", text)
         self.assertIn("daily summary", text)
+
+
+# ---------------------------------------------------------------------------
+# Request cache + EPA rate limiting
+# ---------------------------------------------------------------------------
+
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self.status_code = 200
+        self._payload = payload
+        self.url = "https://aqs.epa.gov/data/api/fake"
+
+    def json(self):
+        return self._payload
+
+
+class _RecordingHttp:
+    """Stands in for httpx.AsyncClient, recording every outbound EPA call."""
+
+    def __init__(self, payload=None):
+        self.calls = []
+        self.payload = payload or {"Header": [{"status": "Success"}], "Data": [{"row": 1}]}
+
+    def __call__(self, *args, **kwargs):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def get(self, url, params=None):
+        self.calls.append((url, dict(params or {})))
+        return _FakeResponse(self.payload)
+
+
+class AqsRequestCacheTests(unittest.IsolatedAsyncioTestCase):
+    """The AQS request cache exists to keep EPA calls off the wire.
+
+    EPA disables accounts that exceed 10 requests/minute without notice, and
+    the credential is shared app-wide, so every avoidable duplicate matters.
+    """
+
+    def setUp(self):
+        _epa._reset_aqs_request_state()
+
+    def tearDown(self):
+        _epa._reset_aqs_request_state()
+
+    async def test_identical_requests_from_separate_tasks_fetch_once(self):
+        """Regression: the original ContextVar cache was written inside the
+        task asyncio.gather creates for each tool call, so it never
+        propagated back and every call re-fetched. Live logs showed identical
+        monitors/byBox params hitting EPA twice in a single turn."""
+        http = _RecordingHttp()
+        params = {"param": "88101", "bdate": "20200101", "edate": "20200107"}
+
+        with unittest.mock.patch.object(_epa.httpx, "AsyncClient", http):
+            await asyncio.gather(_epa._aqs_get("dailyData/bySite", dict(params)))
+            await asyncio.gather(_epa._aqs_get("dailyData/bySite", dict(params)))
+
+        self.assertEqual(len(http.calls), 1)
+
+    async def test_different_params_are_fetched_separately(self):
+        http = _RecordingHttp()
+
+        with unittest.mock.patch.object(_epa.httpx, "AsyncClient", http):
+            await _epa._aqs_get("dailyData/bySite", {"param": "88101", "edate": "20200107"})
+            await _epa._aqs_get("dailyData/bySite", {"param": "42602", "edate": "20200107"})
+
+        self.assertEqual(len(http.calls), 2)
+
+    async def test_a_second_credential_reuses_the_first_researchers_result(self):
+        """AQS measurements are public: the same query returns the same bytes
+        whoever's key fetched it. Keying the cache on the credential would
+        make every researcher re-pay a rate-limit slot for identical data,
+        and would silently undo this cache once per-user keys land."""
+        http = _RecordingHttp()
+        params = {"param": "88101", "bdate": "20200101", "edate": "20200107"}
+
+        with unittest.mock.patch.object(_epa.httpx, "AsyncClient", http):
+            with unittest.mock.patch.object(_epa, "AQS_EMAIL", "first@example.com"):
+                await _epa._aqs_get("dailyData/bySite", dict(params))
+            with unittest.mock.patch.object(_epa, "AQS_EMAIL", "second@example.com"):
+                await _epa._aqs_get("dailyData/bySite", dict(params))
+
+        self.assertEqual(len(http.calls), 1)
+
+    async def test_an_unpublished_range_is_refetched_once_its_entry_goes_stale(self):
+        """A range EPA has not published yet returns empty now and real rows
+        in a couple of months. Caching that emptiness on the same terms as
+        settled data would keep answering "no data" long after the
+        measurements landed."""
+        from datetime import date
+
+        http = _RecordingHttp()
+        today = date.today().strftime("%Y%m%d")
+        clock = [1000.0]
+
+        with unittest.mock.patch.object(_epa, "_now", lambda: clock[0]):
+            with unittest.mock.patch.object(_epa.httpx, "AsyncClient", http):
+                await _epa._aqs_get("dailyData/bySite", {"param": "88101", "edate": today})
+                clock[0] += 3600.0
+                await _epa._aqs_get("dailyData/bySite", {"param": "88101", "edate": today})
+
+        self.assertEqual(len(http.calls), 2)
+
+    async def test_settled_measurements_stay_cached_across_turns(self):
+        """Anything outside EPA's publication lag is final, so a later turn
+        — or a different researcher — must not spend a rate-limit slot
+        re-fetching it."""
+        http = _RecordingHttp()
+        clock = [1000.0]
+
+        with unittest.mock.patch.object(_epa, "_now", lambda: clock[0]):
+            with unittest.mock.patch.object(_epa.httpx, "AsyncClient", http):
+                await _epa._aqs_get("dailyData/bySite", {"param": "88101", "edate": "20200107"})
+                clock[0] += 6 * 60 * 60
+                await _epa._aqs_get("dailyData/bySite", {"param": "88101", "edate": "20200107"})
+
+        self.assertEqual(len(http.calls), 1)
+
+    async def test_cache_hits_do_not_spend_the_epa_request_budget(self):
+        """The cache exists to protect the rate limit, so a served-from-cache
+        answer must not reserve a slot. If it did, twenty repeats of one
+        question would exhaust the minute as surely as twenty real calls."""
+        http = _RecordingHttp()
+        params = {"param": "88101", "bdate": "20200101", "edate": "20200107"}
+        clock = [1000.0]
+
+        with unittest.mock.patch.object(_epa, "_now", lambda: clock[0]):
+            with unittest.mock.patch.object(_epa.httpx, "AsyncClient", http):
+                for _ in range(20):
+                    await _epa._aqs_get("dailyData/bySite", dict(params))
+            clock[0] += 2.0
+            wait_for_a_fresh_request = _epa._limiter_for(_epa.AQS_KEY).reserve()
+
+        self.assertEqual(len(http.calls), 1)
+        self.assertEqual(wait_for_a_fresh_request, 0.0)
+
+    async def test_the_cache_does_not_grow_without_bound(self):
+        """Entries live for days and AQS payloads are whole result sets, so
+        an unevicted entry per distinct query is a slow leak in a process
+        that already has a history of memory pressure."""
+        http = _RecordingHttp()
+
+        # These are all cache misses, so the limiter legitimately paces them.
+        # This test is about the cache's ceiling, not pacing, so the waiting
+        # is stubbed out rather than actually served.
+        with unittest.mock.patch.object(_epa.asyncio, "sleep", unittest.mock.AsyncMock()):
+            with unittest.mock.patch.object(_epa.httpx, "AsyncClient", http):
+                for i in range(_epa._MAX_CACHE_ENTRIES + 25):
+                    await _epa._aqs_get("dailyData/bySite", {"param": "88101", "site": str(i)})
+
+        self.assertLessEqual(len(_epa._response_cache), _epa._MAX_CACHE_ENTRIES)
+
+
+class AqsRateLimitTests(unittest.TestCase):
+    """EPA allows 10 requests/minute per credential and disables accounts that
+    exceed it without notice, so pacing is mandatory. It must not, however,
+    tax the ordinary case: one researcher asking one question makes only a
+    handful of calls, spaced by the agent's own thinking time.
+    """
+
+    def setUp(self):
+        _epa._reset_aqs_request_state()
+
+    def tearDown(self):
+        _epa._reset_aqs_request_state()
+
+    def test_a_single_researchers_calls_are_not_delayed(self):
+        clock = [1000.0]
+        with unittest.mock.patch.object(_epa, "_now", lambda: clock[0]):
+            limiter = _epa._limiter_for("shared-key")
+            waits = []
+            for _ in range(4):
+                waits.append(limiter.reserve())
+                clock[0] += 2.0  # the agent's own model latency between calls
+
+        self.assertEqual(waits, [0.0, 0.0, 0.0, 0.0])
+
+    def test_the_request_past_the_cap_waits_for_a_slot_to_free(self):
+        """Nine simultaneous requests fill EPA's minute; the tenth cannot go
+        out until the first has aged out of the window."""
+        clock = [1000.0]
+        with unittest.mock.patch.object(_epa, "_now", lambda: clock[0]):
+            limiter = _epa._limiter_for("shared-key")
+            waits = [limiter.reserve() for _ in range(10)]
+
+        within_cap = waits[: _epa._AQS_MAX_REQUESTS_PER_WINDOW]
+        past_cap = waits[_epa._AQS_MAX_REQUESTS_PER_WINDOW]
+
+        self.assertTrue(all(w < _epa._AQS_WINDOW_SECONDS for w in within_cap), within_cap)
+        self.assertEqual(past_cap, _epa._AQS_WINDOW_SECONDS)
+
+    def test_slots_free_again_once_the_window_slides_past_them(self):
+        clock = [1000.0]
+        with unittest.mock.patch.object(_epa, "_now", lambda: clock[0]):
+            limiter = _epa._limiter_for("shared-key")
+            for _ in range(_epa._AQS_MAX_REQUESTS_PER_WINDOW):
+                limiter.reserve()
+            clock[0] += _epa._AQS_WINDOW_SECONDS + 1.0
+            wait_after_window = limiter.reserve()
+
+        self.assertEqual(wait_after_window, 0.0)
+
+    def test_one_credentials_exhausted_window_does_not_delay_another(self):
+        """EPA's cap is per credential. If a researcher brings their own key,
+        it has to buy them their own budget — queueing them behind everyone
+        on the shared key would make bringing a key pointless."""
+        clock = [1000.0]
+        with unittest.mock.patch.object(_epa, "_now", lambda: clock[0]):
+            shared = _epa._limiter_for("shared-key")
+            for _ in range(_epa._AQS_MAX_REQUESTS_PER_WINDOW + 1):
+                shared.reserve()
+            own_key_wait = _epa._limiter_for("researchers-own-key").reserve()
+
+        self.assertEqual(own_key_wait, 0.0)
+
+
+class SummaryFailureClassificationTests(unittest.IsolatedAsyncioTestCase):
+    """"EPA has no rows" and "EPA did not answer" must not share a status.
+
+    The summary tools return a structured dict instead of raising, because a
+    raised RuntimeError escapes ToolNode and kills the whole ground turn. But
+    _aqs_get raises RuntimeError for transport and API failures too, so a
+    catch-all handler reported an AQS outage or a rejected credential as
+    ``no_data`` -- and the agent, reading a successful empty result, told the
+    researcher no monitoring data exists. That is a scientific claim the
+    service outage is no evidence for.
+    """
+
+    async def _daily_summary_header(self, error):
+        from unittest.mock import AsyncMock, patch
+
+        with patch.object(_epa, "_fetch_summary", AsyncMock(side_effect=error)):
+            result = await _epa.get_daily_summary(
+                param_code="42602", bdate="20200101", edate="20200107", state_code="34",
+            )
+        return result["Header"][0]
+
+    async def test_an_empty_result_set_is_reported_as_no_data(self):
+        header = await self._daily_summary_header(
+            _epa.AqsNoDataError("No EPA daily summary measurements for 2020-01-01 to 2020-01-07.")
+        )
+
+        self.assertEqual(header["status"], "no_data")
+        self.assertIn("No EPA daily summary measurements", header["note"])
+
+    async def test_an_upstream_failure_is_not_reported_as_no_data(self):
+        """The exact shape _aqs_get raises for an HTTP error. Reported as
+        no_data, this became "there are no NO2 measurements there" in the
+        answer -- indistinguishable from a real empty result."""
+        header = await self._daily_summary_header(
+            RuntimeError("AQS HTTP 503 on dailyData/byState: service unavailable")
+        )
+
+        self.assertNotEqual(header["status"], "no_data")
+        self.assertEqual(header["status"], "upstream_error")
+        self.assertIn("503", header["note"])
+
+    async def test_a_rejected_credential_is_not_reported_as_no_data(self):
+        header = await self._daily_summary_header(
+            RuntimeError("EPA AQS request failed: invalid email/key combination")
+        )
+
+        self.assertEqual(header["status"], "upstream_error")
+
+    async def test_the_no_data_type_still_satisfies_broad_runtime_error_handlers(self):
+        """validation_tools' ground fetches catch RuntimeError to fall back on
+        either kind, so the new type must stay a subclass rather than becoming
+        a sibling."""
+        self.assertTrue(issubclass(_epa.AqsNoDataError, RuntimeError))
 
 
 if __name__ == "__main__":

@@ -45,6 +45,7 @@ import tempfile
 CUBE_STORE_ENV = "CUBE_STORE_DIR"
 OVERLAY_STORE_ENV = "OVERLAY_STORE_DIR"
 OUTPUT_DIR_ENV = "OUTPUT_DIR"
+FRAME_STORE_ENV = "FRAME_STORE_DIR"
 
 _cube_store_root: str | None = None
 _isolated_roots: dict[str, str] = {}
@@ -122,6 +123,25 @@ def isolate_overlay_store() -> str:
 def deployment_overlay_store_dir() -> str:
     """The overlay store path the deployment uses — see :func:`_deployment_dir`."""
     return _deployment_dir(OVERLAY_STORE_ENV, "overlay_store_dir")
+
+
+def isolate_frame_store() -> str:
+    """Redirect T59's frame blob store (``services/frame_store.py``).
+
+    Same reasoning as the cube store: its default is the deployment volume
+    (``/app/frame_store``), which under Docker is production's named volume and
+    on a Windows checkout resolves against the current drive as
+    ``C:\\app\\frame_store``. Left alone, the suite would write stacks into a
+    store it does not own — and this one *evicts*, so a test writing past the
+    cap would delete a developer's or a deployment's entries, not merely add to
+    them.
+    """
+    return _isolate_store(FRAME_STORE_ENV, "tta-frame-store-")
+
+
+def deployment_frame_store_dir() -> str:
+    """The frame store path the deployment uses — see :func:`_deployment_dir`."""
+    return _deployment_dir(FRAME_STORE_ENV, "frame_store_dir")
 
 
 def isolate_output_dir() -> str:
@@ -266,6 +286,7 @@ class ProcessCacheIsolation:
         isolate_cube_store()
         isolate_overlay_store()
         isolate_output_dir()
+        isolate_frame_store()
         clear_process_caches()
         self.addCleanup(clear_process_caches)
         super().setUp()

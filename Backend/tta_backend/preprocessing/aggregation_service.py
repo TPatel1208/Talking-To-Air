@@ -40,6 +40,21 @@ VARIABLE_RESOLUTION_ATTR = "_variable_resolution"
 class AggregatedResult:
     ds: xr.Dataset
     meta: dict[str, Any]
+    #: The masked, still-time-resolved field this reduction was computed FROM,
+    #: and the QA counters the mask recorded on its way through (T59 Phase 5).
+    #:
+    #: Handed out because a caller that wants a second reduction over the same
+    #: time axis -- the frame stack is the one that exists -- would otherwise
+    #: have to re-resolve and re-apply the mask to get it, which is a second
+    #: masking resolution AND a second counter compute over a lazily-opened
+    #: bundle. It is a reference to a lazy array and a dict already in hand, so
+    #: carrying it costs nothing; every consumer that ignores it is unaffected.
+    #:
+    #: D5a is why the counters ride along rather than being re-derived: every
+    #: scientific quantity a frame discloses comes off the NATIVE field, and a
+    #: number the caller forgets to pass is a second full I/O pass with nothing
+    #: saying so.
+    masked: "MaskedField | None" = None
 
 
 class MaskedField(NamedTuple):
@@ -47,11 +62,18 @@ class MaskedField(NamedTuple):
 
     ``counts`` is the raw QA counter block ``_apply_quality_mask`` recorded,
     empty when QA masking never ran. It is deliberately absent from the public
-    ``resolve_and_mask`` interface: ``aggregate`` is its only consumer -- it
-    reuses the per-timestep reduction rather than force a second I/O pass over
-    a lazily-opened bundle (T55) -- and every fact an outside caller needs is
-    already summarized into ``provenance``. Handing it out publicly would widen
-    the interface for a reuse channel nobody outside can act on.
+    ``resolve_and_mask`` interface: that returns the masked array and its
+    provenance, which is everything a caller who only wants a masked array
+    needs, and widening it would put the counters in front of six callers who
+    have no use for them.
+
+    They ARE reachable, on ``AggregatedResult.masked``, by a caller that
+    reduces the same masked field a second way -- ``aggregate`` reusing the
+    per-timestep reduction for its valid-timestep scan (T55), and
+    ``plot_singular`` handing the counters to the frame stack rather than
+    buying ``checked_area_by_time``/``passing_area_by_time``/``value_min``/
+    ``value_max`` again with a second full I/O pass (T59 D5a). The seam is the
+    aggregation the counters were computed during, not a public masking call.
     """
 
     data: xr.DataArray
@@ -321,6 +343,15 @@ def _count_qa_pixels(da: xr.DataArray, qf: xr.DataArray, condition: xr.DataArray
             "flag_missing": flag_missing.sum(),
             "checked_area": checked_area.sum(),
             "passing_area": passing_area.sum(),
+            # The field's extremes, measured here because this walk is already
+            # happening. A quantile is not a streaming reduction, so the frame
+            # stack's pooled colour scale (T59 D9) cannot choose its histogram
+            # bins until the range is known -- a real data dependency, and
+            # without this it would buy the answer with a second full I/O pass
+            # over a lazily-opened bundle. Taken on the fill/valid-masked field
+            # BEFORE the QA mask, so it stays a superset of what survives.
+            "value_min": da.min(skipna=True),
+            "value_max": da.max(skipna=True),
         }
         # Per-timestep rates, reduced over the spatial dims of the SAME
         # pre/post arrays, so a day the mask gutted stays visible instead of
@@ -346,6 +377,10 @@ def _count_qa_pixels(da: xr.DataArray, qf: xr.DataArray, condition: xr.DataArray
         "flag_missing": int(reduced["flag_missing"]),
         "counted_extent": counted_extent,
     }
+    for key in ("value_min", "value_max"):
+        extreme = float(reduced[key])
+        if np.isfinite(extreme):
+            counts[key] = extreme
     area_checked = float(reduced["checked_area"])
     if area_checked > 0:
         counts["pass_rate"] = float(reduced["passing_area"]) / area_checked
@@ -353,6 +388,15 @@ def _count_qa_pixels(da: xr.DataArray, qf: xr.DataArray, condition: xr.DataArray
         counts["pass_rate_by_time"] = _by_time_rates(
             reduced["passing_area_by_time"], reduced["checked_area_by_time"],
         )
+        # The undivided areas, alongside the rates they produced. A per-bucket
+        # roll-up (T59 finding 12) has to SUM these and divide once -- averaging
+        # the quotients above would weight a scan that clipped the region's
+        # corner exactly as heavily as one that covered all of it -- and a
+        # quotient cannot be unmixed back into its terms. Re-deriving them
+        # instead would be a second full walk of a lazily-opened bundle for
+        # numbers this graph has already paid for.
+        for key in ("checked_area_by_time", "passing_area_by_time"):
+            counts[key] = [float(v) for v in np.asarray(reduced[key].values)]
         counts["times"] = [
             pd.Timestamp(t).isoformat() for t in np.asarray(reduced[time_dim].values)
         ]
@@ -599,7 +643,7 @@ class AggregationService:
         if variable_resolution:
             meta["variable_resolution"] = variable_resolution
 
-        return AggregatedResult(ds=result_ds, meta=meta)
+        return AggregatedResult(ds=result_ds, meta=meta, masked=masked)
 
     def timeseries_aggregation_meta(
         self,
@@ -1187,6 +1231,32 @@ class AggregationService:
             return None
         return flags
 
+    def temporal_mean(self, da: xr.DataArray, time_dim: str, cadence: str) -> xr.DataArray:
+        """Collapse ``time_dim`` to "the average over the period".
+
+        The public form of the cadence-bucket weighting below, for a caller
+        that has already reduced space itself and only needs time collapsed --
+        the vertical profile, whose reduction runs space-then-time (T56 D4) and
+        so arrives here holding a (timestep x layer) matrix rather than a field.
+        Without this the profile would have to reach into a private method or,
+        worse, spell its own ``mean(dim=time)`` and quietly reintroduce the
+        clustered-sampling bias Finding #11 removed.
+        """
+        return self._cadence_weighted_mean(da, time_dim, cadence)
+
+    def cadence_for(
+        self,
+        data: xr.Dataset | xr.DataArray,
+        *,
+        collection_id: str | None = None,
+        variable: str | None = None,
+        col_info: dict[str, Any] | None = None,
+    ) -> str:
+        """The product's publishing cadence, or ``"unknown"``. Public because
+        ``temporal_mean`` needs one and only this module knows how it is
+        resolved (data attrs -> col_info -> registry)."""
+        return self._cadence(data, collection_id, variable, col_info)
+
     # Cadence -> the pandas offset a timestamp is floored to when grouping
     # granules into the buckets a temporal mean must weight equally (#11).
     _CADENCE_FLOOR = {"hourly": "h", "daily": "D"}
@@ -1196,13 +1266,32 @@ class AggregationService:
         not each granule (Finding #11) -- so 'average over the period' is not
         biased toward days sampled more densely than the cadence.
 
-        Each timestep's weight is ``1 / (granules in its cadence bucket)``, so
-        every bucket contributes weight 1 to the mean regardless of how many
-        granules landed in it. Buckets come from flooring the timestamp to the
-        product's cadence (hour/day/month). An unknown or unbucketable cadence
-        can't define a period, so it falls back to the plain unweighted mean --
-        as does an evenly-cadenced series, where every bucket holds exactly one
-        granule and the weights are already uniform.
+        Each timestep's weight is ``1 / (granules in its bucket that have a
+        value AT THIS PIXEL)``, so every bucket contributes weight 1 to the
+        mean regardless of how many granules landed in it. Buckets come from
+        flooring the timestamp to the product's cadence (hour/day/month). An
+        unknown or unbucketable cadence can't define a period, so it falls back
+        to the plain unweighted mean -- as does an evenly-cadenced series,
+        where every bucket holds exactly one granule and the weights are
+        already uniform.
+
+        The denominator counts CONTRIBUTING granules, not granules, and that
+        distinction is the whole of T59 D4. ``.weighted(w).mean(skipna=True)``
+        renormalizes per pixel over the timesteps that survived masking, so a
+        fixed ``1 / (granules in bucket)`` weight let a bucket whose granules
+        mostly missed this pixel vote with a fraction of a bucket: where a
+        4-granule hour kept one granule, that hour counted a quarter. Measured
+        on two materialized TEMPO NO2 bundles, that put 2.7% and 2.3% on the
+        partial-coverage population -- and disabling QA made it LARGER, because
+        the NaNs come from swath tiles covering different slices of the domain,
+        not from quality masking.
+
+        Counting contributors instead makes the renormalization divide by
+        exactly the number of buckets that contributed, which is the mean of
+        the per-bucket means -- Finding #11's stated intent, and identical to
+        the old arithmetic wherever a bucket is wholly covered. Expressed as a
+        weight rather than a ``groupby(...).mean().mean("bucket")`` so the
+        reduction keeps its shape: same laziness, same dim order, same attrs.
         """
         if cadence not in ("hourly", "daily", "monthly"):
             return da.reduce(np.nanmean, dim=time_dim)
@@ -1212,15 +1301,24 @@ class AggregationService:
                 buckets = stamps.to_period("M")
             else:
                 buckets = stamps.floor(self._CADENCE_FLOOR[cadence])
-            counts = pd.Series(1, index=buckets).groupby(level=0).transform("size")
+            labels = np.asarray([str(b) for b in buckets])
         except Exception:
             # Non-datetime or otherwise unbucketable time axis -- never fatal.
             return da.reduce(np.nanmean, dim=time_dim)
-        weights = xr.DataArray(
-            1.0 / np.asarray(counts.values, dtype=float),
-            dims=[time_dim],
-            coords={time_dim: da[time_dim]},
+        bucket_of = xr.DataArray(
+            labels, dims=[time_dim], coords={time_dim: da[time_dim]},
+        ).rename("bucket")
+        # Per pixel, per timestep: how many granules in THIS timestep's bucket
+        # have a finite value HERE. ``.sel(bucket=bucket_of)`` scatters the
+        # per-bucket count back across the timesteps that share a bucket.
+        contributing = (
+            np.isfinite(da).groupby(bucket_of).sum(dim=time_dim).sel(bucket=bucket_of)
         )
+        # ``.where`` before the reciprocal, not after: dividing by a zero count
+        # would warn and produce an inf that ``fillna`` would then miss. A pixel
+        # no granule covered gets weight 0 in every bucket, so the weights sum
+        # to 0 and the mean is NaN -- the same absence the old form reported.
+        weights = (1.0 / contributing.where(contributing > 0)).fillna(0.0)
         return da.weighted(weights).mean(dim=time_dim, skipna=True)
 
     def _collection_info(self, collection_id: str | None, variable: str | None) -> dict[str, Any]:

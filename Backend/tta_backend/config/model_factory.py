@@ -20,14 +20,24 @@ def build_chat_model(provider: str, model: str, settings: Settings) -> Any:
     supported set, matching the existing fail-at-boot posture for other
     required runtime configuration.
     """
+    # Attached here rather than per-agent because this is the only place a
+    # chat model is constructed: an agent added later is timed without its
+    # author having to remember to ask for it. See utils.llm_timing for why
+    # provider latency needed its own series at all.
+    from tta_backend.utils.llm_timing import timing_callbacks
+
     if provider == "groq":
         from langchain_groq import ChatGroq
 
-        return ChatGroq(model=model, groq_api_key=settings.groq_api_key)
+        return ChatGroq(
+            model=model, groq_api_key=settings.groq_api_key, callbacks=timing_callbacks()
+        )
     if provider == "google":
         from langchain_google_genai import ChatGoogleGenerativeAI
 
-        return ChatGoogleGenerativeAI(model=model, google_api_key=settings.google_api_key)
+        return ChatGoogleGenerativeAI(
+            model=model, google_api_key=settings.google_api_key, callbacks=timing_callbacks()
+        )
     raise ConfigurationError(
         f"Unknown model provider {provider!r}; supported providers are {', '.join(_PROVIDERS)}"
     )

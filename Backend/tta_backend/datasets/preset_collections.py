@@ -31,6 +31,7 @@ _PRESETS: list[tuple[str, str]] = [
     ("TROPOMI_NO2", "NO2 column, monthly, global"),
     ("TEMPO_NO2", "Tropospheric NO2 vertical column, hourly, North America"),
     ("TEMPO_O3TOT", "Total ozone column, hourly, North America"),
+    ("TEMPO_O3PROF", "Ozone VERTICAL PROFILE (24 layers), hourly, North America"),
     ("OMI_O3", "Total ozone column, daily, global"),
     ("TEMPO_HCHO", "HCHO vertical column, hourly, North America"),
     ("OMI_HCHO", "HCHO vertical column, daily, global"),

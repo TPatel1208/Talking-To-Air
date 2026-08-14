@@ -470,6 +470,174 @@ class ValidateAgainstGroundToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(monitor_result["source_handles"], ["cube_1"])
         self.assertIn("34-017-0006", result["monitor_ids"])
 
+    async def test_validate_against_ground_masks_when_collection_identity_is_dataset_level(self):
+        """A granule that carries its collection identity only as a *dataset*
+        global attribute must still get the collections.yaml-pinned quality
+        mask applied to the monitor series.
+
+        xarray does not propagate a Dataset's global attrs onto a DataArray
+        pulled out of it (``to_dataarray`` does ``data[name]``), so resolving
+        the collection short_name from ``da.attrs`` alone finds nothing, falls
+        back to the variable name, matches no registry entry, and hands
+        ``resolve_and_mask`` an empty col_info -- no quality_flag_var, so the
+        quality mask silently never runs. This is the same dataset-level
+        identity fact the T25 masking-execution fix pinned for the plot/stat/
+        compare paths; validation must not be the one path that skips it.
+
+        Day 2 carries a bad quality flag at the monitor cell, so it is not a
+        trustworthy observation and must not be paired against ground data.
+        """
+        import numpy as np
+        import pandas as pd
+        import xarray as xr
+        from tta_backend.tools.satellite_tools import validation_tools
+
+        def make_cube():
+            times = pd.date_range("2024-01-01", periods=3, freq="D")
+            values = np.full((3, 2, 2), 100.0)
+            values[:, 0, 0] = [1.0, 2.0, 3.0]  # monitor cell (lat=40.0, lon=-74.0)
+            flags = np.zeros((3, 2, 2), dtype="int64")
+            flags[1, 0, 0] = 1  # day 2 fails QA at the monitor cell
+            return xr.Dataset(
+                {
+                    "vertical_column_troposphere": (
+                        ("time", "lat", "lon"), values, {"units": "molecules/cm^2"},
+                    ),
+                    "main_data_quality_flag": (("time", "lat", "lon"), flags),
+                },
+                coords={"time": times, "lat": [40.0, 41.0], "lon": [-74.0, -73.0]},
+                # Collection identity lives ONLY here, never on the variable.
+                attrs={"short_name": "TEMPO_NO2_L3"},
+            )
+
+        self.volume.add_zarr("cube_qa", make_cube)
+
+        monitors_body = [{
+            "latitude": "40.0",
+            "longitude": "-74.0",
+            "state_code": "34",
+            "county_code": "017",
+            "site_number": "0006",
+            "local_site_name": "Newark Firehouse",
+        }]
+        daily_body = [
+            {
+                "date_local": date, "arithmetic_mean": mean, "state_code": "34",
+                "county_code": "017", "site_number": "0006", "units_of_measure": "ppb",
+                "pollutant_standard": "NO2 1-hour 2010", "local_site_name": "Newark Firehouse",
+            }
+            for date, mean in (
+                ("2024-01-01", "2.0"), ("2024-01-02", "4.0"), ("2024-01-03", "6.0"),
+            )
+        ]
+
+        region = {
+            "bounds": (-75.0, 39.0, -73.0, 41.0),
+            "geometry": None,
+            "name": "New Jersey",
+        }
+
+        with patch.object(validation_tools._resolver, "aresolve_location", AsyncMock(return_value=region)), \
+             patch(
+                 "tta_backend.tools.ground_sensor_tools.epa_aqs_tools._aqs_get",
+                 AsyncMock(side_effect=_fake_aqs_get(monitors_body, daily_body)),
+             ):
+            tool = validation_tools.make_validate_against_ground(self.mcp_tools)
+            raw = await tool.ainvoke({
+                "handle": "cube_qa",
+                "location": "New Jersey",
+                "param_code": "42602",
+                "pollutant_standard": "NO2 1-hour 2010",
+            })
+
+        result = json.loads(raw)
+        self.assertNotIn("error", result)
+
+        monitor_result = result["monitors"][0]
+        # Day 2 is QA-rejected, so only days 1 and 3 are trustworthy pairings.
+        self.assertEqual(monitor_result["stats"]["n"], 2)
+        self.assertEqual(monitor_result["coverage"]["n_valid"], 2)
+        self.assertEqual(monitor_result["coverage"]["n_excluded"], 1)
+
+        # ...and the disclosure says the pinned rule is what decided it,
+        # rather than quietly reporting that no quality mask ran.
+        masking = result["_artifact_refs"][0]["metadata"]["masking"]
+        self.assertEqual(masking["qa_status"], "verified")
+        self.assertEqual(masking["qa_source"], "collections_yaml")
+
+    async def test_exceedance_overlay_masks_when_collection_identity_is_dataset_level(self):
+        """The exceedance overlay resolves its masking metadata on the same
+        dataset-level collection identity the validation path does -- the two
+        tools open the same granules, so a QA-rejected observation must not
+        appear on the overlay's satellite series either."""
+        import numpy as np
+        import pandas as pd
+        import xarray as xr
+        from tta_backend.tools.satellite_tools import validation_tools
+
+        def make_cube():
+            times = pd.date_range("2024-01-01", periods=3, freq="D")
+            values = np.full((3, 2, 2), 100.0)
+            values[:, 0, 0] = [10.0, 20.0, 30.0]  # monitor cell
+            flags = np.zeros((3, 2, 2), dtype="int64")
+            flags[1, 0, 0] = 1  # day 2 fails QA at the monitor cell
+            return xr.Dataset(
+                {
+                    "vertical_column_troposphere": (
+                        ("time", "lat", "lon"), values, {"units": "molecules/cm^2"},
+                    ),
+                    "main_data_quality_flag": (("time", "lat", "lon"), flags),
+                },
+                coords={"time": times, "lat": [40.0, 41.0], "lon": [-74.0, -73.0]},
+                attrs={"short_name": "TEMPO_NO2_L3"},
+            )
+
+        self.volume.add_zarr("cube_qa_exceed", make_cube)
+
+        monitors_body = [{
+            "latitude": "40.0",
+            "longitude": "-74.0",
+            "state_code": "34",
+            "county_code": "017",
+            "site_number": "0006",
+            "local_site_name": "Newark Firehouse",
+        }]
+        daily_body = [
+            {
+                "date_local": date, "first_max_value": value, "state_code": "34",
+                "county_code": "017", "site_number": "0006",
+                "pollutant_standard": "NO2 1-hour 2010",
+            }
+            for date, value in (
+                ("2024-01-01", "2.0"), ("2024-01-02", "150.0"), ("2024-01-03", "1.0"),
+            )
+        ]
+
+        region = {
+            "bounds": (-75.0, 39.0, -73.0, 41.0),
+            "geometry": None,
+            "name": "New Jersey",
+        }
+
+        with patch.object(validation_tools._resolver, "aresolve_location", AsyncMock(return_value=region)), \
+             patch(
+                 "tta_backend.tools.ground_sensor_tools.epa_aqs_tools._aqs_get",
+                 AsyncMock(side_effect=_fake_aqs_get(monitors_body, daily_body)),
+             ):
+            tool = validation_tools.make_exceedance_overlay(self.mcp_tools)
+            raw = await tool.ainvoke({
+                "handle": "cube_qa_exceed", "location": "New Jersey", "param_code": "42602",
+            })
+
+        result = json.loads(raw)
+        self.assertNotIn("error", result)
+
+        metadata = result["_artifact_refs"][0]["metadata"]
+        self.assertEqual(metadata["coverage"]["n_valid"], 2)
+        self.assertEqual(metadata["coverage"]["n_excluded"], 1)
+        self.assertEqual(metadata["masking"]["qa_status"], "verified")
+        self.assertEqual(metadata["masking"]["qa_source"], "collections_yaml")
+
     async def test_exceedance_overlay_marks_the_right_days_on_the_satellite_series(self):
         import pandas as pd
         import xarray as xr

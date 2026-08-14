@@ -130,6 +130,129 @@ def identify_time(obj: Any) -> str | None:
     return next((n for n in TIME_NAME_CANDIDATES if n in cands), None)
 
 
+# CF unit strings a physical VERTICAL axis is published against, by kind. As
+# with lat/lon (T24), the identification signal is the vocabulary rather than
+# any one variable name: TEMPO_O3PROF spells its axes
+# ``ozone_profile_pressure``/``ozone_profile_altitude``, MERRA-2 spells its
+# ``lev``, and the next layered product will spell them something else again --
+# but they all publish hPa or km.
+PRESSURE_UNITS = frozenset({
+    "hpa", "hectopascal", "hectopascals", "mb", "mbar", "millibar", "millibars",
+    "pa", "pascal", "pascals", "kpa", "kilopascal", "kilopascals", "atm",
+})
+ALTITUDE_UNITS = frozenset({
+    "km", "kilometer", "kilometers", "kilometre", "kilometres",
+    "m", "metre", "metres", "meter", "meters",
+})
+
+# Values producers write into a standard_name they never set. A placeholder is
+# an ABSENCE, not a declaration, and reading it as one short-circuits the units
+# check: an hPa coordinate labelled ``standard_name: none`` came back classified
+# as not-vertical at all, which reads to the caller as "this product publishes
+# no pressure axis". Fails safe rather than wrong, but it fails on a real file.
+_PLACEHOLDER_STANDARD_NAMES = frozenset({
+    "", "-", "--", "n/a", "na", "none", "null", "nil", "unknown", "unspecified", "unset", "tbd",
+})
+
+# CF standard names that name a physical vertical coordinate. Deliberately a
+# CLOSED set with a hard veto: a variable that has declared itself something
+# else is not reconsidered on its units, because "m" is a length whether it
+# measures height or an easting.
+#
+# The cost of the veto is that a real CF name missing from here silently kills a
+# genuine axis, so the list has to actually be complete for the names products
+# use. ``height_above_mean_sea_level`` and ``height_above_geopotential_datum``
+# are both real CF names published in metres and were both missing.
+#
+# ``geopotential_height`` is mapped to altitude knowingly: it is geopotential,
+# not geometric, height -- they differ by ~0.3% at 10 km and ~1.5% at 50 km.
+# Treating them as one is right for selecting a layer and wrong for a precise
+# altitude, which is why the resolution discloses which variable answered.
+_VERTICAL_STANDARD_NAMES = {
+    "air_pressure": "pressure",
+    "air_pressure_at_mean_sea_level": "pressure",
+    "atmosphere_pressure_coordinate": "pressure",
+    "atmosphere_ln_pressure_coordinate": "pressure",
+    "altitude": "altitude",
+    "height": "altitude",
+    "height_above_mean_sea_level": "altitude",
+    "height_above_geopotential_datum": "altitude",
+    "height_above_reference_ellipsoid": "altitude",
+    "geopotential_height": "altitude",
+}
+
+
+def vertical_axis_kind(var: Any) -> str | None:
+    """``"pressure"``, ``"altitude"`` or None for one variable, by CF metadata.
+
+    ``standard_name`` wins over units, because units alone are ambiguous: "m"
+    is a length whether it measures height above the surface or an easting on
+    a projected grid. A variable that declares itself is believed; one that
+    doesn't is judged on its units alone, which is how real products (whose
+    profile axes carry ``units`` and a free-text ``comment`` and nothing else)
+    have to be read.
+
+    A *placeholder* standard_name ("none", "N/A", "unknown") is treated as no
+    declaration at all, so such a variable falls through to its units rather
+    than being ruled out. That is the same rule, not an exception to it: the
+    precedence exists because a declaration carries information, and a
+    placeholder carries none.
+    """
+    attrs = getattr(var, "attrs", None) or {}
+    standard = str(attrs.get("standard_name", "")).strip().lower()
+    if standard in _PLACEHOLDER_STANDARD_NAMES:
+        standard = ""
+    if standard:
+        # A declaration is believed in BOTH directions. ``projection_y_coordinate``
+        # is published in metres, and reading it as an altitude would draw a map
+        # projection as an atmosphere -- so a variable that has already said what
+        # it is and did not say "vertical" is not reconsidered on its units.
+        return _VERTICAL_STANDARD_NAMES.get(standard)
+    units = str(attrs.get("units", "")).strip().lower()
+    if units in PRESSURE_UNITS:
+        return "pressure"
+    if units in ALTITUDE_UNITS:
+        return "altitude"
+    return None
+
+
+def vertical_axes_for_dim(obj: Any, dim: str) -> dict:
+    """``{kind: name}`` for every physical vertical axis spanning ``dim``.
+
+    Scans coordinates before data variables: a granule that publishes its
+    vertical axes as CF *auxiliary coordinates* (TEMPO_O3PROF does) already has
+    them attached to the science variable, so they need no co-locating; one that
+    publishes them as ordinary data variables does. First match per kind wins,
+    so the attached form is never displaced by a looser one.
+    """
+    if not dim:
+        return {}
+    found: dict = {}
+    names = list(getattr(obj, "coords", ()) or ())
+    if hasattr(obj, "data_vars"):
+        names += list(obj.data_vars)
+    for name in names:
+        var = obj[name]
+        if dim not in getattr(var, "dims", ()):
+            continue
+        kind = vertical_axis_kind(var)
+        if kind and kind not in found:
+            found[kind] = name
+    return found
+
+
+def is_vertical_dim(obj: Any, dim: str) -> bool:
+    """Whether ``dim`` is an atmospheric vertical axis — either because it
+    indexes a pressure/altitude coordinate itself, or because one spans it.
+
+    Used to decide whether a "this variable has an extra dimension" refusal
+    should point at the vertical-profile tool. Deliberately conservative: an
+    unlabelled index dimension (a wavelength, a retrieval attempt) answers
+    False, so the suggestion is never made where a profile could not help.
+    """
+    return bool(vertical_axes_for_dim(obj, dim))
+
+
 def normalise_bbox(bbox) -> Tuple[float, float, float, float]:
     """Return bbox as (min_lon, min_lat, max_lon, max_lat)."""
     while isinstance(bbox, (list, tuple)) and len(bbox) == 1:

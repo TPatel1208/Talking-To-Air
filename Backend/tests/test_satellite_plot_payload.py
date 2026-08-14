@@ -40,7 +40,44 @@ class SatellitePlotPayloadTests(unittest.TestCase):
             np.sort(uncropped.values[np.isfinite(uncropped.values)]),
         )
 
-    def test_payload_preserves_sparse_valid_points(self):
+    def test_payload_omits_the_vestigial_points_array(self):
+        """``points`` was a second, flattened copy of the same field -- up to
+        8,000 lat/lon/value triples, ~270 KB of JSON on every heatmap, stored
+        durably in Postgres alongside the grid it duplicated.
+
+        Nothing renders from it. The map draws the server-rendered overlay PNG,
+        and falls back to the 2-D ``values`` grid (buildCanvasFallbackFrame);
+        the Statistics tab reads ``statistics``. Its last reader was
+        chartStats.rawCellValues, and only for payloads predating
+        ``statistics`` -- a read-path fallback that stays, because old charts
+        are durable rows. New payloads simply stop paying for it.
+        """
+        import numpy as np
+        import xarray as xr
+        from tta_backend.tools.satellite_tools.plot_tools import _da_to_heatmap_payload
+
+        da = xr.DataArray(
+            np.array([[1.0, 2.0], [3.0, 4.0]]),
+            dims=("lat", "lon"),
+            coords={"lat": [40.0, 41.0], "lon": [-75.0, -74.0]},
+        )
+
+        payload = _da_to_heatmap_payload(da, "Compact", "NO2", "mol/cm2")
+
+        self.assertNotIn("points", payload)
+        # the grid the frontend actually renders from is untouched
+        self.assertEqual(payload["values"], [[1.0, 2.0], [3.0, 4.0]])
+
+    def test_sparse_valid_cells_survive_thinning_in_the_statistics(self):
+        """A sparse field is exactly where the render grid's uniform stride is
+        lossiest -- here it steps over both valid cells and the rendered grid
+        comes back empty. ``points`` used to be what preserved them.
+
+        Nothing consumed that preservation: what a reader is actually told
+        about a sparse scene comes from ``statistics``, computed on the full
+        field before ``_downsample_grid`` thins it. That is the guarantee this
+        test pins, and it holds without a second copy of the array.
+        """
         import numpy as np
         import xarray as xr
         from tta_backend.tools.satellite_tools.plot_tools import _MAX_GRID_CELLS, _da_to_heatmap_payload
@@ -56,9 +93,13 @@ class SatellitePlotPayloadTests(unittest.TestCase):
 
         payload = _da_to_heatmap_payload(da, "Sparse", "NO2", "mol/cm2")
 
-        self.assertEqual(payload["points"]["values"], [1.25, 2.5])
-        self.assertEqual(len(payload["points"]["values"]), 2)
-        self.assertLessEqual(len(payload["points"]["values"]), _MAX_GRID_CELLS)
+        rendered = [v for row in payload["values"] for v in row if v is not None]
+        self.assertLessEqual(len(rendered), _MAX_GRID_CELLS)
+        self.assertEqual(rendered, [])            # the stride really drops both
+
+        self.assertEqual(payload["statistics"]["count"], 2)
+        self.assertEqual(payload["statistics"]["min"], 1.25)
+        self.assertEqual(payload["statistics"]["max"], 2.5)
 
     def test_reported_statistics_describe_the_full_field_not_the_rendered_grid(self):
         """The grid in the payload is thinned to _MAX_GRID_CELLS for rendering,
@@ -122,7 +163,7 @@ class SatellitePlotPayloadTests(unittest.TestCase):
 
         payload = _da_to_heatmap_payload(da, "Wrapped", "NO2", "mol/cm2")
 
-        self.assertEqual(payload["points"]["values"], [4.0])
+        self.assertEqual(payload["values"], [[None, 4.0, None]])
         self.assertEqual(payload["lons"], [-10.0, -5.0, 5.0])
         self.assertLess(payload["vmin"], 4.0)
         self.assertGreater(payload["vmax"], 4.0)
@@ -752,6 +793,101 @@ class SatellitePlotPayloadTests(unittest.TestCase):
 
         self.assertEqual(start, "2024-06-01")
         self.assertEqual(end, "2024-06-02")
+
+    def test_building_a_payload_holds_a_bounded_multiple_of_the_field(self):
+        """Building a heatmap must not need an unbounded multiple of the field.
+
+        This is the stage that OOM-killed the backend on 2026-08-05 (full-day
+        TEMPO over North America): the retrieval and the materialize both
+        succeeded, then uvicorn was SIGKILLed with ~2.8 GB RSS. Measured cause
+        was accumulation, not any single allocation -- the reduced field was
+        upcast to float64 on arrival and then copied again by every step that
+        read it (percentile bounds, overlay rasterization, statistics, the
+        point list), all alive at once. 62.8 bytes per cell measured; at TEMPO
+        CONUS native resolution (2880x7750) that is ~1.4 GB for one map.
+
+        The ceiling is the guarantee. A satellite retrieval carries nowhere
+        near float64 precision and the map is drawn in 8-bit color, so the
+        headroom that bought the doubling was never real.
+        """
+        import tracemalloc
+        import numpy as np
+        import xarray as xr
+        from tta_backend.tools.satellite_tools.plot_tools import _da_to_heatmap_payload
+
+        def field(nlat, nlon):
+            return xr.DataArray(
+                np.linspace(0.0, 1.0, nlat * nlon, dtype=np.float32).reshape(nlat, nlon),
+                dims=("lat", "lon"),
+                coords={"lat": np.linspace(20.0, 55.0, nlat), "lon": np.linspace(-130.0, -60.0, nlon)},
+            )
+
+        # Warm up: matplotlib/rasterio import once, and must not be charged
+        # to the measured build.
+        _da_to_heatmap_payload(field(40, 50), "warmup", "NO2", "mol/cm2", render_overlay=True)
+
+        da = field(600, 800)
+        cells = da.size
+
+        tracemalloc.start()
+        try:
+            tracemalloc.reset_peak()
+            before = tracemalloc.get_traced_memory()[0]
+            _da_to_heatmap_payload(da, "Peak memory", "NO2", "mol/cm2", render_overlay=True)
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+
+        bytes_per_cell = (peak - before) / cells
+        self.assertLess(
+            bytes_per_cell, 30.0,
+            f"payload build peaked at {bytes_per_cell:.1f} bytes per cell; at TEMPO "
+            f"CONUS native resolution (22.3M cells) that is "
+            f"{bytes_per_cell * 22.3e6 / 1e9:.2f} GB for a single map",
+        )
+
+    def test_statistics_survive_the_working_precision_of_the_field(self):
+        """Reported statistics must describe the data, not the buffer it sat in.
+
+        The field is carried at float32 to keep a native-resolution render off
+        the OOM killer, and that is safe for pixels but not automatically safe
+        for a mean: summing millions of same-signed values in float32 drifts,
+        and this mean is a published scientific number that the stats and
+        trend tools are required to agree with (see _area_weighted_mean). So
+        the reduction accumulates in float64 regardless of how the field is
+        stored, and this pins that -- against a float64 field carrying values
+        at TEMPO NO2's real magnitude, where naive float32 accumulation is
+        visible well inside the six significant digits the payload reports.
+        """
+        import numpy as np
+        import xarray as xr
+        from tta_backend.tools.satellite_tools.plot_tools import _da_to_heatmap_payload
+
+        rng = np.random.default_rng(20260805)
+        lats = np.linspace(20.0, 55.0, 400)
+        lons = np.linspace(-130.0, -60.0, 500)
+        # Real TEMPO NO2 column magnitudes, where float32 has ~7 significant
+        # digits total and a large running sum eats them.
+        values = 9.0e17 + rng.normal(0.0, 1.0e15, size=(lats.size, lons.size))
+
+        def payload_for(dtype):
+            da = xr.DataArray(
+                values.astype(dtype), dims=("lat", "lon"),
+                coords={"lat": lats, "lon": lons},
+            )
+            return _da_to_heatmap_payload(da, "Precision", "NO2", "mol/cm2")
+
+        reference = payload_for(np.float64)["statistics"]
+        actual = payload_for(np.float32)["statistics"]
+
+        # The area weighting must be reproduced too, so compute the expected
+        # mean the way the tool documents it rather than as a flat average.
+        weights = np.clip(np.cos(np.deg2rad(lats)), 0.0, None)
+        expected_mean = float((values * weights[:, None]).sum() / (weights.sum() * lons.size))
+
+        self.assertAlmostEqual(reference["mean"] / expected_mean, 1.0, places=6)
+        self.assertAlmostEqual(actual["mean"] / expected_mean, 1.0, places=6)
+        self.assertEqual(actual["count"], values.size)
 
 
 if __name__ == "__main__":

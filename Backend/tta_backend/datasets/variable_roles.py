@@ -124,6 +124,12 @@ _CONTEXT_SUBSTRS = (
     "cloudfraction", "cloudfrac", "cloudpressure", "cloudtop", "cloudheight",
     "cloudalbedo", "pressure", "albedo", "reflectivity", "terrain",
     "aerosolindex", "aerosol", "pbl", "snowice", "temperature",
+    # A vertical axis is a coordinate, the same as latitude/longitude/time, so
+    # it belongs in context beside them. "pressure" above already caught one
+    # spelling of it; without "altitude" the SAME axis in different units
+    # (TEMPO_O3PROF publishes both) landed in different buckets, and the
+    # related-variables panel offered one half of a toggle.
+    "altitude",
 )
 # Science: recognized geophysical naming stems -- positive evidence, never a
 # residual default.

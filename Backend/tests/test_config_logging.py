@@ -140,7 +140,12 @@ class ConfigLoggingTests(unittest.TestCase):
             get_settings.cache_clear()
             loaded = get_settings()
 
-        self.assertEqual(loaded.bundle_open_max_uncompressed_bytes, 2 * 1024 ** 3)
+        # 8 GiB, not the original 2: that number was sized to bound RAM, and
+        # open_max_chunk_bytes does that now. What is left for this gate to
+        # protect is extract-cache disk and the retrieval whose size the
+        # provider could not estimate, and 2 GiB was quietly capping an
+        # ordinary two-day TEMPO request in the name of a risk that had moved.
+        self.assertEqual(loaded.bundle_open_max_uncompressed_bytes, 8 * 1024 ** 3)
 
         with patch.dict(os.environ, {"BUNDLE_OPEN_MAX_UNCOMPRESSED_BYTES": "1234"}, clear=True):
             get_settings.cache_clear()

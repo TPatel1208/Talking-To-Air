@@ -35,6 +35,7 @@ from tta_backend.utils.geo_utils import (
     find_lat_coord,
     find_lon_coord,
     identify_time,
+    is_vertical_dim,
 )
 from tta_backend.utils.phase_timing import phase_timer
 
@@ -330,11 +331,24 @@ def _dimension_choice_error(data_array: xr.DataArray, dim: str) -> MCPToolError:
     values_str = ", ".join(str(v) for v in values)
     units_note = f", units {units}" if units else ""
     name = data_array.name or "this variable"
+    suggestion = f"Pass a dimension selector for '{dim}' with one of the values above."
+    # A refused VERTICAL dimension is the moment a researcher wanted the whole
+    # profile, not one level out of it -- and this refusal is where they already
+    # are. Naming the tool here turns the dead end into the discovery path
+    # (T56 D10). Kept conditional on the dimension actually being vertical:
+    # suggesting a profile for a wavelength axis would send them somewhere that
+    # cannot help.
+    if is_vertical_dim(data_array, dim):
+        suggestion = (
+            f"'{dim}' is a vertical axis: call plot_vertical_profile to chart the "
+            f"whole profile, or pass a '{dim}' selector with one of the values "
+            "above to take a single level."
+        )
     return MCPToolError(
         CATEGORY_DIMENSION_CHOICE_REQUIRED,
         f"'{name}' has an additional dimension '{dim}' ({len(values)} values{units_note}) "
         f"with no selection made: {values_str}.",
-        suggestion=f"Pass a dimension selector for '{dim}' with one of the values above.",
+        suggestion=suggestion,
     )
 
 
@@ -677,11 +691,19 @@ def mask_data_by_geometry(
             data_array, mask_da = _crop_to_mask_footprint(data_array, mask_da)
             timing["cells_out"] = int(data_array.size)
 
-    if data_array.ndim not in (2, 3):
-        raise ValueError(f"Unsupported array dimension: {data_array.ndim}D")
-
-    # xarray aligns by dimension name, so this works for both (lat, lon)
-    # and Harmony-reformatted grids ordered as (time, lon, lat).
+    # Rank is not this function's business, and pinning it to 2-D/3-D was a
+    # false constraint: the ``.where`` below aligns by dimension NAME, and
+    # ``geometry_mask`` above has already established that the grid is a
+    # rectilinear lat/lon one it can rasterize. What that rank check actually
+    # excluded was a field carrying a non-spatial axis besides time -- a
+    # vertical profile product's (time, lat, lon, layer) -- which failed here
+    # with a bare ValueError before any tool could reach its own dimension
+    # handling. Requiring the two masked dims to be present is the real
+    # precondition, and it is checked where it belongs, in geometry_mask.
+    #
+    # xarray aligns by dimension name, so this works for (lat, lon),
+    # Harmony-reformatted grids ordered as (time, lon, lat), and a layered
+    # field alike.
     with phase_timer("mask", cells_in=int(data_array.size), cropped=crop):
         masked = data_array.where(mask_da)
     # Carry the mask's fidelity signal (T42): when geometry_mask self-healed
@@ -689,6 +711,37 @@ def mask_data_by_geometry(
     # keep the mask's attrs) so the tool can disclose region_type.
     if mask_da.attrs.get("region_type"):
         masked.attrs["region_type"] = mask_da.attrs["region_type"]
+    # How many cells the ANALYZED REGION actually covers on this grid, recorded
+    # here because this is the only place the rasterized mask exists -- a caller
+    # re-deriving it would have to re-rasterize on the cropped axes, whose
+    # float32 step differs in the 8th digit and flips cells on the boundary
+    # (the T50 finding).
+    #
+    # It is the honest denominator for any "what fraction of the region had a
+    # value" figure. The obvious alternative -- the cropped array's cell count --
+    # is the BOUNDING BOX, and for a region shaped like anything but a rectangle
+    # that silently reports empty ocean as missing data: a complete retrieval
+    # over the continental US reads 60% covered, and the reader sees a data
+    # problem that does not exist.
+    masked.attrs["region_cells"] = int(mask_da.sum())
+    # ...and how much AREA those cells cover, cos(latitude)-weighted with the
+    # one weight definition (``cos_lat_weights``). A count and an area are not
+    # interchangeable denominators: cells shrink toward the poles, so a
+    # coverage figure whose numerator is area-weighted and whose denominator is
+    # a cell count describes two different fields at once -- Finding #13's
+    # mismatch, arriving through the denominator instead of the numerator. The
+    # frame stack's ``valid_fraction`` (T59 D10) needs the area; T56's
+    # per-layer coverage still reads the count.
+    #
+    # Imported here rather than at module scope: aggregation_service reaches
+    # back into this module's masking helpers, and a top-level import would
+    # close the cycle.
+    from tta_backend.preprocessing.aggregation_service import cos_lat_weights
+
+    weights = cos_lat_weights(mask_da)
+    masked.attrs["region_area"] = float(
+        (mask_da if weights is None else mask_da * weights).sum()
+    )
     return masked
 
 

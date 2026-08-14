@@ -1,0 +1,214 @@
+{
+  "registry_key": "TEMPO_O3PROF",
+  "collection_id": "C3685896402-LARC_CLOUD",
+  "short_name": "TEMPO_O3PROF_L3",
+  "source": "describe_dataset detail=True",
+  "primary_var": "ozone_profile",
+  "quality_flag_var": null,
+  "groups": [
+    "product",
+    "support_data",
+    "geolocation"
+  ],
+  "variables": [
+    {
+      "name": "geolocation/relative_azimuth_angle",
+      "long_name": "geolocation/relative_azimuth_angle",
+      "units": "degrees",
+      "standard_name": null
+    },
+    {
+      "name": "geolocation/solar_zenith_angle",
+      "long_name": "geolocation/solar_zenith_angle",
+      "units": "degrees",
+      "standard_name": null
+    },
+    {
+      "name": "geolocation/viewing_zenith_angle",
+      "long_name": "geolocation/viewing_zenith_angle",
+      "units": "degrees",
+      "standard_name": null
+    },
+    {
+      "name": "latitude",
+      "long_name": "latitude",
+      "units": "degrees_north",
+      "standard_name": "latitude"
+    },
+    {
+      "name": "longitude",
+      "long_name": "longitude",
+      "units": "degrees_east",
+      "standard_name": "longitude"
+    },
+    {
+      "name": "product/ozone_profile",
+      "long_name": "product/ozone_profile",
+      "units": "DU",
+      "standard_name": null
+    },
+    {
+      "name": "product/ozone_profile_error",
+      "long_name": "product/ozone_profile_error",
+      "units": "DU",
+      "standard_name": null
+    },
+    {
+      "name": "product/ozone_profile_precision",
+      "long_name": "product/ozone_profile_precision",
+      "units": "DU",
+      "standard_name": null
+    },
+    {
+      "name": "product/stratosphere_ozone_column",
+      "long_name": "product/stratosphere_ozone_column",
+      "units": "DU",
+      "standard_name": null
+    },
+    {
+      "name": "product/stratosphere_ozone_error",
+      "long_name": "product/stratosphere_ozone_error",
+      "units": "DU",
+      "standard_name": null
+    },
+    {
+      "name": "product/stratosphere_ozone_precision",
+      "long_name": "product/stratosphere_ozone_precision",
+      "units": "DU",
+      "standard_name": null
+    },
+    {
+      "name": "product/total_ozone_column",
+      "long_name": "product/total_ozone_column",
+      "units": "DU",
+      "standard_name": null
+    },
+    {
+      "name": "product/total_ozone_error",
+      "long_name": "product/total_ozone_error",
+      "units": "DU",
+      "standard_name": null
+    },
+    {
+      "name": "product/total_ozone_precision",
+      "long_name": "product/total_ozone_precision",
+      "units": "DU",
+      "standard_name": null
+    },
+    {
+      "name": "product/troposphere_ozone_column",
+      "long_name": "product/troposphere_ozone_column",
+      "units": "DU",
+      "standard_name": null
+    },
+    {
+      "name": "product/troposphere_ozone_error",
+      "long_name": "product/troposphere_ozone_error",
+      "units": "DU",
+      "standard_name": null
+    },
+    {
+      "name": "product/troposphere_ozone_precision",
+      "long_name": "product/troposphere_ozone_precision",
+      "units": "DU",
+      "standard_name": null
+    },
+    {
+      "name": "support_data/eff_cloud_fraction",
+      "long_name": "support_data/eff_cloud_fraction",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "support_data/eff_cloud_pressure",
+      "long_name": "support_data/eff_cloud_pressure",
+      "units": "hPa",
+      "standard_name": null
+    },
+    {
+      "name": "support_data/ozone_apriori_profile",
+      "long_name": "support_data/ozone_apriori_profile",
+      "units": "DU",
+      "standard_name": null
+    },
+    {
+      "name": "support_data/ozone_apriori_profile_error",
+      "long_name": "support_data/ozone_apriori_profile_error",
+      "units": "DU",
+      "standard_name": null
+    },
+    {
+      "name": "support_data/ozone_profile_altitude",
+      "long_name": "support_data/ozone_profile_altitude",
+      "units": "km",
+      "standard_name": null
+    },
+    {
+      "name": "support_data/ozone_profile_altitude_bounds",
+      "long_name": "support_data/ozone_profile_altitude_bounds",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "support_data/ozone_profile_pressure",
+      "long_name": "support_data/ozone_profile_pressure",
+      "units": "hPa",
+      "standard_name": null
+    },
+    {
+      "name": "support_data/ozone_profile_pressure_bounds",
+      "long_name": "support_data/ozone_profile_pressure_bounds",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "support_data/tropopause_index",
+      "long_name": "support_data/tropopause_index",
+      "units": null,
+      "standard_name": null
+    },
+    {
+      "name": "time",
+      "long_name": "scan start time",
+      "units": "seconds since 1980-01-06T00:00:00Z",
+      "standard_name": "time"
+    },
+    {
+      "name": "weight",
+      "long_name": "sum of area weights",
+      "units": "km^2",
+      "standard_name": null
+    }
+  ],
+  "expected_roles": {
+    "geolocation/relative_azimuth_angle": "context",
+    "geolocation/solar_zenith_angle": "context",
+    "geolocation/viewing_zenith_angle": "context",
+    "latitude": "context",
+    "longitude": "context",
+    "product/ozone_profile": "science",
+    "product/ozone_profile_error": "quality",
+    "product/ozone_profile_precision": "quality",
+    "product/stratosphere_ozone_column": "science",
+    "product/stratosphere_ozone_error": "quality",
+    "product/stratosphere_ozone_precision": "quality",
+    "product/total_ozone_column": "science",
+    "product/total_ozone_error": "quality",
+    "product/total_ozone_precision": "quality",
+    "product/troposphere_ozone_column": "science",
+    "product/troposphere_ozone_error": "quality",
+    "product/troposphere_ozone_precision": "quality",
+    "support_data/eff_cloud_fraction": "context",
+    "support_data/eff_cloud_pressure": "context",
+    "support_data/ozone_apriori_profile": "unclassified",
+    "support_data/ozone_apriori_profile_error": "quality",
+    "support_data/ozone_profile_altitude": "context",
+    "support_data/ozone_profile_altitude_bounds": "context",
+    "support_data/ozone_profile_pressure": "context",
+    "support_data/ozone_profile_pressure_bounds": "context",
+    "support_data/tropopause_index": "unclassified",
+    "time": "context",
+    "weight": "unclassified"
+  },
+  "note": "Ground truth reviewed by hand 2026-08-08 against the live describe_dataset inventory. The two vertical axes (ozone_profile_pressure/-altitude) are context for the same reason latitude and time are: they are coordinates, not measurements. ozone_apriori_profile is the retrievals prior, and weight is the L3 gridding area weight -- neither is a measurement a reader would plot, and neither has an established role in this taxonomy, so both stay unclassified rather than being forced into one."
+}

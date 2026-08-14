@@ -386,11 +386,25 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
   }, [abortActiveRequest, accessToken, onLogout])
 
   return (
+    // Horizontally scrollable, not clipped. The three side panels are all
+    // fixed-width and flexShrink: 0 (232 + 380 + 308 = 920 px), so a viewport
+    // narrower than that plus the output panel's own floor has genuinely more
+    // content than width. `overflow: hidden` answered that by making the
+    // overflowing panel invisible AND unreachable -- measured at 556 px, the
+    // output column sat at left: 634 with a 0 px map inside it. Admitting the
+    // overflow means the user can reach it, and the three collapse toggles
+    // remain the way to make it fit.
+    //
+    // Deliberately NOT solved by auto-collapsing a panel at some breakpoint:
+    // that is what this layout used to do, and it was removed because it moved
+    // the layout around outside the user's control (see the collapse state
+    // above). Scrolling leaves the choice with them.
     <div style={{
       display:    'flex',
       height:     '100%',
       width:      '100%',
-      overflow:   'hidden',
+      overflowX:  'auto',
+      overflowY:  'hidden',
       background: 'var(--bg-primary)',
     }}>
       {sessionsCollapsed ? (

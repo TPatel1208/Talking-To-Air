@@ -39,12 +39,20 @@ function statsFromPayload(payload) {
 
 // Every cell of the payload's own grid, nulls included. Masked pixels (QA
 // drops, fill values, out-of-region cells) are serialized as null by the
-// backend and must count against validPct — flattenPayload strips them,
-// which is right for rendering but would make validPct always 100%.
+// backend and must count against validPct — a flatten that skips nulls is
+// right for rendering but would make validPct read 100% no matter how much
+// of the field was masked away.
 function rawCellValues(payload) {
   if (Array.isArray(payload.values) && Array.isArray(payload.values[0])) {
     return payload.values.flat()
   }
+  // Legacy read path only. `points` was a flattened duplicate of the same
+  // field that the backend stopped emitting (plot_tools._build_heatmap_payload)
+  // once nothing rendered from it. Charts are durable rows in Postgres, so
+  // payloads that shipped it — and predate `statistics`, or this branch is
+  // never reached — are still openable and this is the only value array they
+  // carry. Note it holds finite cells only, so an old chart's validPct reads
+  // 100%; that is what those payloads have always reported here.
   const points = payload.points
   if (points && Array.isArray(points.values)) return points.values
   return []

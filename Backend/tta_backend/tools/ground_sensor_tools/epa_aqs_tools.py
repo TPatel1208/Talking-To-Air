@@ -1,5 +1,8 @@
+import asyncio
 import logging
-from contextvars import ContextVar
+import threading
+import time
+from collections import deque
 
 from langchain.tools import tool
 import httpx
@@ -25,10 +28,111 @@ AQS_EMAIL = settings.aqs_api_email
 AQS_KEY = settings.aqs_api_key
 DEFAULT_PARAM_CODE = "42602"  # NO2
 
-# Per-request deduplication cache — keyed by (endpoint, sorted-params-tuple).
-# Each asyncio Task (one per HTTP request) gets its own copy via ContextVar
-# isolation, so cache entries never leak across requests.
-_request_cache: ContextVar[dict | None] = ContextVar("_aqs_request_cache", default=None)
+# Response cache — keyed by (endpoint, sorted-params-tuple), credentials
+# excluded (see _cache_key).
+#
+# This was a ContextVar holding a per-task dict, which did not do what its
+# docstring claimed: LangGraph's ToolNode runs each tool call inside a Task
+# created by asyncio.gather, and a Task gets a *copy* of the context, so the
+# dict a call created was discarded when that call finished. Every request
+# therefore started with an empty cache and re-fetched — live logs showed
+# identical monitors/byBox params hitting EPA twice within a single turn.
+# A module-global dict is what actually spans the tool calls of a turn (and
+# of later turns, which is the point: see _cache_ttl_seconds).
+# Values are (expires_at, payload).
+_response_cache: dict = {}
+
+# Settled measurements never change, so the only bound on reuse is process
+# lifetime; unsettled ones must lapse soon enough that a researcher asking
+# again after EPA publishes gets the real rows.
+_SETTLED_TTL_SECONDS = 7 * 24 * 60 * 60
+_UNSETTLED_TTL_SECONDS = 15 * 60
+
+# Entries hold whole AQS result sets and live for days, so the cache needs a
+# ceiling as well as a clock — otherwise one entry per distinct query
+# accumulates for the life of the process. Oldest-first eviction suits the
+# access pattern: researchers revisit a region across a conversation, then
+# move on.
+_MAX_CACHE_ENTRIES = 256
+
+# EPA AQS states "do not make more than 10 requests per minute" and reserves
+# the right to disable an account without notice for violating its terms
+# (https://aqs.epa.gov/aqsweb/documents/data_api.html). Nine leaves a slot of
+# margin, since EPA counts arrivals on its own clock rather than ours.
+_AQS_MAX_REQUESTS_PER_WINDOW = 9
+_AQS_WINDOW_SECONDS = 60.0
+# EPA also *asks* for a pause between requests. Enforcing their suggested 5s
+# as a hard floor would serialise every turn — a 4-call question would spend
+# 15s waiting — while the limit they actually enforce is the per-minute one.
+# A second of spacing keeps us from opening nine sockets at once without
+# taxing the sequential case, where the agent's own model latency (seconds
+# per step) already exceeds it and this never binds.
+_AQS_MIN_SPACING_SECONDS = 1.0
+
+
+class _SlidingWindowLimiter:
+    """Paces requests to at most ``max_requests`` per ``window_seconds``.
+
+    A strict "one request every 6.5s" serialiser also satisfies EPA's cap,
+    but it charges the common case for the rare one: a lone researcher's
+    four-call question would wait ~20s to protect against a concurrency
+    level that mostly does not happen. This tracks the times it has handed
+    out instead, so callers are delayed only once the window is genuinely
+    full — which is exactly the condition EPA's limit describes.
+    """
+
+    def __init__(self, max_requests: int, window_seconds: float, min_spacing_seconds: float):
+        self._max_requests = max_requests
+        self._window_seconds = window_seconds
+        self._min_spacing_seconds = min_spacing_seconds
+        # threading.Lock, not asyncio.Lock: the critical section is pure
+        # arithmetic held for microseconds and the caller does its waiting
+        # after release, so the event loop is never blocked on contention.
+        # Mirrors GeocodingService._reserve_throttle_slot (utils/plotting.py).
+        self._lock = threading.Lock()
+        self._reserved: deque[float] = deque()
+
+    def reserve(self) -> float:
+        """Claim the next send slot and return how long the caller must wait
+        for it. Reserving (rather than checking-then-sending) is what keeps
+        concurrent callers from all reading the same free window and firing
+        together."""
+        with self._lock:
+            now = _now()
+            horizon = now - self._window_seconds
+            while self._reserved and self._reserved[0] <= horizon:
+                self._reserved.popleft()
+
+            send_at = now
+            if self._reserved:
+                send_at = max(send_at, self._reserved[-1] + self._min_spacing_seconds)
+            if len(self._reserved) >= self._max_requests:
+                # The oldest in-window slot has to age out before this one.
+                send_at = max(send_at, self._reserved[-self._max_requests] + self._window_seconds)
+
+            self._reserved.append(send_at)
+            return max(0.0, send_at - now)
+
+
+# One limiter per credential. Today every call shares the app-level key, so
+# this behaves exactly like a single global limiter — but EPA's cap is
+# per-credential, so keying it this way is what lets per-user keys actually
+# buy independent budgets instead of queueing behind one another.
+_rate_limiters: dict[str, _SlidingWindowLimiter] = {}
+_rate_limiter_registry_lock = threading.Lock()
+
+
+def _limiter_for(credential: str) -> _SlidingWindowLimiter:
+    with _rate_limiter_registry_lock:
+        limiter = _rate_limiters.get(credential)
+        if limiter is None:
+            limiter = _SlidingWindowLimiter(
+                _AQS_MAX_REQUESTS_PER_WINDOW,
+                _AQS_WINDOW_SECONDS,
+                _AQS_MIN_SPACING_SECONDS,
+            )
+            _rate_limiters[credential] = limiter
+        return limiter
 
 # Initial bbox half-width for street-level addresses (degrees, ~17 miles).
 # Nominatim returns a ~10m box for a street address which AQS returns empty for;
@@ -58,21 +162,91 @@ _PLACEHOLDER_FILTER_VALUES = {
 # Helper functions
 # ---------------------------------------------------------------------------
 
+def _now() -> float:
+    """Monotonic clock seam — one place for the cache and the rate limiter to
+    read time, and the point tests substitute a controllable clock."""
+    return time.monotonic()
+
+
+def _cache_ttl_seconds(params: Dict[str, Any]) -> float:
+    """How long a response for ``params`` may be reused.
+
+    EPA publishes on a lag of roughly two months, so a query whose end date
+    is already outside that window describes measurements that will never
+    change again — those are cacheable for as long as the process lives.
+    A query reaching into the unpublished window is the opposite: it returns
+    empty today and real rows once EPA catches up, so its entry has to expire
+    or the researcher keeps being told "no data" after the data arrived.
+    Requests with no end date at all (list/states and friends) are reference
+    lookups, settled by nature.
+    """
+    edate = str(params.get("edate") or "").strip()
+    if not edate:
+        return _SETTLED_TTL_SECONDS
+    try:
+        edate_obj = date(int(edate[0:4]), int(edate[4:6]), int(edate[6:8]))
+    except (ValueError, IndexError):
+        return _UNSETTLED_TTL_SECONDS
+    if edate_obj < date.today() - timedelta(days=_RECENT_DATA_WINDOW_DAYS):
+        return _SETTLED_TTL_SECONDS
+    return _UNSETTLED_TTL_SECONDS
+
+
+def _cache_key(endpoint: str, params: Dict[str, Any]) -> tuple:
+    """Cache identity for a request, excluding credentials.
+
+    AQS serves public measurements: the bytes EPA returns for a given
+    (endpoint, query) are the same no matter whose email+key fetched them.
+    Keying on the credential would mean a second researcher re-fetches data
+    the first already paid a rate-limit slot for — and would silently undo
+    this cache the moment per-user keys land.
+    """
+    return (endpoint, tuple(sorted((k, str(v)) for k, v in params.items())))
+
+
+def _remember_response(cache_key: tuple, data: Dict[str, Any], ttl_seconds: float) -> None:
+    """Store a response, dropping whatever has expired and then the oldest
+    entries if the cache is still over its ceiling."""
+    now = _now()
+    if len(_response_cache) >= _MAX_CACHE_ENTRIES:
+        for key in [k for k, (expires_at, _) in _response_cache.items() if expires_at <= now]:
+            del _response_cache[key]
+        # dicts preserve insertion order, so this evicts oldest-first.
+        while len(_response_cache) >= _MAX_CACHE_ENTRIES:
+            del _response_cache[next(iter(_response_cache))]
+    _response_cache[cache_key] = (now + ttl_seconds, data)
+
+
+def _reset_aqs_request_state() -> None:
+    """Drop cached responses and rate-limit history.
+
+    A module-global cache outlives the test that filled it, so tests reset
+    here rather than starving each other with one another's entries.
+    """
+    _response_cache.clear()
+    with _rate_limiter_registry_lock:
+        _rate_limiters.clear()
+
+
 async def _aqs_get(endpoint: str, params: Dict[str, Any]) -> Dict[str, Any]:
     """GET request to the AQS API; raises on HTTP errors or unexpected statuses.
 
-    Identical (endpoint, params) pairs within the same asyncio Task are served
-    from an in-memory dict, preventing duplicate EPA calls when the LLM invokes
-    multiple tools with overlapping data requirements in a single request.
+    Identical (endpoint, params) pairs are served from the response cache,
+    which spans the tool calls of a turn and — for measurements EPA has
+    already settled — later turns and other researchers too. A cache hit
+    neither waits nor consumes a rate-limit slot.
     """
     full_params = {**params, "email": AQS_EMAIL, "key": AQS_KEY}
-    cache_key = (endpoint, tuple(sorted(full_params.items())))
-    cache = _request_cache.get()
-    if cache is None:
-        cache = {}
-        _request_cache.set(cache)
-    if cache_key in cache:
-        return cache[cache_key]
+    cache_key = _cache_key(endpoint, params)
+    cached = _response_cache.get(cache_key)
+    if cached is not None:
+        expires_at, payload = cached
+        if _now() < expires_at:
+            return payload
+        del _response_cache[cache_key]
+    wait_seconds = _limiter_for(AQS_KEY).reserve()
+    if wait_seconds > 0:
+        await asyncio.sleep(wait_seconds)
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.get(f"{AQS_BASE_URL}/{endpoint}", params=full_params)
     if resp.status_code >= 400:
@@ -106,7 +280,7 @@ async def _aqs_get(endpoint: str, params: Dict[str, Any]) -> Dict[str, Any]:
             detail = "; ".join(str(item) for item in detail)
         logger.warning("aqs_error endpoint=%s header=%r", endpoint, header[0])
         raise RuntimeError(f"EPA AQS request failed: {detail}")
-    cache[cache_key] = data
+    _remember_response(cache_key, data, _cache_ttl_seconds(params))
     return data
 
 
@@ -208,6 +382,55 @@ def _no_data_message(kind: str, param_code: str, bdate_obj: date, edate_obj: dat
         f"for {window} in the requested area. Try a wider area, a "
         "different date range, or a different pollutant."
     )
+
+
+class AqsNoDataError(RuntimeError):
+    """EPA answered, and has no rows matching the query.
+
+    A distinct type because the summary tools have to tell this apart from
+    ``_aqs_get``'s failures, which are also RuntimeError: "EPA has nothing for
+    those dates" and "EPA did not answer" are opposite facts, and reporting
+    the second as the first tells a researcher no measurements exist when the
+    service was merely down.
+
+    Subclasses RuntimeError so existing handlers that catch the broad type --
+    validation_tools' ground-fetch fallbacks, which want either -- keep
+    working unchanged.
+    """
+
+
+def _no_data_response(message: str) -> Dict[str, Any]:
+    """Structured empty-result tool response, not a raised exception.
+
+    LangGraph's ToolNode only converts a ToolInvocationError (bad tool args)
+    into a ToolMessage automatically; any other exception — including
+    RuntimeError, and ToolException isn't special-cased in this version
+    either — escapes _execute_tool_async and kills the whole agent turn
+    (live 2026-08-07: a stale date banner made "this week" resolve into an
+    unpublished window, and the resulting RuntimeError crashed the ground
+    sensor agent instead of letting it read the message and apply its own
+    monitor-fallback rules). Returning this dict keeps the message on the
+    normal tool-result path the model actually sees.
+
+    Reserved for :class:`AqsNoDataError` — an actual empty result set. See
+    :func:`_upstream_error_response` for the other half.
+    """
+    return {"Header": [{"status": "no_data", "note": message}], "Body": []}
+
+
+def _upstream_error_response(message: str) -> Dict[str, Any]:
+    """Structured *failure* tool response — EPA was unreachable, rejected the
+    credentials, or returned an error status.
+
+    Kept off the exception path for the same reason as ``_no_data_response``:
+    a raised RuntimeError kills the whole ground turn. But it must never wear
+    that function's ``no_data`` status. "No monitors reported NO2 there" is a
+    scientific claim; an AQS 503 is not evidence for it, and an agent handed
+    ``no_data`` has no way to tell the difference. This status says plainly
+    that the question is unanswered, so the model relays a service failure
+    and can retry rather than reporting an absence that was never measured.
+    """
+    return {"Header": [{"status": "upstream_error", "note": message}], "Body": []}
 
 
 async def _fetch_active_monitors(bbox, param_code, bdate_str, edate_str, k=1):
@@ -508,7 +731,7 @@ async def _fetch_summary(
             "aqs_no_data endpoint=%s params=%r pollutant_standard=%r",
             endpoint, filter_params, pollutant_standard,
         )
-        raise RuntimeError(
+        raise AqsNoDataError(
             _no_data_message(_SUMMARY_KINDS.get(prefix, prefix), param_code, bdate_obj, edate_obj)
         )
     return records, endpoint, filter_params
@@ -750,11 +973,16 @@ async def get_daily_summary(
             "returning quarterly period rows instead. Call with a shorter range for daily detail."
         )
 
-    records, endpoint, _ = await _fetch_summary(
-        fetch_prefix, param_code, bdate_obj, edate_obj, bdate_str, edate_str,
-        state_code, county_code, site_number, cbsa_code,
-        minlat, maxlat, minlon, maxlon, cbdate, cedate, pollutant_standard,
-    )
+    try:
+        records, endpoint, _ = await _fetch_summary(
+            fetch_prefix, param_code, bdate_obj, edate_obj, bdate_str, edate_str,
+            state_code, county_code, site_number, cbsa_code,
+            minlat, maxlat, minlon, maxlon, cbdate, cedate, pollutant_standard,
+        )
+    except AqsNoDataError as exc:
+        return _no_data_response(str(exc))
+    except RuntimeError as exc:
+        return _upstream_error_response(str(exc))
     body, total_sites, total_periods = _aggregate_summary_records(records, requested_period)
     header = _build_summary_header(len(body), endpoint, param_code, bdate_obj, edate_obj, pollutant_standard)
     header[0]["total_sites_matched"] = total_sites
@@ -802,11 +1030,16 @@ async def get_quarterly_summary(
     min, max, peak quarter/value, and coverage.
     """
     bdate_obj, edate_obj, bdate_str, edate_str = _resolve_dates(bdate, edate)
-    records, endpoint, _ = await _fetch_summary(
-        "quarterlyData", param_code, bdate_obj, edate_obj, bdate_str, edate_str,
-        state_code, county_code, site_number, cbsa_code,
-        minlat, maxlat, minlon, maxlon, cbdate, cedate, pollutant_standard,
-    )
+    try:
+        records, endpoint, _ = await _fetch_summary(
+            "quarterlyData", param_code, bdate_obj, edate_obj, bdate_str, edate_str,
+            state_code, county_code, site_number, cbsa_code,
+            minlat, maxlat, minlon, maxlon, cbdate, cedate, pollutant_standard,
+        )
+    except AqsNoDataError as exc:
+        return _no_data_response(str(exc))
+    except RuntimeError as exc:
+        return _upstream_error_response(str(exc))
     body, total_sites, total_periods = _aggregate_summary_records(records, "quarterly")
     header = _build_summary_header(len(body), endpoint, param_code, bdate_obj, edate_obj, pollutant_standard)
     header[0]["total_sites_matched"] = total_sites
@@ -852,11 +1085,16 @@ async def get_annual_summary(
     peak year/value, and coverage.
     """
     bdate_obj, edate_obj, bdate_str, edate_str = _resolve_dates(bdate, edate)
-    records, endpoint, _ = await _fetch_summary(
-        "annualData", param_code, bdate_obj, edate_obj, bdate_str, edate_str,
-        state_code, county_code, site_number, cbsa_code,
-        minlat, maxlat, minlon, maxlon, cbdate, cedate, pollutant_standard,
-    )
+    try:
+        records, endpoint, _ = await _fetch_summary(
+            "annualData", param_code, bdate_obj, edate_obj, bdate_str, edate_str,
+            state_code, county_code, site_number, cbsa_code,
+            minlat, maxlat, minlon, maxlon, cbdate, cedate, pollutant_standard,
+        )
+    except AqsNoDataError as exc:
+        return _no_data_response(str(exc))
+    except RuntimeError as exc:
+        return _upstream_error_response(str(exc))
     body, total_sites, total_periods = _aggregate_summary_records(records, "annual")
     header = _build_summary_header(len(body), endpoint, param_code, bdate_obj, edate_obj, pollutant_standard)
     header[0]["total_sites_matched"] = total_sites
@@ -939,11 +1177,16 @@ async def find_exceedance_days(
     if (edate_obj - bdate_obj).days > 365:
         edate_obj = bdate_obj + timedelta(days=365)
         edate_str = edate_obj.strftime("%Y%m%d")
-    records, endpoint, filter_params = await _fetch_summary(
-        "dailyData", param_code, bdate_obj, edate_obj, bdate_str, edate_str,
-        state_code, county_code, site_number, cbsa_code,
-        minlat, maxlat, minlon, maxlon, None, None, pollutant_standard,
-    )
+    try:
+        records, endpoint, filter_params = await _fetch_summary(
+            "dailyData", param_code, bdate_obj, edate_obj, bdate_str, edate_str,
+            state_code, county_code, site_number, cbsa_code,
+            minlat, maxlat, minlon, maxlon, None, None, pollutant_standard,
+        )
+    except AqsNoDataError as exc:
+        return _no_data_response(str(exc))
+    except RuntimeError as exc:
+        return _upstream_error_response(str(exc))
 
     # Extract the measurement value for each day
     def _val(r):
@@ -1057,7 +1300,7 @@ async def get_sample_data(
 
     if not records:
         logger.info("aqs_no_data endpoint=%s params=%r", endpoint, filter_params)
-        raise RuntimeError(
+        return _no_data_response(
             _no_data_message("hourly sample", param_code, bdate_obj, edate_obj)
         )
 

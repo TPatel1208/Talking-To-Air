@@ -96,11 +96,17 @@ def _isolate_on_disk_stores() -> None:
     tests_dir = os.path.join(BACKEND_DIR, "tests")
     if tests_dir not in sys.path:
         sys.path.insert(0, tests_dir)
-    from cache_isolation import isolate_cube_store, isolate_output_dir, isolate_overlay_store
+    from cache_isolation import (
+        isolate_cube_store,
+        isolate_frame_store,
+        isolate_output_dir,
+        isolate_overlay_store,
+    )
 
     isolate_cube_store()
     isolate_overlay_store()
     isolate_output_dir()
+    isolate_frame_store()
 
 
 _isolate_on_disk_stores()

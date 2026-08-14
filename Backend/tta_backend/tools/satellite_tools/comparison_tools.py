@@ -25,7 +25,7 @@ from langchain.tools import tool
 from langchain_core.tools import BaseTool
 
 from tta_backend.config.workflow_stages import STAGE_RENDER
-from tta_backend.datasets.mask_info import col_info_for_short_name, short_name_from_attrs
+from tta_backend.datasets.mask_info import col_info_for_variable
 from tta_backend.earthdata_mcp.results import CATEGORY_PROVIDER_UNAVAILABLE, MCPToolError, parse_tool_result
 from tta_backend.preprocessing.aggregation_service import (
     AggregationService,
@@ -351,19 +351,6 @@ def _units_mismatch_error(da_a, da_b) -> str | None:
     return None
 
 
-def _mask_col_info(da, ds=None) -> dict:
-    """See plot_tools._mask_col_info: collection identity is dataset-level,
-    so ``ds.attrs`` is checked before the per-variable ``da.attrs`` (T25
-    masking-execution fix)."""
-    short_name = (
-        short_name_from_attrs(ds.attrs if ds is not None else None)
-        or short_name_from_attrs(da.attrs)
-        or da.name
-        or ""
-    )
-    return col_info_for_short_name(str(short_name).upper())
-
-
 def _prepare_2d(da, variable_name: str, source_ds=None):
     """Apply quality masking and collapse to a single 2-D (lat, lon) snapshot
     (time-mean, matching plot_singular's default) so every side of a
@@ -374,7 +361,7 @@ def _prepare_2d(da, variable_name: str, source_ds=None):
     applied — so the comparison builders can *disclose* that masking instead of
     silently swallowing it (T25/T46: compare must honor the same masking and
     scope-echo doctrines the heatmap/timeseries paths do)."""
-    col_info = _mask_col_info(da, source_ds)
+    col_info = col_info_for_variable(da, source_ds)
     aggregation = _aggregation_service.aggregate(
         da, variable=variable_name, stat="mean", col_info=col_info, source_ds=source_ds,
     )

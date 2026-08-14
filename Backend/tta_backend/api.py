@@ -50,7 +50,8 @@ from tta_backend.repositories.user_connector_repository import (
 )
 from tta_backend.repositories.user_repository import create_user, ensure_user_table, get_user_by_username
 from tta_backend.repositories.artifact_repository import ensure_artifact_table
-from tta_backend.services import cube_cache
+from tta_backend.services import cube_cache, frame_store, warmup
+from tta_backend.services.open_handle import OPEN_PIPELINE_VERSION
 from tta_backend.services.auth_service import authenticate_request, create_access_token, hash_password, verify_password
 from tta_backend.services.connector_credential_service import EdlCredentialInjector
 from tta_backend.services.connector_token_service import TokenValidationError, decode_token_expiry
@@ -80,7 +81,7 @@ from tta_backend.utils.metrics import (
     render_prometheus_metrics,
     set_db_pool_connections_active,
 )
-from tta_backend.utils.streaming import current_user_id, user_id_context
+from tta_backend.utils.streaming import current_user_id, iter_with_user_id, user_id_context
 
 agent = None
 settings = get_settings()
@@ -147,7 +148,21 @@ async def lifespan(app: FastAPI):
     # handle->cube index from the surviving manifests, which is what makes that
     # index derived state — losing the file costs a boot's scan, never an
     # answer.
-    cube_cache.sweep_store()
+    cube_cache.sweep_store(OPEN_PIPELINE_VERSION)
+
+    # T59 D8: the same reclaim for the frame store. Frames are never served or
+    # rebuilt across a version change, so after a bump every stack in there is
+    # unreachable — but its manifest is still valid, so nothing else would ever
+    # drop it and its bytes would go on counting against the cap.
+    frame_store.sweep_store(OPEN_PIPELINE_VERSION)
+
+    # Pay the render path's one-time lazy-import cost here rather than charging
+    # it to whoever asks the first question: measured at ~0.44 s of dask and
+    # ~0.10 s of PIL, pulled in by the aggregate-and-render chain the first
+    # time any plot, statistic or comparison runs. Synchronous on purpose --
+    # nothing is being served yet, and a request that arrives mid-warm is no
+    # worse off than it was before this existed.
+    warmup.warm_render_path()
 
     logger.info("startup_begin", extra={"_model": settings.llm_model})
     # T17: the backend boots without the earthdata-retrieval MCP — ground/EPA
@@ -602,9 +617,19 @@ async def export_chart_csv(chart_id: str, request: Request):
     # common failures (missing handle, evicted export) raise here as a clean
     # 4xx/5xx instead of truncating the download mid-stream. An MCPToolError
     # propagates to the shared taxonomy handler.
+    #
+    # iter_with_user_id wraps the row generator rather than a `with
+    # user_id_context(...)` wrapping only this await: StreamingResponse pulls
+    # every chunk after the first one *outside* the handler, and this export
+    # opens a handle per panel — a heatmap_multi comparison reaches panel B
+    # long after the first 64 KiB chunk went out. Bound at the innermost seam,
+    # so every pull, first or last, carries the request's user.
     try:
         stream = await materialize_first_chunk(
-            export_service.iter_chart_csv_chunks_async(payload, tools)
+            iter_with_user_id(
+                request.state.current_user.id,
+                export_service.iter_chart_csv_chunks(payload, tools),
+            )
         )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -624,7 +649,8 @@ async def export_chart_csv(chart_id: str, request: Request):
 async def export_chart_png(chart_id: str, request: Request):
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
     try:
-        content = await export_service.build_chart_png_async(payload, request.app.state.earthdata_mcp_tools)
+        with user_id_context(request.state.current_user.id):
+            content = await export_service.build_chart_png(payload, request.app.state.earthdata_mcp_tools)
     except Exception as e:
         raise HTTPException(status_code=422, detail=str(e))
     return Response(
@@ -662,6 +688,118 @@ async def chart_overlay_png(chart_id: str, request: Request, panel: int | None =
     return Response(content=content, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
+# T59 D13. A deliberate divergence from overlay.png's `no-store` above, and it
+# rests entirely on D8: a frame blob is never regenerated in place, so this
+# URL's bytes cannot change and a cache that keeps them forever can never serve
+# a stale field. `private` because charts are ownership-scoped — every route
+# here goes through `_get_owned_chart`, there is no shared cache to warm, and
+# no cross-user entry for one researcher's region to leak into.
+_FRAME_CACHE_CONTROL = "private, immutable, max-age=31536000"
+
+
+def _if_none_match(request: Request) -> set[str]:
+    header = request.headers.get("if-none-match", "")
+    return {tag.strip().removeprefix("W/") for tag in header.split(",") if tag.strip()}
+
+
+@app.get("/chart/{chart_id}/frames.f32.gz")
+async def chart_frames(chart_id: str, request: Request):
+    """The float32 frame stack behind a chart's scrubber (T59).
+
+    Serves the stored bytes still gzipped, so the browser inflates them
+    natively and no client-side decompressor stands between the checked bytes
+    and the canvas. Everything needed to *label* the scrub — the axis, the
+    intervals, coverage, QA rates, per-frame statistics — travels in the chart
+    payload instead, which is why a 404 here degrades the slider rather than
+    breaking the chart (D8: an evicted stack disables the scrubber with the
+    axis still drawn, and is never rebuilt in place).
+    """
+    payload = await _get_owned_chart(chart_id, request.state.current_user.id)
+    frames = payload.get("frames")
+    key = frames.get("_key") if isinstance(frames, dict) else None
+    if not key:
+        raise HTTPException(status_code=404, detail="This chart has no stored frame stack.")
+
+    # Off the event loop for the same reason the overlay read is (T45): a slow
+    # volume must not stall every other in-flight stream for the read's
+    # duration, and this one hashes what it reads as well.
+    blob = await asyncio.to_thread(
+        frame_store.read_frames, key, pipeline_version=OPEN_PIPELINE_VERSION
+    )
+    if blob is None:
+        raise HTTPException(
+            status_code=404, detail="The frame values for this chart are no longer available."
+        )
+
+    return _frame_blob_response(blob, request)
+
+
+@app.get("/chart/{chart_id}/frames.{statistic}.f32.gz")
+async def chart_frame_plane(chart_id: str, statistic: str, request: Request):
+    """One additional statistic's frame stack (T59 D6a decision 5).
+
+    A path per statistic rather than a query parameter on the mean's URL. A
+    parameter would make one URL serve several bodies, which every cache
+    between the browser and this app then has to be told about with `Vary`, and
+    would turn `_FRAME_CACHE_CONTROL`'s `immutable` into a claim about a URL
+    whose content is no longer fixed. A distinct path is a distinct cache entry
+    needing no coordination at all — and it leaves `frames.f32.gz` untouched
+    outright rather than untouched-as-long-as-nobody-passes-the-parameter,
+    which is what decision 5's "the mean entry keeps its exact shape, URL and
+    cost" actually asks for.
+
+    Every failure here is a 404: an unknown statistic, one this chart never
+    computed, and one whose entry has been evicted are all "there is no such
+    blob", and the frontend's answer to each is the same — offer the statistics
+    that are there. The axis is in Postgres either way, so the scrubber stays
+    drawn and labeled (D8).
+    """
+    # Constrained to the statistics the reduction actually produces, so the
+    # segment can never become an arbitrary key lookup into the chart's block.
+    if statistic not in frame_store.STORABLE_STATISTICS:
+        raise HTTPException(status_code=404, detail="Unknown frame statistic.")
+
+    payload = await _get_owned_chart(chart_id, request.state.current_user.id)
+    frames = payload.get("frames")
+    planes = frames.get("planes") if isinstance(frames, dict) else None
+    plane = planes.get(statistic) if isinstance(planes, dict) else None
+    # `mean` is never a key in there — its blob is the chart's own, at the URL
+    # above — so it falls out as a miss with no special case for it.
+    key = plane.get("_key") if isinstance(plane, dict) else None
+    if not key:
+        raise HTTPException(
+            status_code=404, detail="This chart has no stored frames for that statistic."
+        )
+
+    blob = await asyncio.to_thread(
+        frame_store.read_frames, key,
+        pipeline_version=OPEN_PIPELINE_VERSION, statistic=statistic,
+    )
+    if blob is None:
+        raise HTTPException(
+            status_code=404,
+            detail="The frame values for that statistic are no longer available.",
+        )
+    return _frame_blob_response(blob, request)
+
+
+def _frame_blob_response(blob, request: Request) -> Response:
+    """The stored bytes, still gzipped, under the ETag they were stored with.
+
+    Shared by the mean's route and every plane's, so the two cannot drift into
+    serving the same kind of thing under different cache rules.
+    """
+    etag = f'"{blob.etag}"'
+    headers = {"ETag": etag, "Cache-Control": _FRAME_CACHE_CONTROL}
+    if etag in _if_none_match(request):
+        return Response(status_code=304, headers=headers)
+    return Response(
+        content=blob.gzipped,
+        media_type="application/octet-stream",
+        headers={**headers, "Content-Encoding": "gzip"},
+    )
+
+
 @app.get("/chart/{chart_id}/provenance")
 async def chart_provenance_endpoint(chart_id: str, request: Request):
     tools = _earthdata_tools(request)
@@ -697,6 +835,14 @@ async def chart_methods_endpoint(chart_id: str, request: Request):
             time_window=_methods_time_window(provenance),
             lineage=lineage,
             citations=citations,
+            maturity=provenance.get("maturity"),
+            maturity_note=provenance.get("maturity_note"),
+            # T59 D12: the whole payload, not the provenance sub-dict — the
+            # frames disclosure reads two blocks that live at the top level
+            # (``frames``/``frames_unavailable`` and ``export.frames``), and
+            # the precedence rule between them belongs in one place rather
+            # than split across this endpoint.
+            chart=payload,
         )
     except MCPToolError:
         raise

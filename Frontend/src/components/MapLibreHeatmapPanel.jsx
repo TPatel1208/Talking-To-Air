@@ -4,19 +4,28 @@
  * Renders a single heatmap chart payload as a NASA-scientific interactive
  * map (T23): a shaded-relief terrain basemap, the data field as a
  * full-native-resolution server-rendered PNG overlay (GPU-bilinear
- * smoothed), region borders, per-cell hover, and a scientific colorbar.
+ * smoothed), region borders, and a scientific colorbar.
  *
- * Visual fidelity (the overlay PNG) and interaction resolution (the
- * shipped lats/lons/values arrays) are deliberately decoupled -- hover and
- * stats read the arrays; only the picture comes from the server render.
+ * Deliberately has NO per-cell readout. One lived here until 2026-08-05 and
+ * was removed on purpose: it answered by nearest-neighbour lookup against
+ * the shipped arrays, and those are thinned to <=8k cells, so on a
+ * native-resolution scene (TEMPO CONUS is 2880x7750) the value it reported
+ * could come from a cell tens of kilometres from the cursor -- printed to
+ * three decimals, with no masking provenance or QA status attached. In a
+ * product where every answer is a scientific claim, a precise-looking
+ * number pulled from the wrong place is worse than no number, and asking
+ * in chat already answers point questions with provenance. The arrays stay
+ * for the canvas fallback and for stats; they are not an inspection
+ * surface. Re-adding a readout means a server-side query at native
+ * resolution, not another nearest-neighbour scan over the thinned grid.
+ *
  * Degrades instead of dying: overlay missing/failed -> client canvas from
  * the arrays; basemap/terrain tiles failed -> flat fill, overlay still
  * shows.
  */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
-import { nearestCell } from '../utils/heatmapHover.js'
 import { colorbarGeometry, scaleClipNote } from '../utils/colorbarGeometry.js'
 import { buildCanvasFallbackFrame } from '../utils/canvasFallback.js'
 import { fetchUsStatesGeoJSON, isConusBounds } from '../utils/regionBorders.js'
@@ -109,9 +118,12 @@ function canvasCornersFromArrays(lats, lons) {
   ]
 }
 
-function addCanvasFallbackOverlay(map, payload) {
+function addCanvasFallbackOverlay(map, payload, { animate = false } = {}) {
   const { lats, lons, values, vmin, vmax, colormap } = payload
-  if (!Array.isArray(lats) || !Array.isArray(lons) || !Array.isArray(values)) return
+  // `values` is either the payload's nested rows or a T59 frame's flat float32
+  // VIEW over the shared stack buffer -- handed straight through, never copied.
+  const haveValues = Array.isArray(values) || ArrayBuffer.isView(values)
+  if (!Array.isArray(lats) || !Array.isArray(lons) || !haveValues) return
 
   const frame = buildCanvasFallbackFrame({ lats, lons, values, vmin, vmax, lut: colormap?.lut })
   if (!frame.width || !frame.height) return
@@ -126,11 +138,19 @@ function addCanvasFallbackOverlay(map, payload) {
   if (map.getSource('overlay')) map.removeSource('overlay')
   if (map.getSource('overlay-canvas')) map.removeSource('overlay-canvas')
 
+  // `animate` is set only while a T59 frame is showing. A canvas source with
+  // animate:false uploads its texture once on add, so swapping a frame's
+  // pixels into an existing canvas would draw nothing; animate:true makes
+  // MapLibre re-upload on its own render loop. Deliberately not a
+  // requestAnimationFrame play/pause dance -- useChat's rAF loop already
+  // taught this codebase that a backgrounded tab stops delivering those, and
+  // an overlay that depends on one never firing is an overlay that silently
+  // keeps showing the previous hour.
   map.addSource('overlay-canvas', {
     type: 'canvas',
     canvas,
     coordinates: canvasCornersFromArrays(lats, lons),
-    animate: false,
+    animate,
   })
   map.addLayer({
     id: 'overlay',
@@ -152,25 +172,31 @@ function addBorderLayer(map, geojson) {
   })
 }
 
-export default function MapLibreHeatmapPanel({ payload, height = 420, accessToken, colorScaleOverride = null, hideLegend = false }) {
-  const { title, variable, units, vmin, vmax, colormap, overlay, bounds, lats, lons, scale } = payload
+export default function MapLibreHeatmapPanel({ payload, height = 420, accessToken, colorScaleOverride = null, hideLegend = false, frame = null }) {
+  const { title, units, vmin, vmax, colormap, overlay, bounds, lats, lons, scale } = payload
   const containerRef = useRef(null)
   const mapRef = useRef(null)
   const drawOverlayRef = useRef(null)
-  const [hover, setHover] = useState(null)
 
   // An externally supplied vmin/vmax/colormap wins over the payload's own --
   // this is the hook compare mode's shared-scale logic (T28) uses to recolor
   // every panel onto one range. The server-rendered overlay PNG is baked
   // with the payload's native scale and can't be recolored client-side, so
   // an override always forces the canvas-fallback path (rendered from the
-  // same lats/lons/values arrays hover already reads).
+  // payload's own lats/lons/values arrays).
   const effectiveVmin = colorScaleOverride?.vmin ?? vmin
   const effectiveVmax = colorScaleOverride?.vmax ?? vmax
   const effectiveColormap = colorScaleOverride?.colormap ?? colormap
 
   const overrideRef = useRef(colorScaleOverride)
   useEffect(() => { overrideRef.current = colorScaleOverride }, [colorScaleOverride])
+
+  // The T59 frame currently selected on the scrubber: `{ values, lats, lons }`,
+  // where `values` is a zero-copy view over one plane of the frame stack.
+  // Null outside scrubber mode, and null while the blob is still in flight --
+  // in which case the aggregate stays drawn, on whatever scale is current.
+  const frameRef = useRef(frame)
+  useEffect(() => { frameRef.current = frame }, [frame])
 
   const [minx, miny, maxx, maxy] = bounds || [
     Math.min(...(lons || [])), Math.min(...(lats || [])),
@@ -189,7 +215,8 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, accessToke
     // payload's arrays at the effective vmin/vmax/colormap.
     const drawOverlay = (map) => {
       const override = overrideRef.current
-      if (resolveOverlayMode(override, overlay?.url) === 'native') {
+      const activeFrame = frameRef.current
+      if (resolveOverlayMode(override, overlay?.url, activeFrame) === 'native') {
         if (map.getLayer('overlay')) map.removeLayer('overlay')
         if (map.getSource('overlay-canvas')) map.removeSource('overlay-canvas')
         if (!map.getSource('overlay')) {
@@ -209,12 +236,16 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, accessToke
         }
         return
       }
+      // A frame brings its own grid: the frame stack's block-meaned lats/lons,
+      // not the payload's thinned ones. Its `values` is a subarray view over
+      // the shared stack buffer and is handed to the canvas builder as-is.
       addCanvasFallbackOverlay(map, {
         ...payload,
+        ...(activeFrame ? { lats: activeFrame.lats, lons: activeFrame.lons, values: activeFrame.values } : {}),
         vmin: override?.vmin ?? vmin,
         vmax: override?.vmax ?? vmax,
         colormap: override?.colormap ?? colormap,
-      })
+      }, { animate: Boolean(activeFrame) })
     }
     drawOverlayRef.current = drawOverlay
 
@@ -273,12 +304,6 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, accessToke
           })
         }
       })
-
-      map.on('mousemove', (e) => {
-        const cell = nearestCell(e.lngLat.lng, e.lngLat.lat, payload)
-        if (cell) setHover({ ...cell, x: e.point.x, y: e.point.y })
-      })
-      map.on('mouseleave', () => setHover(null))
     })
 
     return () => {
@@ -302,13 +327,15 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, accessToke
     // showing must rebuild the native image source, not leave the stale
     // shared-scale canvas in place while the legend above it moves on.
     drawOverlayRef.current?.(map)
-  }, [colorScaleOverride])
+  }, [colorScaleOverride, frame])
 
   const { gradientStops, ticks } = colorbarGeometry({ vmin: effectiveVmin, vmax: effectiveVmax, lut: effectiveColormap?.lut, tickCount: 5 })
   // Only disclose the payload's percentile clip when the shown scale is still
   // the payload's own -- an active colorScaleOverride (compare auto-scale)
-  // replaces vmin/vmax, so that clip no longer describes what's rendered.
-  const clipNote = colorScaleOverride ? null : scaleClipNote(scale)
+  // replaces vmin/vmax, so that clip no longer describes what's rendered. An
+  // override that states its OWN basis (T59's pooled 2-98) says so in the same
+  // place, so the legend never goes quiet about which scale is drawn.
+  const clipNote = colorScaleOverride ? (colorScaleOverride.legendNote || null) : scaleClipNote(scale)
 
   return (
     <div style={{ width: '100%' }}>
@@ -319,31 +346,6 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, accessToke
       )}
       <div style={{ position: 'relative', width: '100%', height, borderRadius: '8px', overflow: 'hidden' }}>
         <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
-
-        {hover && (
-          <div
-            style={{
-              position: 'absolute',
-              left: Math.min(hover.x + 12, (containerRef.current?.clientWidth || 400) - 160),
-              top: hover.y + 12,
-              background: 'var(--bg-card)',
-              border: '1px solid var(--border)',
-              borderRadius: '6px',
-              padding: '6px 8px',
-              fontSize: '11px',
-              lineHeight: 1.4,
-              color: 'var(--text-secondary)',
-              pointerEvents: 'none',
-              boxShadow: 'var(--shadow-sm)',
-              zIndex: 2,
-            }}
-          >
-            <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
-              {variable}: {Number.isFinite(hover.value) ? hover.value.toExponential(3) : '—'} {units}
-            </div>
-            <div>Lat: {hover.lat.toFixed(3)}, Lon: {hover.lon.toFixed(3)}</div>
-          </div>
-        )}
 
         {!hideLegend && <MapColorbar gradientStops={gradientStops} ticks={ticks} units={units} clipNote={clipNote} />}
       </div>

@@ -12,14 +12,20 @@ def _echo_saved_chart(thread_id, payload, user_id):
 
 
 class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
-    def test_export_service_safe_name_and_missing_export(self):
+    async def test_export_service_safe_name_and_missing_export(self):
+        """A payload with no export metadata must refuse with a message that
+        says so, rather than streaming an empty or truncated download.
+
+        Asserted on the async row iterator because that is the one the CSV
+        download actually goes through (api.py -> iter_chart_csv_chunks).
+        """
         from tta_backend.services.export_service import ExportService
 
         service = ExportService(csv_export_max_granules=2)
 
         self.assertEqual(service.safe_export_name({"title": "TEMPO over Texas!"}, "csv"), "tempo-over-texas.csv")
         with self.assertRaisesRegex(ValueError, "full-resolution export metadata"):
-            list(service.iter_chart_csv_rows({}))
+            [row async for row in service.iter_chart_csv_rows({}, {})]
 
     def test_chart_service_parses_agent_result_and_persists(self):
         from tta_backend.models import AgentResult, ChartPayload, agent_result_to_json
@@ -472,7 +478,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["Body"][0]["station_name"], "Near")
         self.assertEqual(result["Body"][0]["monitor_name"], "Near")
 
-    async def test_aqs_get_deduplicates_identical_requests_within_task(self):
+    async def test_aqs_get_deduplicates_identical_requests(self):
         from tta_backend.tools.ground_sensor_tools import epa_aqs_tools
         from unittest.mock import MagicMock
 
@@ -487,8 +493,8 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
             resp.json = MagicMock(return_value={"Header": [{"status": "success"}], "Data": []})
             return resp
 
-        # Reset the ContextVar so this test starts with a clean cache
-        epa_aqs_tools._request_cache.set(None)
+        epa_aqs_tools._reset_aqs_request_state()
+        self.addCleanup(epa_aqs_tools._reset_aqs_request_state)
 
         with patch("tta_backend.tools.ground_sensor_tools.epa_aqs_tools.httpx.AsyncClient") as mock_client_cls:
             mock_client = MagicMock()
@@ -503,7 +509,12 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call_count, 1, "Expected exactly 1 HTTP call for duplicate params")
         self.assertIs(result1, result2, "Both calls should return the same cached object")
 
-    async def test_aqs_get_does_not_share_cache_across_independent_resets(self):
+    async def test_aqs_get_reuses_settled_data_across_requests(self):
+        """Replaces a test that asserted the opposite — that each new request
+        re-fetched — which was the ContextVar defect written down as a
+        requirement. EPA measurements outside the publication lag never
+        change, and the credential is shared app-wide, so re-fetching them
+        per request spent a rate-limit slot for identical bytes."""
         from tta_backend.tools.ground_sensor_tools import epa_aqs_tools
         from unittest.mock import MagicMock
 
@@ -518,6 +529,9 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
             resp.json = MagicMock(return_value={"Header": [{"status": "success"}], "Data": []})
             return resp
 
+        epa_aqs_tools._reset_aqs_request_state()
+        self.addCleanup(epa_aqs_tools._reset_aqs_request_state)
+
         with patch("tta_backend.tools.ground_sensor_tools.epa_aqs_tools.httpx.AsyncClient") as mock_client_cls:
             mock_client = MagicMock()
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -525,15 +539,11 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
             mock_client.get = AsyncMock(side_effect=fake_get)
             mock_client_cls.return_value = mock_client
 
-            # First "request" — fresh cache
-            epa_aqs_tools._request_cache.set(None)
-            await epa_aqs_tools._aqs_get("dailyData/bySite", {"state": "48"})
+            await epa_aqs_tools._aqs_get("dailyData/bySite", {"state": "48", "edate": "20200107"})
+            # A later turn, a different researcher — same settled query.
+            await epa_aqs_tools._aqs_get("dailyData/bySite", {"state": "48", "edate": "20200107"})
 
-            # Second "request" — reset simulates new asyncio Task
-            epa_aqs_tools._request_cache.set(None)
-            await epa_aqs_tools._aqs_get("dailyData/bySite", {"state": "48"})
-
-        self.assertEqual(call_count, 2, "Each fresh cache should result in a new HTTP call")
+        self.assertEqual(call_count, 1, "Settled measurements should be served from cache")
 
     def test_summary_filter_rejects_literal_site_id_placeholder(self):
         from tta_backend.tools.ground_sensor_tools import epa_aqs_tools

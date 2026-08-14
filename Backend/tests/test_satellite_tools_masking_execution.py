@@ -564,7 +564,8 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def test_conduct_temporal_statistic_attaches_dataset_and_source_from_registry(self):
         """T32: dataset/source come from the TEMPO_NO2 registry entry matched
         via the opened granule's short_name attribute -- the same match
-        _mask_col_info already performs for masking, not a second lookup."""
+        col_info_for_variable already performs for masking, not a second
+        lookup."""
         import xarray as xr
         from tta_backend.tools.satellite_tools.plot_tools import make_conduct_temporal_statistic
 
@@ -603,10 +604,10 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def test_plot_singular_attaches_dataset_and_source_without_a_second_registry_lookup(self):
         """T32's variable-definition/dataset attach must ride on the same
         col_info the masking pipeline already resolved -- not a second call
-        to the registry. Spies on col_info_for_short_name (what
-        _mask_col_info calls) and asserts the call count is unchanged from
-        before this PRD: exactly one, for the one masking resolution the
-        tool already performed."""
+        to the registry. Spies on col_info_for_variable (the shared seam every
+        satellite tool resolves masking metadata through) and asserts the call
+        count is unchanged from before this PRD: exactly one, for the one
+        masking resolution the tool already performed."""
         import xarray as xr
         from tta_backend.tools.satellite_tools.plot_tools import make_plot_singular
 
@@ -624,15 +625,15 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
 
         import tta_backend.tools.satellite_tools.plot_tools as plot_tools_module
         calls = []
-        real_lookup = plot_tools_module.col_info_for_short_name
+        real_lookup = plot_tools_module.col_info_for_variable
 
-        def counting_lookup(short_name):
-            calls.append(short_name)
-            return real_lookup(short_name)
+        def counting_lookup(da, ds=None):
+            calls.append(da.name)
+            return real_lookup(da, ds)
 
         plot_singular = make_plot_singular(self.mcp_tools)
         with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", fake_emit_chart), \
-             patch.object(plot_tools_module, "col_info_for_short_name", counting_lookup):
+             patch.object(plot_tools_module, "col_info_for_variable", counting_lookup):
             raw = await plot_singular.ainvoke({"handle": "obs_1", "location": "global"})
 
         result = json.loads(raw)

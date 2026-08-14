@@ -192,8 +192,8 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         auth_patches = self._auth_patch()
         with auth_patches[0], auth_patches[1], \
              patch.object(self.api.chart_service, "get_chart", fake_get_chart), \
-             patch.object(self.api.export_service, "iter_chart_csv_chunks_async", return_value=_aiter([b"variable,latitude,longitude,value,units\n"])), \
-             patch.object(self.api.export_service, "build_chart_png_async", return_value=b"\x89PNG\r\n\x1a\n"):
+             patch.object(self.api.export_service, "iter_chart_csv_chunks", return_value=_aiter([b"variable,latitude,longitude,value,units\n"])), \
+             patch.object(self.api.export_service, "build_chart_png", return_value=b"\x89PNG\r\n\x1a\n"):
             async with self.httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",
@@ -209,6 +209,56 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(png_response.status_code, 200)
         self.assertEqual(png_response.headers["content-type"], "image/png")
         self.assertEqual(png_response.content, b"\x89PNG\r\n\x1a\n")
+
+    async def test_chart_csv_export_keeps_the_user_bound_for_every_streamed_chunk(self):
+        """Not just the first one.
+
+        The handler returns as soon as materialize_first_chunk has the opening
+        chunk; StreamingResponse pulls the rest afterwards, outside anything
+        the handler wrapped. This export opens a source handle per panel, so a
+        heatmap_multi comparison reaches panel B on a later pull -- and a
+        workspace-bound MCP tool called with no user refuses outright
+        (earthdata_mcp/workspace.py: "refusing to mint a shared 'user-None'
+        workspace"), which _replay_then_stream turns into a silently truncated
+        download carrying an "EXPORT INCOMPLETE" trailer.
+        """
+        payload = {
+            "chart_id": "chart-1",
+            "title": "TEMPO over Texas",
+            "export": {"type": "heatmap_multi"},
+            "user_id": self.user.id,
+        }
+        self.api.app.state.earthdata_mcp_manager = SimpleNamespace(state="ready", tools={})
+        self.addCleanup(setattr, self.api.app.state, "earthdata_mcp_manager", None)
+
+        # Read where the real generator would open the next panel's handle:
+        # inside the body, as each chunk is produced.
+        bound_at_each_chunk = []
+
+        async def recording_chunks(payload_, tools, chunk_size=64 * 1024):
+            for index in range(3):
+                bound_at_each_chunk.append(self.api.current_user_id())
+                yield f"panel-{index}\n".encode("utf-8")
+
+        transport = self.httpx.ASGITransport(app=self.api.app)
+
+        async def fake_get_chart(chart_id):
+            return payload
+
+        auth_patches = self._auth_patch()
+        with auth_patches[0], auth_patches[1], \
+             patch.object(self.api.chart_service, "get_chart", fake_get_chart), \
+             patch.object(self.api.export_service, "iter_chart_csv_chunks", recording_chunks):
+            async with self.httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                response = await client.get("/chart/chart-1/export.csv", headers=self.auth_headers)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"panel-0\npanel-1\npanel-2\n")
+        # The later entries were None when only the first chunk was bound.
+        self.assertEqual(bound_at_each_chunk, [self.user.id] * 3)
 
     async def test_chart_csv_export_503s_with_the_taxonomy_body_when_the_mcp_is_not_ready(self):
         # T37: export.csv must go through the same T17 readiness gate as
@@ -255,7 +305,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         auth_patches = self._auth_patch()
         with auth_patches[0], auth_patches[1], \
              patch.object(self.api.chart_service, "get_chart", fake_get_chart), \
-             patch.object(self.api.export_service, "iter_chart_csv_chunks_async", broken_chunks):
+             patch.object(self.api.export_service, "iter_chart_csv_chunks", broken_chunks):
             async with self.httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",
@@ -289,7 +339,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         auth_patches = self._auth_patch()
         with auth_patches[0], auth_patches[1], \
              patch.object(self.api.chart_service, "get_chart", fake_get_chart), \
-             patch.object(self.api.export_service, "iter_chart_csv_chunks_async", dying_chunks):
+             patch.object(self.api.export_service, "iter_chart_csv_chunks", dying_chunks):
             async with self.httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",
@@ -325,7 +375,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         auth_patches = self._auth_patch()
         with auth_patches[0], auth_patches[1], \
              patch.object(self.api.chart_service, "get_chart", fake_get_chart), \
-             patch.object(self.api.export_service, "iter_chart_csv_chunks_async", dying_chunks):
+             patch.object(self.api.export_service, "iter_chart_csv_chunks", dying_chunks):
             async with self.httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",
@@ -540,6 +590,337 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
                 response = await client.get("/chart/chart-1/overlay.png", headers=self.auth_headers)
 
         self.assertEqual(response.status_code, 404)
+
+    def _frame_chart(self, planes: bool = False):
+        """A chart whose frame stack has been stored (T59 Phase 4).
+
+        Returns ``(payload, stack)``. The store is redirected at a tempdir for
+        the test, so this writes a real entry through the real write path
+        rather than faking one — the endpoint's whole job is to serve what the
+        store actually holds.
+
+        ``planes`` attaches D6a's max and min planes, each of which stores an
+        entry of its own with a URL of its own (T59 Phase 13).
+        """
+        import tempfile
+
+        from tta_backend.config.settings import get_settings
+        from tta_backend.services.frame_store import store_frame_stack
+        from tta_backend.services.open_handle import OPEN_PIPELINE_VERSION
+
+        from test_frame_store import make_frame_stack, with_planes
+
+        store = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(store.cleanup)
+        patcher = patch.dict(os.environ, {"FRAME_STORE_DIR": os.path.join(store.name, "frames")})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        get_settings.cache_clear()
+        self.addCleanup(get_settings.cache_clear)
+
+        stack = make_frame_stack(n_frames=4, ny=20, nx=20)
+        if planes:
+            stack = with_planes(stack)
+        block = store_frame_stack(stack, pipeline_version=OPEN_PIPELINE_VERSION)
+        payload = {
+            "chart_id": "chart-1",
+            "type": "heatmap",
+            "title": "TEMPO over Texas",
+            "frames": block,
+            "user_id": self.user.id,
+        }
+        return payload, stack
+
+    async def _get_frames(self, payload, **kwargs):
+        async def fake_get_chart(chart_id):
+            return payload
+
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        auth_patches = self._auth_patch()
+        with auth_patches[0], auth_patches[1], \
+             patch.object(self.api.chart_service, "get_chart", fake_get_chart):
+            async with self.httpx.AsyncClient(
+                transport=transport, base_url="http://testserver",
+            ) as client:
+                return await client.get(
+                    "/chart/chart-1/frames.f32.gz",
+                    headers={**self.auth_headers, **kwargs.pop("headers", {})},
+                    **kwargs,
+                )
+
+    async def test_chart_frames_endpoint_serves_the_stored_float32_stack(self):
+        """One authenticated GET, gzipped on the wire, cached immutably.
+
+        ``private, immutable, max-age`` is a deliberate divergence from
+        ``/chart/{id}/overlay.png``'s ``no-store``, and it is only safe because
+        D8 says a blob is never regenerated in place: this URL's bytes cannot
+        change, so a cache that keeps them forever can never serve a stale
+        field. ``private`` because charts are ownership-scoped — there is no
+        shared cache to warm and no cross-user entry to leak into.
+        """
+        import numpy as np
+
+        payload, stack = self._frame_chart()
+
+        response = await self._get_frames(payload)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-encoding"], "gzip")
+        cache_control = response.headers["cache-control"]
+        self.assertIn("private", cache_control)
+        self.assertIn("immutable", cache_control)
+        self.assertIn("max-age=", cache_control)
+        self.assertTrue(response.headers["etag"])
+
+        # Decoded by the transport, natively — the client never gunzips.
+        planes = np.frombuffer(response.content, dtype="float32").reshape(
+            *payload["frames"]["shape"]
+        )
+        self.assertTrue(np.array_equal(planes[0], stack.period_values, equal_nan=True))
+        self.assertTrue(np.array_equal(planes[1:], stack.values, equal_nan=True))
+
+    async def test_chart_frames_endpoint_304s_when_the_client_already_has_it(self):
+        payload, _stack = self._frame_chart()
+
+        first = await self._get_frames(payload)
+        again = await self._get_frames(
+            payload, headers={"If-None-Match": first.headers["etag"]}
+        )
+
+        self.assertEqual(again.status_code, 304)
+        self.assertEqual(again.content, b"")
+
+    async def test_chart_frames_endpoint_404s_when_the_values_have_been_evicted(self):
+        """D8's degradation, at the seam it actually happens.
+
+        The axis is in Postgres and survives; only the values are gone. A 404
+        here is the frontend's signal to draw the labeled axis with the
+        scrubber disabled — never an error state, and never a rebuild, whose
+        cost is bimodal to minutes when the export is gone.
+        """
+        payload, _stack = self._frame_chart()
+        import shutil
+
+        from tta_backend.config.settings import get_settings
+
+        shutil.rmtree(get_settings().frame_store_dir)
+
+        response = await self._get_frames(payload)
+
+        self.assertEqual(response.status_code, 404)
+        # The chart itself is untouched: every stop is still labeled.
+        self.assertEqual(len(payload["frames"]["frames"]), 4)
+
+    async def test_chart_frames_endpoint_404s_for_another_users_chart(self):
+        payload, _stack = self._frame_chart()
+        payload["user_id"] = "someone-else"
+
+        response = await self._get_frames(payload)
+
+        self.assertEqual(response.status_code, 404)
+
+    async def test_chart_frames_endpoint_refuses_an_unauthenticated_request(self):
+        """The blob is served ``private, immutable, max-age`` — a divergence
+        from ``overlay.png``'s ``no-store`` that is only defensible while every
+        reader is authenticated and ownership-scoped. Authentication here is a
+        blanket middleware with an explicit ``PUBLIC_ENDPOINTS`` allowlist, so
+        this guards against the one edit that would quietly undo it."""
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        async with self.httpx.AsyncClient(
+            transport=transport, base_url="http://testserver",
+        ) as client:
+            response = await client.get("/chart/chart-1/frames.f32.gz")
+
+        self.assertEqual(response.status_code, 401)
+
+    async def test_chart_frames_endpoint_404s_when_the_chart_has_no_frames(self):
+        payload = {"chart_id": "chart-1", "type": "heatmap", "user_id": self.user.id}
+
+        response = await self._get_frames(payload)
+
+        self.assertEqual(response.status_code, 404)
+
+    async def _get_plane(self, payload, statistic, **kwargs):
+        async def fake_get_chart(chart_id):
+            return payload
+
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        auth_patches = self._auth_patch()
+        with auth_patches[0], auth_patches[1], \
+             patch.object(self.api.chart_service, "get_chart", fake_get_chart):
+            async with self.httpx.AsyncClient(
+                transport=transport, base_url="http://testserver",
+            ) as client:
+                return await client.get(
+                    f"/chart/chart-1/frames.{statistic}.f32.gz",
+                    headers={**self.auth_headers, **kwargs.pop("headers", {})},
+                    **kwargs,
+                )
+
+    async def test_chart_plane_endpoint_serves_each_statistic_at_its_own_url(self):
+        """D6a decision 5's *"one store entry per statistic, fetched lazily"*,
+        at the transport.
+
+        A path per statistic rather than a query parameter, deliberately. A
+        parameter would make one URL serve several bodies, which every cache
+        between the browser and the app then has to be told about with `Vary` —
+        and it would make ``_FRAME_CACHE_CONTROL``'s ``immutable`` a claim about
+        a URL whose content is no longer fixed. A distinct path is a distinct
+        cache entry with no coordination at all, and it leaves the mean's URL
+        untouched outright rather than untouched-if-the-parameter-is-absent.
+        """
+        import numpy as np
+
+        payload, stack = self._frame_chart(planes=True)
+
+        for statistic in ("max", "min"):
+            response = await self._get_plane(payload, statistic)
+
+            self.assertEqual(response.status_code, 200, statistic)
+            self.assertEqual(response.headers["content-encoding"], "gzip")
+            self.assertIn("immutable", response.headers["cache-control"])
+            self.assertTrue(response.headers["etag"])
+
+            planes = np.frombuffer(response.content, dtype="float32").reshape(
+                *payload["frames"]["shape"]
+            )
+            plane = stack.planes[statistic]
+            self.assertTrue(np.array_equal(planes[0], plane.period_values, equal_nan=True))
+            self.assertTrue(np.array_equal(planes[1:], plane.values, equal_nan=True))
+            # And emphatically not the mean's field, which is the failure a
+            # shape check could never catch: every plane of a chart has the
+            # same shape, dtype, grid and pipeline version.
+            self.assertFalse(np.array_equal(planes[1:], stack.values, equal_nan=True))
+
+    async def test_a_plane_url_and_the_mean_url_do_not_serve_each_other(self):
+        """The mean keeps its exact URL, and it keeps it *exclusively*.
+
+        Decision 5 says the mean entry keeps "its exact shape, URL and cost",
+        which is only worth anything if the two paths cannot be confused for
+        one another by the router — ``frames.f32.gz`` and ``frames.max.f32.gz``
+        differ by one path segment's contents, and a greedy match would make
+        one of them shadow the other.
+        """
+        import numpy as np
+
+        payload, stack = self._frame_chart(planes=True)
+
+        mean = await self._get_frames(payload)
+        maximum = await self._get_plane(payload, "max")
+
+        self.assertEqual(mean.status_code, 200)
+        self.assertEqual(maximum.status_code, 200)
+        self.assertNotEqual(mean.headers["etag"], maximum.headers["etag"])
+        planes = np.frombuffer(mean.content, dtype="float32").reshape(
+            *payload["frames"]["shape"]
+        )
+        self.assertTrue(np.array_equal(planes[1:], stack.values, equal_nan=True))
+
+    async def test_chart_plane_endpoint_304s_when_the_client_already_has_it(self):
+        payload, _stack = self._frame_chart(planes=True)
+
+        first = await self._get_plane(payload, "max")
+        again = await self._get_plane(
+            payload, "max", headers={"If-None-Match": first.headers["etag"]}
+        )
+
+        self.assertEqual(again.status_code, 304)
+        self.assertEqual(again.content, b"")
+
+    async def test_chart_plane_endpoint_404s_for_a_statistic_that_is_not_one(self):
+        """404, never 500 — and never a lookup of whatever the URL said.
+
+        The segment is constrained to the statistics the reduction actually
+        produces, so the path cannot become an arbitrary key lookup into the
+        chart's own block.
+        """
+        payload, _stack = self._frame_chart(planes=True)
+
+        for statistic in ("median", "_key", "MAX"):
+            response = await self._get_plane(payload, statistic)
+            self.assertEqual(response.status_code, 404, statistic)
+
+    async def test_chart_plane_endpoint_404s_for_a_statistic_this_chart_lacks(self):
+        """The common case for the whole of this phase: nothing upstream asks
+        for a plane yet, so every real chart has exactly the mean. Asking for
+        its max is a miss, not an error — and the mean keeps working."""
+        payload, _stack = self._frame_chart()
+
+        response = await self._get_plane(payload, "max")
+        mean = await self._get_frames(payload)
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(mean.status_code, 200)
+        # "mean" is never a plane: its URL is `frames.f32.gz` and always was.
+        self.assertEqual((await self._get_plane(payload, "mean")).status_code, 404)
+
+    async def test_chart_plane_endpoint_404s_when_only_that_plane_was_evicted(self):
+        """A partially-resident chart is a defined state, per statistic.
+
+        The chart keeps scrubbing in every statistic still resident; the
+        evicted one degrades through exactly the path an evicted mean already
+        takes, with the axis still drawn from Postgres.
+        """
+        import shutil
+
+        from tta_backend.config.settings import get_settings
+
+        payload, _stack = self._frame_chart(planes=True)
+        evicted = payload["frames"]["planes"]["max"]["_key"]
+        shutil.rmtree(os.path.join(get_settings().frame_store_dir, evicted))
+
+        self.assertEqual((await self._get_plane(payload, "max")).status_code, 404)
+        self.assertEqual((await self._get_plane(payload, "min")).status_code, 200)
+        self.assertEqual((await self._get_frames(payload)).status_code, 200)
+
+    async def test_chart_plane_endpoint_404s_for_another_users_chart(self):
+        """Ownership through ``_get_owned_chart``, the same as every other
+        chart route. A new URL is a new place to forget it."""
+        payload, _stack = self._frame_chart(planes=True)
+        payload["user_id"] = "someone-else"
+
+        response = await self._get_plane(payload, "max")
+
+        self.assertEqual(response.status_code, 404)
+
+    async def test_chart_plane_endpoint_refuses_an_unauthenticated_request(self):
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        async with self.httpx.AsyncClient(
+            transport=transport, base_url="http://testserver",
+        ) as client:
+            response = await client.get("/chart/chart-1/frames.max.f32.gz")
+
+        self.assertEqual(response.status_code, 401)
+
+    async def test_chart_plane_endpoint_does_not_block_the_event_loop(self):
+        """The same offload the mean's route takes, for the same reason: the
+        read hashes every byte it returns, so on a slow volume it would stall
+        every other in-flight stream for the duration."""
+        import asyncio
+        import time
+
+        payload, _stack = self._frame_chart(planes=True)
+        real_read = self.api.frame_store.read_frames
+
+        def slow_read(*args, **kwargs):
+            time.sleep(0.5)
+            return real_read(*args, **kwargs)
+
+        tick_count = 0
+
+        async def ticker():
+            nonlocal tick_count
+            for _ in range(15):
+                await asyncio.sleep(0.03)
+                tick_count += 1
+
+        with patch.object(self.api.frame_store, "read_frames", slow_read):
+            response, _ = await asyncio.gather(
+                self._get_plane(payload, "max"), ticker(),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(tick_count, 15)
 
     async def test_chart_overlay_endpoint_does_not_block_the_event_loop(self):
         """T45: chart_overlay_png used to read the overlay PNG with a

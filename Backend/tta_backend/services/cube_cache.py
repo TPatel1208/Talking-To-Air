@@ -227,6 +227,53 @@ def _stat_sweep(cube_dir: str) -> tuple[int, int]:
     return files, total
 
 
+# Compression ratios measured writing this pipeline's data to Zarr, on a
+# 2950x5771 float64 grid: 1.9x on incompressible noise, 3.1x at 50% fill, 5.5x
+# at 75% -- the TEMPO L3 shape, where the geostationary scan leaves most of the
+# grid fill. A grid that is entirely fill compresses by three orders of
+# magnitude.
+#
+# The two constants below are used in opposite directions, and which is which
+# is the whole point:
+#
+#   * The pre-filter may only skip a write that is CERTAIN not to fit, so it
+#     assumes the most generous compression it could plausibly get. Guessing
+#     low there is what the old ds.nbytes gate did -- it assumed 1x, and so
+#     rejected cubes costing a fifth of what it charged them.
+#   * Eviction must make ENOUGH room, so it assumes the least compression it
+#     could plausibly get. Guessing high there would under-evict and overrun
+#     the store.
+#
+# Neither number has to be right. The binding check is the exact on-disk size,
+# taken after the staged write, and the store's own accounting self-corrects
+# from the real bytes on the following write.
+_OPTIMISTIC_COMPRESSION = 20.0
+_CONSERVATIVE_COMPRESSION = 1.9
+
+
+def per_cube_disk_limit(settings: Any) -> int:
+    """The most disk one cube may occupy, in the unit the store accounts in."""
+    return int(settings.cube_store_max_bytes * settings.cube_write_max_store_fraction)
+
+
+def _hopeless_disk_bytes(ds: Any) -> int:
+    """A lower bound on what ``ds`` will occupy on disk -- if even this exceeds
+    the cap, no compression saves it and the write is not worth starting."""
+    return int(_nbytes(ds) / _OPTIMISTIC_COMPRESSION)
+
+
+def _eviction_disk_bytes(ds: Any) -> int:
+    """An upper bound on what ``ds`` will occupy, for making room."""
+    return int(_nbytes(ds) / _CONSERVATIVE_COMPRESSION)
+
+
+def _nbytes(ds: Any) -> int:
+    """The uncompressed in-memory footprint. Never a disk figure: a written
+    cube is compressed, and treating these as interchangeable is what made the
+    old cap reject the multi-granule retrievals the cache exists for."""
+    return int(getattr(ds, "nbytes", 0) or 0)
+
+
 def write_cube(
     ds: Any,
     key: str,
@@ -253,22 +300,35 @@ def write_cube(
         return False  # known-unsafe under this pipeline version; don't retry
 
     settings = get_settings()
-    projected = int(getattr(ds, "nbytes", 0) or 0)
-    if projected > settings.cube_write_max_bytes:
+    limit = per_cube_disk_limit(settings)
+    projected = _hopeless_disk_bytes(ds)
+    if projected > limit:
         # A size policy, not a contract failure: the source is perfectly fine,
         # it is merely too big to cube safely. No negative-cache entry — this
         # check is O(1) and re-running it on every open costs nothing.
+        #
+        # Deliberately optimistic (see _hopeless_disk_bytes): this is only a
+        # pre-filter that skips a background write already certain to be
+        # discarded. The binding check is the exact one below, on the bytes the
+        # staged cube actually occupies.
         logger.info(
             "cube_write_skipped_too_large",
             extra={
                 "_event": "cube_write_skipped_too_large",
                 "_cube_key": key,
                 "_projected_bytes": projected,
-                "_limit_bytes": settings.cube_write_max_bytes,
+                "_limit_bytes": limit,
             },
         )
         return False
-    evict_to_fit(projected)
+    # Capped at ``limit``, not just estimated: a cube is allowed at most that
+    # many bytes, so it can never justify clearing more than that many, and an
+    # estimate that says otherwise is wrong by definition. Without the cap the
+    # two estimates diverge by more than the whole store over a wide band of
+    # sizes (~7.6-40 GiB of nbytes at the shipped defaults) -- eviction drains
+    # every cube, and the finished write is then discarded by the exact check
+    # below, destroying the cache for nothing.
+    evict_to_fit(min(_eviction_disk_bytes(ds), limit))
 
     staging = tempfile.mkdtemp(prefix=f"{_STAGING_PREFIX}{key}-", dir=root)
     try:
@@ -281,6 +341,24 @@ def write_cube(
         writable.to_zarr(cube_dir, mode="w", consolidated=True)
         _fsync_tree(staging)
         files, total = _stat_sweep(cube_dir)
+        if total > limit:
+            # The binding cap, on the real bytes -- the same number _entries()
+            # accounts the store in, so the two can never disagree. The
+            # pre-filter above works from an estimate and is allowed to be
+            # wrong in the admitting direction; this cannot be. Discarded
+            # rather than promoted, which costs one wasted background write and
+            # keeps a thrash-sized cube out of the store.
+            logger.info(
+                "cube_write_discarded_too_large",
+                extra={
+                    "_event": "cube_write_discarded_too_large",
+                    "_cube_key": key,
+                    "_disk_bytes": total,
+                    "_limit_bytes": limit,
+                },
+            )
+            shutil.rmtree(staging, ignore_errors=True)
+            return False
         manifest = {
             "source_identity": source,
             # T54: the handle this cube was built for. The index below is
@@ -683,13 +761,31 @@ def rebuild_index() -> None:
     _write_index(index)
 
 
-def sweep_store() -> None:
-    """Remove orphaned staging directories and manifest-less entries.
+def sweep_store(current_pipeline_version: str) -> None:
+    """Remove everything the store can never serve: orphaned staging
+    directories, manifest-less entries, and cubes left behind by a superseded
+    pipeline version.
 
-    Called at startup: a crash mid-write leaves a staging dir behind, and an
-    entry whose manifest never landed is by definition incomplete. Neither is
-    ever served (the manifest is the completion marker), so this reclaims
-    space rather than fixing correctness.
+    Called at startup. A crash mid-write leaves a staging dir behind, and an
+    entry whose manifest never landed is by definition incomplete; neither is
+    ever served, since the manifest is the completion marker.
+
+    The version case is the same idea one step further out. ``cache_key`` mixes
+    the pipeline version in, so after a bump no key will ever name an older
+    cube again — but those cubes keep perfectly valid manifests, so nothing
+    here used to touch them and ``_entries`` went on counting their bytes
+    against ``cube_store_max_bytes``. The store would sit full of unreadable
+    cubes crowding out readable ones, giving them up only as LRU eviction
+    ground them out one write at a time. That is what turned "a version bump
+    costs the cache once" into "a version bump degrades the cache until it
+    happens to churn".
+
+    ``current_pipeline_version`` is a parameter and not an import because
+    ``open_handle`` owns that constant and imports *this* module; passing it in
+    also keeps the cache's existing stance, which is that it stores what it is
+    told and never interprets it (``write_cube`` takes the same value the same
+    way). Required rather than defaulted, so a caller cannot quietly skip the
+    reclaim by forgetting it.
 
     T54: rebuilds the handle index on the way out, rather than leaving that to
     a second call at the startup site. The rebuild has to run *after* the sweep
@@ -704,12 +800,37 @@ def sweep_store() -> None:
     for entry in entries:
         if not entry.is_dir(follow_symlinks=False):
             continue
-        complete = os.path.exists(os.path.join(entry.path, _MANIFEST_NAME))
+        manifest = _read_manifest(entry.name)
         # A negative-cache entry is complete by construction — it has no
         # manifest because it has no cube, and sweeping it would make every
-        # restart retry a source already known unsafe.
+        # restart retry a source already known unsafe. Its own key carries the
+        # pipeline version too, so a stale one is equally unreachable, but it
+        # is a ~100-byte file that _entries already ignores: not worth the
+        # extra bookkeeping to recognize, and it crowds out nothing.
         refused = os.path.exists(os.path.join(entry.path, _REFUSED_NAME))
-        if entry.name.startswith(_STAGING_PREFIX) or not (complete or refused):
+        superseded = (
+            manifest is not None
+            and str(manifest.get("pipeline_version", "")) != current_pipeline_version
+        )
+        if entry.name.startswith(_STAGING_PREFIX):
+            shutil.rmtree(entry.path, ignore_errors=True)
+        elif manifest is None:
+            # Manifest-less and not a refusal: the write never completed. The
+            # two are separate arms rather than one disjunction so that the
+            # version case below reads on a manifest mypy knows is there.
+            if not refused:
+                shutil.rmtree(entry.path, ignore_errors=True)
+        elif superseded:
+            logger.info(
+                "cube_reclaimed_stale_pipeline_version",
+                extra={
+                    "_event": "cube_reclaimed_stale_pipeline_version",
+                    "_cube_key": entry.name,
+                    "_was_version": manifest.get("pipeline_version"),
+                    "_current_version": current_pipeline_version,
+                    "_bytes": manifest.get("total_bytes"),
+                },
+            )
             shutil.rmtree(entry.path, ignore_errors=True)
     rebuild_index()
 

@@ -157,6 +157,65 @@ TEMPO_O3TOT:
   groups:
     - product
 
+# The only registered product whose scientific content is VERTICAL: ozone
+# partial columns at 24 layers, rather than one number per pixel. Registered for
+# T56's profile plot, and every field below was measured against a real granule
+# (TEMPO_O3PROF_L3_V04_20251001T120743Z_S002.nc, 2026-08-08) because the L3
+# documentation is incomplete for this product.
+#
+# Three variables, not one. `plot_vertical_profile` needs the science variable
+# AND both per-pixel vertical axes reduced in lockstep -- pressure is the
+# default y-axis, altitude the toggle -- so all three are subset together. Drop
+# either sibling and the profile comes back with values and no axis to plot
+# them against.
+#
+# valid_min/valid_max are deliberately PERMISSIVE and are not the sibling
+# O3TOT's. That entry's `valid_min: 50.0` describes a TOTAL column; a single
+# layer of this product runs 0.23-32.9 DU, so copying it would silently wipe all
+# 24 layers -- the exact failure mode the masking pipeline cannot detect,
+# because a fully-masked variable and a genuinely empty scene look identical
+# downstream. The bounds here catch a corrupt value and nothing else.
+TEMPO_O3PROF:
+  collection_id: C3685896402-LARC_CLOUD
+  short_name: TEMPO_O3PROF_L3
+  version: V04
+  description: TEMPO Level 3 ozone vertical profile (24 layers, partial columns)
+  cadence: hourly
+  provider: NASA LARC
+  instrument: TEMPO
+  # CMR publishes this collection as "TEMPO gridded ozone profile V04 (BETA)".
+  maturity: beta
+  maturity_note: >-
+    Beta product: the TEMPO user guide states that publication of research
+    results using this product is not recommended and highly discouraged.
+    Documented ~10% systematic low bias against TOLNet lidar, and V04 mostly
+    uses V1 rather than V2 GEOS-CF a priori profiles.
+  primary_var: ozone_profile
+  # No per-pixel flag band exists, by design -- see COLLECTIONS_WITHOUT_QUALITY_FLAG
+  # in datasets/registry.py for the granule evidence and the producer's own
+  # pre-gridding filter.
+  quality_flag_var: null
+  # Requested automatically whenever ozone_profile is, the same way a pinned
+  # quality flag is. Listing them under `variables` is not enough on its own:
+  # the agent composes safe_retrieve's variable list itself, and on the first
+  # real run it asked for product/ozone_profile alone.
+  vertical_axis_vars:
+    - support_data/ozone_profile_pressure
+    - support_data/ozone_profile_altitude
+  variables:
+    - product/ozone_profile
+    - support_data/ozone_profile_pressure
+    - support_data/ozone_profile_altitude
+  supports_variable_subsetting: true
+  units: DU
+  fill_value: -1.2676506e+30
+  valid_min: -10.0
+  valid_max: 150.0
+  groups:
+    - product
+    - support_data
+    - geolocation
+
 OMI_O3:
   collection_id: C1266136037-GES_DISC
   short_name: OMDOAO3e

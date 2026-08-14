@@ -34,18 +34,25 @@ class ColormapRegistryTests(unittest.TestCase):
         self.assertEqual(resolution.name, "viridis")
 
 
-class ColormapExportAntiDriftTests(unittest.TestCase):
+class ColormapExportAntiDriftTests(unittest.IsolatedAsyncioTestCase):
     """Proves export_service renders with the same registry entry the
     payload ships as `colormap.lut`, so the map, the legend, and the export
-    can never disagree on what a value looks like."""
+    can never disagree on what a value looks like.
 
-    def test_export_heatmap_axis_uses_the_same_registry_entry_as_the_payload(self):
+    Asserted against the async render path because that is the only one the
+    PNG export actually takes (api.py -> build_chart_png). The sync twin
+    this once covered could not render at all -- it fetched through a stub that
+    unconditionally raised -- so the anti-drift guarantee was being proven on
+    code no download ever ran.
+    """
+
+    async def test_export_heatmap_axis_uses_the_same_registry_entry_as_the_payload(self):
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         import numpy as np
         import xarray as xr
-        from unittest.mock import patch
+        from unittest.mock import AsyncMock, patch
         from tta_backend.services.export_service import ExportService
 
         da = xr.DataArray(
@@ -58,8 +65,8 @@ class ColormapExportAntiDriftTests(unittest.TestCase):
         fig, ax = plt.subplots()
 
         try:
-            with patch.object(ExportService, "_export_data_array", return_value=da):
-                mesh = service._plot_heatmap_axis(ax, export, "Panel")
+            with patch.object(ExportService, "_export_data_array", AsyncMock(return_value=da)):
+                mesh = await service._plot_heatmap_axis(ax, export, {}, "Panel")
         finally:
             plt.close(fig)
 

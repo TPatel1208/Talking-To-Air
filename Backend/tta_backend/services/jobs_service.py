@@ -35,6 +35,28 @@ _STATUS_FANOUT_LIMIT = 8
 # arrives here as an ordinary status string.
 _CACHEABLE_STATUSES = TERMINAL_STATUSES
 
+# The status this module synthesizes when a single handle's
+# get_retrieval_status call fails, so one bad row degrades instead of taking
+# down the whole fan-out. Not a status any provider reports.
+STATUS_READ_FAILED = "error"
+
+# A row the panel is done with. Two things make a row finished: the provider
+# called it terminal, or the status read itself failed and there is nothing
+# further to report and no live job a cancel could reach.
+#
+# Deliberately distinct from the two neighbouring sets:
+#   TERMINAL_STATUSES  — what the *provider* calls terminal. Drives
+#       await_retrieval's poll loop and annotate_paused, which only ever see
+#       real provider statuses, never this module's synthesized one.
+#   _CACHEABLE_STATUSES — immutable outcomes safe to cache forever. A failed
+#       status read is transient and must be retried on the next poll, so it
+#       must never appear here.
+#
+# Mirrored by Frontend/src/utils/jobCard.js's TERMINAL_STATUSES, which drives
+# the panel's badge, polling and re-sort. The two are pinned together by a
+# contract test — they had already drifted by exactly this status.
+FINISHED_ROW_STATUSES = TERMINAL_STATUSES | {STATUS_READ_FAILED}
+
 # The panel refetches the whole workspace on the frontend's live poll
 # (hooks/useJobs.js). Without this cache, list_jobs re-issued
 # get_retrieval_status for every finished-or-dead handle on every poll, for
@@ -102,7 +124,7 @@ async def list_jobs(tools: dict[str, BaseTool]) -> list[dict[str, Any]]:
             # every other in-flight status call. Never cached — a status read
             # that failed transiently must be retried on the next poll.
             except Exception as exc:
-                return {"status": "error", "message": str(exc)}
+                return {"status": STATUS_READ_FAILED, "message": str(exc)}
         # Cache only immutable outcomes (terminal or dead handle);
         # paused/running/pending stay on the fan-out so a resume or completion
         # is still picked up.
@@ -117,7 +139,7 @@ async def list_jobs(tools: dict[str, BaseTool]) -> list[dict[str, Any]]:
         for entry, status in zip(entries, statuses)
     ]
     jobs.sort(key=lambda job: job.get("created_at") or "", reverse=True)
-    jobs.sort(key=lambda job: job.get("status") in TERMINAL_STATUSES)
+    jobs.sort(key=lambda job: job.get("status") in FINISHED_ROW_STATUSES)
     return jobs
 
 

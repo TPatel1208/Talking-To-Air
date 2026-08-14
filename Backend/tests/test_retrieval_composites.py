@@ -555,13 +555,46 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
         return seen
 
     def _fast_settings(self, settings):
+        """Zero backoff, plus a timeout that is a *hang* guard rather than a race.
+
+        The zeroed poll intervals are the only thing that makes these tests
+        fast; the timeout is not a deadline anyone here asserts on (the one
+        test that does, test_await_retrieval_times_out_when_job_never_reaches_
+        terminal_state, sets its own 0). It exists so a poll loop that stops
+        terminating fails instead of hanging the suite.
+
+        It was 5s, which read as generous only because polls look free. They
+        are not: ``_tools`` hands back ``load_raw_mcp_tools`` output, whose
+        tools carry ``session=None``, so every ``ainvoke`` opens a *fresh*
+        streamable-HTTP session -- see earthdata_mcp.client.
+        open_earthdata_session on why that path exists and what it costs.
+        Measured against this fixture's in-process server, that handshake is
+        ~1.2-1.6s while the tool call itself is ~30ms, i.e. ~1.4s per poll.
+        (The steady-state path production actually uses holds one session
+        open and calls in ~35ms, which is why nothing outside these tests
+        pays this.)
+
+        await_retrieval only checks the deadline after a *non-terminal* poll,
+        so the binding quantity is the clock at the last non-terminal one --
+        for the 3-response tests here, poll 2, measured at 2.2-3.0s. Against
+        5s that is under 2x, and it degrades exactly the way the failure did:
+        at a 3s budget these tests already fail ~1 run in 5, surfacing as
+        RetrievalTimeoutError with the progress list truncated to [0, 40].
+        That is why the test survived alone and in-class but died deep into a
+        full run (position ~1014 of 1359), where the process is slow enough
+        for two handshakes to cross 5s -- no state left behind by another
+        test, just a budget sized as if the work were free.
+
+        30s is ~10x the measured worst case, and still a bounded failure
+        rather than a hang. Production's own default is 900s.
+        """
         from dataclasses import replace
 
         return replace(
             settings,
             await_retrieval_poll_min_seconds=0,
             await_retrieval_poll_max_seconds=0,
-            await_retrieval_timeout_seconds=5,
+            await_retrieval_timeout_seconds=30,
         )
 
 

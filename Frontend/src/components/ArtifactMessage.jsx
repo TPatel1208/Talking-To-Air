@@ -139,6 +139,26 @@ function MapArtifactCard({ artifact, accessToken }) {
   )
 }
 
+// A vertical profile's card. Layer ordering is on it because "which end of
+// this array is the sky" is a fact about the product, not a rendering choice --
+// a reader pulling this artifact months later needs it as much as the chart did.
+function ProfileArtifactCard({ artifact, accessToken }) {
+  const meta = artifact.metadata || {}
+  return (
+    <CardShell artifact={artifact} accessToken={accessToken}>
+      <MetaRow label="Variable" value={meta.variable} />
+      <MetaRow label="Units" value={meta.units} />
+      <MetaRow label="Layers" value={meta.layer_count} />
+      <MetaRow
+        label="Vertical axis"
+        value={meta.vertical_axis && `${meta.vertical_axis}${meta.vertical_units ? ` (${meta.vertical_units})` : ''}`}
+      />
+      <MetaRow label="Layer order" value={meta.layer_order} />
+      <MetaRow label="Source handles" value={meta.source_handles?.join(', ')} />
+    </CardShell>
+  )
+}
+
 function ComparisonArtifactCard({ artifact, accessToken }) {
   const meta = artifact.metadata || {}
   return (
@@ -398,6 +418,7 @@ export default function ArtifactMessage({ artifact, accessToken }) {
     case 'map': return <MapArtifactCard artifact={artifact} accessToken={accessToken} />
     case 'comparison': return <ComparisonArtifactCard artifact={artifact} accessToken={accessToken} />
     case 'timeseries': return <TimeseriesArtifactCard artifact={artifact} accessToken={accessToken} />
+    case 'profile': return <ProfileArtifactCard artifact={artifact} accessToken={accessToken} />
     default: return null
   }
 }

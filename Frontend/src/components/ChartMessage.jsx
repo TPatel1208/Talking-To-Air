@@ -1,16 +1,18 @@
 /**
  * ChartMessage.jsx
  * ----------------
- * The Plotly time-series panel (TimeSeriesPanel/TimeSeriesOverlayPanel) and
- * the shared chart toolbar (query/CSV/PNG export, ChartToolbar) consumed by
+ * The Plotly line panels -- time-series (TimeSeriesPanel/
+ * TimeSeriesOverlayPanel) and vertical profile (ProfilePanel) -- and the
+ * shared chart toolbar (query/CSV/PNG export, ChartToolbar) consumed by
  * OutputPanel.jsx. Geo charts render via MapLibreHeatmapPanel/
  * HeatmapMultiPanel directly, not through this file.
  */
 import { useState, useEffect, useMemo, useRef } from 'react'
 import Plotly from 'plotly.js-dist-min'
 import _createPlotlyComponent from 'react-plotly.js/factory'
-import { flattenPayload } from '../utils/flattenPayload.js'
+import { resolveCsvExport, resolveNetcdfExport } from '../utils/chartExport.js'
 import { buildOverlayTraces } from '../utils/timeseriesCompare.js'
+import { availableAxes, profileLayout, profileTraces, spreadCaveat } from '../utils/verticalProfile.js'
 
 const createPlotlyComponent =
   typeof _createPlotlyComponent === 'function'
@@ -49,36 +51,6 @@ function rowsToCsv(rows) {
     headers.map(csvEscape).join(','),
     ...rows.map(row => headers.map(header => csvEscape(row[header])).join(',')),
   ].join('\n')
-}
-
-function heatmapRows(payload, panelName = '') {
-  const { variable, units } = payload
-  const { lat, lon, val } = flattenPayload(payload)
-  return val.map((value, i) => ({
-    ...(panelName ? { panel: panelName } : {}),
-    variable,
-    latitude: lat[i],
-    longitude: lon[i],
-    value,
-    units,
-  }))
-}
-
-function chartRows(chart) {
-  if (chart.type === 'heatmap') return heatmapRows(chart)
-  if (chart.type === 'heatmap_multi') {
-    return (chart.panels || []).flatMap(panel => heatmapRows(panel, panel.title || panel.provenance?.region_name || 'panel'))
-  }
-  if (chart.type === 'timeseries') {
-    return (chart.times || []).map((time, i) => ({
-      variable: chart.variable,
-      time,
-      stat: chart.stat,
-      value: chart.values?.[i],
-      units: chart.units,
-    }))
-  }
-  return []
 }
 
 function downloadText(filename, content, type) {
@@ -141,26 +113,50 @@ export function ChartToolbar({ chart, plotRootRef, accessToken }) {
 
   const handleCsv = async () => {
     setExportState({ status: 'preparing', message: 'Preparing export' })
-    if (chart.chart_id && chart.export) {
-      try {
-        setExportState({ status: 'progress', message: 'Export in progress' })
-        await downloadFromUrl(`/api/chart/${chart.chart_id}/export.csv`, `${fileBase}.csv`, accessToken)
-        setExportState({ status: 'complete', message: 'Export complete' })
-        window.setTimeout(() => setExportState({ status: '', message: '' }), 2200)
-      } catch (error) {
-        setExportState({ status: 'failed', message: error.message || 'Export failed' })
-      }
+    const resolved = resolveCsvExport(chart)
+
+    if (resolved.kind === 'unavailable') {
+      setExportState({ status: 'failed', message: resolved.message })
       return
     }
 
-    const rows = chartRows(chart)
-    if (!rows.length) {
-      setExportState({ status: 'failed', message: 'No chart rows available to export' })
+    if (resolved.kind === 'client') {
+      downloadText(`${fileBase}.csv`, rowsToCsv(resolved.rows), 'text/csv;charset=utf-8')
+      setExportState({ status: 'complete', message: 'Export complete' })
+      window.setTimeout(() => setExportState({ status: '', message: '' }), 2200)
       return
     }
-    downloadText(`${fileBase}.csv`, rowsToCsv(rows), 'text/csv;charset=utf-8')
-    setExportState({ status: 'complete', message: 'Export complete' })
-    window.setTimeout(() => setExportState({ status: '', message: '' }), 2200)
+
+    try {
+      setExportState({ status: 'progress', message: 'Export in progress' })
+      await downloadFromUrl(resolved.url, `${fileBase}.csv`, accessToken)
+      setExportState({ status: 'complete', message: 'Export complete' })
+      window.setTimeout(() => setExportState({ status: '', message: '' }), 2200)
+    } catch (error) {
+      setExportState({ status: 'failed', message: error.message || 'Export failed' })
+    }
+  }
+
+  const handleNetcdf = async () => {
+    setExportState({ status: 'preparing', message: 'Preparing export' })
+    const resolved = resolveNetcdfExport(chart)
+
+    if (resolved.kind === 'unavailable') {
+      setExportState({ status: 'failed', message: resolved.message })
+      return
+    }
+
+    try {
+      // Conversion happens server-side and can take a while on a large cube,
+      // so this reports progress like the other streamed exports rather than
+      // appearing to hang.
+      setExportState({ status: 'progress', message: 'Converting to NetCDF' })
+      await downloadFromUrl(resolved.url, `${fileBase}.nc`, accessToken)
+      setExportState({ status: 'complete', message: 'Export complete' })
+      window.setTimeout(() => setExportState({ status: '', message: '' }), 2200)
+    } catch (error) {
+      setExportState({ status: 'failed', message: error.message || 'Export failed' })
+    }
   }
 
   const handlePng = async () => {
@@ -231,6 +227,15 @@ export function ChartToolbar({ chart, plotRootRef, accessToken }) {
         </button>
         <button
           type="button"
+          onClick={handleNetcdf}
+          style={{ ...buttonStyle, opacity: exportBusy ? 0.65 : 1, cursor: exportBusy ? 'wait' : 'pointer' }}
+          disabled={exportBusy}
+          title="Download the source data as NetCDF — keeps the grid, units and CF metadata a CSV drops"
+        >
+          Export NetCDF
+        </button>
+        <button
+          type="button"
           onClick={handlePng}
           style={{ ...buttonStyle, opacity: exportBusy ? 0.65 : 1, cursor: exportBusy ? 'wait' : 'pointer' }}
           disabled={exportBusy}
@@ -286,6 +291,74 @@ export function TimeSeriesPanel({ payload }) {
   return (
     <Plot data={data} layout={layout} config={BASE_CONFIG} revision={revision}
       style={{ width: '100%' }} useResizeHandler />
+  )
+}
+
+// The vertical profile (T56): one value per atmospheric layer, plotted against
+// the layer's physical pressure or altitude rather than its index.
+//
+// Everything decidable about this chart lives in utils/verticalProfile.js --
+// which axis to draw, which way up, whether a log scale is safe, and how much
+// of an approximation the regional-mean axis is. That split is deliberate:
+// "layer 0 is the top of the atmosphere" is the one thing here that can be
+// silently wrong, and it has to be testable without a DOM.
+export function ProfilePanel({ payload }) {
+  const [axisKind, setAxisKind] = useState(payload?.default_axis || 'pressure')
+  const axes = useMemo(() => availableAxes(payload), [payload])
+  // Derived during render rather than reset in an effect: focusing a different
+  // chart whose axis this one doesn't publish must fall back immediately, not
+  // after a frame of drawing against nothing.
+  const activeAxis = axes.includes(axisKind) ? axisKind : (payload?.default_axis || axes[0])
+
+  const [revision, setRevision] = useState(0)
+  const mounted = useRef(false)
+  useEffect(() => {
+    if (!mounted.current) { mounted.current = true; requestAnimationFrame(() => setRevision(r => r + 1)) }
+  }, [])
+
+  const data = useMemo(() => profileTraces(payload, activeAxis), [payload, activeAxis])
+  const layout = useMemo(
+    () => ({ ...profileLayout(payload, activeAxis), datarevision: revision }),
+    [payload, activeAxis, revision],
+  )
+  const caveat = useMemo(() => spreadCaveat(payload, activeAxis), [payload, activeAxis])
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      {axes.length > 1 && (
+        <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+          <span style={{ fontSize: '11.5px', fontWeight: 700, color: 'var(--text-muted)' }}>
+            Vertical axis
+          </span>
+          {axes.map(kind => (
+            <button
+              key={kind}
+              onClick={() => setAxisKind(kind)}
+              style={{
+                fontSize: '11.5px', fontWeight: 700, cursor: 'pointer',
+                padding: '4px 10px', borderRadius: '7px',
+                border: `1px solid ${kind === activeAxis ? 'var(--teal)' : 'var(--border)'}`,
+                background: kind === activeAxis ? 'var(--teal)' : 'var(--bg-secondary)',
+                color: kind === activeAxis ? '#ffffff' : 'var(--text-secondary)',
+              }}
+            >
+              {kind}
+            </button>
+          ))}
+        </div>
+      )}
+      <Plot data={data} layout={layout} config={BASE_CONFIG} revision={revision}
+        style={{ width: '100%' }} useResizeHandler />
+      {caveat && (
+        <div style={{
+          fontSize: '11.5px', color: 'var(--text-muted)', lineHeight: 1.5,
+          background: 'var(--bg-secondary)', border: '1px solid var(--border)',
+          borderRadius: '7px', padding: '8px 10px',
+        }}>
+          {caveat.text}
+        </div>
+      )}
+    </div>
   )
 }
 

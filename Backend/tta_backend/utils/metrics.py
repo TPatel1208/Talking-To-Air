@@ -108,6 +108,50 @@ PIPELINE_PHASES = (
     # not folded into "mask", because it adds an eager reduction to a
     # lazily-opened bundle and what it costs is exactly what must stay visible.
     "qa_pass_rate",
+    # The two phases above the data pipeline, added after a 2026-08-07 trace
+    # of a 372s plot turn left 107s (29%) attributable to nothing: every
+    # phase here is data work, so model latency and graph overhead had no
+    # series to land in and the gap read as a hole in the timeline.
+    #
+    # "llm_call" is one provider request as LangChain sees it, from
+    # on_chat_model_start to on_llm_end. Provider-side retries live *inside*
+    # that span (ChatGoogleGenerativeAI defaults to max_retries=6 with
+    # backoff, and retries beneath the LangChain seam raise no callback), so
+    # a retry storm shows up here as one long call rather than many -- which
+    # is exactly the shape that was invisible before.
+    "llm_call",
+    # "llm_retry_sleep" is the cumulative backoff a LangChain-driven retry
+    # has slept when it fires. Separate from "llm_call" because it is a
+    # component *of* one: a long call with retry sleep is rate limiting, a
+    # long call without it is the provider genuinely taking that long.
+    "llm_retry_sleep",
+    # The provenance build, split out 2026-08-07 after llm_call/agent_step
+    # narrowed a 870s turn's unexplained 303s (34.8%) to the window between the
+    # "render" timer closing and the tool returning. The only work there is
+    # _attach_reproducibility, and nothing separated its two expensive halves.
+    #
+    # "provenance" is that whole span; "evidence" and "related_variables" are
+    # the two passes inside it that read the *unaggregated* Dataset -- every
+    # granule, every band -- rather than the reduced array the chart was drawn
+    # from. Timed separately because the fix differs: evidence computes
+    # per-band area-weighted stats, related_variables only classifies an
+    # inventory, and which one dominates decides which to change.
+    "provenance",
+    "evidence",
+    "related_variables",
+    # "frames" is T59's bucketed reduction, the one behind a map's scrubber.
+    # Its own phase for the same reason "qa_pass_rate" is: it is a whole extra
+    # graph walk over a lazily-opened bundle -- Phase 3 measured 9.2 s against
+    # a 12-15 s open+mask on a real regional TEMPO bundle -- so a plot that
+    # gains a scrubber gains that time, and a feature's cost has to be visible
+    # rather than smeared across "aggregate".
+    "frames",
+    # "agent_step" is one LangGraph superstep: the wall-clock gap between
+    # consecutive `updates` chunks, attributed to the node that produced the
+    # later one. Deliberately not folded into "llm_call" -- it also covers
+    # checkpointer writes and graph overhead, so the *difference* between the
+    # two is what separates "the model was slow" from "we were slow around it".
+    "agent_step",
 )
 
 _PROMETHEUS_COUNTER_ALIASES = {

@@ -7,7 +7,7 @@ from typing import Annotated, Optional
 from pydantic import Field
 
 from tta_backend.config.workflow_stages import STAGE_RENDER
-from tta_backend.datasets.mask_info import col_info_for_short_name, short_name_from_attrs
+from tta_backend.datasets.mask_info import col_info_for_variable
 from tta_backend.earthdata_mcp.results import MCPToolError
 from tta_backend.services.open_handle import OpenHandleError, open_handle
 from tta_backend.tools.satellite_tools.plot_tools import _normalize_longitudes
@@ -26,19 +26,6 @@ _resolver = RegionResolver()
 _aggregation_service = AggregationService()
 
 VALID_STATS = {"mean", "median", "max", "min", "std"}
-
-
-def _mask_col_info(da, ds=None) -> dict:
-    """See plot_tools._mask_col_info: collection identity is dataset-level,
-    so ``ds.attrs`` is checked before the per-variable ``da.attrs`` (T25
-    masking-execution fix)."""
-    short_name = (
-        short_name_from_attrs(ds.attrs if ds is not None else None)
-        or short_name_from_attrs(da.attrs)
-        or da.name
-        or ""
-    )
-    return col_info_for_short_name(str(short_name).upper())
 
 
 def _build_dim_selector(dimension: str | None, dimension_value: float | None) -> dict | None:
@@ -119,7 +106,7 @@ def make_compute_statistic_tool(mcp_tools: dict[str, BaseTool]):
             # the disclosed region_type -- read it off the masked array so the
             # result names what was actually computed.
             apply_mask_region_type(masked, region)
-            col_info = _mask_col_info(masked, ds)
+            col_info = col_info_for_variable(masked, ds)
             dim_selector = _build_dim_selector(dimension, dimension_value)
 
             def _reduced_field(stat):
@@ -275,7 +262,7 @@ def make_find_daily_peak(mcp_tools: dict[str, BaseTool]):
             masked = mask_data_by_geometry(da, region['geometry'])
             apply_mask_region_type(masked, region)  # T42: disclose boundary_cells self-heal
 
-            col_info = _mask_col_info(masked, ds)
+            col_info = col_info_for_variable(masked, ds)
             try:
                 # stat="max": the peak of the per-cell MAX field is the true
                 # peak over every observation in the period (max composes

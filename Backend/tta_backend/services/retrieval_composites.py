@@ -116,49 +116,63 @@ def _leaf(name: str) -> str:
     return str(name or "").rsplit("/", 1)[-1]
 
 
-def _pinned_quality_flag_variables(variables: list[str]) -> list[str]:
-    """The quality flag variable pinned for each requested science variable's
-    collection, in the spelling the registry itself uses.
+def _pinned_companion_variables(variables: list[str]) -> list[str]:
+    """The companions each requested science variable cannot be honestly
+    interpreted without, in the spelling the registry itself uses.
 
-    A variable subset that drops the quality flag variable cannot be masked at
-    all: masking provenance degrades to "not applied — semantics unknown" and
+    Two kinds, one doctrine. A subset that drops the **quality flag** cannot be
+    masked at all: provenance degrades to "not applied — semantics unknown" and
     every not-normal pixel is plotted as if it were good (measured 2026-08-01:
-    26.6% of a real TEMPO NO2 L3 scene). Requesting the flag is therefore part
-    of requesting the science variable, not a separate decision -- and not one
-    left to the agent, which is what the previous "a standard TEMPO retrieval
-    always requests both" comment assumed without enforcing.
+    26.6% of a real TEMPO NO2 L3 scene). A subset that drops a layered
+    product's **vertical axes** yields values with nothing to plot them against
+    (measured 2026-08-08: the agent requested ``product/ozone_profile`` alone,
+    Harmony obliged, and the profile rendered against a bare layer index --
+    upside down, since layer 0 is the top of the atmosphere).
+
+    Both are part of requesting the science variable, not separate decisions --
+    and not ones left to the agent. The flag guard exists because the previous
+    "a standard TEMPO retrieval always requests both" comment assumed without
+    enforcing; the axes were registered in ``collections.yaml`` and made
+    exactly the same assumption until the same thing happened again.
 
     Matched by bare leaf name, since the caller's spelling may be
     group-qualified (``product/vertical_column_troposphere``) or bare. The
     addition is emitted in whichever spelling the matching request used:
     handing the provider one variable list addressed two different ways is a
-    request no collection's variable list ever looks like.
+    request no collection's variable list ever looks like. A companion that
+    lives in a *different* group from the science variable (the axes are in
+    ``support_data``) keeps the registry's own qualified spelling, which is the
+    only one that resolves.
     """
     requested = {_leaf(v) for v in variables}
     by_leaf = {_leaf(v): v for v in variables}
     additions: list[str] = []
     for cfg in load_registry().values():
-        if not cfg.quality_flag_var:
+        companions = [cfg.quality_flag_var, *cfg.vertical_axis_vars]
+        companions = [c for c in companions if c]
+        if not companions:
             continue
-        flag_leaf = _leaf(cfg.quality_flag_var)
-        if flag_leaf in requested:
-            continue                      # the caller already asked for it
         collection_leaves = {_leaf(cfg.primary_var)} | {_leaf(v) for v in cfg.variables}
         matched = requested & collection_leaves
         if not matched:
             continue
         science_as_asked = by_leaf[sorted(matched)[0]]
-        if "/" not in science_as_asked:
-            spelling = flag_leaf
-        else:
-            # Prefer the registry's own qualified spelling; fall back to the
-            # group the caller addressed the science variable through.
-            spelling = next(
-                (v for v in cfg.variables if _leaf(v) == flag_leaf and "/" in v),
-                f"{science_as_asked.rsplit('/', 1)[0]}/{flag_leaf}",
-            )
-        if spelling not in additions:
-            additions.append(spelling)
+        for companion in companions:
+            companion_leaf = _leaf(companion)
+            if companion_leaf in requested:
+                continue                  # the caller already asked for it
+            if "/" not in science_as_asked and "/" not in companion:
+                spelling = companion_leaf
+            else:
+                # Prefer the registry's own qualified spelling; fall back to the
+                # group the caller addressed the science variable through.
+                spelling = next(
+                    (v for v in cfg.variables if _leaf(v) == companion_leaf and "/" in v),
+                    f"{science_as_asked.rsplit('/', 1)[0]}/{companion_leaf}"
+                    if "/" in science_as_asked else companion_leaf,
+                )
+            if spelling not in additions:
+                additions.append(spelling)
     return additions
 
 
@@ -399,7 +413,7 @@ async def safe_retrieve(
     # wasted failed-subset-then-full-retrieval round trip on every call.
     subset_variables = variables if _supports_variable_subsetting(variables) else []
     if subset_variables:
-        subset_variables = [*subset_variables, *_pinned_quality_flag_variables(subset_variables)]
+        subset_variables = [*subset_variables, *_pinned_companion_variables(subset_variables)]
     subset_raw = await tools["retrieve_subset"].ainvoke({
         "dataset_handle": dataset_handle,
         "aoi_handle": aoi_handle,
@@ -411,7 +425,7 @@ async def safe_retrieve(
 
     # T25: record the model's chosen science variable, keyed by the job this
     # retrieval submits as. A quality flag variable riding along is not a
-    # science choice -- ``_pinned_quality_flag_variables`` above adds one to
+    # science choice -- ``_pinned_companion_variables`` above adds one to
     # every registered subset request, so counting raw ``variables`` would see
     # 2 and record nothing, leaving the opened 2-var file to refuse downstream.
     # Exclude known flag vars (matched by bare leaf name, since ``variables``
@@ -511,7 +525,7 @@ async def point_timeseries(
         "dataset_handle": dataset_handle,
         "aoi_handle": aoi_handle,
         "time_range": time_range,
-        "variables": [variable, *_pinned_quality_flag_variables([variable])],
+        "variables": [variable, *_pinned_companion_variables([variable])],
         "point_sample": True,
     })
     submit = parse_tool_result(submit_raw)

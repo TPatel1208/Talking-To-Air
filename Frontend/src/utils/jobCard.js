@@ -11,6 +11,12 @@
 // ("queued at provider" vs. "submitted") and coincides with `status` once a
 // job is terminal.
 
+// This set is the JS half of services/jobs_service.py's FINISHED_ROW_STATUSES,
+// which cannot be imported across the Python/JS seam. A backend contract test
+// (tests/test_jobs_service.py) reads this literal and pins the two together --
+// they had previously drifted by exactly "error", leaving the backend sorting
+// a row as active that this file badged as terminal.
+//
 // "error" is synthesized by services/jobs_service.py's fault-isolated
 // status fan-out (a single handle's get_retrieval_status call failed) --
 // terminal because the backend has nothing further to report and there's

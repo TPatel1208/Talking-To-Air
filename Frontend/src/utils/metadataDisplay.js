@@ -100,6 +100,108 @@ export function citationString(provenance) {
   return parts.join(', ')
 }
 
+// Where a product sits in its provider's validation lifecycle, and the caveat
+// that comes with it (T57).
+//
+// Returns null for an unstated maturity, deliberately. "unknown" means nobody
+// checked, which is a different thing from a checked clean bill of health --
+// rendering it as a field would read like the latter. A `cautionary` level is
+// one whose provider tells you not to publish on it yet, and it is flagged so
+// the UI can weight it rather than listing it beside the version number.
+const CAUTIONARY_MATURITY = new Set(['beta', 'provisional'])
+
+export function maturityFields(chart) {
+  const level = chart?.provenance?.maturity
+  if (!level || level === 'unknown') return null
+  return {
+    level,
+    note: chart?.provenance?.maturity_note || '',
+    cautionary: CAUTIONARY_MATURITY.has(level),
+  }
+}
+
+// Which layer a physical level request resolved to, and how much of an
+// approximation that was (T58 D5).
+//
+// Two INDEPENDENT facts, because either can be perfect while the other is poor:
+// how much of the analyzed region agrees on this layer, and how far the layer
+// actually sits from what was asked. The spike measured a 300 hPa request
+// landing 40 hPa away at 83% agreement, and an 850 hPa request landing 46 hPa
+// away at 100% -- a panel showing only agreement would call the second one
+// perfect. Returns null for a chart that selected no physical level, so the
+// section is absent rather than a row of "Not available" on every ordinary map.
+const LEVEL_DECIMALS = 2
+
+// Below this, 2-dp rounding would print "0" for a value that is not zero --
+// and the panel deliberately distinguishes "exactly the level requested" from a
+// small error. Rendering 0.004 hPa as "0 hPa from the level requested" is a
+// sentence that contradicts itself.
+const LEVEL_EPSILON = 10 ** -LEVEL_DECIMALS / 2
+
+function roundedLevel(value) {
+  if (!Number.isFinite(value)) return null
+  return Number(value.toFixed(LEVEL_DECIMALS))
+}
+
+export function levelResolutionFields(chart) {
+  const level = chart?.provenance?.level_resolution
+  if (!level) return null
+  const units = level.units || ''
+  const suffix = units ? ` ${units}` : ''
+  // Every field guards its own input. This is the one block whose absence takes
+  // the whole Metadata tab down rather than leaving a row blank, because it
+  // renders outside fmt()/NOT_AVAILABLE -- so a payload missing a field must
+  // degrade to a missing line, not a TypeError.
+  const withUnits = value => {
+    const rounded = roundedLevel(value)
+    return rounded === null ? null : `${rounded}${suffix}`
+  }
+  const pct = fraction =>
+    (Number.isFinite(fraction) ? `${Number((fraction * 100).toFixed(1))}%` : null)
+  const hasRunnerUp = level.runner_up !== null && level.runner_up !== undefined
+  const resolved = withUnits(level.resolved_level)
+  const agreement = pct(level.dominant_fraction)
+  const count = Number.isFinite(level.n_pixels) ? Number(level.n_pixels).toLocaleString('en-US') : null
+  const excluded = pct(level.excluded_fraction)
+
+  return {
+    kind: level.kind || null,
+    requested: Number.isFinite(level.requested) ? `${Number(level.requested)}${suffix}` : null,
+    resolved: resolved === null ? null : `${resolved} (layer ${level.index})`,
+    // Stated even when zero: "not shown" and "exact" read identically to
+    // someone scanning the panel, and they are different facts. Anything below
+    // half a displayed unit is reported as a band rather than rounded to "0",
+    // which would collapse the same distinction from the other side.
+    levelError: levelError(level, withUnits, suffix),
+    // "of the analyzed AREA", not "of N pixels". The fraction is
+    // cos(latitude)-weighted and the count is raw, so "91.3% of 40 analyzed
+    // pixels" is false whenever 40 equal-count cells span an unequal area --
+    // by count that same split can be 50/50. The count travels as a sample
+    // size, which is what it actually is.
+    agreement: agreement === null ? null
+      : `${agreement} of the analyzed area resolves to layer ${level.index}` +
+        (count === null ? '' : ` (${count} pixel-columns sampled)`),
+    runnerUp: hasRunnerUp && pct(level.runner_up_fraction) !== null
+      ? `${pct(level.runner_up_fraction)} resolves to layer ${level.runner_up} instead`
+      : null,
+    // The denominator behind the sample size. Without it, "100% of 4
+    // pixel-columns" sits beside a map built from forty.
+    excluded: level.excluded_fraction ? `${excluded} of the region had no usable vertical coordinate` : null,
+    spread: level.resolved_level_spread
+      ? `This layer itself ranges ${withUnits(level.resolved_level_spread)} across the region`
+      : null,
+    axisVariable: level.axis_variable || null,
+  }
+}
+
+function levelError(level, withUnits, suffix) {
+  const error = level.level_error
+  if (!Number.isFinite(error)) return null
+  if (error === 0) return 'exactly the level requested'
+  if (error < LEVEL_EPSILON) return `less than ${LEVEL_EPSILON}${suffix} from the level requested`
+  return `${withUnits(error)} from the level requested`
+}
+
 export function datasetLandingUrl(collectionId) {
   return collectionId ? `https://cmr.earthdata.nasa.gov/search/concepts/${collectionId}.html` : null
 }
