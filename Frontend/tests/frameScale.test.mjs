@@ -54,10 +54,30 @@ test('the aggregate is drawn on the pooled scale too — it is in the pool', () 
   // The scale is a property of the MODE, not of the stop, so there is one
   // recolour at entry and none mid-scrub. Frame 0 is the period mean, and
   // POOLED_SCALE_BASIS pools it with every frame.
-  const atAggregate = resolveScrubberScale(chart, true, 0)
-  const atInterval = resolveScrubberScale(chart, true, 2)
+  //
+  // RE-POINTED (Phase 16; the finding is Phase 15's). This test used to call
+  // `resolveScrubberScale(chart, true, 0)` and `(chart, true, 2)` and deepEqual
+  // them -- a stop index handed to a function that has never had a stop
+  // parameter. Before Phase 15 the third argument was ignored, so it compared a
+  // call to itself; after Phase 15 gave that position a `statistic`, `0` and `2`
+  // became unrecognized statistics and both returned null, so it asserted
+  // `deepEqual(null, null)`. It had never once exercised what its name claims.
+  //
+  // Its property is now structural -- there is no stop to vary -- so what is
+  // checked is the half that remains checkable: the pooled clip brackets the
+  // aggregate rather than being built from the frames alone, and the basis says
+  // so. The per-frame extremes (-6.49e14 .. 2.46e16) lie outside it, which the
+  // test above already relies on.
+  const scale = resolveScrubberScale(chart, true)
 
-  assert.deepEqual(atAggregate, atInterval)
+  assert.equal(scale.vmin, chart.frames.value_range[0])
+  assert.equal(scale.vmax, chart.frames.value_range[1])
+  assert.match(scale.basis, /pooled across every frame and the period mean/)
+  // And the third parameter is a statistic, not a stop: the default is the
+  // mean's own clip, and an index in that position selects no plane at all --
+  // which is exactly how the old assertion managed to pass.
+  assert.deepEqual(resolveScrubberScale(chart, true, 'mean'), scale)
+  assert.equal(resolveScrubberScale(chart, true, 0), null)
 })
 
 test('a stack with nothing valid in it has no pooled scale to offer', () => {

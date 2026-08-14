@@ -128,6 +128,50 @@ def _coarsened_tier_chart(
     return _cadence_tier_chart(render=render, spec=spec, **overrides)
 
 
+def _planes_chart(*, statistics=("mean", "max", "min"), planes=None, **overrides) -> dict:
+    """A chart carrying D6a's extra planes, shaped as Phase 13/14 write them.
+
+    Two blocks again, and they carry DIFFERENT plane facts on purpose. The
+    spec's ``statistics`` is the recipe's list of what the axis can be browsed
+    as (``_scrubbable_statistics``, derived from what landed); the per-plane
+    disclosures — ``frame_grid_delta``, ``extent_overstatement``, ``value_range``
+    — live only on the render block, the way the mean's delta already does.
+
+    The defaults are Phase 11 G4/G5's live measurements: both selection
+    identities bit-exact (``0.0``), and the max plane's spatial overstatement at
+    24.7x pooled with a worst frame of 24.9x.
+    """
+    from tta_backend.preprocessing.frame_stack import (
+        EXTENT_OVERSTATEMENT_BASIS, PLANE_AGREEMENT_BASIS,
+    )
+
+    def _plane(name: str, *, overstatement=None) -> dict:
+        return {
+            "url": f"/chart/map_1531e35a0e18/frames.{name}.f32.gz",
+            "value_range": [5.7e14, 3.3e15],
+            "frame_grid_delta": {
+                "headline": 0.0,
+                "max_abs": 0.0,
+                "basis": PLANE_AGREEMENT_BASIS[name],
+            },
+            "extent_overstatement": overstatement,
+        }
+
+    if planes is None:
+        planes = {
+            "max": _plane("max", overstatement={
+                "headline": 24.7,
+                "worst_frame": 24.9,
+                "ceiling": 25,
+                "basis": EXTENT_OVERSTATEMENT_BASIS,
+            }),
+            "min": _plane("min"),
+        }
+    render = {"planes": planes, **overrides.pop("render", {})}
+    spec = {"statistics": list(statistics), **overrides.pop("spec", {})}
+    return _cadence_tier_chart(render=render, spec=spec, **overrides)
+
+
 def _section(markdown: str, heading: str) -> str:
     """The body of one ``### heading`` section, up to the next heading."""
     body = markdown.split(f"### {heading}\n\n", 1)[1]
@@ -297,6 +341,616 @@ class TemporalFramesDisclosureTests(unittest.TestCase):
             markdown,
         )
         self.assertNotIn("quality screening", markdown)
+
+
+class BrowsableStatisticsTests(unittest.TestCase):
+    """T59 Phase 16 / D6a decisions 8 and 9: the planes leave the screen.
+
+    A ``methods.md`` goes into supplementary material and is read by someone
+    who was not sitting at the scrubber. Phase 15 gave the max plane four
+    sentences on screen; a reader who browsed it, screenshotted it and cited
+    the figure has none of them here.
+
+    Its own section rather than bullets under ``### Temporal frames``, for the
+    reason ``### Frame–map agreement`` has one: it carries a measured number
+    that qualifies what the reader is about to cite. The lead sentence does the
+    work of keeping it separate from the artifact — D12 is unchanged and the
+    export bullet above stays exactly where it is.
+    """
+
+    def test_a_chart_with_planes_names_what_its_axis_can_be_browsed_as(self):
+        markdown = _markdown_for(_planes_chart())
+
+        self.assertIn(
+            "This figure's time axis can also be browsed as a per-interval "
+            "**maximum** and **minimum**. They are viewing modes: exports and "
+            "downloads are unchanged.",
+            _section(markdown, "Browsable statistics"),
+        )
+
+    def test_a_chart_that_never_had_planes_says_nothing_at_all(self):
+        """Phase 13's reason for omitting the key rather than emitting it
+        empty, arriving at the last consumer.
+
+        Every chart plotted before Phase 14 is in this state, and this document
+        is generated, archived and never diffed by a human — so a row written a
+        year ago must render exactly as it rendered then. "Browsable
+        statistics: none" would read as a finding about a feature the request
+        never implied, which is ``_frames_section``'s third state and T57's
+        omitted maturity, one level in.
+        """
+        markdown = _markdown_for(_cadence_tier_chart())
+
+        self.assertNotIn("Browsable statistics", markdown)
+        self.assertNotIn("maximum", markdown)
+        # And the section it would have followed is untouched.
+        self.assertIn("### Frame–map agreement", markdown)
+
+    def test_a_row_whose_recipe_lists_only_the_mean_offers_no_selection_modes(self):
+        # ``_scrubbable_statistics`` returns ["mean"] for a chart whose planes
+        # never landed. A list is not a promise that it holds extras.
+        markdown = _markdown_for(_planes_chart(statistics=("mean",), planes={}))
+
+        self.assertNotIn("Browsable statistics", markdown)
+
+    def test_each_plane_states_its_identity_and_prints_no_percentage_for_it(self):
+        """D6a decision 8: one sentence stating the identity, and an EXACT
+        equality rather than a tolerance in disguise.
+
+        Both of the render block's figures belong to the mean — ``delta`` is
+        its temporal disagreement and ``frame_grid_delta`` its shipped-array
+        one — and a selection plane has neither. Passing the mean's 1.876%
+        through here would attribute a mean-only disagreement to a plane that
+        does not have it; passing the plane's own ``0.0`` through ``_pct``
+        would print "under 0.1%", which D6a names as exactly the failure
+        ``_DELTA_FLOOR`` exists to prevent.
+        """
+        section = _section(_markdown_for(_planes_chart()), "Browsable statistics")
+
+        self.assertIn(
+            "Taking the maximum of the stored frame planes reproduces the "
+            "stored period plane exactly — a maximum selects one of the values "
+            "it is given rather than combining them, so there is no "
+            "disagreement here to measure.",
+            section,
+        )
+        self.assertIn(
+            "Taking the minimum of the stored frame planes reproduces the "
+            "stored period plane exactly",
+            section,
+        )
+        # No figure, of any formatting, for either plane's agreement. "0.0%"
+        # claims a precision, "under 0.1%" claims a residual, and this is an
+        # identity that holds exactly.
+        self.assertNotIn("under 0.1%", section)
+        self.assertNotIn("0.0%", section)
+
+    def test_the_identity_is_asserted_from_the_payload_never_from_the_name(self):
+        """A plane that ever ships a real disagreement reports the figure and
+        says to read it as a defect.
+
+        Claiming "exactly" because a maximum is associative *in theory* would
+        be the same class of falsehood Phase 8 caught in ``frameDelta.js``:
+        true of the mechanism, false of the arrays. The screen's
+        ``selectionDelta`` branches on the payload for this reason, and this
+        document must branch on the same fact rather than on the operation's
+        name.
+        """
+        from tta_backend.preprocessing.frame_stack import PLANE_AGREEMENT_BASIS
+
+        chart = _planes_chart()
+        chart["frames"]["planes"]["max"]["frame_grid_delta"] = {
+            "headline": 0.042, "max_abs": 8.1e14,
+            "basis": PLANE_AGREEMENT_BASIS["max"],
+        }
+        section = _section(_markdown_for(chart), "Browsable statistics")
+
+        self.assertIn(
+            "Taking the maximum of the stored frame planes misses the stored "
+            "period plane by **4.2%**, largest absolute difference 8.100e+14 "
+            "molecules/cm^2 — which a maximum is not able to do, so read it as "
+            "a defect in this figure rather than as a caveat on it.",
+            section,
+        )
+        # The min plane, unchanged, still states its identity beside it.
+        self.assertIn(
+            "Taking the minimum of the stored frame planes reproduces the "
+            "stored period plane exactly",
+            section,
+        )
+
+    def test_each_plane_carries_its_own_basis_and_never_the_means(self):
+        """``_figure_lines``' rule, applied to a claim rather than a figure.
+
+        ``PLANE_AGREEMENT_BASIS`` is one sentence per plane because the word
+        that changes carries the whole claim: a reader shown "mean of the
+        stored frame planes" beside an identity produced by taking their
+        MAXIMUM has been told something false about a real measurement — and
+        quietly, because the max plane's number is zero under its own basis and
+        would be large under the mean's, so the printed value would not even
+        hint at the mismatch.
+        """
+        from tta_backend.preprocessing.frame_stack import (
+            FRAME_GRID_DELTA_BASIS, PLANE_AGREEMENT_BASIS,
+        )
+
+        section = _section(_markdown_for(_planes_chart()), "Browsable statistics")
+
+        self.assertIn(f"- Basis: {PLANE_AGREEMENT_BASIS['max']}.", section)
+        self.assertIn(f"- Basis: {PLANE_AGREEMENT_BASIS['min']}.", section)
+        # The mean's own basis belongs to the section above and is not reused
+        # here — three planes under one account of themselves is the failure
+        # the three separate basis strings exist to prevent.
+        self.assertNotIn(f"- Basis: {FRAME_GRID_DELTA_BASIS}.", section)
+        self.assertIn(
+            f"- Basis: {FRAME_GRID_DELTA_BASIS}.",
+            _section(_markdown_for(_planes_chart()), "Frame–map agreement"),
+        )
+
+    def test_a_plane_whose_identity_was_never_measured_says_so(self):
+        """``_delta_section``'s rule, one plane in: unmeasured is not the same
+        as agreeing, and a section built from what was measured rather than
+        from what would be nice to say cannot claim "exactly" for a row that
+        never checked."""
+        chart = _planes_chart()
+        chart["frames"]["planes"]["max"]["frame_grid_delta"] = None
+
+        section = _section(_markdown_for(chart), "Browsable statistics")
+
+        self.assertIn(
+            "Whether taking the maximum of the stored frame planes reproduces "
+            "the stored period plane was not measured for this figure.",
+            section,
+        )
+        self.assertNotIn("reproduces the stored period plane exactly — a maximum", section)
+
+    def test_the_max_plane_discloses_the_ground_a_rendered_peak_claims(self):
+        """Phase 11 G4, asked for in ``methods.md`` by name.
+
+        With both of the max tier's deltas structurally zero, this one number
+        carries all the weight the mean tier spreads over two — and it is the
+        one a reader who screenshotted a peak into a slide has no other way to
+        learn. ``EXTENT_OVERSTATEMENT_BASIS`` is the third basis string in
+        ``frame_stack`` and until now had never been printed anywhere.
+        """
+        from tta_backend.preprocessing.frame_stack import EXTENT_OVERSTATEMENT_BASIS
+
+        section = _section(_markdown_for(_planes_chart()), "Browsable statistics")
+
+        self.assertIn(
+            "- Every cell of a block is drawn at that block's highest value, "
+            "so the ground shown at peak level is about **24.7×** the ground "
+            "the peak was actually measured over. Its single worst frame "
+            "stretched one further, to 24.9×.",
+            section,
+        )
+        self.assertIn(f"- Basis: {EXTENT_OVERSTATEMENT_BASIS}.", section)
+
+    def test_the_overstatement_is_this_chart_s_own_measurement_not_a_constant(self):
+        # Phase 14's k=(2,2) chart measured 4.0000014 — a different figure from
+        # Phase 11's ≈24.7×, and the document must be the chart's own.
+        chart = _planes_chart()
+        chart["frames"]["planes"]["max"]["extent_overstatement"].update(
+            {"headline": 4.0000014, "worst_frame": 4.31, "ceiling": 4},
+        )
+
+        section = _section(_markdown_for(chart), "Browsable statistics")
+
+        self.assertIn("about **4.0×** the ground the peak was actually", section)
+        self.assertIn("stretched one further, to 4.3×.", section)
+        self.assertNotIn("24.7", section)
+
+    def test_the_min_plane_is_given_no_overstatement_it_does_not_have(self):
+        # ``extent_overstatement`` is None on every plane but max, by
+        # construction: a block minimum paints a trough, not a peak, and D6a
+        # decision 9 measures the peak. Silence, not a zero.
+        section = _section(_markdown_for(_planes_chart()), "Browsable statistics")
+
+        self.assertEqual(section.count("Every cell of a block is drawn"), 1)
+        self.assertNotIn("lowest value, so the ground shown", section)
+
+    def test_the_document_never_claims_the_overstatement_has_a_bound(self):
+        """Phase 14's finding, addressed to this phase by name.
+
+        ``ceiling`` is k² and is NOT an upper bound: both sums in
+        ``_overstatement_terms`` are cos(latitude)-weighted per cell, so a
+        block whose max sits on its lowest-weighted row contributes more than
+        k², and the pooled figure straddles k² rather than approaching it from
+        below. The fixture here is Phase 14's own straddling measurement —
+        4.0000014 against a ceiling of 4 — so a document that rendered the
+        ceiling would be printing a number this chart has already exceeded.
+        """
+        chart = _planes_chart()
+        chart["frames"]["planes"]["max"]["extent_overstatement"].update(
+            {"headline": 4.0000014, "worst_frame": 4.31, "ceiling": 4},
+        )
+
+        section = _section(_markdown_for(chart), "Browsable statistics")
+
+        self.assertNotIn("up to", section)
+        self.assertNotIn("at most", section)
+        self.assertNotIn("ceiling", section)
+        # The ceiling itself, which would render as "4×" beside the measured
+        # "4.0×" and the worst frame's "4.3×".
+        self.assertNotIn("4×", section)
+
+
+    def test_a_coarsened_frame_holds_the_peak_across_its_intervals_not_of_one(self):
+        """The noun trap this project has now hit twice (``_gap_rule``,
+        ``_weighting_rule``), arriving at a third sentence.
+
+        In tier two a frame's value is the maximum across
+        ``buckets_per_frame`` cadence intervals, not the maximum of one — and
+        the wrong noun here is wrong in the direction that makes the plane
+        sound more precise than it is, which is the same direction "13 of the
+        48 intervals" was wrong in.
+        """
+        chart = _planes_chart(spec={"tier": "coarsened", "buckets_per_frame": 5},
+                              render={"tier": "coarsened", "buckets_per_frame": 5})
+
+        section = _section(_markdown_for(chart), "Browsable statistics")
+
+        self.assertIn(
+            "- **Maximum**: each frame is the highest value across the 5 hourly "
+            "intervals it spans, at each cell.",
+            section,
+        )
+        self.assertNotIn("one hourly interval", section)
+
+    def test_a_coarsened_row_that_lost_its_bucket_count_omits_it_rather_than_prints_zero(self):
+        # ``_count_phrase``'s rule: "across the hourly intervals it spans",
+        # never "across the 0 hourly intervals it spans".
+        chart = _planes_chart(spec={"tier": "coarsened"}, render={"tier": "coarsened"})
+        del chart["frames"]["buckets_per_frame"]
+
+        section = _section(_markdown_for(chart), "Browsable statistics")
+
+        self.assertIn(
+            "each frame is the highest value across the hourly intervals it "
+            "spans, at each cell.",
+            section,
+        )
+        self.assertNotIn(" 0 hourly", section)
+
+    def test_a_chart_above_the_plane_ceiling_says_so_in_the_gates_own_words(self):
+        """The middle state, which did not exist before Phase 14.
+
+        ``_refusal_section``'s posture, one level in: this figure HAS a
+        scrubber, so what is missing is the extra statistics rather than the
+        axis, and a reader who finds neither a mode nor a reason is exactly the
+        person ``_DISCLOSED_FRAME_REFUSALS`` exists to keep out of that
+        position. Quoted, never paraphrased — a second account of why the
+        planes are missing is a second account.
+        """
+        detail = (
+            "A frame axis over this region reduces 4,200,000 cells per "
+            "interval, above the 1,000,000-cell limit the additional max and "
+            "min planes are built within; the mean scrubber is unaffected."
+        )
+        chart = _planes_chart(statistics=("mean",), planes={}, render={
+            "planes_unavailable": {
+                "reason": "plane_extent_too_large", "detail": detail,
+            },
+        })
+
+        section = _section(_markdown_for(chart), "Browsable statistics")
+
+        self.assertEqual(
+            section,
+            "This figure's time axis is browsable as a period mean only. " + detail,
+        )
+
+    def test_a_plane_refusal_carrying_no_detail_still_names_what_is_missing(self):
+        chart = _planes_chart(statistics=("mean",), planes={}, render={
+            "planes_unavailable": {"reason": "plane_extent_too_large"},
+        })
+
+        self.assertEqual(
+            _section(_markdown_for(chart), "Browsable statistics"),
+            "This figure's time axis is browsable as a period mean only.",
+        )
+
+
+    def test_the_agreement_figures_above_are_scoped_to_the_mean_they_belong_to(self):
+        """A hazard the document has and the screen does not.
+
+        On screen the toggle REPLACES the delta disclosure: in max mode
+        ``resolveFrameDelta`` branches before it touches either figure, so the
+        mean's 1.876% is never on the page beside a max plane. This document
+        has no modes — both sections are always present, and the agreement
+        figures sit three lines above bullets about a different statistic with
+        nothing saying whose they are.
+
+        One clause, in this section rather than in that one: the figures above
+        keep their single account of themselves, and the reader who arrives
+        here after browsing a peak is told which statistic they described.
+        """
+        section = _section(_markdown_for(_planes_chart()), "Browsable statistics")
+
+        self.assertIn(
+            "The frame–map agreement figures above are the period mean's; each "
+            "plane's own is stated with it.",
+            section,
+        )
+
+    def test_a_row_with_no_agreement_section_is_not_told_to_scope_one(self):
+        # Nothing above to misattribute, so the clause would be pointing at a
+        # section that is not there — the same reason ``_delta_section`` stays
+        # silent on a row that measured nothing.
+        chart = _planes_chart(render={"frame_grid_delta": None})
+
+        markdown = _markdown_for(chart)
+
+        self.assertNotIn("Frame–map agreement", markdown)
+        self.assertNotIn("figures above", markdown)
+        # ...and the section itself is otherwise unchanged.
+        self.assertIn("per-interval **maximum** and **minimum**", markdown)
+
+    def test_the_statistics_are_the_ones_that_landed_not_the_ones_asked_for(self):
+        """The same rule three consumers now share.
+
+        ``store_frame_stack`` degrades one statistic at a time, so a plane
+        whose write failed — or one evicted since — has a block entry and no
+        key. The recipe's ``statistics`` is ``_scrubbable_statistics``' own
+        output, derived from what landed, and naming a mode from the presence
+        of a block would describe a toggle the reader watches 404.
+        """
+        chart = _planes_chart(statistics=("mean", "max"))
+
+        section = _section(_markdown_for(chart), "Browsable statistics")
+
+        self.assertIn("per-interval **maximum**.", section)
+        self.assertNotIn("minimum", section)
+
+    def test_a_row_with_no_recipe_falls_back_to_the_planes_that_have_urls(self):
+        # A row written without a spec block still has to disclose what it
+        # holds, and the render block's urls are the same witness under the
+        # same rule — the fallback ``_recipe``'s precedence already applies to
+        # every field the two share.
+        chart = _planes_chart()
+        del chart["export"]["frames"]["spec"]
+        del chart["frames"]["planes"]["min"]["url"]
+
+        section = _section(_markdown_for(chart), "Browsable statistics")
+
+        self.assertIn("per-interval **maximum**.", section)
+        self.assertNotIn("minimum", section)
+
+    def test_the_export_sentence_survives_verbatim_and_stays_unambiguous(self):
+        """D12, and the one thing tension 1 was not allowed to blur.
+
+        A plane is browsable and is not downloadable, in any phase. The export
+        bullet keeps its exact wording and its exact place in ``### Temporal
+        frames``, and the new section states the same fact in its own lead
+        rather than qualifying that one.
+        """
+        markdown = _markdown_for(_planes_chart())
+
+        self.assertIn(
+            "- Exports and downloads of this figure are the **period "
+            "aggregate** at native resolution — never the frame grid, and "
+            "never an individual frame.",
+            _section(markdown, "Temporal frames"),
+        )
+        self.assertEqual(markdown.count("Exports and downloads of this figure"), 1)
+        self.assertLess(
+            markdown.index("### Temporal frames"),
+            markdown.index("### Browsable statistics"),
+        )
+        self.assertLess(
+            markdown.index("### Browsable statistics"),
+            markdown.index("### References"),
+        )
+
+    def test_the_whole_section_reads_as_one_document_on_a_real_shaped_chart(self):
+        """The golden, for ``TemporalFramesDisclosureTests``' reason: every
+        line of this is prose a stranger reads a year from now, and a
+        by-fragment test lets two of them drift into contradicting each
+        other."""
+        from tta_backend.preprocessing.frame_stack import (
+            EXTENT_OVERSTATEMENT_BASIS, PLANE_AGREEMENT_BASIS,
+        )
+
+        markdown = _markdown_for(_planes_chart())
+
+        self.assertEqual(
+            _section(markdown, "Browsable statistics"),
+            "\n".join([
+                "This figure's time axis can also be browsed as a per-interval "
+                "**maximum** and **minimum**. They are viewing modes: exports "
+                "and downloads are unchanged. The frame–map agreement figures "
+                "above are the period mean's; each plane's own is stated with "
+                "it.",
+                "",
+                "- **Maximum**: each frame is the highest value one hourly "
+                "interval of this product holds at each cell. Taking the "
+                "maximum of the stored frame planes reproduces the stored "
+                "period plane exactly — a maximum selects one of the values it "
+                "is given rather than combining them, so there is no "
+                "disagreement here to measure.",
+                f"- Basis: {PLANE_AGREEMENT_BASIS['max']}.",
+                "- Every cell of a block is drawn at that block's highest "
+                "value, so the ground shown at peak level is about **24.7×** "
+                "the ground the peak was actually measured over. Its single "
+                "worst frame stretched one further, to 24.9×.",
+                f"- Basis: {EXTENT_OVERSTATEMENT_BASIS}.",
+                "- **Minimum**: each frame is the lowest value one hourly "
+                "interval of this product holds at each cell. Taking the "
+                "minimum of the stored frame planes reproduces the stored "
+                "period plane exactly — a minimum selects one of the values it "
+                "is given rather than combining them, so there is no "
+                "disagreement here to measure.",
+                f"- Basis: {PLANE_AGREEMENT_BASIS['min']}.",
+            ]),
+        )
+
+    def test_this_sections_vocabulary_covers_every_statistic_the_backend_builds(self):
+        """The fourth pairing of this kind, and the reason it is a test rather
+        than a comment.
+
+        ``_SELECTION_NOUNS`` is not merely a label table: the identity sentence
+        beside each noun asserts that the statistic SELECTS one of the values
+        it is given, which is true of a maximum and a minimum and false of a
+        mean, a median over an even count, or a percentile. So a statistic
+        added to ``PLANE_STATISTICS`` cannot be given prose here by default —
+        and it must not be dropped from the document in silence either, which
+        is what an unrecognized key would otherwise be.
+
+        Failing here is the intended outcome of adding one: the new plane needs
+        a sentence someone has decided is true of it.
+        """
+        from tta_backend.preprocessing.frame_stack import PLANE_STATISTICS
+        from tta_backend.services.methods_export_service import (
+            _SELECTION_NOUNS, _SELECTION_VERBS,
+        )
+
+        self.assertEqual(
+            {"mean", *_SELECTION_NOUNS},
+            set(PLANE_STATISTICS),
+            "A statistic was added to PLANE_STATISTICS without prose in "
+            "methods_export_service. Its identity sentence claims the "
+            "statistic selects one of its inputs — decide whether that is true "
+            "of the new one rather than letting it drop out of the document.",
+        )
+        self.assertEqual(set(_SELECTION_NOUNS), set(_SELECTION_VERBS))
+
+    def test_malformed_plane_blocks_degrade_to_blander_lines_never_a_crash(self):
+        # ``api.py``'s broad except turns any surprise here into a generic 500
+        # (the QA 2026-07-17 blocker), so a shape bug becomes invisible rather
+        # than loud. Every one of these is a row a degraded write can produce.
+        for planes in (
+            "not a dict",
+            {"max": "not a dict"},
+            {"max": {}},
+            {"max": {"frame_grid_delta": "no"}},
+            {"max": {"extent_overstatement": "no"}},
+            {"max": {"extent_overstatement": {"headline": float("nan")}}},
+            {"max": {"extent_overstatement": {"headline": 24.7, "worst_frame": "?"}}},
+            {"unknown_statistic": {"url": "/x", "frame_grid_delta": None}},
+        ):
+            with self.subTest(planes=planes):
+                markdown = _markdown_for(
+                    _planes_chart(planes=planes, statistics=("mean", "max", "min"))
+                )
+                self.assertIn("### References", markdown)
+                self.assertNotIn("None", markdown)
+
+
+class SharedPlaneClaimTests(unittest.TestCase):
+    """T59 Phase 16 tension 2: two languages now have to agree about a
+    SENTENCE, and every tool this repo has for that problem takes a number.
+
+    ``_DELTA_HIGH`` ↔ ``severityOf``'s high edge and ``_DELTA_FLOOR`` ↔
+    ``formatPct``'s floor are constants, and a constant can be read out of the
+    other language and compared. Prose cannot: a test asserting the document
+    and the screen hold equal strings would be a test forbidding the document
+    from reading like a document, and ``_figure_lines``' own rule — a basis is
+    quoted, never paraphrased — is about a *quoted* string, which is exactly
+    what these sentences are not.
+
+    **So what is pinned here is the CLAIM inside each sentence, not its
+    wording**, from both sides:
+
+    * neither language may render a percentage for a selection plane's
+      agreement, because the identity holds exactly;
+    * neither may claim a bound on the overstatement (Phase 14);
+    * both must take the overstatement from the payload's measured figure,
+      which the document's own two-fixture test proves for this side.
+
+    Read through the same bind mount ``SharedDeltaThresholdTests`` documents
+    and asserts — ``frameStatistic.js`` is inside the mount that already
+    serves ``frameDelta.js``, so no compose change was needed. Each pattern
+    below was verified to BITE by mutating the JS source in memory and
+    confirming the assertion fails; a contract test that cannot fail is worse
+    than none, and this repo has measured that exact thing happening.
+    """
+
+    def _js_source(self, filename: str) -> str:
+        import os
+
+        path = os.path.normpath(
+            os.path.join(os.path.dirname(__file__), "../../Frontend/src/utils", filename)
+        )
+        self.assertTrue(
+            os.path.isfile(path),
+            f"{filename} not found at {path} — the shared plane claims cannot "
+            "be checked, which is the same as not checking them.",
+        )
+        with open(path, "r", encoding="utf-8") as handle:
+            return handle.read()
+
+    def _function_body(self, source: str, name: str) -> str:
+        """One exported function's source, so a pattern found anywhere in the
+        file cannot stand in for one found in the function that makes the
+        claim. ``frameDelta.js`` legitimately says "up to" about a worst
+        PIXEL; this is about a bound on the overstatement."""
+        start = source.index(f"export function {name}(")
+        rest = source[start:]
+        end = rest.find("\nexport ", 1)
+        return rest if end == -1 else rest[:end]
+
+    def test_neither_language_claims_a_bound_on_the_overstatement(self):
+        note = self._function_body(
+            self._js_source("frameStatistic.js"), "extentOverstatementNote",
+        )
+
+        for forbidden in ("up to", "at most", "ceiling"):
+            with self.subTest(forbidden=forbidden):
+                # The comment block above the function names both phrases in
+                # order to forbid them, so only the rendered string is checked.
+                rendered = note.split("return (", 1)[1]
+                self.assertNotIn(forbidden, rendered)
+
+    def test_the_screen_takes_the_overstatement_from_the_payload_too(self):
+        # The document's version of this claim is asserted by feeding two
+        # fixtures and getting two numbers. The screen's cannot be run from
+        # here, so what is checked is that the figure comes off the payload at
+        # all rather than out of a literal.
+        note = self._function_body(
+            self._js_source("frameStatistic.js"), "extentOverstatementNote",
+        )
+
+        self.assertIn("extent_overstatement", note)
+        self.assertIn("headline.toFixed(1)", note)
+        self.assertNotIn("24.7", note)
+
+    def test_the_screens_identity_sentence_prints_no_percentage_either(self):
+        """``_pct`` and ``formatPct`` draw the same floor, so a selection
+        plane's ``0.0`` would print "under 0.1%" in both languages — D6a's own
+        example of the failure ``_DELTA_FLOOR`` exists to prevent. This
+        document's side is asserted above; this is the screen's.
+        """
+        source = self._js_source("frameDelta.js")
+        exact = next(
+            line for line in source.splitlines()
+            if "reproduces the period plane at stop 0 exactly" in line
+        )
+
+        self.assertNotIn("pct", exact)
+        self.assertNotIn("formatPct", exact)
+
+    def test_the_compose_file_mounts_the_js_sources_into_the_test_service(self):
+        # The same assertion ``SharedDeltaThresholdTests`` makes, made again
+        # for the second file that now depends on the mount: without it, every
+        # check in this class fails on a missing file rather than on a real
+        # drift, and a reader of that failure has to work out which it is.
+        import os
+
+        import yaml
+
+        compose_path = "/compose/docker-compose.yml"
+        if not os.path.exists(compose_path):
+            self.skipTest(
+                f"{compose_path} not mounted (run via docker compose backend-test)"
+            )
+        with open(compose_path, "r", encoding="utf-8") as handle:
+            compose = yaml.safe_load(handle)
+
+        volumes = compose["services"]["backend-test"].get("volumes") or []
+        self.assertIn(
+            "./Frontend/src/utils:/Frontend/src/utils:ro",
+            [str(entry) for entry in volumes],
+        )
 
 
 class SharedDeltaThresholdTests(unittest.TestCase):

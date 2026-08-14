@@ -170,8 +170,238 @@ def _frames_section(chart: dict[str, Any]) -> list[str]:
             "native resolution — never the frame grid, and never an individual "
             "frame."
         )
-    lines += _delta_section(render, recipe, cadence, chart.get("units"))
+    agreement = _delta_section(render, recipe, cadence, chart.get("units"))
+    lines += agreement
+    lines += _planes_section(
+        render, recipe, cadence, chart.get("units"), bool(agreement),
+    )
     return lines
+
+
+#: The nouns the extra planes are named by, in the backend's own order
+#: (``PLANE_STATISTICS`` minus the mean, which is not a ``planes`` key). Nouns
+#: rather than the payload's keys because this document is prose: "browsed as a
+#: per-interval max" reads as jargon for a field name where "maximum" reads as
+#: the quantity it is.
+_SELECTION_NOUNS = {"max": "maximum", "min": "minimum"}
+
+#: What one frame of each plane holds, in the same voice ``_weighting_rule``
+#: describes the mean's in.
+_SELECTION_VERBS = {"max": "highest", "min": "lowest"}
+
+
+def _planes_section(
+    render: dict[str, Any], recipe: dict[str, Any], cadence: str, units: Any,
+    agreement_stated: bool,
+) -> list[str]:
+    """What else this figure's time axis can be browsed as (D6a).
+
+    Its own section, for ``### Frame–map agreement``'s reason: it carries a
+    measured number that qualifies what the reader is about to cite. The lead
+    keeps D12 unambiguous in the same breath — a plane is browsable and is not
+    downloadable, in any phase.
+
+    ``agreement_stated`` closes a hazard this document has and the screen does
+    not. On screen the toggle REPLACES the delta disclosure — ``resolveFrameDelta``
+    branches on the statistic before it touches either of the mean's figures —
+    so the mean's 1.876% is never on the page beside a max plane. Here both
+    sections are always present, and a figure whose subject is unstated three
+    lines above bullets about a different statistic is a figure a reader can
+    take for that statistic's. The clause lives in this section rather than
+    that one so the figures above keep their single account of themselves.
+    """
+    selections = [
+        name for name in _browsable_statistics(render, recipe)
+        if name in _SELECTION_NOUNS
+    ]
+    if not selections:
+        return _plane_refusal_section(render)
+
+    nouns = " and ".join(f"**{_SELECTION_NOUNS[name]}**" for name in selections)
+    lead = (
+        f"This figure's time axis can also be browsed as a per-interval {nouns}. "
+        "They are viewing modes: exports and downloads are unchanged."
+    )
+    if agreement_stated:
+        lead += (
+            " The frame–map agreement figures above are the period mean's; "
+            "each plane's own is stated with it."
+        )
+    lines = ["", "### Browsable statistics", "", lead, ""]
+    planes = render.get("planes")
+    planes = planes if isinstance(planes, dict) else {}
+    for name in selections:
+        plane = planes.get(name)
+        lines += _plane_lines(
+            name, plane if isinstance(plane, dict) else {}, recipe, cadence, units,
+        )
+    return lines
+
+
+def _plane_refusal_section(render: dict[str, Any]) -> list[str]:
+    """Why this figure has a scrubber and no extra statistics — or silence.
+
+    Three states here too, and the middle one did not exist before Phase 14:
+
+    * **planes present** — the disclosure above.
+    * **refused** — this, with the gate's own sentence. ``_refusal_section``'s
+      posture one level in: what is missing is the toggle rather than the axis,
+      and a reader who finds no mode and no reason is exactly the person the
+      disclosed refusals exist to keep out of that position.
+    * **neither** — silence, and a document byte-identical to what it was.
+      Phase 13 omitted ``planes`` rather than emitting it empty precisely so
+      this state stays distinguishable from the one above, and every chart
+      plotted before Phase 14 is in it.
+    """
+    refusal = render.get("planes_unavailable")
+    if not isinstance(refusal, dict) or not refusal.get("reason"):
+        return []
+    sentence = "This figure's time axis is browsable as a period mean only."
+    detail = str(refusal.get("detail") or "").strip()
+    if detail:
+        sentence = f"{sentence} {detail}"
+    return ["", "### Browsable statistics", "", sentence]
+
+
+def _plane_lines(
+    name: str, plane: dict[str, Any], recipe: dict[str, Any], cadence: str,
+    units: Any,
+) -> list[str]:
+    """One plane: what a frame of it holds, and whether it satisfies the
+    identity the payload claims for it.
+
+    **The identity is read off the payload's own figure, never off the
+    operation's name.** A maximum is associative in theory, and printing
+    "exactly" on that ground would be the same class of falsehood Phase 8
+    caught one file along — true of the mechanism, false of the arrays. The
+    exact branch is what the backend measures today (Phase 11 G5: ``0.0`` max
+    abs diff on both identities, both live bundles); the other exists so it
+    cannot silently become wrong, and it names the figure a defect because for
+    this statistic that is what it would be.
+    """
+    noun = _SELECTION_NOUNS[name]
+    figure = _delta_figure(plane.get("frame_grid_delta"), units)
+    lead = f"- **{noun.capitalize()}**: {_selection_frame_rule(name, recipe, cadence)}"
+    if figure is None:
+        # Unmeasured is not the same as agreeing — ``_delta_section``'s rule,
+        # one plane in. Every row written before Phase 12 is in this state.
+        return [
+            lead
+            + f" Whether taking the {noun} of the stored frame planes "
+            "reproduces the stored period plane was not measured for this "
+            "figure."
+        ]
+    if figure[0] == 0.0:
+        # Stated, not measured — and stated as an exact identity, because that
+        # is what a zero here means. ``_pct`` would render it "under 0.1%",
+        # which reads as a residual too small to resolve rather than as an
+        # equality that holds.
+        lead += (
+            f" Taking the {noun} of the stored frame planes reproduces the "
+            f"stored period plane exactly — a {noun} selects one of the values "
+            "it is given rather than combining them, so there is no "
+            "disagreement here to measure."
+        )
+    else:
+        lead += (
+            f" Taking the {noun} of the stored frame planes misses the stored "
+            f"period plane by **{_pct(figure[0])}**{figure[1]} — which a {noun} "
+            "is not able to do, so read it as a defect in this figure rather "
+            "than as a caveat on it."
+        )
+    lines = [lead]
+    # The account of what was compared, quoted rather than paraphrased, in both
+    # branches: an identity claimed without saying what it was checked against
+    # is the same unanchored assertion ``_figure_lines`` refuses for a figure.
+    if figure[2]:
+        lines.append(f"- Basis: {figure[2]}.")
+    return lines + _overstatement_lines(plane)
+
+
+def _overstatement_lines(plane: dict[str, Any]) -> list[str]:
+    """D6a decision 9 / Phase 11 G4: how much ground a rendered peak claims.
+
+    **Phase 14's finding binds this wording.** ``ceiling`` is k² and is NOT an
+    upper bound — both sums in ``_overstatement_terms`` are cos(latitude)-
+    weighted per cell, so a block whose max sits on its lowest-weighted row
+    contributes more than k², and the pooled figure straddles k² rather than
+    approaching it from below (measured 4.0000014 against a ceiling of 4).
+    Nothing here says "up to k×" or "at most 25×", and ``ceiling`` is
+    deliberately not rendered at all. What the quantity supports is this
+    chart's own measured figure.
+
+    ``None`` on every plane but max, and this is silence rather than a zero: a
+    block minimum paints a trough and decision 9 measures the peak.
+    """
+    measured = plane.get("extent_overstatement")
+    if not isinstance(measured, dict):
+        return []
+    headline = _as_float(measured.get("headline"))
+    if headline is None:
+        return []
+    lines = [
+        "- Every cell of a block is drawn at that block's highest value, so "
+        f"the ground shown at peak level is about **{headline:.1f}×** the "
+        "ground the peak was actually measured over."
+    ]
+    worst = _as_float(measured.get("worst_frame"))
+    if worst is not None:
+        # Beside the pooled figure rather than folded into it, the same way
+        # ``delta`` carries a headline and a worst pixel.
+        lines[-1] += (
+            f" Its single worst frame stretched one further, to {worst:.1f}×."
+        )
+    basis = measured.get("basis")
+    if basis:
+        lines.append(f"- Basis: {basis}.")
+    return lines
+
+
+def _selection_frame_rule(name: str, recipe: dict[str, Any], cadence: str) -> str:
+    """What one frame of a selection plane holds, per tier.
+
+    The noun trap this project has now hit three times. Tier one: a frame IS a
+    cadence interval, so "the highest value one hourly interval holds" is
+    exact. Tier two: a frame's value is the highest across
+    ``buckets_per_frame`` intervals, and calling that "the maximum of each
+    interval" is wrong in the direction that makes the plane sound more precise
+    than it is — the same direction ``_gap_rule``'s "13 of the 48 intervals"
+    was wrong in.
+    """
+    verb = _SELECTION_VERBS[name]
+    if _is_coarsened(recipe):
+        return (
+            f"each frame is the {verb} value across the "
+            f"{_count_phrase(recipe)}{cadence} intervals it spans, at each cell."
+        )
+    return (
+        f"each frame is the {verb} value one {cadence} interval of this "
+        "product holds at each cell."
+    )
+
+
+def _browsable_statistics(
+    render: dict[str, Any], recipe: dict[str, Any],
+) -> list[str]:
+    """Which statistics the axis actually offers, from what LANDED.
+
+    The recipe's list first — it is ``_scrubbable_statistics``' own output,
+    derived at plot time from the keys that got a ``_key`` — and the render
+    block's own planes as the fallback for a row written without one, read off
+    ``url`` under the same rule the frontend uses: a plane whose write failed,
+    or one evicted since, has a block and no url, and naming it here would
+    describe a mode the reader cannot open.
+    """
+    stated = recipe.get("statistics")
+    if isinstance(stated, (list, tuple)):
+        return [str(name) for name in stated]
+    planes = render.get("planes")
+    if not isinstance(planes, dict):
+        return []
+    return [
+        name for name in planes
+        if isinstance(planes[name], dict) and planes[name].get("url")
+    ]
 
 
 def _export_label(chart: dict[str, Any]) -> str | None:
