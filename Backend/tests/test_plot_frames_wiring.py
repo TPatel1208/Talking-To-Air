@@ -22,6 +22,7 @@ import sys
 import tempfile
 import unittest
 import unittest.mock
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 TESTS_DIR = os.path.dirname(__file__)
@@ -32,6 +33,11 @@ TOOL_MODULES = [
     "langchain", "langchain_mcp_adapters", "fastmcp", "uvicorn",
     "numpy", "xarray", "zarr", "pandas", "shapely", "rasterio", "cartopy", "affine",
 ]
+
+# The endpoint half of the cross-seam test below needs the API app as well.
+API_MODULES = ["fastapi", "httpx", "jwt", "bcrypt", "langgraph"]
+
+os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
 
 
 def _field(xr, np, times, *, ny=4, nx=4, name="no2"):
@@ -222,6 +228,69 @@ class FrameGateTests(unittest.TestCase):
 
         self.assertIsNone(frame_gate(conus, time_dim="time", cadence="hourly"))
 
+    def test_an_extent_that_frames_may_still_not_carry_extra_planes(self):
+        """Phase 14's measurement, as a limit.
+
+        ``MAX_FRAME_NATIVE_CELLS`` was measured on a ONE-statistic build, at
+        the largest extent that completed: CONUS 1250x3000 at 1,342 MB. Phase
+        14 re-measured the same extent asking for three statistics and the
+        kernel OOM-killed it, as it did at 1.8M cells and at 1.4M cells. The
+        largest extent measured to survive a three-statistic build is 1,050,000
+        cells, where it peaks at 1,308 MB against the one-statistic build's
+        681.8 MB -- 1.92x, which is Phase 11's own ratio reproduced at 3x the
+        extent.
+
+        So the two limits are genuinely different numbers and this is the
+        smaller one. A chart between them is not refused: it keeps the mean
+        scrubber it has today, because refusing it would charge an existing
+        capability for a new one."""
+        import numpy as np
+        import xarray as xr
+        from tta_backend.preprocessing.frame_stack import (
+            MAX_FRAME_NATIVE_CELLS,
+            MAX_PLANE_NATIVE_CELLS,
+            frame_gate,
+            plane_gate,
+        )
+
+        field = _field(
+            xr, np, ["2024-01-01T09:30", "2024-01-01T10:30"], ny=2, nx=2,
+        )
+        # Between the two ceilings: framable, and measured not to survive three
+        # statistics at anything like this size.
+        between = field.isel(lat=[0, 1] * 625, lon=[0, 1] * 1500)
+        cells = between.sizes["lat"] * between.sizes["lon"]
+        self.assertGreater(cells, MAX_PLANE_NATIVE_CELLS)
+        self.assertLessEqual(cells, MAX_FRAME_NATIVE_CELLS)
+
+        # The scrubber this chart has today is untouched...
+        self.assertIsNone(frame_gate(between, time_dim="time", cadence="hourly"))
+        # ...and the extra planes are what it may not have.
+        refusal = plane_gate(between, time_dim="time")
+        self.assertIsNotNone(refusal)
+        self.assertEqual(refusal.reason, "plane_extent_too_large")
+        self.assertIn(f"{MAX_PLANE_NATIVE_CELLS:,}", refusal.detail)
+
+    def test_an_ordinary_regional_extent_may_carry_every_plane(self):
+        """The regime every live bundle this project has measured is in.
+
+        Phase 8's and Phase 11's real TEMPO retrievals are 535x658 = 352,181
+        native cells, a third of the largest extent measured to survive a
+        three-statistic build -- and Phase 11 measured the extra statistics
+        there at +32.5 MB and +84.4 MB. A gate that refused these would be
+        withholding the tier from every chart anyone actually plots."""
+        import numpy as np
+        import xarray as xr
+        from tta_backend.preprocessing.frame_stack import plane_gate
+
+        field = _field(
+            xr, np, ["2024-01-01T09:30", "2024-01-01T10:30"], ny=2, nx=2,
+        )
+        regional = field.isel(lat=[0, 1] * 267, lon=[0, 1] * 329)
+        self.assertEqual(regional.sizes["lat"] * regional.sizes["lon"], 534 * 658)
+
+        self.assertIsNone(plane_gate(regional, time_dim="time"))
+
     def test_a_span_beyond_the_backstop_is_refused_rather_than_coarsened(self):
         """D3's backstop above D14's coarsening.
 
@@ -258,17 +327,13 @@ class FrameGateTests(unittest.TestCase):
         self.assertIsNone(frame_gate(field, time_dim="time", cadence="hourly"))
 
 
-@unittest.skipIf(
-    any(importlib.util.find_spec(name) is None for name in TOOL_MODULES),
-    "satellite tool integration dependencies are not installed",
-)
-class PlotSingularFrameWiringTests(unittest.IsolatedAsyncioTestCase):
-    """D7's auto-upgrade, through the real tool.
+class _PlotHarness:
+    """Building a real chart through the real tool, shared by the two classes
+    below.
 
-    ``plot_singular`` only: not ``plot_multiple``, not comparison panels. A
-    tool the agent must CHOOSE to call gets called when someone says "animate"
-    and not when they say "show me July" -- T56's own lesson was enforce in the
-    composite, don't trust the agent.
+    A mixin rather than a base class with tests on it: ``unittest`` collects
+    inherited test methods, so a second class inheriting from the first would
+    silently re-run every one of its ~20 tool tests under a second name.
     """
 
     async def asyncSetUp(self):
@@ -350,6 +415,39 @@ class PlotSingularFrameWiringTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("error", summary)
         return summary, emitted["payload"]
 
+    def _uneven_coverage(self, n_times, ny, nx, seed=59):
+        """A field whose blocks are seen in DIFFERENT intervals -- the coverage
+        pattern that makes the two reductions stop commuting.
+
+        A rotating one-in-four column stripe, which is a crude stand-in for
+        what swath tiling does to a real product: within any 2x2 block, one
+        native column is observed in a timestep the other is not, so the block
+        mean weights each native cell by how many intervals saw it while the
+        across-frame mean weights each interval equally. A uniformly covered
+        field would agree exactly at any k and would test nothing.
+        """
+        import numpy as np
+
+        rng = np.random.default_rng(seed)
+        values = rng.normal(4.0e15, 5.0e14, size=(n_times, ny, nx))
+        for step in range(n_times):
+            values[step][:, (np.arange(nx) + step) % 4 == 0] = np.nan
+        return values
+
+
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in TOOL_MODULES),
+    "satellite tool integration dependencies are not installed",
+)
+class PlotSingularFrameWiringTests(_PlotHarness, unittest.IsolatedAsyncioTestCase):
+    """D7's auto-upgrade, through the real tool.
+
+    ``plot_singular`` only: not ``plot_multiple``, not comparison panels. A
+    tool the agent must CHOOSE to call gets called when someone says "animate"
+    and not when they say "show me July" -- T56's own lesson was enforce in the
+    composite, don't trust the agent.
+    """
+
     async def test_a_multi_granule_map_gets_a_frame_axis_without_being_asked(self):
         """The whole point of D7: the researcher who retrieved three hours of
         TEMPO and asked for a map can browse those hours without re-asking the
@@ -413,6 +511,289 @@ class PlotSingularFrameWiringTests(unittest.IsolatedAsyncioTestCase):
 
         planes = np.frombuffer(gzip.decompress(blob.gzipped), dtype="float32")
         self.assertEqual(list(planes.reshape(frames["shape"]).shape), frames["shape"])
+
+    async def test_a_scrubbable_chart_carries_a_max_and_a_min_plane(self):
+        """D6a decisions 1, 2 and 5, through the tool rather than through the
+        reduction.
+
+        Phases 12 and 13 built the reduction and the transport against hand-made
+        fixtures with nothing upstream feeding them. This is the first thing
+        that makes a REAL chart carry them: ``_attach_frames`` asks for three
+        statistics, and each extra one lands as its own store entry with its own
+        key.
+
+        The mean is deliberately NOT among ``planes``. It stays in the block's
+        own top-level fields where it has always been -- decision 5's "the mean
+        entry keeps its exact current shape, URL and cost", read at the payload
+        level."""
+        self.add_bundle()
+
+        _summary, payload = await self.plot()
+
+        frames = payload["frames"]
+        self.assertEqual(sorted(frames["planes"]), ["max", "min"])
+        for statistic in ("max", "min"):
+            plane = frames["planes"][statistic]
+            self.assertTrue(plane["_key"], statistic)
+            self.assertIsNotNone(plane["value_range"], statistic)
+            self.assertIn("headline", plane["frame_grid_delta"])
+            self.assertIn("basis", plane["frame_grid_delta"])
+        # The mean's own entry is not duplicated into the plane map.
+        self.assertNotIn("mean", frames["planes"])
+        self.assertTrue(frames["_key"])
+
+    async def test_the_max_plane_discloses_how_much_ground_it_paints(self):
+        """D6a decision 9, on a real chart, in the regime where it exists.
+
+        Block max paints one native cell's value across every cell its block
+        covers, so a rendered peak claims k^2 cells' worth of ground for an
+        observation that holds at one. Phase 11 measured that at ~24.7x on both
+        live bundles -- ~99% of the k^2=25 ceiling, and the typical case rather
+        than a tail.
+
+        Tested at k=(2,2) deliberately. Every other plane test above runs on an
+        8x8 grid where the block reduction is a no-op and the figure is
+        correctly absent, which is Phase 9's own lesson: an assertion written
+        only in the regime where the quantity does not exist pins nothing about
+        the regime real charts are in. The min plane carries no such figure --
+        "measured, and there is no such quantity here" is a different statement
+        from silence."""
+        self.add_bundle(ny=200, nx=200, values=self._uneven_coverage(3, 200, 200))
+
+        _summary, payload = await self.plot()
+
+        frames = payload["frames"]
+        self.assertEqual(frames["coarsen_k"], [2, 2])
+
+        overstatement = frames["planes"]["max"]["extent_overstatement"]
+        self.assertEqual(overstatement["ceiling"], 4)
+        self.assertIn("basis", overstatement)
+        # Real, and not a placeholder 1.0: a rendered peak here claims more
+        # ground than the cell that actually held it.
+        self.assertGreater(overstatement["headline"], 1.0)
+        self.assertGreaterEqual(
+            overstatement["worst_frame"], overstatement["headline"],
+        )
+        # ``ceiling`` is k^2 and is NOT an upper bound, which this fixture
+        # measures at 4.0000014. Both sums are cos(latitude)-weighted per
+        # cell, so a block whose max happens to sit on its lowest-weighted row
+        # contributes slightly more than k^2, and the pooled figure straddles
+        # it. Phase 11's "fractionally under 25, not at it" was an observation
+        # about two bundles whose edge blocks held fewer than k^2 real cells,
+        # never a bound -- and `_extent_overstatement`'s own docstring is
+        # careful to define `ceiling` as what the figure WOULD take under equal
+        # weighting rather than as a maximum. Anything rendering this as
+        # "up to Nx" would be claiming more than the number supports.
+        self.assertAlmostEqual(overstatement["headline"], 4.0, places=3)
+        self.assertIsNone(frames["planes"]["min"]["extent_overstatement"])
+
+    async def test_an_extent_too_large_for_planes_keeps_the_scrubber_it_had(self):
+        """Phase 14's whole shape, and the reason it is a second limit rather
+        than a smaller first one.
+
+        The three-statistic build was measured OOM-killed at 1.4M, 1.8M and
+        3.75M native cells -- extents where the one-statistic build completes,
+        the last of them being the very extent ``MAX_FRAME_NATIVE_CELLS`` was
+        derived from. Lowering that constant instead would have refused every
+        chart between 1M and 4M cells outright, taking away a mean scrubber
+        that works today to pay for a toggle nobody has yet.
+
+        So: the chart keeps its frames, its key and its url, and loses only the
+        planes -- and it is told which, because "no toggle and no reason" is the
+        failure ``_DISCLOSED_FRAME_REFUSALS`` exists to prevent, and the fix
+        here is the same one ``extent_too_large`` names.
+
+        The ceiling is patched rather than met, so this pays for the wiring and
+        not for a million-cell reduction; the real constant is pinned in
+        ``FrameGateTests`` against Phase 14's measured table."""
+        import tta_backend.preprocessing.frame_stack as frame_stack_module
+
+        self.add_bundle()
+
+        with patch.object(frame_stack_module, "MAX_PLANE_NATIVE_CELLS", 8):
+            _summary, payload = await self.plot()
+
+        frames = payload["frames"]
+        # The scrubber this chart has today, entirely intact.
+        self.assertEqual(len(frames["frames"]), 3)
+        self.assertTrue(frames["_key"])
+        self.assertEqual(frames["url"], f"/chart/{payload['chart_id']}/frames.f32.gz")
+        # And no planes, with a reason rather than a silence.
+        self.assertNotIn("planes", frames)
+        self.assertEqual(
+            frames["planes_unavailable"]["reason"], "plane_extent_too_large",
+        )
+
+    async def test_the_max_plane_is_a_field_not_the_readouts_scalar_max(self):
+        """The distinction ``PLANE_STATISTICS``' own docstring exists to keep,
+        checked on a real chart.
+
+        ``Frame.statistics["max"]`` is the per-frame REGIONAL SCALAR and has
+        shipped since Phase 3; the max PLANE is one value per pixel per frame.
+        They share three words and nothing else, and Phase 12 measured them as
+        different numbers (50.5 against 100.0 on its fixture). A chart that
+        wired one into the other's slot would render something plausible.
+
+        The fixture's peak sits in a single pixel of a single hour, so the max
+        plane must reach it where the mean plane -- averaging it against 63
+        neighbours -- cannot."""
+        import gzip
+
+        import numpy as np
+        from tta_backend.services import frame_store
+        from tta_backend.services.open_handle import OPEN_PIPELINE_VERSION
+
+        values = np.full((3, 8, 8), 4.0e15)
+        values[1, 4, 4] = 9.0e15
+        self.add_bundle(values=values)
+
+        _summary, payload = await self.plot()
+        frames = payload["frames"]
+
+        def planes_of(key):
+            blob = frame_store.read_frames(
+                key, pipeline_version=OPEN_PIPELINE_VERSION,
+                statistic="max" if key != frames["_key"] else "mean",
+            )
+            return np.frombuffer(
+                gzip.decompress(blob.gzipped), dtype="float32",
+            ).reshape(frames["shape"])
+
+        mean_stack = planes_of(frames["_key"])
+        max_stack = planes_of(frames["planes"]["max"]["_key"])
+
+        # k=(1,1) here, so the spike survives into both -- what differs is the
+        # TEMPORAL reduction, which is the plane's whole definition.
+        self.assertAlmostEqual(float(max_stack[2][4, 4]), 9.0e15, delta=1e12)
+        self.assertAlmostEqual(float(mean_stack[2][4, 4]), 9.0e15, delta=1e12)
+        # Stop 0 is the period max, and it is NOT the period mean (D6a
+        # decision 3): the spike is in one hour of three.
+        period = frames["period_index"]
+        self.assertAlmostEqual(float(max_stack[period][4, 4]), 9.0e15, delta=1e12)
+        self.assertLess(float(mean_stack[period][4, 4]), 7.0e15)
+
+    async def test_each_plane_is_reachable_at_a_url_of_its_own(self):
+        """A path per statistic (Phase 13's decision 1), minted here for the
+        same reason the mean's is: the stack is built inside
+        ``asyncio.to_thread`` before ``_save_chart`` exists to mint a
+        ``chart_id``, so a block leaves the reduction holding store keys and
+        gains its urls at save time.
+
+        The mean's url is unchanged and stays ``frames.f32.gz`` -- decision 5
+        asks for it to be untouched outright, not untouched-unless-a-parameter
+        is-passed."""
+        self.add_bundle()
+
+        _summary, payload = await self.plot()
+
+        frames = payload["frames"]
+        chart_id = payload["chart_id"]
+        self.assertEqual(frames["url"], f"/chart/{chart_id}/frames.f32.gz")
+        self.assertEqual(
+            frames["planes"]["max"]["url"],
+            f"/chart/{chart_id}/frames.max.f32.gz",
+        )
+        self.assertEqual(
+            frames["planes"]["min"]["url"],
+            f"/chart/{chart_id}/frames.min.f32.gz",
+        )
+
+    async def test_a_plane_whose_values_did_not_land_gets_no_url(self):
+        """An absent url means THAT STATISTIC is unavailable, and must never
+        mean the chart is broken.
+
+        ``write_frames`` never raises -- it logs and returns ``None`` -- so a
+        plane whose write fails leaves a block entry with no ``_key``, which is
+        also exactly what an evicted plane looks like later. Minting a url for
+        it would hand the frontend a link that 404s; withholding it is the same
+        rule the mean has always followed, applied per plane.
+
+        The failure is injected at the store rather than simulated in the
+        block, because the claim under test is that the two agree."""
+        import tta_backend.services.frame_store as frame_store_module
+
+        self.add_bundle()
+
+        real_write = frame_store_module.write_frames
+
+        def fail_the_max(source, *, pipeline_version, statistic="mean", **kwargs):
+            if statistic == "max":
+                return None
+            return real_write(
+                source, pipeline_version=pipeline_version, statistic=statistic,
+                **kwargs,
+            )
+
+        with patch.object(frame_store_module, "write_frames", fail_the_max):
+            _summary, payload = await self.plot()
+
+        frames = payload["frames"]
+        # The chart, the mean scrubber and the surviving plane are all fine.
+        self.assertTrue(payload["values"])
+        self.assertEqual(frames["url"], f"/chart/{payload['chart_id']}/frames.f32.gz")
+        self.assertIn("url", frames["planes"]["min"])
+        # The max is present as an axis entry and unreachable, not missing.
+        self.assertIn("max", frames["planes"])
+        self.assertNotIn("_key", frames["planes"]["max"])
+        self.assertNotIn("url", frames["planes"]["max"])
+
+    async def test_the_agent_is_told_which_statistics_it_can_offer(self):
+        """D6a decision 7, and Phase 5 decision 2's rule underneath it: the
+        agent never sees the payload, so a capability that stops at the payload
+        is one nobody is told about.
+
+        The mean is named alongside max and min even though it is not a
+        ``planes`` key -- the list answers "what can this chart be scrubbed as",
+        and an agent told only "max, min" would reasonably conclude the default
+        is not among them."""
+        self.add_bundle()
+
+        summary, _payload = await self.plot()
+
+        self.assertEqual(summary["frames"]["statistics"], ["mean", "max", "min"])
+
+    async def test_the_agent_is_not_offered_a_statistic_that_would_404(self):
+        """It must say what is REACHABLE, not what was requested.
+
+        A plane whose write failed, or which is evicted later, has a block entry
+        and no key. Deriving this list from the requested statistics would let
+        the agent offer a toggle that 404s -- a promise the researcher watches
+        fail rather than one they were never made."""
+        import tta_backend.services.frame_store as frame_store_module
+
+        self.add_bundle()
+
+        real_write = frame_store_module.write_frames
+
+        def fail_the_max(source, *, pipeline_version, statistic="mean", **kwargs):
+            if statistic == "max":
+                return None
+            return real_write(
+                source, pipeline_version=pipeline_version, statistic=statistic,
+                **kwargs,
+            )
+
+        with patch.object(frame_store_module, "write_frames", fail_the_max):
+            summary, _payload = await self.plot()
+
+        self.assertEqual(summary["frames"]["statistics"], ["mean", "min"])
+
+    async def test_the_agent_is_told_why_a_chart_offers_only_the_mean(self):
+        """The other half of the same rule. A chart above the plane ceiling can
+        be scrubbed and cannot be toggled, and the agent relaying "narrow the
+        region and you get max and min" is only possible if it is told which
+        limit was hit."""
+        import tta_backend.preprocessing.frame_stack as frame_stack_module
+
+        self.add_bundle()
+
+        with patch.object(frame_stack_module, "MAX_PLANE_NATIVE_CELLS", 8):
+            summary, _payload = await self.plot()
+
+        self.assertEqual(summary["frames"]["statistics"], ["mean"])
+        self.assertEqual(
+            summary["frames"]["planes_unavailable"], "plane_extent_too_large",
+        )
 
     async def test_an_unregistered_product_says_why_there_is_no_scrubber(self):
         """The refusal above the backstop is disclosed, not silent (D3).
@@ -608,6 +989,46 @@ class PlotSingularFrameWiringTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["export"]["type"], "heatmap")
         self.assertNotIn("values", payload["export"])
 
+    async def test_the_recipe_records_the_export_and_the_planes_separately(self):
+        """Two facts, two keys, and the older one does not move.
+
+        ``spec["statistic"]`` describes what the export IS, and D12 says that is
+        the period aggregate and is unchanged by any of this -- so it still says
+        ``"mean"`` and must keep saying it. That the scrubber now offers three
+        planes is a different fact about the same recipe. Repurposing the
+        existing key to carry it would change the meaning of a field already on
+        the wire, which is the one thing D15 exists to prevent, and would leave
+        every archived row ambiguous about which sense it meant.
+
+        ``statistics`` names what was STORED, so a row reproduces the stack it
+        actually holds rather than the one that was requested."""
+        self.add_bundle()
+
+        _summary, payload = await self.plot()
+
+        spec = payload["export"]["frames"]["spec"]
+        # Unmoved: the export is still the period aggregate of the mean.
+        self.assertEqual(spec["statistic"], "mean")
+        self.assertEqual(payload["export"]["frames"]["exports"], "period aggregate")
+        # New, and beside it rather than instead of it.
+        self.assertEqual(spec["statistics"], ["mean", "max", "min"])
+
+    async def test_the_recipe_records_only_the_planes_that_were_stored(self):
+        """The same rule the agent summary follows, in the durable row: a spec
+        naming a plane the row does not hold would describe a stack nobody can
+        reproduce from it."""
+        import tta_backend.preprocessing.frame_stack as frame_stack_module
+
+        self.add_bundle()
+
+        with patch.object(frame_stack_module, "MAX_PLANE_NATIVE_CELLS", 8):
+            _summary, payload = await self.plot()
+
+        spec = payload["export"]["frames"]["spec"]
+        self.assertEqual(spec["statistic"], "mean")
+        self.assertEqual(spec["statistics"], ["mean"])
+        self.assertEqual(payload["export"]["frames"]["exports"], "period aggregate")
+
     async def test_the_refusal_reaches_the_recipe_as_well_as_the_render(self):
         """A durable row that simply lacks a frame block cannot say whether
         frames were refused or never attempted. Here the span is a year of
@@ -676,25 +1097,6 @@ class PlotSingularFrameWiringTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("frames", payload)
         for panel in payload["panels"]:
             self.assertNotIn("frames", panel)
-
-    def _uneven_coverage(self, n_times, ny, nx, seed=59):
-        """A field whose blocks are seen in DIFFERENT intervals -- the coverage
-        pattern that makes the two reductions stop commuting.
-
-        A rotating one-in-four column stripe, which is a crude stand-in for
-        what swath tiling does to a real product: within any 2x2 block, one
-        native column is observed in a timestep the other is not, so the block
-        mean weights each native cell by how many intervals saw it while the
-        across-frame mean weights each interval equally. A uniformly covered
-        field would agree exactly at any k and would test nothing.
-        """
-        import numpy as np
-
-        rng = np.random.default_rng(seed)
-        values = rng.normal(4.0e15, 5.0e14, size=(n_times, ny, nx))
-        for step in range(n_times):
-            values[step][:, (np.arange(nx) + step) % 4 == 0] = np.nan
-        return values
 
     def _blob_planes(self, frames):
         """The float32 planes the browser downloads, read back through the
@@ -884,6 +1286,66 @@ class PlotSingularFrameWiringTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("frames", payload)
         self.assertIn("frames", events)
 
+    async def test_every_plane_urls_bytes_are_that_planes_own(self):
+        """The first test that crosses all three seams at once.
+
+        Phases 12, 13 and 14 were each tested in isolation: the reduction
+        against its own fixtures, the transport against hand-made stacks, the
+        wiring against the block. Between them sits the failure none of those
+        can see -- a key wired into the wrong slot, which every check on the way
+        out passes, because every plane of a chart has the same shape, dtype,
+        grid and pipeline version. Phase 13 added the manifest's ``statistic``
+        precisely so that mixup is loud; this is what makes it fire.
+
+        Read through each url's own statistic, exactly as the route resolves it
+        (segment -> that plane's key -> ``read_frames`` for that statistic), so
+        a max key filed under ``min`` is refused here rather than rendering a
+        believable field with the wrong numbers in it."""
+        import gzip
+
+        import numpy as np
+        from tta_backend.services import frame_store
+        from tta_backend.services.open_handle import OPEN_PIPELINE_VERSION
+
+        # A field whose three statistics are genuinely different numbers, so
+        # "served the wrong plane" cannot pass by coincidence.
+        values = self._uneven_coverage(3, 8, 8)
+        self.add_bundle(values=values)
+
+        _summary, payload = await self.plot()
+        frames = payload["frames"]
+
+        served = {}
+        for statistic, plane in frames["planes"].items():
+            self.assertEqual(
+                plane["url"],
+                f"/chart/{payload['chart_id']}/frames.{statistic}.f32.gz",
+            )
+            blob = frame_store.read_frames(
+                plane["_key"], pipeline_version=OPEN_PIPELINE_VERSION,
+                statistic=statistic,
+            )
+            self.assertIsNotNone(blob, statistic)
+            served[statistic] = np.frombuffer(
+                gzip.decompress(blob.gzipped), dtype="float32",
+            ).reshape(frames["shape"])
+
+        mean_blob = frame_store.read_frames(
+            frames["_key"], pipeline_version=OPEN_PIPELINE_VERSION,
+        )
+        served["mean"] = np.frombuffer(
+            gzip.decompress(mean_blob.gzipped), dtype="float32",
+        ).reshape(frames["shape"])
+
+        # Each url serves ITS statistic: max >= mean >= min everywhere all
+        # three are finite, and not by equality -- which is what a swapped key
+        # would produce.
+        both = np.isfinite(served["max"]) & np.isfinite(served["min"])
+        self.assertTrue(both.any())
+        self.assertTrue(np.all(served["max"][both] >= served["mean"][both]))
+        self.assertTrue(np.all(served["mean"][both] >= served["min"][both]))
+        self.assertTrue(np.any(served["max"][both] > served["min"][both]))
+
     async def test_the_whole_payload_still_serializes_for_the_jsonb_row(self):
         """The chart payload is persisted as jsonb and streamed to the browser,
         and a numpy scalar or a float32 is neither JSON- nor jsonb-serializable.
@@ -899,3 +1361,148 @@ class PlotSingularFrameWiringTests(unittest.IsolatedAsyncioTestCase):
             len(round_tripped["frames"]["frames"]), len(payload["frames"]["frames"]),
         )
         self.assertEqual(round_tripped["export"]["frames"]["spec"], payload["export"]["frames"]["spec"])
+
+
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None
+        for name in TOOL_MODULES + API_MODULES),
+    "satellite tool or API dependencies are not installed",
+)
+class PlotToPlaneEndpointTests(_PlotHarness, unittest.IsolatedAsyncioTestCase):
+    """A chart plotted through the tool, then fetched over HTTP at the url the
+    tool minted for it (T59 Phases 12+13+14).
+
+    Phase 13's nine endpoint tests drive the route from hand-made stacks, and
+    the class above drives the tool without a route. Neither can see the seam
+    between them: whether ``_wire_frames_url`` mints a path this router
+    actually resolves, and whether the key it filed under a statistic is the
+    one the route hands ``read_frames`` for that statistic. Both halves are one
+    edit away from disagreeing silently, because a wrong plane still renders.
+    """
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        import httpx
+
+        import tta_backend.api as api
+        from tta_backend.models.user import User
+
+        self.httpx = httpx
+        self.api = api
+        self.api.app.state.agent = object()
+        self.api.app.state.earthdata_mcp_tools = {}
+        self.user = User(
+            id="user-1", username="tester", password_hash="hash",
+            created_at=datetime.now(timezone.utc), is_active=True,
+        )
+        token, _ = self.api.create_access_token(self.user)
+        self.auth_headers = {"Authorization": f"Bearer {token}"}
+
+    async def get(self, payload, url):
+        """Fetch ``url`` as the chart's owner, with the real router."""
+        async def fake_get_user_by_id(user_id):
+            return self.user if user_id == self.user.id else None
+
+        async def fake_is_token_revoked(jti):
+            return False
+
+        async def fake_get_chart(chart_id):
+            return {**payload, "user_id": self.user.id}
+
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        with patch("tta_backend.services.auth_service.get_user_by_id", fake_get_user_by_id), \
+             patch("tta_backend.services.auth_service.is_token_revoked", fake_is_token_revoked), \
+             patch.object(self.api.chart_service, "get_chart", fake_get_chart):
+            async with self.httpx.AsyncClient(
+                transport=transport, base_url="http://testserver",
+            ) as client:
+                return await client.get(url, headers=self.auth_headers)
+
+    async def test_the_url_the_plot_minted_serves_that_planes_bytes(self):
+        """End to end, over HTTP, on every statistic the chart carries.
+
+        The bytes are compared against the store's own, keyed by statistic, so
+        this fails if the route resolves a path to the wrong plane's entry --
+        the exact mixup Phase 13's manifest guard exists to make loud, and the
+        one that produces a plausible picture rather than an error."""
+        import gzip
+
+        import numpy as np
+        from tta_backend.services import frame_store
+        from tta_backend.services.open_handle import OPEN_PIPELINE_VERSION
+
+        self.add_bundle(values=self._uneven_coverage(3, 8, 8))
+
+        _summary, payload = await self.plot()
+        frames = payload["frames"]
+
+        for statistic, plane in frames["planes"].items():
+            response = await self.get(payload, plane["url"])
+
+            self.assertEqual(response.status_code, 200, statistic)
+            self.assertEqual(response.headers["content-encoding"], "gzip")
+            expected = frame_store.read_frames(
+                plane["_key"], pipeline_version=OPEN_PIPELINE_VERSION,
+                statistic=statistic,
+            )
+            # httpx inflates a gzipped body transparently, so ``content`` is
+            # already the float32 bytes the canvas would read.
+            self.assertEqual(
+                response.headers["etag"].strip('"'), expected.etag, statistic,
+            )
+            served = np.frombuffer(
+                response.content, dtype="float32",
+            ).reshape(frames["shape"])
+            np.testing.assert_array_equal(
+                served,
+                np.frombuffer(
+                    gzip.decompress(expected.gzipped), dtype="float32",
+                ).reshape(frames["shape"]),
+            )
+
+    async def test_the_means_own_url_is_untouched_by_the_planes_beside_it(self):
+        """D6a decision 5, at the only place it can finally be checked whole:
+        a real chart that HAS planes still serves its mean at
+        ``frames.f32.gz``, with the mean's bytes."""
+        import numpy as np
+
+        self.add_bundle(values=self._uneven_coverage(3, 8, 8))
+
+        _summary, payload = await self.plot()
+        frames = payload["frames"]
+        self.assertEqual(sorted(frames["planes"]), ["max", "min"])
+
+        response = await self.get(payload, frames["url"])
+
+        self.assertEqual(response.status_code, 200)
+        served = np.frombuffer(
+            response.content, dtype="float32",
+        ).reshape(frames["shape"])
+        # It is the mean and not a plane: the max plane is strictly greater
+        # somewhere, so serving that blob here would be visible.
+        max_response = await self.get(payload, frames["planes"]["max"]["url"])
+        maxes = np.frombuffer(
+            max_response.content, dtype="float32",
+        ).reshape(frames["shape"])
+        both = np.isfinite(served) & np.isfinite(maxes)
+        self.assertTrue(np.any(maxes[both] > served[both]))
+
+    async def test_a_statistic_this_chart_never_built_is_a_404(self):
+        """A chart above the plane ceiling keeps a working mean url and 404s
+        the toggle, rather than the frontend having to infer which it is from a
+        broken render. Every unavailable statistic is one answer -- offer the
+        ones that are there."""
+        import tta_backend.preprocessing.frame_stack as frame_stack_module
+
+        self.add_bundle()
+
+        with patch.object(frame_stack_module, "MAX_PLANE_NATIVE_CELLS", 8):
+            _summary, payload = await self.plot()
+
+        mean = await self.get(payload, payload["frames"]["url"])
+        missing = await self.get(
+            payload, f"/chart/{payload['chart_id']}/frames.max.f32.gz",
+        )
+
+        self.assertEqual(mean.status_code, 200)
+        self.assertEqual(missing.status_code, 404)

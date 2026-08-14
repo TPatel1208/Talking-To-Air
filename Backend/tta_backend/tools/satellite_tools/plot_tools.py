@@ -481,15 +481,51 @@ def _frames_summary(payload: dict) -> dict:
     """
     frames = payload.get("frames")
     if isinstance(frames, dict) and frames.get("frames"):
-        return {
-            "frames": {
-                "n_frames": len(frames["frames"]),
-                "cadence": frames.get("cadence"),
-                "tier": frames.get("tier"),
-            },
+        block = {
+            "n_frames": len(frames["frames"]),
+            "cadence": frames.get("cadence"),
+            "tier": frames.get("tier"),
+            # D6a decision 7's toggle. Compact in T13's posture -- names, not
+            # the per-plane disclosure blocks, because the agent needs to know
+            # a max exists and not what its ``extent_overstatement`` was.
+            "statistics": _scrubbable_statistics(frames),
         }
+        planes_unavailable = frames.get("planes_unavailable")
+        if planes_unavailable:
+            # Only the machine-readable reason: which limit was hit is what
+            # lets the agent say "narrow the region", and the sentence itself
+            # is already in the payload for the reader.
+            block["planes_unavailable"] = planes_unavailable.get("reason")
+        return {"frames": block}
     unavailable = payload.get("frames_unavailable")
     return {"frames_unavailable": unavailable} if unavailable else {}
+
+
+def _scrubbable_statistics(frames: dict) -> list[str]:
+    """Which statistics this chart can actually be scrubbed as.
+
+    Derived from the keys that LANDED, never from what was asked for: a plane
+    whose write failed, or one evicted since, has a block entry and no ``_key``,
+    and an agent that offered it would be promising a toggle the researcher
+    watches 404. The same rule the urls are minted under, read off the same
+    field.
+
+    ``"mean"`` leads the list although it is never a ``planes`` key -- it is the
+    chart's own top-level entry (D6a decision 5), and a list that named only the
+    extras would read as though the default were not among them. Ordered by
+    ``PLANE_STATISTICS`` rather than by dict order so the agent sees one stable
+    vocabulary.
+    """
+    from tta_backend.preprocessing.frame_stack import PLANE_STATISTICS
+
+    planes = frames.get("planes") or {}
+    landed = {
+        name for name, plane in planes.items()
+        if isinstance(plane, dict) and plane.get("_key")
+    }
+    if frames.get("_key"):
+        landed.add("mean")
+    return [name for name in PLANE_STATISTICS if name in landed]
 
 
 def _wire_overlay_url(overlay: dict | None, url: str) -> None:
@@ -1173,7 +1209,9 @@ def _attach_frames(payload: dict, result, masked, agg_meta: dict) -> None:
     from tta_backend.preprocessing.frame_stack import (
         FRAME_CELL_CEILING,
         MAX_FRAMES,
+        PLANE_STATISTICS,
         frame_gate,
+        plane_gate,
     )
     from tta_backend.services import frame_store
     from tta_backend.utils.geo_utils import identify_time
@@ -1195,12 +1233,22 @@ def _attach_frames(payload: dict, result, masked, agg_meta: dict) -> None:
             payload.setdefault("export", {})["frames"] = {"unavailable": disclosure}
         return
 
+    # D6a's extra planes, behind their own extent limit. A chart above it is
+    # NOT refused -- it keeps exactly the mean scrubber it has always had, and
+    # only the toggle is withheld -- because Phase 14 measured the three-
+    # statistic build being OOM-killed at extents the mean build completes at,
+    # and paying for the new tier with the old one is not a trade anyone asked
+    # for.
+    plane_refusal = plane_gate(field.data, time_dim=time_dim)
+    statistics = ("mean",) if plane_refusal is not None else PLANE_STATISTICS
+
     try:
         with phase_timer("frames", cells_in=int(getattr(field.data, "size", 0))):
             stack = frame_stack_module.build_frame_stack(
                 field.data,
                 time_dim=time_dim,
                 cadence=cadence,
+                statistics=statistics,
                 # Every scientific quantity off the NATIVE field (D5a). The
                 # region's own cos(latitude)-weighted footprint denominates
                 # coverage -- without it a frame is denominated on the BOUNDING
@@ -1219,6 +1267,16 @@ def _attach_frames(payload: dict, result, masked, agg_meta: dict) -> None:
         logger.warning("frame_stack_failed", exc_info=True)
         return
 
+    if plane_refusal is not None:
+        # Beside the axis rather than beside ``frames_unavailable``, because
+        # this chart HAS a scrubber -- what it lacks is the toggle, and a
+        # reader who finds no toggle and no reason is in exactly the position
+        # ``_DISCLOSED_FRAME_REFUSALS`` exists to keep them out of. Additive,
+        # and absent entirely when every plane was built (D15).
+        block["planes_unavailable"] = {
+            "reason": plane_refusal.reason, "detail": plane_refusal.detail,
+        }
+
     payload["frames"] = block
     payload.setdefault("export", {})["frames"] = {
         # The recipe, beside source_handles/variable/region_name/
@@ -1234,7 +1292,18 @@ def _attach_frames(payload: dict, result, masked, agg_meta: dict) -> None:
             "cells_per_frame": stack.cells_per_frame,
             "coarsen_k": [int(k) for k in stack.coarsen_k],
             "boundary": "pad",
+            # What the EXPORT is, unchanged and unchanging (D12). The exported
+            # thing is still the period aggregate of the mean, so this field
+            # still says so.
             "statistic": "mean",
+            # What the SCRUBBER offers, which is a different fact about the
+            # same recipe and therefore a different key. Renaming or
+            # repurposing the one above would change the meaning of a field
+            # already on the wire -- the one thing D15 exists to prevent -- and
+            # leave every archived row ambiguous about which sense it meant.
+            # Derived from what LANDED, so the row reproduces the stack it
+            # holds rather than the one that was asked for.
+            "statistics": _scrubbable_statistics(block),
             "dtype": "float32",
             "span": [stack.frames[0].t_start, stack.frames[-1].t_end],
             "pipeline_version": OPEN_PIPELINE_VERSION,
@@ -1258,11 +1327,22 @@ def _wire_frames_url(payload: dict) -> None:
     No ``_key`` means the axis is drawn and the values did not land, which is a
     state D8 already requires the frontend to handle: a labeled, unscrubbable
     axis. It is also exactly what an evicted chart looks like later.
+
+    Each of D6a's extra planes gets the same treatment under the same rule, at
+    a path of its own (Phase 13 decision 1). Applied PER PLANE rather than to
+    the block as a whole: ``store_frame_stack`` degrades one statistic at a
+    time, so an absent url here means that statistic is unavailable and never
+    that the chart is broken. The mean's url is untouched by any of it.
     """
     frames = payload.get("frames")
     chart_id = payload.get("chart_id")
-    if chart_id and isinstance(frames, dict) and frames.get("_key"):
+    if not chart_id or not isinstance(frames, dict):
+        return
+    if frames.get("_key"):
         frames["url"] = f"/chart/{chart_id}/frames.f32.gz"
+    for statistic, plane in (frames.get("planes") or {}).items():
+        if isinstance(plane, dict) and plane.get("_key"):
+            plane["url"] = f"/chart/{chart_id}/frames.{statistic}.f32.gz"
 
 
 # ── Vertical profile (T56) ────────────────────────────────────────────────────

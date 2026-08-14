@@ -65,6 +65,34 @@ MAX_FRAMES = 60
 # than attempted and killed.
 MAX_FRAME_NATIVE_CELLS = 4_000_000
 
+# The same backstop for a build carrying D6a's EXTRA PLANES, and it is a
+# different number because the constant above was measured on a build that
+# carried none. Phase 14 measured this one the same way -- one arm per process,
+# in the same 3.9 GB container, against this same function:
+#
+#   1,050,000 cells  1 stat  681.8 MB   3 stats  1,308 MB   both completed
+#   1,400,000 cells                     3 stats  OOM-KILLED
+#   1,800,000 cells                     3 stats  OOM-KILLED
+#   3,750,000 cells  1 stat  1,343.5 MB 3 stats  OOM-KILLED
+#
+# Phase 11's ratio is not what fails: 1,308/681.8 = 1.92x reproduces its 1.91x
+# at three times the extent, so the single fused compute behaves exactly as D6a
+# decision 6 assumed. What fails is headroom. The one-statistic arm reproduces
+# Phase 5's own anchor to within 0.1% (1,343.5 against 1,342 MB), which means
+# the constant above was set at the last extent that survived -- it has no
+# margin by construction, so ANY increase in the reduction's cost breaks it.
+#
+# Deliberately a SECOND limit rather than a smaller first one. Lowering
+# MAX_FRAME_NATIVE_CELLS to fit three statistics would refuse charts from 1M to
+# 4M cells that scrub perfectly well today, charging an existing capability for
+# a new one. Above this line a chart keeps exactly the mean scrubber it has
+# always had; only the extra planes are withheld, and the tool says why.
+#
+# Under the largest measured survivor, not at it: 1,050,000 survived once at
+# 1,308 MB with roughly 300 MB to spare, in a container whose own baseline moved
+# by 400 MB during the session that measured it.
+MAX_PLANE_NATIVE_CELLS = 1_000_000
+
 # D3's other backstop, on SPAN, sitting above D14's coarsening rather than
 # instead of it. Coarsening is what fits a long span into the frame budget and
 # Phase 3 §2 measured it as the common case (a 2.2-day TEMPO retrieval is
@@ -242,6 +270,34 @@ def frame_gate(
             f"{max_frames * MAX_BUCKETS_PER_FRAME:,} a frame axis is built "
             f"within -- past it each of the {max_frames} frames would average "
             f"more than {MAX_BUCKETS_PER_FRAME} intervals together.",
+        )
+    return None
+
+
+def plane_gate(da: xr.DataArray, *, time_dim: str) -> FrameRefusal | None:
+    """Whether ``da`` may be built with D6a's EXTRA PLANES. ``None`` = yes.
+
+    Separate from :func:`frame_gate` rather than a parameter on it, because the
+    two answer different questions about the same field: that one decides
+    whether there is a scrubber at all, this one decides how many statistics it
+    can offer. A field can pass the first and fail this one, and the right
+    outcome then is the mean scrubber it already had -- never a refusal, which
+    is why this returns its own answer instead of turning into a third arm of
+    the other's ``extent_too_large``.
+
+    Assumes its caller has already run :func:`frame_gate`; everything that gate
+    checks (a real time axis, a bucketable cadence, a 2-D field) is a
+    precondition for building any plane at all, and repeating it here would give
+    one refusal two homes.
+    """
+    cells = _native_cells(da, time_dim)
+    if cells > MAX_PLANE_NATIVE_CELLS:
+        return FrameRefusal(
+            "plane_extent_too_large",
+            f"A frame axis over this region reduces {cells:,} cells per interval, "
+            f"above the {MAX_PLANE_NATIVE_CELLS:,}-cell limit the additional "
+            "max and min planes are built within; the mean scrubber is "
+            "unaffected.",
         )
     return None
 
