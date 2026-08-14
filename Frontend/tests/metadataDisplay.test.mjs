@@ -6,7 +6,7 @@ import {
   maskingStatusColor, resolveMaskingRaw, citationString, datasetLandingUrl,
   spatialFields, temporalFields, qaMethodologyFields, variableDefinitionFields,
   reproducibilityQuery, reproducibilityFields, rawMetadataJson, regionLabel,
-  hasProvenance,
+  hasProvenance, maturityFields,
 } from '../src/utils/metadataDisplay.js'
 
 // A fixture provenance object exercising every field the Overview/Details
@@ -360,4 +360,38 @@ test('rawMetadataJson renders provenance and aggregation_meta verbatim', () => {
 
 test('rawMetadataJson is null-safe for a chart with neither field', () => {
   assert.deepEqual(rawMetadataJson({}), { provenance: null, aggregation_meta: null })
+})
+
+test('a beta product discloses its maturity and the provider caveat', () => {
+  // T57. The product's own user guide says publishing research on it is
+  // "not recommended and highly discouraged". That has to be visible next to
+  // the dataset, not buried in a raw JSON blob.
+  const chart = {
+    provenance: {
+      dataset: 'TEMPO_O3PROF_L3',
+      maturity: 'beta',
+      maturity_note: 'Beta product: publication is not recommended.',
+    },
+  }
+
+  const fields = maturityFields(chart)
+
+  assert.equal(fields.level, 'beta')
+  assert.equal(fields.note, 'Beta product: publication is not recommended.')
+  assert.equal(fields.cautionary, true)
+})
+
+test('a validated product is disclosed without a caution', () => {
+  const fields = maturityFields({ provenance: { maturity: 'validated' } })
+
+  assert.equal(fields.level, 'validated')
+  assert.equal(fields.cautionary, false)
+})
+
+test('an unstated maturity discloses nothing rather than reassuring', () => {
+  // "unknown" means nobody checked, which is not a clean bill of health --
+  // and rendering it as a field would read like one.
+  assert.equal(maturityFields({ provenance: { maturity: 'unknown' } }), null)
+  assert.equal(maturityFields({ provenance: {} }), null)
+  assert.equal(maturityFields(null), null)
 })
