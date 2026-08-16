@@ -20,6 +20,8 @@ sync/async fork only becomes necessary when CUSTOM lands).
 from dataclasses import dataclass
 from typing import Any
 
+from tta_backend.datasets.us_states import US_STATES
+
 
 @dataclass(frozen=True)
 class DispatchResult:
@@ -159,11 +161,11 @@ def dispatch_extent(normalized_name: str, global_regions: dict) -> ExtentDispatc
     normalize identically and cannot disagree about what string they were
     handed.
 
-    Scope is exactly this module's vocabulary -- ``COALITIONS`` plus
-    ``ALIASES`` -- and nothing else. A ``global_regions`` key typed directly
+    Scope is ``COALITIONS`` plus ``ALIASES`` plus the 51 U.S. admin-1 units,
+    and nothing else. Any *other* ``global_regions`` key typed directly
     ("northeast us", "north america", "paris") is *not* claimed and reaches the
     MCP byte-identical to today; those already work, and translating them would
-    be a blast radius this phase has no measurement to justify.
+    be a blast radius no phase has measured.
 
     The *alias* forms are claimed even when they point at a plain preset, and
     that is not an inconsistency -- it is Risk 5. Phase 1 taught the mask plane
@@ -171,11 +173,25 @@ def dispatch_extent(normalized_name: str, global_regions: dict) -> ExtentDispatc
     geocodes that string to an ~11 m railway platform in Boston (Phase 0, V2).
     Leaving the alias untranslated is precisely the two-plane divergence where
     the mask clips against a cube that never covered it.
+
+    The **states** are claimed for the same reason, on a measurement rather
+    than on symmetry (Phase 3a gate, V13). Two of five probed tokens retrieved
+    a different place outright -- "new york" as New York City, "washington" as
+    Washington DC, 0.00% overlap. But the deciding finding was the three that
+    geocoded *correctly* and still failed containment: Georgia covers 99.99% of
+    the shipped mask and its retrieved extent still stops 0.018 deg short on
+    the west edge, because the mask is Natural Earth 50m and the extent was
+    OSM. Two providers, two sets of edges. No geocoder improvement closes that
+    -- only both planes deriving from one polygon, which is what claiming the
+    state here does. A state reaches the ``global_regions`` branch below, so
+    the extent it sends is the same envelope ``_finalize_preset`` masks with.
     """
     from tta_backend.utils.plotting import load_preset_polygons
 
     target = ALIASES.get(normalized_name, normalized_name)
-    if target not in COALITIONS and normalized_name not in ALIASES:
+    if (target not in COALITIONS
+            and normalized_name not in ALIASES
+            and normalized_name not in US_STATES):
         return EXTENT_NOT_CLAIMED  # not our vocabulary -- caller sends its own string
 
     if target in COALITIONS:

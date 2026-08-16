@@ -23,6 +23,7 @@ from affine import Affine
 from typing import Optional, Tuple, Union
 
 from tta_backend.config.settings import get_settings
+from tta_backend.datasets.us_states import US_STATES
 from tta_backend.utils import region_dispatch
 from tta_backend.earthdata_mcp.results import (
     CATEGORY_DIMENSION_CHOICE_REQUIRED,
@@ -978,6 +979,32 @@ class RegionResolver:
         'east africa':        {'geometry': box( 29, -12, 52, 16), 'bounds': ( 29, -12, 52, 16), 'name': 'East Africa'},
         'southern africa':    {'geometry': box( 11, -35, 40, -15), 'bounds': ( 11, -35, 40, -15), 'name': 'Southern Africa'},
     }
+        # T60 Phase 3a: the 51 U.S. admin-1 units, from the generated table.
+        # Ordinary presets -- an honest envelope here, upgraded to the real
+        # boundary by ``_finalize_preset`` -- because unlike a coalition a
+        # state *has* an honest bounding box (D3's objection does not apply;
+        # no state crosses the antimeridian). ``display_name`` carries the
+        # disambiguation D15's resolution order makes necessary: gate V12
+        # measured "washington" geocoding live to Washington DC with 0.00%
+        # overlap with Washington State.
+        for _key, _state in US_STATES.items():
+            if _key in self.global_regions:
+                # D12a, applied to the merge itself. These go in by
+                # assignment, so a key that already existed would be silently
+                # replaced -- and Phase 4 adds countries, where "georgia" the
+                # country meets "georgia" the state. Naming the key beats a
+                # count assertion that only holds until someone updates it.
+                raise region_dispatch.AliasCollisionError(
+                    f"U.S. admin-1 key {_key!r} shadows an existing "
+                    "global_regions preset; resolve the ambiguity explicitly "
+                    "rather than letting one silently win"
+                )
+            self.global_regions[_key] = {
+                'geometry': box(*_state['bounds']),
+                'bounds': _state['bounds'],
+                'name': _state['name'],
+                'display_name': _state['display_name'],
+            }
         # D12a: the T60 alias/coalition tables are hand-maintained, and a
         # table that silently shadows "us" or "georgia" is the cheapest way
         # to reintroduce a confident wrong region. Checked against this
@@ -999,6 +1026,9 @@ class RegionResolver:
         # coalition has no honest bounding box), so they are unreachable via
         # the exact-match gate below and arrive only through region_dispatch.
         "otc": "otc", "new england": "new england",
+        # T60 Phase 3a: the 51 states. Feature id is the lowercased name, so
+        # the preset key and the polygon id are the same string.
+        **{key: key for key in US_STATES},
     }
 
     def _finalize_preset(self, preset: dict, key: str) -> dict:

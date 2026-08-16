@@ -115,6 +115,35 @@ class RetrievalExtentTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCa
                     [round(v, 6) for v in polygons[coalition_id].bounds],
                 )
 
+    async def test_a_state_name_reaches_the_mcp_as_an_extent_never_as_the_word(self):
+        """T60 Phase 3a: the states go through this seam too.
+
+        Three tokens, chosen because the Phase 3a gate (V13) measured each of
+        them failing live and they fail in two different ways:
+
+        - ``"new york"`` came back as New York **City** -- 0.56% of the state.
+        - ``"washington"`` came back as Washington **DC** -- **0.00%** overlap,
+          47 degrees of longitude away.
+        - ``"pennsylvania"`` came back as the *right* state and still left
+          0.023 deg of its northern edge outside what was retrieved.
+
+        The third is the one that generalizes, and the 51-wide containment
+        property it implies is asserted where the extent is actually decided --
+        ``dispatch_extent``, in test_region_us_states.py -- rather than paid for
+        51 times over an HTTP round trip. What this test covers is the wiring:
+        that a state reaches the seam at all."""
+        for token in ("new york", "washington", "pennsylvania"):
+            with self.subTest(location=token):
+                self.seen.clear()
+                await self.tools["define_area_of_interest"].ainvoke({"location": token})
+
+                sent = self.seen[0]
+                self.assertNotIn(token, sent.lower())
+                self.assertIsNotNone(
+                    _parse_bbox(sent),
+                    f"{token!r} reached the MCP as a place name, not an extent",
+                )
+
     async def test_a_string_outside_the_vocabulary_is_passed_through_untouched(self):
         """The regression this seam is most likely to cause, and the mirror of
         the mask plane's NOT_CLAIMED fall-through. "paris" must reach the MCP
