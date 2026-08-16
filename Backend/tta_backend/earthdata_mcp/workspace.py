@@ -292,16 +292,34 @@ def region_aware_area_of_interest(tool: BaseTool) -> BaseTool:
     to pre-T60 behavior, which is the mirror of the mask plane's NOT_CLAIMED
     fall-through and the regression this seam is most likely to cause.
     """
-    from tta_backend.utils import region_dispatch
+    from tta_backend.utils import region_composition, region_dispatch
 
     async def _call(**kwargs):
         location = kwargs.get("location")
         if isinstance(location, str):
             resolver = _region_resolver()
+            # T60 D5: the "+" grammar reads the RAW string, ahead of
+            # normalization (D11a -- split first, then normalize each token),
+            # exactly as the mask plane does. A composite has no key the MCP
+            # could ever resolve, so an unclaimed one would reach Nominatim as
+            # a literal string with a "+" in it. Its failures (a bad token,
+            # D8; an over-large envelope, D16) travel as MCPToolError and
+            # convert to the same tool-JSON envelope used below.
+            try:
+                composed = region_composition.dispatch_composite_extent(location, resolver)
+            except MCPToolError as exc:
+                logger.error(
+                    "region_composite_unresolved",
+                    extra={"_event": "region_composite_unresolved", "_location": location},
+                )
+                return exc.to_tool_json()
             # D11a: the same normalization the mask plane uses, so neither
             # plane can normalize differently than the other.
             normalized = resolver._normalize_location_name(location)
-            dispatched = region_dispatch.dispatch_extent(normalized, resolver.global_regions)
+            dispatched = (
+                composed if composed.claimed
+                else region_dispatch.dispatch_extent(normalized, resolver.global_regions)
+            )
             if dispatched.claimed:
                 if dispatched.location is None:
                     # Claimed and failed. Refusing is the point: falling

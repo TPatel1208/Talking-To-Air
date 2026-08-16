@@ -1092,6 +1092,11 @@ def _provenance(
         # display_name it resolved to -- so a bounding-box "US" or a
         # wrong-place geocode is checkable in the answer, not just the title.
         "region_type": (region or {}).get("region_type"),
+        # T60 D10a: region_type is the *rasterization* fact and
+        # apply_mask_region_type overwrites it on a self-heal. The shape's
+        # own provenance -- "this was a construction, not a named place" --
+        # travels beside it or it is lost before the researcher sees it.
+        "region_origin": (region or {}).get("region_origin"),
         "display_name": (region or {}).get("display_name") or region_name,
         "aggregation": aggregation,
         "units": da.attrs.get("units", ""),
@@ -1659,7 +1664,13 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
             return json.dumps({"error": f"Failed to open handle '{handle}': {e}"})
 
         emit_status("Resolving requested location...", stage=STAGE_RENDER)
-        region = await _resolver.aresolve_location(location)
+        # T60 D14: a composite that cannot be built raises the taxonomy's
+        # error naming the offending token -- a ``None`` return could never
+        # carry which token failed. Same shape as the open_handle catch.
+        try:
+            region = await _resolver.aresolve_location(location)
+        except MCPToolError as e:
+            return json.dumps({"error": e.to_dict()})
         if region is None:
             emit_status("Location lookup failed.", stage=STAGE_RENDER)
             return json.dumps({"error": f"Could not geocode location: '{location}'"})
@@ -1836,7 +1847,13 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
                 return json.dumps({"error": f"Failed to open handle '{handle}' for '{location}': {e}"})
 
             emit_status("Resolving requested location...", stage=STAGE_RENDER)
-            region = await _resolver.aresolve_location(location)
+            # T60 D14: a composite that cannot be built raises the taxonomy's
+            # error naming the offending token -- a ``None`` return could never
+            # carry which token failed. Same shape as the open_handle catch.
+            try:
+                region = await _resolver.aresolve_location(location)
+            except MCPToolError as e:
+                return json.dumps({"error": e.to_dict()})
             if region is None:
                 emit_status("Location lookup failed.", stage=STAGE_RENDER)
                 return json.dumps({"error": f"Could not geocode location: '{location}'"})
@@ -2003,7 +2020,13 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
             return json.dumps({"error": f"No time dimension found. dims={list(da.dims)}"})
 
         emit_status("Resolving requested location...", stage=STAGE_RENDER)
-        region = await _resolver.aresolve_location(location)
+        # T60 D14: a composite that cannot be built raises the taxonomy's
+        # error naming the offending token -- a ``None`` return could never
+        # carry which token failed. Same shape as the open_handle catch.
+        try:
+            region = await _resolver.aresolve_location(location)
+        except MCPToolError as e:
+            return json.dumps({"error": e.to_dict()})
         if region is None:
             return json.dumps({"error": f"Could not resolve location: '{location}'"})
 
@@ -2218,7 +2241,13 @@ def make_plot_vertical_profile(mcp_tools: dict[str, BaseTool]):
             return json.dumps({"error": _dimension_choice_error(da, candidates[0]).to_dict()})
 
         emit_status("Resolving requested location...", stage=STAGE_RENDER)
-        region = await _resolver.aresolve_location(location)
+        # T60 D14: a composite that cannot be built raises the taxonomy's
+        # error naming the offending token -- a ``None`` return could never
+        # carry which token failed. Same shape as the open_handle catch.
+        try:
+            region = await _resolver.aresolve_location(location)
+        except MCPToolError as e:
+            return json.dumps({"error": e.to_dict()})
         if region is None:
             emit_status("Location lookup failed.", stage=STAGE_RENDER)
             return json.dumps({"error": f"Could not geocode location: '{location}'"})

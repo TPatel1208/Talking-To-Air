@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { resolveMasking, resolveRegionFidelity, formatQaPassRate } from '../src/utils/maskingProvenance.js'
+import { resolveMasking, resolveRegionFidelity, formatQaPassRate, regionTypeNote } from '../src/utils/maskingProvenance.js'
 
 // Timeseries payloads carry masking at the top level
 // (plot_tools ts_payload["masking"]).
@@ -189,8 +189,12 @@ test('resolveRegionFidelity surfaces a bounding_box region', () => {
     type: 'heatmap',
     provenance: { region_type: 'bounding_box', display_name: 'United States' },
   }
+  // The full resolved shape, deliberately: OutputPanel reads every field, so
+  // regionOrigin being present-but-empty on a region with no construction
+  // behind it (T60 D10a) is part of the contract, not an accident.
   assert.deepEqual(resolveRegionFidelity(chart), {
     regionType: 'bounding_box',
+    regionOrigin: '',
     displayName: 'United States',
   })
 })
@@ -227,4 +231,62 @@ test('prefers top-level masking over provenance', () => {
     provenance: { masking: { qa_status: 'verified' } },
   }
   assert.equal(resolveMasking(chart).qaStatus, 'inferred, not verified')
+})
+
+// T60 D10b. The backend now emits `composite_union` for a "+" grammar region
+// ("NY + NJ"). Gate V16 traced what an unchanged frontend does with it:
+// resolveRegionFidelity returns a disclosure for anything that isn't
+// 'polygon', and OutputPanel falls back to `|| region.regionType`, so the
+// researcher would read the literal enum
+//
+//     New York + New Jersey (composite of 2 U.S. states) composite_union
+//
+// under a "Region fidelity" heading whose other three values are all
+// apologies. A correctly-built union of two real state boundaries is a
+// *faithful* region -- as faithful as `polygon` -- so it warrants no caveat.
+test('a faithful composite_union needs no fidelity caveat', () => {
+  const chart = {
+    provenance: {
+      region_type: 'composite_union',
+      display_name: 'New York + New Jersey (composite of 2 U.S. states)',
+    },
+  }
+  assert.equal(resolveRegionFidelity(chart), null)
+})
+
+// ...but D10a's whole point is that the two facts are orthogonal. A composite
+// small enough to self-heal onto the cells it touches IS worth disclosing --
+// and it must still say the shape was a construction, not just that it was
+// rasterized coarsely.
+test('a self-healed composite discloses both the rasterization and the origin', () => {
+  const chart = {
+    provenance: {
+      region_type: 'boundary_cells',
+      region_origin: 'composite_union',
+      display_name: 'Rhode Island + Delaware (composite of 2 U.S. states)',
+    },
+  }
+  const region = resolveRegionFidelity(chart)
+  assert.equal(region.regionType, 'boundary_cells')
+  assert.equal(region.regionOrigin, 'composite_union')
+})
+
+// The regression net: a plain polygon still carries region_origin on the wire
+// after any self-heal, and that must not start producing a caveat of its own.
+test('region_origin alone never turns a faithful polygon into a caveat', () => {
+  const chart = { provenance: { region_type: 'polygon', region_origin: 'polygon' } }
+  assert.equal(resolveRegionFidelity(chart), null)
+})
+
+// The note lookup is extracted from OutputPanel so it is testable at all --
+// this repo has no jsdom, so a rendered component cannot be asserted on.
+test('every region_type the backend can emit has a plain-language note', () => {
+  for (const value of ['bounding_box', 'point_buffer', 'boundary_cells', 'composite_union']) {
+    assert.ok(regionTypeNote(value), `no note for ${value}`)
+    assert.ok(!regionTypeNote(value).includes('_'), `${value} note leaks the raw enum`)
+  }
+})
+
+test('an unknown region_type degrades to something readable, not the raw enum', () => {
+  assert.ok(!regionTypeNote('buffer_from_phase_5').includes('_'))
 })

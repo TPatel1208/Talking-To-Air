@@ -144,6 +144,64 @@ class RetrievalExtentTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCa
                     f"{token!r} reached the MCP as a place name, not an extent",
                 )
 
+    async def test_a_composite_reaches_the_mcp_as_an_extent_never_as_the_string(self):
+        """T60 Phase 3b: the ``+`` grammar goes through this seam too, and it
+        has *less* to fall back on than anything before it.
+
+        A coalition has a name the MCP's geocoder might resolve, badly. A
+        composite has no key at all -- it is built per request -- so an
+        unclaimed ``"NY + NJ"`` would reach Nominatim as a literal string with
+        a ``+`` in it. The 51-wide containment property is asserted where the
+        extent is decided (test_region_composition.py); this covers the
+        wiring."""
+        from tta_backend.utils.plotting import RegionResolver
+
+        await self.tools["define_area_of_interest"].ainvoke({"location": "NY + NJ"})
+
+        self.assertEqual(len(self.seen), 1)
+        sent = self.seen[0]
+        self.assertNotIn("+", sent)
+        # It is the union's own envelope, agreeing with the mask plane exactly.
+        masked = RegionResolver().resolve_location("NY + NJ")
+        self.assertEqual(_parse_bbox(sent), [round(v, 6) for v in masked["bounds"]])
+
+    async def test_a_composite_with_a_bad_token_refuses_instead_of_geocoding(self):
+        """D8 on the retrieval plane. The MCP must never be asked, because its
+        geocoder is the same Nominatim the mask plane is keeping the string
+        away from -- and a fail-open seam is indistinguishable from a working
+        one unless the not-called assertion is made."""
+        from tta_backend.earthdata_mcp.results import (
+            CATEGORY_USER_INPUT, MCPToolError, parse_tool_result,
+        )
+
+        raw = await self.tools["define_area_of_interest"].ainvoke(
+            {"location": "NY + NJ + Wakanda"}
+        )
+
+        self.assertEqual(self.seen, [])
+        with self.assertRaises(MCPToolError) as caught:
+            parse_tool_result(raw)
+        self.assertEqual(caught.exception.category, CATEGORY_USER_INPUT)
+        self.assertIn("wakanda", caught.exception.message.lower())
+
+    async def test_an_oversized_composite_refuses_before_any_retrieval(self):
+        """D16 where it costs least. The extent gate firing here means a
+        continent-spanning union never becomes a retrieval at all, rather than
+        being fetched and refused downstream by a byte limit that would name
+        the wrong problem."""
+        from tta_backend.earthdata_mcp.results import (
+            CATEGORY_TOO_LARGE, MCPToolError, parse_tool_result,
+        )
+
+        raw = await self.tools["define_area_of_interest"].ainvoke(
+            {"location": "alaska + florida"}
+        )
+
+        self.assertEqual(self.seen, [])
+        with self.assertRaises(MCPToolError) as caught:
+            parse_tool_result(raw)
+        self.assertEqual(caught.exception.category, CATEGORY_TOO_LARGE)
+
     async def test_a_string_outside_the_vocabulary_is_passed_through_untouched(self):
         """The regression this seam is most likely to cause, and the mirror of
         the mask plane's NOT_CLAIMED fall-through. "paris" must reach the MCP

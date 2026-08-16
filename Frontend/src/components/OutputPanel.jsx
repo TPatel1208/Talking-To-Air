@@ -19,7 +19,7 @@ import { PANEL_MIN_WIDTH } from '../utils/panelLayout.js'
 import { MetadataOverview } from './MetadataOverview.jsx'
 import { MetaField } from './metadataPrimitives.jsx'
 import { smallButtonStyle, copyToClipboard } from '../utils/metadataUiHelpers.js'
-import { resolveMasking, resolveRegionFidelity, formatQaPassRate } from '../utils/maskingProvenance'
+import { resolveMasking, resolveRegionFidelity, formatQaPassRate, regionTypeNote, regionOriginNote } from '../utils/maskingProvenance'
 import { evidenceRows } from '../utils/evidenceSummary'
 import { filledCharts } from '../utils/compareMode'
 import { focusChartPayload } from '../utils/compareSlotOverview'
@@ -135,14 +135,11 @@ function StatCard({ label, value, subtitle }) {
 // actually ran on the plotted data (and by which tier) rather than inferring
 // it from the valid-pixel count above. Renders nothing when the payload
 // carries no masking record.
-// One-line, plain-language caveat for a region_type that isn't a faithful
-// polygon (T42). Keeps the researcher from reading "mean over the US" as the
-// real US when it was a rectangle, a point buffer, or the touched cells.
-const REGION_TYPE_NOTE = {
-  bounding_box: 'approximated as a bounding box (a rectangle), not the named boundary',
-  point_buffer: 'approximated as a small box around a geocoded point (no boundary found)',
-  boundary_cells: 'smaller than a grid cell — showing the cells it touches',
-}
+// The one-line, plain-language caveat for a region_type that isn't faithful
+// (T42) now lives in utils/maskingProvenance so it can be tested -- this repo
+// has no jsdom, and the `|| region.regionType` fallback it replaced is how a
+// new backend value (T60's composite_union) ends up rendered as a raw enum
+// under a heading that implies a defect.
 
 // `masking` is optional: StatisticsTab hoists one resolveMasking(chart) and
 // shares it with the pass-rate card so both read the identical object. Falls
@@ -188,7 +185,12 @@ function MaskingDisclosure({ chart, masking: hoistedMasking }) {
           </div>
           <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', lineHeight: 1.45 }}>
             {region.displayName ? <strong>{region.displayName}</strong> : 'Region'}{' '}
-            {REGION_TYPE_NOTE[region.regionType] || region.regionType}
+            {regionTypeNote(region.regionType)}
+            {/* T60 D10a: rasterization fidelity and shape provenance are two
+                facts, and a self-healed composite must still say it was a
+                construction. Rendered only when the origin adds something the
+                note above doesn't already say. */}
+            {regionOriginNote(region.regionOrigin) && ` — ${regionOriginNote(region.regionOrigin)}`}
           </div>
         </div>
       )}

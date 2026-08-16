@@ -24,7 +24,7 @@ from typing import Optional, Tuple, Union
 
 from tta_backend.config.settings import get_settings
 from tta_backend.datasets.us_states import US_STATES
-from tta_backend.utils import region_dispatch
+from tta_backend.utils import region_composition, region_dispatch
 from tta_backend.earthdata_mcp.results import (
     CATEGORY_DIMENSION_CHOICE_REQUIRED,
     CATEGORY_UNSUPPORTED_GRID,
@@ -759,9 +759,25 @@ def apply_mask_region_type(masked: xr.DataArray, region: dict) -> None:
     """Downgrade ``region['region_type']`` to the masking-time fact when the
     mask self-healed (T42): a sub-cell region that ``geometry_mask`` rescued
     with ``all_touched`` is ``boundary_cells``, not the polygon/box/point the
-    resolver first named. Mutates the caller-owned ``region`` dict in place."""
+    resolver first named. Mutates the caller-owned ``region`` dict in place.
+
+    T60 D10a: ``region_type`` was carrying two orthogonal facts in one slot.
+    ``boundary_cells`` is *rasterization fidelity*; ``composite_union`` (and
+    Phase 5's ``buffer``) is *shape provenance* -- "this shape is a
+    construction, not a named place". Both can be true at once, and the
+    downgrade below used to destroy the second. It is the *likely* path, not a
+    corner: a small construction on a coarse grid self-heals, and every
+    masking site calls this before building provenance, so the researcher
+    would never learn the shape was constructed.
+
+    The prior value is preserved into ``region_origin`` here rather than at
+    each constructor, so a future origin (D9's buffer) cannot forget to opt
+    in. ``setdefault``, because a constructor that already stated its origin
+    is the more specific answer."""
     mask_region_type = masked.attrs.get("region_type")
     if mask_region_type:
+        if region.get("region_type"):
+            region.setdefault("region_origin", region["region_type"])
         region["region_type"] = mask_region_type
 class GeocodingService:
     """Free geocoding using Nominatim (OpenStreetMap) with polygon and bounding box"""
@@ -1100,6 +1116,13 @@ class RegionResolver:
 
     def resolve_location(self, location_name: str):
         """Convert location name to RegionResult with geometry"""
+        # T60 D5/D11a: the ``+`` grammar reads the RAW string, ahead of
+        # normalization, because the split has to happen before "the " is
+        # stripped -- otherwise "ny + the nj" and "the ny + nj" resolve
+        # differently. Raises (D14) rather than returning None on a bad token.
+        composed = region_composition.dispatch_composite(location_name, self)
+        if composed.claimed:
+            return composed.region
         # Check for global regions first
         location_lower = self._normalize_location_name(location_name)
         dispatched = region_dispatch.dispatch(location_lower, self)
@@ -1121,6 +1144,11 @@ class RegionResolver:
 
     async def aresolve_location(self, location_name: str):
         """Async version of resolve_location() for agent tool execution."""
+        # T60 D5: the same gate, in the same place, for the same reason as the
+        # sync twin -- the composition tier is pure, so both share one copy.
+        composed = region_composition.dispatch_composite(location_name, self)
+        if composed.claimed:
+            return composed.region
         location_lower = self._normalize_location_name(location_name)
         dispatched = region_dispatch.dispatch(location_lower, self)
         if dispatched.claimed:
