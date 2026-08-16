@@ -240,7 +240,13 @@ def _region_resolver():
     Lazy because ``utils.plotting`` pulls in cartopy/rasterio, and
     ``earthdata_mcp`` is imported in contexts that have no reason to pay for
     that. Cached because ``global_regions`` is instance state rebuilt on every
-    construction, and this is a per-tool-call path."""
+    construction, and this is a per-tool-call path.
+
+    Deliberately *not* registered in tests/cache_isolation.py's
+    ``clear_process_caches``. That policy covers caches holding data a test
+    could leave behind for the next one; this holds only the static preset
+    tables, so clearing it could never change an outcome — the same reasoning
+    that leaves ``load_preset_polygons``'s own lru_cache unregistered."""
     from tta_backend.utils.plotting import RegionResolver
 
     return RegionResolver()
