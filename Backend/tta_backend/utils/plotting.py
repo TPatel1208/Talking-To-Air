@@ -23,6 +23,7 @@ from affine import Affine
 from typing import Optional, Tuple, Union
 
 from tta_backend.config.settings import get_settings
+from tta_backend.utils import region_dispatch
 from tta_backend.earthdata_mcp.results import (
     CATEGORY_DIMENSION_CHOICE_REQUIRED,
     CATEGORY_UNSUPPORTED_GRID,
@@ -969,6 +970,11 @@ class RegionResolver:
         'east africa':        {'geometry': box( 29, -12, 52, 16), 'bounds': ( 29, -12, 52, 16), 'name': 'East Africa'},
         'southern africa':    {'geometry': box( 11, -35, 40, -15), 'bounds': ( 11, -35, 40, -15), 'name': 'Southern Africa'},
     }
+        # D12a: the T60 alias/coalition tables are hand-maintained, and a
+        # table that silently shadows "us" or "georgia" is the cheapest way
+        # to reintroduce a confident wrong region. Checked against this
+        # instance's presets rather than left to review.
+        region_dispatch.assert_no_alias_collisions(self.global_regions)
 
     # Preset keys that resolve to a real polygon (feature id in
     # preset_regions.geojson). Everything else in ``global_regions`` stays a
@@ -981,6 +987,10 @@ class RegionResolver:
         "north america": "north america", "south america": "south america",
         "europe": "europe", "africa": "africa", "asia": "asia",
         "oceania": "oceania", "antarctica": "antarctica",
+        # T60 coalitions. These are NOT ``global_regions`` keys (D3 -- a
+        # coalition has no honest bounding box), so they are unreachable via
+        # the exact-match gate below and arrive only through region_dispatch.
+        "otc": "otc", "new england": "new england",
     }
 
     def _finalize_preset(self, preset: dict, key: str) -> dict:
@@ -1041,6 +1051,14 @@ class RegionResolver:
         """Convert location name to RegionResult with geometry"""
         # Check for global regions first
         location_lower = self._normalize_location_name(location_name)
+        dispatched = region_dispatch.dispatch(location_lower, self)
+        if dispatched.claimed:
+            # Claimed-and-failed returns None here and never reaches the
+            # geocoder (D3b). Phase 1 surfaces that as the call sites'
+            # existing "Could not resolve location: '<string>'" -- honest, and
+            # it names the string but not the reason; D14's taxonomy error is
+            # Phase 3's.
+            return dispatched.region
         if location_lower in self.global_regions:
             return self._finalize_preset(self.global_regions[location_lower], location_lower)
 
@@ -1053,6 +1071,9 @@ class RegionResolver:
     async def aresolve_location(self, location_name: str):
         """Async version of resolve_location() for agent tool execution."""
         location_lower = self._normalize_location_name(location_name)
+        dispatched = region_dispatch.dispatch(location_lower, self)
+        if dispatched.claimed:
+            return dispatched.region
         if location_lower in self.global_regions:
             return self._finalize_preset(self.global_regions[location_lower], location_lower)
 
