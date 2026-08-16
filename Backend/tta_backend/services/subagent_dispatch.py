@@ -213,11 +213,10 @@ async def run_satellite(
     satellite_context = await _load_satellite_context(conversation_thread_id)
     enriched_task = _inject_satellite_context(_current_date_preamble() + task, satellite_context)
     captured_context: dict[str, str] = {}
-    # T46: the first define_area_of_interest user_input rejection seen this
-    # turn. Its presence alongside a delivered chart means the agent improvised
-    # a substitute region instead of relaying the rejection — the no-
-    # substitution guard below refuses that answer deterministically.
-    aoi_rejection: dict[str, MCPToolError] = {}
+    # T46: this turn's record of whether the agent answered about a region the
+    # researcher did not ask for. Fed from the tool stream below; the no-
+    # substitution guard refuses such an answer deterministically.
+    aoi_watch = _AoiSubstitutionWatch()
     # T49: the deterministic variable-choice picker a tool emitted out-of-band
     # (emit_variable_choice) when the T48 resolver couldn't confidently choose.
     # Kept last-wins; attached to the finalized answer below with each
@@ -239,6 +238,7 @@ async def run_satellite(
                     await on_event(event_type, data)
                 if event_type == "tool_call":
                     _capture_satellite_context(data.get("name"), data.get("args"), captured_context)
+                    aoi_watch.observe_call(data.get("args"))
                     continue
                 if event_type == "variable_choice":
                     # T49: the deterministic picker rides out-of-band, exactly
@@ -264,7 +264,7 @@ async def run_satellite(
                     continue
                 if event_type == "tool_result":
                     content = data.get("content", "")
-                    _capture_aoi_rejection(data.get("name"), content, aoi_rejection)
+                    aoi_watch.observe_result(data.get("name"), content)
                     artifacts.extend(_artifact_refs_from_content(content))
                     nested = parse_agent_result(content)
                     if nested is not None:
@@ -319,7 +319,7 @@ async def run_satellite(
         result = await _reprompt_final_envelope(satellite_agent, _satellite_retry_task(enriched_task), "satellite")
 
     finalized = _finalize_sub_agent_result(result, "earthdata")
-    finalized = _guard_aoi_substitution(finalized, aoi_rejection.get("error"))
+    finalized = _guard_aoi_substitution(finalized, aoi_watch)
     finalized = _attach_variable_choice(finalized, variable_choice_box.get("value"), task)
     if captured_context and conversation_thread_id:
         await _persist_satellite_context(
@@ -437,35 +437,77 @@ def _append_disclosures(result: AgentResult) -> AgentResult:
     return _append_scope_note(_append_variable_note(result))
 
 
-def _capture_aoi_rejection(name: Any, content: Any, into: dict[str, MCPToolError]) -> None:
-    """Record the first define_area_of_interest user_input rejection seen in a
-    turn's tool stream (T46). The rejection travels as bind_workspace's own
-    error envelope in the tool_result content, which parse_tool_result
-    re-raises as a typed MCPToolError. Non-AOI tools, non-error results, and
-    non-user_input errors (a transient provider outage isn't the researcher's
-    fault) are ignored; only the first rejection is kept."""
-    if name != "define_area_of_interest" or into.get("error") is not None:
-        return
-    try:
-        parse_tool_result(content)
-    except MCPToolError as exc:
-        if exc.category == CATEGORY_USER_INPUT:
-            into["error"] = exc
-    except Exception:
-        pass
+class _AoiSubstitutionWatch:
+    """T46: one turn's evidence that the agent answered about a region the
+    researcher did not ask for, read off the turn's own tool stream. Two
+    observations, no model in the loop:
+
+    - ``observe_result`` keeps the first define_area_of_interest user_input
+      rejection. It travels as bind_workspace's own error *envelope* in the
+      tool_result content (never a raised exception at this layer), which
+      parse_tool_result re-raises as a typed MCPToolError. Non-AOI tools,
+      successes, and non-user_input errors (a transient provider outage isn't
+      the researcher's fault) don't arm anything. Once armed, a *successful*
+      AOI result is a candidate substitute and its handle is remembered.
+    - ``observe_call`` marks the substitution real once some later tool call
+      actually works with one of those handles — that is what separates the
+      turn improvising a new region from the turn resolving an alternative
+      merely to offer it in a clarifying question."""
+
+    def __init__(self) -> None:
+        self.rejection: MCPToolError | None = None
+        self.substituted = False
+        self._substitute_handles: set[str] = set()
+
+    def observe_result(self, name: Any, content: Any) -> None:
+        if name != "define_area_of_interest":
+            return
+        try:
+            parsed = parse_tool_result(content)
+        except MCPToolError as exc:
+            if exc.category == CATEGORY_USER_INPUT and self.rejection is None:
+                self.rejection = exc
+            return
+        except Exception:
+            return
+        # A successful area call only matters once something was rejected —
+        # otherwise it is just the turn doing its job.
+        if self.rejection is None or not isinstance(parsed, dict):
+            return
+        handle = parsed.get("handle") or parsed.get("aoi_handle")
+        if handle:
+            self._substitute_handles.add(str(handle))
+
+    def observe_call(self, args: Any) -> None:
+        if not self._substitute_handles or not isinstance(args, dict):
+            return
+        if str(args.get("aoi_handle") or "") in self._substitute_handles:
+            self.substituted = True
 
 
-def _guard_aoi_substitution(result: AgentResult, rejection: MCPToolError | None) -> AgentResult:
+def _guard_aoi_substitution(result: AgentResult, watch: _AoiSubstitutionWatch) -> AgentResult:
     """T46 story #1: when define_area_of_interest rejected the requested area
-    with a user_input error but the turn still delivered a chart, the agent
-    improvised a substitute region instead of relaying the rejection — the
-    live 2026-07-17 incident answered an impossible bbox with a confident
-    'North America' map. Replace the answer with the deterministic T18 error
-    relay (the exact mechanism as salvage — no model in the loop) and drop the
-    wrong-region chart, so a researcher never receives a confident map of a
-    region they did not ask about. A rejection with no delivered chart (the
-    agent relayed it and asked a clarifying question) is left untouched."""
-    if rejection is None or not result.charts:
+    with a user_input error and the turn went on to answer about a region of
+    the agent's own choosing, replace the answer with the deterministic T18
+    error relay (the exact mechanism as salvage — no model in the loop) and
+    drop any wrong-region chart, so a researcher never receives a confident
+    answer about a region they did not ask about.
+
+    Two independent kinds of evidence, either of which is enough:
+
+    - a *delivered chart* — the live 2026-07-17 incident answered an
+      impossible bbox with a confident 'North America' map;
+    - a *substitute area handle the turn actually used* — the live 2026-08-16
+      run (T60 Phase 1.5 gate, V6) that answered "Plot ozone over the OTC"
+      with the Northeastern United States. That turn delivered no chart (its
+      retrieval stopped at the size gate for unrelated reasons), so a guard
+      watching only for a picture left the wrong answer standing.
+
+    A rejection the agent honestly relayed — no chart, and no substitute
+    handle put to work — is left untouched: that turn asked the researcher
+    what they meant, and a templated error would be a downgrade."""
+    rejection = watch.rejection
+    if rejection is None or not (result.charts or watch.substituted):
         return result
     detail = rejection.message
     if rejection.suggestion:
