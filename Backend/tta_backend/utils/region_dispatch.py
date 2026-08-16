@@ -105,6 +105,92 @@ ALIASES: dict[str, str] = {
 }
 
 
+@dataclass(frozen=True)
+class ExtentDispatch:
+    """The retrieval plane's answer, in the same three states as
+    ``DispatchResult`` and for the same reason.
+
+    - **claimed, with a location** -- send this to ``define_area_of_interest``
+      instead of what the caller passed.
+    - **not claimed** (``EXTENT_NOT_CLAIMED``) -- outside this module's
+      vocabulary. The caller sends its original string, byte-identical.
+    - **claimed, location is None** -- a known coalition or alias that failed
+      to produce a footprint.
+
+    The third state exists here for exactly the reason D3b gives on the mask
+    plane, one plane over. Falling through on a missing asset hands ``"OTC"``
+    to the MCP's own geocoder, which is Nominatim, which returns an aerodrome
+    in **Chad** (Phase 0 gate, V2). Phase 1 fails closed on the mask; the
+    retrieval plane must not fail open behind it, or the mask clips a cube that
+    never covered the region and nothing says so.
+    """
+
+    claimed: bool
+    location: str | None = None
+
+
+EXTENT_NOT_CLAIMED = ExtentDispatch(claimed=False)
+
+
+def _bbox_string(bounds) -> str:
+    """``"W,S,E,N"`` decimal degrees -- the channel the Phase 1.5 gate chose.
+
+    V5 measured both channels live: the MCP accepts the 12,951-byte OTR
+    GeoJSON whole (``vertex_count: 519``, untruncated) *and* derives from it
+    the identical ``bbox`` this string carries. V7 then measured what the
+    difference buys -- ``estimate_retrieval_size`` returned **81 granules for
+    both**, so the polygon costs 12,951 bytes on every call (and in the T53
+    cache key) for a measured zero reduction in what is fetched.
+
+    The envelope is 2.453x the polygon's area, and that over-inclusion is
+    *correct*: the mask clips it. Retrieval must contain the mask, not equal
+    it. Revisit only if someone measures Harmony-side polygon subsetting
+    reducing materialized bytes; the AOI response already reports ``source``
+    (``bbox`` vs ``geojson``), so the switch would be visible.
+    """
+    return ",".join(f"{v:.6f}" for v in bounds)
+
+
+def dispatch_extent(normalized_name: str, global_regions: dict) -> ExtentDispatch:
+    """Translate a T60 vocabulary word into an extent the MCP can consume.
+
+    ``normalized_name`` must already have been through
+    ``RegionResolver._normalize_location_name`` (D11a), so both planes
+    normalize identically and cannot disagree about what string they were
+    handed.
+
+    Scope is exactly this module's vocabulary -- ``COALITIONS`` plus
+    ``ALIASES`` -- and nothing else. A ``global_regions`` key typed directly
+    ("northeast us", "north america", "paris") is *not* claimed and reaches the
+    MCP byte-identical to today; those already work, and translating them would
+    be a blast radius this phase has no measurement to justify.
+
+    The *alias* forms are claimed even when they point at a plain preset, and
+    that is not an inconsistency -- it is Risk 5. Phase 1 taught the mask plane
+    that "northeastern us" means the ``northeast us`` box; the MCP still
+    geocodes that string to an ~11 m railway platform in Boston (Phase 0, V2).
+    Leaving the alias untranslated is precisely the two-plane divergence where
+    the mask clips against a cube that never covered it.
+    """
+    from tta_backend.utils.plotting import load_preset_polygons
+
+    target = ALIASES.get(normalized_name, normalized_name)
+    if target not in COALITIONS and normalized_name not in ALIASES:
+        return EXTENT_NOT_CLAIMED  # not our vocabulary -- caller sends its own string
+
+    if target in COALITIONS:
+        polygon = load_preset_polygons().get(target)
+        if polygon is None:
+            return ExtentDispatch(claimed=True)  # claimed and failed -- do NOT geocode
+        return ExtentDispatch(claimed=True, location=_bbox_string(polygon.bounds))
+
+    preset = global_regions.get(target)
+    bounds = preset.get("bounds") if preset else None
+    if not bounds:
+        return ExtentDispatch(claimed=True)
+    return ExtentDispatch(claimed=True, location=_bbox_string(bounds))
+
+
 class AliasCollisionError(RuntimeError):
     """An alias or coalition id shadows something that already resolves."""
 
