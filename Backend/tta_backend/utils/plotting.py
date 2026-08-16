@@ -71,6 +71,14 @@ _PRESET_REGIONS_PATH = os.path.join(
     os.path.dirname(__file__), "..", "datasets", "preset_regions.geojson"
 )
 
+# GeoJSON geometry types that carry no area, and therefore no boundary to
+# disclose as one (see RegionResolver._geocoded_region). GeometryCollection is
+# deliberately absent: it *may* contain a polygon, so it keeps the shape-based
+# treatment rather than being pre-judged by its type tag.
+_ZERO_AREA_GEOJSON_TYPES = frozenset(
+    {"Point", "MultiPoint", "LineString", "MultiLineString"}
+)
+
 
 @functools.lru_cache(maxsize=1)
 def load_preset_polygons() -> dict:
@@ -1019,9 +1027,22 @@ class RegionResolver:
         or ``point_buffer`` when it didn't and we mint a 0.1° box around the
         centroid. ``display_name`` is the geocoder's own label, carried
         through so a wrong-place answer ("Paris, Texas") is catchable. Shared
-        by the sync and async resolvers so a place can't resolve two ways."""
-        if geo_result.get("polygon"):
-            geometry = shape(geo_result["polygon"])
+        by the sync and async resolvers so a place can't resolve two ways.
+
+        A GeoJSON hit is not automatically a boundary. Nominatim wraps a
+        *point* result in GeoJSON as readily as an administrative area, so
+        ``geojson is not None`` was never the same question as "did we get a
+        footprint" -- measured in the T60 Phase 0 gate (V2), both ``"OTC"``
+        (an aerodrome in Chad) and ``"northeastern us"`` (an ~11 m railway
+        platform in Boston) return GeoJSON ``Point`` geometries and were being
+        disclosed as ``polygon``. A zero-area geometry gets the same 0.1° box
+        the no-geojson branch mints, because that is the same footprint by the
+        same logic; ``point_buffer`` already names it honestly, and inventing a
+        second value for "point, but wrapped in GeoJSON" would be a
+        distinction with no consequence for the researcher."""
+        geojson = geo_result.get("polygon")
+        if geojson and geojson.get("type") not in _ZERO_AREA_GEOJSON_TYPES:
+            geometry = shape(geojson)
             region_type = "polygon"
         else:
             lon, lat = geo_result["longitude"], geo_result["latitude"]

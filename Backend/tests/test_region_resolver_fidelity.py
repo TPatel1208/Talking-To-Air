@@ -71,6 +71,34 @@ class RegionResolverFidelityTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(maxx - minx, 0.2)
         self.assertAlmostEqual(maxy - miny, 0.2)
 
+    def test_geocoded_point_geometry_is_not_disclosed_as_a_polygon(self):
+        """Nominatim wraps a *point* hit in GeoJSON too, and a zero-area point
+        is not a boundary. Measured in the T60 Phase 0 gate (V2): ``"OTC"``
+        returns a GeoJSON ``Point`` at an airport in Chad and ``"northeastern
+        us"`` a GeoJSON ``Point`` on a Boston railway platform -- both were
+        disclosed as ``region_type: polygon``, which is exactly the claim T42's
+        vocabulary exists to make checkable. (Both of those strings are now
+        claimed by the T60 dispatcher before the geocoder is reached, so this
+        drives the branch with a string outside that vocabulary -- the defect
+        is the geocoder's, not the coalitions'.)"""
+        geo = {
+            "latitude": 42.3399,
+            "longitude": -71.0892,
+            "display_name": "Northeastern, 360 Huntington Avenue, Boston",
+            "polygon": {"type": "Point", "coordinates": [-71.0892, 42.3399]},
+            "bbox": [],
+        }
+        resolver = self._resolver()
+        with patch.object(resolver.geocoding_service, "geocode", return_value=geo):
+            region = resolver.resolve_location("northeastern university boston")
+
+        self.assertEqual(region["region_type"], "point_buffer")
+        # Same footprint the no-geojson branch already mints, by the same
+        # logic: the shape carries no area, so the 0.1° box is what it is.
+        minx, miny, maxx, maxy = region["bounds"]
+        self.assertAlmostEqual(maxx - minx, 0.2)
+        self.assertAlmostEqual(maxy - miny, 0.2)
+
     async def test_sync_and_async_resolvers_strip_the_prefix_identically(self):
         # The async path stripped a leading "the "; the sync path didn't, so
         # the same string resolved two ways by code path. Both must now
