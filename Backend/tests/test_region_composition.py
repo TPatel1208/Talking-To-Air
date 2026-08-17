@@ -423,6 +423,26 @@ class ShapeProvenanceTests(unittest.TestCase):
         resolver = RegionResolver()
         region = resolver.resolve_location("NY + NJ")
         self.assertEqual(region["region_type"], "composite_union")
+        # **The constructor states its own origin, before any masking runs.**
+        #
+        # Added in Phase 5, from a mutation this class did not catch. 3b's own
+        # mutation #3 deleted ``region_origin`` from the constructor *and* from
+        # ``apply_mask_region_type`` together, and two tests died -- which read
+        # as proof. The single-point mutant (constructor only) **survives every
+        # assertion below**, because ``apply_mask_region_type`` does
+        # ``setdefault("region_origin", region["region_type"])``: it *derives*
+        # the origin from whatever the slot held, so it reconstructs
+        # ``composite_union`` for free. The assertions below therefore prove
+        # ``apply_mask_region_type``, which the sibling test already covers,
+        # and not the composite constructor this class is named for.
+        #
+        # The behaviour was never actually unpinned -- the constructor-only
+        # mutant is caught by
+        # ``test_a_composite_chart_puts_both_disclosure_fields_on_the_wire``,
+        # one file over. But a test whose docstring says "without this test
+        # D10a is a refactor with no behaviour behind it" should be the test
+        # that dies, and it was not.
+        self.assertEqual(region["region_origin"], "composite_union")
 
         masked = mask_data_by_geometry(self._coarse_grid(), region["geometry"])
         apply_mask_region_type(masked, region)
