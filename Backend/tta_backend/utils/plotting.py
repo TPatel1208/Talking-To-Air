@@ -24,7 +24,7 @@ from typing import Optional, Tuple, Union
 
 from tta_backend.config.settings import get_settings
 from tta_backend.datasets.us_states import US_STATES
-from tta_backend.utils import region_composition, region_dispatch
+from tta_backend.utils import region_buffer, region_composition, region_dispatch
 from tta_backend.earthdata_mcp.results import (
     CATEGORY_DIMENSION_CHOICE_REQUIRED,
     CATEGORY_UNSUPPORTED_GRID,
@@ -1182,6 +1182,16 @@ class RegionResolver:
         composed = region_composition.dispatch_composite(location_name, self)
         if composed.claimed:
             return composed.region
+        # T60 D9/D11b: the buffer grammar, and it runs AFTER composition
+        # deliberately (gate V25). "within 50 km of NY + NJ" contains a "+",
+        # so the composition grammar claims it first and hard-fails naming the
+        # token -- the right answer, because D9 forbids X from resolving
+        # recursively through COMPOSITE. Reversing the order would turn that
+        # refusal into a buffer around a region D9 does not allow. This is the
+        # sync twin; it is the one this method needs (export_service).
+        buffered = region_buffer.dispatch_buffer(location_name, self)
+        if buffered.claimed:
+            return buffered.region
         # Check for global regions first
         location_lower = self._normalize_location_name(location_name)
         dispatched = region_dispatch.dispatch(location_lower, self)
@@ -1208,6 +1218,14 @@ class RegionResolver:
         composed = region_composition.dispatch_composite(location_name, self)
         if composed.claimed:
             return composed.region
+        # T60 D9/D11b: the async twin, in the same position and by the same
+        # V25 ordering argument as the sync one. This is the twin every
+        # analysis tool reaches (stat/plot/validation call the async resolver
+        # exclusively -- gate V24), and it is async precisely so the geocode
+        # does not block the event loop.
+        buffered = await region_buffer.adispatch_buffer(location_name, self)
+        if buffered.claimed:
+            return buffered.region
         location_lower = self._normalize_location_name(location_name)
         dispatched = region_dispatch.dispatch(location_lower, self)
         if dispatched.claimed:

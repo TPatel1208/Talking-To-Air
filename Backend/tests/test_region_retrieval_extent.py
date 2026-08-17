@@ -202,6 +202,71 @@ class RetrievalExtentTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCa
             parse_tool_result(raw)
         self.assertEqual(caught.exception.category, CATEGORY_TOO_LARGE)
 
+    async def test_a_buffer_reaches_the_mcp_as_an_extent_never_as_the_phrase(self):
+        """T60 Phase 5: the buffer grammar goes through this seam too, and it
+        has *less* behind it than anything before it.
+
+        A coalition has a name the MCP's geocoder might resolve, badly. A
+        composite at least contains real place names. Gate V23 measured
+        ``"within 50 miles of NYC"`` against live Nominatim and it returns
+        **zero hits** -- so an unclaimed buffer is not a wrong retrieval, it is
+        no retrieval at all, after which T46 Phase 2's V6 measured the agent
+        silently substituting a different region. The containment property is
+        asserted where the extent is decided (test_region_buffer.py); this
+        covers the wiring."""
+        from unittest.mock import AsyncMock, patch
+
+        from shapely.geometry import box
+
+        from tta_backend.utils.plotting import GeocodingService, RegionResolver
+
+        hit = {
+            "latitude": 40.7128, "longitude": -74.0060,
+            "display_name": "New York, United States", "polygon": None, "bbox": [],
+        }
+        with patch.object(GeocodingService, "ageocode", AsyncMock(return_value=hit)):
+            await self.tools["define_area_of_interest"].ainvoke(
+                {"location": "within 50 miles of NYC"}
+            )
+
+            self.assertEqual(len(self.seen), 1)
+            sent = self.seen[0]
+            self.assertNotIn("within", sent)
+
+            resolver = RegionResolver()
+            masked = (await resolver.aresolve_location("within 50 miles of NYC"))["geometry"]
+
+        # Containment, not equality -- the retrieval envelope is a superset of
+        # the disc it contains, and the mask clips it.
+        self.assertTrue(box(*_parse_bbox(sent)).contains(masked))
+
+    async def test_a_refused_buffer_never_reaches_the_mcp(self):
+        """V22 on the retrieval plane. An antimeridian-crossing buffer refused
+        for the mask and retrieved anyway would pull a globe-spanning band --
+        the 200x over-retrieval option (b) was rejected for."""
+        from unittest.mock import AsyncMock, patch
+
+        from tta_backend.earthdata_mcp.results import (
+            CATEGORY_USER_INPUT, MCPToolError, parse_tool_result,
+        )
+        from tta_backend.utils.plotting import GeocodingService
+
+        hit = {
+            "latitude": 20.0, "longitude": 179.5,
+            "display_name": "somewhere in the Pacific", "polygon": None, "bbox": [],
+        }
+        with patch.object(GeocodingService, "ageocode", AsyncMock(return_value=hit)):
+            raw = await self.tools["define_area_of_interest"].ainvoke(
+                {"location": "within 100 km of somewhere"}
+            )
+
+        # The MCP was never asked. This is the assertion that bites.
+        self.assertEqual(self.seen, [])
+        with self.assertRaises(MCPToolError) as caught:
+            parse_tool_result(raw)
+        self.assertEqual(caught.exception.category, CATEGORY_USER_INPUT)
+        self.assertIn("antimeridian", caught.exception.message.lower())
+
     async def test_a_string_outside_the_vocabulary_is_passed_through_untouched(self):
         """The regression this seam is most likely to cause, and the mirror of
         the mask plane's NOT_CLAIMED fall-through. "paris" must reach the MCP

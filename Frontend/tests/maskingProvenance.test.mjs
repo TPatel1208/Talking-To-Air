@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { resolveMasking, resolveRegionFidelity, formatQaPassRate, regionTypeNote } from '../src/utils/maskingProvenance.js'
+import { resolveMasking, resolveRegionFidelity, formatQaPassRate, regionTypeNote, regionOriginNote } from '../src/utils/maskingProvenance.js'
 
 // Timeseries payloads carry masking at the top level
 // (plot_tools ts_payload["masking"]).
@@ -289,4 +289,48 @@ test('every region_type the backend can emit has a plain-language note', () => {
 
 test('an unknown region_type degrades to something readable, not the raw enum', () => {
   assert.ok(!regionTypeNote('buffer_from_phase_5').includes('_'))
+})
+
+// T60 Phase 5, D10b. `buffer` is the CUSTOM grammar's output ("within 50 miles
+// of NYC") and it is FAITHFUL: a geodesic AEQD buffer is the exact shape that
+// was asked for, retaining 99.99% of pi r^2 at every latitude the gate tested.
+// V16's trace applies unchanged -- unlisted, it renders as the raw enum under
+// a "Region fidelity" heading whose other values are all apologies.
+test('a faithful buffer needs no fidelity caveat', () => {
+  const chart = {
+    provenance: {
+      region_type: 'buffer',
+      display_name: '50 miles around New York, United States (geodesic buffer, radius 50 miles)',
+    },
+  }
+  assert.equal(resolveRegionFidelity(chart), null)
+})
+
+// D10a, and for `buffer` this is the *likely* path rather than a corner: a
+// 50-mile disc on a TEMPO L3 cell is small enough to self-heal, at which point
+// the only thing still saying the shape was a deliberate construction is
+// region_origin.
+test('a self-healed buffer discloses both the rasterization and the origin', () => {
+  const chart = {
+    provenance: {
+      region_type: 'boundary_cells',
+      region_origin: 'buffer',
+      display_name: '5 km around Trenton, United States (geodesic buffer, radius 5 km)',
+    },
+  }
+  const region = resolveRegionFidelity(chart)
+  assert.equal(region.regionType, 'boundary_cells')
+  assert.equal(region.regionOrigin, 'buffer')
+  assert.ok(regionOriginNote('buffer'), 'a self-healed buffer origin says nothing')
+  assert.ok(!regionOriginNote('buffer').includes('_'))
+})
+
+// `point_buffer` means the OPPOSITE thing -- "no boundary was found, so here
+// is a 0.1 degree box" -- and D10 is explicit that conflating the two inverts
+// the disclosure. This is the test that fails if someone ever "simplifies" the
+// two into one value.
+test('buffer and point_buffer do not share a note', () => {
+  assert.notEqual(regionTypeNote('buffer'), regionTypeNote('point_buffer'))
+  assert.ok(regionTypeNote('point_buffer').includes('no boundary found'))
+  assert.ok(!regionTypeNote('buffer').includes('no boundary found'))
 })

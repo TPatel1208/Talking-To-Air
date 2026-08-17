@@ -292,7 +292,7 @@ def region_aware_area_of_interest(tool: BaseTool) -> BaseTool:
     to pre-T60 behavior, which is the mirror of the mask plane's NOT_CLAIMED
     fall-through and the regression this seam is most likely to cause.
     """
-    from tta_backend.utils import region_composition, region_dispatch
+    from tta_backend.utils import region_buffer, region_composition, region_dispatch
 
     async def _call(**kwargs):
         location = kwargs.get("location")
@@ -307,6 +307,20 @@ def region_aware_area_of_interest(tool: BaseTool) -> BaseTool:
             # convert to the same tool-JSON envelope used below.
             try:
                 composed = region_composition.dispatch_composite_extent(location, resolver)
+                # T60 D9/D13: the buffer grammar, second, in the same order the
+                # mask plane uses (gate V25 -- "within 50 km of NY + NJ"
+                # contains a "+" and belongs to the composition grammar, which
+                # hard-fails it naming the token). A buffer phrase has no name
+                # at all: V23 measured "within 50 miles of NYC" returning zero
+                # Nominatim hits, so unclaimed it is not a wrong retrieval but
+                # a failed one -- after which the agent silently substitutes
+                # (T46 Phase 2, V6). Its refusals (units, a named region as X,
+                # the antimeridian, a pole, D16's extent) ride the same
+                # MCPToolError channel already caught here.
+                buffered = (
+                    composed if composed.claimed
+                    else await region_buffer.adispatch_buffer_extent(location, resolver)
+                )
             except MCPToolError as exc:
                 logger.error(
                     "region_composite_unresolved",
@@ -317,7 +331,7 @@ def region_aware_area_of_interest(tool: BaseTool) -> BaseTool:
             # plane can normalize differently than the other.
             normalized = resolver._normalize_location_name(location)
             dispatched = (
-                composed if composed.claimed
+                buffered if buffered.claimed
                 else region_dispatch.dispatch_extent(normalized, resolver.global_regions)
             )
             if dispatched.claimed:
