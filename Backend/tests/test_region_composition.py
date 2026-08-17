@@ -134,13 +134,29 @@ class PostalVocabularyTests(unittest.IsolatedAsyncioTestCase):
         what a region is will drift from the first. Comparing only
         ``region_type`` or only the geometry would miss a wrong
         ``display_name``, which is the field carrying the ``"(U.S. state)"``
-        disambiguation V12 put there."""
+        disambiguation V12 put there.
+
+        **50 of 51 as of Phase 4.** ``"georgia"`` in full is now ambiguous
+        between the state and the country and fails closed by design (D7, as
+        Phase 4's V20 narrowed it), while ``"GA"`` still resolves -- so the
+        equivalence this asserts is *deliberately* broken for exactly that one
+        name, and D7's whole point is the asymmetry. The exclusion is derived
+        from the same function the guard uses rather than hard-coded, so a
+        second collision joins it automatically; both readings of Georgia are
+        pinned in ``test_region_countries.py::GeorgiaAmbiguityTests``."""
         from tta_backend.datasets.us_states import US_STATES
+        from tta_backend.utils.region_composition import ambiguous_member_tokens
 
         resolver = self._resolver()
         self.assertEqual(len(US_STATES), 51)
+        ambiguous = ambiguous_member_tokens()
+        self.assertEqual(ambiguous, {"georgia"},
+                         "a new state/country collision appeared; D7's guard "
+                         "now covers it and this exclusion grew with it")
 
         for key, state in US_STATES.items():
+            if key in ambiguous:
+                continue
             with self.subTest(state=key):
                 postal = state["postal"]
                 # The duplicate-member form, which D15 explicitly permits

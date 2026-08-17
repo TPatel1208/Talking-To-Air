@@ -99,6 +99,60 @@ def load_preset_polygons() -> dict:
         return {}
 
 
+# T60 Phase 4: the 242 individually-addressable countries, the ``+`` grammar's
+# second member vocabulary (D6). A **second** asset rather than more features in
+# the one above, on two measurements (Phase 4 gate, V18/V19):
+#
+#   * ``georgia`` and ``antarctica`` are each a shipped preset id *and* an
+#     ``ADMIN`` value. Merged, this dict comprehension silently reduces 304
+#     features to 302 polygons -- last wins -- and ``"georgia"`` masks the
+#     Caucasus while ``global_regions['georgia']`` still reports the U.S.
+#     Southeast. ``AliasCollisionError`` never sees it: that guard compares
+#     keys against ``global_regions``, one layer above the asset.
+#   * Merged cold parse is 230-354 ms against 34.9 ms today, and every region
+#     request pays it -- including ``"paris"``, which then geocodes anyway.
+#     Separate, the 165 ms is paid only when a country token is typed.
+_ADMIN0_COUNTRIES_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "datasets", "admin0_countries.geojson"
+)
+
+
+@functools.lru_cache(maxsize=1)
+def load_admin0_polygons() -> dict:
+    """``{normalized ADMIN: {"name": ADMIN, "geometry": geom}}``, parsed once.
+
+    Keys are already normalized by the builder, so ``"bahamas"`` resolves even
+    though the source spells it ``"The Bahamas"`` -- the only one of the 242
+    that ``_normalize_location_name`` changes (V19).
+
+    Carrying the source's own ``ADMIN`` spelling alongside the geometry is why
+    this returns a richer value than ``load_preset_polygons``: the key is
+    lower-cased and ``"the "``-stripped, and an answer that cited *that* would
+    say "Bahamas", "Eswatini" and "Hong Kong S.A.R" for places Natural Earth
+    spells "The Bahamas", "eSwatini" and "Hong Kong S.A.R.". ``display_name``
+    is what a T42 answer cites, so it gets the real spelling rather than a
+    ``.title()`` reconstruction of a normalized key.
+
+    Degrades to ``{}`` like ``load_preset_polygons``, which for this asset means
+    every country token stops resolving and the composite grammar reports it as
+    an unknown token. That is the fail-closed answer D3b requires: there is no
+    bounding-box tier under this one to fall back to, by design (V21), and the
+    geocoder is off the table for anything containing a ``+`` (D8)."""
+    try:
+        with open(_ADMIN0_COUNTRIES_PATH, encoding="utf-8") as fh:
+            fc = json.load(fh)
+        return {
+            feature["id"]: {
+                "name": feature["properties"]["name"],
+                "geometry": shape(feature["geometry"]),
+            }
+            for feature in fc.get("features", [])
+        }
+    except (OSError, ValueError, KeyError) as e:
+        logger.warning("Could not load admin-0 country polygons: %s", e)
+        return {}
+
+
 def plot_map(
     data_array: xr.DataArray,
     title: str = "",
@@ -1026,6 +1080,11 @@ class RegionResolver:
         # to reintroduce a confident wrong region. Checked against this
         # instance's presets rather than left to review.
         region_dispatch.assert_no_alias_collisions(self.global_regions)
+        # T60 Phase 4's table, same rule. Kept a separate call because it
+        # deliberately does not open the country asset -- see its docstring;
+        # doing so here would spend the 165 ms cold parse on every resolver,
+        # including the ones that only ever resolve "paris".
+        region_composition.assert_no_country_collisions(self.global_regions)
 
     # Preset keys that resolve to a real polygon (feature id in
     # preset_regions.geojson). Everything else in ``global_regions`` stays a

@@ -17,6 +17,7 @@ Source: Natural Earth 110m + 50m (public domain), via the natural-earth-vector
 GeoJSON mirror.
 """
 import json
+import math
 import os
 import urllib.request
 
@@ -40,6 +41,43 @@ ADMIN1_SOURCE_URL = (
 # holds DC to within 0.2% and costs 15.8 KB for the OTR polygon. The 110m
 # continent/US features keep their existing tolerances, unchanged.
 ADMIN1_TOLERANCE = 0.01
+
+# T60 Phase 4: the individually-addressable countries, the composite grammar's
+# second member vocabulary (D6).
+ADMIN0_SOURCE_URL = (
+    "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/"
+    "geojson/ne_50m_admin_0_countries.geojson"
+)
+# T60/D2a at country scale, and this is where a *uniform* tolerance stops
+# working. The Phase 4 gate (V18) measured ``ADMIN1_TOLERANCE`` against all 242
+# countries: it retains **33.2% of Vatican City**, 50.0% of Ashmore and Cartier,
+# 76.6% of Tuvalu, 81.2% of Monaco -- 40 of 242 outside a two-sided 99-101%
+# band. D2 switched to 50m *specifically* to protect Vatican/Monaco/Singapore/
+# Liechtenstein, and the tolerance D2a picked undid it; nobody had measured that
+# because the states are all within one order of magnitude of each other in size
+# and the countries span six.
+#
+# So the tolerance is proportional to the feature's **own** linear scale:
+#
+#     tol = min(CAP, sqrt(feature.area) / DIVISOR)     "1% of its own size"
+#
+# ``sqrt(area)`` and not the bbox span, and that is load-bearing: five countries
+# (Russia, Fiji, New Zealand, the USA, Antarctica) have a 360-degree-wide bbox
+# because they cross the antimeridian, so a span-based measure would hand
+# exactly those five an enormous tolerance.
+#
+# Measured over all 242 (V18): band **99.39% - 100.48%**, nothing outside it, no
+# exception list, and a worst-case Hausdorff error of 1.3% of the feature's own
+# scale (Guinea-Bissau). Vatican goes 33.2% -> 100.00% at a tolerance of
+# 0.000088 deg. A size *floor* ("do not simplify below X") was measured too and
+# discarded: once the tolerance is proportional it buys 0.04 points of band for
+# a third constant.
+#
+# These are deliberately NOT ``ADMIN1_TOLERANCE``. That constant is shared with
+# the 51 states and the two coalitions, and re-cutting them to help the
+# countries would move 3a's asset pins for no measured reason.
+ADMIN0_TOLERANCE_CAP = 0.02
+ADMIN0_TOLERANCE_DIVISOR = 100
 CONUS_BOX = box(-125, 24, -66, 50)
 # Continents we ship as presets, in the CONTINENT spelling Natural Earth uses.
 CONTINENTS = [
@@ -102,6 +140,24 @@ OUT_PATH = os.path.join(_DATASETS, "preset_regions.geojson")
 # from the same fetch, in the same run, so the two artifacts cannot drift; a
 # test asserts they agree on all 51 keys and bounds rather than trusting it.
 STATES_OUT_PATH = os.path.join(_DATASETS, "us_states.py")
+# T60 Phase 4: a **separate** asset, not merged into preset_regions.geojson.
+#
+# 3a merged the states after V11 found the two-file case rested on a byte pin
+# that did not exist. The Phase 4 gate (V19) found the opposite for countries,
+# by measurement: merging produces a 304-feature file that
+# ``load_preset_polygons`` -- a dict comprehension keyed on ``feature["id"]`` --
+# silently reduces to **302** polygons, because ``georgia`` and ``antarctica``
+# are both a shipped preset id *and* an ADMIN value. Last feature wins, so
+# ``"georgia"`` would mask the Caucasus (39.98..46.67 E) while
+# ``global_regions['georgia']`` still reported the U.S. Southeast
+# (-85.62..-80.87 E). Zero overlap, no error, and ``AliasCollisionError`` does
+# not fire -- it compares keys against ``global_regions``, one layer above the
+# asset, and has no view of feature ids at all.
+#
+# The parse budget agrees: merged is 230-354 ms cold against 34.9 ms today, paid
+# by every region request including ``"paris"``. Separate, the 165 ms is paid
+# only when a country token is actually typed.
+COUNTRIES_OUT_PATH = os.path.join(_DATASETS, "admin0_countries.geojson")
 
 # Natural Earth's own ``type`` for a US admin-1 unit, mapped to the
 # parenthetical the resolved region cites. Phase 3a gate V12 measured why this
@@ -241,6 +297,72 @@ def _write_states_table(state_features: list[dict]) -> None:
           f"{len(state_features)} states)")
 
 
+EXPECTED_ADMIN0 = 242  # measured in the Phase 4 gate, 2026-08-16
+
+
+def _preset_key(name: str) -> str:
+    """Mirror of ``RegionResolver._normalize_location_name``.
+
+    The build script deliberately does not import the backend, so this is a
+    copy -- and a copy of a normalizer is exactly the T42 bug (two paths
+    normalizing differently) waiting to happen. What keeps it honest is that
+    the *asset* is checked in: a test asserts every emitted id is already a
+    fixed point of the real normalizer, so a drift between the two shows up as
+    a failing test rather than as a country that only resolves when spelled
+    with a leading "the".
+
+    Measured (V19): ``"The Bahamas"`` is the only one of the 242 that this
+    changes, and it is the whole reason the strip cannot be skipped -- keyed on
+    ``ADMIN.lower()`` alone, ``"bahamas"`` would never resolve while
+    ``"the bahamas"`` would."""
+    normalized = " ".join(name.lower().strip().split())
+    return normalized.removeprefix("the ")
+
+
+def _admin0_tolerance(geom) -> float:
+    """The V18 scheme: 1% of the feature's own linear scale, capped."""
+    if geom.area <= 0:
+        return 0.0
+    return min(ADMIN0_TOLERANCE_CAP, math.sqrt(geom.area) / ADMIN0_TOLERANCE_DIVISOR)
+
+
+def _country_features(features: list[dict]) -> list[dict]:
+    """One feature per country, keyed on the normalized ``ADMIN`` (D6).
+
+    Matched on ``ADMIN`` and never on an ISO code -- Verified Finding 5, 26 of
+    51 U.S. postal codes are also ISO alpha-2 country codes, and banning codes
+    from the grammar removes the ambiguity at the root rather than resolving it.
+
+    Fails loudly on a changed feature count or a duplicate key, for the same
+    reason ``_us_admin1`` does: the emitted ids *are* the composite grammar's
+    vocabulary, so a mirror update that merges or renames a country would
+    otherwise ship a silently different one."""
+    admins = [f["properties"].get("ADMIN") for f in features]
+    if len(features) != EXPECTED_ADMIN0 or not all(admins):
+        raise ValueError(
+            f"admin-0 source has {len(features)} features, expected "
+            f"{EXPECTED_ADMIN0}, with every ADMIN non-empty; the mirror changed "
+            "-- re-run the Phase 4 V18/V19 measurements before moving this constant"
+        )
+
+    out, seen = [], {}
+    for f in sorted(features, key=lambda f: f["properties"]["ADMIN"].lower()):
+        admin = f["properties"]["ADMIN"]
+        key = _preset_key(admin)
+        if key in seen:
+            # V19's finding, turned into a build-time refusal rather than a
+            # comment nobody re-reads. Two features under one id is a silent
+            # overwrite in every consumer, because they all key on the id.
+            raise KeyError(
+                f"admin-0 key {key!r} is produced by both {seen[key]!r} and "
+                f"{admin!r}; one would silently overwrite the other"
+            )
+        seen[key] = admin
+        geom = shape(f["geometry"])
+        out.append(_feature(key, admin, geom, _admin0_tolerance(geom)))
+    return out
+
+
 def _coalition_features(features: list[dict]) -> list[dict]:
     """Dissolve each T60 coalition from whole 50m admin-1 US jurisdictions.
 
@@ -300,6 +422,14 @@ def main() -> None:
         json.dump(fc, fh)
     print(f"wrote {OUT_PATH} ({os.path.getsize(OUT_PATH)} bytes, "
           f"{len(out_features)} features)")
+
+    # T60 Phase 4, its own file (see COUNTRIES_OUT_PATH for why it is not
+    # merged into the collection above).
+    countries = _country_features(_load_features(ADMIN0_SOURCE_URL))
+    with open(COUNTRIES_OUT_PATH, "w", encoding="utf-8") as fh:
+        json.dump({"type": "FeatureCollection", "features": countries}, fh)
+    print(f"wrote {COUNTRIES_OUT_PATH} ({os.path.getsize(COUNTRIES_OUT_PATH)} "
+          f"bytes, {len(countries)} features)")
 
 
 if __name__ == "__main__":
