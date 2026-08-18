@@ -34,6 +34,7 @@ from tta_backend.earthdata_mcp.results import (
     CATEGORY_USER_INPUT,
     MCPToolError,
 )
+from tta_backend.repositories.chart_repository import ensure_chart_table
 from tta_backend.repositories.session_metadata_repository import (
     ensure_session_metadata_table,
     get_session_metadata,
@@ -141,6 +142,7 @@ async def lifespan(app: FastAPI):
     await ensure_session_metadata_table()
     await ensure_user_connector_table()
     await ensure_artifact_table()
+    await ensure_chart_table()
 
     # T52: reclaim staging dirs and manifest-less entries a crash mid-write
     # left behind. Neither is ever served (the manifest is the completion

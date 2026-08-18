@@ -29,6 +29,25 @@ def _sanitize_non_finite(value: Any) -> Any:
         return [_sanitize_non_finite(v) for v in value]
     return value
 
+async def ensure_chart_table() -> None:
+    async with pg_connection() as conn:
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agent_charts (
+
+                id TEXT PRIMARY KEY,
+                thread_id TEXT NOT NULL,
+                user_id TEXT NOT NULL DEFAULT '__legacy__',
+                payload JSONB NOT NULL,
+                metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );"""
+        )
+        await conn.execute("""CREATE INDEX IF NOT EXISTS idx_agent_charts_thread_created ON agent_charts (thread_id, created_at);""")
+
+        await conn.execute("""CREATE INDEX IF NOT EXISTS idx_agent_charts_user_id ON agent_charts (user_id);""")
+
+        await conn.commit()
 
 async def save_chart(thread_id: str, payload: dict[str, Any], user_id: str) -> dict[str, Any]:
     # Sanitise before the id hash below too, so a payload that differs only
