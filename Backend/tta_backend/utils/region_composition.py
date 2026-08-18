@@ -20,9 +20,13 @@ Network-free, like ``region_dispatch``: every member is a checked-in Natural
 Earth boundary and the geocoder is never consulted (D8).
 """
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from tta_backend.datasets.us_states import US_STATES
+
+if TYPE_CHECKING:  # the runtime imports stay function-local (circularity);
+    # this one only feeds the annotations on the refusal factories below.
+    from tta_backend.earthdata_mcp.results import MCPToolError
 
 # D5: symbol-only. No natural-language "and"/"or" -- no legitimate place name
 # contains a literal "+", so the split can never collide with a real place,

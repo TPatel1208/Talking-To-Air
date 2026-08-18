@@ -149,7 +149,7 @@ class ExportService:
         elif export_type == "profile":
             fig = self._plot_profile_figure(payload, export, plt)
         else:
-            from tta_backend.utils.plotting import RegionResolver, plot_map
+            from tta_backend.utils.plotting import plot_map
 
             da = await self._export_data_array(export, tools, collapse_to_2d=True)
             region = None
@@ -294,7 +294,7 @@ class ExportService:
         from tta_backend.preprocessing.aggregation_service import AggregationService, VariableChoiceRequired
         from tta_backend.tools.satellite_tools.plot_tools import _normalize_longitudes, _sel_bounds
         from tta_backend.services.open_handle import open_handle
-        from tta_backend.utils.plotting import RegionResolver, mask_data_by_geometry
+        from tta_backend.utils.plotting import mask_data_by_geometry
 
         from tta_backend.earthdata_mcp.results import MCPToolError
 
