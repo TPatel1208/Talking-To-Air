@@ -66,7 +66,10 @@ jobs:
         env:
           PYTHONPATH: Backend
         run: coverage report
-
+      - name: Build backend Docker image
+        run: |
+           touch .env
+           docker compose build backend
   frontend:
     runs-on: ubuntu-latest
     defaults:
