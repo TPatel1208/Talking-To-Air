@@ -23,6 +23,8 @@ from affine import Affine
 from typing import Optional, Tuple, Union
 
 from tta_backend.config.settings import get_settings
+from tta_backend.datasets.us_states import US_STATES
+from tta_backend.utils import region_buffer, region_composition, region_dispatch
 from tta_backend.earthdata_mcp.results import (
     CATEGORY_DIMENSION_CHOICE_REQUIRED,
     CATEGORY_UNSUPPORTED_GRID,
@@ -70,6 +72,14 @@ _PRESET_REGIONS_PATH = os.path.join(
     os.path.dirname(__file__), "..", "datasets", "preset_regions.geojson"
 )
 
+# GeoJSON geometry types that carry no area, and therefore no boundary to
+# disclose as one (see RegionResolver._geocoded_region). GeometryCollection is
+# deliberately absent: it *may* contain a polygon, so it keeps the shape-based
+# treatment rather than being pre-judged by its type tag.
+_ZERO_AREA_GEOJSON_TYPES = frozenset(
+    {"Point", "MultiPoint", "LineString", "MultiLineString"}
+)
+
 
 @functools.lru_cache(maxsize=1)
 def load_preset_polygons() -> dict:
@@ -86,6 +96,60 @@ def load_preset_polygons() -> dict:
         }
     except (OSError, ValueError, KeyError) as e:
         logger.warning("Could not load preset polygons: %s", e)
+        return {}
+
+
+# T60 Phase 4: the 242 individually-addressable countries, the ``+`` grammar's
+# second member vocabulary (D6). A **second** asset rather than more features in
+# the one above, on two measurements (Phase 4 gate, V18/V19):
+#
+#   * ``georgia`` and ``antarctica`` are each a shipped preset id *and* an
+#     ``ADMIN`` value. Merged, this dict comprehension silently reduces 304
+#     features to 302 polygons -- last wins -- and ``"georgia"`` masks the
+#     Caucasus while ``global_regions['georgia']`` still reports the U.S.
+#     Southeast. ``AliasCollisionError`` never sees it: that guard compares
+#     keys against ``global_regions``, one layer above the asset.
+#   * Merged cold parse is 230-354 ms against 34.9 ms today, and every region
+#     request pays it -- including ``"paris"``, which then geocodes anyway.
+#     Separate, the 165 ms is paid only when a country token is typed.
+_ADMIN0_COUNTRIES_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "datasets", "admin0_countries.geojson"
+)
+
+
+@functools.lru_cache(maxsize=1)
+def load_admin0_polygons() -> dict:
+    """``{normalized ADMIN: {"name": ADMIN, "geometry": geom}}``, parsed once.
+
+    Keys are already normalized by the builder, so ``"bahamas"`` resolves even
+    though the source spells it ``"The Bahamas"`` -- the only one of the 242
+    that ``_normalize_location_name`` changes (V19).
+
+    Carrying the source's own ``ADMIN`` spelling alongside the geometry is why
+    this returns a richer value than ``load_preset_polygons``: the key is
+    lower-cased and ``"the "``-stripped, and an answer that cited *that* would
+    say "Bahamas", "Eswatini" and "Hong Kong S.A.R" for places Natural Earth
+    spells "The Bahamas", "eSwatini" and "Hong Kong S.A.R.". ``display_name``
+    is what a T42 answer cites, so it gets the real spelling rather than a
+    ``.title()`` reconstruction of a normalized key.
+
+    Degrades to ``{}`` like ``load_preset_polygons``, which for this asset means
+    every country token stops resolving and the composite grammar reports it as
+    an unknown token. That is the fail-closed answer D3b requires: there is no
+    bounding-box tier under this one to fall back to, by design (V21), and the
+    geocoder is off the table for anything containing a ``+`` (D8)."""
+    try:
+        with open(_ADMIN0_COUNTRIES_PATH, encoding="utf-8") as fh:
+            fc = json.load(fh)
+        return {
+            feature["id"]: {
+                "name": feature["properties"]["name"],
+                "geometry": shape(feature["geometry"]),
+            }
+            for feature in fc.get("features", [])
+        }
+    except (OSError, ValueError, KeyError) as e:
+        logger.warning("Could not load admin-0 country polygons: %s", e)
         return {}
 
 
@@ -749,9 +813,25 @@ def apply_mask_region_type(masked: xr.DataArray, region: dict) -> None:
     """Downgrade ``region['region_type']`` to the masking-time fact when the
     mask self-healed (T42): a sub-cell region that ``geometry_mask`` rescued
     with ``all_touched`` is ``boundary_cells``, not the polygon/box/point the
-    resolver first named. Mutates the caller-owned ``region`` dict in place."""
+    resolver first named. Mutates the caller-owned ``region`` dict in place.
+
+    T60 D10a: ``region_type`` was carrying two orthogonal facts in one slot.
+    ``boundary_cells`` is *rasterization fidelity*; ``composite_union`` (and
+    Phase 5's ``buffer``) is *shape provenance* -- "this shape is a
+    construction, not a named place". Both can be true at once, and the
+    downgrade below used to destroy the second. It is the *likely* path, not a
+    corner: a small construction on a coarse grid self-heals, and every
+    masking site calls this before building provenance, so the researcher
+    would never learn the shape was constructed.
+
+    The prior value is preserved into ``region_origin`` here rather than at
+    each constructor, so a future origin (D9's buffer) cannot forget to opt
+    in. ``setdefault``, because a constructor that already stated its origin
+    is the more specific answer."""
     mask_region_type = masked.attrs.get("region_type")
     if mask_region_type:
+        if region.get("region_type"):
+            region.setdefault("region_origin", region["region_type"])
         region["region_type"] = mask_region_type
 class GeocodingService:
     """Free geocoding using Nominatim (OpenStreetMap) with polygon and bounding box"""
@@ -969,6 +1049,42 @@ class RegionResolver:
         'east africa':        {'geometry': box( 29, -12, 52, 16), 'bounds': ( 29, -12, 52, 16), 'name': 'East Africa'},
         'southern africa':    {'geometry': box( 11, -35, 40, -15), 'bounds': ( 11, -35, 40, -15), 'name': 'Southern Africa'},
     }
+        # T60 Phase 3a: the 51 U.S. admin-1 units, from the generated table.
+        # Ordinary presets -- an honest envelope here, upgraded to the real
+        # boundary by ``_finalize_preset`` -- because unlike a coalition a
+        # state *has* an honest bounding box (D3's objection does not apply;
+        # no state crosses the antimeridian). ``display_name`` carries the
+        # disambiguation D15's resolution order makes necessary: gate V12
+        # measured "washington" geocoding live to Washington DC with 0.00%
+        # overlap with Washington State.
+        for _key, _state in US_STATES.items():
+            if _key in self.global_regions:
+                # D12a, applied to the merge itself. These go in by
+                # assignment, so a key that already existed would be silently
+                # replaced -- and Phase 4 adds countries, where "georgia" the
+                # country meets "georgia" the state. Naming the key beats a
+                # count assertion that only holds until someone updates it.
+                raise region_dispatch.AliasCollisionError(
+                    f"U.S. admin-1 key {_key!r} shadows an existing "
+                    "global_regions preset; resolve the ambiguity explicitly "
+                    "rather than letting one silently win"
+                )
+            self.global_regions[_key] = {
+                'geometry': box(*_state['bounds']),
+                'bounds': _state['bounds'],
+                'name': _state['name'],
+                'display_name': _state['display_name'],
+            }
+        # D12a: the T60 alias/coalition tables are hand-maintained, and a
+        # table that silently shadows "us" or "georgia" is the cheapest way
+        # to reintroduce a confident wrong region. Checked against this
+        # instance's presets rather than left to review.
+        region_dispatch.assert_no_alias_collisions(self.global_regions)
+        # T60 Phase 4's table, same rule. Kept a separate call because it
+        # deliberately does not open the country asset -- see its docstring;
+        # doing so here would spend the 165 ms cold parse on every resolver,
+        # including the ones that only ever resolve "paris".
+        region_composition.assert_no_country_collisions(self.global_regions)
 
     # Preset keys that resolve to a real polygon (feature id in
     # preset_regions.geojson). Everything else in ``global_regions`` stays a
@@ -981,6 +1097,13 @@ class RegionResolver:
         "north america": "north america", "south america": "south america",
         "europe": "europe", "africa": "africa", "asia": "asia",
         "oceania": "oceania", "antarctica": "antarctica",
+        # T60 coalitions. These are NOT ``global_regions`` keys (D3 -- a
+        # coalition has no honest bounding box), so they are unreachable via
+        # the exact-match gate below and arrive only through region_dispatch.
+        "otc": "otc", "new england": "new england",
+        # T60 Phase 3a: the 51 states. Feature id is the lowercased name, so
+        # the preset key and the polygon id are the same string.
+        **{key: key for key in US_STATES},
     }
 
     def _finalize_preset(self, preset: dict, key: str) -> dict:
@@ -1009,9 +1132,22 @@ class RegionResolver:
         or ``point_buffer`` when it didn't and we mint a 0.1° box around the
         centroid. ``display_name`` is the geocoder's own label, carried
         through so a wrong-place answer ("Paris, Texas") is catchable. Shared
-        by the sync and async resolvers so a place can't resolve two ways."""
-        if geo_result.get("polygon"):
-            geometry = shape(geo_result["polygon"])
+        by the sync and async resolvers so a place can't resolve two ways.
+
+        A GeoJSON hit is not automatically a boundary. Nominatim wraps a
+        *point* result in GeoJSON as readily as an administrative area, so
+        ``geojson is not None`` was never the same question as "did we get a
+        footprint" -- measured in the T60 Phase 0 gate (V2), both ``"OTC"``
+        (an aerodrome in Chad) and ``"northeastern us"`` (an ~11 m railway
+        platform in Boston) return GeoJSON ``Point`` geometries and were being
+        disclosed as ``polygon``. A zero-area geometry gets the same 0.1° box
+        the no-geojson branch mints, because that is the same footprint by the
+        same logic; ``point_buffer`` already names it honestly, and inventing a
+        second value for "point, but wrapped in GeoJSON" would be a
+        distinction with no consequence for the researcher."""
+        geojson = geo_result.get("polygon")
+        if geojson and geojson.get("type") not in _ZERO_AREA_GEOJSON_TYPES:
+            geometry = shape(geojson)
             region_type = "polygon"
         else:
             lon, lat = geo_result["longitude"], geo_result["latitude"]
@@ -1039,8 +1175,33 @@ class RegionResolver:
 
     def resolve_location(self, location_name: str):
         """Convert location name to RegionResult with geometry"""
+        # T60 D5/D11a: the ``+`` grammar reads the RAW string, ahead of
+        # normalization, because the split has to happen before "the " is
+        # stripped -- otherwise "ny + the nj" and "the ny + nj" resolve
+        # differently. Raises (D14) rather than returning None on a bad token.
+        composed = region_composition.dispatch_composite(location_name, self)
+        if composed.claimed:
+            return composed.region
+        # T60 D9/D11b: the buffer grammar, and it runs AFTER composition
+        # deliberately (gate V25). "within 50 km of NY + NJ" contains a "+",
+        # so the composition grammar claims it first and hard-fails naming the
+        # token -- the right answer, because D9 forbids X from resolving
+        # recursively through COMPOSITE. Reversing the order would turn that
+        # refusal into a buffer around a region D9 does not allow. This is the
+        # sync twin; it is the one this method needs (export_service).
+        buffered = region_buffer.dispatch_buffer(location_name, self)
+        if buffered.claimed:
+            return buffered.region
         # Check for global regions first
         location_lower = self._normalize_location_name(location_name)
+        dispatched = region_dispatch.dispatch(location_lower, self)
+        if dispatched.claimed:
+            # Claimed-and-failed returns None here and never reaches the
+            # geocoder (D3b). Phase 1 surfaces that as the call sites'
+            # existing "Could not resolve location: '<string>'" -- honest, and
+            # it names the string but not the reason; D14's taxonomy error is
+            # Phase 3's.
+            return dispatched.region
         if location_lower in self.global_regions:
             return self._finalize_preset(self.global_regions[location_lower], location_lower)
 
@@ -1052,7 +1213,23 @@ class RegionResolver:
 
     async def aresolve_location(self, location_name: str):
         """Async version of resolve_location() for agent tool execution."""
+        # T60 D5: the same gate, in the same place, for the same reason as the
+        # sync twin -- the composition tier is pure, so both share one copy.
+        composed = region_composition.dispatch_composite(location_name, self)
+        if composed.claimed:
+            return composed.region
+        # T60 D9/D11b: the async twin, in the same position and by the same
+        # V25 ordering argument as the sync one. This is the twin every
+        # analysis tool reaches (stat/plot/validation call the async resolver
+        # exclusively -- gate V24), and it is async precisely so the geocode
+        # does not block the event loop.
+        buffered = await region_buffer.adispatch_buffer(location_name, self)
+        if buffered.claimed:
+            return buffered.region
         location_lower = self._normalize_location_name(location_name)
+        dispatched = region_dispatch.dispatch(location_lower, self)
+        if dispatched.claimed:
+            return dispatched.region
         if location_lower in self.global_regions:
             return self._finalize_preset(self.global_regions[location_lower], location_lower)
 

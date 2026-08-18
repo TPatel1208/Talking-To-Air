@@ -10,6 +10,7 @@ threads without the model being able to see or forge workspace identity.
 from __future__ import annotations
 
 import copy
+import functools
 import json
 import logging
 from typing import Any, Callable, Protocol
@@ -86,7 +87,18 @@ def bind_workspace(
     injector resolves one (connected ∧ unexpired); omitting ``edl_injector``
     (the default) reproduces the pre-T31 behavior exactly, token or no
     token, advertised or not."""
-    return {name: _bind_one(tool, user_id_getter, edl_injector) for name, tool in tools.items()}
+    bound = {name: _bind_one(tool, user_id_getter, edl_injector) for name, tool in tools.items()}
+    # T60 D13: applied here, not in curated_model_tools, and deliberately so.
+    # model_view_describe_dataset's *shape* is the precedent; its application
+    # point is not. That one wraps only the model-facing copy because
+    # discovery_service needs the untrimmed tool. The requirement here is the
+    # opposite -- all three AOI callers must be translated, and all three take
+    # the dict this function returns.
+    if "define_area_of_interest" in bound:
+        bound["define_area_of_interest"] = region_aware_area_of_interest(
+            bound["define_area_of_interest"]
+        )
+    return bound
 
 
 def _schema_properties(schema) -> dict:
@@ -219,6 +231,136 @@ def _schema_without_hidden_params(schema):
         properties.pop(name, None)
     schema["required"] = [name for name in schema.get("required", []) if name not in _HIDDEN_PARAMS]
     return schema
+
+
+@functools.lru_cache(maxsize=1)
+def _region_resolver():
+    """One shared RegionResolver for the translation, built lazily.
+
+    Lazy because ``utils.plotting`` pulls in cartopy/rasterio, and
+    ``earthdata_mcp`` is imported in contexts that have no reason to pay for
+    that. Cached because ``global_regions`` is instance state rebuilt on every
+    construction, and this is a per-tool-call path.
+
+    Deliberately *not* registered in tests/cache_isolation.py's
+    ``clear_process_caches``. That policy covers caches holding data a test
+    could leave behind for the next one; this holds only the static preset
+    tables, so clearing it could never change an outcome — the same reasoning
+    that leaves ``load_preset_polygons``'s own lru_cache unregistered."""
+    from tta_backend.utils.plotting import RegionResolver
+
+    return RegionResolver()
+
+
+def region_aware_area_of_interest(tool: BaseTool) -> BaseTool:
+    """Wrap an already workspace-bound ``define_area_of_interest`` so the T60
+    region vocabulary reaches the *retrieval* plane (D13).
+
+    Phase 1 shipped a correct mask for the Ozone Transport Region that no user
+    could reach from a prompt: the spatial subset that actually pulls data is
+    resolved by the MCP, in another repo, by a geocoder that has never heard of
+    the word. Measured live in the Phase 1.5 gate (V6), ``"ozone over the OTC"``
+    does not politely fail -- the AOI step refuses ``"Ozone Transport
+    Commission"``, and the agent then silently substitutes ``"Northeastern
+    United States"`` and retrieves *that*, which is not a superset of the OTR.
+    The mask would then clip against a cube that never covered the Mid-Atlantic
+    third of the region, with nothing to say so (Risk 5).
+
+    **Why a named wrapper and not a branch in ``_bind_one``.** ``_bind_one`` is
+    generic MCP plumbing -- workspace binding, credential injection, error
+    classification. Region vocabulary is a domain concept and does not belong
+    inside a transport layer. Kept here it is greppable, and the whole two-plane
+    story lives in one function with one docstring.
+
+    **Why the whole story is in one place.** Three callers reach this tool:
+    services/retrieval_composites.py, services/discovery_service.py::_resolve_aoi,
+    and -- the majority path -- the agent itself, which calls it directly as a
+    curated tool because workflow step 2 of the agent prompt makes the AOI step
+    mandatory and first. No composite edit can intercept that third one. This
+    wrapper is applied in ``bind_workspace``, which is the single dict all three
+    take their tools from.
+
+    **Which side of the T53 cache this sits on, and why it matters.** Outside,
+    i.e. *before*. The rewrite happens here, and only then does ``_bind_one``'s
+    ``_call`` compute the cache key from ``kwargs``. So "otc", "the OTC", "otr"
+    and "ozone transport region" all collapse to a single key, and no key can
+    ever hold a raw coalition string. Were this a branch *inside* ``_call``
+    placed after the lookup, the cache would answer "otc" with whatever had been
+    stored for the raw string.
+
+    A string outside the vocabulary is passed through untouched -- byte-identical
+    to pre-T60 behavior, which is the mirror of the mask plane's NOT_CLAIMED
+    fall-through and the regression this seam is most likely to cause.
+    """
+    from tta_backend.utils import region_buffer, region_composition, region_dispatch
+
+    async def _call(**kwargs):
+        location = kwargs.get("location")
+        if isinstance(location, str):
+            resolver = _region_resolver()
+            # T60 D5: the "+" grammar reads the RAW string, ahead of
+            # normalization (D11a -- split first, then normalize each token),
+            # exactly as the mask plane does. A composite has no key the MCP
+            # could ever resolve, so an unclaimed one would reach Nominatim as
+            # a literal string with a "+" in it. Its failures (a bad token,
+            # D8; an over-large envelope, D16) travel as MCPToolError and
+            # convert to the same tool-JSON envelope used below.
+            try:
+                composed = region_composition.dispatch_composite_extent(location, resolver)
+                # T60 D9/D13: the buffer grammar, second, in the same order the
+                # mask plane uses (gate V25 -- "within 50 km of NY + NJ"
+                # contains a "+" and belongs to the composition grammar, which
+                # hard-fails it naming the token). A buffer phrase has no name
+                # at all: V23 measured "within 50 miles of NYC" returning zero
+                # Nominatim hits, so unclaimed it is not a wrong retrieval but
+                # a failed one -- after which the agent silently substitutes
+                # (T46 Phase 2, V6). Its refusals (units, a named region as X,
+                # the antimeridian, a pole, D16's extent) ride the same
+                # MCPToolError channel already caught here.
+                buffered = (
+                    composed if composed.claimed
+                    else await region_buffer.adispatch_buffer_extent(location, resolver)
+                )
+            except MCPToolError as exc:
+                logger.error(
+                    "region_composite_unresolved",
+                    extra={"_event": "region_composite_unresolved", "_location": location},
+                )
+                return exc.to_tool_json()
+            # D11a: the same normalization the mask plane uses, so neither
+            # plane can normalize differently than the other.
+            normalized = resolver._normalize_location_name(location)
+            dispatched = (
+                buffered if buffered.claimed
+                else region_dispatch.dispatch_extent(normalized, resolver.global_regions)
+            )
+            if dispatched.claimed:
+                if dispatched.location is None:
+                    # Claimed and failed. Refusing is the point: falling
+                    # through would hand the MCP's Nominatim the very string
+                    # D3b exists to keep away from it.
+                    logger.error(
+                        "region_extent_unresolved",
+                        extra={
+                            "_event": "region_extent_unresolved",
+                            "_location": location,
+                        },
+                    )
+                    return MCPToolError(
+                        CATEGORY_USER_INPUT,
+                        f"'{location}' is a known region, but its boundary asset "
+                        "is missing, so the area to retrieve can't be determined.",
+                        suggestion="Try a different region, or name the member states directly.",
+                    ).to_tool_json()
+                kwargs["location"] = dispatched.location
+        return await tool.ainvoke(kwargs)
+
+    return StructuredTool.from_function(
+        coroutine=_call,
+        name=tool.name,
+        description=tool.description,
+        args_schema=tool.args_schema,
+    )
 
 
 def model_view_describe_dataset(tool: BaseTool) -> BaseTool:

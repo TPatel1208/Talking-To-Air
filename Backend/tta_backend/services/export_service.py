@@ -26,6 +26,35 @@ async def materialize_first_chunk(chunks: AsyncIterator[bytes]) -> AsyncIterator
     return _replay_then_stream(first, chunks)
 
 
+def _resolve_export_region(region_name: str):
+    """Resolve an export's region, tolerating a *lookup failure* and refusing
+    to tolerate a *refusal* (T60 D14).
+
+    Both export paths used to wrap this in a bare ``except Exception: region =
+    None``, which is a reasonable guard against a Nominatim timeout -- an
+    unmasked chart beats a failed download -- and a catastrophe against a
+    region the resolver deliberately declined to guess at. With no region the
+    export renders ``extent=None, mask_geometry=None``: a chart over the
+    **entire globe**, carrying the region name the researcher asked for. That
+    is the T46 silent-scope-substitution failure arriving through the export
+    path, and D14's raised error would have walked straight into it.
+
+    So ``MCPToolError`` propagates (the API's handler turns it into a clean
+    4xx naming the token) and everything else still degrades as before.
+    Extracted to one function because two call sites drifting apart on this
+    question is how one of them quietly keeps the old behaviour."""
+    from tta_backend.earthdata_mcp.results import MCPToolError
+    from tta_backend.utils.plotting import RegionResolver
+
+    try:
+        return RegionResolver().resolve_location(region_name)
+    except MCPToolError:
+        raise
+    except Exception:
+        logger.warning("export_region_lookup_failed", extra={"_region": region_name})
+        return None
+
+
 async def _replay_then_stream(first: bytes | None, rest: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
     from tta_backend.earthdata_mcp.results import CATEGORY_CONTRACT, MCPToolError
 
@@ -120,16 +149,13 @@ class ExportService:
         elif export_type == "profile":
             fig = self._plot_profile_figure(payload, export, plt)
         else:
-            from tta_backend.utils.plotting import RegionResolver, plot_map
+            from tta_backend.utils.plotting import plot_map
 
             da = await self._export_data_array(export, tools, collapse_to_2d=True)
             region = None
             region_name = export.get("region_name")
             if region_name:
-                try:
-                    region = RegionResolver().resolve_location(region_name)
-                except Exception:
-                    region = None
+                region = _resolve_export_region(region_name)
             fig, ax = plot_map(
                 da,
                 title=payload.get("title") or export.get("region_name") or "Chart",
@@ -268,7 +294,7 @@ class ExportService:
         from tta_backend.preprocessing.aggregation_service import AggregationService, VariableChoiceRequired
         from tta_backend.tools.satellite_tools.plot_tools import _normalize_longitudes, _sel_bounds
         from tta_backend.services.open_handle import open_handle
-        from tta_backend.utils.plotting import RegionResolver, mask_data_by_geometry
+        from tta_backend.utils.plotting import mask_data_by_geometry
 
         from tta_backend.earthdata_mcp.results import MCPToolError
 
@@ -302,10 +328,7 @@ class ExportService:
         region = None
         region_name = export.get("region_name")
         if region_name:
-            try:
-                region = RegionResolver().resolve_location(region_name)
-            except Exception:
-                region = None
+            region = _resolve_export_region(region_name)
 
         bounds = None
         if region:

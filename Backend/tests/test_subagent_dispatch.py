@@ -917,6 +917,180 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("south latitude", result.text)
         self.assertEqual(result.charts, [])
 
+    async def test_run_satellite_refuses_a_substituted_region_with_no_chart_delivered(self):
+        """T46 Phase 2, gate V6/V8 (live 2026-08-16): "Plot ozone over the OTC"
+        was rejected at the AOI step, and the agent silently proceeded on
+        "Northeastern United States" through availability and retrieval. No
+        chart was delivered — the retrieval stopped at the size gate for
+        unrelated reasons — so the guard, which only watched for a delivered
+        chart, let a confident answer about a region the researcher never
+        asked about go out. A rejection followed by a *successful* area call
+        whose handle a later call actually uses is a substitution whether or
+        not a picture came back."""
+        from tta_backend.services import subagent_dispatch
+
+        error_env = json.dumps({"error": {
+            "category": "user_input",
+            "message": (
+                "Neither Nominatim nor USGS WBD found results for location "
+                "'Ozone Transport Commission'"
+            ),
+            "suggestion": "Try a more specific location name.",
+        }})
+        aoi_ok = json.dumps({"handle": "aoi_d0d4f21bc35e8325"})
+        envelope = json.dumps({
+            "summary": (
+                "The retrieval of ozone data over the Northeastern United States for "
+                "July 2026 resulted in a large volume of data."
+            ),
+            "artifact_ids": [], "handles": [],
+        })
+
+        class FakeSatelliteAgent:
+            async def astream(self, input_, config, stream_mode):
+                yield "updates", {"tools": {"messages": [
+                    SimpleNamespace(name="define_area_of_interest", content=error_env, tool_calls=None),
+                ]}}
+                await asyncio.sleep(0)
+                yield "updates", {"tools": {"messages": [
+                    SimpleNamespace(name="define_area_of_interest", content=aoi_ok, tool_calls=None),
+                ]}}
+                await asyncio.sleep(0)
+                yield "updates", {"agent": {"messages": [SimpleNamespace(
+                    tool_calls=[{
+                        "id": "tc1",
+                        "name": "safe_retrieve",
+                        "args": {"aoi_handle": "aoi_d0d4f21bc35e8325", "confirmed": True},
+                    }],
+                    content="",
+                )]}}
+                await asyncio.sleep(0)
+                yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
+
+        subagent_dispatch.get_call_budget().clear()
+        with patch.object(subagent_dispatch, "get_satellite_context", AsyncMock(return_value={})), \
+             patch.object(subagent_dispatch, "save_satellite_context", AsyncMock()):
+            result = await subagent_dispatch.run_satellite(
+                FakeSatelliteAgent(), "Plot ozone over the OTC for July 2026", "thread-1",
+            )
+
+        self.assertNotIn("Northeastern United States", result.text)
+        self.assertIn("could not proceed", result.text)
+        self.assertIn("Ozone Transport Commission", result.text)
+
+    async def test_run_satellite_leaves_an_honestly_relayed_aoi_rejection_untouched(self):
+        """The case the chart condition was really protecting: the agent
+        received the rejection, made no substitute area call at all, and asked
+        the researcher what they meant. That turn is useful — replacing it with
+        the templated relay would be a downgrade, so the guard must not fire on
+        a rejection alone."""
+        from tta_backend.services import subagent_dispatch
+
+        error_env = json.dumps({"error": {
+            "category": "user_input",
+            "message": "Neither Nominatim nor USGS WBD found results for location 'Ozone Transport Commission'",
+            "suggestion": "Try a more specific location name.",
+        }})
+        clarification = (
+            "I couldn't resolve \"Ozone Transport Commission\" as a place. Did you mean "
+            "a specific state, or should I use the OTR member states?"
+        )
+        envelope = json.dumps({"summary": clarification, "artifact_ids": [], "handles": []})
+
+        class FakeSatelliteAgent:
+            async def astream(self, input_, config, stream_mode):
+                yield "updates", {"tools": {"messages": [
+                    SimpleNamespace(name="define_area_of_interest", content=error_env, tool_calls=None),
+                ]}}
+                await asyncio.sleep(0)
+                yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
+
+        subagent_dispatch.get_call_budget().clear()
+        with patch.object(subagent_dispatch, "get_satellite_context", AsyncMock(return_value={})), \
+             patch.object(subagent_dispatch, "save_satellite_context", AsyncMock()):
+            result = await subagent_dispatch.run_satellite(
+                FakeSatelliteAgent(), "Plot ozone over the OTC for July 2026", "thread-1",
+            )
+
+        self.assertEqual(result.text, clarification)
+
+    async def test_run_satellite_leaves_an_unused_alternative_area_untouched(self):
+        """A rejection followed by a successful area call is not yet a
+        substitution: the agent may have resolved an alternative in order to
+        *offer* it in the clarifying question. What makes it a substitution is
+        the turn going on to work with that handle. Nothing here does, so the
+        answer stands."""
+        from tta_backend.services import subagent_dispatch
+
+        error_env = json.dumps({"error": {
+            "category": "user_input",
+            "message": "Neither Nominatim nor USGS WBD found results for location 'Ozone Transport Commission'",
+            "suggestion": "Try a more specific location name.",
+        }})
+        aoi_ok = json.dumps({"handle": "aoi_d0d4f21bc35e8325"})
+        clarification = (
+            "I couldn't resolve \"Ozone Transport Commission\". I can plot the "
+            "Northeastern United States instead — shall I?"
+        )
+        envelope = json.dumps({"summary": clarification, "artifact_ids": [], "handles": []})
+
+        class FakeSatelliteAgent:
+            async def astream(self, input_, config, stream_mode):
+                yield "updates", {"tools": {"messages": [
+                    SimpleNamespace(name="define_area_of_interest", content=error_env, tool_calls=None),
+                ]}}
+                await asyncio.sleep(0)
+                yield "updates", {"tools": {"messages": [
+                    SimpleNamespace(name="define_area_of_interest", content=aoi_ok, tool_calls=None),
+                ]}}
+                await asyncio.sleep(0)
+                yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
+
+        subagent_dispatch.get_call_budget().clear()
+        with patch.object(subagent_dispatch, "get_satellite_context", AsyncMock(return_value={})), \
+             patch.object(subagent_dispatch, "save_satellite_context", AsyncMock()):
+            result = await subagent_dispatch.run_satellite(
+                FakeSatelliteAgent(), "Plot ozone over the OTC for July 2026", "thread-1",
+            )
+
+        self.assertEqual(result.text, clarification)
+
+    async def test_run_satellite_leaves_a_retrieval_with_no_rejection_untouched(self):
+        """The guard is armed by a rejection, not by the retrieval shape: the
+        same successful-area-then-retrieve sequence with nothing rejected is an
+        ordinary turn and must reach the researcher unchanged."""
+        from tta_backend.services import subagent_dispatch
+
+        aoi_ok = json.dumps({"handle": "aoi_d0d4f21bc35e8325"})
+        summary = "Ozone over New Jersey for July 2026 is a large volume of data."
+        envelope = json.dumps({"summary": summary, "artifact_ids": [], "handles": []})
+
+        class FakeSatelliteAgent:
+            async def astream(self, input_, config, stream_mode):
+                yield "updates", {"tools": {"messages": [
+                    SimpleNamespace(name="define_area_of_interest", content=aoi_ok, tool_calls=None),
+                ]}}
+                await asyncio.sleep(0)
+                yield "updates", {"agent": {"messages": [SimpleNamespace(
+                    tool_calls=[{
+                        "id": "tc1",
+                        "name": "safe_retrieve",
+                        "args": {"aoi_handle": "aoi_d0d4f21bc35e8325", "confirmed": True},
+                    }],
+                    content="",
+                )]}}
+                await asyncio.sleep(0)
+                yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
+
+        subagent_dispatch.get_call_budget().clear()
+        with patch.object(subagent_dispatch, "get_satellite_context", AsyncMock(return_value={})), \
+             patch.object(subagent_dispatch, "save_satellite_context", AsyncMock()):
+            result = await subagent_dispatch.run_satellite(
+                FakeSatelliteAgent(), "Plot ozone over New Jersey for July 2026", "thread-1",
+            )
+
+        self.assertEqual(result.text, summary)
+
     async def test_run_satellite_leaves_a_clarifying_answer_when_no_region_was_substituted(self):
         """Regression / no over-fire: when the agent relays the rejection and
         asks a clarifying question instead of substituting a region (no chart

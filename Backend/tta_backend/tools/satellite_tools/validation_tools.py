@@ -262,7 +262,13 @@ def make_validate_against_ground(mcp_tools: dict[str, BaseTool]):
         except OpenHandleError as e:
             return json.dumps({"error": f"Failed to open handle '{handle}': {e}"})
 
-        region = await _resolver.aresolve_location(location)
+        # T60 D14: a composite that cannot be built raises the taxonomy's
+        # error naming the offending token -- a ``None`` return could never
+        # carry which token failed. Same shape as the open_handle catch.
+        try:
+            region = await _resolver.aresolve_location(location)
+        except MCPToolError as e:
+            return json.dumps({"error": e.to_dict()})
         if region is None:
             return json.dumps({"error": f"Could not resolve location: '{location}'"})
 
@@ -444,7 +450,13 @@ def make_exceedance_overlay(mcp_tools: dict[str, BaseTool]):
         except OpenHandleError as e:
             return json.dumps({"error": f"Failed to open handle '{handle}': {e}"})
 
-        region = await _resolver.aresolve_location(location)
+        # T60 D14: a composite that cannot be built raises the taxonomy's
+        # error naming the offending token -- a ``None`` return could never
+        # carry which token failed. Same shape as the open_handle catch.
+        try:
+            region = await _resolver.aresolve_location(location)
+        except MCPToolError as e:
+            return json.dumps({"error": e.to_dict()})
         if region is None:
             return json.dumps({"error": f"Could not resolve location: '{location}'"})
 
