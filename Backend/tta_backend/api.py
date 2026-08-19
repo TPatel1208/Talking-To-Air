@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from starlette.routing import Match
 
 from tta_backend.agents.earthdata_agent import LazySatelliteAgent, build_earthdata_agent, refresh_live_tools
@@ -312,10 +312,39 @@ class ChatRequest(BaseModel):
     thread_id: Optional[str] = Field(default=None, min_length=1, pattern=r"^[A-Za-z0-9-]+$")
 
 
-class AuthRequest(BaseModel):
+class LoginRequest(BaseModel):
     username: str = Field(min_length=1, max_length=150)
     password: str = Field(min_length=1, max_length=1024)
 
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls,value: str) -> str:
+        if len(value) < 3 or len(value) > 64:
+            raise ValueError("Username must be between 3 and 64 characters")
+        if " " in value:
+            raise ValueError("Username cannot contain spaces")
+
+        return value
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, value: str) -> str:
+        if len(value) < 8 or len(value) > 1024:
+            raise ValueError("Password must be between 8 and 1024 characters")
+        if " " in value:
+            raise ValueError("Password cannot contain spaces")
+        if not any(c.isupper() for c in value):
+            raise ValueError("Password must contain at least one uppercase letter")
+        if not any(c.islower() for c in value):
+            raise ValueError("Password must contain at least one lowercase letter")
+        if not any(c.isdigit() for c in value):
+            raise ValueError("Password must contain at least one digit")
+        if not any(c in "!@#$%^&*()-_=+[]{}|;:,.<>?/" for c in value):
+            raise ValueError("Password must contain at least one special character")
+        return value
 
 class DiscoverySearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=500)
@@ -367,7 +396,7 @@ class ConnectorStatusView(BaseModel):
 
 
 @app.post("/auth/register", status_code=status.HTTP_201_CREATED, response_model=UserResponse)
-async def register(req: AuthRequest):
+async def register(req: RegisterRequest):
     password_hash = hash_password(req.password)
     try:
         user = await create_user(req.username, password_hash)
@@ -377,7 +406,7 @@ async def register(req: AuthRequest):
 
 
 @app.post("/auth/login", response_model=TokenResponse)
-async def login(req: AuthRequest):
+async def login(req: LoginRequest):
     user = await get_user_by_username(req.username)
     if user is None or not user.is_active or not verify_password(req.password, user.password_hash):
         raise HTTPException(
