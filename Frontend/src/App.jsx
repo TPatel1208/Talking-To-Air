@@ -58,7 +58,12 @@ function LoginForm({ onAuthenticated, allowRegister = true, heading = 'Talking t
           body: JSON.stringify({ username, password }),
         })
         if (!registerRes.ok && registerRes.status !== 409) {
-          throw new Error(registerRes.status === 422 ? 'Enter a username and password.' : `HTTP ${registerRes.status}`)
+          if (registerRes.status === 422) {
+            const body = await registerRes.json()
+            const messages = (body.detail || []).map(d => d.msg.replace(/^Value error,\s*/, ''))
+            throw new Error(messages.join(' ') || 'Invalid username or password.')
+          }
+          throw new Error(`HTTP ${registerRes.status}`)
         }
         if (registerRes.status === 409) {
           throw new Error('That username is already taken.')
