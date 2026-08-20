@@ -44,6 +44,16 @@ BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
+# tta_backend.api caches get_settings() in a module-level variable at import
+# time, so whichever test file happens to import it first (collection order
+# is filesystem-dependent, not alphabetical-guaranteed) permanently decides
+# what JWT_SECRET_KEY is for the whole run. It used to be set only as a side
+# effect of test_chat_endpoint.py importing before test_auth_endpoints.py --
+# fragile, and silently masked locally by a real JWT_SECRET_KEY in .env. Set
+# it here, before any test module is imported, so it can't depend on import
+# order again.
+os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
+
 
 def _has_proj_db(path: str | None) -> bool:
     return bool(path) and os.path.isfile(os.path.join(path, "proj.db"))
