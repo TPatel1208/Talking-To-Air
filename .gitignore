@@ -77,3 +77,6 @@ AGENTS.md
 CLAUDE.md
 /prds/
 docs/prds/
+
+#mkcert
+*.pem

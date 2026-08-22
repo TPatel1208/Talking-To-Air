@@ -159,6 +159,7 @@ services:
     restart: unless-stopped
     ports:
       - "5173:80"
+      - "443:443"
     volumes:
       - plot_outputs:/usr/share/nginx/html/outputs  # serves images directly from volume
     depends_on:

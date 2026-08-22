@@ -24,6 +24,8 @@ FROM nginx:1.25-alpine AS runtime
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=builder /app/dist /usr/share/nginx/html
+COPY localhost+2-key.pem /etc/nginx/
+COPY localhost+2.pem /etc/nginx/
 
-EXPOSE 80
+EXPOSE 80 443
 CMD ["nginx", "-g", "daemon off;"]

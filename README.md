@@ -13,6 +13,7 @@ That's the whole picture you need to run it. For internals — storage layout, o
 ## Prerequisites
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+- [mkcert](https://github.com/FiloSottile/mkcert#installation) — mints the locally-trusted cert the frontend serves over HTTPS
 - [Google AI Studio API key](https://ai.google.dev/) — `GOOGLE_API_KEY` (every agent uses this by default)
 - [NASA Earthdata account](https://urs.earthdata.nasa.gov/) — username + password
 - [EPA AQS API key](https://aqs.epa.gov/aqsweb/documents/data_api.html) — email + key
@@ -33,17 +34,23 @@ That's the whole picture you need to run it. For internals — storage layout, o
 
 2. **If you want satellite data**, bring up the `harmony-retrieval-mcp` stack once first — it creates a Docker network and volume this stack depends on. Details: [`docs/mcp-setup.md`](docs/mcp-setup.md). Skip this if you only need ground/EPA features, or if that stack is already running somewhere.
 
-3. **Build and start:**
+3. **Set up local HTTPS (one-time, required):**
+   ```bash
+   ./scripts/setup-tls.sh
+   ```
+   Trusts a local CA via mkcert and writes `Frontend/localhost+2.pem` / `Frontend/localhost+2-key.pem`. The frontend's Docker build copies these into the nginx image, so it won't build without them. Re-run any time if those files go missing.
+
+4. **Build and start:**
    ```bash
    docker compose up --build
    ```
 
-4. **Open the chat interface** — http://localhost:5173. It opens on a sign-in screen; these are app-level accounts in this stack's own Postgres, unrelated to the Earthdata/EPA credentials above. Click "Create account" the first time.
+5. **Open the chat interface** — https://localhost. It opens on a sign-in screen; these are app-level accounts in this stack's own Postgres, unrelated to the Earthdata/EPA credentials above. Click "Create account" the first time.
 
    Also available: API docs at `/docs`, health check at `/health`, Prometheus metrics at `/metrics` (all on port 8000).
 
-5. **Subsequent starts** (no rebuild unless dependencies changed): `docker compose up`
-6. **Stop and wipe volumes:** `docker compose down -v`
+6. **Subsequent starts** (no rebuild unless dependencies changed): `docker compose up`
+7. **Stop and wipe volumes:** `docker compose down -v`
 
 ---
 
