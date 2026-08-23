@@ -101,6 +101,18 @@ jobs:
         working-directory: Frontend
         run: npm run build
 
+      # Frontend/Dockerfile COPYs a cert/key pair for nginx's TLS listener.
+      # Devs generate a real mkcert-trusted one via scripts/setup-tls.sh, but
+      # that trust step is meaningless in CI (no browser ever loads this
+      # image) -- CI just needs *a* file at that path for COPY to succeed, so
+      # a throwaway self-signed pair is enough.
+      - name: Generate throwaway TLS cert for the Docker build
+        working-directory: Frontend
+        run: |
+          openssl req -x509 -nodes -newkey rsa:2048 -days 1 \
+            -keyout localhost+2-key.pem -out localhost+2.pem \
+            -subj "/CN=localhost"
+
       - name: Build frontend Docker image
         env:
           DB_PASSWORD: ci-placeholder
