@@ -63,13 +63,14 @@ Copy `.env.example` to `.env` and fill in the values below — it's the exhausti
 | Variable | Description |
 |---|---|
 | `DB_PASSWORD` | PostgreSQL password (any string you choose) |
-| `JWT_SECRET_KEY` | Long random secret for session auth tokens |
+| `SUPABASE_URL` | Supabase project URL — the identity provider. Access tokens are verified locally against its published JWKS |
+| `SUPABASE_PUBLISHABLE_KEY` | Supabase publishable (anon) key. Served to the browser at runtime by `GET /config/auth` |
 | `GOOGLE_API_KEY` | Google AI Studio key — every agent defaults to the `google` provider |
 | `EARTHDATA_USERNAME` / `EARTHDATA_PASSWORD` | NASA Earthdata credentials |
 | `AQS_API_EMAIL` / `AQS_API_KEY` | EPA AQS credentials. `AQS_API_EMAIL` also becomes the contact address in the Nominatim geocoder's User-Agent, so it must be a **real** email — Nominatim rejects placeholder `@example.com`/`.org`/`.net` addresses, and location lookups (ground *and* satellite) fail without it |
 | `EARTHDATA_MCP_URL` / `EARTHDATA_MCP_TOKEN` | Endpoint and bearer token of the MCP stack (satellite path only) |
 
-The backend refuses to boot without `DB_PASSWORD`, `JWT_SECRET_KEY`, and `GOOGLE_API_KEY`. Earthdata/AQS/MCP values aren't checked at boot but are required for the corresponding features to work.
+The backend refuses to boot without `DB_PASSWORD`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, and `GOOGLE_API_KEY`. Earthdata/AQS/MCP values aren't checked at boot but are required for the corresponding features to work.
 
 ### Worth knowing about
 
