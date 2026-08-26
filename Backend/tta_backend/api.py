@@ -245,6 +245,7 @@ PUBLIC_ENDPOINTS = {
     ("GET", "/metrics"),
     ("GET", "/capabilities/starters"),
     ("GET", "/config/map-tiles"),
+    ("GET", "/config/auth"),
 }
 ThreadId = Annotated[str, Path(pattern=r"^[A-Za-z0-9-]+$")]
 JobHandle = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]+$")]
@@ -521,6 +522,29 @@ async def health():
 def metrics():
     refresh_process_gauges()
     return Response(content=render_prometheus_metrics(), media_type=prometheus_content_type())
+
+
+@app.get("/config/auth")
+def config_auth():
+    """The identity provider's coordinates, served at runtime rather than
+    baked into the frontend bundle, so one image runs against either the dev or
+    the prod Supabase project. Baking VITE_* in would mean a dev-keyed bundle
+    shipped to prod fails only at login, which is the worst place to find out.
+
+    Necessarily unauthenticated, and uniquely so: this is the only thing the app
+    can call before anyone holds a token. Without it the login screen cannot
+    construct a Supabase client and therefore cannot offer a login at all --
+    a 401 here is a deadlock, not a rejection.
+
+    The publishable key is safe to hand an anonymous caller. It normally reaches
+    a project's Postgres through Supabase's PostgREST, but our data lives in our
+    own database (decision 1: identity provider only), so it can do nothing here
+    but talk to Supabase Auth. Do not "fix" this by hiding it behind auth.
+    """
+    return {
+        "supabase_url": settings.supabase_url,
+        "supabase_publishable_key": settings.supabase_publishable_key,
+    }
 
 
 @app.get("/debug/heap-snapshot")

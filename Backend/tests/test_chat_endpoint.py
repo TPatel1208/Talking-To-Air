@@ -1016,6 +1016,30 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("http_requests_total", metrics.text)
         self.assertEqual(response.status_code, 401)
 
+    async def test_auth_config_is_public_and_reflects_settings(self):
+        """The one endpoint whose being public is load-bearing, not incidental.
+
+        It is the only thing the app can call before anyone holds a token: the
+        login screen needs it to construct a Supabase client at all. If a future
+        edit drops it from PUBLIC_ENDPOINTS the middleware's fail-closed default
+        answers 401, the login screen cannot render a login, and there is no way
+        to authenticate out of it. That deadlock is what this pins.
+        """
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        async with self.httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            response = await client.get("/config/auth")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["supabase_url"], self.api.settings.supabase_url)
+        self.assertEqual(body["supabase_publishable_key"], self.api.settings.supabase_publishable_key)
+        # Phase 4's frontend reads these exact names; a rename here is a silent
+        # login failure there, so the key set is pinned rather than just probed.
+        self.assertEqual(set(body), {"supabase_url", "supabase_publishable_key"})
+
     async def test_map_tiles_config_is_public_and_reflects_settings(self):
         transport = self.httpx.ASGITransport(app=self.api.app)
         async with self.httpx.AsyncClient(
