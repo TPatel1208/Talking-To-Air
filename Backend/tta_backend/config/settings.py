@@ -359,6 +359,19 @@ class Settings:
         default_factory=lambda: os.getenv("DEBUG_HEAP_PROFILING_ENABLED", "").strip() == "1"
     )
     long_request_seconds: float = field(default_factory=lambda: float(os.getenv("LONG_REQUEST_SECONDS", "30")))
+    # T61: Supabase is the identity provider; our own Postgres stays. Optional
+    # for now because nothing reads them yet -- Phase 2 moves them into
+    # validate_startup() as JWT_SECRET_KEY comes out. The URL is stripped of
+    # whitespace and any trailing slash: the issuer is built as
+    # f"{supabase_url}/auth/v1", and a stray slash rejects every token with no
+    # hint as to why. No default is possible for either -- a placeholder URL
+    # would verify tokens from the wrong project rather than failing.
+    supabase_url: str | None = field(
+        default_factory=lambda: os.getenv("SUPABASE_URL", "").strip().rstrip("/") or None
+    )
+    supabase_publishable_key: str | None = field(
+        default_factory=lambda: os.getenv("SUPABASE_PUBLISHABLE_KEY", "").strip() or None
+    )
     jwt_secret_key: str | None = field(default_factory=lambda: os.getenv("JWT_SECRET_KEY"))
     jwt_algorithm: str = field(default_factory=lambda: os.getenv("JWT_ALGORITHM", "HS256"))
     jwt_expiration_minutes: int = field(default_factory=lambda: max(1, _int_env("JWT_EXPIRATION_MINUTES", 60)))
