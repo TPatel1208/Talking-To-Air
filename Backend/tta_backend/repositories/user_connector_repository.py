@@ -15,9 +15,15 @@ async def ensure_user_connector_table() -> None:
     async with pg_connection() as conn:
         await conn.execute(
             """
+            -- T61: user_id is the Supabase `sub` UUID off a verified JWT, not
+            -- a local row -- the `users` table is gone, so the FK it referenced
+            -- goes too. It guarded against nothing: the value never came from
+            -- user input, only from a signature we checked ourselves. Cost of
+            -- losing it, accepted deliberately: no cascade, so a deleted user's
+            -- encrypted token outlives them here until a reaper exists.
             CREATE TABLE IF NOT EXISTS user_connectors (
                 id TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL REFERENCES users(id),
+                user_id TEXT NOT NULL,
                 connector_type TEXT NOT NULL,
                 auth_method TEXT NOT NULL,
                 encrypted_secret TEXT NOT NULL,
@@ -27,6 +33,33 @@ async def ensure_user_connector_table() -> None:
                 last_used_at TIMESTAMPTZ,
                 UNIQUE (user_id, connector_type)
             )
+            """
+        )
+        # T61: CREATE TABLE IF NOT EXISTS is a no-op on a database that already
+        # has this table, so dropping the FK from the DDL above only ever
+        # reaches a *fresh* one. Every existing deployment keeps
+        # user_connectors_user_id_fkey pointing at a `users` table that is about
+        # to be dropped -- which makes `DROP TABLE users` fail outright, and
+        # makes the first upsert carrying a Supabase `sub` raise
+        # ForeignKeyViolation because no local row can vouch for it. There is no
+        # migration framework here, so this ensure_* function is the migration.
+        # Looked up rather than dropped by name: the name is Postgres's default
+        # rather than one we chose, and IF EXISTS on a guessed name would fail
+        # silently and leave the constraint in place.
+        await conn.execute(
+            """
+            DO $$
+            DECLARE constraint_name text;
+            BEGIN
+                FOR constraint_name IN
+                    SELECT conname FROM pg_constraint
+                     WHERE conrelid = 'user_connectors'::regclass AND contype = 'f'
+                LOOP
+                    EXECUTE format(
+                        'ALTER TABLE user_connectors DROP CONSTRAINT %I', constraint_name
+                    );
+                END LOOP;
+            END $$;
             """
         )
 

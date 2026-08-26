@@ -8,15 +8,21 @@ the existing /chart/{id}/export.* routes.
 import importlib.util
 import os
 import tempfile
+import sys
 import unittest
-from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
 
-os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
 
-REQUIRED_MODULES = ["fastapi", "httpx", "jwt", "bcrypt", "langchain_mcp_adapters", "fastmcp", "uvicorn"]
+TESTS_DIR = os.path.dirname(__file__)
+if TESTS_DIR not in sys.path:
+    sys.path.insert(0, TESTS_DIR)
+
+import auth_helpers  # noqa: E402 -- needs the TESTS_DIR insert above
+
+
+REQUIRED_MODULES = ["fastapi", "httpx", "jwt", "langchain_mcp_adapters", "fastmcp", "uvicorn"]
 
 
 @unittest.skipIf(
@@ -30,7 +36,6 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
         from tta_backend.earthdata_mcp.toolset import load_earthdata_tools
         from tta_backend.config.settings import Settings
-        from tta_backend.models.user import User
         from tta_backend.utils.streaming import current_user_id
 
         self.httpx = httpx
@@ -116,11 +121,8 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
         # module happens to run first.
         self.addCleanup(setattr, self.api.app.state, "earthdata_mcp_manager", None)
 
-        self.user = User(
-            id="user-1", username="tester", password_hash="hash",
-            created_at=datetime.now(timezone.utc), is_active=True,
-        )
-        token, _ = self.api.create_access_token(self.user)
+        self.user = auth_helpers.user("user-1", email="tester@example.com")
+        token = auth_helpers.make_token(self.user.id, email=self.user.email)
         self.auth_headers = {"Authorization": f"Bearer {token}"}
 
         self.chart_payload = {
@@ -137,14 +139,7 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
         }
 
     def _auth_patch(self):
-        async def fake_get_user_by_id(user_id):
-            return self.user if user_id == self.user.id else None
-
-        async def fake_is_token_revoked(jti):
-            return False
-
-        return patch("tta_backend.services.auth_service.get_user_by_id", fake_get_user_by_id), \
-            patch("tta_backend.services.auth_service.is_token_revoked", fake_is_token_revoked)
+        return auth_helpers.patch_verifier()
 
     async def test_provenance_endpoint_returns_the_merged_lineage_for_the_owned_chart(self):
         async def fake_get_chart(chart_id):
@@ -152,7 +147,7 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1], patch.object(self.api.chart_service, "get_chart", fake_get_chart):
+        with auth_patches, patch.object(self.api.chart_service, "get_chart", fake_get_chart):
             async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.get("/chart/chart-1/provenance", headers=self.auth_headers)
 
@@ -180,7 +175,7 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1], patch.object(self.api.chart_service, "get_chart", fake_get_chart):
+        with auth_patches, patch.object(self.api.chart_service, "get_chart", fake_get_chart):
             async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.get("/chart/chart-1/citations", headers=self.auth_headers)
 
@@ -200,7 +195,7 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1], patch.object(self.api.chart_service, "get_chart", fake_get_chart):
+        with auth_patches, patch.object(self.api.chart_service, "get_chart", fake_get_chart):
             async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.get("/chart/chart-1/methods.md", headers=self.auth_headers)
 
@@ -245,7 +240,7 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1], patch.object(self.api.chart_service, "get_chart", fake_get_chart):
+        with auth_patches, patch.object(self.api.chart_service, "get_chart", fake_get_chart):
             async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.get("/chart/chart-1/methods.md", headers=self.auth_headers)
 
@@ -274,7 +269,7 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1], \
+        with auth_patches, \
              patch.object(self.api.chart_service, "get_chart", fake_get_chart), \
              patch.object(self.api, "build_methods_markdown", exploding_build):
             async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -291,7 +286,7 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1], patch.object(self.api.chart_service, "get_chart", fake_get_chart):
+        with auth_patches, patch.object(self.api.chart_service, "get_chart", fake_get_chart):
             async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.get("/chart/chart-1/export.nc", headers=self.auth_headers)
 
@@ -324,7 +319,7 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
         original_manager = self.api.app.state.earthdata_mcp_manager
         self.api.app.state.earthdata_mcp_manager = SimpleNamespace(state="ready", tools=broken_tools)
         try:
-            with auth_patches[0], auth_patches[1], patch.object(self.api.chart_service, "get_chart", fake_get_chart):
+            with auth_patches, patch.object(self.api.chart_service, "get_chart", fake_get_chart):
                 async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                     response = await client.get("/chart/chart-1/export.nc", headers=self.auth_headers)
         finally:
@@ -343,7 +338,7 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1], patch.object(self.api.chart_service, "get_chart", fake_get_chart):
+        with auth_patches, patch.object(self.api.chart_service, "get_chart", fake_get_chart):
             async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.get("/chart/chart-1/provenance", headers=self.auth_headers)
 
@@ -356,7 +351,7 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1], patch.object(self.api.chart_service, "get_chart", fake_get_chart):
+        with auth_patches, patch.object(self.api.chart_service, "get_chart", fake_get_chart):
             async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.get("/chart/chart-1/provenance", headers=self.auth_headers)
 

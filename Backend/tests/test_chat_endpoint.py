@@ -1,14 +1,20 @@
 import os
 import importlib.util
+import sys
 import unittest
 from unittest.mock import AsyncMock, patch
 from types import SimpleNamespace
-from datetime import datetime, timezone
 
 
-os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
 
-_REQUIRED = ["fastapi", "httpx", "jwt", "bcrypt", "langchain", "langgraph"]
+TESTS_DIR = os.path.dirname(__file__)
+if TESTS_DIR not in sys.path:
+    sys.path.insert(0, TESTS_DIR)
+
+import auth_helpers  # noqa: E402 -- needs the TESTS_DIR insert above
+
+
+_REQUIRED = ["fastapi", "httpx", "jwt", "langchain", "langgraph"]
 
 
 async def _aiter(items):
@@ -24,31 +30,17 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         import httpx
         import tta_backend.api as api
-        from tta_backend.models.user import User
 
         self.httpx = httpx
         self.api = api
         self.api.app.state.agent = object()
         self.api.app.state.earthdata_mcp_tools = {}
-        self.user = User(
-            id="user-1",
-            username="tester",
-            password_hash="hash",
-            created_at=datetime.now(timezone.utc),
-            is_active=True,
-        )
-        token, _ = self.api.create_access_token(self.user)
+        self.user = auth_helpers.user("user-1", email="tester@example.com")
+        token = auth_helpers.make_token(self.user.id, email=self.user.email)
         self.auth_headers = {"Authorization": f"Bearer {token}"}
 
     def _auth_patch(self):
-        async def fake_get_user_by_id(user_id):
-            return self.user if user_id == self.user.id else None
-
-        async def fake_is_token_revoked(jti):
-            return False
-
-        return patch("tta_backend.services.auth_service.get_user_by_id", fake_get_user_by_id), \
-            patch("tta_backend.services.auth_service.is_token_revoked", fake_is_token_revoked)
+        return auth_helpers.patch_verifier()
 
     async def test_chat_streams_done_event(self):
         async def fake_stream_response(agent, message, thread_id, **kwargs):
@@ -60,7 +52,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1], \
+        with auth_patches, \
              patch.object(self.api, "save_session_metadata_once", fake_save_session_metadata_once), \
              patch("tta_backend.services.chat_stream_service.stream_response", fake_stream_response):
             async with self.httpx.AsyncClient(
@@ -108,7 +100,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         fake_delete_session.called_with = None
 
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1], \
+        with auth_patches, \
              patch.object(self.api.session_repository, "list_sessions", fake_list_sessions), \
              patch.object(self.api.session_repository, "delete_session", fake_delete_session), \
              patch.object(self.api, "session_belongs_to_user", fake_session_belongs_to_user):
@@ -156,7 +148,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1], \
+        with auth_patches, \
              patch.object(self.api.session_repository, "list_sessions", raising_list_sessions), \
              patch.object(self.api.session_repository, "delete_session", raising_delete_session), \
              patch.object(self.api, "session_belongs_to_user", fake_session_belongs_to_user):
@@ -190,7 +182,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
             return payload
 
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1], \
+        with auth_patches, \
              patch.object(self.api.chart_service, "get_chart", fake_get_chart), \
              patch.object(self.api.export_service, "iter_chart_csv_chunks", return_value=_aiter([b"variable,latitude,longitude,value,units\n"])), \
              patch.object(self.api.export_service, "build_chart_png", return_value=b"\x89PNG\r\n\x1a\n"):
@@ -246,7 +238,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
             return payload
 
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1], \
+        with auth_patches, \
              patch.object(self.api.chart_service, "get_chart", fake_get_chart), \
              patch.object(self.api.export_service, "iter_chart_csv_chunks", recording_chunks):
             async with self.httpx.AsyncClient(
@@ -268,7 +260,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         # which reads as "connecting" — not ready.
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1]:
+        with auth_patches:
             async with self.httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",
@@ -303,7 +295,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
             return payload
 
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1], \
+        with auth_patches, \
              patch.object(self.api.chart_service, "get_chart", fake_get_chart), \
              patch.object(self.api.export_service, "iter_chart_csv_chunks", broken_chunks):
             async with self.httpx.AsyncClient(
@@ -337,7 +329,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
             return payload
 
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1], \
+        with auth_patches, \
              patch.object(self.api.chart_service, "get_chart", fake_get_chart), \
              patch.object(self.api.export_service, "iter_chart_csv_chunks", dying_chunks):
             async with self.httpx.AsyncClient(
@@ -373,7 +365,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
             return payload
 
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1], \
+        with auth_patches, \
              patch.object(self.api.chart_service, "get_chart", fake_get_chart), \
              patch.object(self.api.export_service, "iter_chart_csv_chunks", dying_chunks):
             async with self.httpx.AsyncClient(
@@ -390,7 +382,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         # the shared T18 taxonomy like every other MCP-backed endpoint.
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1]:
+        with auth_patches:
             async with self.httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",
@@ -422,7 +414,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
             return payload
 
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1], \
+        with auth_patches, \
              patch.object(self.api.chart_service, "get_chart", fake_get_chart), \
              patch.object(self.api, "export_converted", fake_export_converted):
             async with self.httpx.AsyncClient(
@@ -456,7 +448,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         try:
             auth_patches = self._auth_patch()
-            with auth_patches[0], auth_patches[1], \
+            with auth_patches, \
                  patch.object(self.api.chart_service, "get_chart", fake_get_chart):
                 async with self.httpx.AsyncClient(
                     transport=transport,
@@ -499,7 +491,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         try:
             auth_patches = self._auth_patch()
-            with auth_patches[0], auth_patches[1], \
+            with auth_patches, \
                  patch.object(self.api.chart_service, "get_chart", fake_get_chart):
                 async with self.httpx.AsyncClient(
                     transport=transport,
@@ -539,7 +531,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         try:
             auth_patches = self._auth_patch()
-            with auth_patches[0], auth_patches[1], \
+            with auth_patches, \
                  patch.object(self.api.chart_service, "get_chart", fake_get_chart):
                 async with self.httpx.AsyncClient(
                     transport=transport,
@@ -559,7 +551,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
             return payload
 
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1], \
+        with auth_patches, \
              patch.object(self.api.chart_service, "get_chart", fake_get_chart):
             async with self.httpx.AsyncClient(
                 transport=transport,
@@ -581,7 +573,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
             return payload
 
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1], \
+        with auth_patches, \
              patch.object(self.api.chart_service, "get_chart", fake_get_chart):
             async with self.httpx.AsyncClient(
                 transport=transport,
@@ -637,7 +629,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1], \
+        with auth_patches, \
              patch.object(self.api.chart_service, "get_chart", fake_get_chart):
             async with self.httpx.AsyncClient(
                 transport=transport, base_url="http://testserver",
@@ -746,7 +738,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1], \
+        with auth_patches, \
              patch.object(self.api.chart_service, "get_chart", fake_get_chart):
             async with self.httpx.AsyncClient(
                 transport=transport, base_url="http://testserver",
@@ -956,7 +948,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
                 tick_count += 1
 
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1], \
+        with auth_patches, \
              patch.object(self.api.chart_service, "get_chart", fake_get_chart), \
              patch("os.path.isfile", return_value=True), \
              patch.object(self.api, "_read_overlay_bytes", slow_read_overlay_bytes):
@@ -987,7 +979,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1], \
+        with auth_patches, \
              patch("tta_backend.services.artifact_store.artifact_repository.save_artifact", AsyncMock()), \
              patch("tta_backend.services.artifact_store.artifact_repository.delete_expired_unclaimed", AsyncMock()):
             await artifact_store.claim(ref.id, self.user.id, "thread-1")
@@ -1132,7 +1124,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
             pass
 
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1], \
+        with auth_patches, \
              patch.object(self.api, "save_session_metadata_once", fake_save_session_metadata_once), \
              patch("tta_backend.services.chat_stream_service.stream_response", fake_stream_response):
             async with self.httpx.AsyncClient(
@@ -1155,34 +1147,6 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(long_message.status_code, 422)
         self.assertEqual(bad_thread.status_code, 422)
         self.assertFalse(fake_stream_response.called)
-
-    async def test_login_issues_bearer_token(self):
-        password_hash = self.api.hash_password("correct-password")
-        user = self.user.model_copy(update={"password_hash": password_hash})
-
-        async def fake_get_user_by_username(username):
-            return user if username == "tester" else None
-
-        transport = self.httpx.ASGITransport(app=self.api.app)
-        with patch.object(self.api, "get_user_by_username", fake_get_user_by_username):
-            async with self.httpx.AsyncClient(
-                transport=transport,
-                base_url="http://testserver",
-            ) as client:
-                response = await client.post(
-                    "/auth/login",
-                    json={"username": "tester", "password": "correct-password"},
-                )
-                invalid = await client.post(
-                    "/auth/login",
-                    json={"username": "tester", "password": "wrong-password"},
-                )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["token_type"], "bearer")
-        self.assertEqual(response.json()["expires_in"], 3600)
-        self.assertTrue(response.json()["access_token"])
-        self.assertEqual(invalid.status_code, 401)
 
 
 if __name__ == "__main__":

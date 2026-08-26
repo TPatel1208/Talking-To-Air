@@ -22,12 +22,13 @@ import sys
 import tempfile
 import unittest
 import unittest.mock
-from datetime import datetime, timezone
 from unittest.mock import patch
 
 TESTS_DIR = os.path.dirname(__file__)
 if TESTS_DIR not in sys.path:
     sys.path.insert(0, TESTS_DIR)
+
+import auth_helpers  # noqa: E402 -- needs the TESTS_DIR insert above
 
 TOOL_MODULES = [
     "langchain", "langchain_mcp_adapters", "fastmcp", "uvicorn",
@@ -35,9 +36,8 @@ TOOL_MODULES = [
 ]
 
 # The endpoint half of the cross-seam test below needs the API app as well.
-API_MODULES = ["fastapi", "httpx", "jwt", "bcrypt", "langgraph"]
+API_MODULES = ["fastapi", "httpx", "jwt", "langgraph"]
 
-os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
 
 
 def _field(xr, np, times, *, ny=4, nx=4, name="no2"):
@@ -1385,33 +1385,21 @@ class PlotToPlaneEndpointTests(_PlotHarness, unittest.IsolatedAsyncioTestCase):
         import httpx
 
         import tta_backend.api as api
-        from tta_backend.models.user import User
 
         self.httpx = httpx
         self.api = api
         self.api.app.state.agent = object()
         self.api.app.state.earthdata_mcp_tools = {}
-        self.user = User(
-            id="user-1", username="tester", password_hash="hash",
-            created_at=datetime.now(timezone.utc), is_active=True,
-        )
-        token, _ = self.api.create_access_token(self.user)
-        self.auth_headers = {"Authorization": f"Bearer {token}"}
+        self.user = auth_helpers.user("user-1", email="tester@example.com")
+        self.auth_headers = auth_helpers.auth_header(self.user.id, email=self.user.email)
 
     async def get(self, payload, url):
         """Fetch ``url`` as the chart's owner, with the real router."""
-        async def fake_get_user_by_id(user_id):
-            return self.user if user_id == self.user.id else None
-
-        async def fake_is_token_revoked(jti):
-            return False
-
         async def fake_get_chart(chart_id):
             return {**payload, "user_id": self.user.id}
 
         transport = self.httpx.ASGITransport(app=self.api.app)
-        with patch("tta_backend.services.auth_service.get_user_by_id", fake_get_user_by_id), \
-             patch("tta_backend.services.auth_service.is_token_revoked", fake_is_token_revoked), \
+        with auth_helpers.patch_verifier(), \
              patch.object(self.api.chart_service, "get_chart", fake_get_chart):
             async with self.httpx.AsyncClient(
                 transport=transport, base_url="http://testserver",

@@ -34,21 +34,52 @@ def _fake_conn(cursor=None, execute_result=None):
 
 
 class EnsureTableSchemaContractTests(unittest.IsolatedAsyncioTestCase):
-    """CREATE TABLE IF NOT EXISTS pattern, same lifecycle as users/revoked_tokens
-    -- no migration framework, so the shape asserted here IS the schema."""
+    """CREATE TABLE IF NOT EXISTS pattern -- no migration framework, so the
+    shape asserted here IS the schema."""
 
-    async def test_table_ddl_has_a_unique_constraint_on_user_id_and_connector_type(self):
+    async def _statements(self):
         from tta_backend.repositories import user_connector_repository
 
         conn = _fake_conn()
         with patch("tta_backend.repositories.user_connector_repository.pg_connection", _fake_pg_connection(conn)):
             await user_connector_repository.ensure_user_connector_table()
+        return [call.args[0] for call in conn.execute.await_args_list]
 
-        ddl = conn.execute.await_args.args[0]
+    async def _ensure(self):
+        return (await self._statements())[0]
+
+    async def test_table_ddl_has_a_unique_constraint_on_user_id_and_connector_type(self):
+        ddl = await self._ensure()
         self.assertIn("CREATE TABLE IF NOT EXISTS user_connectors", ddl)
         self.assertIn("UNIQUE (user_id, connector_type)", ddl)
         self.assertIn("encrypted_secret", ddl)
         self.assertIn("last_used_at", ddl)
+
+    async def test_table_ddl_carries_no_foreign_key(self):
+        # T61 dropped `REFERENCES users(id)` along with the users table. With no
+        # migration framework this DDL is the only schema definition there is,
+        # so re-adding the FK would break ensure_user_connector_table() at boot
+        # against a database where `users` no longer exists. user_id now holds a
+        # Supabase `sub` off a verified token, which no local row can vouch for.
+        ddl = await self._ensure()
+        self.assertIn("user_id TEXT NOT NULL,", ddl)
+        self.assertNotIn("REFERENCES", ddl)
+
+    async def test_ensure_drops_a_pre_existing_foreign_key(self):
+        # The DDL above only reaches a fresh database -- CREATE TABLE IF NOT
+        # EXISTS does nothing to one that already has the table, so an existing
+        # deployment keeps its FK to `users`. Without this statement, dropping
+        # `users` fails and the first Supabase-sub upsert raises
+        # ForeignKeyViolation. No migration framework, so ensure_* is it.
+        statements = await self._statements()
+        self.assertEqual(len(statements), 2, "the FK drop is not being issued")
+        drop = statements[1]
+        self.assertIn("pg_constraint", drop)
+        self.assertIn("contype = 'f'", drop)
+        self.assertIn("DROP CONSTRAINT", drop)
+        # Looked up, not guessed: DROP CONSTRAINT IF EXISTS on a wrong name is
+        # a silent no-op that leaves the constraint in place.
+        self.assertNotIn("IF EXISTS", drop)
 
 
 class UpsertConnectorTests(unittest.IsolatedAsyncioTestCase):

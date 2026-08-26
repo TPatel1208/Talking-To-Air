@@ -2,18 +2,17 @@ import importlib.util
 import os
 import sys
 import unittest
-from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import patch
 
 
 TESTS_DIR = os.path.dirname(__file__)
 if TESTS_DIR not in sys.path:
     sys.path.insert(0, TESTS_DIR)
 
-os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
+import auth_helpers  # noqa: E402 -- needs the TESTS_DIR insert above
 
-REQUIRED_MODULES = ["fastapi", "httpx", "jwt", "bcrypt", "langchain_mcp_adapters", "fastmcp", "uvicorn"]
+
+REQUIRED_MODULES = ["fastapi", "httpx", "jwt", "langchain_mcp_adapters", "fastmcp", "uvicorn"]
 
 
 @unittest.skipIf(
@@ -27,7 +26,6 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
         from tta_backend.earthdata_mcp.toolset import load_earthdata_tools
         from tta_backend.config.settings import Settings
-        from tta_backend.models.user import User
         from tta_backend.services.jobs_service import clear_terminal_status_cache
         from tta_backend.utils.streaming import current_user_id
 
@@ -90,35 +88,20 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
             state="ready", tools=self.api.app.state.earthdata_mcp_tools,
         )
 
-        self.user1 = User(
-            id="user-1", username="one", password_hash="hash",
-            created_at=datetime.now(timezone.utc), is_active=True,
-        )
-        self.user2 = User(
-            id="user-2", username="two", password_hash="hash",
-            created_at=datetime.now(timezone.utc), is_active=True,
-        )
-        token1, _ = self.api.create_access_token(self.user1)
-        token2, _ = self.api.create_access_token(self.user2)
+        self.user1 = auth_helpers.user("user-1", email="one@example.com")
+        self.user2 = auth_helpers.user("user-2", email="two@example.com")
+        token1 = auth_helpers.make_token(self.user1.id, email=self.user1.email)
+        token2 = auth_helpers.make_token(self.user2.id, email=self.user2.email)
         self.auth_headers1 = {"Authorization": f"Bearer {token1}"}
         self.auth_headers2 = {"Authorization": f"Bearer {token2}"}
 
     def _auth_patch(self):
-        users = {self.user1.id: self.user1, self.user2.id: self.user2}
-
-        async def fake_get_user_by_id(user_id):
-            return users.get(user_id)
-
-        async def fake_is_token_revoked(jti):
-            return False
-
-        return patch("tta_backend.services.auth_service.get_user_by_id", fake_get_user_by_id), \
-            patch("tta_backend.services.auth_service.is_token_revoked", fake_is_token_revoked)
+        return auth_helpers.patch_verifier()
 
     async def test_get_jobs_composes_list_and_status_scoped_to_the_caller(self):
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1]:
+        with auth_patches:
             async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 res1 = await client.get("/jobs", headers=self.auth_headers1)
                 res2 = await client.get("/jobs", headers=self.auth_headers2)
@@ -155,7 +138,7 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1]:
+        with auth_patches:
             async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 res = await client.get("/jobs", headers=self.auth_headers1)
 
@@ -170,7 +153,7 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
     async def test_cancel_job_proxies_the_mcp_and_scopes_to_the_caller(self):
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1]:
+        with auth_patches:
             async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.post("/jobs/job_1/cancel", headers=self.auth_headers1)
 
@@ -208,7 +191,7 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1]:
+        with auth_patches:
             async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.post("/jobs/job_1/cancel", headers=self.auth_headers1)
 
@@ -247,7 +230,7 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1]:
+        with auth_patches:
             async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.post("/jobs/job_ghost/cancel", headers=self.auth_headers1)
 
@@ -282,7 +265,7 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1]:
+        with auth_patches:
             async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.post("/jobs/job_ghost/cancel", headers=self.auth_headers1)
 
@@ -296,7 +279,7 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1]:
+        with auth_patches:
             async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.get("/jobs", headers=self.auth_headers1)
 

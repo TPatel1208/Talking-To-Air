@@ -5,24 +5,39 @@ T47 findings #1/#2: an auth failure mid-session must read as 401 ("sign in
 again"), never as 404 ("this thing is gone"). The frontend routes one to
 in-place re-auth and the other to an honest empty state, so the two must never
 be confused. These pin the invariant so a future refactor can't quietly turn
-an expired/garbage/revoked token into a 404 on a session-scoped route.
+an expired/garbage/unsigned token into a 404 on a session-scoped route.
 
-The complementary half — a *successfully authenticated* request for a resource
+The complementary half -- a *successfully authenticated* request for a resource
 that genuinely belongs to someone else still answers 404 (don't leak
-existence) — is pinned here for the session-history route and, for charts,
+existence) -- is pinned here for the session-history route and, for charts,
 already by test_provenance_endpoint's foreign-chart test.
+
+T61 note: the revoked-token case this file used to carry is **gone, not
+forgotten**. There is no denylist any more -- an access token stays
+cryptographically valid until its own `exp`, which is the accepted consequence
+of verifying locally against a JWKS (logout revokes the *refresh* token, so
+sign-out latency is bounded by the 45-minute access-token TTL, not by us).
+Testing revocation would mean asserting behaviour the system no longer has.
+It is replaced below by the wrong-signing-key case: a well-formed token
+carrying every correct claim, signed by a key we never published. That is the
+forgery the old shared-secret scheme could not have caught at all, and it must
+read as 401 for exactly the same reason the expired one does.
 """
 import importlib.util
 import os
+import sys
 import unittest
-import uuid
-from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 
-os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
+TESTS_DIR = os.path.dirname(__file__)
+if TESTS_DIR not in sys.path:
+    sys.path.insert(0, TESTS_DIR)
 
-REQUIRED_MODULES = ["fastapi", "httpx", "jwt", "bcrypt", "langchain_mcp_adapters", "fastmcp", "uvicorn"]
+import auth_helpers  # noqa: E402 -- needs the TESTS_DIR insert above
+
+
+REQUIRED_MODULES = ["fastapi", "httpx", "jwt", "langchain_mcp_adapters", "fastmcp", "uvicorn"]
 
 
 @unittest.skipIf(
@@ -33,56 +48,30 @@ class SessionAuthContractTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         import httpx
         import tta_backend.api as api
-        import jwt
-        from tta_backend.config.settings import get_settings
-        from tta_backend.models.user import User
 
         self.httpx = httpx
         self.api = api
-        self.jwt = jwt
-        self.settings = get_settings()
         self.api.app.state.agent = object()
 
-        self.user = User(
-            id="user-1", username="tester", password_hash="hash",
-            created_at=datetime.now(timezone.utc), is_active=True,
-        )
-        self.valid_token, _ = self.api.create_access_token(self.user)
+        self.user = auth_helpers.user("user-1", email="tester@example.com")
+        self.valid_token = auth_helpers.make_token(self.user.id, email=self.user.email)
 
-    def _token(self, *, exp_delta_minutes: int) -> str:
-        payload = {
-            "sub": self.user.id,
-            "username": self.user.username,
-            "exp": datetime.now(timezone.utc) + timedelta(minutes=exp_delta_minutes),
-            "jti": str(uuid.uuid4()),
-        }
-        return self.jwt.encode(payload, self.settings.jwt_secret_key, algorithm=self.settings.jwt_algorithm)
-
-    def _auth_patch(self, *, revoked=False):
-        async def fake_get_user_by_id(user_id):
-            return self.user if user_id == self.user.id else None
-
-        async def fake_is_token_revoked(jti):
-            return revoked
-
-        return patch("tta_backend.services.auth_service.get_user_by_id", fake_get_user_by_id), \
-            patch("tta_backend.services.auth_service.is_token_revoked", fake_is_token_revoked)
+    def _auth_patch(self):
+        return auth_helpers.patch_verifier()
 
     async def _client(self):
         transport = self.httpx.ASGITransport(app=self.api.app)
         return self.httpx.AsyncClient(transport=transport, base_url="http://testserver")
 
     async def test_expired_token_answers_401_not_404_on_the_history_route(self):
-        expired = self._token(exp_delta_minutes=-1)
-        auth = self._auth_patch()
-        with auth[0], auth[1]:
+        expired = auth_helpers.make_token(self.user.id, expires_in_minutes=-1)
+        with self._auth_patch():
             async with await self._client() as client:
                 res = await client.get("/session/abc/history", headers={"Authorization": f"Bearer {expired}"})
         self.assertEqual(res.status_code, 401)
 
     async def test_garbage_token_answers_401_not_404_on_chat(self):
-        auth = self._auth_patch()
-        with auth[0], auth[1]:
+        with self._auth_patch():
             async with await self._client() as client:
                 res = await client.post(
                     "/chat",
@@ -91,13 +80,18 @@ class SessionAuthContractTests(unittest.IsolatedAsyncioTestCase):
                 )
         self.assertEqual(res.status_code, 401)
 
-    async def test_revoked_token_answers_401_not_404_on_a_chart_route(self):
-        auth = self._auth_patch(revoked=True)
-        with auth[0], auth[1]:
+    async def test_token_signed_by_an_unpublished_key_answers_401_not_404(self):
+        # Every claim correct, signed by a key absent from the JWKS. Replaces
+        # the old revoked-token case (see the module docstring): this is what
+        # a forged token looks like now, and the reply must still be 401.
+        forged = auth_helpers.make_token(
+            self.user.id, private_key=auth_helpers.OTHER_PRIVATE_KEY
+        )
+        with self._auth_patch():
             async with await self._client() as client:
                 res = await client.get(
                     "/chart/chart-1/provenance",
-                    headers={"Authorization": f"Bearer {self.valid_token}"},
+                    headers={"Authorization": f"Bearer {forged}"},
                 )
         self.assertEqual(res.status_code, 401)
 
@@ -106,13 +100,44 @@ class SessionAuthContractTests(unittest.IsolatedAsyncioTestCase):
             res = await client.get("/session/abc/history")
         self.assertEqual(res.status_code, 401)
 
-    async def test_authenticated_request_for_a_foreign_session_still_answers_404(self):
-        auth = self._auth_patch()
+    async def test_identity_provider_outage_answers_503_not_401(self):
+        # The other half of the contract, new in T61. A 401 sends the frontend
+        # into T47's re-auth modal; signing in again cannot reach an identity
+        # provider that is down, so it would hand the user a login form that
+        # also fails. A verifier that has never fetched a key set raises
+        # IdentityProviderUnavailable, and that must surface as 503.
+        dead = auth_helpers.build_verifier()
+        dead.fetch_jwks = lambda: (_ for _ in ()).throw(ConnectionError("supabase unreachable"))
+        with patch("tta_backend.api.supabase_verifier", dead):
+            async with await self._client() as client:
+                res = await client.get(
+                    "/session/abc/history",
+                    headers={"Authorization": f"Bearer {self.valid_token}"},
+                )
+        self.assertEqual(res.status_code, 503)
+        self.assertNotIn("WWW-Authenticate", res.headers)
 
+    async def test_auth_rejections_carry_cors_headers(self):
+        """A 401 the browser cannot read is a 401 the frontend cannot act on.
+
+        The auth middleware answers without calling call_next, so any middleware
+        registered outside it never sees these responses. With CORSMiddleware
+        registered inside, a cross-origin 401 arrived with no
+        Access-Control-Allow-Origin and fetch rejected with a TypeError -- the
+        status never reached shouldPromptReauth(401), and the 401-vs-503 split
+        was invisible to the only client that consumes it.
+        """
+        origin = self.api.settings.cors_origins[0]
+        async with await self._client() as client:
+            unauthenticated = await client.get("/session/abc/history", headers={"Origin": origin})
+        self.assertEqual(unauthenticated.status_code, 401)
+        self.assertEqual(unauthenticated.headers.get("access-control-allow-origin"), origin)
+
+    async def test_authenticated_request_for_a_foreign_session_still_answers_404(self):
         async def fake_session_belongs_to_user(thread_id, user_id):
             return False
 
-        with auth[0], auth[1], patch.object(self.api, "session_belongs_to_user", fake_session_belongs_to_user):
+        with self._auth_patch(), patch.object(self.api, "session_belongs_to_user", fake_session_belongs_to_user):
             async with await self._client() as client:
                 res = await client.get(
                     "/session/someone-elses-thread/history",

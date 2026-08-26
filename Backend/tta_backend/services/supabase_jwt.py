@@ -52,6 +52,11 @@ class SupabaseJwtVerifier:
         self.retry_interval = retry_interval
         self.kid_refresh_cooldown = kid_refresh_cooldown
         self._last_kid_refresh: float | None = None
+        # The warm-cache branch defers its next attempt by parking a deadline on
+        # the cache entry. A cold cache has no entry to park one on, so it needs
+        # its own: without it every request during a cold outage re-attempts the
+        # blocking fetch. See _serve_stale_or_fail.
+        self._cold_retry_deadline: float | None = None
         self._throttled_kid_refreshes = 0
         self._warm_task: asyncio.Task | None = None
         # warm() fetches on a worker thread while requests run on the event
@@ -166,7 +171,11 @@ class SupabaseJwtVerifier:
         backoff = initial_backoff_seconds
         for attempt in range(1, max_attempts + 1):
             try:
-                await asyncio.to_thread(self._keyset)
+                # force_refresh so the cold-start cooldown in _keyset cannot
+                # swallow attempts 2..N of this loop: the capped backoff above is
+                # already this path's rate limit, and it is a single background
+                # task rather than one call per inbound request.
+                await asyncio.to_thread(self._keyset, True)
             except Exception:
                 logger.warning(
                     "jwks_warm_attempt_failed",
@@ -261,6 +270,22 @@ class SupabaseJwtVerifier:
                 and entry.expiration_time > self.now()
             ):
                 return entry.keyset
+            if (
+                not force_refresh
+                and entry is None
+                and self._cold_retry_deadline is not None
+                and self._cold_retry_deadline > self.now()
+            ):
+                # Nothing has ever been cached and the last attempt just failed.
+                # Refuse without touching the network: the request path runs one
+                # of these per inbound request, on a worker thread, so fetching
+                # here would put the whole default executor behind a queue of
+                # blocking calls that are all going to fail anyway -- and hand an
+                # unauthenticated caller one outbound HTTPS request each. warm()
+                # passes force_refresh so its own capped backoff still governs.
+                raise IdentityProviderUnavailable(
+                    "identity provider unreachable and no usable signing keys are cached"
+                )
 
         try:
             # Parsed here, inside the guard: a 200 response carrying no usable
@@ -280,6 +305,7 @@ class SupabaseJwtVerifier:
                 keyset=keyset,
                 expiration_time=self.now() + self.cache_ttl,
             )
+            self._cold_retry_deadline = None
         return keyset
 
     def _serve_stale_or_fail(self, exc: Exception) -> jwt.PyJWKSet:
@@ -288,7 +314,11 @@ class SupabaseJwtVerifier:
             entry = self._cache_entry
             if entry is None:
                 # Cold start: nothing usable has ever been fetched, so there is
-                # no fallback and no token can be verified at all.
+                # no fallback and no token can be verified at all. Defer the next
+                # attempt the same way the stale branch below does -- the reason
+                # is identical, and this branch is the one the request path takes
+                # when a restart coincides with a provider outage.
+                self._cold_retry_deadline = self.now() + self.retry_interval
                 raise IdentityProviderUnavailable(
                     "identity provider unreachable and no usable signing keys are cached"
                 ) from exc
@@ -309,3 +339,29 @@ class SupabaseJwtVerifier:
             exc_info=True,
         )
         return keyset
+
+def _jwks_url(supabase_url: str) -> str:
+    """Where Supabase publishes this project's public signing keys."""
+    return f"{supabase_url}/auth/v1/.well-known/jwks.json"
+
+
+def make_jwks_fetcher(supabase_url: str, timeout: float = 10) -> Callable[[], dict[str, Any]]:
+    """Build the production fetch_jwks callable for SupabaseJwtVerifier.
+
+    PyJWKClient is here for its urllib and SSL handling, nothing else.
+    cache_jwk_set=False is load-bearing rather than incidental: its cache
+    clears itself on a failed refresh (fetch_data's finally puts None back),
+    which is precisely the behaviour this module's own cache was written to
+    avoid. Leaving it on would stack a cache with the wrong failure semantics
+    in front of the one with the right ones.
+
+    fetch_data returns the parsed JWKS dict and lets urllib and JSON errors
+    out, which is the contract _keyset wants -- it treats any exception as an
+    unreachable provider and serves the last-good key set instead.
+    """
+    client = jwt.PyJWKClient(
+        _jwks_url(supabase_url),
+        cache_jwk_set=False,
+        timeout=timeout,
+    )
+    return client.fetch_data

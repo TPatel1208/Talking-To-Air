@@ -10,6 +10,8 @@ from tta_backend.services.supabase_jwt import (
     AuthenticationError,
     IdentityProviderUnavailable,
     SupabaseJwtVerifier,
+    _jwks_url,
+    make_jwks_fetcher,
 )
 ISSUER = "https://nzzetaoojoopkfjrkqyk.supabase.co/auth/v1"
 
@@ -831,3 +833,124 @@ class TestSupabaseJwtWarm(unittest.IsolatedAsyncioTestCase):
         self.assertIs(verifier._warm_task, first)
         await verifier.stop_warm()
 
+
+class ColdStartCooldownTests(unittest.TestCase):
+    """A cold cache during an outage must not fetch once per request.
+
+    The warm-cache branch defers by parking a deadline on the cache entry. The
+    cold branch has no entry, and before this it re-attempted the blocking fetch
+    for every caller -- which the request path runs on a worker thread, one per
+    inbound request, so a restart that coincided with a Supabase outage put the
+    whole default executor behind doomed 10s calls and turned each unauthenticated
+    request into an outbound HTTPS attempt.
+    """
+
+    def setUp(self):
+        self.private_key = ec.generate_private_key(ec.SECP256R1())
+        jwk = ECAlgorithm.to_jwk(self.private_key.public_key(), as_dict=True)
+        jwk.update({"kid": "test-kid", "use": "sig", "alg": "ES256"})
+        self.jwks = {"keys": [jwk]}
+
+    def _token(self):
+        return jwt.encode(
+            {
+                "sub": "11111111-2222-3333-4444-555555555555",
+                "aud": "authenticated",
+                "iss": ISSUER,
+                "exp": datetime.now(timezone.utc) + timedelta(minutes=10),
+            },
+            self.private_key,
+            algorithm="ES256",
+            headers={"kid": "test-kid"},
+        )
+
+    def test_a_cold_outage_costs_one_fetch_per_retry_interval(self):
+        calls = []
+
+        def dead_fetch():
+            calls.append(1)
+            raise ConnectionError("supabase unreachable")
+
+        clock = FakeClock()
+        verifier = SupabaseJwtVerifier(
+            fetch_jwks=dead_fetch, issuer=ISSUER, retry_interval=60, now=clock
+        )
+
+        for _ in range(25):
+            with self.assertRaises(IdentityProviderUnavailable):
+                verifier.verify(self._token())
+        self.assertEqual(len(calls), 1, "every request re-attempted the blocking fetch")
+
+        clock.advance(61)
+        with self.assertRaises(IdentityProviderUnavailable):
+            verifier.verify(self._token())
+        self.assertEqual(len(calls), 2, "the cooldown never reopened")
+
+    def test_recovery_clears_the_cooldown_and_serves_normally(self):
+        state = {"up": False}
+
+        def flaky_fetch():
+            if not state["up"]:
+                raise ConnectionError("supabase unreachable")
+            return self.jwks
+
+        clock = FakeClock()
+        verifier = SupabaseJwtVerifier(
+            fetch_jwks=flaky_fetch, issuer=ISSUER, retry_interval=60, now=clock
+        )
+        with self.assertRaises(IdentityProviderUnavailable):
+            verifier.verify(self._token())
+
+        state["up"] = True
+        clock.advance(61)
+        self.assertEqual(
+            verifier.verify(self._token()).id, "11111111-2222-3333-4444-555555555555"
+        )
+        # A later failure must fall to the *stale* branch, not the cold one.
+        state["up"] = False
+        clock.advance(10_000)
+        self.assertEqual(
+            verifier.verify(self._token()).id, "11111111-2222-3333-4444-555555555555"
+        )
+
+
+class MakeJwksFetcherTests(unittest.TestCase):
+    """Cover the one link in the chain the tests above never touch.
+
+    Every test in this file hands the verifier a ``lambda: self.jwks``, so
+    make_jwks_fetcher itself -- and the URL it builds -- is exercised for the
+    first time by a real request at boot. That is a bad place to find a typo:
+    warm() never raises, so a wrong path does not crash anything. The backend
+    comes up, every authenticated request 503s, and the only evidence is a
+    jwks_warm_attempt_failed log line.
+    """
+
+    def test_url_is_the_supabase_jwks_endpoint(self):
+        self.assertEqual(
+            _jwks_url("https://abc.supabase.co"),
+            "https://abc.supabase.co/auth/v1/.well-known/jwks.json",
+        )
+
+    def test_fetcher_is_bound_to_a_client_for_that_url(self):
+        # The client is a local inside the factory; the returned bound method
+        # is the only handle on it.
+        fetcher = make_jwks_fetcher("https://abc.supabase.co")
+        self.assertEqual(
+            fetcher.__self__.uri,
+            "https://abc.supabase.co/auth/v1/.well-known/jwks.json",
+        )
+
+    def test_pyjwkclient_caching_stays_off(self):
+        # Reaches into PyJWT's internals deliberately. Turning cache_jwk_set
+        # back on silently reinstates a cache that clears itself on a failed
+        # refresh, sitting in front of the one this module wrote to avoid
+        # exactly that. If a PyJWT upgrade renames this attribute, repair the
+        # assertion -- do not delete it.
+        fetcher = make_jwks_fetcher("https://abc.supabase.co")
+        self.assertIsNone(fetcher.__self__.jwk_set_cache)
+
+    def test_timeout_reaches_the_client(self):
+        # PyJWKClient's own default is 30s, long enough to matter to warm()'s
+        # backoff schedule, so an unpassed timeout would not be obvious.
+        fetcher = make_jwks_fetcher("https://abc.supabase.co", timeout=3)
+        self.assertEqual(fetcher.__self__.timeout, 3)

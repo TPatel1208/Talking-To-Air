@@ -47,12 +47,18 @@ if BACKEND_DIR not in sys.path:
 # tta_backend.api caches get_settings() in a module-level variable at import
 # time, so whichever test file happens to import it first (collection order
 # is filesystem-dependent, not alphabetical-guaranteed) permanently decides
-# what JWT_SECRET_KEY is for the whole run. It used to be set only as a side
-# effect of test_chat_endpoint.py importing before test_auth_endpoints.py --
-# fragile, and silently masked locally by a real JWT_SECRET_KEY in .env. Set
-# it here, before any test module is imported, so it can't depend on import
-# order again.
-os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
+# what the Supabase settings are for the whole run. This used to be
+# JWT_SECRET_KEY, set only as a side effect of test_chat_endpoint.py importing
+# before test_auth_endpoints.py -- fragile, and silently masked locally by a
+# real value in .env. The reasoning survives T61 unchanged: set these here,
+# before any test module is imported, so it can't depend on import order again.
+#
+# The host must be syntactically real but must never be reached. Verification
+# runs against a fixture keypair injected in place of the verifier, so nothing
+# in the suite should ever resolve this name -- if a test starts making DNS
+# queries for it, something is talking to the live identity provider.
+os.environ.setdefault("SUPABASE_URL", "https://test-project.supabase.co")
+os.environ.setdefault("SUPABASE_PUBLISHABLE_KEY", "test-publishable-key")
 
 
 def _has_proj_db(path: str | None) -> bool:
