@@ -80,3 +80,7 @@ docs/prds/
 
 #mkcert
 *.pem
+
+# T61: pre-clean DB dumps. Contain real user rows and bcrypt password hashes
+# from the deleted local auth system -- never commit these.
+backups/
