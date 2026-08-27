@@ -254,3 +254,58 @@ test('losing the session clears the snapshot rather than leaving a dead token', 
 
   assert.equal(currentAccessToken(), null)
 })
+
+// An auth whose session is fine but whose refresh cannot complete, so the two
+// reasons refreshSession() hands back a null session can be told apart.
+function authFailingRefresh(token, error) {
+  return {
+    calls: { getSession: 0, refreshSession: 0 },
+    async getSession() {
+      this.calls.getSession += 1
+      return { data: { session: { access_token: token } }, error: null }
+    },
+    async refreshSession() {
+      this.calls.refreshSession += 1
+      return { data: { user: null, session: null }, error }
+    },
+  }
+}
+
+test('an unreachable auth service is not a lapsed session', async () => {
+  // Decision 6 puts the browser on supabase.co directly while API calls go to
+  // our own origin, so the two hosts fail independently. A refresh that could
+  // not ask says nothing about whether the session is alive: retrying without a
+  // credential is guaranteed to 401 against fail-closed middleware, and raising
+  // T47's modal tells a signed-in user their session expired.
+  const { configureApiFetch, apiFetch, currentAccessToken } = await load()
+  const raised = []
+  const auth = authFailingRefresh('jwt-live', Object.assign(new Error('Failed to fetch'), { status: 0 }))
+  const server = serving(401)
+  configureApiFetch({ auth, onUnauthorized: () => raised.push('modal') })
+
+  const res = await apiFetch('/api/jobs')
+
+  assert.equal(res.status, 401, 'the original response is handed back for the caller to treat as transient')
+  assert.equal(server.calls.length, 1, 'no credential-less retry, which could only 401 again')
+  assert.deepEqual(raised, [], 'a signed-in user must not be told their session expired')
+  // send() records every token it uses, so a retry here would also have wiped
+  // the snapshot maplibre reads while the session was still perfectly alive.
+  assert.equal(currentAccessToken(), 'jwt-live')
+})
+
+test('a refresh token the server rejects still raises the modal', async () => {
+  // The other half, and the reason the check is on the error rather than on the
+  // absent session: both failures hand back session: null, and only this one
+  // means the user really does have to sign in again.
+  const { configureApiFetch, apiFetch } = await load()
+  const raised = []
+  const auth = authFailingRefresh('jwt-stale', Object.assign(new Error('Invalid Refresh Token'), { status: 400 }))
+  const server = serving(401, 401)
+  configureApiFetch({ auth, onUnauthorized: () => raised.push('modal') })
+
+  const res = await apiFetch('/api/jobs')
+
+  assert.equal(res.status, 401)
+  assert.equal(server.calls.length, 2)
+  assert.deepEqual(raised, ['modal'])
+})

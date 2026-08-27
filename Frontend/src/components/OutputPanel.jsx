@@ -690,6 +690,20 @@ function MetadataTab({ chart, artifact, onViewStatistics }) {
     )
   }
   if (artifact) {
+    // Everything the table and ground-validation branches above do not claim:
+    // map, comparison, timeseries and profile artifacts, which render through
+    // CardShell and so carry ExportButtons.
+    //
+    // This used to be handed an explicitly undefined token prop, two lines
+    // below the same function handing the real one to TableMetadataDetails, so
+    // the asymmetry was deliberate rather than overlooked. (Spelling that prop
+    // out here would trip the authWiring guard that bans it -- it reads raw
+    // source, comments included, which is the bluntness that makes it hold.) Its effect was that those export buttons sent no credential
+    // and every download here failed with a 401. Since Phase 5 there is no
+    // token to withhold: apiFetch reads the session at call time, so this path
+    // authenticates like every other and the exports work. Kept that way on
+    // purpose -- a download offered by the UI should either work or not be
+    // offered, and nothing here wants an inert button.
     return <ArtifactMessage artifact={artifact} />
   }
   return null

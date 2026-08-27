@@ -10,6 +10,7 @@
 // somewhere to ask for a fresh one. Keeping that seam narrow is also what makes
 // it testable in a repo with no jsdom.
 import { shouldPromptReauth } from './sessionExpiry.js'
+import { isUnreachable } from './authSession.js'
 
 let auth = null
 let unauthorized = null
@@ -78,7 +79,19 @@ export async function apiFetch(path, options = {}) {
   // The token was stale rather than the session dead -- the common case for a
   // tab that sat in the background while its refresh timer was throttled. Ask
   // for a fresh one and try the same request again.
-  const { data: refreshed } = await auth.refreshSession()
+  const { data: refreshed, error } = await auth.refreshSession()
+
+  // Told no, or unable to ask? supabase-js reports both as session: null, and
+  // they mean opposite things. The browser talks to supabase.co directly while
+  // these requests go to our own origin (decision 6), so the auth host can be
+  // briefly unreachable while the backend is fine -- and the session is then
+  // still perfectly alive. Retrying it without a credential could only 401
+  // again, the retry would wipe the snapshot maplibre reads on its way past,
+  // and the modal would tell a signed-in user their session had expired. Hand
+  // the original 401 back and let the caller treat it as the transient failure
+  // it is; loadHistory already keeps the messages on one.
+  if (isUnreachable(error)) return res
+
   const retried = await send(path, options, refreshed?.session)
 
   // A second 401 is the refresh token itself being gone, which is the only
