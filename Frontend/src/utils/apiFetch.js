@@ -27,7 +27,9 @@ function bearer(session) {
 }
 
 function send(path, options, session) {
-  lastToken = session?.access_token ?? null
+  // One writer for the snapshot, so a request and a session event cannot
+  // disagree about how a token is recorded.
+  noteSession(session)
   return fetch(path, {
     ...options,
     headers: { ...options.headers, ...bearer(session) },
@@ -35,13 +37,31 @@ function send(path, options, session) {
 }
 
 /**
- * The most recent token this module has sent, or null.
+ * Record the session supabase-js just announced.
+ *
+ * Requests alone are not enough to keep the snapshot below correct. supabase-js
+ * refreshes on its own timer, at EXPIRY_MARGIN_MS -- 90 seconds before expiry
+ * -- so the token a rotation replaces is dead almost immediately, while the
+ * snapshot would still be handing it out until something happened to issue a
+ * request. An idle app issues none: useJobs polls only while a job is
+ * progressing. Feeding this from onAuthStateChange makes the snapshot exactly
+ * as current as supabase-js itself.
+ *
+ * A null session clears it. No header is the honest answer once there is no
+ * session, and better than presenting a credential the server has stopped
+ * accepting.
+ */
+export function noteSession(session) {
+  lastToken = session?.access_token ?? null
+}
+
+/**
+ * The most recent access token, or null.
  *
  * For the one caller that cannot await a session: maplibre's `transformRequest`
- * is synchronous. It is a snapshot, but a fresher one than the prop it
- * replaces -- that closed over whatever token was in scope when the map was
- * built and never updated, whereas this follows every request and every
- * refresh. Anything that can await should call apiFetch instead.
+ * is synchronous. Kept current by every request and by every session change,
+ * so it trails the live session by nothing. Anything that can await should call
+ * apiFetch instead.
  */
 export function currentAccessToken() {
   return lastToken

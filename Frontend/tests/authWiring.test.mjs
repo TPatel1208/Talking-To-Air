@@ -148,3 +148,17 @@ test('no token travels through props, and one module builds the header', () => {
     'building a bearer header anywhere else means a call site that bypassed apiFetch',
   )
 })
+
+test('every session change reaches the synchronous token snapshot', () => {
+  // maplibre's transformRequest cannot await a session, so it reads apiFetch's
+  // snapshot. Requests alone leave that snapshot wrong for however long an idle
+  // app goes without making one -- unbounded, since useJobs polls only while a
+  // job is progressing -- and auth-js rotates at EXPIRY_MARGIN_MS, 90 seconds
+  // before expiry, so the replaced token dies almost at once. Feeding the
+  // snapshot from the subscription is the only thing keeping it current, and
+  // the staleness cannot be observed without waiting out a real rotation.
+  const subscription = callText(APP, 'onAuthStateChange(')
+  assert.ok(subscription, 'the subscription must exist for this guard to mean anything')
+  assert.match(subscription, /noteSession\(session\)/,
+    'the snapshot maplibre reads goes stale unless every session change feeds it')
+})

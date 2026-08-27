@@ -9,7 +9,7 @@ import { createEmptySelection, toggleSlot } from './utils/compareMode'
 import { authTransition } from './utils/sessionExpiry'
 import { turnCompletionFocus } from './utils/turnFocus'
 import { ensureSupabaseClient, getSupabaseClient } from './utils/supabaseClient'
-import { configureApiFetch } from './utils/apiFetch'
+import { configureApiFetch, noteSession } from './utils/apiFetch'
 import {
   authReducer,
   authView,
@@ -534,7 +534,13 @@ export default function App() {
     const { data } = getSupabaseClient().auth.onAuthStateChange((event, session) => {
       // Nothing may be awaited in here. Awaiting a Supabase call inside this
       // callback deadlocks every later call on the client -- documented in
-      // Supabase's own troubleshooting guide. Dispatch and return.
+      // Supabase's own troubleshooting guide. Both of these are synchronous.
+      //
+      // noteSession keeps apiFetch's snapshot -- the one maplibre's synchronous
+      // transformRequest reads -- level with the live session. Requests alone
+      // cannot: a rotation happens on supabase-js's timer, 90 seconds before
+      // expiry, and an idle app may issue no request for hours.
+      noteSession(session)
       dispatch({ type: 'auth-event', event, session })
     })
     return () => data.subscription.unsubscribe()

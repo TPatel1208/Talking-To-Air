@@ -223,3 +223,34 @@ test('the most recent token is readable synchronously, refreshes included', asyn
   await apiFetch('/api/jobs')
   assert.equal(currentAccessToken(), 'jwt-rotated')
 })
+
+test('a background rotation updates the snapshot with no request in between', async () => {
+  // The gap this closes. supabase-js refreshes on its own timer and announces
+  // it through onAuthStateChange; nothing calls apiFetch on that path. Left to
+  // requests alone the snapshot goes wrong 90 seconds after every rotation --
+  // auth-js refreshes at EXPIRY_MARGIN_MS, so the token it replaces dies almost
+  // immediately -- and stays wrong until something happens to issue a request.
+  // An idle app issues none: useJobs only polls while a job is progressing.
+  const { configureApiFetch, apiFetch, currentAccessToken, noteSession } = await load()
+  serving(200)
+  configureApiFetch({ auth: authHolding('jwt-first') })
+
+  await apiFetch('/api/jobs')
+  assert.equal(currentAccessToken(), 'jwt-first')
+
+  noteSession({ access_token: 'jwt-rotated' })
+  assert.equal(currentAccessToken(), 'jwt-rotated')
+})
+
+test('losing the session clears the snapshot rather than leaving a dead token', async () => {
+  // No header is the honest answer once there is no session. maplibre would
+  // otherwise keep presenting a credential the server has stopped accepting.
+  const { configureApiFetch, apiFetch, currentAccessToken, noteSession } = await load()
+  serving(200)
+  configureApiFetch({ auth: authHolding('jwt-live') })
+
+  await apiFetch('/api/jobs')
+  noteSession(null)
+
+  assert.equal(currentAccessToken(), null)
+})
