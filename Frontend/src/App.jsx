@@ -6,8 +6,8 @@ import { useChat } from './hooks/useChat'
 import { useDiscovery } from './hooks/useDiscovery'
 import { useJobs } from './hooks/useJobs'
 import { createEmptySelection, toggleSlot } from './utils/compareMode'
-import { reachableArtifacts } from './utils/artifactReachability'
 import { authTransition } from './utils/sessionExpiry'
+import { turnCompletionFocus } from './utils/turnFocus'
 import { ensureSupabaseClient, getSupabaseClient } from './utils/supabaseClient'
 import {
   accessTokenOf,
@@ -19,7 +19,7 @@ import {
   showReauthModal,
   userIdOf,
 } from './utils/authSession'
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useState } from 'react'
 
 // Thin clickable rail standing in for a side column while it's manually
 // collapsed -- keeps a one-click way back rather than the column just
@@ -280,33 +280,23 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
   // the newest one from a completed reply, or whatever the user clicked in
   // the chat history.
   const [focusedOutput, setFocusedOutput] = useState(null)
-  const wasLoadingRef = useRef(false)
 
-  // PRE-EXISTING violation of this repo's setState-in-effect rule, unrelated
-  // to auth and untouched by T61. It was invisible until Phase 4 rewrote the
-  // rest of this file: the React Compiler rule bails out on a component it
-  // cannot fully model, and something in the old login form was causing that
-  // bailout to suppress this diagnostic. Verified real in isolation.
-  //
-  // Not fixed here because the fix is a rework of when the output panel
-  // changes focus -- user-visible behavior, with no jsdom to test it against,
-  // and nothing to do with authentication.
-  /* eslint-disable react-hooks/set-state-in-effect */
-  useEffect(() => {
-    if (wasLoadingRef.current && !loading) {
-      const last = messages[messages.length - 1]
-      if (last?.role === 'assistant') {
-        if (last.charts?.length) {
-          setFocusedOutput({ kind: 'chart', data: last.charts[last.charts.length - 1] })
-        } else {
-          const artifact = reachableArtifacts(last)[0]
-          if (artifact) setFocusedOutput({ kind: 'artifact', data: artifact })
-        }
-      }
-    }
-    wasLoadingRef.current = loading
-  }, [loading, messages])
-  /* eslint-enable react-hooks/set-state-in-effect */
+  // Focus follows the newest output of a turn the moment that turn settles,
+  // but a chart the user clicked in the history keeps focus until the *next*
+  // turn settles. That is a transition in React's own state, not a
+  // synchronization with anything outside it, so it belongs in the render
+  // pass (react.dev, "adjusting state when a prop changes") rather than in an
+  // effect: `prevLoading` carries the previous render's value, the comparison
+  // is only ever true on the transition render, and the re-render React does
+  // in response happens before this one is committed -- no cascading render,
+  // and no frame painted with the stale focus.
+  const [prevLoading, setPrevLoading] = useState(loading)
+  if (prevLoading !== loading) {
+    const settledFocus = turnCompletionFocus(prevLoading, loading, messages)
+    setPrevLoading(loading)
+    // A null result means "leave focus alone" -- see turnFocus.js.
+    if (settledFocus) setFocusedOutput(settledFocus)
+  }
 
   // Compare mode (T28): off | choosing-count | active. Pure in-memory state,
   // owned here alongside focusedOutput -- no new store, no persistence, and
