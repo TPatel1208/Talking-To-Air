@@ -13,6 +13,7 @@ import _createPlotlyComponent from 'react-plotly.js/factory'
 import { resolveCsvExport, resolveNetcdfExport } from '../utils/chartExport.js'
 import { buildOverlayTraces } from '../utils/timeseriesCompare.js'
 import { availableAxes, profileLayout, profileTraces, spreadCaveat } from '../utils/verticalProfile.js'
+import { apiFetch } from '../utils/apiFetch.js'
 
 const createPlotlyComponent =
   typeof _createPlotlyComponent === 'function'
@@ -74,10 +75,8 @@ function filenameFromDisposition(disposition, fallback) {
   return match?.[1]?.trim() || fallback
 }
 
-async function downloadFromUrl(url, fallbackFilename, accessToken) {
-  const response = await fetch(url, {
-    headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
-  })
+async function downloadFromUrl(url, fallbackFilename) {
+  const response = await apiFetch(url)
   if (!response.ok) {
     let detail = ''
     try {
@@ -93,7 +92,7 @@ async function downloadFromUrl(url, fallbackFilename, accessToken) {
   downloadBlob(filename, blob)
 }
 
-export function ChartToolbar({ chart, plotRootRef, accessToken }) {
+export function ChartToolbar({ chart, plotRootRef }) {
   const [copyState, setCopyState] = useState('')
   const [exportState, setExportState] = useState({ status: '', message: '' })
   const fileBase = sanitizeFilename(chart.title || chart.metadata?.name || chart.type)
@@ -129,7 +128,7 @@ export function ChartToolbar({ chart, plotRootRef, accessToken }) {
 
     try {
       setExportState({ status: 'progress', message: 'Export in progress' })
-      await downloadFromUrl(resolved.url, `${fileBase}.csv`, accessToken)
+      await downloadFromUrl(resolved.url, `${fileBase}.csv`)
       setExportState({ status: 'complete', message: 'Export complete' })
       window.setTimeout(() => setExportState({ status: '', message: '' }), 2200)
     } catch (error) {
@@ -151,7 +150,7 @@ export function ChartToolbar({ chart, plotRootRef, accessToken }) {
       // so this reports progress like the other streamed exports rather than
       // appearing to hang.
       setExportState({ status: 'progress', message: 'Converting to NetCDF' })
-      await downloadFromUrl(resolved.url, `${fileBase}.nc`, accessToken)
+      await downloadFromUrl(resolved.url, `${fileBase}.nc`)
       setExportState({ status: 'complete', message: 'Export complete' })
       window.setTimeout(() => setExportState({ status: '', message: '' }), 2200)
     } catch (error) {
@@ -164,7 +163,7 @@ export function ChartToolbar({ chart, plotRootRef, accessToken }) {
     if (chart.chart_id && chart.export) {
       try {
         setExportState({ status: 'progress', message: 'Export in progress' })
-        await downloadFromUrl(`/api/chart/${chart.chart_id}/export.png`, `${fileBase}.png`, accessToken)
+        await downloadFromUrl(`/api/chart/${chart.chart_id}/export.png`, `${fileBase}.png`)
         setExportState({ status: 'complete', message: 'Export complete' })
         window.setTimeout(() => setExportState({ status: '', message: '' }), 2200)
       } catch (error) {

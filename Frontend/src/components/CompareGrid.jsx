@@ -145,7 +145,7 @@ function SlotGrid({ compareCount, compareSelection, height, hint, renderChart, o
 // heatmap kind (T28): independent live MapLibreHeatmapPanel per slot, plus
 // the shared-color-scale legend/toggle when every filled slot's variable and
 // units match.
-function HeatmapCompareBody({ compareCount, compareSelection, accessToken, autoScaleEach, onToggleAutoScale, height, onFocusChart }) {
+function HeatmapCompareBody({ compareCount, compareSelection, autoScaleEach, onToggleAutoScale, height, onFocusChart }) {
   const filled = useMemo(() => filledCharts(compareSelection), [compareSelection])
   const shared = useMemo(() => computeSharedColorScale(filled), [filled])
   const useShared = shared.available && !autoScaleEach
@@ -186,7 +186,6 @@ function HeatmapCompareBody({ compareCount, compareSelection, accessToken, autoS
           <MapLibreHeatmapPanel
             payload={chart}
             height={height}
-            accessToken={accessToken}
             colorScaleOverride={colorScaleOverride}
             hideLegend={useShared}
           />
@@ -237,7 +236,7 @@ function TimeSeriesCompareBody({ compareCount, compareSelection, height, onFocus
   )
 }
 
-export default function CompareGrid({ compareCount, compareSelection, accessToken, autoScaleEach, onToggleAutoScale, height = 420, onFocusChart }) {
+export default function CompareGrid({ compareCount, compareSelection, autoScaleEach, onToggleAutoScale, height = 420, onFocusChart }) {
   const kind = activeCompareKind(compareSelection)
 
   if (kind === 'timeseries') {
@@ -255,7 +254,6 @@ export default function CompareGrid({ compareCount, compareSelection, accessToke
     <HeatmapCompareBody
       compareCount={compareCount}
       compareSelection={compareSelection}
-      accessToken={accessToken}
       autoScaleEach={autoScaleEach}
       onToggleAutoScale={onToggleAutoScale}
       height={height}

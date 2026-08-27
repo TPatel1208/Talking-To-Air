@@ -5,12 +5,12 @@ import { extractSuggestedFollowups } from '../utils/followups'
 import { extractVariableChoice } from '../utils/variableChoice'
 import { TERMINAL_STATUSES as TERMINAL_JOB_STATUSES } from '../utils/jobCard'
 import { classifyHistoryFetchFailure, historyStateReducer } from '../utils/historyLoad'
-import { shouldPromptReauth } from '../utils/sessionExpiry'
+import { apiFetch } from '../utils/apiFetch.js'
 
 const API_BASE = '/api'
 const ACTIVE_THREAD_STORAGE_KEY = 'tta.activeThreadId'
 
-export function useChat(accessToken, onUnauthorized, onJobProgress) {
+export function useChat(onJobProgress) {
   const [messages, setMessages] = useState([])
   const [threadId, setThreadId] = useState(null)
   const [sessions, setSessions] = useState([])
@@ -56,17 +56,6 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
   const getSessionId = useCallback((session) => (
     typeof session === 'string' ? session : session?.id
   ), [])
-
-  const authHeaders = useCallback((extra = {}) => ({
-    ...extra,
-    ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-  }), [accessToken])
-
-  const handleUnauthorized = useCallback((res) => {
-    // T47's rule has one definition, and sessionExpiry.test.mjs guards it --
-    // an inlined `=== 401` here would leave that test guarding nothing.
-    if (shouldPromptReauth(res.status) && onUnauthorized) onUnauthorized()
-  }, [onUnauthorized])
 
   const makeLocalSession = useCallback((id, message) => {
     const title = message.trim().replace(/\s+/g, ' ')
@@ -162,14 +151,10 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
   // must not read as "your conversation was deleted." Only a genuine 404
   // (the session doesn't exist) clears the view.
   const loadHistory = useCallback(async (id) => {
-    if (!accessToken) return 'failed'
     let action
     try {
-      const res = await fetch(`${API_BASE}/session/${id}/history`, {
-        headers: authHeaders(),
-      })
+      const res = await apiFetch(`${API_BASE}/session/${id}/history`)
       if (!res.ok) {
-        handleUnauthorized(res)
         action = classifyHistoryFetchFailure(res.status) === 'not-found'
           ? { type: 'not-found' }
           : { type: 'failed' }
@@ -192,19 +177,14 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
     setHistoryError(historyStateReducer({ messages: [], historyError: null }, action).historyError)
 
     return action.type === 'loaded' ? 'loaded' : action.type
-  }, [accessToken, authHeaders, handleUnauthorized])
+  }, [])
 
   const retryHistory = useCallback(() => loadHistory(threadIdRef.current), [loadHistory])
 
   const fetchSessions = useCallback(async () => {
-    if (!accessToken) {
-      setSessions([])
-      return
-    }
     try {
-      const res = await fetch(`${API_BASE}/sessions`, { headers: authHeaders() })
+      const res = await apiFetch(`${API_BASE}/sessions`)
       if (!res.ok) {
-        handleUnauthorized(res)
         throw new Error(`HTTP ${res.status}`)
       }
       const data = await res.json()
@@ -236,15 +216,11 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
         }
       }
     }
-  }, [accessToken, authHeaders, getSessionId, handleUnauthorized, loadHistory, persistActiveThread])
+  }, [getSessionId, loadHistory, persistActiveThread])
 
   useEffect(() => { fetchSessions() }, [fetchSessions])
 
   const sendMessage = useCallback(async (text) => {
-    if (!accessToken) {
-      setError('Please sign in to continue.')
-      return
-    }
     const message = text.trim()
     if (!message) return
 
@@ -286,15 +262,14 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
     setError(null)
 
     try {
-      const res = await fetch(`${API_BASE}/chat`, {
+      const res = await apiFetch(`${API_BASE}/chat`, {
         method: 'POST',
-        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: text, thread_id: threadIdRef.current }),
         signal: controller.signal,
       })
 
       if (!res.ok) {
-        handleUnauthorized(res)
         throw new Error(`HTTP ${res.status}`)
       }
       if (!res.body) throw new Error('Streaming response was empty')
@@ -453,7 +428,7 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
         setLoading(false)
       }
     }
-  }, [abortActiveRequest, accessToken, authHeaders, getSessionId, handleUnauthorized, isCurrentRequest, makeLocalSession, onJobProgress, persistActiveThread, queueAssistantUpdate])
+  }, [abortActiveRequest, getSessionId, isCurrentRequest, makeLocalSession, onJobProgress, persistActiveThread, queueAssistantUpdate])
 
   const newSession = useCallback(() => {
     abortActiveRequest()
@@ -486,12 +461,8 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
 
   const deleteSession = useCallback(async (id) => {
     try {
-      const res = await fetch(`${API_BASE}/session/${id}`, {
-        method: 'DELETE',
-        headers: authHeaders(),
-      })
+      const res = await apiFetch(`${API_BASE}/session/${id}`, { method: 'DELETE' })
       if (!res.ok) {
-        handleUnauthorized(res)
         throw new Error(`HTTP ${res.status}`)
       }
       setSessions(prev => prev.filter(session => getSessionId(session) !== id))
@@ -499,7 +470,7 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
     } catch (err) {
       setError(err.message ? `Failed to delete session: ${err.message}` : 'Failed to delete session. Please try again.')
     }
-  }, [authHeaders, getSessionId, handleUnauthorized, newSession])
+  }, [getSessionId, newSession])
 
   const clearError = useCallback(() => {
     setError(null)

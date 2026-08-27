@@ -8,6 +8,7 @@ import { starterMessage } from '../utils/starterPrompts'
 import { compareBadgeLabel, isChartComparable, isSelectionFull, slotIndexOf } from '../utils/compareMode'
 import { reachableArtifacts } from '../utils/artifactReachability'
 import VariableChoicePicker from './VariableChoicePicker'
+import { apiFetch } from '../utils/apiFetch.js'
 
 const TYPE_LABEL = { map: 'Map', comparison: 'Comparison', timeseries: 'Time series', table: 'Table' }
 
@@ -235,7 +236,7 @@ function LoadingMessage({ toolCalls, statusMessage, workflowStage, startedAt }) 
 }
 
 /* ── Inline image with lightbox ── */
-function InlineImage({ url, accessToken }) {
+function InlineImage({ url }) {
   const [lightbox, setLightbox] = useState(false)
   const [blobUrl, setBlobUrl] = useState(null)
   const src = toImageUrl(url)
@@ -243,7 +244,7 @@ function InlineImage({ url, accessToken }) {
   // lets the effect bail without a setState (react-hooks/set-state-in-effect):
   // the render below ignores blobUrl when it doesn't apply, which is what the
   // old setBlobUrl(null) reset was for.
-  const needsAuthedFetch = Boolean(src && accessToken && src.startsWith('/api/outputs/'))
+  const needsAuthedFetch = Boolean(src && src.startsWith('/api/outputs/'))
 
   useEffect(() => {
     if (!needsAuthedFetch) return undefined
@@ -251,7 +252,7 @@ function InlineImage({ url, accessToken }) {
     let cancelled = false
     let objectUrl = null
 
-    fetch(src, { headers: { Authorization: `Bearer ${accessToken}` } })
+    apiFetch(src)
       .then(response => response.ok ? response.blob() : null)
       .then(blob => {
         if (!blob || cancelled) return
@@ -266,7 +267,7 @@ function InlineImage({ url, accessToken }) {
       cancelled = true
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
-  }, [src, accessToken, needsAuthedFetch])
+  }, [src, needsAuthedFetch])
 
   if (!src) return null
   const displaySrc = (needsAuthedFetch && blobUrl) || src
@@ -364,7 +365,7 @@ function ReloadSessionButton({ onReloadSession }) {
 
 /* ── Message bubble ── */
 function MessageBubble({
-  msg, accessToken, onFollowupClick, focusedOutput, onFocusOutput,
+  msg, onFollowupClick, focusedOutput, onFocusOutput,
   compareMode, compareSelection, onToggleCompareSlot, onCompareCapFull,
   onReloadSession,
 }) {
@@ -517,7 +518,7 @@ function MessageBubble({
                   </ReactMarkdown>
                 )}
                 {msg.imageUrls?.filter(Boolean).map((url, i) => (
-                  <InlineImage key={i} url={url} accessToken={accessToken} />
+                  <InlineImage key={i} url={url} />
                 ))}
                 {msg.isConnectionLost && <ReloadSessionButton onReloadSession={onReloadSession} />}
               </>
@@ -654,7 +655,7 @@ function EmptyState({ onChipClick }) {
 
 /* ── Main Chat component ── */
 export default function Chat({
-  messages, loading, error, accessToken, chatTitle, onSend, onAbort, onClearError,
+  messages, loading, error, chatTitle, onSend, onAbort, onClearError,
   historyError, onRetryHistory, onReloadSession,
   focusedOutput, onFocusOutput,
   compareMode = 'off', compareSelection = [], onToggleCompareSlot,
@@ -854,7 +855,6 @@ export default function Chat({
                 <MessageBubble
                   key={i}
                   msg={msg}
-                  accessToken={accessToken}
                   onFollowupClick={handleSend}
                   focusedOutput={focusedOutput}
                   onFocusOutput={onFocusOutput}

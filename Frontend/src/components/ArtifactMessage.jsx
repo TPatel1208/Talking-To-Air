@@ -1,12 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { sortArtifactRows } from '../utils/artifactTable'
+import { apiFetch } from '../utils/apiFetch.js'
 
 const API_BASE = '/api'
 const PAGE_SIZE = 100
-
-function authHeaders(accessToken) {
-  return accessToken ? { Authorization: `Bearer ${accessToken}` } : {}
-}
 
 function filenameFromDisposition(disposition, fallback) {
   const match = /filename="?([^";]+)"?/i.exec(disposition || '')
@@ -53,15 +50,13 @@ function TypeBadge({ type }) {
   )
 }
 
-function ExportButtons({ artifactId, title, accessToken }) {
+function ExportButtons({ artifactId, title }) {
   const [state, setState] = useState('')
 
   async function download(format) {
     setState('downloading')
     try {
-      const response = await fetch(`${API_BASE}/chart/${artifactId}/export.${format}`, {
-        headers: authHeaders(accessToken),
-      })
+      const response = await apiFetch(`${API_BASE}/chart/${artifactId}/export.${format}`)
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const blob = await response.blob()
       const filename = filenameFromDisposition(
@@ -91,7 +86,7 @@ function ExportButtons({ artifactId, title, accessToken }) {
   )
 }
 
-function CardShell({ artifact, accessToken, children }) {
+function CardShell({ artifact, children }) {
   return (
     <div style={{
       border: '1px solid var(--border)', borderRadius: '8px', margin: '12px 0',
@@ -107,7 +102,7 @@ function CardShell({ artifact, accessToken, children }) {
             {artifact.title || 'Untitled artifact'}
           </div>
         </div>
-        <ExportButtons artifactId={artifact.id} title={artifact.title} accessToken={accessToken} />
+        <ExportButtons artifactId={artifact.id} title={artifact.title} />
       </div>
       <div style={{ padding: '10px 12px', fontSize: '12px', color: 'var(--text-secondary)' }}>
         {children}
@@ -126,10 +121,10 @@ export function MetaRow({ label, value }) {
   )
 }
 
-function MapArtifactCard({ artifact, accessToken }) {
+function MapArtifactCard({ artifact }) {
   const meta = artifact.metadata || {}
   return (
-    <CardShell artifact={artifact} accessToken={accessToken}>
+    <CardShell artifact={artifact}>
       <MetaRow label="Variable" value={meta.variable} />
       <MetaRow label="Units" value={meta.units} />
       <MetaRow label="Bounding box" value={meta.bbox?.map(v => Number(v).toFixed(2)).join(', ')} />
@@ -142,10 +137,10 @@ function MapArtifactCard({ artifact, accessToken }) {
 // A vertical profile's card. Layer ordering is on it because "which end of
 // this array is the sky" is a fact about the product, not a rendering choice --
 // a reader pulling this artifact months later needs it as much as the chart did.
-function ProfileArtifactCard({ artifact, accessToken }) {
+function ProfileArtifactCard({ artifact }) {
   const meta = artifact.metadata || {}
   return (
-    <CardShell artifact={artifact} accessToken={accessToken}>
+    <CardShell artifact={artifact}>
       <MetaRow label="Variable" value={meta.variable} />
       <MetaRow label="Units" value={meta.units} />
       <MetaRow label="Layers" value={meta.layer_count} />
@@ -159,10 +154,10 @@ function ProfileArtifactCard({ artifact, accessToken }) {
   )
 }
 
-function ComparisonArtifactCard({ artifact, accessToken }) {
+function ComparisonArtifactCard({ artifact }) {
   const meta = artifact.metadata || {}
   return (
-    <CardShell artifact={artifact} accessToken={accessToken}>
+    <CardShell artifact={artifact}>
       <MetaRow label="Mode" value={meta.mode} />
       <MetaRow
         label="Panels"
@@ -173,10 +168,10 @@ function ComparisonArtifactCard({ artifact, accessToken }) {
   )
 }
 
-function TimeseriesArtifactCard({ artifact, accessToken }) {
+function TimeseriesArtifactCard({ artifact }) {
   const meta = artifact.metadata || {}
   return (
-    <CardShell artifact={artifact} accessToken={accessToken}>
+    <CardShell artifact={artifact}>
       <MetaRow
         label="Series"
         value={(meta.series || [])
@@ -188,7 +183,7 @@ function TimeseriesArtifactCard({ artifact, accessToken }) {
   )
 }
 
-export function TableArtifactMessage({ artifact, accessToken }) {
+export function TableArtifactMessage({ artifact }) {
   const [page, setPage] = useState({ columns: [], rows: [], total_rows: artifact?.row_count || 0, offset: 0, limit: PAGE_SIZE })
   const [offset, setOffset] = useState(0)
   const [sort, setSort] = useState({ column: null, direction: 'asc' })
@@ -203,9 +198,7 @@ export function TableArtifactMessage({ artifact, accessToken }) {
       setStatus('loading')
       setError('')
       try {
-        const response = await fetch(`${API_BASE}/artifacts/${artifact.id}?offset=${offset}&limit=${PAGE_SIZE}`, {
-          headers: authHeaders(accessToken),
-        })
+        const response = await apiFetch(`${API_BASE}/artifacts/${artifact.id}?offset=${offset}&limit=${PAGE_SIZE}`)
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
         const data = await response.json()
         if (!cancelled) {
@@ -223,7 +216,7 @@ export function TableArtifactMessage({ artifact, accessToken }) {
     return () => {
       cancelled = true
     }
-  }, [artifact?.id, artifact?.type, accessToken, offset])
+  }, [artifact?.id, artifact?.type, offset])
 
   const visibleColumns = useMemo(() => (
     page.columns?.length
@@ -246,9 +239,7 @@ export function TableArtifactMessage({ artifact, accessToken }) {
   async function downloadCsv() {
     setExportState('downloading')
     try {
-      const response = await fetch(`${API_BASE}/artifacts/${artifact.id}/csv`, {
-        headers: authHeaders(accessToken),
-      })
+      const response = await apiFetch(`${API_BASE}/artifacts/${artifact.id}/csv`)
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const blob = await response.blob()
       const filename = filenameFromDisposition(
@@ -411,14 +402,14 @@ function pagerStyle(enabled) {
   }
 }
 
-export default function ArtifactMessage({ artifact, accessToken }) {
+export default function ArtifactMessage({ artifact }) {
   if (!artifact) return null
   switch (artifact.type) {
-    case 'table': return <TableArtifactMessage artifact={artifact} accessToken={accessToken} />
-    case 'map': return <MapArtifactCard artifact={artifact} accessToken={accessToken} />
-    case 'comparison': return <ComparisonArtifactCard artifact={artifact} accessToken={accessToken} />
-    case 'timeseries': return <TimeseriesArtifactCard artifact={artifact} accessToken={accessToken} />
-    case 'profile': return <ProfileArtifactCard artifact={artifact} accessToken={accessToken} />
+    case 'table': return <TableArtifactMessage artifact={artifact} />
+    case 'map': return <MapArtifactCard artifact={artifact} />
+    case 'comparison': return <ComparisonArtifactCard artifact={artifact} />
+    case 'timeseries': return <TimeseriesArtifactCard artifact={artifact} />
+    case 'profile': return <ProfileArtifactCard artifact={artifact} />
     default: return null
   }
 }

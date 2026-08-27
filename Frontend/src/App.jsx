@@ -9,8 +9,8 @@ import { createEmptySelection, toggleSlot } from './utils/compareMode'
 import { authTransition } from './utils/sessionExpiry'
 import { turnCompletionFocus } from './utils/turnFocus'
 import { ensureSupabaseClient, getSupabaseClient } from './utils/supabaseClient'
+import { configureApiFetch } from './utils/apiFetch'
 import {
-  accessTokenOf,
   authReducer,
   authView,
   describeAuthError,
@@ -230,14 +230,14 @@ function SessionExpiredModal({ onSignIn }) {
   )
 }
 
-function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
+function AuthenticatedApp({ onLogout }) {
   const {
     jobs,
     error: jobsError,
     fetchJobs,
     applyJobProgress,
     cancelJob,
-  } = useJobs(accessToken)
+  } = useJobs()
 
   const {
     messages,
@@ -254,9 +254,9 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
     deleteSession,
     abortActiveRequest,
     clearError,
-  } = useChat(accessToken, onUnauthorized, applyJobProgress)
+  } = useChat(applyJobProgress)
 
-  const discovery = useDiscovery(accessToken)
+  const discovery = useDiscovery()
 
   // The card's retrieve action hands off to the standard agent flow (safe_retrieve
   // gates included) rather than bypassing it — one retrieval pipeline, two entry points.
@@ -417,7 +417,6 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
           onLogout={handleLogout}
           images={images}
           artifacts={artifacts}
-          accessToken={accessToken}
           onCollapse={toggleSessionsCollapsed}
         />
       )}
@@ -433,7 +432,6 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
             historyError={historyError}
             onRetryHistory={retryHistory}
             onReloadSession={reloadSession}
-            accessToken={accessToken}
             chatTitle={chatTitle}
             onSend={sendMessage}
             onAbort={() => {
@@ -457,7 +455,6 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
       <OutputPanel
         focusedOutput={focusedOutput}
         onFocusOutput={setFocusedOutput}
-        accessToken={accessToken}
         onSend={sendMessage}
         compareMode={compareMode}
         compareCount={compareCount}
@@ -497,6 +494,10 @@ export default function App() {
   // Bumped by the retry button on the config-error screen.
   const [configAttempt, setConfigAttempt] = useState(0)
 
+  // T47: a 401 during an active session raises the re-auth modal instead of
+  // wiping the session and dumping the user to the login screen.
+  const handleUnauthorized = useCallback(() => dispatch({ type: 'unauthorized' }), [])
+
   // The app's first request, and everything waits behind it: the identity
   // provider's coordinates are served at runtime rather than baked into this
   // bundle (decision 11), so one image runs against either project. Failure is
@@ -511,13 +512,20 @@ export default function App() {
         // blank key surfaces as the config-error screen naming the missing
         // variable instead of throwing during a later render.
         ensureSupabaseClient(config)
+        // Wired here rather than in an effect of its own, and deliberately
+        // before config-loaded is dispatched. React runs child effects before
+        // parent effects, so an effect in App could lose the race to a hook
+        // inside a freshly mounted AuthenticatedApp. Configuring before the
+        // dispatch that can first produce a view means no authenticated tree
+        // can exist un-wired, whatever React batches together.
+        configureApiFetch({ auth: getSupabaseClient().auth, onUnauthorized: handleUnauthorized })
         if (!cancelled) dispatch({ type: 'config-loaded', config })
       })
       .catch((err) => {
         if (!cancelled) dispatch({ type: 'config-failed', error: err.message || 'unreachable' })
       })
     return () => { cancelled = true }
-  }, [configAttempt])
+  }, [configAttempt, handleUnauthorized])
 
   // supabase-js announces the restored session, every refresh, and every
   // sign-out through this one callback. It is the only writer of session state.
@@ -579,9 +587,6 @@ export default function App() {
     getSupabaseClient()?.auth.signOut().catch(() => {})
   }, [])
 
-  // T47: a 401 during an active session raises the re-auth modal instead of
-  // wiping the session and dumping the user to the login screen.
-  const handleUnauthorized = useCallback(() => dispatch({ type: 'unauthorized' }), [])
   const retryConfig = useCallback(() => setConfigAttempt(n => n + 1), [])
   const retryRestore = useCallback(() => dispatch({ type: 'restore-retry' }), [])
 
@@ -623,9 +628,7 @@ export default function App() {
         // change on every auto-refresh -- every 45 minutes, decision 10 -- and
         // React would discard this entire tree mid-analysis.
         key={userIdOf(state)}
-        accessToken={accessTokenOf(state)}
         onLogout={handleLogout}
-        onUnauthorized={handleUnauthorized}
       />
       {showReauthModal(state) && <SessionExpiredModal onSignIn={handleReauth} />}
     </>

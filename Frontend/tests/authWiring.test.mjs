@@ -129,3 +129,22 @@ test('the sign-in form takes an email, and offers no way to register', () => {
   assert.match(APP, /type="email"/)
   assert.doesNotMatch(APP, /setUsername|allowRegister/)
 })
+
+test('no token travels through props, and one module builds the header', () => {
+  // Phase 5. A token passed as a prop is a snapshot of whenever the tree last
+  // rendered, and supabase-js rotates the real one on its own schedule -- the
+  // gap between the two is a 401 nobody earned. apiFetch reads the session at
+  // call time instead, so nothing downstream needs to be handed a token.
+  assert.deepEqual(offenders(/accessToken=\{/), [],
+    'no component may be handed a token through props')
+
+  // MapLibreHeatmapPanel is the one exception and has to be: maplibre's
+  // transformRequest is synchronous, so it cannot await a session and takes
+  // the snapshot apiFetch exposes for exactly this. Every other caller can
+  // await, so every other caller goes through apiFetch.
+  assert.deepEqual(
+    offenders(/Authorization: `Bearer/).sort(),
+    ['components/MapLibreHeatmapPanel.jsx', 'utils/apiFetch.js'],
+    'building a bearer header anywhere else means a call site that bypassed apiFetch',
+  )
+})

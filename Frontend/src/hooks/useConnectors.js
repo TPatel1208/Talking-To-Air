@@ -1,26 +1,18 @@
 import { useState, useCallback, useEffect } from 'react'
+import { apiFetch } from '../utils/apiFetch.js'
 
 const API_BASE = '/api'
 
-export function useConnectors(accessToken) {
+export function useConnectors() {
   const [connectors, setConnectors] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [notConfigured, setNotConfigured] = useState(false)
 
-  const authHeaders = useCallback((extra = {}) => ({
-    ...extra,
-    ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-  }), [accessToken])
-
   const fetchConnectors = useCallback(async () => {
-    if (!accessToken) {
-      setConnectors([])
-      return
-    }
     setLoading(true)
     try {
-      const res = await fetch(`${API_BASE}/connectors`, { headers: authHeaders() })
+      const res = await apiFetch(`${API_BASE}/connectors`)
       if (res.status === 503) {
         setNotConfigured(true)
         setConnectors([])
@@ -37,32 +29,29 @@ export function useConnectors(accessToken) {
     } finally {
       setLoading(false)
     }
-  }, [accessToken, authHeaders])
+  }, [])
 
   useEffect(() => { fetchConnectors() }, [fetchConnectors])
 
   const setToken = useCallback(async (connectorType, token) => {
-    const res = await fetch(`${API_BASE}/connectors/${connectorType}/token`, {
+    const res = await apiFetch(`${API_BASE}/connectors/${connectorType}/token`, {
       method: 'PUT',
-      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token }),
     })
     const data = await res.json().catch(() => null)
     if (!res.ok) throw new Error(data?.detail || `HTTP ${res.status}`)
     setConnectors(prev => prev.map(c => (c.connector_type === connectorType ? data : c)))
     return data
-  }, [authHeaders])
+  }, [])
 
   const disconnect = useCallback(async (connectorType) => {
-    const res = await fetch(`${API_BASE}/connectors/${connectorType}`, {
-      method: 'DELETE',
-      headers: authHeaders(),
-    })
+    const res = await apiFetch(`${API_BASE}/connectors/${connectorType}`, { method: 'DELETE' })
     const data = await res.json().catch(() => null)
     if (!res.ok) throw new Error(data?.detail || `HTTP ${res.status}`)
     setConnectors(prev => prev.map(c => (c.connector_type === connectorType ? data : c)))
     return data
-  }, [authHeaders])
+  }, [])
 
   return { connectors, loading, error, notConfigured, fetchConnectors, setToken, disconnect }
 }

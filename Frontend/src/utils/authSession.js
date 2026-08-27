@@ -136,11 +136,6 @@ export function showReauthModal(state) {
   return state.sessionExpired
 }
 
-/** The bearer token to send with requests, or null if there is none. */
-export function accessTokenOf(state) {
-  return state.session?.access_token ?? null
-}
-
 // The stable half of a session. App.jsx keys the authenticated tree on this
 // rather than on the access token, which auto-refresh rotates on a timer.
 export function userIdOf(state) {

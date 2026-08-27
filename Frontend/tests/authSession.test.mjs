@@ -6,7 +6,6 @@ import {
   initialAuthState,
   authReducer,
   authView,
-  accessTokenOf,
   userIdOf,
   showReauthModal,
   describeAuthError,
@@ -14,6 +13,10 @@ import {
 } from '../src/utils/authSession.js'
 
 const reduce = (state, ...actions) => actions.reduce(authReducer, state)
+// Read here rather than exported from the state machine: since Phase 5 no
+// production code asks it for a token -- apiFetch reads the session at call
+// time -- so an accessTokenOf export would exist only to be asserted on.
+const tokenOf = (state) => state.session?.access_token ?? null
 const sessionFor = (token, id = 'user-uuid-1') => ({
   access_token: token,
   user: { id, email: 'researcher@example.gov' },
@@ -69,7 +72,7 @@ test('no stored session means the sign-in screen, and no token to offer', () => 
     { type: 'restore-settled', error: null },
   )
   assert.equal(authView(state), 'login')
-  assert.equal(accessTokenOf(state), null)
+  assert.equal(tokenOf(state), null)
 })
 
 test('a restore that came back empty does not decide anything on its own', () => {
@@ -118,7 +121,7 @@ test('a session landing while the probe is out wins over the probe', () => {
     { type: 'restore-settled', error: 'the sign-in service is unreachable' },
   )
   assert.equal(authView(state), 'app')
-  assert.equal(accessTokenOf(state), 'jwt-recovered')
+  assert.equal(tokenOf(state), 'jwt-recovered')
 })
 
 test('unreachable is the absence of a status, and a missing session is not it', () => {
@@ -135,7 +138,7 @@ test('a restored session goes straight into the app with its token', () => {
     type: 'auth-event', event: 'INITIAL_SESSION', session: sessionFor('jwt-restored'),
   })
   assert.equal(authView(state), 'app')
-  assert.equal(accessTokenOf(state), 'jwt-restored')
+  assert.equal(tokenOf(state), 'jwt-restored')
 })
 
 test('signing in from the login screen enters the app', () => {
@@ -145,7 +148,7 @@ test('signing in from the login screen enters the app', () => {
     { type: 'auth-event', event: 'SIGNED_IN', session: sessionFor('jwt-fresh') },
   )
   assert.equal(authView(state), 'app')
-  assert.equal(accessTokenOf(state), 'jwt-fresh')
+  assert.equal(tokenOf(state), 'jwt-fresh')
 })
 
 test('a background refresh swaps the token but leaves the user identity alone', () => {
@@ -161,7 +164,7 @@ test('a background refresh swaps the token but leaves the user identity alone', 
     type: 'auth-event', event: 'TOKEN_REFRESHED', session: sessionFor('jwt-second'),
   })
 
-  assert.equal(accessTokenOf(refreshed), 'jwt-second')
+  assert.equal(tokenOf(refreshed), 'jwt-second')
   assert.equal(userIdOf(refreshed), userIdOf(signedIn))
   assert.equal(authView(refreshed), 'app')
 })
@@ -183,7 +186,7 @@ test('losing the session mid-analysis raises the re-auth modal over the preserve
   // setJobs([]). The sidebar and jobs panel would blank out UNDERNEATH the
   // modal, which is the rug-pull returning by a new route. Keeping the stale
   // token is what preserves the view.
-  assert.equal(accessTokenOf(state), 'jwt-live')
+  assert.equal(tokenOf(state), 'jwt-live')
 })
 
 test('signing out deliberately returns to the login screen, carrying nothing over', () => {
@@ -194,7 +197,7 @@ test('signing out deliberately returns to the login screen, carrying nothing ove
   )
 
   assert.equal(authView(state), 'login')
-  assert.equal(accessTokenOf(state), null)
+  assert.equal(tokenOf(state), null)
   // Signing out is not a session failure. Offering "sign in to continue" over
   // a view the user just chose to leave would be nonsense.
   assert.equal(showReauthModal(state), false)
@@ -225,7 +228,7 @@ test('a 401 from any request raises the modal without disturbing the view', () =
   const state = reduce(signedIn(), { type: 'unauthorized' })
   assert.equal(showReauthModal(state), true)
   assert.equal(authView(state), 'app')
-  assert.equal(accessTokenOf(state), 'jwt-live')
+  assert.equal(tokenOf(state), 'jwt-live')
 })
 
 test('a successful re-login closes the modal and resumes on the new token', () => {
@@ -236,7 +239,7 @@ test('a successful re-login closes the modal and resumes on the new token', () =
     { type: 'reauthenticated' },
   )
   assert.equal(showReauthModal(state), false)
-  assert.equal(accessTokenOf(state), 'jwt-reauth')
+  assert.equal(tokenOf(state), 'jwt-reauth')
   assert.equal(authView(state), 'app')
 })
 

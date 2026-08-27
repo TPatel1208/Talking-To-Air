@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
 import { sortJobs, hasProgressingJob } from '../utils/jobCard.js'
+import { apiFetch } from '../utils/apiFetch.js'
 
 const API_BASE = '/api'
 
@@ -9,24 +10,15 @@ const API_BASE = '/api'
 // at its last-seen status ("Processing — 0%") until a manual Refresh.
 const ACTIVE_JOB_POLL_MS = 15000
 
-export function useJobs(accessToken) {
+export function useJobs() {
   const [jobs, setJobs] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
-  const authHeaders = useCallback((extra = {}) => ({
-    ...extra,
-    ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-  }), [accessToken])
-
   const fetchJobs = useCallback(async () => {
-    if (!accessToken) {
-      setJobs([])
-      return
-    }
     setLoading(true)
     try {
-      const res = await fetch(`${API_BASE}/jobs`, { headers: authHeaders() })
+      const res = await apiFetch(`${API_BASE}/jobs`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       setJobs(data.jobs || [])
@@ -36,11 +28,12 @@ export function useJobs(accessToken) {
     } finally {
       setLoading(false)
     }
-  }, [accessToken, authHeaders])
+  }, [])
 
-  // Populated from the backend on mount (and whenever the access token
-  // changes) so reloading the page never loses running jobs — the panel
-  // never relies on chat history to know what's in flight.
+  // Populated from the backend on mount so reloading the page never loses
+  // running jobs — the panel never relies on chat history to know what's in
+  // flight. Stable now that no token is threaded in, so this runs once rather
+  // than again on every silent token rotation.
   useEffect(() => { fetchJobs() }, [fetchJobs])
 
   // Keep in-flight rows live even when no chat stream is feeding
@@ -50,10 +43,10 @@ export function useJobs(accessToken) {
   // so a stuck workspace can't poll (and re-fan-out to the MCP) forever.
   const hasActiveJobs = hasProgressingJob(jobs)
   useEffect(() => {
-    if (!accessToken || !hasActiveJobs) return undefined
+    if (!hasActiveJobs) return undefined
     const id = setInterval(() => { fetchJobs() }, ACTIVE_JOB_POLL_MS)
     return () => clearInterval(id)
-  }, [accessToken, hasActiveJobs, fetchJobs])
+  }, [hasActiveJobs, fetchJobs])
 
   const applyJobProgress = useCallback((data) => {
     if (!data || !data.job_handle) return
@@ -66,17 +59,14 @@ export function useJobs(accessToken) {
 
   const cancelJob = useCallback(async (jobHandle) => {
     try {
-      const res = await fetch(`${API_BASE}/jobs/${jobHandle}/cancel`, {
-        method: 'POST',
-        headers: authHeaders(),
-      })
+      const res = await apiFetch(`${API_BASE}/jobs/${jobHandle}/cancel`, { method: 'POST' })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       applyJobProgress(data)
     } catch (err) {
       setError(err.message || 'Failed to cancel job')
     }
-  }, [authHeaders, applyJobProgress])
+  }, [applyJobProgress])
 
   return { jobs, loading, error, fetchJobs, applyJobProgress, cancelJob }
 }

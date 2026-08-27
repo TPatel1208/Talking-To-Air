@@ -162,8 +162,8 @@ function ConnectorCard({ connector, onSave, onDisconnect }) {
   )
 }
 
-export default function ConnectorsPanel({ accessToken }) {
-  const { connectors, loading, error, notConfigured, setToken, disconnect } = useConnectors(accessToken)
+export default function ConnectorsPanel() {
+  const { connectors, loading, error, notConfigured, setToken, disconnect } = useConnectors()
 
   if (notConfigured) {
     return (
