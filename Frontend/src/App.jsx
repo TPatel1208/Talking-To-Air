@@ -7,7 +7,18 @@ import { useDiscovery } from './hooks/useDiscovery'
 import { useJobs } from './hooks/useJobs'
 import { createEmptySelection, toggleSlot } from './utils/compareMode'
 import { reachableArtifacts } from './utils/artifactReachability'
-import { sessionExpiryReducer, authTransition } from './utils/sessionExpiry'
+import { authTransition } from './utils/sessionExpiry'
+import { ensureSupabaseClient, getSupabaseClient } from './utils/supabaseClient'
+import {
+  accessTokenOf,
+  authReducer,
+  authView,
+  describeAuthError,
+  initialAuthState,
+  readAuthConfig,
+  showReauthModal,
+  userIdOf,
+} from './utils/authSession'
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 
 // Thin clickable rail standing in for a side column while it's manually
@@ -35,12 +46,27 @@ function CollapsedRail({ label, onExpand }) {
 }
 
 const API_BASE = '/api'
-const AUTH_STORAGE_KEY = 'tta.accessToken'
+// There is deliberately no token key here. supabase-js owns session
+// persistence and refresh (decision 6); a second copy of the token in our own
+// storage would be a rival source of truth, and the stale one wins on reload.
 const ACTIVE_THREAD_STORAGE_KEY = 'tta.activeThreadId'
 
-function LoginForm({ onAuthenticated, allowRegister = true, heading = 'Talking to Air', subtitle = null }) {
-  const [mode, setMode] = useState('login')
-  const [username, setUsername] = useState('')
+const FIELD_STYLE = {
+  height: '38px',
+  border: '1px solid var(--border)',
+  borderRadius: '6px',
+  background: 'var(--bg-primary)',
+  color: 'var(--text-primary)',
+  padding: '0 10px',
+}
+
+// Sign-in only. There is no register tab: signup is invite-only and disabled
+// in the Supabase project (decision 8), so a register button could produce
+// nothing but a rejection. The username field went with it -- it was read by
+// this form and by a JWT claim, and displayed nowhere in the product, so email
+// replaces it at no cost.
+function LoginForm({ onSubmit, heading = 'Talking to Air', subtitle = 'Sign in to continue.' }) {
+  const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -49,40 +75,12 @@ function LoginForm({ onAuthenticated, allowRegister = true, heading = 'Talking t
     event.preventDefault()
     setLoading(true)
     setError(null)
-
     try {
-      if (mode === 'register') {
-        const registerRes = await fetch(`${API_BASE}/auth/register`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username, password }),
-        })
-        if (!registerRes.ok && registerRes.status !== 409) {
-          if (registerRes.status === 422) {
-            const body = await registerRes.json()
-            const messages = (body.detail || []).map(d => d.msg.replace(/^Value error,\s*/, ''))
-            throw new Error(messages.join(' ') || 'Invalid username or password.')
-          }
-          throw new Error(`HTTP ${registerRes.status}`)
-        }
-        if (registerRes.status === 409) {
-          throw new Error('That username is already taken.')
-        }
-      }
-
-      const loginRes = await fetch(`${API_BASE}/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password }),
-      })
-      if (!loginRes.ok) {
-        throw new Error(loginRes.status === 401 ? 'Invalid username or password.' : `HTTP ${loginRes.status}`)
-      }
-      const data = await loginRes.json()
-      onAuthenticated(data.access_token)
+      await onSubmit(email, password)
+      // No setLoading(false) here: a successful sign-in unmounts this form,
+      // either into the app or by closing the re-auth modal over it.
     } catch (err) {
-      setError(err.message || 'Authentication failed.')
-    } finally {
+      setError(describeAuthError(err))
       setLoading(false)
     }
   }
@@ -100,91 +98,58 @@ function LoginForm({ onAuthenticated, allowRegister = true, heading = 'Talking t
     }}>
       <div>
         <h1 style={{ margin: '0 0 6px', fontSize: '22px', letterSpacing: 0 }}>{heading}</h1>
-        <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '13px' }}>
-          {subtitle || (mode === 'login' ? 'Sign in to continue.' : 'Create an account to continue.')}
-        </p>
+        <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '13px' }}>{subtitle}</p>
       </div>
 
-        <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '12px', color: 'var(--text-muted)' }}>
-          Username
-          <input
-            value={username}
-            onChange={event => setUsername(event.target.value)}
-            autoComplete="username"
-            required
-            style={{
-              height: '38px',
-              border: '1px solid var(--border)',
-              borderRadius: '6px',
-              background: 'var(--bg-primary)',
-              color: 'var(--text-primary)',
-              padding: '0 10px',
-            }}
-          />
-        </label>
+      <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '12px', color: 'var(--text-muted)' }}>
+        Email
+        <input
+          value={email}
+          onChange={event => setEmail(event.target.value)}
+          type="email"
+          autoComplete="email"
+          required
+          style={FIELD_STYLE}
+        />
+      </label>
 
-        <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '12px', color: 'var(--text-muted)' }}>
-          Password
-          <input
-            value={password}
-            onChange={event => setPassword(event.target.value)}
-            type="password"
-            autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-            required
-            style={{
-              height: '38px',
-              border: '1px solid var(--border)',
-              borderRadius: '6px',
-              background: 'var(--bg-primary)',
-              color: 'var(--text-primary)',
-              padding: '0 10px',
-            }}
-          />
-        </label>
+      <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '12px', color: 'var(--text-muted)' }}>
+        Password
+        <input
+          value={password}
+          onChange={event => setPassword(event.target.value)}
+          type="password"
+          autoComplete="current-password"
+          required
+          style={FIELD_STYLE}
+        />
+      </label>
 
-        {error && <div style={{ color: 'var(--danger, #b42318)', fontSize: '13px' }}>{error}</div>}
+      {error && <div style={{ color: 'var(--danger, #b42318)', fontSize: '13px' }}>{error}</div>}
 
-        <button
-          type="submit"
-          disabled={loading}
-          style={{
-            height: '38px',
-            border: 0,
-            borderRadius: '6px',
-            background: 'var(--teal)',
-            color: 'white',
-            cursor: loading ? 'not-allowed' : 'pointer',
-            opacity: loading ? 0.75 : 1,
-          }}
-        >
-          {loading ? 'Please wait...' : mode === 'login' ? 'Sign in' : 'Register'}
-        </button>
-
-        {allowRegister && (
-          <button
-            type="button"
-            onClick={() => {
-              setMode(mode === 'login' ? 'register' : 'login')
-              setError(null)
-            }}
-            style={{
-              height: '34px',
-              border: '1px solid var(--border)',
-              borderRadius: '6px',
-              background: 'transparent',
-              color: 'var(--text-primary)',
-              cursor: 'pointer',
-            }}
-          >
-            {mode === 'login' ? 'Create account' : 'Use existing account'}
-          </button>
-        )}
+      <button
+        type="submit"
+        disabled={loading}
+        style={{
+          height: '38px',
+          border: 0,
+          borderRadius: '6px',
+          background: 'var(--teal)',
+          color: 'white',
+          cursor: loading ? 'not-allowed' : 'pointer',
+          opacity: loading ? 0.75 : 1,
+        }}
+      >
+        {loading ? 'Signing in...' : 'Sign in'}
+      </button>
     </form>
   )
 }
 
-// Full-screen sign-in shown when there's no session at all.
-function AuthScreen({ onAuthenticated }) {
+// Shown before there is an app to show: while the runtime auth config is in
+// flight, while supabase-js restores a stored session, and when the config
+// could not be fetched at all.
+function Splash({ heading, message, actionLabel, onAction }) {
   return (
     <div style={{
       minHeight: '100%',
@@ -194,7 +159,39 @@ function AuthScreen({ onAuthenticated }) {
       color: 'var(--text-primary)',
       padding: '24px',
     }}>
-      <LoginForm onAuthenticated={onAuthenticated} />
+      <div style={{ textAlign: 'center', maxWidth: '420px' }}>
+        {heading && <h1 style={{ margin: '0 0 8px', fontSize: '20px' }}>{heading}</h1>}
+        <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '13px' }}>{message}</p>
+        {onAction && (
+          <button
+            type="button"
+            onClick={onAction}
+            style={{
+              marginTop: '16px', height: '34px', padding: '0 16px',
+              border: '1px solid var(--border)', borderRadius: '6px',
+              background: 'transparent', color: 'var(--text-primary)', cursor: 'pointer',
+            }}
+          >
+            {actionLabel}
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// Full-screen sign-in shown when there's no session at all.
+function AuthScreen({ onSignIn }) {
+  return (
+    <div style={{
+      minHeight: '100%',
+      display: 'grid',
+      placeItems: 'center',
+      background: 'var(--bg-primary)',
+      color: 'var(--text-primary)',
+      padding: '24px',
+    }}>
+      <LoginForm onSubmit={onSignIn} />
     </div>
   )
 }
@@ -202,9 +199,11 @@ function AuthScreen({ onAuthenticated }) {
 // T47: an auth failure mid-analysis raises this over the preserved view rather
 // than dropping the researcher to a blank login screen. Re-login resumes the
 // same thread in place (the active thread id is deliberately not cleared), so
-// a 40-minute session survives a lapsed token. Register is disabled here — the
-// only sane action on an expired session is to sign back into the same account.
-function SessionExpiredModal({ onReauthenticated }) {
+// a 40-minute session survives a lapsed token.
+//
+// It now fires far less often than it used to: a 401 means the *refresh* token
+// lapsed, not the access token, which supabase-js renews on its own.
+function SessionExpiredModal({ onSignIn }) {
   return (
     <div
       role="dialog"
@@ -222,8 +221,7 @@ function SessionExpiredModal({ onReauthenticated }) {
       }}
     >
       <LoginForm
-        onAuthenticated={onReauthenticated}
-        allowRegister={false}
+        onSubmit={onSignIn}
         heading="Session expired"
         subtitle="Sign in to continue — your work is right where you left it."
       />
@@ -284,6 +282,16 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
   const [focusedOutput, setFocusedOutput] = useState(null)
   const wasLoadingRef = useRef(false)
 
+  // PRE-EXISTING violation of this repo's setState-in-effect rule, unrelated
+  // to auth and untouched by T61. It was invisible until Phase 4 rewrote the
+  // rest of this file: the React Compiler rule bails out on a component it
+  // cannot fully model, and something in the old login form was causing that
+  // bailout to suppress this diagnostic. Verified real in isolation.
+  //
+  // Not fixed here because the fix is a rework of when the output panel
+  // changes focus -- user-visible behavior, with no jsdom to test it against,
+  // and nothing to do with authentication.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (wasLoadingRef.current && !loading) {
       const last = messages[messages.length - 1]
@@ -298,6 +306,7 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
     }
     wasLoadingRef.current = loading
   }, [loading, messages])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // Compare mode (T28): off | choosing-count | active. Pure in-memory state,
   // owned here alongside focusedOutput -- no new store, no persistence, and
@@ -376,19 +385,12 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
     return { images: allImages, artifacts: dedupedArtifacts }
   }, [messages])
 
-  const handleLogout = useCallback(async () => {
+  // Stop the stream first, then hand off. Revoking the session upstream is the
+  // root component's job now -- there is no backend auth route left to call.
+  const handleLogout = useCallback(() => {
     abortActiveRequest(true)
-    try {
-      await fetch(`${API_BASE}/auth/logout`, {
-        method: 'POST',
-        headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
-      })
-    } catch {
-      // Local cleanup still matters if the network drops.
-    } finally {
-      onLogout()
-    }
-  }, [abortActiveRequest, accessToken, onLogout])
+    onLogout()
+  }, [abortActiveRequest, onLogout])
 
   return (
     // Horizontally scrollable, not clipped. The three side panels are all
@@ -500,50 +502,108 @@ function AuthenticatedApp({ accessToken, onLogout, onUnauthorized }) {
 }
 
 export default function App() {
-  const [accessToken, setAccessToken] = useState(() => window.localStorage.getItem(AUTH_STORAGE_KEY))
-  const [{ sessionExpired }, dispatchSession] = useReducer(sessionExpiryReducer, { sessionExpired: false })
+  const [state, dispatch] = useReducer(authReducer, initialAuthState)
+  // Bumped by the retry button on the config-error screen.
+  const [configAttempt, setConfigAttempt] = useState(0)
 
-  const clearAuthState = useCallback(() => {
-    window.localStorage.removeItem(AUTH_STORAGE_KEY)
-    window.localStorage.removeItem(ACTIVE_THREAD_STORAGE_KEY)
-    setAccessToken(null)
-  }, [])
+  // The app's first request, and everything waits behind it: the identity
+  // provider's coordinates are served at runtime rather than baked into this
+  // bundle (decision 11), so one image runs against either project. Failure is
+  // a screen with a retry rather than a blank page -- T17's degrade-don't-die.
+  useEffect(() => {
+    let cancelled = false
+    fetch(`${API_BASE}/config/auth`)
+      .then(res => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
+      .then((body) => {
+        const config = readAuthConfig(body)
+        // Built here, before anything reports success, so a backend serving a
+        // blank key surfaces as the config-error screen naming the missing
+        // variable instead of throwing during a later render.
+        ensureSupabaseClient(config)
+        if (!cancelled) dispatch({ type: 'config-loaded', config })
+      })
+      .catch((err) => {
+        if (!cancelled) dispatch({ type: 'config-failed', error: err.message || 'unreachable' })
+      })
+    return () => { cancelled = true }
+  }, [configAttempt])
 
-  const applyToken = useCallback((token, kind) => {
-    window.localStorage.setItem(AUTH_STORAGE_KEY, token)
-    // A fresh login starts clean; a re-auth preserves the active thread so the
-    // researcher resumes the exact conversation they were in (T47).
+  // supabase-js announces the restored session, every refresh, and every
+  // sign-out through this one callback. It is the only writer of session state.
+  useEffect(() => {
+    if (!state.config) return undefined
+    const { data } = getSupabaseClient().auth.onAuthStateChange((event, session) => {
+      // Nothing may be awaited in here. Awaiting a Supabase call inside this
+      // callback deadlocks every later call on the client -- documented in
+      // Supabase's own troubleshooting guide. Dispatch and return.
+      dispatch({ type: 'auth-event', event, session })
+    })
+    return () => data.subscription.unsubscribe()
+  }, [state.config])
+
+  const signIn = useCallback(async (email, password, kind) => {
+    // Cleared BEFORE the sign-in, not after. onAuthStateChange fires as soon
+    // as the session lands and mounts the authenticated tree, whose useChat
+    // reads this key on mount -- clearing afterwards is a race the previous
+    // user's thread can win. A re-auth deliberately keeps it, which is what
+    // resumes the exact conversation the researcher was in (T47).
     if (authTransition(kind).clearActiveThread) {
       window.localStorage.removeItem(ACTIVE_THREAD_STORAGE_KEY)
     }
-    setAccessToken(token)
+    const { error } = await getSupabaseClient().auth.signInWithPassword({ email, password })
+    if (error) throw error
+    // Only an explicit re-login closes the modal. supabase-js re-emits
+    // SIGNED_IN when a backgrounded tab regains focus, so the event itself
+    // cannot be read as "the user just signed in".
+    if (kind === 'reauth') dispatch({ type: 'reauthenticated' })
   }, [])
 
-  const handleAuthenticated = useCallback((token) => applyToken(token, 'login'), [applyToken])
+  const handleSignIn = useCallback((email, password) => signIn(email, password, 'login'), [signIn])
+  const handleReauth = useCallback((email, password) => signIn(email, password, 'reauth'), [signIn])
+
+  const handleLogout = useCallback(() => {
+    // Cleared eagerly, so signing out is instant and unconditional even when
+    // the call revoking the refresh token upstream never lands.
+    dispatch({ type: 'logout-requested' })
+    window.localStorage.removeItem(ACTIVE_THREAD_STORAGE_KEY)
+    getSupabaseClient()?.auth.signOut().catch(() => {})
+  }, [])
 
   // T47: a 401 during an active session raises the re-auth modal instead of
-  // wiping the token and dumping the user to the login screen. The rug-pull is
-  // exactly the failure this replaces.
-  const handleSessionExpired = useCallback(() => dispatchSession({ type: 'unauthorized' }), [])
+  // wiping the session and dumping the user to the login screen.
+  const handleUnauthorized = useCallback(() => dispatch({ type: 'unauthorized' }), [])
+  const retryConfig = useCallback(() => setConfigAttempt(n => n + 1), [])
 
-  const handleReauthenticated = useCallback((token) => {
-    dispatchSession({ type: 'reauthenticated' })
-    applyToken(token, 'reauth')
-  }, [applyToken])
-
-  if (!accessToken) {
-    return <AuthScreen onAuthenticated={handleAuthenticated} />
+  const view = authView(state)
+  if (view === 'config-loading') return <Splash message="Starting up..." />
+  if (view === 'config-error') {
+    return (
+      <Splash
+        heading="Cannot reach the server"
+        message={`Sign-in is unavailable until the app can load its configuration (${state.configError}).`}
+        actionLabel="Try again"
+        onAction={retryConfig}
+      />
+    )
   }
+  // Not the same as signed out: supabase-js reads its stored session
+  // asynchronously, and showing the login form in this window is what makes an
+  // already-signed-in user watch it flash by on every single reload.
+  if (view === 'restoring') return <Splash message="Restoring your session..." />
+  if (view === 'login') return <AuthScreen onSignIn={handleSignIn} />
 
   return (
     <>
       <AuthenticatedApp
-        key={accessToken}
-        accessToken={accessToken}
-        onLogout={clearAuthState}
-        onUnauthorized={handleSessionExpired}
+        // Keyed on the user, never on the access token. A token key would
+        // change on every auto-refresh -- every 45 minutes, decision 10 -- and
+        // React would discard this entire tree mid-analysis.
+        key={userIdOf(state)}
+        accessToken={accessTokenOf(state)}
+        onLogout={handleLogout}
+        onUnauthorized={handleUnauthorized}
       />
-      {sessionExpired && <SessionExpiredModal onReauthenticated={handleReauthenticated} />}
+      {showReauthModal(state) && <SessionExpiredModal onSignIn={handleReauth} />}
     </>
   )
 }

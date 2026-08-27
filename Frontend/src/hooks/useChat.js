@@ -5,6 +5,7 @@ import { extractSuggestedFollowups } from '../utils/followups'
 import { extractVariableChoice } from '../utils/variableChoice'
 import { TERMINAL_STATUSES as TERMINAL_JOB_STATUSES } from '../utils/jobCard'
 import { classifyHistoryFetchFailure, historyStateReducer } from '../utils/historyLoad'
+import { shouldPromptReauth } from '../utils/sessionExpiry'
 
 const API_BASE = '/api'
 const ACTIVE_THREAD_STORAGE_KEY = 'tta.activeThreadId'
@@ -62,7 +63,9 @@ export function useChat(accessToken, onUnauthorized, onJobProgress) {
   }), [accessToken])
 
   const handleUnauthorized = useCallback((res) => {
-    if (res.status === 401 && onUnauthorized) onUnauthorized()
+    // T47's rule has one definition, and sessionExpiry.test.mjs guards it --
+    // an inlined `=== 401` here would leave that test guarding nothing.
+    if (shouldPromptReauth(res.status) && onUnauthorized) onUnauthorized()
   }, [onUnauthorized])
 
   const makeLocalSession = useCallback((id, message) => {
