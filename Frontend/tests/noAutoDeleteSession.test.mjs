@@ -26,7 +26,11 @@ function collectSources(dir) {
 // A fetch to a /session/ URL issued with method DELETE — the destructive
 // "remove this conversation" call. Other DELETEs (e.g. disconnecting a
 // connector) are unrelated and out of scope for this guard.
-const SESSION_DELETE = /fetch\(`[^`]*\/session\/[^`]*`,\s*\{[^}]*method:\s*['"]DELETE['"]/g
+// `[a-zA-Z]*[fF]etch\(` covers both the bare `fetch(` this used to match and
+// Phase 5's `apiFetch(` wrapper. Matching only the lowercase spelling silently
+// stopped finding anything the moment the call sites moved behind apiFetch --
+// the guard read as "zero DELETE sites", not as a failure to look.
+const SESSION_DELETE = /[a-zA-Z]*[fF]etch\(`[^`]*\/session\/[^`]*`,\s*\{[^}]*method:\s*['"]DELETE['"]/g
 
 test('the only DELETE /session request in the client is the explicit deleteSession action', () => {
   const offenders = []

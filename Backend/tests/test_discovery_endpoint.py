@@ -2,7 +2,6 @@ import importlib.util
 import os
 import sys
 import unittest
-from datetime import datetime, timezone
 from types import SimpleNamespace
 
 
@@ -10,11 +9,13 @@ TESTS_DIR = os.path.dirname(__file__)
 if TESTS_DIR not in sys.path:
     sys.path.insert(0, TESTS_DIR)
 
+import auth_helpers  # noqa: E402 -- needs the TESTS_DIR insert above
+
+
 from cache_isolation import ProcessCacheIsolation  # noqa: E402 -- needs the TESTS_DIR insert above
 
-os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
 
-REQUIRED_MODULES = ["fastapi", "httpx", "jwt", "bcrypt", "langchain_mcp_adapters", "fastmcp", "uvicorn"]
+REQUIRED_MODULES = ["fastapi", "httpx", "jwt", "langchain_mcp_adapters", "fastmcp", "uvicorn"]
 
 
 @unittest.skipIf(
@@ -28,7 +29,6 @@ class DiscoveryEndpointTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTest
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
         from tta_backend.earthdata_mcp.toolset import load_earthdata_tools
         from tta_backend.config.settings import Settings
-        from tta_backend.models.user import User
         from tta_backend.utils.streaming import current_user_id
 
         self.httpx = httpx
@@ -125,36 +125,20 @@ class DiscoveryEndpointTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTest
             state="ready", tools=self.api.app.state.earthdata_mcp_tools,
         )
 
-        self.user1 = User(
-            id="user-1", username="one", password_hash="hash",
-            created_at=datetime.now(timezone.utc), is_active=True,
-        )
-        self.user2 = User(
-            id="user-2", username="two", password_hash="hash",
-            created_at=datetime.now(timezone.utc), is_active=True,
-        )
-        token1, _ = self.api.create_access_token(self.user1)
-        token2, _ = self.api.create_access_token(self.user2)
+        self.user1 = auth_helpers.user("user-1", email="one@example.com")
+        self.user2 = auth_helpers.user("user-2", email="two@example.com")
+        token1 = auth_helpers.make_token(self.user1.id, email=self.user1.email)
+        token2 = auth_helpers.make_token(self.user2.id, email=self.user2.email)
         self.auth_headers1 = {"Authorization": f"Bearer {token1}"}
         self.auth_headers2 = {"Authorization": f"Bearer {token2}"}
 
     def _auth_patch(self):
-        from unittest.mock import patch
-        users = {self.user1.id: self.user1, self.user2.id: self.user2}
-
-        async def fake_get_user_by_id(user_id):
-            return users.get(user_id)
-
-        async def fake_is_token_revoked(jti):
-            return False
-
-        return patch("tta_backend.services.auth_service.get_user_by_id", fake_get_user_by_id), \
-            patch("tta_backend.services.auth_service.is_token_revoked", fake_is_token_revoked)
+        return auth_helpers.patch_verifier()
 
     async def test_search_proxies_the_mcp_scoped_to_the_caller(self):
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1]:
+        with auth_patches:
             async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.post(
                     "/discovery/search", json={"query": "soil moisture"}, headers=self.auth_headers1,
@@ -169,7 +153,7 @@ class DiscoveryEndpointTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTest
     async def test_describe_proxies_the_mcp_scoped_to_the_caller(self):
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1]:
+        with auth_patches:
             async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.get(
                     "/discovery/dataset/dataset_smap_l3", headers=self.auth_headers2,
@@ -184,7 +168,7 @@ class DiscoveryEndpointTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTest
     async def test_coverage_resolves_the_aoi_then_checks_coverage_scoped_to_the_caller(self):
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1]:
+        with auth_patches:
             async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.post(
                     "/discovery/dataset/dataset_smap_l3/coverage",
@@ -203,7 +187,7 @@ class DiscoveryEndpointTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTest
     async def test_granules_lists_records_with_summary_scoped_to_the_caller(self):
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1]:
+        with auth_patches:
             async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.post(
                     "/discovery/dataset/dataset_smap_l3/granules",
@@ -231,7 +215,7 @@ class DiscoveryEndpointTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTest
     async def test_granules_caps_an_oversized_limit_request(self):
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1]:
+        with auth_patches:
             async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.post(
                     "/discovery/dataset/dataset_smap_l3/granules",
@@ -246,7 +230,7 @@ class DiscoveryEndpointTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTest
     async def test_granules_reports_no_coverage_as_a_plain_answer_not_an_error(self):
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1]:
+        with auth_patches:
             async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.post(
                     "/discovery/dataset/dataset_no_coverage/granules",
@@ -263,7 +247,7 @@ class DiscoveryEndpointTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTest
     async def test_granules_reports_an_unresolvable_location_structurally_not_as_a_bare_500(self):
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1]:
+        with auth_patches:
             async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.post(
                     "/discovery/dataset/dataset_smap_l3/granules",
@@ -280,7 +264,7 @@ class DiscoveryEndpointTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTest
     async def test_preview_reports_no_gibs_layer_plainly_instead_of_an_empty_result(self):
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1]:
+        with auth_patches:
             async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.post(
                     "/discovery/dataset/dataset_no_gibs/preview",
@@ -297,7 +281,7 @@ class DiscoveryEndpointTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTest
     async def test_preview_resolves_the_aoi_when_a_location_is_given(self):
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1]:
+        with auth_patches:
             async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.post(
                     "/discovery/dataset/dataset_smap_l3/preview",
@@ -317,7 +301,7 @@ class DiscoveryEndpointTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTest
     async def test_preview_skips_aoi_resolution_when_no_location_is_given(self):
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1]:
+        with auth_patches:
             async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.post(
                     "/discovery/dataset/dataset_smap_l3/preview", json={}, headers=self.auth_headers1,
@@ -336,7 +320,7 @@ class DiscoveryEndpointTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTest
         # 500. It now answers 422 with a human message and a suggestion.
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1]:
+        with auth_patches:
             async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.post(
                     "/discovery/dataset/dataset_smap_l3/coverage",
@@ -359,7 +343,7 @@ class DiscoveryEndpointTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTest
 
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1]:
+        with auth_patches:
             async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.post(
                     "/discovery/search", json={"query": "soil moisture"}, headers=self.auth_headers1,

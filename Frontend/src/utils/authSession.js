@@ -1,0 +1,183 @@
+import { sessionExpiryReducer } from './sessionExpiry.js'
+
+// The auth session lifecycle as a pure state machine.
+//
+// It lives outside App.jsx because this repo has no jsdom: logic left inside a
+// component is verifiable only by reading its source. Everything here is
+// decidable without a DOM, so it is testable as behavior.
+
+/**
+ * Translate the GET /config/auth body into the config the client is built
+ * from. Decision 11: served at runtime rather than baked into the bundle, so
+ * one image runs against either the dev or the prod Supabase project.
+ *
+ * A rename of the wire names, nothing more -- an absent field is caught and
+ * named at the client seam by ensureSupabaseClient, which is the last point
+ * before the value would reach supabase-js.
+ */
+export function readAuthConfig(body) {
+  return {
+    supabaseUrl: body?.supabase_url,
+    publishableKey: body?.supabase_publishable_key,
+  }
+}
+
+export const initialAuthState = {
+  config: null,
+  configError: null,
+  // supabase-js restores any stored session asynchronously and reports the
+  // outcome through INITIAL_SESSION. Until that lands we know nothing, which
+  // is a different state from "signed out".
+  bootstrapped: false,
+  session: null,
+  // Whether an authenticated tree is, or has been, mounted. Distinct from
+  // holding a session: it is what keeps the view on 'app' when a session is
+  // lost involuntarily.
+  hadSession: false,
+  // Owned by T47's sessionExpiryReducer, which this machine composes rather
+  // than reimplements -- one definition of "a lapsed session raises the modal
+  // and never reads as a logout".
+  sessionExpired: false,
+  // Set when INITIAL_SESSION arrives carrying nothing. supabase-js reports an
+  // unreachable service and a genuinely absent session identically, so that
+  // event settles nothing on its own -- App.jsx probes for the reason and
+  // dispatches 'restore-settled'.
+  restoreUnresolved: false,
+  restoreError: null,
+}
+
+function withExpiry(state, action) {
+  return { ...state, ...sessionExpiryReducer({ sessionExpired: state.sessionExpired }, action) }
+}
+
+export function authReducer(state, action) {
+  switch (action.type) {
+    case 'config-loaded':
+      return { ...state, config: action.config, configError: null }
+    case 'config-failed':
+      return { ...state, config: null, configError: action.error }
+    case 'auth-event':
+      return applyAuthEvent(state, action)
+    // The probe's verdict on an INITIAL_SESSION that carried no session:
+    // `error` set means the service was unreachable, null means the user is
+    // genuinely signed out. Either way the question is now answered.
+    case 'restore-settled':
+      return {
+        ...state,
+        bootstrapped: true,
+        restoreUnresolved: false,
+        restoreError: action.error ?? null,
+      }
+    // The retry on the restore-error screen: ask the same question again.
+    case 'restore-retry':
+      return { ...state, bootstrapped: false, restoreUnresolved: true, restoreError: null }
+    // Cleared eagerly rather than waiting on signOut()'s SIGNED_OUT, so
+    // logout is instant and unconditional in the UI even when the network
+    // call revoking the refresh token fails.
+    case 'logout-requested':
+      return { ...state, session: null, hadSession: false, sessionExpired: false }
+    // A 401 from any request, and the modal's own sign-in resolving. Both are
+    // T47's, and both are delegated so the rule has one definition. Note that
+    // nothing supabase-js emits closes the modal: SIGNED_IN is re-emitted when
+    // a backgrounded tab regains focus, so it does not mean the user signed
+    // in, and acting on it would wipe a half-typed password off the screen.
+    case 'unauthorized':
+    case 'reauthenticated':
+      return withExpiry(state, action)
+    default:
+      return state
+  }
+}
+
+// supabase-js announces every session change through one callback. Only a
+// handful of its events change anything here.
+function applyAuthEvent(state, { event, session }) {
+  // ANY event bootstraps us, not just INITIAL_SESSION. supabase-js does emit
+  // INITIAL_SESSION first on subscribe today, but hanging the restoring
+  // spinner on that ordering means a session arriving by any other route sits
+  // behind a spinner while we hold a valid token for it.
+  const heard = { ...state, bootstrapped: true, restoreUnresolved: false }
+
+  if (event === 'SIGNED_OUT') {
+    // A deliberate logout has already cleared hadSession, so reaching here
+    // still holding one means the session went away on its own -- the refresh
+    // token lapsed, or the account was banned. That is a T47 unauthorized, and
+    // the session is deliberately left in place so the view survives it.
+    return state.hadSession ? withExpiry(heard, { type: 'unauthorized' }) : heard
+  }
+  // The one event that settles nothing. supabase-js swallows a network failure
+  // during the restore and emits INITIAL_SESSION with a null session -- exactly
+  // what it emits when there is genuinely nothing stored (its
+  // _emitInitialSession catches AuthRetryableFetchError and reports null).
+  // Reading that as "signed out" turns a wifi blip on reload into a sign-out,
+  // and the login that follows clears tta.activeThreadId, costing the
+  // researcher the thread they were in -- T47's rug-pull by another route. So
+  // stay in 'restoring' and let App.jsx ask again, where the reason is visible.
+  if (event === 'INITIAL_SESSION' && !session) {
+    return { ...state, restoreUnresolved: true }
+  }
+  if (!session) return heard
+  return { ...heard, session, hadSession: true }
+}
+
+/** Which screen the app owes the user right now. */
+export function authView(state) {
+  if (state.configError) return 'config-error'
+  if (!state.config) return 'config-loading'
+  if (!state.bootstrapped) return 'restoring'
+  // A session we could not reach the service to restore is not a signed-out
+  // one. Saying so costs the user a click; saying 'login' costs them a thread.
+  if (state.restoreError && !state.hadSession) return 'restore-error'
+  return state.hadSession ? 'app' : 'login'
+}
+
+/** Whether T47's in-place "sign in to continue" modal is up. */
+export function showReauthModal(state) {
+  return state.sessionExpired
+}
+
+// The stable half of a session. App.jsx keys the authenticated tree on this
+// rather than on the access token, which auto-refresh rotates on a timer.
+export function userIdOf(state) {
+  return state.session?.user?.id ?? null
+}
+
+/**
+ * Whether an auth failure means "we could not ask" rather than "the answer is
+ * no". supabase-js spells an unreachable service status 0
+ * (AuthRetryableFetchError) and a genuinely absent session status 400
+ * (AuthSessionMissingError), so the status alone is the whole discriminator.
+ */
+export function isUnreachable(error) {
+  return Boolean(error) && !error.status
+}
+
+/**
+ * One line of copy for a failed sign-in. supabase-js rejects with an
+ * AuthApiError whose `message` is written for a developer reading a console,
+ * so it is mapped rather than shown.
+ */
+export function describeAuthError(error) {
+  const code = error?.code
+  const status = error?.status
+
+  if (code === 'invalid_credentials' || status === 400) {
+    // Deliberately does not say which half was wrong -- that distinction is an
+    // account-enumeration oracle, and it does not help someone who mistyped.
+    return 'Invalid email or password.'
+  }
+  if (code === 'email_not_confirmed') {
+    return 'This account has not been confirmed yet. Ask an administrator to confirm it.'
+  }
+  if (code === 'over_request_rate_limit' || status === 429) {
+    return 'Too many sign-in attempts. Wait a moment and try again.'
+  }
+  // Decision 6 has the browser talking to supabase.co directly, so a failure
+  // carrying no real HTTP status means the request never arrived -- supabase-js
+  // spells that 0 (AuthRetryableFetchError) or leaves it absent. Reporting it
+  // as a bad password sends the user off to reset one that works.
+  if (isUnreachable(error)) {
+    return 'Could not reach the sign-in service. Check your connection and try again.'
+  }
+  return error?.message || 'Sign-in failed. Try again.'
+}

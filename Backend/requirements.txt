@@ -33,7 +33,6 @@ tenacity>=8.2.0
 langchain_groq==1.1.2
 dask>=2024.0.0
 PyJWT==2.10.1
-bcrypt>=4.0.1,<6
 cryptography>=42.0.0,<45
 fastmcp==3.4.2
 prometheus-client==0.22.1

@@ -10,7 +10,6 @@ from .agent_result import (
     parse_sub_agent_envelope,
 )
 from .artifact import ArtifactReference, TableArtifactPayload
-from .user import User
 
 __all__ = [
     "AgentResult",
@@ -18,7 +17,6 @@ __all__ = [
     "ChartPayload",
     "SubAgentEnvelope",
     "TableArtifactPayload",
-    "User",
     "VariableChoice",
     "VariableChoiceOption",
     "agent_result_to_json",

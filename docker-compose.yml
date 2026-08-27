@@ -100,7 +100,8 @@ services:
     profiles: ["test"]
     working_dir: /app
     environment:
-      JWT_SECRET_KEY: "test-secret"
+      SUPABASE_URL: "https://test-project.supabase.co"
+      SUPABASE_PUBLISHABLE_KEY: "test-publishable-key"
       GROQ_API_KEY: "test"
       AQS_API_KEY: "test"
       AQS_API_EMAIL: "test@test.com"

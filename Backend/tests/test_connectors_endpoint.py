@@ -7,14 +7,21 @@ endpoint (jobs, sessions, charts).
 """
 import importlib.util
 import os
+import sys
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 
-os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
 
-REQUIRED_MODULES = ["fastapi", "httpx", "jwt", "bcrypt", "cryptography", "langchain_mcp_adapters", "fastmcp", "uvicorn"]
+TESTS_DIR = os.path.dirname(__file__)
+if TESTS_DIR not in sys.path:
+    sys.path.insert(0, TESTS_DIR)
+
+import auth_helpers  # noqa: E402 -- needs the TESTS_DIR insert above
+
+
+REQUIRED_MODULES = ["fastapi", "httpx", "jwt", "cryptography", "langchain_mcp_adapters", "fastmcp", "uvicorn"]
 
 
 class _FakeConnectorStore:
@@ -67,7 +74,6 @@ class ConnectorsEndpointTests(unittest.IsolatedAsyncioTestCase):
         import httpx
         import tta_backend.api as api
         from cryptography.fernet import Fernet
-        from tta_backend.models.user import User
         from tta_backend.utils.connector_crypto import build_multi_fernet
 
         self.httpx = httpx
@@ -75,26 +81,15 @@ class ConnectorsEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.store = _FakeConnectorStore()
         self.cipher = build_multi_fernet(Fernet.generate_key().decode())
 
-        self.user1 = User(id="user-1", username="one", password_hash="hash", created_at=datetime.now(timezone.utc), is_active=True)
-        self.user2 = User(id="user-2", username="two", password_hash="hash", created_at=datetime.now(timezone.utc), is_active=True)
-        token1, _ = self.api.create_access_token(self.user1)
-        token2, _ = self.api.create_access_token(self.user2)
+        self.user1 = auth_helpers.user("user-1", email="one@example.com")
+        self.user2 = auth_helpers.user("user-2", email="two@example.com")
+        token1 = auth_helpers.make_token(self.user1.id, email=self.user1.email)
+        token2 = auth_helpers.make_token(self.user2.id, email=self.user2.email)
         self.auth_headers1 = {"Authorization": f"Bearer {token1}"}
         self.auth_headers2 = {"Authorization": f"Bearer {token2}"}
 
     def _auth_patches(self):
-        users = {self.user1.id: self.user1, self.user2.id: self.user2}
-
-        async def fake_get_user_by_id(user_id):
-            return users.get(user_id)
-
-        async def fake_is_token_revoked(jti):
-            return False
-
-        return [
-            patch("tta_backend.services.auth_service.get_user_by_id", fake_get_user_by_id),
-            patch("tta_backend.services.auth_service.is_token_revoked", fake_is_token_revoked),
-        ]
+        return [auth_helpers.patch_verifier()]
 
     def _repo_patches(self):
         return [

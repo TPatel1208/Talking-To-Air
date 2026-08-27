@@ -359,9 +359,22 @@ class Settings:
         default_factory=lambda: os.getenv("DEBUG_HEAP_PROFILING_ENABLED", "").strip() == "1"
     )
     long_request_seconds: float = field(default_factory=lambda: float(os.getenv("LONG_REQUEST_SECONDS", "30")))
-    jwt_secret_key: str | None = field(default_factory=lambda: os.getenv("JWT_SECRET_KEY"))
-    jwt_algorithm: str = field(default_factory=lambda: os.getenv("JWT_ALGORITHM", "HS256"))
-    jwt_expiration_minutes: int = field(default_factory=lambda: max(1, _int_env("JWT_EXPIRATION_MINUTES", 60)))
+    # T61: Supabase is the identity provider; our own Postgres stays. Both are
+    # required at boot (validate_startup) now that the auth middleware verifies
+    # against them -- see the note there for why a missing URL has to be fatal
+    # rather than merely absent. Typed Optional anyway, because the dataclass
+    # field is what validate_startup inspects: a required field with no default
+    # would raise a TypeError at construction, before the check that names it.
+    # The URL is stripped of whitespace and any trailing slash: the issuer is
+    # built as f"{supabase_url}/auth/v1", and a stray slash rejects every token
+    # with no hint as to why. No default is possible for either -- a placeholder
+    # URL would verify tokens from the wrong project rather than failing.
+    supabase_url: str | None = field(
+        default_factory=lambda: os.getenv("SUPABASE_URL", "").strip().rstrip("/") or None
+    )
+    supabase_publishable_key: str | None = field(
+        default_factory=lambda: os.getenv("SUPABASE_PUBLISHABLE_KEY", "").strip() or None
+    )
 
     # T30: per-user connector secret storage (MultiFernet). Comma-separated so
     # a rotation can carry an old + new key simultaneously -- unset entirely
@@ -424,8 +437,22 @@ class Settings:
             missing.append("GOOGLE_API_KEY")
         if "groq" in configured_providers and not self.groq_api_key:
             missing.append("GROQ_API_KEY")
-        if not self.jwt_secret_key:
-            missing.append("JWT_SECRET_KEY")
+        # T61: unconditional, unlike the provider keys above -- every route is
+        # authenticated, so there is no configuration in which the backend is
+        # useful without an identity provider. Fatal here rather than absent
+        # because api.py builds the verifier's issuer as an f-string at import:
+        # a None URL yields the literal "None/auth/v1", which constructs fine
+        # and then rejects every token with "Invalid issuer." on a backend that
+        # booted clean and reports healthy. One RuntimeError beats that.
+        if not self.supabase_url:
+            missing.append("SUPABASE_URL")
+        # Not read by the backend until T61 Phase 3 serves it from /config/auth.
+        # Required now regardless: the frontend cannot sign anyone in without
+        # it, so a deploy carrying one of the pair and not the other is broken
+        # either way, and boot is a cheaper place to learn that than the login
+        # screen. Drop this branch if Phase 3 ends up somewhere else.
+        if not self.supabase_publishable_key:
+            missing.append("SUPABASE_PUBLISHABLE_KEY")
         if missing:
             raise RuntimeError(f"Missing required environment variable(s): {', '.join(missing)}")
 

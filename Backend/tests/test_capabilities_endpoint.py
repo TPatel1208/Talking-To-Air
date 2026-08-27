@@ -1,11 +1,8 @@
 import importlib.util
-import os
 import unittest
 
 
-os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
-
-_REQUIRED = ["fastapi", "httpx", "jwt", "bcrypt", "langchain", "langgraph"]
+_REQUIRED = ["fastapi", "httpx", "jwt", "langchain", "langgraph"]
 
 
 @unittest.skipIf(

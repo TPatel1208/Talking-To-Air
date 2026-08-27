@@ -9,13 +9,13 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Annotated, Optional
 
-import psycopg
 from fastapi import FastAPI, HTTPException, Path, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.security.utils import get_authorization_scheme_param
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 from starlette.routing import Match
 
 from tta_backend.agents.earthdata_agent import LazySatelliteAgent, build_earthdata_agent, refresh_live_tools
@@ -41,7 +41,6 @@ from tta_backend.repositories.session_metadata_repository import (
     save_session_metadata_once,
     session_belongs_to_user,
 )
-from tta_backend.repositories.revoked_token_repository import ensure_revoked_token_table, revoke_token
 from tta_backend.repositories.session_repository import SessionRepository
 from tta_backend.repositories.user_connector_repository import (
     delete_connector,
@@ -49,11 +48,9 @@ from tta_backend.repositories.user_connector_repository import (
     list_connectors_for_user,
     upsert_connector,
 )
-from tta_backend.repositories.user_repository import create_user, ensure_user_table, get_user_by_username
 from tta_backend.repositories.artifact_repository import ensure_artifact_table
 from tta_backend.services import cube_cache, frame_store, warmup
 from tta_backend.services.open_handle import OPEN_PIPELINE_VERSION
-from tta_backend.services.auth_service import authenticate_request, create_access_token, hash_password, verify_password
 from tta_backend.services.connector_credential_service import EdlCredentialInjector
 from tta_backend.services.connector_token_service import TokenValidationError, decode_token_expiry
 from tta_backend.services.artifact_store import artifact_store
@@ -68,6 +65,12 @@ from tta_backend.services.discovery_service import (
     inspect_granules,
     preview_dataset,
     search_datasets,
+)
+from tta_backend.services.supabase_jwt import (
+    AuthenticationError,
+    IdentityProviderUnavailable,
+    SupabaseJwtVerifier,
+    make_jwks_fetcher,
 )
 from tta_backend.services.jobs_service import cancel_job, list_jobs
 from tta_backend.services.methods_export_service import build_methods_markdown
@@ -93,7 +96,12 @@ chart_service = ChartService()
 export_service = ExportService(settings.csv_export_max_granules)
 history_service = HistoryService(chart_service)
 session_repository = SessionRepository()
-
+# Constructed at import time so tests can patch the verifier before requests.
+# validate_config() runs during lifespan before any request is served, so a missing
+# SUPABASE_URL may briefly produce "None/auth/v1" but cannot be used in a valid boot.
+supabase_verifier = SupabaseJwtVerifier(make_jwks_fetcher(settings.supabase_url),
+                                        issuer = f"{settings.supabase_url}/auth/v1"
+                                        )
 
 async def _on_earthdata_mcp_ready(tools: dict) -> None:
     """earthdata_mcp_manager's on_ready hook (T17): refreshes the persistent
@@ -136,9 +144,16 @@ chat_stream_service = ChatStreamService(
 async def lifespan(app: FastAPI):
     global agent
     validate_config()
+    # T61: start the JWKS fetch before the slow half of boot (pool, tables,
+    # store sweeps, render warm, agent build) so the key cache is populated well
+    # before anything can be served. Sync on purpose -- start_warm() creates the
+    # task and returns; awaiting the fetch here would let a Supabase blip during
+    # a deploy stop the container coming up at all (T17 degrade-don't-die), and
+    # the request path already handles a cold cache. Placed after
+    # validate_config() so we never warm against a URL built from an unset
+    # SUPABASE_URL.
+    supabase_verifier.start_warm()
     await init_db_pool()
-    await ensure_user_table()
-    await ensure_revoked_token_table()
     await ensure_session_metadata_table()
     await ensure_user_connector_table()
     await ensure_artifact_table()
@@ -198,6 +213,10 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await earthdata_mcp_manager.stop()
+        # Same reason the MCP manager is stopped here: a warm still sleeping on
+        # capped backoff would otherwise outlive the loop it was created on.
+        # stop_warm() is safe when the task already finished.
+        await supabase_verifier.stop_warm()
         agent = None
         app.state.agent = None
         app.state.ground_agent = None
@@ -210,13 +229,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Talking to Air API", lifespan=lifespan)
 app.add_middleware(GZipMiddleware, minimum_size=1024)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # The one live consumer of the public output dir. StaticFiles resolves and
 # checks the directory when it is mounted, so this genuinely has to exist at
@@ -233,8 +245,7 @@ PUBLIC_ENDPOINTS = {
     ("GET", "/metrics"),
     ("GET", "/capabilities/starters"),
     ("GET", "/config/map-tiles"),
-    ("POST", "/auth/login"),
-    ("POST", "/auth/register"),
+    ("GET", "/config/auth"),
 }
 ThreadId = Annotated[str, Path(pattern=r"^[A-Za-z0-9-]+$")]
 JobHandle = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]+$")]
@@ -289,62 +300,84 @@ def _observe_request_metrics_at_stream_close(
     response.body_iterator = _timed_iterator()
 
 
+# Sent with every 401 so a client knows what kind of credential to present.
+# Deliberately absent from the 503 below: that is not a challenge, and a
+# browser offered one may retry rather than surface the outage.
+_BEARER_CHALLENGE = {"WWW-Authenticate": "Bearer"}
+
+
+def _auth_error(status_code: int, detail: str, headers: dict[str, str] | None = None) -> Response:
+    return Response(
+        content=json.dumps({"detail": detail}),
+        status_code=status_code,
+        media_type="application/json",
+        headers=headers,
+    )
+
+
 @app.middleware("http")
 async def require_authentication(request: Request, call_next):
     if request.method == "OPTIONS" or (request.method, request.url.path) in PUBLIC_ENDPOINTS:
         return await call_next(request)
     if not any(route.matches(request.scope)[0] != Match.NONE for route in app.routes):
         return await call_next(request)
+
+    # T61: header parsing lives here now. It used to sit inside authenticate_request,
+    # which went with the local user table -- the verifier takes a bare token and
+    # knows nothing about HTTP.
+    scheme, token = get_authorization_scheme_param(request.headers.get("Authorization"))
+    if scheme.lower() != "bearer" or not token:
+        return _auth_error(status.HTTP_401_UNAUTHORIZED, "Not authenticated", _BEARER_CHALLENGE)
     try:
-        request.state.current_user = await authenticate_request(request)
-    except HTTPException as exc:
-        return Response(
-            content=json.dumps({"detail": exc.detail}),
-            status_code=exc.status_code,
-            media_type="application/json",
-            headers=exc.headers,
+        # verify() is synchronous and, whenever the JWKS cache misses, blocks on
+        # urllib inside _keyset. Called bare it would stall the event loop for
+        # every request behind it; warm() routes its own fetch through a thread
+        # for exactly this reason. A cache hit is dict lookups, so the hop costs
+        # approximately nothing on the common path.
+        request.state.current_user = await asyncio.to_thread(supabase_verifier.verify, token)
+    except AuthenticationError as exc:
+        # The verifier's own message is passed through. There is no account
+        # enumeration to protect here -- a token either carries a valid Supabase
+        # signature or it does not, and knowing which check failed does not help
+        # forge one -- while an opaque 401 is genuinely expensive to debug from
+        # the browser. The one place where distinguishing WOULD leak is already
+        # flattened inside the verifier: both unknown-kid paths share a message
+        # so the refresh throttle's state stays invisible.
+        return _auth_error(status.HTTP_401_UNAUTHORIZED, str(exc), _BEARER_CHALLENGE)
+    except IdentityProviderUnavailable:
+        # Not a 401. The frontend opens T47's re-auth modal on 401, and signing
+        # in again cannot fix an unreachable identity provider -- it would just
+        # hand the user a login form that also fails. The message stays vague
+        # about which dependency is down.
+        return _auth_error(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Authentication is temporarily unavailable. Please try again shortly.",
         )
     return await call_next(request)
+
+
+# Registered LAST on purpose, which makes it the OUTERMOST middleware: each
+# add_middleware inserts at index 0, so the final registration runs first. The
+# auth middleware returns its 401s and 503s directly rather than calling
+# call_next, so anything registered outside it never sees those responses --
+# with CORS registered earlier (i.e. inside), a cross-origin 401 came back with
+# no Access-Control-Allow-Origin and the browser surfaced it as a network error
+# instead of a status. That silently defeats T47: shouldPromptReauth(401) never
+# fires, and the 401-vs-503 distinction above is invisible to the client it was
+# written for. Do not move this back up next to the app construction.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=10_000)
     thread_id: Optional[str] = Field(default=None, min_length=1, pattern=r"^[A-Za-z0-9-]+$")
 
-
-class LoginRequest(BaseModel):
-    username: str = Field(min_length=1, max_length=150)
-    password: str = Field(min_length=1, max_length=1024)
-
-class RegisterRequest(BaseModel):
-    username: str
-    password: str
-
-    @field_validator("username")
-    @classmethod
-    def validate_username(cls,value: str) -> str:
-        if len(value) < 3 or len(value) > 64:
-            raise ValueError("Username must be between 3 and 64 characters")
-        if " " in value:
-            raise ValueError("Username cannot contain spaces")
-
-        return value
-    @field_validator("password")
-    @classmethod
-    def validate_password(cls, value: str) -> str:
-        if len(value) < 8 or len(value) > 1024:
-            raise ValueError("Password must be between 8 and 1024 characters")
-        if " " in value:
-            raise ValueError("Password cannot contain spaces")
-        if not any(c.isupper() for c in value):
-            raise ValueError("Password must contain at least one uppercase letter")
-        if not any(c.islower() for c in value):
-            raise ValueError("Password must contain at least one lowercase letter")
-        if not any(c.isdigit() for c in value):
-            raise ValueError("Password must contain at least one digit")
-        if not any(c in "!@#$%^&*()-_=+[]{}|;:,.<>?/" for c in value):
-            raise ValueError("Password must contain at least one special character")
-        return value
 
 class DiscoverySearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=500)
@@ -367,22 +400,8 @@ class DiscoveryGranulesRequest(BaseModel):
     time_range: str = Field(min_length=1, max_length=200)
     limit: Optional[int] = Field(default=None, ge=1)
 
-
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    expires_in: int
-
-
-class UserResponse(BaseModel):
-    id: str
-    username: str
-    is_active: bool
-
-
 class SetConnectorTokenRequest(BaseModel):
     token: str = Field(min_length=1, max_length=8192)
-
 
 class ConnectorStatusView(BaseModel):
     connector_type: str
@@ -393,41 +412,6 @@ class ConnectorStatusView(BaseModel):
     status: str
     connected_at: Optional[datetime] = None
     expires_at: Optional[datetime] = None
-
-
-@app.post("/auth/register", status_code=status.HTTP_201_CREATED, response_model=UserResponse)
-async def register(req: RegisterRequest):
-    password_hash = hash_password(req.password)
-    try:
-        user = await create_user(req.username, password_hash)
-    except psycopg.errors.UniqueViolation:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already exists")
-    return UserResponse(id=user.id, username=user.username, is_active=user.is_active)
-
-
-@app.post("/auth/login", response_model=TokenResponse)
-async def login(req: LoginRequest):
-    user = await get_user_by_username(req.username)
-    if user is None or not user.is_active or not verify_password(req.password, user.password_hash):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid username or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    token, expires_in = create_access_token(user)
-    return TokenResponse(access_token=token, expires_in=expires_in)
-
-
-@app.post("/auth/logout")
-async def logout(request: Request):
-    payload = getattr(request.state, "jwt_payload", {})
-    jti = payload.get("jti")
-    exp = payload.get("exp")
-    if not jti or exp is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication credentials")
-    await revoke_token(jti, datetime.fromtimestamp(exp, tz=timezone.utc))
-    return {"detail": "Logged out"}
-
 
 # T30: per-user connector (e.g. Earthdata Login) token storage. Registry-
 # driven -- CONNECTOR_REGISTRY is the single source of what cards the
@@ -538,6 +522,29 @@ async def health():
 def metrics():
     refresh_process_gauges()
     return Response(content=render_prometheus_metrics(), media_type=prometheus_content_type())
+
+
+@app.get("/config/auth")
+def config_auth():
+    """The identity provider's coordinates, served at runtime rather than
+    baked into the frontend bundle, so one image runs against either the dev or
+    the prod Supabase project. Baking VITE_* in would mean a dev-keyed bundle
+    shipped to prod fails only at login, which is the worst place to find out.
+
+    Necessarily unauthenticated, and uniquely so: this is the only thing the app
+    can call before anyone holds a token. Without it the login screen cannot
+    construct a Supabase client and therefore cannot offer a login at all --
+    a 401 here is a deadlock, not a rejection.
+
+    The publishable key is safe to hand an anonymous caller. It normally reaches
+    a project's Postgres through Supabase's PostgREST, but our data lives in our
+    own database (decision 1: identity provider only), so it can do nothing here
+    but talk to Supabase Auth. Do not "fix" this by hiding it behind auth.
+    """
+    return {
+        "supabase_url": settings.supabase_url,
+        "supabase_publishable_key": settings.supabase_publishable_key,
+    }
 
 
 @app.get("/debug/heap-snapshot")

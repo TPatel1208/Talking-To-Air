@@ -69,7 +69,7 @@ const backButtonStyle = {
   marginBottom: '8px',
 }
 
-export default function HeatmapMultiPanel({ payload, accessToken }) {
+export default function HeatmapMultiPanel({ payload }) {
   const { title, mode, panels, difference } = payload
   const [expanded, setExpanded] = useState(null)
 
@@ -79,7 +79,6 @@ export default function HeatmapMultiPanel({ payload, accessToken }) {
     return (
       <MapLibreHeatmapPanel
         payload={{ ...difference, title: difference.title || title }}
-        accessToken={accessToken}
       />
     )
   }
@@ -92,7 +91,7 @@ export default function HeatmapMultiPanel({ payload, accessToken }) {
         <button type="button" onClick={() => setExpanded(null)} style={backButtonStyle}>
           ← Back to comparison
         </button>
-        <MapLibreHeatmapPanel payload={panels[expanded]} accessToken={accessToken} />
+        <MapLibreHeatmapPanel payload={panels[expanded]} />
       </div>
     )
   }

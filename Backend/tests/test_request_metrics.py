@@ -7,14 +7,20 @@ dashboard could never see the slowest thing in the app.
 import asyncio
 import importlib.util
 import os
+import sys
 import unittest
-from datetime import datetime, timezone
 from unittest.mock import patch
 
 
-os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
 
-_REQUIRED = ["fastapi", "httpx", "jwt", "bcrypt", "langchain", "langgraph"]
+TESTS_DIR = os.path.dirname(__file__)
+if TESTS_DIR not in sys.path:
+    sys.path.insert(0, TESTS_DIR)
+
+import auth_helpers  # noqa: E402 -- needs the TESTS_DIR insert above
+
+
+_REQUIRED = ["fastapi", "httpx", "jwt", "langchain", "langgraph"]
 
 
 @unittest.skipIf(
@@ -25,31 +31,17 @@ class StreamingRequestMetricsTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         import httpx
         import tta_backend.api as api
-        from tta_backend.models.user import User
 
         self.httpx = httpx
         self.api = api
         self.api.app.state.agent = object()
         self.api.app.state.earthdata_mcp_tools = {}
-        self.user = User(
-            id="user-1",
-            username="tester",
-            password_hash="hash",
-            created_at=datetime.now(timezone.utc),
-            is_active=True,
-        )
-        token, _ = self.api.create_access_token(self.user)
+        self.user = auth_helpers.user("user-1", email="tester@example.com")
+        token = auth_helpers.make_token(self.user.id, email=self.user.email)
         self.auth_headers = {"Authorization": f"Bearer {token}"}
 
     def _auth_patch(self):
-        async def fake_get_user_by_id(user_id):
-            return self.user if user_id == self.user.id else None
-
-        async def fake_is_token_revoked(jti):
-            return False
-
-        return patch("tta_backend.services.auth_service.get_user_by_id", fake_get_user_by_id), \
-            patch("tta_backend.services.auth_service.is_token_revoked", fake_is_token_revoked)
+        return auth_helpers.patch_verifier()
 
     async def test_chat_stream_duration_covers_the_full_stream_not_just_headers(self):
         sleep_seconds = 0.3
@@ -78,7 +70,7 @@ class StreamingRequestMetricsTests(unittest.IsolatedAsyncioTestCase):
 
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches[0], auth_patches[1], \
+        with auth_patches, \
              patch.object(self.api, "save_session_metadata_once", fake_save_session_metadata_once), \
              patch.object(self.api.chat_stream_service, "stream_chat_events", fake_stream_chat_events), \
              patch.object(self.api, "observe_http_request", fake_observe_http_request):

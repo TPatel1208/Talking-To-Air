@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { apiFetch } from '../utils/apiFetch.js'
 import { decodeFrameStack } from '../utils/frameStack.js'
 
 const API_BASE = '/api'
@@ -26,7 +27,7 @@ const API_BASE = '/api'
  * blob is refused instead of reshaping cleanly into fewer frames and rendering
  * as a plausible map with the tail of the scrub silently absent.
  */
-export function useFrameStack(block, accessToken, enabled) {
+export function useFrameStack(block, enabled) {
   const [result, setResult] = useState({ url: null, loadState: 'idle', stack: null })
   // The request in flight, so a chart switched mid-fetch can never have the
   // previous chart's pixels land on it.
@@ -42,10 +43,7 @@ export function useFrameStack(block, accessToken, enabled) {
     const request = ++requestRef.current
     const controller = new AbortController()
 
-    fetch(`${API_BASE}${url}`, {
-      signal: controller.signal,
-      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
-    })
+    apiFetch(`${API_BASE}${url}`, { signal: controller.signal })
       .then(async (res) => {
         if (res.status === 404) return { loadState: 'expired', stack: null }
         if (!res.ok) return { loadState: 'failed', stack: null }
@@ -62,7 +60,7 @@ export function useFrameStack(block, accessToken, enabled) {
       })
 
     return () => controller.abort()
-  }, [block, url, accessToken, enabled])
+  }, [block, url, enabled])
 
   // 'loading' is DERIVED from "we have no answer for this url yet", never set
   // synchronously in the effect body -- that cascades a render, and this

@@ -1,11 +1,8 @@
 import { useState } from 'react'
 import ConnectorsPanel from './ConnectorsPanel'
+import { apiFetch } from '../utils/apiFetch.js'
 
 const API_BASE = '/api'
-
-function authHeaders(accessToken) {
-  return accessToken ? { Authorization: `Bearer ${accessToken}` } : {}
-}
 
 function downloadBlob(filename, blob) {
   const url = URL.createObjectURL(blob)
@@ -23,18 +20,18 @@ function filenameFromDisposition(disposition, fallback) {
   return match?.[1]?.trim() || fallback
 }
 
-async function downloadArtifact(artifact, accessToken) {
+async function downloadArtifact(artifact) {
   const url = artifact.type === 'table'
     ? `${API_BASE}/artifacts/${artifact.id}/csv`
     : `${API_BASE}/chart/${artifact.id}/export.csv`
-  const res = await fetch(url, { headers: authHeaders(accessToken) })
+  const res = await apiFetch(url)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   const blob = await res.blob()
   downloadBlob(filenameFromDisposition(res.headers.get('content-disposition'), `${artifact.title || artifact.id}.csv`), blob)
 }
 
-async function downloadImage(url, accessToken) {
-  const res = await fetch(url, { headers: authHeaders(accessToken) })
+async function downloadImage(url) {
+  const res = await apiFetch(url)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   const blob = await res.blob()
   downloadBlob(url.split('/').pop() || 'image.png', blob)
@@ -89,7 +86,7 @@ function FileRow({ tag, title, subtitle, onDownload }) {
   )
 }
 
-export default function SessionSidebar({ sessions, threadId, onSwitch, onNew, onDelete, onLogout, images = [], artifacts = [], accessToken, onCollapse }) {
+export default function SessionSidebar({ sessions, threadId, onSwitch, onNew, onDelete, onLogout, images = [], artifacts = [], onCollapse }) {
   const [nav, setNav] = useState('chats')
 
   const getSessionId = (session) => typeof session === 'string' ? session : session?.id
@@ -269,7 +266,7 @@ export default function SessionSidebar({ sessions, threadId, onSwitch, onNew, on
                 tag={TYPE_TAG[artifact.type] || 'OUT'}
                 title={artifact.title || 'Untitled output'}
                 subtitle={artifact.type}
-                onDownload={() => downloadArtifact(artifact, accessToken)}
+                onDownload={() => downloadArtifact(artifact)}
               />
             ))}
             {images.map((url, i) => (
@@ -278,7 +275,7 @@ export default function SessionSidebar({ sessions, threadId, onSwitch, onNew, on
                 tag="IMG"
                 title={url.split('/').pop() || `image-${i + 1}`}
                 subtitle="Image"
-                onDownload={() => downloadImage(url, accessToken)}
+                onDownload={() => downloadImage(url)}
               />
             ))}
           </div>
@@ -290,7 +287,7 @@ export default function SessionSidebar({ sessions, threadId, onSwitch, onNew, on
           <div style={{ fontSize: '10.5px', fontWeight: 700, letterSpacing: '0.06em', color: 'var(--text-muted)', textTransform: 'uppercase', padding: '0 10px 8px' }}>
             Connected services
           </div>
-          <ConnectorsPanel accessToken={accessToken} />
+          <ConnectorsPanel />
         </>
       )}
 

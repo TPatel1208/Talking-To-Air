@@ -4,6 +4,15 @@ import os
 import unittest
 from unittest.mock import patch
 
+# T61: the identity-provider pair validate_startup() now requires. Every
+# Settings(...) below has to satisfy it to reach the assertion it actually
+# cares about, so it lives here -- the next required-var change edits one line
+# rather than every construction in the file.
+SUPABASE_KWARGS = {
+    "supabase_url": "https://test-project.supabase.co",
+    "supabase_publishable_key": "k",
+}
+
 
 class ConfigLoggingTests(unittest.TestCase):
     def setUp(self):
@@ -221,14 +230,14 @@ class ConfigLoggingTests(unittest.TestCase):
         from tta_backend.config.settings import Settings
 
         # Default posture: supervisor, earthdata, and ground agent all on google.
-        loaded = Settings(db_password="x", jwt_secret_key="x", google_api_key=None, groq_api_key="x")
+        loaded = Settings(db_password="x", **SUPABASE_KWARGS, google_api_key=None, groq_api_key="x")
         with self.assertRaisesRegex(RuntimeError, "GOOGLE_API_KEY"):
             loaded.validate_startup()
 
         # No agent resolves to google -> GOOGLE_API_KEY is not required.
         loaded = Settings(
             db_password="x",
-            jwt_secret_key="x",
+            **SUPABASE_KWARGS,
             google_api_key=None,
             groq_api_key="x",
             supervisor_model_provider="groq",
@@ -237,13 +246,52 @@ class ConfigLoggingTests(unittest.TestCase):
         )
         loaded.validate_startup()
 
+    def test_validate_startup_requires_the_supabase_identity_provider(self):
+        from tta_backend.config.settings import Settings
+
+        # T61: unconditional, unlike the provider keys. api.py builds the
+        # verifier's issuer as f"{supabase_url}/auth/v1" at import, so a None
+        # URL constructs a verifier reading "None/auth/v1" that rejects every
+        # token with "Invalid issuer." on a backend that booted clean. Naming
+        # it at boot is the whole point of the check.
+        loaded = Settings(
+            db_password="x",
+            google_api_key="x",
+            groq_api_key="x",
+            supabase_url=None,
+            supabase_publishable_key="k",
+        )
+        with self.assertRaisesRegex(RuntimeError, "SUPABASE_URL"):
+            loaded.validate_startup()
+
+        # Unread by the backend until Phase 3 serves it from /config/auth, and
+        # required anyway: the frontend cannot sign anyone in without it, so a
+        # deploy carrying one of the pair is broken either way.
+        loaded = Settings(
+            db_password="x",
+            google_api_key="x",
+            groq_api_key="x",
+            supabase_url="https://test-project.supabase.co",
+            supabase_publishable_key=None,
+        )
+        with self.assertRaisesRegex(RuntimeError, "SUPABASE_PUBLISHABLE_KEY"):
+            loaded.validate_startup()
+
+    def test_validate_startup_passes_with_the_identity_provider_configured(self):
+        from tta_backend.config.settings import Settings
+
+        # The other half of the check above: proves the two branches reject a
+        # missing value rather than rejecting everything.
+        loaded = Settings(db_password="x", google_api_key="x", groq_api_key="x", **SUPABASE_KWARGS)
+        loaded.validate_startup()  # must not raise
+
     def test_validate_startup_requires_groq_key_only_when_a_groq_agent_is_configured(self):
         from tta_backend.config.settings import Settings
 
         # A groq-configured subagent requires GROQ_API_KEY.
         loaded = Settings(
             db_password="x",
-            jwt_secret_key="x",
+            **SUPABASE_KWARGS,
             google_api_key="x",
             groq_api_key=None,
             ground_agent_provider="groq",
@@ -252,7 +300,7 @@ class ConfigLoggingTests(unittest.TestCase):
             loaded.validate_startup()
 
         # Default posture: no agent resolves to groq -> GROQ_API_KEY is not required.
-        loaded = Settings(db_password="x", jwt_secret_key="x", google_api_key="x", groq_api_key=None)
+        loaded = Settings(db_password="x", **SUPABASE_KWARGS, google_api_key="x", groq_api_key=None)
         loaded.validate_startup()
 
     def test_validate_startup_rejects_a_malformed_earthdata_mcp_url(self):
@@ -261,7 +309,7 @@ class ConfigLoggingTests(unittest.TestCase):
         # A config typo (bad scheme, no host) is a bug to fix at boot, not an
         # outage the connection manager should retry (T17).
         loaded = Settings(
-            db_password="x", jwt_secret_key="x", google_api_key="x", groq_api_key="x",
+            db_password="x", **SUPABASE_KWARGS, google_api_key="x", groq_api_key="x",
             earthdata_mcp_url="not-a-url",
         )
         with self.assertRaisesRegex(ConfigurationError, "EARTHDATA_MCP_URL"):
@@ -271,7 +319,7 @@ class ConfigLoggingTests(unittest.TestCase):
         from tta_backend.config.settings import Settings
 
         loaded = Settings(
-            db_password="x", jwt_secret_key="x", google_api_key="x", groq_api_key="x",
+            db_password="x", **SUPABASE_KWARGS, google_api_key="x", groq_api_key="x",
             earthdata_mcp_url="http://mcp:8765/mcp",
         )
         loaded.validate_startup()  # must not raise
@@ -321,7 +369,7 @@ class ConfigLoggingTests(unittest.TestCase):
         # A misconfiguration here would make every retrieval that runs the
         # full await_retrieval_timeout_seconds a guaranteed turn timeout.
         loaded = Settings(
-            db_password="x", jwt_secret_key="x", google_api_key="x", groq_api_key="x",
+            db_password="x", **SUPABASE_KWARGS, google_api_key="x", groq_api_key="x",
             await_retrieval_timeout_seconds=900,
             chat_turn_timeout_seconds=900,
         )
@@ -332,7 +380,7 @@ class ConfigLoggingTests(unittest.TestCase):
         from tta_backend.config.settings import Settings
 
         loaded = Settings(
-            db_password="x", jwt_secret_key="x", google_api_key="x", groq_api_key="x",
+            db_password="x", **SUPABASE_KWARGS, google_api_key="x", groq_api_key="x",
             await_retrieval_timeout_seconds=900,
             chat_turn_timeout_seconds=1800,
         )

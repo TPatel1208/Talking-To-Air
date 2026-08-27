@@ -30,6 +30,7 @@ import { colorbarGeometry, scaleClipNote } from '../utils/colorbarGeometry.js'
 import { buildCanvasFallbackFrame } from '../utils/canvasFallback.js'
 import { fetchUsStatesGeoJSON, isConusBounds } from '../utils/regionBorders.js'
 import { resolveOverlayMode } from '../utils/overlayMode.js'
+import { currentAccessToken } from '../utils/apiFetch.js'
 
 const FALLBACK_TILE_CONFIG = {
   basemap_light_url: 'https://basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png',
@@ -172,7 +173,7 @@ function addBorderLayer(map, geojson) {
   })
 }
 
-export default function MapLibreHeatmapPanel({ payload, height = 420, accessToken, colorScaleOverride = null, hideLegend = false, frame = null }) {
+export default function MapLibreHeatmapPanel({ payload, height = 420, colorScaleOverride = null, hideLegend = false, frame = null }) {
   const { title, units, vmin, vmax, colormap, overlay, bounds, lats, lons, scale } = payload
   const containerRef = useRef(null)
   const mapRef = useRef(null)
@@ -256,11 +257,14 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, accessToke
         container: containerRef.current,
         style: buildMapStyle(tileConfig),
         attributionControl: false,
+        // maplibre calls this synchronously to build each request, so it is
+        // the one place that cannot await a session and reads apiFetch's
+        // snapshot instead. Not a regression: this effect depends on [payload],
+        // so the token it used to close over was already frozen at map-build
+        // time and went stale after the first rotation.
         transformRequest: (url) => {
-          if (isOwnOverlayRequest(url) && accessToken) {
-            return { url, headers: { Authorization: `Bearer ${accessToken}` } }
-          }
-          return { url }
+          const token = isOwnOverlayRequest(url) ? currentAccessToken() : null
+          return token ? { url, headers: { Authorization: `Bearer ${token}` } } : { url }
         },
       })
       mapRef.current = map

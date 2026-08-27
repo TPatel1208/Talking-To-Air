@@ -85,33 +85,6 @@ One row per chat thread: auto-generated title (first message, truncated to
 60 chars) plus per-session UI context (which ground monitors / satellite
 layers are active) so a reload can restore it.
 
-### `users`
-Source: [Backend/repositories/user_repository.py](../Backend/repositories/user_repository.py)
-
-```sql
-CREATE TABLE users (
-    id            TEXT PRIMARY KEY,
-    username      TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL,
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    is_active     BOOLEAN NOT NULL DEFAULT TRUE
-);
-```
-
-### `revoked_tokens`
-Source: [Backend/repositories/revoked_token_repository.py](../Backend/repositories/revoked_token_repository.py)
-
-```sql
-CREATE TABLE revoked_tokens (
-    jti         TEXT PRIMARY KEY,
-    revoked_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    expires_at  TIMESTAMPTZ NOT NULL
-);
-```
-JWT denylist. Self-pruning — every write path first runs
-`DELETE FROM revoked_tokens WHERE expires_at < now()`, so the table never
-accumulates rows for tokens that would have expired anyway.
-
 ### LangGraph checkpoint tables (`checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations`)
 Not defined by this repo — auto-created by `AsyncPostgresSaver.setup()` in
 [Backend/utils/db.py:176-181](../Backend/utils/db.py) (`get_checkpointer()`),
@@ -271,8 +244,8 @@ designer — they can't read the code, so this spells out every fact needed:
 >
 > **Tier 2 — Persistent storage** (Docker named volumes), six boxes below
 > tier 1, each with an arrow up to Backend:
-> 1. **PostgreSQL + PostGIS** (volume `pg_data`) — list inside: `users`,
->    `session_metadata`, `agent_charts`, `agent_artifacts`, `revoked_tokens`, and LangGraph's own
+> 1. **PostgreSQL + PostGIS** (volume `pg_data`) — list inside:
+>    `session_metadata`, `agent_charts`, `agent_artifacts`, `user_connectors`, and LangGraph's own
 >    `checkpoints`/`checkpoint_blobs`/`checkpoint_writes` tables.
 > 2. **plot_outputs** volume — chart PNGs; arrows from *both* Frontend and
 >    Backend (nginx serves it directly and unauthenticated at `/outputs`;

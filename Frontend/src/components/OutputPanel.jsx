@@ -34,6 +34,7 @@ import {
   groundValidationOverviewFields, groundValidationDetailsFields,
   rawArtifactMetadataJson,
 } from '../utils/artifactMetadataDisplay'
+import { apiFetch } from '../utils/apiFetch.js'
 
 // Every render branch of this panel is the same flex child of the app's one
 // row, so every one of them needs the same floor. It used to be `minWidth: 0`
@@ -488,19 +489,17 @@ const metaViewButtonStyle = (active) => ({
 // `/api/artifacts/{id}` response, so Overview/Details fetch a minimal
 // (limit=1) page themselves to learn it, same endpoint TableArtifactMessage
 // already pages through for the grid.
-function useTableColumnsPreview(artifact, accessToken) {
+function useTableColumnsPreview(artifact) {
   const [state, setState] = useState({ page: null, status: 'loading' })
   useEffect(() => {
     if (!artifact?.id || artifact.type !== 'table') return undefined
     let cancelled = false
-    fetch(`/api/artifacts/${artifact.id}?offset=0&limit=1`, {
-      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
-    })
+    apiFetch(`/api/artifacts/${artifact.id}?offset=0&limit=1`)
       .then(response => (response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`))))
       .then(page => { if (!cancelled) setState({ page, status: 'ready' }) })
       .catch(() => { if (!cancelled) setState({ page: null, status: 'failed' }) })
     return () => { cancelled = true }
-  }, [artifact?.id, artifact?.type, accessToken])
+  }, [artifact?.id, artifact?.type])
   return state
 }
 
@@ -528,14 +527,12 @@ function TableMetadataOverview({ artifact, page, status }) {
   )
 }
 
-function TableCsvExport({ artifact, accessToken }) {
+function TableCsvExport({ artifact }) {
   const [state, setState] = useState('')
   async function downloadCsv() {
     setState('downloading')
     try {
-      const response = await fetch(`/api/artifacts/${artifact.id}/csv`, {
-        headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
-      })
+      const response = await apiFetch(`/api/artifacts/${artifact.id}/csv`)
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const blob = await response.blob()
       const disposition = response.headers.get('content-disposition')
@@ -574,7 +571,7 @@ function ArtifactRawJsonToggle({ artifact }) {
   )
 }
 
-function TableMetadataDetails({ artifact, accessToken, page, status }) {
+function TableMetadataDetails({ artifact, page, status }) {
   const { columns } = tableDetailsFields(artifact, page)
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
@@ -590,7 +587,7 @@ function TableMetadataDetails({ artifact, accessToken, page, status }) {
         )}
       </DetailsSection>
       <DetailsSection title="Export">
-        <TableCsvExport artifact={artifact} accessToken={accessToken} />
+        <TableCsvExport artifact={artifact} />
       </DetailsSection>
       <ArtifactRawJsonToggle artifact={artifact} />
     </div>
@@ -654,13 +651,13 @@ function GroundValidationDetails({ artifact }) {
   )
 }
 
-function MetadataTab({ chart, artifact, accessToken, onViewStatistics }) {
+function MetadataTab({ chart, artifact, onViewStatistics }) {
   const [view, setView] = useState('overview')
   // Lifted above the Overview/Details toggle (T33 review fix) so switching
   // between the two sub-tabs on a table artifact reuses the same fetched
   // page instead of each mounting its own useTableColumnsPreview and
   // refetching /api/artifacts/{id} every time the user toggles.
-  const { page: tablePage, status: tablePageStatus } = useTableColumnsPreview(artifact, accessToken)
+  const { page: tablePage, status: tablePageStatus } = useTableColumnsPreview(artifact)
   if (chart) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
@@ -685,7 +682,7 @@ function MetadataTab({ chart, artifact, accessToken, onViewStatistics }) {
         {isTable
           ? (view === 'overview'
             ? <TableMetadataOverview artifact={artifact} page={tablePage} status={tablePageStatus} />
-            : <TableMetadataDetails artifact={artifact} accessToken={accessToken} page={tablePage} status={tablePageStatus} />)
+            : <TableMetadataDetails artifact={artifact} page={tablePage} status={tablePageStatus} />)
           : (view === 'overview'
             ? <GroundValidationOverview artifact={artifact} />
             : <GroundValidationDetails artifact={artifact} />)}
@@ -693,7 +690,21 @@ function MetadataTab({ chart, artifact, accessToken, onViewStatistics }) {
     )
   }
   if (artifact) {
-    return <ArtifactMessage artifact={artifact} accessToken={undefined} />
+    // Everything the table and ground-validation branches above do not claim:
+    // map, comparison, timeseries and profile artifacts, which render through
+    // CardShell and so carry ExportButtons.
+    //
+    // This used to be handed an explicitly undefined token prop, two lines
+    // below the same function handing the real one to TableMetadataDetails, so
+    // the asymmetry was deliberate rather than overlooked. (Spelling that prop
+    // out here would trip the authWiring guard that bans it -- it reads raw
+    // source, comments included, which is the bluntness that makes it hold.) Its effect was that those export buttons sent no credential
+    // and every download here failed with a 401. Since Phase 5 there is no
+    // token to withhold: apiFetch reads the session at call time, so this path
+    // authenticates like every other and the exports work. Kept that way on
+    // purpose -- a download offered by the UI should either work or not be
+    // offered, and nothing here wants an inert button.
+    return <ArtifactMessage artifact={artifact} />
   }
   return null
 }
@@ -809,7 +820,7 @@ function CompareControl({ compareMode, compareCount, filledCount, onStart, onCan
 // of its own, so Metadata is its only tab (see ARTIFACT_TABS). The caller
 // keys this by artifact.id so switching artifacts remounts it fresh
 // (activeTab reset) instead of needing an effect to resync local state.
-function ArtifactTabsPanel({ artifact, accessToken, compareControlProps }) {
+function ArtifactTabsPanel({ artifact, compareControlProps }) {
   const tabs = ARTIFACT_TABS[artifact.type] || ['metadata']
   const [activeTab, setActiveTab] = useState(tabs[0])
 
@@ -827,15 +838,15 @@ function ArtifactTabsPanel({ artifact, accessToken, compareControlProps }) {
       </div>
 
       <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '18px 22px' }}>
-        {activeTab === 'table' && <TableArtifactMessage artifact={artifact} accessToken={accessToken} />}
-        {activeTab === 'metadata' && <MetadataTab artifact={artifact} accessToken={accessToken} />}
+        {activeTab === 'table' && <TableArtifactMessage artifact={artifact} />}
+        {activeTab === 'metadata' && <MetadataTab artifact={artifact} />}
       </div>
     </div>
   )
 }
 
 export default function OutputPanel({
-  focusedOutput, accessToken, onFocusOutput, onSend,
+  focusedOutput, onFocusOutput, onSend,
   compareMode = 'off', compareCount = 2, compareSelection = [], compareSessionId = 0,
   onStartCompare, onCancelChooseCompare, onEnterCompare, onExitCompare,
   sessionsCollapsed = false, chatCollapsed = false, rightPanelCollapsed = false,
@@ -886,7 +897,7 @@ export default function OutputPanel({
     () => resolveStatisticSource(chart, askedStatistic),
     [chart, askedStatistic],
   )
-  const frameLoad = useFrameStack(frameSource, accessToken, scrubbing)
+  const frameLoad = useFrameStack(frameSource, scrubbing)
   // `selected` is what the reader asked for; `rendered` is what is actually on
   // screen. Everything that SPEAKS keys off `rendered`, so the mean's pixels
   // can never sit under a max label while the bytes are in flight.
@@ -970,7 +981,6 @@ export default function OutputPanel({
           <CompareGrid
             compareCount={compareCount}
             compareSelection={compareSelection}
-            accessToken={accessToken}
             autoScaleEach={autoScaleEach}
             onToggleAutoScale={setAutoScaleEach}
             onFocusChart={onFocusOutput ? (chart) => {
@@ -1006,7 +1016,7 @@ export default function OutputPanel({
   }
 
   if (isMetadataTabbedArtifact) {
-    return <ArtifactTabsPanel key={artifact.id} artifact={artifact} accessToken={accessToken} compareControlProps={compareControlProps} />
+    return <ArtifactTabsPanel key={artifact.id} artifact={artifact} compareControlProps={compareControlProps} />
   }
 
   if (artifact && !chart) {
@@ -1020,7 +1030,7 @@ export default function OutputPanel({
           <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', margin: '10px 0 16px' }}>
             {artifactMetaChips(artifact).map((chip, i) => <MetaChip key={i}>{chip}</MetaChip>)}
           </div>
-          <ArtifactMessage artifact={artifact} accessToken={accessToken} />
+          <ArtifactMessage artifact={artifact} />
         </div>
       </div>
     )
@@ -1054,7 +1064,6 @@ export default function OutputPanel({
             <MapLibreHeatmapPanel
               payload={chart}
               height={480}
-              accessToken={accessToken}
               colorScaleOverride={scrubScale}
               frame={activeFrame}
             />
@@ -1074,7 +1083,7 @@ export default function OutputPanel({
             />
           </>
         )}
-        {activeTab === 'map' && chart.type === 'heatmap_multi' && <HeatmapMultiPanel payload={chart} accessToken={accessToken} />}
+        {activeTab === 'map' && chart.type === 'heatmap_multi' && <HeatmapMultiPanel payload={chart} />}
         {activeTab === 'chart' && chart.type === 'timeseries' && <TimeSeriesPanel payload={chart} />}
         {activeTab === 'chart' && chart.type === 'profile' && <ProfilePanel payload={chart} />}
         {(activeTab === 'map' || activeTab === 'chart') && (
@@ -1094,7 +1103,7 @@ export default function OutputPanel({
 
       {(activeTab === 'map' || activeTab === 'chart') && (
         <div style={{ padding: '0 22px 14px', flexShrink: 0 }}>
-          <ChartToolbar chart={chart} plotRootRef={plotRootRef} accessToken={accessToken} />
+          <ChartToolbar chart={chart} plotRootRef={plotRootRef} />
         </div>
       )}
     </div>

@@ -1,9 +1,10 @@
 import { useCallback, useState } from 'react'
 import { normalizeSearchResults } from '../utils/discoveryResults'
+import { apiFetch } from '../utils/apiFetch.js'
 
 const API_BASE = '/api'
 
-export function useDiscovery(accessToken) {
+export function useDiscovery() {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
   const [loading, setLoading] = useState(false)
@@ -16,11 +17,6 @@ export function useDiscovery(accessToken) {
   const [coverages, setCoverages] = useState({})
   const [granules, setGranules] = useState({})
   const [inventories, setInventories] = useState({})
-
-  const authHeaders = useCallback((extra = {}) => ({
-    ...extra,
-    ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-  }), [accessToken])
 
   // T18: every discovery endpoint failure now arrives as
   // {"error": {"category", "message", "suggestion"}} (api.py's
@@ -43,9 +39,9 @@ export function useDiscovery(accessToken) {
     setLoading(true)
     setError(null)
     try {
-      const res = await fetch(`${API_BASE}/discovery/search`, {
+      const res = await apiFetch(`${API_BASE}/discovery/search`, {
         method: 'POST',
-        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: trimmed }),
       })
       if (!res.ok) throw new Error(await readErrorMessage(res))
@@ -59,14 +55,14 @@ export function useDiscovery(accessToken) {
     } finally {
       setLoading(false)
     }
-  }, [query, authHeaders])
+  }, [query])
 
   const preview = useCallback(async (datasetHandle, layer) => {
     setPreviews(prev => ({ ...prev, [datasetHandle]: { loading: true, error: null } }))
     try {
-      const res = await fetch(`${API_BASE}/discovery/dataset/${datasetHandle}/preview`, {
+      const res = await apiFetch(`${API_BASE}/discovery/dataset/${datasetHandle}/preview`, {
         method: 'POST',
-        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           location: location.trim() || undefined,
           time_range: timeRange.trim() || undefined,
@@ -79,7 +75,7 @@ export function useDiscovery(accessToken) {
     } catch (err) {
       setPreviews(prev => ({ ...prev, [datasetHandle]: { loading: false, error: err.message || 'Quick-look failed' } }))
     }
-  }, [location, timeRange, authHeaders])
+  }, [location, timeRange])
 
   const checkCoverage = useCallback(async (datasetHandle) => {
     if (!location.trim() || !timeRange.trim()) {
@@ -91,9 +87,9 @@ export function useDiscovery(accessToken) {
     }
     setCoverages(prev => ({ ...prev, [datasetHandle]: { loading: true, error: null } }))
     try {
-      const res = await fetch(`${API_BASE}/discovery/dataset/${datasetHandle}/coverage`, {
+      const res = await apiFetch(`${API_BASE}/discovery/dataset/${datasetHandle}/coverage`, {
         method: 'POST',
-        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ location: location.trim(), time_range: timeRange.trim() }),
       })
       if (!res.ok) throw new Error(await readErrorMessage(res))
@@ -102,7 +98,7 @@ export function useDiscovery(accessToken) {
     } catch (err) {
       setCoverages(prev => ({ ...prev, [datasetHandle]: { loading: false, error: err.message || 'Coverage check failed' } }))
     }
-  }, [location, timeRange, authHeaders])
+  }, [location, timeRange])
 
   // Describe (GET /discovery/dataset/{handle}) returns the MCP's variable
   // facts plus the T35 classified `inventory` the backend attaches. Toggling
@@ -115,16 +111,14 @@ export function useDiscovery(accessToken) {
     }
     setInventories(prev => ({ ...prev, [datasetHandle]: { loading: true, error: null } }))
     try {
-      const res = await fetch(`${API_BASE}/discovery/dataset/${datasetHandle}`, {
-        headers: authHeaders(),
-      })
+      const res = await apiFetch(`${API_BASE}/discovery/dataset/${datasetHandle}`)
       if (!res.ok) throw new Error(await readErrorMessage(res))
       const data = await res.json()
       setInventories(prev => ({ ...prev, [datasetHandle]: { loading: false, error: null, inventory: data.inventory } }))
     } catch (err) {
       setInventories(prev => ({ ...prev, [datasetHandle]: { loading: false, error: err.message || 'Variable inventory failed' } }))
     }
-  }, [inventories, authHeaders])
+  }, [inventories])
 
   const inspectGranules = useCallback(async (datasetHandle) => {
     if (!location.trim() || !timeRange.trim()) {
@@ -136,9 +130,9 @@ export function useDiscovery(accessToken) {
     }
     setGranules(prev => ({ ...prev, [datasetHandle]: { loading: true, error: null } }))
     try {
-      const res = await fetch(`${API_BASE}/discovery/dataset/${datasetHandle}/granules`, {
+      const res = await apiFetch(`${API_BASE}/discovery/dataset/${datasetHandle}/granules`, {
         method: 'POST',
-        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ location: location.trim(), time_range: timeRange.trim() }),
       })
       if (!res.ok) throw new Error(await readErrorMessage(res))
@@ -147,7 +141,7 @@ export function useDiscovery(accessToken) {
     } catch (err) {
       setGranules(prev => ({ ...prev, [datasetHandle]: { loading: false, error: err.message || 'Granule listing failed' } }))
     }
-  }, [location, timeRange, authHeaders])
+  }, [location, timeRange])
 
   return {
     query, setQuery,
