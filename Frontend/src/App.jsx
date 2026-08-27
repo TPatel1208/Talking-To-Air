@@ -15,6 +15,7 @@ import {
   authView,
   describeAuthError,
   initialAuthState,
+  isUnreachable,
   readAuthConfig,
   showReauthModal,
   userIdOf,
@@ -531,6 +532,25 @@ export default function App() {
     return () => data.subscription.unsubscribe()
   }, [state.config])
 
+  // supabase-js cannot say why a restore came back empty: it swallows an
+  // unreachable service into the same null INITIAL_SESSION it emits for a
+  // genuinely absent session. So ask again, where the reason survives -- a
+  // status-0 AuthRetryableFetchError is a blip worth retrying, anything else
+  // (a missing session is status 400) is a real sign-out. Without this a wifi
+  // blip on reload reads as a sign-out, and the sign-in that follows clears
+  // the active thread.
+  useEffect(() => {
+    if (!state.restoreUnresolved) return undefined
+    let cancelled = false
+    getSupabaseClient().auth.refreshSession()
+      // A session recovered here arrives on its own through onAuthStateChange;
+      // this only has to report whether the question got an answer.
+      .then(({ error }) => (isUnreachable(error) ? 'the sign-in service is unreachable' : null))
+      .catch(() => 'the sign-in service is unreachable')
+      .then((error) => { if (!cancelled) dispatch({ type: 'restore-settled', error }) })
+    return () => { cancelled = true }
+  }, [state.restoreUnresolved])
+
   const signIn = useCallback(async (email, password, kind) => {
     // Cleared BEFORE the sign-in, not after. onAuthStateChange fires as soon
     // as the session lands and mounts the authenticated tree, whose useChat
@@ -563,6 +583,7 @@ export default function App() {
   // wiping the session and dumping the user to the login screen.
   const handleUnauthorized = useCallback(() => dispatch({ type: 'unauthorized' }), [])
   const retryConfig = useCallback(() => setConfigAttempt(n => n + 1), [])
+  const retryRestore = useCallback(() => dispatch({ type: 'restore-retry' }), [])
 
   const view = authView(state)
   if (view === 'config-loading') return <Splash message="Starting up..." />
@@ -580,6 +601,19 @@ export default function App() {
   // asynchronously, and showing the login form in this window is what makes an
   // already-signed-in user watch it flash by on every single reload.
   if (view === 'restoring') return <Splash message="Restoring your session..." />
+  // Not signed out -- unasked. Dropping to the login form here would clear the
+  // active thread on the sign-in that follows, which is the one thing T47
+  // exists to prevent.
+  if (view === 'restore-error') {
+    return (
+      <Splash
+        heading="Could not restore your session"
+        message={`Your saved session could not be restored because ${state.restoreError}. Check your connection and try again.`}
+        actionLabel="Try again"
+        onAction={retryRestore}
+      />
+    )
+  }
   if (view === 'login') return <AuthScreen onSignIn={handleSignIn} />
 
   return (

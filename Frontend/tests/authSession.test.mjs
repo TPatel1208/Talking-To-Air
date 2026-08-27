@@ -10,6 +10,7 @@ import {
   userIdOf,
   showReauthModal,
   describeAuthError,
+  isUnreachable,
 } from '../src/utils/authSession.js'
 
 const reduce = (state, ...actions) => actions.reduce(authReducer, state)
@@ -60,9 +61,73 @@ test('config in hand, the login screen still waits for Supabase to restore the s
 })
 
 test('no stored session means the sign-in screen, and no token to offer', () => {
-  const state = reduce(configured(), { type: 'auth-event', event: 'INITIAL_SESSION', session: null })
+  // Two steps, not one: the empty INITIAL_SESSION only poses the question, and
+  // the probe answering "no error" is what makes it a real sign-out.
+  const state = reduce(
+    configured(),
+    { type: 'auth-event', event: 'INITIAL_SESSION', session: null },
+    { type: 'restore-settled', error: null },
+  )
   assert.equal(authView(state), 'login')
   assert.equal(accessTokenOf(state), null)
+})
+
+test('a restore that came back empty does not decide anything on its own', () => {
+  // supabase-js emits INITIAL_SESSION with a null session both when there is
+  // nothing stored and when it could not reach the service to refresh what is
+  // (its _emitInitialSession catches AuthRetryableFetchError and reports null).
+  // Deciding 'login' on that alone is what sent a user with a valid refresh
+  // token to the sign-in form after a wifi blip.
+  const state = reduce(configured(), { type: 'auth-event', event: 'INITIAL_SESSION', session: null })
+  assert.equal(authView(state), 'restoring')
+  assert.equal(state.restoreUnresolved, true)
+})
+
+test('an unreachable service is its own screen, never the sign-in form', () => {
+  // The whole point: the sign-in form is what costs the thread, because
+  // authTransition('login').clearActiveThread drops tta.activeThreadId.
+  const state = reduce(
+    configured(),
+    { type: 'auth-event', event: 'INITIAL_SESSION', session: null },
+    { type: 'restore-settled', error: 'the sign-in service is unreachable' },
+  )
+  assert.equal(authView(state), 'restore-error')
+  assert.notEqual(authView(state), 'login')
+})
+
+test('retrying an unreachable restore asks again rather than giving up', () => {
+  const state = reduce(
+    configured(),
+    { type: 'auth-event', event: 'INITIAL_SESSION', session: null },
+    { type: 'restore-settled', error: 'the sign-in service is unreachable' },
+    { type: 'restore-retry' },
+  )
+  assert.equal(authView(state), 'restoring')
+  assert.equal(state.restoreUnresolved, true)
+  assert.equal(state.restoreError, null)
+})
+
+test('a session landing while the probe is out wins over the probe', () => {
+  // The probe's own refreshSession() can be what recovers the session, and it
+  // arrives through onAuthStateChange. A late 'restore-settled' must not then
+  // strand a signed-in user on the restore-error screen.
+  const state = reduce(
+    configured(),
+    { type: 'auth-event', event: 'INITIAL_SESSION', session: null },
+    { type: 'auth-event', event: 'TOKEN_REFRESHED', session: sessionFor('jwt-recovered') },
+    { type: 'restore-settled', error: 'the sign-in service is unreachable' },
+  )
+  assert.equal(authView(state), 'app')
+  assert.equal(accessTokenOf(state), 'jwt-recovered')
+})
+
+test('unreachable is the absence of a status, and a missing session is not it', () => {
+  // supabase-js: AuthRetryableFetchError carries status 0, AuthSessionMissingError
+  // carries 400. Confusing the two is exactly how a blip becomes a sign-out.
+  assert.equal(isUnreachable(Object.assign(new Error('Failed to fetch'), { status: 0 })), true)
+  assert.equal(isUnreachable(new TypeError('Failed to fetch')), true)
+  assert.equal(isUnreachable(Object.assign(new Error('Auth session missing!'), { status: 400 })), false)
+  assert.equal(isUnreachable(null), false)
 })
 
 test('a restored session goes straight into the app with its token', () => {

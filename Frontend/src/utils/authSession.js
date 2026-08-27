@@ -38,6 +38,12 @@ export const initialAuthState = {
   // than reimplements -- one definition of "a lapsed session raises the modal
   // and never reads as a logout".
   sessionExpired: false,
+  // Set when INITIAL_SESSION arrives carrying nothing. supabase-js reports an
+  // unreachable service and a genuinely absent session identically, so that
+  // event settles nothing on its own -- App.jsx probes for the reason and
+  // dispatches 'restore-settled'.
+  restoreUnresolved: false,
+  restoreError: null,
 }
 
 function withExpiry(state, action) {
@@ -52,6 +58,19 @@ export function authReducer(state, action) {
       return { ...state, config: null, configError: action.error }
     case 'auth-event':
       return applyAuthEvent(state, action)
+    // The probe's verdict on an INITIAL_SESSION that carried no session:
+    // `error` set means the service was unreachable, null means the user is
+    // genuinely signed out. Either way the question is now answered.
+    case 'restore-settled':
+      return {
+        ...state,
+        bootstrapped: true,
+        restoreUnresolved: false,
+        restoreError: action.error ?? null,
+      }
+    // The retry on the restore-error screen: ask the same question again.
+    case 'restore-retry':
+      return { ...state, bootstrapped: false, restoreUnresolved: true, restoreError: null }
     // Cleared eagerly rather than waiting on signOut()'s SIGNED_OUT, so
     // logout is instant and unconditional in the UI even when the network
     // call revoking the refresh token fails.
@@ -77,7 +96,7 @@ function applyAuthEvent(state, { event, session }) {
   // INITIAL_SESSION first on subscribe today, but hanging the restoring
   // spinner on that ordering means a session arriving by any other route sits
   // behind a spinner while we hold a valid token for it.
-  const heard = { ...state, bootstrapped: true }
+  const heard = { ...state, bootstrapped: true, restoreUnresolved: false }
 
   if (event === 'SIGNED_OUT') {
     // A deliberate logout has already cleared hadSession, so reaching here
@@ -85,6 +104,17 @@ function applyAuthEvent(state, { event, session }) {
     // token lapsed, or the account was banned. That is a T47 unauthorized, and
     // the session is deliberately left in place so the view survives it.
     return state.hadSession ? withExpiry(heard, { type: 'unauthorized' }) : heard
+  }
+  // The one event that settles nothing. supabase-js swallows a network failure
+  // during the restore and emits INITIAL_SESSION with a null session -- exactly
+  // what it emits when there is genuinely nothing stored (its
+  // _emitInitialSession catches AuthRetryableFetchError and reports null).
+  // Reading that as "signed out" turns a wifi blip on reload into a sign-out,
+  // and the login that follows clears tta.activeThreadId, costing the
+  // researcher the thread they were in -- T47's rug-pull by another route. So
+  // stay in 'restoring' and let App.jsx ask again, where the reason is visible.
+  if (event === 'INITIAL_SESSION' && !session) {
+    return { ...state, restoreUnresolved: true }
   }
   if (!session) return heard
   return { ...heard, session, hadSession: true }
@@ -95,6 +125,9 @@ export function authView(state) {
   if (state.configError) return 'config-error'
   if (!state.config) return 'config-loading'
   if (!state.bootstrapped) return 'restoring'
+  // A session we could not reach the service to restore is not a signed-out
+  // one. Saying so costs the user a click; saying 'login' costs them a thread.
+  if (state.restoreError && !state.hadSession) return 'restore-error'
   return state.hadSession ? 'app' : 'login'
 }
 
@@ -112,6 +145,16 @@ export function accessTokenOf(state) {
 // rather than on the access token, which auto-refresh rotates on a timer.
 export function userIdOf(state) {
   return state.session?.user?.id ?? null
+}
+
+/**
+ * Whether an auth failure means "we could not ask" rather than "the answer is
+ * no". supabase-js spells an unreachable service status 0
+ * (AuthRetryableFetchError) and a genuinely absent session status 400
+ * (AuthSessionMissingError), so the status alone is the whole discriminator.
+ */
+export function isUnreachable(error) {
+  return Boolean(error) && !error.status
 }
 
 /**
@@ -138,7 +181,7 @@ export function describeAuthError(error) {
   // carrying no real HTTP status means the request never arrived -- supabase-js
   // spells that 0 (AuthRetryableFetchError) or leaves it absent. Reporting it
   // as a bad password sends the user off to reset one that works.
-  if (!status) {
+  if (isUnreachable(error)) {
     return 'Could not reach the sign-in service. Check your connection and try again.'
   }
   return error?.message || 'Sign-in failed. Try again.'
