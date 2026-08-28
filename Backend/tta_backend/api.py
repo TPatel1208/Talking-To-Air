@@ -235,6 +235,42 @@ app = FastAPI(title="Talking to Air API", lifespan=lifespan)
 app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 
+_forwarded_trust_warned = False
+
+
+def _warn_once_if_forwarded_headers_were_discarded(request: Request) -> None:
+    """Say so, once, when the trusted-proxy configuration is not taking effect.
+
+    nginx appends the caller's address to X-Forwarded-For, so when uvicorn has
+    honoured the header the peer address is one of that header's hops. When a
+    request carries the header and the peer is *not* in it, --proxy-headers
+    refused the hop: FORWARDED_ALLOW_IPS does not cover the subnet the proxy is
+    actually on, the header was dropped, and every anonymous request is now
+    being counted against the proxy's own address -- one shared bucket, so the
+    first visitor to exhaust a public endpoint locks out all the rest.
+
+    Worth a log line because nothing else reveals it. The misconfiguration
+    changes no status code and breaks no request; it just quietly removes the
+    isolation that per-address limiting is supposed to provide.
+    """
+    global _forwarded_trust_warned
+    if _forwarded_trust_warned:
+        return
+    forwarded = request.headers.get("x-forwarded-for")
+    if not forwarded:
+        return
+    peer = get_remote_address(request)
+    if peer in {hop.strip() for hop in forwarded.split(",")}:
+        return
+    _forwarded_trust_warned = True
+    logger.warning(
+        "forwarded_headers_discarded peer=%s x_forwarded_for=%s -- FORWARDED_ALLOW_IPS "
+        "does not cover this proxy, so every anonymous request shares one rate-limit bucket",
+        peer,
+        forwarded,
+    )
+
+
 def _rate_limit_key(request: Request) -> str:
     """The bucket a request is counted against.
 
@@ -259,10 +295,20 @@ def _rate_limit_key(request: Request) -> str:
     user = getattr(request.state, "current_user", None)
     if user is not None:
         return f"user:{user.id}"
+    _warn_once_if_forwarded_headers_were_discarded(request)
     return f"ip:{get_remote_address(request)}"
 
 
-limiter = Limiter(key_func=_rate_limit_key)
+# Constructed from the environment rather than armed and switched off later.
+# The test suite disables it (Backend/conftest.py, tests/cache_isolation.py),
+# and flipping ``limiter.enabled`` after the fact only works if something has
+# already imported this module: most endpoint tests here import it lazily
+# inside setUp, by which point a limiter built armed has already begun counting
+# -- and refusing -- their requests.
+limiter = Limiter(
+    key_func=_rate_limit_key,
+    enabled=os.getenv("RATE_LIMITING_ENABLED", "1").strip().lower() not in {"0", "false", "no"},
+)
 app.state.limiter = limiter
 
 

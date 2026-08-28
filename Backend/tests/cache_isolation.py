@@ -269,8 +269,14 @@ def disable_api_rate_limiter() -> None:
     import-time ``CRS.from_epsg`` — on every ``TestCase`` that mixes in
     :class:`ProcessCacheIsolation`, including under bare ``unittest``, which
     never loads ``conftest.py`` and so has not wired PROJ. If nothing has
-    imported the API, there is no limiter and nothing to disable.
+    imported the API yet, the environment variable above is what disarms the
+    limiter it will build when something finally does -- which is the case that
+    matters, since the fixture runs before the lazy import in most setUps here.
     """
+    # Set unconditionally, and first. Under pytest conftest.py has already done
+    # this before collection; under bare unittest nothing has, and a module
+    # imported later in this process would otherwise build an armed limiter.
+    os.environ["RATE_LIMITING_ENABLED"] = "0"
     api = sys.modules.get("tta_backend.api")
     if api is None:
         return

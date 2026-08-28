@@ -58,7 +58,15 @@ services:
       # real client even when the client sent its own X-Forwarded-For. With "*"
       # it takes the leftmost entry instead, which the client fully controls --
       # anyone could mint a fresh rate-limit bucket per request.
-      FORWARDED_ALLOW_IPS: "172.16.0.0/12"
+      #
+      # The default is Docker's conventional pool, which is what this stack gets
+      # on a stock daemon. It is overridable because the pool is configurable in
+      # daemon.json: a host allocating from, say, 10.10.0.0/16 puts nginx outside
+      # this range, uvicorn then drops X-Forwarded-For, and per-address limiting
+      # silently collapses to one bucket for every anonymous visitor. api.py logs
+      # a warning the first time it sees that happen, so the symptom is at least
+      # findable; this is the knob that fixes it.
+      FORWARDED_ALLOW_IPS: "${FORWARDED_ALLOW_IPS:-172.16.0.0/12}"
     ports:
       # Bound to loopback, not 0.0.0.0. nginx reaches this over the compose
       # network as backend:8000 and is unaffected; keeping the host mapping
