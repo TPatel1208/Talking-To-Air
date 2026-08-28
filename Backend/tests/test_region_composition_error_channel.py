@@ -201,7 +201,7 @@ class ToolsSurfaceTheNamedTokenTests(unittest.IsolatedAsyncioTestCase):
     any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
     "region composition error-channel test dependencies are not installed",
 )
-class ExportServiceMustNotSwallowTheRefusalTests(unittest.TestCase):
+class ExportServiceMustNotSwallowTheRefusalTests(unittest.IsolatedAsyncioTestCase):
     """V14's load-bearing finding, and the only one of the eleven that is a
     bug rather than a chore.
 
@@ -212,26 +212,32 @@ class ExportServiceMustNotSwallowTheRefusalTests(unittest.TestCase):
     this region is" into "no region".
     """
 
-    def test_the_export_paths_let_a_region_refusal_propagate(self):
+    async def test_the_export_paths_let_a_region_refusal_propagate(self):
         """Asserted on the source's own behaviour via the shared helper both
         call sites use, rather than on the text of an `except` clause -- a
         test that greps for a clause name passes on a rewrite that keeps the
-        clause and reintroduces the swallow."""
+        clause and reintroduces the swallow.
+
+        Awaited because the helper moved to the async resolver to get the
+        blocking geocoder off the event loop. The claim is untouched by that:
+        which resolver is reached decides nothing about whether a refusal is
+        swallowed, and this is the assertion that says it must not be."""
         from tta_backend.earthdata_mcp.results import MCPToolError
         from tta_backend.services.export_service import _resolve_export_region
 
         with self.assertRaises(MCPToolError) as caught:
-            _resolve_export_region(BAD)
+            await _resolve_export_region(BAD)
         self.assertIn("wakanda", caught.exception.message.lower())
 
-    def test_an_ordinary_geocode_failure_is_still_tolerated(self):
+    async def test_an_ordinary_geocode_failure_is_still_tolerated(self):
         """The other half. The guard exists for a reason -- a Nominatim
         timeout during an export should still produce an unmasked chart rather
         than failing the download -- and narrowing it must not remove that."""
-        from unittest.mock import patch
+        from unittest.mock import AsyncMock, patch
 
         from tta_backend.services.export_service import _resolve_export_region
         from tta_backend.utils.plotting import RegionResolver
 
-        with patch.object(RegionResolver, "resolve_location", side_effect=OSError("boom")):
-            self.assertIsNone(_resolve_export_region("paris"))
+        with patch.object(RegionResolver, "aresolve_location",
+                          AsyncMock(side_effect=OSError("boom"))):
+            self.assertIsNone(await _resolve_export_region("paris"))

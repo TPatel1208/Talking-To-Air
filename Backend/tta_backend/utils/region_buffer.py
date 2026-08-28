@@ -331,8 +331,15 @@ def _resolved(request: BufferRequest, geo_result) -> dict:
 
 
 def dispatch_buffer(raw_name: str, resolver) -> BufferResult:
-    """The sync twin (D11b). Reached by ``export_service``, which calls
-    ``resolve_location`` -- verified against the live code in gate V24."""
+    """The sync twin (D11b).
+
+    Gate V24 verified export_service as the caller that reached this, via
+    ``resolve_location``. That is no longer true: export_service moved to
+    ``aresolve_location`` (and so to :func:`adispatch_buffer`) to get the
+    blocking geocoder off the event loop, which leaves this twin with **no
+    production caller**. It stays reachable through ``resolve_location``, and
+    the region suites exercise it there, so treat a V24 re-verification as
+    open rather than settled -- do not read the old claim as still checked."""
     request = _claim(raw_name, resolver)
     if request is None:
         return NOT_CLAIMED

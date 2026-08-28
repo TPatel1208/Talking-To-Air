@@ -10,7 +10,14 @@ import time
 
 import numpy as np
 import xarray as xr
-import matplotlib.pyplot as plt
+# The object-oriented API, never pyplot. ``plt.subplots`` files every figure
+# in a process-global registry that ``plt.close`` must later remove it from,
+# and neither operation is synchronised -- so two exports rendering on two
+# worker threads share one unguarded dict, and a render that raises before
+# its close leaks its figure for the life of the process. A Figure with its
+# own canvas has no registry to share and nothing to leak.
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.figure import Figure
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
@@ -153,6 +160,49 @@ def load_admin0_polygons() -> dict:
         return {}
 
 
+# The Natural Earth features ``plot_map`` draws, and the one-time guard that
+# makes them safe to reach from more than one thread.
+#
+# cartopy loads these lazily and without any locking of its own:
+# ``NaturalEarthFeature.geometries()`` does an unguarded ``if key not in
+# _NATURAL_EARTH_GEOM_CACHE`` check-then-set, and on a miss reaches
+# ``Downloader.path()``, which checks ``target_path.exists()`` and otherwise
+# writes the download straight to that final path -- no temp file, no atomic
+# rename. Nothing bakes this data into the image, so a fresh container fetches
+# it on its first render. That was harmless while every render was serialised
+# on the event loop; once renders moved to worker threads, two cold exports
+# could both miss the cache and write the same shapefile, and a third could
+# read it half-written.
+#
+# Warming under a lock closes the whole window: after this returns, every
+# feature's geometries are in cartopy's cache and the concurrent path is
+# pure dict reads. A failed warm deliberately does NOT latch -- the render
+# that follows would fail on the same download anyway, and a transient
+# network blip should not poison every later export.
+_CARTOPY_MAP_FEATURES = None
+_CARTOPY_FEATURE_LOCK = threading.Lock()
+_CARTOPY_FEATURES_WARMED = False
+
+
+def _warm_cartopy_features() -> None:
+    global _CARTOPY_MAP_FEATURES, _CARTOPY_FEATURES_WARMED
+
+    if _CARTOPY_FEATURES_WARMED:
+        return
+    with _CARTOPY_FEATURE_LOCK:
+        if _CARTOPY_FEATURES_WARMED:
+            return
+        if _CARTOPY_MAP_FEATURES is None:
+            _CARTOPY_MAP_FEATURES = (cfeature.STATES, cfeature.COASTLINE, cfeature.BORDERS)
+        try:
+            for feature in _CARTOPY_MAP_FEATURES:
+                feature.geometries()
+        except Exception as e:
+            logger.warning("Could not pre-load cartopy map features: %s", e)
+            return
+        _CARTOPY_FEATURES_WARMED = True
+
+
 def plot_map(
     data_array: xr.DataArray,
     title: str = "",
@@ -204,6 +254,11 @@ def plot_map(
 
 
     """
+
+    # Populate cartopy's shapefile cache before anything else touches it --
+    # see _warm_cartopy_features. Called here rather than at import time so a
+    # process that never renders a map never fetches the data.
+    _warm_cartopy_features()
 
     # --- 0. Handle 3D data - select time slice ---
     if data_array.ndim == 3:
@@ -291,11 +346,9 @@ def plot_map(
         fig_width, fig_height = 10, 6
 
     # --- 4. Create figure with Cartopy projection ---
-    fig, ax = plt.subplots(
-        figsize=(fig_width, fig_height),
-        dpi=150,
-        subplot_kw={'projection': ccrs.PlateCarree()}
-    )
+    fig = Figure(figsize=(fig_width, fig_height), dpi=150)
+    FigureCanvasAgg(fig)
+    ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
 
     # --- 5. Plot the data ---
     if lat_coord in data_array.dims and lon_coord in data_array.dims:
@@ -315,7 +368,7 @@ def plot_map(
     )
 
     # Add colorbar manually
-    plt.colorbar(
+    fig.colorbar(
         im,
         ax=ax,
         shrink=0.7,
@@ -363,7 +416,7 @@ def plot_map(
     # --- 9. Set title ---
     ax.set_title(title, fontsize=12, fontweight='bold', pad=10)
 
-    plt.tight_layout()
+    fig.tight_layout()
 
     return fig, ax
 
@@ -911,10 +964,16 @@ class GeocodingService:
         logger.info("satellite_geocode_requests", extra={"_location": location_name})
 
         try:
-            # timeout is load-bearing: this sync path still runs on the event
-            # loop in a few legacy callers (export_service) — without it a
-            # hanging Nominatim response freezes the whole single-worker
-            # backend (every SSE stream, heartbeat, and /health) indefinitely.
+            # timeout is load-bearing. No production caller reaches this sync
+            # path any more -- export_service, the last one, moved to
+            # ``aresolve_location``/``ageocode`` precisely because the throttle
+            # below sleeps and this request blocks. Keep the timeout anyway:
+            # the path is still live (``resolve_location`` reaches it, and the
+            # region suites mock at this seam), so whichever thread a future
+            # caller runs it on, an unbounded hang is not an option. If that
+            # caller is ever on the event loop again it freezes the whole
+            # single-worker backend -- every SSE stream, heartbeat, and
+            # /health -- which is the failure this bound exists to cap.
             response = requests.get(url, params=params, headers=headers, timeout=15)
             data = response.json()
 
@@ -1188,7 +1247,10 @@ class RegionResolver:
         # token -- the right answer, because D9 forbids X from resolving
         # recursively through COMPOSITE. Reversing the order would turn that
         # refusal into a buffer around a region D9 does not allow. This is the
-        # sync twin; it is the one this method needs (export_service).
+        # sync twin, which is what this sync method needs -- but note that
+        # export_service, once its only production caller, now takes
+        # ``aresolve_location``. Nothing in production reaches this line today;
+        # the region suites do.
         buffered = region_buffer.dispatch_buffer(location_name, self)
         if buffered.claimed:
             return buffered.region
