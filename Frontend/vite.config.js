@@ -24,12 +24,21 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
-    // plotly.js-dist-min must be pre-bundled so Vite serves it as a single ESM chunk.
-    include: ['plotly.js-dist-min'],
-    // Exclude the factory from pre-bundling so Vite doesn't wrap the CJS
-    // module.exports = fn in an ESM namespace object.  The interop shim in
-    // ChartMessage.jsx handles the remaining edge cases across Vite versions.
-    exclude: ['react-plotly.js/factory'],
+    // Both of these must be pre-bundled so Vite serves them as ESM chunks.
+    //
+    // react-plotly.js/factory is CommonJS (Babel output: `__esModule: true`
+    // plus `exports.default = plotComponentFactory`). It used to be listed
+    // under `exclude`, on the theory that pre-bundling would wrap it in an
+    // ESM namespace object. That backfired as of Vite 8: an excluded dep is
+    // served raw, with no CJS-to-ESM interop, so the browser parsed
+    // `exports.default = ...` as a bare assignment and the module really did
+    // export nothing -- "does not provide an export named 'default'", thrown
+    // at link time, before the interop shim in ChartMessage.jsx could run.
+    //
+    // Pre-bundled, the default import is the CJS exports object
+    // (`{__esModule: true, default: fn}`); the shim in ChartMessage.jsx
+    // unwraps that last hop, so both pieces are load-bearing.
+    include: ['plotly.js-dist-min', 'react-plotly.js/factory'],
   },
   build: {
     commonjsOptions: {
