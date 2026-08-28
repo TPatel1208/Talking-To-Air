@@ -44,8 +44,37 @@ services:
       DB_PORT: "5432"
       DB_NAME: talking_to_air_memory
       DB_USER: postgres
+      # Which peers uvicorn's --proxy-headers will believe about the client's
+      # real address. Scoped to Docker's private bridge range, which is the
+      # only hop in front of this service (nginx, in the frontend container).
+      #
+      # This is what makes per-IP rate limiting mean anything: without it the
+      # default trusts 127.0.0.1 only, nginx connects from a bridge address,
+      # X-Forwarded-For is discarded, and every request in the stack is
+      # attributed to nginx -- one shared bucket for the whole userbase.
+      #
+      # Deliberately NOT "*". uvicorn walks the forwarded chain in reverse and
+      # stops at the first peer it does not trust, so a narrow range yields the
+      # real client even when the client sent its own X-Forwarded-For. With "*"
+      # it takes the leftmost entry instead, which the client fully controls --
+      # anyone could mint a fresh rate-limit bucket per request.
+      #
+      # The default is Docker's conventional pool, which is what this stack gets
+      # on a stock daemon. It is overridable because the pool is configurable in
+      # daemon.json: a host allocating from, say, 10.10.0.0/16 puts nginx outside
+      # this range, uvicorn then drops X-Forwarded-For, and per-address limiting
+      # silently collapses to one bucket for every anonymous visitor. api.py logs
+      # a warning the first time it sees that happen, so the symptom is at least
+      # findable; this is the knob that fixes it.
+      FORWARDED_ALLOW_IPS: "${FORWARDED_ALLOW_IPS:-172.16.0.0/12}"
     ports:
-      - "8000:8000"
+      # Bound to loopback, not 0.0.0.0. nginx reaches this over the compose
+      # network as backend:8000 and is unaffected; keeping the host mapping
+      # means `curl localhost:8000` still works for debugging. Published on
+      # 0.0.0.0 it was a way around the edge: nginx's limit_req only sees
+      # traffic that goes through nginx, so anything on the LAN could skip
+      # both it and the trusted-proxy path above by talking to :8000 directly.
+      - "127.0.0.1:8000:8000"
     volumes:
       - plot_outputs:/app/outputs
       # Server-rendered map overlay PNGs (T23). Kept OUT of /app/outputs on

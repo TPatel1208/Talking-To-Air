@@ -60,6 +60,14 @@ if BACKEND_DIR not in sys.path:
 os.environ.setdefault("SUPABASE_URL", "https://test-project.supabase.co")
 os.environ.setdefault("SUPABASE_PUBLISHABLE_KEY", "test-publishable-key")
 
+# Same "before any test module is imported" reasoning, for the same reason:
+# api.py decides at import whether its limiter is armed. Set here rather than
+# from the fixture because a test file that imports api.py lazily (inside
+# asyncSetUp, which most of the endpoint tests do) imports it *after* the
+# fixture has run, and by then an armed limiter is already counting. Assigned,
+# not setdefault: the suite must not inherit an ambient value that re-arms it.
+os.environ["RATE_LIMITING_ENABLED"] = "0"
+
 
 def _has_proj_db(path: str | None) -> bool:
     return bool(path) and os.path.isfile(os.path.join(path, "proj.db"))
