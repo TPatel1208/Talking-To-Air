@@ -13,6 +13,22 @@ from tta_backend.utils.connector_crypto import ConnectorCryptoError, build_multi
 _VALID_FETCH_MODES = {"auto", "harmony", "opendap", "s3"}
 _VALID_LOG_FORMATS = {"text", "json"}
 
+# Model ids reach the provider SDK unvalidated (see config/model_factory.py),
+# so a wrong one is not discoverable until it 404s on the first call that uses
+# it -- and for the supervisor that is every turn, making it an outage rather
+# than a degraded path. Boot is the cheaper place to learn it.
+#
+# Adding an id here is the record that someone confirmed it exists on the
+# provider *and* on the billing tier being deployed. A provider absent from
+# this map is not gated at all, so bringing one under the gate stays a
+# deliberate act instead of silently starting to fail boots.
+_VETTED_MODELS: dict[str, frozenset[str]] = {
+    "google": frozenset({
+        "gemini-3.7-flash",
+        "gemini-3.1-flash-lite",
+    }),
+}
+
 
 class ConfigurationError(RuntimeError):
     """Raised when required runtime configuration is missing or invalid."""
@@ -455,6 +471,22 @@ class Settings:
             missing.append("SUPABASE_PUBLISHABLE_KEY")
         if missing:
             raise RuntimeError(f"Missing required environment variable(s): {', '.join(missing)}")
+        unvetted = []
+        for label, provider, model in (
+            ("LLM_MODEL", self.supervisor_model_provider, self.llm_model),
+            ("EARTHDATA_AGENT_MODEL", self.earthdata_agent_provider, self.earthdata_agent_model),
+            ("GROUND_AGENT_MODEL", self.ground_agent_provider, self.ground_agent_model),
+        ):
+            vetted = _VETTED_MODELS.get(provider)
+            if vetted is not None and model not in vetted:
+                unvetted.append(f"{label}={model!r} for provider {provider!r}")
+        if unvetted:
+            raise RuntimeError(
+                "Unvetted model id(s): "
+                + "; ".join(unvetted)
+                + ". Confirm each id exists on the provider and on the billing tier "
+                "being deployed, then add it to _VETTED_MODELS in config/settings.py."
+            )
 
         # T38: a turn deadline that isn't comfortably above the retrieval
         # poll-loop's own deadline would make every retrieval that runs the

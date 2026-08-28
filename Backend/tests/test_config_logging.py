@@ -303,6 +303,38 @@ class ConfigLoggingTests(unittest.TestCase):
         loaded = Settings(db_password="x", **SUPABASE_KWARGS, google_api_key="x", groq_api_key=None)
         loaded.validate_startup()
 
+    def test_validate_startup_rejects_an_unvetted_model_id(self):
+        """A model id is handed to the provider SDK unvalidated, so a wrong one
+        is invisible until it 404s on the first call that uses it -- for the
+        supervisor, every turn. Nothing in the suite makes a real model call,
+        so boot is the only place a typo can be caught before a user finds it."""
+        from tta_backend.config.settings import Settings
+
+        loaded = Settings(
+            db_password="x",
+            **SUPABASE_KWARGS,
+            google_api_key="x",
+            llm_model="gemini-9.9-imaginary",
+        )
+        with self.assertRaisesRegex(RuntimeError, "gemini-9.9-imaginary"):
+            loaded.validate_startup()
+
+    def test_validate_startup_does_not_gate_a_provider_with_no_vetted_list(self):
+        """The gate is opt-in per provider: only providers listed in
+        _VETTED_MODELS are checked, so adding one is deliberate rather than
+        something that silently starts failing other deployments' boots."""
+        from tta_backend.config.settings import Settings
+
+        loaded = Settings(
+            db_password="x",
+            **SUPABASE_KWARGS,
+            google_api_key="x",
+            groq_api_key="x",
+            ground_agent_provider="groq",
+            ground_agent_model="some-groq-only-model",
+        )
+        loaded.validate_startup()  # must not raise
+
     def test_validate_startup_rejects_a_malformed_earthdata_mcp_url(self):
         from tta_backend.config.settings import ConfigurationError, Settings
 
