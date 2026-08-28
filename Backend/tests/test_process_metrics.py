@@ -2,8 +2,14 @@
 jump-and-plateau (steady ~400MB -> ~811MB -> plateaued 780-813MB) -- nothing
 in metrics tracked process RSS or open-dataset-adjacent state, so "plateau
 vs leak" was unfalsifiable from dashboards. refresh_process_gauges() reads
-process RSS, the matplotlib open-figure count, and the bundle extract-cache
-size into Prometheus gauges on each /metrics scrape.
+process RSS, the bundle extract-cache size, and the cube-store size into
+Prometheus gauges on each /metrics scrape.
+
+T45 also added a matplotlib open-figure gauge, dropped once the PNG export
+moved off pyplot onto the object-oriented API: with no process-global
+figure registry left to read, it could only ever report 0. What replaced it
+is a source-level check in test_export_event_loop_offload, which fails at
+merge time rather than on a dashboard nobody was alerting on.
 """
 import ctypes
 import importlib.util
@@ -39,26 +45,6 @@ class ProcessMetricsTests(unittest.TestCase):
         # positive is the whole point (item 6): the dashboard could never see
         # this value before.
         self.assertGreater(_gauge_value(PROCESS_RSS_BYTES), 0)
-
-    @unittest.skipIf(importlib.util.find_spec("matplotlib") is None, "matplotlib is not installed")
-    def test_refresh_process_gauges_counts_open_matplotlib_figures(self):
-        import matplotlib.pyplot as plt
-
-        from tta_backend.utils.metrics import MATPLOTLIB_OPEN_FIGURES, refresh_process_gauges
-
-        plt.close("all")
-        try:
-            # Opened for the side effect only — the gauge counts what pyplot
-            # is holding, not what this test holds a name for.
-            plt.figure()
-            plt.figure()
-            refresh_process_gauges()
-            self.assertEqual(_gauge_value(MATPLOTLIB_OPEN_FIGURES), 2)
-        finally:
-            plt.close("all")
-
-        refresh_process_gauges()
-        self.assertEqual(_gauge_value(MATPLOTLIB_OPEN_FIGURES), 0)
 
     def test_refresh_process_gauges_reports_the_bundle_extract_cache_size(self):
         from tta_backend.utils.metrics import BUNDLE_EXTRACT_CACHE_BYTES, refresh_process_gauges

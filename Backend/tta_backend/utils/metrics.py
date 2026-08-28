@@ -58,10 +58,6 @@ PROCESS_RSS_BYTES = Gauge(
     "process_rss_bytes",
     "Resident set size of the backend process in bytes.",
 )
-MATPLOTLIB_OPEN_FIGURES = Gauge(
-    "matplotlib_open_figures",
-    "Number of matplotlib figures currently open (created but not yet closed).",
-)
 BUNDLE_EXTRACT_CACHE_BYTES = Gauge(
     "bundle_extract_cache_bytes",
     "Total on-disk size of the bundle-extract TTL cache in bytes.",
@@ -368,21 +364,27 @@ def _current_process_rss_bytes() -> int | None:
 
 
 def refresh_process_gauges() -> None:
-    """Refresh the process-health gauges (RSS, open matplotlib figures,
-    bundle extract-cache size) -- called on each /metrics scrape rather than
-    a timer, so idle time costs nothing and every scrape is current as of
-    itself. Each source is best-effort: a missing/uninstalled dependency
-    skips that one gauge rather than failing the whole scrape."""
+    """Refresh the process-health gauges (RSS, bundle extract-cache size,
+    cube-store size) -- called on each /metrics scrape rather than a timer,
+    so idle time costs nothing and every scrape is current as of itself.
+    Each source is best-effort: a missing/uninstalled dependency skips that
+    one gauge rather than failing the whole scrape.
+
+    There is deliberately no open-figure gauge here. T45 added one, reading
+    ``plt.get_fignums()``, back when the PNG export built figures through
+    ``pyplot`` and could leak them. ``export_service`` and ``plotting`` --
+    the only modules in this process that build figures -- now use the
+    object-oriented API (``Figure`` + ``FigureCanvasAgg``), which files
+    nothing in pyplot's process-global registry, so that gauge could only
+    ever report 0. Reading it also meant importing ``pyplot`` here, which
+    was the one thing left in the whole process still pulling in the very
+    registry the render path was moved off. The regression it watched for
+    is pinned in CI instead, by
+    ``test_export_event_loop_offload.NoProductionModuleImportsPyplotTests``.
+    """
     rss = _current_process_rss_bytes()
     if rss is not None:
         PROCESS_RSS_BYTES.set(rss)
-
-    try:
-        import matplotlib.pyplot as plt
-
-        MATPLOTLIB_OPEN_FIGURES.set(len(plt.get_fignums()))
-    except ImportError:
-        pass
 
     try:
         from tta_backend.services.open_handle import extract_cache_size_bytes
