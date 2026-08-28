@@ -1123,8 +1123,11 @@ async def get_artifact(
 @limiter.limit("10/minute")
 async def export_artifact_csv(artifact_id: str, request: Request):
     try:
-        artifact = await artifact_store.reference(artifact_id)
-        await artifact_store.get_page(artifact_id, request.state.current_user.id, 0, 1)
+        # reference() carries the ownership check itself, so this raises -- and
+        # becomes a 404 -- before the StreamingResponse below is constructed.
+        # iter_csv_chunks re-checks, but as an async generator it would not do
+        # so until the first chunk, long after headers had gone out.
+        artifact = await artifact_store.reference(artifact_id, request.state.current_user.id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Artifact not found")
 

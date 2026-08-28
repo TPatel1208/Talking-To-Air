@@ -61,8 +61,8 @@ class ArtifactStore:
         self._artifacts[artifact_id] = stored
         return self._build_reference(artifact_id, stored)
 
-    async def reference(self, artifact_id: str) -> ArtifactReference:
-        stored = await self._active_artifact(artifact_id)
+    async def reference(self, artifact_id: str, user_id: str) -> ArtifactReference:
+        stored = await self._owned_artifact(artifact_id, user_id)
         return self._build_reference(artifact_id, stored)
 
     async def claim(self, artifact_id: str, user_id: str, thread_id: str) -> ArtifactReference:

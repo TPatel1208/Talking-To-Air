@@ -169,5 +169,24 @@ class UnclaimedArtifactOwnershipTests(unittest.IsolatedAsyncioTestCase):
                     pass
 
 
+    async def test_reference_is_not_readable_by_an_arbitrary_user(self):
+        """reference() returns an artifact's title and row count. It was the
+        one read path with no ownership check at all, safe only because its
+        sole caller happened to gate on the following line -- one reorder away
+        from leaking. Give it the same gate as every other read."""
+        from tta_backend.services.artifact_store import ArtifactStore
+
+        fake_repo = FakeArtifactRepository()
+        store = ArtifactStore()
+        ref = store.put_table("Secret Table", ["date", "value"], [{"date": "2024-01-01", "value": 10}])
+
+        with patch("tta_backend.services.artifact_store.artifact_repository", fake_repo):
+            await store.claim(ref.id, "owner", "thread-1")
+            with self.assertRaises(KeyError):
+                await store.reference(ref.id, "a-stranger")
+            owned = await store.reference(ref.id, "owner")
+
+        self.assertEqual(owned.title, "Secret Table")
+
 if __name__ == "__main__":
     unittest.main()
