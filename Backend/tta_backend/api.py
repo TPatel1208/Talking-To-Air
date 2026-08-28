@@ -390,11 +390,23 @@ ConnectorType = Annotated[str, Path(pattern=r"^[a-z0-9_-]+$")]
 
 
 def _route_path(request: Request) -> str:
+    """The route *template* for a matched request, and a single constant for
+    an unmatched one.
+
+    This value becomes a Prometheus label. Returning the raw URL path for a
+    request that matched no route let any unauthenticated caller mint an
+    unbounded number of permanently-retained label children just by varying
+    the path they 404 on.
+    """
     for route in app.routes:
         match, _ = route.matches(request.scope)
         if match != Match.NONE:
-            return getattr(route, "path", request.url.path)
-    return request.url.path
+            # Not every route type carries a path template -- starlette's Host
+            # has no .path -- so this needs its own bounded constant. Falling
+            # back to the raw URL here would put the same unbounded,
+            # caller-controlled value straight back into the label.
+            return getattr(route, "path", None) or "__unnamed__"
+    return "__unmatched__"
 
 
 @app.middleware("http")

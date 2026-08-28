@@ -135,5 +135,39 @@ class UnclaimedArtifactExpiryTests(unittest.IsolatedAsyncioTestCase):
                 await store.get_page(ref.id, "user-1")
 
 
+class UnclaimedArtifactOwnershipTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unclaimed_artifact_is_not_readable_by_an_arbitrary_user(self):
+        """An artifact is minted unowned and stays that way until the stream
+        service claims it. The ownership check used to read "if the artifact
+        has an owner and it isn't you, deny" -- which grants every
+        authenticated caller access to any artifact that has no owner yet.
+        Ownership must be proven, not merely not-contradicted."""
+        from tta_backend.services.artifact_store import ArtifactStore
+
+        fake_repo = FakeArtifactRepository()
+        store = ArtifactStore()
+        ref = store.put_table("Sample Table", ["date", "value"], [{"date": "2024-01-01", "value": 10}])
+
+        with patch("tta_backend.services.artifact_store.artifact_repository", fake_repo):
+            with self.assertRaises(KeyError):
+                await store.get_page(ref.id, "a-stranger")
+
+    async def test_unclaimed_artifact_is_not_downloadable_by_an_arbitrary_user(self):
+        """iter_csv_chunks is an async generator, so its ownership check does
+        not run until the first chunk is pulled. Pin the deny separately from
+        get_page's -- the CSV route is a second public entry point and must
+        not become a way to read what the paged route refuses."""
+        from tta_backend.services.artifact_store import ArtifactStore
+
+        fake_repo = FakeArtifactRepository()
+        store = ArtifactStore()
+        ref = store.put_table("Sample Table", ["date", "value"], [{"date": "2024-01-01", "value": 10}])
+
+        with patch("tta_backend.services.artifact_store.artifact_repository", fake_repo):
+            with self.assertRaises(KeyError):
+                async for _ in store.iter_csv_chunks(ref.id, "a-stranger"):
+                    pass
+
+
 if __name__ == "__main__":
     unittest.main()

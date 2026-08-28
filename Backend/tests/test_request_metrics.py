@@ -104,5 +104,70 @@ class StreamingRequestMetricsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metrics_observations[0][2], 200)
 
 
+@unittest.skipIf(
+    any(importlib.util.find_spec(m) is None for m in _REQUIRED),
+    "request metrics test dependencies are not installed",
+)
+class UnmatchedRoutePathLabelTests(unittest.IsolatedAsyncioTestCase):
+    """The path recorded by record_request_metrics becomes a Prometheus label
+    value. For a matched route that is the route *template*, so the label set
+    is bounded by the number of routes. For a request matching no route,
+    _route_path fell back to the raw request URL — an attacker-controlled,
+    unbounded string, reachable without authentication, and every distinct
+    value mints a permanently-retained child of the metric family. Unmatched
+    requests must collapse to a single constant label."""
+
+    async def test_unmatched_paths_collapse_to_one_constant_label(self):
+        import httpx
+        import tta_backend.api as api
+
+        observed = []
+
+        def fake_observe_http_request(method, path, status_code, duration_seconds):
+            observed.append((method, path, status_code, duration_seconds))
+
+        transport = httpx.ASGITransport(app=api.app)
+        with patch.object(api, "observe_http_request", fake_observe_http_request):
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                for nonce in ("alpha", "bravo", "charlie"):
+                    response = await client.get(f"/no-such-route-{nonce}")
+                    self.assertEqual(response.status_code, 404)
+
+        self.assertEqual(len(observed), 3)
+        recorded_paths = {o[1] for o in observed}
+        self.assertEqual(
+            recorded_paths,
+            {"__unmatched__"},
+            f"unmatched requests must not each mint their own label: {recorded_paths}",
+        )
+
+
+    async def test_a_matched_route_without_a_path_template_is_also_bounded(self):
+        """starlette's Host route matches without carrying a .path, so the
+        matched branch needs its own constant too -- falling back to the raw
+        URL there would restore the unbounded label this guards against."""
+        from starlette.requests import Request
+        from starlette.routing import Match
+
+        import tta_backend.api as api
+
+        class PathlessRoute:
+            def matches(self, scope):
+                return Match.FULL, {}
+
+        def request_for(path):
+            return Request({
+                "type": "http",
+                "method": "GET",
+                "path": path,
+                "headers": [],
+                "query_string": b"",
+            })
+
+        with patch.object(api.app.router, "routes", [PathlessRoute()]):
+            labels = {api._route_path(request_for(f"/vhost-{n}")) for n in ("alpha", "bravo")}
+
+        self.assertEqual(labels, {"__unnamed__"}, f"expected one bounded label, got: {labels}")
+
 if __name__ == "__main__":
     unittest.main()
