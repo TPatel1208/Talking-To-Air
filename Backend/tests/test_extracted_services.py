@@ -632,7 +632,13 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["Body"][0]["max"], 2.0)
         self.assertEqual(result["Body"][0]["peak"], {"value": 2.5, "date": "2024-01-01", "first_max_hour": 13})
         artifact_id = result["_artifact_refs"][0]["id"]
-        page = await epa_aqs_tools.artifact_store.get_page(artifact_id, "user-1")
+        # A tool mints an artifact unowned; the stream service claims it before
+        # the id is ever emitted to a client. Read through that same boundary
+        # rather than straight out of the store -- reading an unclaimed
+        # artifact is the access an unrelated caller must never get.
+        with patch("tta_backend.services.artifact_store.artifact_repository", AsyncMock()):
+            await epa_aqs_tools.artifact_store.claim(artifact_id, "user-1", "thread-1")
+            page = await epa_aqs_tools.artifact_store.get_page(artifact_id, "user-1")
         self.assertEqual(page["total_rows"], 25)
 
     async def test_daily_summary_returns_one_row_per_day_for_site(self):

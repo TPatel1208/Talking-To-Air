@@ -61,8 +61,8 @@ class ArtifactStore:
         self._artifacts[artifact_id] = stored
         return self._build_reference(artifact_id, stored)
 
-    async def reference(self, artifact_id: str) -> ArtifactReference:
-        stored = await self._active_artifact(artifact_id)
+    async def reference(self, artifact_id: str, user_id: str) -> ArtifactReference:
+        stored = await self._owned_artifact(artifact_id, user_id)
         return self._build_reference(artifact_id, stored)
 
     async def claim(self, artifact_id: str, user_id: str, thread_id: str) -> ArtifactReference:
@@ -146,7 +146,13 @@ class ArtifactStore:
 
     async def _owned_artifact(self, artifact_id: str, user_id: str) -> StoredArtifact:
         stored = await self._active_artifact(artifact_id)
-        if stored.user_id is not None and stored.user_id != user_id:
+        # Fail closed: an artifact with no owner yet (minted, not claimed)
+        # belongs to nobody, so it is readable by nobody. Treating "no
+        # owner" as "not someone else's owner" handed every unclaimed
+        # artifact to any authenticated caller who knew its id. claim()
+        # runs before the id is ever emitted to a client, so no legitimate
+        # read path observes the unclaimed window.
+        if stored.user_id != user_id:
             raise KeyError(artifact_id)
         return stored
 

@@ -390,11 +390,23 @@ ConnectorType = Annotated[str, Path(pattern=r"^[a-z0-9_-]+$")]
 
 
 def _route_path(request: Request) -> str:
+    """The route *template* for a matched request, and a single constant for
+    an unmatched one.
+
+    This value becomes a Prometheus label. Returning the raw URL path for a
+    request that matched no route let any unauthenticated caller mint an
+    unbounded number of permanently-retained label children just by varying
+    the path they 404 on.
+    """
     for route in app.routes:
         match, _ = route.matches(request.scope)
         if match != Match.NONE:
-            return getattr(route, "path", request.url.path)
-    return request.url.path
+            # Not every route type carries a path template -- starlette's Host
+            # has no .path -- so this needs its own bounded constant. Falling
+            # back to the raw URL here would put the same unbounded,
+            # caller-controlled value straight back into the label.
+            return getattr(route, "path", None) or "__unnamed__"
+    return "__unmatched__"
 
 
 @app.middleware("http")
@@ -1111,8 +1123,11 @@ async def get_artifact(
 @limiter.limit("10/minute")
 async def export_artifact_csv(artifact_id: str, request: Request):
     try:
-        artifact = await artifact_store.reference(artifact_id)
-        await artifact_store.get_page(artifact_id, request.state.current_user.id, 0, 1)
+        # reference() carries the ownership check itself, so this raises -- and
+        # becomes a 404 -- before the StreamingResponse below is constructed.
+        # iter_csv_chunks re-checks, but as an async generator it would not do
+        # so until the first chunk, long after headers had gone out.
+        artifact = await artifact_store.reference(artifact_id, request.state.current_user.id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Artifact not found")
 

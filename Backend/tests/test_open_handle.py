@@ -187,8 +187,17 @@ class OpenHandleEventLoopOffloadTests(unittest.IsolatedAsyncioTestCase):
         from tta_backend.services import open_handle as open_handle_module
         from tta_backend.services.open_handle import open_handle
 
+        ticks_at_open_start = -1
+        ticks_at_open_end = -1
+
         def slow_open_zarr(path):
+            # Sampled from inside the (patched-slow) open itself, so the
+            # assertion below is about what the loop did *while this was in
+            # flight* rather than about how long the whole gather took.
+            nonlocal ticks_at_open_start, ticks_at_open_end
+            ticks_at_open_start = tick_count
             time.sleep(0.6)
+            ticks_at_open_end = tick_count
             return xr.Dataset({"no2": (("y", "x"), [[1.0, 2.0], [3.0, 4.0]])})
 
         tick_count = 0
@@ -204,15 +213,22 @@ class OpenHandleEventLoopOffloadTests(unittest.IsolatedAsyncioTestCase):
         })
         with patch.object(open_handle_module, "_export", fast_export), \
              patch("xarray.open_zarr", side_effect=slow_open_zarr):
-            start = time.monotonic()
             ds, _ = await asyncio.gather(open_handle("obs_slow", {}), ticker())
-            elapsed = time.monotonic() - start
 
-        # ticker() and slow_open_zarr each take ~0.6s. If _open ran on the
-        # event loop the two would serialize (~1.5s, measured); offloaded to
-        # a thread they overlap (~1.0s, measured) — 1.25s cleanly separates
-        # the two on this environment's own timer overhead.
-        self.assertLess(elapsed, 1.25)
+        # The property is causal, not temporal: if _open ran on the event loop
+        # the ticker could not advance *at all* while the open was in flight,
+        # so this delta would be exactly 0. Offloaded, the loop stays free and
+        # the ticker keeps going. Asserting the delta rather than total elapsed
+        # keeps this honest on a contended machine -- the previous wall-clock
+        # bound (1.25s) measured how busy the host was as much as whether the
+        # work was offloaded, and went red under parallel test load.
+        ticks_during_open = ticks_at_open_end - ticks_at_open_start
+        self.assertGreater(
+            ticks_during_open,
+            0,
+            "the event loop made no progress while the open was in flight, "
+            "so _open blocked it instead of being offloaded",
+        )
         self.assertEqual(tick_count, 20)
         self.assertIn("no2", ds.data_vars)
 
