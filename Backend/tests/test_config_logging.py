@@ -44,7 +44,7 @@ class ConfigLoggingTests(unittest.TestCase):
             get_settings.cache_clear()
             loaded = get_settings()
 
-        self.assertEqual(loaded.llm_model, "gemma-4-31b-it")
+        self.assertEqual(loaded.llm_model, "gemini-3.7-flash")
         self.assertEqual(loaded.ground_agent_model, "gemini-3.1-flash-lite")
         self.assertEqual(loaded.data_fetch_mode, "auto")
         self.assertEqual(loaded.harmony_processing_timeout_seconds, 600)

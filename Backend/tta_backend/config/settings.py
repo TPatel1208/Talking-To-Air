@@ -42,7 +42,7 @@ def _float_env(name: str, default: float) -> float:
 class Settings:
     """Application settings loaded once from environment at startup/import."""
 
-    llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "gemma-4-31b-it"))
+    llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "gemini-3.7-flash"))
     ground_agent_model: str = field(
         default_factory=lambda: os.getenv(
             "GROUND_AGENT_MODEL",

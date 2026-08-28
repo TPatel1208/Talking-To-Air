@@ -76,7 +76,7 @@ The backend refuses to boot without `DB_PASSWORD`, `SUPABASE_URL`, `SUPABASE_PUB
 
 | Variable | Default | Description |
 |---|---|---|
-| Per-agent provider/model | all `google` | Supervisor: `SUPERVISOR_MODEL_PROVIDER`/`LLM_MODEL` (default `gemma-4-31b-it`). Satellite: `EARTHDATA_AGENT_PROVIDER`/`EARTHDATA_AGENT_MODEL`. Ground: `GROUND_AGENT_PROVIDER`/`GROUND_AGENT_MODEL` (both default `gemini-3.1-flash-lite`). Set a provider to `groq` to route that agent through Groq instead — then `GROQ_API_KEY` becomes required too. |
+| Per-agent provider/model | all `google` | Supervisor: `SUPERVISOR_MODEL_PROVIDER`/`LLM_MODEL` (default `gemini-3.7-flash`). Satellite: `EARTHDATA_AGENT_PROVIDER`/`EARTHDATA_AGENT_MODEL`. Ground: `GROUND_AGENT_PROVIDER`/`GROUND_AGENT_MODEL` (both default `gemini-3.1-flash-lite`). Set a provider to `groq` to route that agent through Groq instead — then `GROQ_API_KEY` becomes required too. |
 | `RETRIEVAL_SOFT_CAP_BYTES` / `RETRIEVAL_HARD_CAP_BYTES` | 2 GiB / 10 GiB | A retrieval estimated at/below the soft cap proceeds automatically; above it (up to the hard cap) it pauses for in-chat confirmation; above the hard cap it's refused with guidance to narrow the request. |
 | `LOG_LEVEL` / `LOG_FORMAT` | `INFO` / `text` | Set `LOG_FORMAT=json` for structured logs suitable for aggregators. |
 | `CONNECTOR_ENCRYPTION_KEY` | — | Fernet key(s) encrypting per-user connector tokens (bring-your-own Earthdata token). Unset: the feature answers a structured 503 instead of blocking boot. |
