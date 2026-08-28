@@ -35,6 +35,15 @@ services:
     build:
       context: ./Backend
       dockerfile: Dockerfile
+    # Tagged so the thing that ran here is the thing that ships. Without an
+    # `image:` compose names the build `<project>-backend`, which exists only in
+    # the local daemon: there is no artifact to push, no digest to roll back to,
+    # and a deploy elsewhere is a rebuild from whatever `main` happens to be at
+    # the time. Defaults keep `docker compose up --build` working untouched --
+    # compose builds when the tag is absent locally, so nothing tries to pull
+    # `:dev` from a registry. CI overrides both vars and pushes; see
+    # .github/workflows/release.yml and IMAGE_REGISTRY/IMAGE_TAG in .env.example.
+    image: ${IMAGE_REGISTRY:-ghcr.io/tpatel1208}/tta-backend:${IMAGE_TAG:-dev}
     container_name: tta-backend
     restart: unless-stopped
     env_file: .env
@@ -67,14 +76,23 @@ services:
       # a warning the first time it sees that happen, so the symptom is at least
       # findable; this is the knob that fixes it.
       FORWARDED_ALLOW_IPS: "${FORWARDED_ALLOW_IPS:-172.16.0.0/12}"
-    ports:
-      # Bound to loopback, not 0.0.0.0. nginx reaches this over the compose
-      # network as backend:8000 and is unaffected; keeping the host mapping
-      # means `curl localhost:8000` still works for debugging. Published on
-      # 0.0.0.0 it was a way around the edge: nginx's limit_req only sees
-      # traffic that goes through nginx, so anything on the LAN could skip
-      # both it and the trusted-proxy path above by talking to :8000 directly.
-      - "127.0.0.1:8000:8000"
+    # No `ports:` on purpose. The backend is reachable only over the compose
+    # network, as backend:8000, which is how nginx already reaches it -- so
+    # dropping the host mapping changes nothing about how the app works.
+    #
+    # What it changes is that there is now exactly one way in. A published
+    # 8000, even on loopback, is a second door that bypasses the edge: nginx's
+    # limit_req and the X-Forwarded-For handling above only see traffic that
+    # went through nginx, so a request to :8000 skips rate limiting entirely
+    # and arrives with whatever forwarded headers it cares to claim. On a
+    # developer's machine "loopback only" mostly contains that; on a host that
+    # is the deployment it also exposes it to anything else sharing the host,
+    # and to any container publishing on the same interface.
+    #
+    # `docker compose exec backend curl localhost:8000/health` covers the
+    # debugging the mapping used to, and docker-compose.debug.yml re-publishes
+    # it on loopback when you want a browser pointed at /docs:
+    #   docker compose -f docker-compose.yml -f docker-compose.debug.yml up
     volumes:
       - plot_outputs:/app/outputs
       # Server-rendered map overlay PNGs (T23). Kept OUT of /app/outputs on
@@ -160,6 +178,30 @@ services:
       # and without this mount those tests fail on a missing file rather than on
       # a drift, which is exactly what jobCard.js's had been doing.
       - ./Frontend/src/utils:/Frontend/src/utils:ro
+      # test_deployment_contract.py reads the frontend's build and TLS config to
+      # assert the image stays buildable from a clean checkout. Same reason as
+      # the mounts above: ./Frontend is outside the ./Backend build context, so
+      # without these the tests fail on a missing file rather than on a drift.
+      # test_deployment_contract.py reads each of these to assert a deployment
+      # invariant that is otherwise checked by nothing: that the frontend image
+      # builds from a clean checkout, that the backend publishes no host port,
+      # that both images carry a pushable tag, and that the `external` network
+      # and volume have a provisioner. They resolve via the same `../..`
+      # expression the tests use on the host, so one expression works in both
+      # places -- see the module docstring there. Mounted file-by-file rather
+      # than as a whole-repo mount to keep the surface explicit; the tests
+      # assert these mounts exist, so deleting one fails rather than silently
+      # turning the contracts into no-ops.
+      - ./Frontend/Dockerfile:/Frontend/Dockerfile:ro
+      - ./Frontend/nginx.conf:/Frontend/nginx.conf:ro
+      - ./Frontend/.dockerignore:/Frontend/.dockerignore:ro
+      - ./Frontend/docker-entrypoint.d:/Frontend/docker-entrypoint.d:ro
+      - ./docker-compose.debug.yml:/docker-compose.debug.yml:ro
+      - ./scripts/provision.sh:/scripts/provision.sh:ro
+      - ./.github/workflows/release.yml:/.github/workflows/release.yml:ro
+      # Pins LF for the scripts a container executes; a CRLF shebang makes
+      # the kernel report the script itself as 'not found'.
+      - ./.gitattributes:/.gitattributes:ro
       # Same reason: .coveragerc is a repo-root file, so the image has never
       # contained it. Without it `coverage report` below ran unconfigured,
       # measured all of site-packages, and died on netCDF4's compiled extension
@@ -185,6 +227,8 @@ services:
     build:
       context: ./Frontend
       dockerfile: Dockerfile
+    # Same reasoning as the backend's tag above.
+    image: ${IMAGE_REGISTRY:-ghcr.io/tpatel1208}/tta-frontend:${IMAGE_TAG:-dev}
     container_name: tta-frontend
     restart: unless-stopped
     ports:
@@ -192,14 +236,28 @@ services:
       - "443:443"
     volumes:
       - plot_outputs:/usr/share/nginx/html/outputs  # serves images directly from volume
+      # TLS keypair, mounted rather than baked into the image. nginx.conf reads
+      # /etc/nginx/certs/tls.crt + tls.key; scripts/setup-tls.sh writes them.
+      # This is what makes the frontend image buildable from a clean checkout:
+      # the pair is .gitignore'd, so a COPY of it could only ever succeed on a
+      # machine that had already run that script.
+      - ./Frontend/certs:/etc/nginx/certs:ro
     depends_on:
       backend:
         condition: service_healthy
 
 # ── Networks ───────────────────────────────────────────────────────────────────
-# Fixed name (not project-prefixed), created by the harmony-retrieval-mcp
-# stack on its first `docker compose up`. Join it here as external so the
-# backend can reach that stack's `mcp` service at $EARTHDATA_MCP_URL.
+# Fixed name (not project-prefixed). Join it here as external so the backend
+# can reach the harmony-retrieval-mcp stack's `mcp` service at
+# $EARTHDATA_MCP_URL.
+#
+# `external: true` means compose will NOT create this -- it refuses to start
+# the stack until the network exists. Run `./scripts/provision.sh` once on a
+# fresh host to create it (and earthdata_data below). That used to be the
+# harmony-retrieval-mcp stack's job, which made cloning and building a second
+# repo a prerequisite for starting this one at all -- including for the
+# ground/EPA-only path, which never speaks to the MCP. The script is idempotent
+# and labels the network so that stack still adopts it cleanly.
 #
 # T17: the backend no longer requires that stack to be up first (or ever, for
 # ground/EPA-only use) — it boots regardless and connects to the MCP in the
@@ -222,8 +280,11 @@ volumes:
     driver: local
   frame_store:
     driver: local
-  # Owned by the harmony-retrieval-mcp stack (its `data` volume, fixed name
+  # The harmony-retrieval-mcp stack's `data` volume (fixed name
   # `earthdata_data`); joined here as external, read-only, so this stack is
-  # not a second writer of materialized data.
+  # not a second writer of materialized data. Like earthdata_net above,
+  # `external: true` means compose will not create it -- `./scripts/provision.sh`
+  # does. It starts empty, which is the correct state with no MCP running: the
+  # backend boots anyway (T17) and the ground/EPA path works.
   earthdata_data:
     external: true

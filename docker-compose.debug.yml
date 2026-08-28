@@ -1,0 +1,23 @@
+# ── Debug overlay: re-publishes the backend on the host ───────────────────────
+#
+#   docker compose -f docker-compose.yml -f docker-compose.debug.yml up
+#
+# The base file deliberately publishes no host port for the backend (see the
+# note there): a published 8000 is a second entrance that bypasses nginx, and
+# with it every per-IP rate limit and the trusted-proxy handling that makes
+# those limits address a real client rather than nginx.
+#
+# That is the right default and the wrong thing to have no escape hatch from --
+# pointing a browser at /docs, or attaching an HTTP client to /metrics, is
+# ordinary work. This overlay restores the mapping for exactly that, opt-in and
+# per-invocation, so it cannot leak into a deployment by being the file someone
+# happened to have. Bound to 127.0.0.1, never 0.0.0.0: on a shared or
+# internet-facing host the difference is the whole point.
+#
+# Requests arriving this way still skip nginx, so anything you measure through
+# it (rate limiting, client-IP attribution, forwarded headers) is measuring a
+# path real traffic never takes. Use https://localhost/api/... to exercise that.
+services:
+  backend:
+    ports:
+      - "127.0.0.1:8000:8000"

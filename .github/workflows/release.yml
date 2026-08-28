@@ -1,0 +1,115 @@
+# Publishes the backend and frontend images to a registry.
+#
+# Until this existed, `docker compose build` produced images that lived only in
+# whichever daemon ran the build. There was no artifact to deploy: standing the
+# stack up anywhere meant rebuilding from source on that host, so what ran in
+# production was never the thing CI tested -- it was a fresh build of the same
+# commit, with whatever base-image and wheel drift the intervening time brought.
+# It also left no digest to roll back to.
+#
+# Images land at ghcr.io/<owner>/tta-{backend,frontend}, which is the default
+# IMAGE_REGISTRY in docker-compose.yml, so a host can run a released build with:
+#
+#   IMAGE_TAG=v1.2.3 docker compose pull && docker compose up -d
+name: Publish images
+
+# Deliberately NOT triggered by pushes to `main`. Publishing is the one step
+# here that cannot be rehearsed locally -- it is the first thing to touch GHCR
+# credentials and package visibility -- so it is opt-in until it has been seen
+# to work once. Run it from the Actions tab (`workflow_dispatch`), or tag a
+# release. To publish an `edge` image on every merge later, add:
+#
+#   push:
+#     branches: [main]
+#
+# alongside the tag trigger below; the `edge` and branch tag rules further down
+# are already in place for it.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  # Serialize per ref so two runs cannot race to move the same tag.
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: backend
+            context: ./Backend
+            # Stage 3. Named explicitly rather than relying on "last stage
+            # wins", because Backend/Dockerfile's `devtools` stage carries
+            # pytest/ruff/mypy and reordering the file would otherwise ship
+            # them.
+            target: runtime
+          - name: frontend
+            context: ./Frontend
+            target: runtime
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # GHCR rejects uppercase path segments and the owner is mixed-case, so it
+      # cannot be interpolated straight from github.repository_owner.
+      - name: Compute lowercase registry namespace
+        id: ns
+        run: echo "value=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.ns.outputs.value }}/tta-${{ matrix.name }}
+          # `edge` tracks main and `latest` only ever moves on a real version
+          # tag, so "latest" cannot silently mean an untagged mid-sprint commit.
+          # Every build also gets an immutable sha- tag, which is what a rollback
+          # actually pins to -- the semver tags are for humans and can move.
+          tags: |
+            type=ref,event=branch
+            type=edge,branch=main
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=long
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          target: ${{ matrix.target }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Provenance/SBOM attestations, so a deployed digest can be traced
+          # back to the commit and build that produced it.
+          provenance: true
+          sbom: true
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+      - name: Summarize
+        run: |
+          {
+            echo "### tta-${{ matrix.name }}"
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

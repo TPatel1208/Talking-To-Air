@@ -1,16 +1,39 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+// Imported rather than used as a global: eslint.config.js applies
+// `globals.browser` to every .js file, this one included, so a bare `process`
+// is a `no-undef` error even though Vite evaluates this file in Node.
+import process from 'node:process'
+
+// Where `npm run dev` sends /api. Defaults to the nginx edge, because that is
+// the stack's only published entrance: the backend deliberately publishes no
+// host port (see docker-compose.yml), so the old 'http://localhost:8000' target
+// now refuses the connection and every /api call from the dev server 502s.
+//
+// Going through nginx is also the more faithful target -- the dev server then
+// exercises the same rate limits and forwarded-header handling as production.
+// To bypass it, bring up docker-compose.debug.yml and set
+// VITE_DEV_API_TARGET=http://localhost:8000.
+const apiTarget = process.env.VITE_DEV_API_TARGET || 'https://localhost'
+
+// nginx already maps /api/* to the backend's /*, so the prefix must survive the
+// hop; a direct-to-backend target has no such mapping and needs it stripped.
+const stripApiPrefix = /:8000(\/|$)/.test(apiTarget)
 
 export default defineConfig({
   plugins: [react()],
   server: {
-    // Dev server has no nginx in front of it, so proxy /api straight to the
-    // backend container (see docker-compose.yml) the way nginx.conf does in prod.
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        target: apiTarget,
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, ''),
+        // The local edge serves a mkcert certificate, which Node does not
+        // trust the way an mkcert-installed browser does. Only relaxed for the
+        // dev proxy; nothing here ships.
+        secure: false,
+        ...(stripApiPrefix
+          ? { rewrite: (path) => path.replace(/^\/api/, '') }
+          : {}),
       },
     },
   },

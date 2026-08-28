@@ -1,0 +1,26 @@
+# Line endings for files a Linux container executes or parses.
+#
+# core.autocrlf=true (the Git-for-Windows default) checks text files out with
+# CRLF. For anything that only ever runs on the host that is harmless; for a
+# file COPYed into an image it is not. Measured 2026-08-28 by converting
+# Frontend/docker-entrypoint.d/10-require-tls-cert.sh to CRLF and building:
+#
+#   /docker-entrypoint.sh: line 31:
+#       /docker-entrypoint.d/10-require-tls-cert.sh: not found
+#   exit 127
+#
+# The file is right there. The kernel reads the shebang as `/bin/sh\r`, fails
+# to find *that* interpreter, and reports the script as missing -- a message
+# that sends you looking for a broken COPY rather than a stray carriage
+# return. It reproduces only after a commit and a fresh Windows clone, which
+# is precisely the path the rest of this change exists to make work.
+#
+# Scoped deliberately: no `* text=auto`, which would renormalize the entire
+# repo in one commit and bury real changes in whitespace churn.
+*.sh            text eol=lf
+
+# Same reasoning. CRLF in a Dockerfile breaks backslash line-continuations
+# (the continuation swallows the \r and the next line is parsed as a new
+# instruction), and nginx.conf is read inside the container too.
+Dockerfile      text eol=lf
+*.conf          text eol=lf
