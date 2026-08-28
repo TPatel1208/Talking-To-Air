@@ -5,7 +5,18 @@
 Check the service with:
 
 ```bash
-curl -i http://localhost:8000/health
+curl -i https://localhost/api/health
+```
+
+The backend publishes no host port -- nginx is the only way in, so every
+command here goes through `/api/`. Against a local stack serving a
+mkcert-minted certificate, add `-k`: browsers trust that CA after
+`mkcert -install`, but curl on Windows fails the revocation check
+(`CRYPT_E_NO_REVOCATION_CHECK`) rather than the trust check. To skip TLS
+entirely, address the backend from inside the stack:
+
+```bash
+docker compose exec backend curl -i http://localhost:8000/health
 ```
 
 A healthy service returns HTTP 200:
@@ -27,7 +38,7 @@ A degraded service returns HTTP 503 and names the failed dependency:
 Prometheus-compatible metrics are available at:
 
 ```bash
-curl http://localhost:8000/metrics
+curl https://localhost/api/metrics
 ```
 
 Key metrics:
@@ -59,7 +70,7 @@ Useful fields:
 A long-running satellite retrieval surfaces as a job and can be cancelled directly — from the Jobs panel, or:
 
 ```bash
-curl -X POST "http://localhost:8000/jobs/<job_handle>/cancel" \
+curl -X POST "https://localhost/api/jobs/<job_handle>/cancel" \
   -H "Authorization: Bearer <token>"
 ```
 

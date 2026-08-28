@@ -1,9 +1,13 @@
 node_modules/
 dist/
 
-# Secrets
+# Secrets. certs/ and *.pem are the TLS keypair, which is mounted at runtime
+# (/etc/nginx/certs) and must not enter the build context -- an image layer
+# carrying a private key leaks it into every registry and cache it touches.
 .env
 .env.*
+certs/
+*.pem
 
 # Clutter
 *.log

@@ -15,6 +15,12 @@ import { buildOverlayTraces } from '../utils/timeseriesCompare.js'
 import { availableAxes, profileLayout, profileTraces, spreadCaveat } from '../utils/verticalProfile.js'
 import { apiFetch } from '../utils/apiFetch.js'
 
+// react-plotly.js/factory is CommonJS, so the shape of its default import is
+// whatever the bundler's interop decides. Under the dev pre-bundler it is the
+// CJS exports object (`{__esModule: true, default: fn}`), so this unwrap is
+// required, not merely defensive; where a bundler hands back the factory
+// directly the first branch takes it. It cannot rescue a module Vite failed to
+// convert at all -- see the optimizeDeps note in vite.config.js.
 const createPlotlyComponent =
   typeof _createPlotlyComponent === 'function'
     ? _createPlotlyComponent

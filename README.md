@@ -17,7 +17,7 @@ That's the whole picture you need to run it. For internals — storage layout, o
 - [Google AI Studio API key](https://ai.google.dev/) — `GOOGLE_API_KEY` (every agent uses this by default)
 - [NASA Earthdata account](https://urs.earthdata.nasa.gov/) — username + password
 - [EPA AQS API key](https://aqs.epa.gov/aqsweb/documents/data_api.html) — email + key
-- The [harmony-retrieval-mcp](https://github.com/TPatel1208/harmony-retrieval-mcp) stack, for satellite data — see [`docs/mcp-setup.md`](docs/mcp-setup.md). Ground/EPA features work without it.
+- Optional: the [harmony-retrieval-mcp](https://github.com/TPatel1208/harmony-retrieval-mcp) stack, for satellite data — see [`docs/mcp-setup.md`](docs/mcp-setup.md). Ground/EPA features work without it, and `scripts/provision.sh` means you no longer need to build it just to start this stack.
 - Optional: [LangSmith API key](https://smith.langchain.com/) for tracing
 
 ---
@@ -32,13 +32,17 @@ That's the whole picture you need to run it. For internals — storage layout, o
    ```
    Fill in `.env` — see [Environment Variables](#environment-variables) below.
 
-2. **If you want satellite data**, bring up the `harmony-retrieval-mcp` stack once first — it creates a Docker network and volume this stack depends on. Details: [`docs/mcp-setup.md`](docs/mcp-setup.md). Skip this if you only need ground/EPA features, or if that stack is already running somewhere.
+2. **Create the shared Docker resources (one-time):**
+   ```bash
+   ./scripts/provision.sh
+   ```
+   `docker-compose.yml` joins a network (`earthdata_net`) and a volume (`earthdata_data`) as `external`, which means compose will not create them and refuses to start until they exist. This script creates both. It is idempotent, and a no-op if the `harmony-retrieval-mcp` stack already made them — running that stack first also works, but is no longer required. Needed even for ground/EPA-only use.
 
 3. **Set up local HTTPS (one-time, required):**
    ```bash
    ./scripts/setup-tls.sh
    ```
-   Trusts a local CA via mkcert and writes `Frontend/localhost+2.pem` / `Frontend/localhost+2-key.pem`. The frontend's Docker build copies these into the nginx image, so it won't build without them. Re-run any time if those files go missing.
+   Trusts a local CA via mkcert and writes `Frontend/certs/tls.crt` / `Frontend/certs/tls.key`, which compose mounts into nginx at `/etc/nginx/certs`. The keypair is *mounted, not baked* — the frontend image builds fine without it; only `docker compose up` needs it. If you skip this step the frontend container stops on start and tells you so.
 
 4. **Build and start:**
    ```bash
@@ -47,7 +51,7 @@ That's the whole picture you need to run it. For internals — storage layout, o
 
 5. **Open the chat interface** — https://localhost. It opens on a sign-in screen; these are app-level accounts in this stack's own Postgres, unrelated to the Earthdata/EPA credentials above. Click "Create account" the first time.
 
-   Also available: API docs at `/docs`, health check at `/health`, Prometheus metrics at `/metrics` (all on port 8000).
+   Also available through nginx: health check at `/api/health` and Prometheus metrics at `/api/metrics`, both open; interactive API docs at `/api/docs`, which require a signed-in session (they return `401` otherwise). The backend publishes no host port of its own — everything goes through the edge (see [Deploying](#deploying)).
 
 6. **Subsequent starts** (no rebuild unless dependencies changed): `docker compose up`
 7. **Stop and wipe volumes:** `docker compose down -v`
@@ -135,9 +139,35 @@ Run a subset while iterating:
 docker compose --profile test run --build --rm backend-test sh -c "pytest tests/test_subagent_dispatch.py -q"
 ```
 
-`.github/workflows/backend-ci.yml` runs on every push and PR to `main`: backend installs system geo deps, syntax-checks with `compileall`, lints with `ruff`, type-checks selected packages with `mypy`, then runs the test suite with coverage; frontend runs `npm ci`, `npm run lint`, `npm test`, `npm run build`, and a Docker image build.
+`.github/workflows/backend-ci.yml` runs on every push and PR to `main`: backend installs system geo deps, syntax-checks with `compileall`, lints with `ruff`, type-checks selected packages with `mypy`, then runs the test suite with coverage; frontend runs `npm ci`, `npm run lint`, `npm test`, `npm run build`, a Docker image build, and a `docker compose config` validation of both compose files. The frontend image build is also the clean-checkout guard — it runs against exactly what a fresh clone contains, so anything that sneaks a gitignored file into the build fails there.
 
 Postgres schema changes go in `sql/init_agent_charts.sql` / `sql/init_agent_artifacts.sql` — these only run against a fresh volume, so apply a local change with `docker compose down -v` then `docker compose up --build`.
+
+---
+
+## Deploying
+
+**Images are published, not rebuilt on the target.** `.github/workflows/release.yml` builds both images and pushes them to `ghcr.io/<owner>/tta-backend` and `.../tta-frontend`. It runs on a `v*` tag (tagging the image with the version, `latest`, and an immutable `sha-<commit>`) or on demand from the Actions tab — deliberately *not* on every push to `main`, so a merge never depends on registry credentials. The workflow header explains how to add an `edge`-on-merge trigger once you've seen a publish succeed. A host runs a released build without a compiler:
+
+```bash
+IMAGE_TAG=v1.2.3 docker compose pull && IMAGE_TAG=v1.2.3 docker compose up -d
+```
+
+`IMAGE_REGISTRY` and `IMAGE_TAG` (see `.env.example`) select the coordinates; the defaults keep `docker compose up --build` building locally exactly as before. Pin an immutable tag anywhere it matters — a moving `latest` makes "which build is running?" unanswerable and rollback impossible.
+
+**TLS is configuration, not image content.** Neither image contains a private key. Mount a keypair at `/etc/nginx/certs` as `tls.crt` + `tls.key` — the names a Kubernetes `kubernetes.io/tls` secret already projects, so the same image serves a real certificate without a rebuild. Locally that mount is `Frontend/certs`, filled by `scripts/setup-tls.sh`. If the mount is missing the frontend container stops immediately and prints what to do rather than failing inside OpenSSL.
+
+**The backend publishes no host port.** nginx is the only way in, which is what makes its `limit_req` zones and the trusted-proxy `X-Forwarded-For` handling mean anything — a published `:8000` is a second door where neither applies. Reach the API at `https://<host>/api/...`. For local debugging that genuinely needs a direct port:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.debug.yml up
+```
+
+That overlay binds `127.0.0.1:8000` only, and is opt-in per invocation so it cannot leak into a deployment. Note that traffic arriving that way skips nginx, so anything you measure through it — rate limiting, client-IP attribution — is measuring a path real requests never take.
+
+**`/metrics` is intentionally unauthenticated** so a scraper can reach it. It is reachable at `/api/metrics` through nginx; put the edge on a private interface, or add an auth layer there, before exposing the stack publicly.
+
+These four properties are pinned by `Backend/tests/test_deployment_contract.py`, which fails if the cert is baked back in, the port is republished, an image loses its tag, or the external resources lose their provisioner.
 
 ---
 

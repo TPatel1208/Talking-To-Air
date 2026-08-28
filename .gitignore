@@ -78,8 +78,12 @@ CLAUDE.md
 /prds/
 docs/prds/
 
-#mkcert
+# Local TLS material. `*.pem` is mkcert's default output naming; the cert dir is
+# what scripts/setup-tls.sh actually writes now and what docker-compose.yml
+# bind-mounts into nginx. Neither is ever baked into an image -- see
+# Frontend/Dockerfile -- so a private key must never reach a commit either.
 *.pem
+Frontend/certs/
 
 # T61: pre-clean DB dumps. Contain real user rows and bcrypt password hashes
 # from the deleted local auth system -- never commit these.
