@@ -34,25 +34,26 @@ class ColormapRegistryTests(unittest.TestCase):
         self.assertEqual(resolution.name, "viridis")
 
 
-class ColormapExportAntiDriftTests(unittest.IsolatedAsyncioTestCase):
+class ColormapExportAntiDriftTests(unittest.TestCase):
     """Proves export_service renders with the same registry entry the
     payload ships as `colormap.lut`, so the map, the legend, and the export
     can never disagree on what a value looks like.
 
-    Asserted against the async render path because that is the only one the
-    PNG export actually takes (api.py -> build_chart_png). The sync twin
-    this once covered could not render at all -- it fetched through a stub that
-    unconditionally raised -- so the anti-drift guarantee was being proven on
-    code no download ever ran.
+    Asserted against the render path the PNG export actually takes (api.py ->
+    build_chart_png -> _render_png). A sync twin this once covered could not
+    render at all -- it fetched through a stub that unconditionally raised --
+    so the anti-drift guarantee was being proven on code no download ever ran.
+    Since the render moved off the event loop the drawing half is synchronous
+    and takes its array as an argument, so this no longer has to stub the
+    fetch to reach it: what runs below is the download's own code.
     """
 
-    async def test_export_heatmap_axis_uses_the_same_registry_entry_as_the_payload(self):
+    def test_export_heatmap_axis_uses_the_same_registry_entry_as_the_payload(self):
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         import numpy as np
         import xarray as xr
-        from unittest.mock import AsyncMock, patch
         from tta_backend.services.export_service import ExportService
 
         da = xr.DataArray(
@@ -65,8 +66,7 @@ class ColormapExportAntiDriftTests(unittest.IsolatedAsyncioTestCase):
         fig, ax = plt.subplots()
 
         try:
-            with patch.object(ExportService, "_export_data_array", AsyncMock(return_value=da)):
-                mesh = await service._plot_heatmap_axis(ax, export, {}, "Panel")
+            mesh = service._plot_heatmap_axis(ax, export, da, "Panel")
         finally:
             plt.close(fig)
 
