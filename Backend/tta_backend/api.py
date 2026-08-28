@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import math
 import os
 import time
 import tracemalloc
@@ -17,6 +18,9 @@ from fastapi.security.utils import get_authorization_scheme_param
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.routing import Match
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from tta_backend.agents.earthdata_agent import LazySatelliteAgent, build_earthdata_agent, refresh_live_tools
 from tta_backend.agents.ground_sensor_agent import build_ground_agent
@@ -229,6 +233,92 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Talking to Air API", lifespan=lifespan)
 app.add_middleware(GZipMiddleware, minimum_size=1024)
+
+
+def _rate_limit_key(request: Request) -> str:
+    """The bucket a request is counted against.
+
+    Signed-in traffic is keyed by user id rather than by address. Per-IP is
+    the wrong bucket for an authenticated route: a campus or corporate NAT
+    puts an entire userbase behind one address, so the first heavy user would
+    lock out everyone sharing it, while one user on several networks would get
+    a fresh allowance per network. The auth middleware runs before any route
+    handler and sets request.state.current_user, and slowapi calls this from
+    inside the handler, so the attribute is present by the time we look.
+
+    Only PUBLIC_ENDPOINTS reach here without a user, and those fall back to the
+    peer address. That address is trustworthy only because the backend runs
+    behind --proxy-headers with FORWARDED_ALLOW_IPS scoped to the compose
+    network -- see docker-compose.yml. Without that, every request arrives
+    wearing nginx's container address and the fallback collapses into one
+    global bucket.
+
+    The prefixes keep the two namespaces apart, so a user id can never collide
+    with an address and inherit its count.
+    """
+    user = getattr(request.state, "current_user", None)
+    if user is not None:
+        return f"user:{user.id}"
+    return f"ip:{get_remote_address(request)}"
+
+
+limiter = Limiter(key_func=_rate_limit_key)
+app.state.limiter = limiter
+
+
+def _rate_limit_exceeded_response(request: Request, exc: RateLimitExceeded) -> Response:
+    """A 429 the client can actually act on.
+
+    Two departures from slowapi's stock handler, both deliberate.
+
+    **Retry-After.** slowapi will emit it, but only under
+    ``headers_enabled=True`` -- and that flag also makes the limiter inject
+    headers on the *success* path, where ``_inject_headers`` hard-requires the
+    endpoint to have returned a ``starlette.responses.Response``. Almost every
+    route here returns a plain dict for FastAPI to serialise, so switching the
+    flag on turns each successful call into a 500 ("parameter `response` must be
+    an instance of starlette.responses.Response"). Measured, not inferred. So
+    the flag stays off and the one header worth having is built here, on the
+    only path where it applies.
+
+    **``detail``, not ``error``.** Every other failure this API returns is
+    ``{"detail": ...}`` -- HTTPException's shape, which ``_auth_error`` follows
+    too -- and the frontend reads ``data.detail`` when a response is not ok.
+    Left as slowapi's ``{"error": ...}``, a throttled user would be shown a bare
+    "HTTP 429" with the reason sitting unread in a key nothing looks at.
+    """
+    retry_after = _retry_after_seconds(request)
+    headers = {"Retry-After": str(retry_after)} if retry_after is not None else None
+    return JSONResponse(
+        {"detail": f"Rate limit exceeded: {exc.detail}"},
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        headers=headers,
+    )
+
+
+def _retry_after_seconds(request: Request) -> int | None:
+    """Whole seconds until the offending window resets, or None if unknowable.
+
+    ``view_rate_limit`` is the (limit, key-args) pair slowapi records on the
+    request as it evaluates; the storage can then say when that window rolls
+    over. Guarded because this runs *inside* an error handler: a storage that
+    cannot answer should still yield a plain 429 rather than turn backpressure
+    into a 500. Floored at 1 so a window about to roll over never advertises
+    "retry in 0 seconds", which reads as "retry immediately" and invites a
+    client to spin.
+    """
+    current = getattr(request.state, "view_rate_limit", None)
+    if not current:
+        return None
+    try:
+        reset_at, _remaining = limiter.limiter.get_window_stats(current[0], *current[1])
+    except Exception:  # storage unavailable or not introspectable
+        logger.debug("retry_after_unavailable", exc_info=True)
+        return None
+    return max(1, math.ceil(reset_at - time.time()))
+
+
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_response)
 
 # The one live consumer of the public output dir. StaticFiles resolves and
 # checks the directory when it is mounted, so this genuinely has to exist at
@@ -461,6 +551,7 @@ def _connector_registry_entry(connector_type: str) -> dict:
 
 
 @app.get("/connectors")
+@limiter.limit("60/minute")
 async def list_connectors_endpoint(request: Request):
     _require_connector_cipher()
     rows = {row["connector_type"]: row for row in await list_connectors_for_user(request.state.current_user.id)}
@@ -468,6 +559,7 @@ async def list_connectors_endpoint(request: Request):
 
 
 @app.put("/connectors/{connector_type}/token")
+@limiter.limit("5/minute")
 async def set_connector_token_endpoint(connector_type: ConnectorType, req: SetConnectorTokenRequest, request: Request):
     cipher = _require_connector_cipher()
     entry = _connector_registry_entry(connector_type)
@@ -487,6 +579,7 @@ async def set_connector_token_endpoint(connector_type: ConnectorType, req: SetCo
 
 
 @app.delete("/connectors/{connector_type}")
+@limiter.limit("10/minute")
 async def disconnect_connector_endpoint(connector_type: ConnectorType, request: Request):
     _require_connector_cipher()
     entry = _connector_registry_entry(connector_type)
@@ -498,7 +591,8 @@ async def disconnect_connector_endpoint(connector_type: ConnectorType, request: 
 
 
 @app.get("/health")
-async def health():
+@limiter.limit("120/minute")
+async def health(request: Request):
     db_ok, db_error = await check_db_pool(timeout_seconds=2.0)
     active_agent = getattr(app.state, "agent", None) or agent
     agent_ok = active_agent is not None
@@ -519,13 +613,15 @@ async def health():
 
 
 @app.get("/metrics")
-def metrics():
+@limiter.limit("60/minute")
+def metrics(request: Request):
     refresh_process_gauges()
     return Response(content=render_prometheus_metrics(), media_type=prometheus_content_type())
 
 
 @app.get("/config/auth")
-def config_auth():
+@limiter.limit("120/minute")
+def config_auth(request: Request):
     """The identity provider's coordinates, served at runtime rather than
     baked into the frontend bundle, so one image runs against either the dev or
     the prod Supabase project. Baking VITE_* in would mean a dev-keyed bundle
@@ -548,7 +644,8 @@ def config_auth():
 
 
 @app.get("/debug/heap-snapshot")
-async def heap_snapshot(limit: int = 25):
+@limiter.limit("1/minute")
+async def heap_snapshot(request: Request, limit: int = 25):
     """T45: tracemalloc top-allocations snapshot for chasing a specific
     memory incident (the 2026-07-17 QA jump-and-plateau) -- gated behind
     DEBUG_HEAP_PROFILING_ENABLED, off by default, since tracemalloc adds
@@ -575,7 +672,8 @@ async def heap_snapshot(limit: int = 25):
 
 
 @app.get("/config/map-tiles")
-def config_map_tiles():
+@limiter.limit("120/minute")
+def config_map_tiles(request: Request):
     """T23: basemap/terrain tile sources as configuration, not code, so a
     keyed or self-hosted provider can be swapped in without a redeploy.
     Unauthenticated -- these are non-sensitive, static URLs the map needs
@@ -590,7 +688,8 @@ def config_map_tiles():
 
 
 @app.get("/capabilities/starters")
-def capabilities_starters():
+@limiter.limit("120/minute")
+def capabilities_starters(request: Request):
     """T22: the empty-chat's example questions — unauthenticated so a
     first-time visitor sees them before signing in. The single backend-owned
     constant (config.starter_prompts) is also what the eval harness's
@@ -641,6 +740,7 @@ def _earthdata_tools(request: Request) -> dict:
 
 
 @app.get("/chart/{chart_id}/export.csv")
+@limiter.limit("3/minute")
 async def export_chart_csv(chart_id: str, request: Request):
     # T37: resolved through the T17 readiness gate (shared structured 503),
     # never app.state.earthdata_mcp_tools directly — a not-ready MCP must
@@ -684,6 +784,7 @@ async def export_chart_csv(chart_id: str, request: Request):
 
 
 @app.get("/chart/{chart_id}/export.png")
+@limiter.limit("20/minute")
 async def export_chart_png(chart_id: str, request: Request):
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
     try:
@@ -717,6 +818,7 @@ def _read_overlay_bytes(path: str) -> bytes:
 
 
 @app.get("/chart/{chart_id}/overlay.png")
+@limiter.limit("120/minute")
 async def chart_overlay_png(chart_id: str, request: Request, panel: int | None = None):
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
     overlay_path = _chart_overlay_path(payload, panel)
@@ -741,6 +843,7 @@ def _if_none_match(request: Request) -> set[str]:
 
 
 @app.get("/chart/{chart_id}/frames.f32.gz")
+@limiter.limit("30/minute")
 async def chart_frames(chart_id: str, request: Request):
     """The float32 frame stack behind a chart's scrubber (T59).
 
@@ -773,6 +876,7 @@ async def chart_frames(chart_id: str, request: Request):
 
 
 @app.get("/chart/{chart_id}/frames.{statistic}.f32.gz")
+@limiter.limit("30/minute")
 async def chart_frame_plane(chart_id: str, statistic: str, request: Request):
     """One additional statistic's frame stack (T59 D6a decision 5).
 
@@ -839,6 +943,7 @@ def _frame_blob_response(blob, request: Request) -> Response:
 
 
 @app.get("/chart/{chart_id}/provenance")
+@limiter.limit("30/minute")
 async def chart_provenance_endpoint(chart_id: str, request: Request):
     tools = _earthdata_tools(request)
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
@@ -848,6 +953,7 @@ async def chart_provenance_endpoint(chart_id: str, request: Request):
 
 
 @app.get("/chart/{chart_id}/citations")
+@limiter.limit("30/minute")
 async def chart_citations_endpoint(chart_id: str, request: Request):
     tools = _earthdata_tools(request)
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
@@ -857,6 +963,7 @@ async def chart_citations_endpoint(chart_id: str, request: Request):
 
 
 @app.get("/chart/{chart_id}/methods.md")
+@limiter.limit("20/minute")
 async def chart_methods_endpoint(chart_id: str, request: Request):
     tools = _earthdata_tools(request)
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
@@ -904,6 +1011,7 @@ async def chart_methods_endpoint(chart_id: str, request: Request):
 
 
 @app.get("/chart/{chart_id}/export.nc")
+@limiter.limit("3/minute")
 async def export_chart_netcdf(chart_id: str, request: Request):
     # T37: same readiness gate (shared structured 503) as every other
     # MCP-backed endpoint, instead of a bespoke bare-detail 503.
@@ -940,6 +1048,7 @@ async def export_chart_netcdf(chart_id: str, request: Request):
 
 
 @app.get("/artifacts/{artifact_id}")
+@limiter.limit("120/minute")
 async def get_artifact(
     artifact_id: str,
     request: Request,
@@ -953,6 +1062,7 @@ async def get_artifact(
 
 
 @app.get("/artifacts/{artifact_id}/csv")
+@limiter.limit("10/minute")
 async def export_artifact_csv(artifact_id: str, request: Request):
     try:
         artifact = await artifact_store.reference(artifact_id)
@@ -973,6 +1083,7 @@ async def export_artifact_csv(artifact_id: str, request: Request):
 
 
 @app.get("/jobs")
+@limiter.limit("60/minute")
 async def get_jobs(request: Request):
     tools = _earthdata_tools(request)
     with user_id_context(request.state.current_user.id):
@@ -981,6 +1092,7 @@ async def get_jobs(request: Request):
 
 
 @app.post("/jobs/{job_handle}/cancel")
+@limiter.limit("20/minute")
 async def cancel_job_endpoint(job_handle: JobHandle, request: Request):
     tools = _earthdata_tools(request)
     with user_id_context(request.state.current_user.id):
@@ -988,6 +1100,7 @@ async def cancel_job_endpoint(job_handle: JobHandle, request: Request):
 
 
 @app.post("/discovery/search")
+@limiter.limit("20/minute")
 async def discovery_search_endpoint(req: DiscoverySearchRequest, request: Request):
     tools = _earthdata_tools(request)
     with user_id_context(request.state.current_user.id):
@@ -995,6 +1108,7 @@ async def discovery_search_endpoint(req: DiscoverySearchRequest, request: Reques
 
 
 @app.get("/discovery/dataset/{dataset_handle}")
+@limiter.limit("40/minute")
 async def discovery_describe_endpoint(dataset_handle: DatasetHandle, request: Request):
     tools = _earthdata_tools(request)
     with user_id_context(request.state.current_user.id):
@@ -1002,6 +1116,7 @@ async def discovery_describe_endpoint(dataset_handle: DatasetHandle, request: Re
 
 
 @app.post("/discovery/dataset/{dataset_handle}/preview")
+@limiter.limit("20/minute")
 async def discovery_preview_endpoint(dataset_handle: DatasetHandle, req: DiscoveryPreviewRequest, request: Request):
     tools = _earthdata_tools(request)
     with user_id_context(request.state.current_user.id):
@@ -1009,6 +1124,7 @@ async def discovery_preview_endpoint(dataset_handle: DatasetHandle, req: Discove
 
 
 @app.post("/discovery/dataset/{dataset_handle}/coverage")
+@limiter.limit("20/minute")
 async def discovery_coverage_endpoint(dataset_handle: DatasetHandle, req: DiscoveryCoverageRequest, request: Request):
     tools = _earthdata_tools(request)
     with user_id_context(request.state.current_user.id):
@@ -1016,6 +1132,7 @@ async def discovery_coverage_endpoint(dataset_handle: DatasetHandle, req: Discov
 
 
 @app.post("/discovery/dataset/{dataset_handle}/granules")
+@limiter.limit("20/minute")
 async def discovery_granules_endpoint(dataset_handle: DatasetHandle, req: DiscoveryGranulesRequest, request: Request):
     tools = _earthdata_tools(request)
     with user_id_context(request.state.current_user.id):
@@ -1047,6 +1164,7 @@ def _methods_time_window(provenance: dict) -> str:
 
 
 @app.post("/chat")
+@limiter.limit("10/minute")
 async def chat(req: ChatRequest, request: Request):
     user = request.state.current_user
     active_agent = getattr(app.state, "agent", None) or agent
@@ -1087,6 +1205,7 @@ _INTERNAL_ERROR_DETAIL = "Internal server error"
 
 
 @app.get("/sessions")
+@limiter.limit("60/minute")
 async def get_sessions(request: Request):
     try:
         return {"sessions": await session_repository.list_sessions(request.state.current_user.id)}
@@ -1097,6 +1216,7 @@ async def get_sessions(request: Request):
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
 
 @app.get("/session/{thread_id}/history")
+@limiter.limit("60/minute")
 async def get_history(thread_id: ThreadId, request: Request):
     try:
         user_id = request.state.current_user.id
@@ -1114,6 +1234,7 @@ async def get_history(thread_id: ThreadId, request: Request):
 
 
 @app.delete("/session/{thread_id}")
+@limiter.limit("20/minute")
 async def remove_session(thread_id: ThreadId, request: Request):
     try:
         deleted = await session_repository.delete_session(thread_id, request.state.current_user.id)

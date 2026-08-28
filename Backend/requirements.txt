@@ -36,6 +36,7 @@ PyJWT==2.10.1
 cryptography>=42.0.0,<45
 fastmcp==3.4.2
 prometheus-client==0.22.1
+slowapi==0.1.10
 
 # Test/lint tooling is NOT here on purpose — the Dockerfile installs this file
 # into /opt/venv and stage 2 copies that venv wholesale, so anything listed here

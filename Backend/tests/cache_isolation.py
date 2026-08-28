@@ -30,6 +30,13 @@ that need a deployment's real path — rather than this process's sandbox — as
 :func:`deployment_cube_store_dir`, :func:`deployment_overlay_store_dir` or
 :func:`deployment_output_dir`.
 
+The API's rate limiter (``api.limiter``) is a fourth piece of process-global
+state and rides along on the same hook, though it is not a cache: it counts
+requests per user in process memory, so an un-neutralised limiter makes the
+suite fail on its own traffic rather than merely serve a stale answer. See
+:func:`disable_api_rate_limiter`, and :func:`rate_limiting_enabled` for the
+opt-in a test uses when the limit *is* the thing under test.
+
 If another process-global cache is ever added, :func:`clear_process_caches` is
 the one place that has to learn about it — and ``test_cache_isolation.py``
 asserts that it actually does.
@@ -38,8 +45,10 @@ asserts that it actually does.
 from __future__ import annotations
 
 import atexit
+import contextlib
 import os
 import shutil
+import sys
 import tempfile
 
 CUBE_STORE_ENV = "CUBE_STORE_DIR"
@@ -237,6 +246,60 @@ def deployment_cube_store_dir() -> str:
         return Settings().cube_store_dir
 
 
+def disable_api_rate_limiter() -> None:
+    """Take the API's rate limiter out of the suite's way.
+
+    ``api.limiter`` counts against a process-lifetime ``MemoryStorage`` keyed by
+    user id, so it is process-global state in exactly the sense this module
+    exists for — but it leaks *forward* in a way the caches above do not. A
+    cache leak serves a stale answer; this one refuses a request outright. The
+    endpoints carry per-minute limits and a test file makes many calls as one
+    user inside one minute, so without this the suite fails on its own traffic:
+    ``/debug/heap-snapshot`` allows 1/minute and its third test was already
+    getting a 429 rather than the 200 it asserts.
+
+    Disabled rather than merely reset between tests. Resetting would fix the
+    across-tests case only, and would still leave any single test that calls a
+    tight endpoint twice failing on a limit it never asked to exercise. The
+    limits are production policy; a test that wants to exercise them says so
+    explicitly with :func:`rate_limiting_enabled`.
+
+    Looked up through ``sys.modules`` instead of imported. Importing
+    ``tta_backend.api`` here would force the whole application graph — and its
+    import-time ``CRS.from_epsg`` — on every ``TestCase`` that mixes in
+    :class:`ProcessCacheIsolation`, including under bare ``unittest``, which
+    never loads ``conftest.py`` and so has not wired PROJ. If nothing has
+    imported the API, there is no limiter and nothing to disable.
+    """
+    api = sys.modules.get("tta_backend.api")
+    if api is None:
+        return
+    api.limiter.enabled = False
+    api.limiter.reset()
+
+
+@contextlib.contextmanager
+def rate_limiting_enabled():
+    """Turn the limiter back on for one test, on a cleared counter.
+
+    The opt-in half of :func:`disable_api_rate_limiter`. Clears on the way in so
+    the test starts from a known count rather than from whatever the file's
+    earlier requests left, and restores the disabled default on the way out even
+    if the test fails — otherwise one failing test would re-arm the limiter for
+    everything that ran after it, which is the exact cross-test coupling the
+    default is there to prevent.
+    """
+    from tta_backend import api
+
+    api.limiter.reset()
+    api.limiter.enabled = True
+    try:
+        yield api.limiter
+    finally:
+        api.limiter.enabled = False
+        api.limiter.reset()
+
+
 def clear_process_caches() -> None:
     """Drop every process-global cache a test could leave behind.
 
@@ -245,13 +308,16 @@ def clear_process_caches() -> None:
     are not necessarily importable yet.
 
     Clearing a cache can only ever cause a miss, so this is safe to call
-    unconditionally — including for tests that never touch either cache.
+    unconditionally — including for tests that never touch either cache. The
+    rate limiter is here for the same reason but is not a cache; see
+    :func:`disable_api_rate_limiter`.
     """
     from tta_backend.earthdata_mcp.tool_cache import clear_tool_cache
     from tta_backend.services.jobs_service import clear_terminal_status_cache
 
     clear_tool_cache()
     clear_terminal_status_cache()
+    disable_api_rate_limiter()
 
 
 class ProcessCacheIsolation:

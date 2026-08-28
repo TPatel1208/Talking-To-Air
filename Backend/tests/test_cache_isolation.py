@@ -255,6 +255,22 @@ class ClearProcessCachesTests(unittest.TestCase):
         assert tool_cache.lookup("describe_dataset", _WORKSPACE, _ARGS) is None
         assert jobs_service._TERMINAL_STATUS_CACHE == {}
 
+    def test_it_also_neutralises_the_api_rate_limiter(self) -> None:
+        """Not a cache, but the same leak and the same hook.
+
+        A test that re-armed the limiter and then failed would otherwise leave
+        it armed for everything after it, and the symptom -- a later file's
+        requests refused on a limit it never asked to exercise -- would look
+        nothing like its cause.
+        """
+        import tta_backend.api as api
+
+        api.limiter.enabled = True
+
+        clear_process_caches()
+
+        assert api.limiter.enabled is False
+
 
 if __name__ == "__main__":
     unittest.main()
