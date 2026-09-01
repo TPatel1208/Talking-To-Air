@@ -6,6 +6,7 @@ from langchain_core.tools import BaseTool
 from typing import Annotated, Optional
 from pydantic import Field
 
+from tta_backend.services import admission
 from tta_backend.config.workflow_stages import STAGE_RENDER
 from tta_backend.datasets.mask_info import col_info_for_variable
 from tta_backend.earthdata_mcp.results import MCPToolError
@@ -106,7 +107,8 @@ def make_compute_statistic_tool(mcp_tools: dict[str, BaseTool]):
 
         def _mask_aggregate_stats():
             # CPU-bound mask -> aggregate -> stats chain (T16), run off the
-            # event loop via asyncio.to_thread below.
+            # event loop via admission.run_heavy below, which also bounds how
+            # many such reductions may hold memory at once.
             masked = mask_data_by_geometry(da, region['geometry'])
             # T42: an empty mask that self-healed to boundary cells downgrades
             # the disclosed region_type -- read it off the masked array so the
@@ -197,7 +199,7 @@ def make_compute_statistic_tool(mcp_tools: dict[str, BaseTool]):
         # structured error, never escape the tool off-taxonomy (QA
         # 2026-07-17: GPM stats surfaced as a generic internal error).
         try:
-            status, result = await asyncio.to_thread(_mask_aggregate_stats)
+            status, result = await admission.run_heavy(_mask_aggregate_stats)
         except MCPToolError as e:
             return json.dumps({"error": e.to_dict()})
         if status == "error":
@@ -271,7 +273,8 @@ def make_find_daily_peak(mcp_tools: dict[str, BaseTool]):
 
         def _mask_aggregate_peak():
             # CPU-bound mask -> aggregate -> peak search chain (T16), run
-            # off the event loop via asyncio.to_thread below.
+            # off the event loop via admission.run_heavy below, which also bounds
+                # how many such reductions may hold memory at once.
             masked = mask_data_by_geometry(da, region['geometry'])
             apply_mask_region_type(masked, region)  # T42: disclose boundary_cells self-heal
 
@@ -364,7 +367,7 @@ def make_find_daily_peak(mcp_tools: dict[str, BaseTool]):
         # See compute_statistic_tool: a mask refusal is a classified answer,
         # not an exception to escape off-taxonomy.
         try:
-            status, result = await asyncio.to_thread(_mask_aggregate_peak)
+            status, result = await admission.run_heavy(_mask_aggregate_peak)
         except MCPToolError as e:
             return json.dumps({"error": e.to_dict()})
         if status == "error":

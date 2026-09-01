@@ -100,9 +100,6 @@ class Settings:
     # granule retrieval without materializing more data into RAM — it does
     # not interact with dask's separate num_workers=2 compute-scheduler cap.
     granule_concurrency: int = field(default_factory=lambda: max(1, _int_env("GRANULE_CONCURRENCY", 4)))
-    memory_cache_max_bytes: int = field(
-        default_factory=lambda: max(1, _int_env("MEMORY_CACHE_MAX_BYTES", 500 * 1024 * 1024))
-    )
     csv_export_max_granules: int = field(default_factory=lambda: max(1, _int_env("CSV_EXPORT_MAX_GRANULES", 50)))
     s3_force_fetch: bool = field(default_factory=lambda: os.getenv("S3_FORCE_FETCH", "").strip() == "1")
     harmony_processing_timeout_seconds: int = field(
@@ -247,8 +244,58 @@ class Settings:
     #
     # None of this touches a provider that already chunked its file sensibly:
     # such a file is under budget, opens once, and is left exactly as written.
+    #
+    # This per-request peak *is* the memory profile: nothing holds datasets in
+    # RAM between requests, and no setting bounds such a cache. open_handle
+    # opens lazily (chunks={}) and drops the dataset with the request, so warm
+    # RSS sits near 204 MiB. What outlives a request is on disk (the cube
+    # store, the bundle-extract dir) or capped by entry count (the
+    # discovery-metadata cache) — never a byte budget held in-process.
+    #
+    # Stated because the knob that implied otherwise did cost one estimate:
+    # memory_cache_max_bytes, a 500 MB budget on an LRU of eagerly-loaded
+    # datasets, lost its only reader when the legacy Harmony loader was
+    # deleted, and then read as a live 500 MB reserve when this container was
+    # sized. Deleted rather than left to imply a guarantee it never made, the
+    # same call made for satellite_max_results_cap, which the same commit
+    # orphaned.
     open_max_chunk_bytes: int = field(
         default_factory=lambda: max(1, _int_env("OPEN_MAX_CHUNK_BYTES", 32 * 1024 ** 2))
+    )
+    # The container's memory ceiling, as declared by the deployment.
+    #
+    # Passed in rather than discovered: a process cannot read its own cgroup
+    # limit portably -- the file differs between cgroup v1 and v2 and reads
+    # "max" when no limit is set, which is exactly the state this exists to
+    # replace. Measured on the live stack 2026-09-01: /sys/fs/cgroup/memory.max
+    # was "max", so an overshoot was the *host* OOM killer choosing a victim,
+    # and it may choose Postgres rather than the backend that caused it.
+    #
+    # Kept in step with compose's `mem_limit` by a deployment-contract test
+    # (test_deployment_contract.TheMemoryCeilingIsDeclaredAndEnforcedTests),
+    # because the two are separate keys a reader would assume move together and
+    # nothing else would notice if they stopped. The drift is silent in the
+    # worse direction: a lowered mem_limit with this unchanged is an OOM that
+    # admission control was sized to prevent.
+    #
+    # The default is the deployment target, not this dev host -- a Windows
+    # checkout measured 2026-09-01 caps its WSL VM at 4 GiB, and sets 3072 in
+    # .env rather than editing a tracked file.
+    backend_mem_limit_mb: int = field(
+        default_factory=lambda: max(1, _int_env("BACKEND_MEM_LIMIT_MB", 8192))
+    )
+    # Override for how many heavy reductions may hold memory at once.
+    #
+    # Zero means "derive it" -- see services/admission.py, which divides the
+    # ceiling above (less a measured process floor) by the largest reduction the
+    # per-request gates will pass. Deriving is the default because a hardcoded
+    # count and a configurable ceiling drift apart the first time either moves.
+    #
+    # This is the escape hatch for the case the derivation cannot see: a host
+    # whose real headroom differs from what compose declares (a shared box, a VM
+    # that overcommits), where the arithmetic is right and its input is not.
+    heavy_admission_limit: int = field(
+        default_factory=lambda: max(0, _int_env("HEAVY_ADMISSION_LIMIT", 0))
     )
     # The public chart-output directory. Mounted unauthenticated at /outputs
     # (api.py) and shared with the frontend nginx container through the

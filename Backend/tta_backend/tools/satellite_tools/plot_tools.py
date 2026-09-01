@@ -58,6 +58,7 @@ from langchain_core.tools import BaseTool
 from typing import Annotated, List, Optional
 from pydantic import Field
 
+from tta_backend.services import admission
 from tta_backend.config.settings import get_settings
 from tta_backend.config.workflow_stages import STAGE_RENDER
 from tta_backend.datasets.mask_info import col_info_for_variable, resolve_mask_info
@@ -536,7 +537,7 @@ def _wire_overlay_url(overlay: dict | None, url: str) -> None:
 def _wire_overlay_urls(payload: dict) -> None:
     """Turn each rendered overlay's internal `_path` into a servable `url`,
     now that `_save_chart` has minted `chart_id` -- the render happens
-    earlier (asyncio.to_thread, before chart_id exists) with a `_path` that
+    earlier (admission.run_heavy, before chart_id exists) with a `_path` that
     only this process can read, never handed to the frontend directly."""
     chart_id = payload.get("chart_id")
     if not chart_id:
@@ -1325,7 +1326,7 @@ def _attach_frames(payload: dict, result, masked, agg_meta: dict) -> None:
 def _wire_frames_url(payload: dict) -> None:
     """Turn a stored stack's internal ``_key`` into a servable url, now that
     ``_save_chart`` has minted ``chart_id`` -- ``_wire_overlay_urls``' rule, for
-    the same reason: the stack is built inside ``asyncio.to_thread``, before a
+    the same reason: the stack is built inside ``admission.run_heavy``, before a
     ``chart_id`` exists, and the key addresses the blob store directly rather
     than being anything the frontend may hold.
 
@@ -1679,7 +1680,8 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
 
         def _mask_aggregate_payload():
             # CPU-bound mask -> aggregate -> payload chain (T16): run off the
-            # event loop via asyncio.to_thread below so a large grid doesn't
+            # event loop via admission.run_heavy below -- which also bounds how
+            # many may run at once -- so a large grid doesn't
             # freeze every other concurrent stream for its duration.
             try:
                 lat_coord = find_lat_coord(da)
@@ -1769,7 +1771,7 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
 
             return None, payload, resolved_title, None
 
-        stage, payload, resolved_title, error_message = await asyncio.to_thread(_mask_aggregate_payload)
+        stage, payload, resolved_title, error_message = await admission.run_heavy(_mask_aggregate_payload)
         if stage == "mask":
             emit_status("Visualization failed while processing map bounds.", stage=STAGE_RENDER)
             return json.dumps({"error": error_message})
@@ -1860,7 +1862,8 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
 
             def _mask_aggregate_panel(da=da, ds=ds, region=region, handle=handle, location=location, variable_name=variable_name):
                 # CPU-bound mask -> aggregate -> payload chain (T16), run off
-                # the event loop via asyncio.to_thread below.
+                # the event loop via admission.run_heavy below, which also bounds
+                # how many such reductions may hold memory at once.
                 try:
                     lat_coord = find_lat_coord(da)
                     lon_coord = find_lon_coord(da)
@@ -1918,7 +1921,7 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
 
                 return None, panel, resolved_variable_name, None
 
-            stage, panel, resolved_variable_name, error_message = await asyncio.to_thread(_mask_aggregate_panel)
+            stage, panel, resolved_variable_name, error_message = await admission.run_heavy(_mask_aggregate_panel)
             if stage == "mask":
                 emit_status("Visualization failed while processing map bounds.", stage=STAGE_RENDER)
                 return json.dumps({"error": error_message})
@@ -2034,7 +2037,8 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
 
         def _mask_aggregate_timeseries():
             # CPU-bound mask -> per-timestep aggregate -> payload chain
-            # (T16), run off the event loop via asyncio.to_thread below.
+            # (T16), run off the event loop via admission.run_heavy below, which also
+            # bounds how many such reductions may hold memory at once.
             masked = mask_data_by_geometry(da, region["geometry"])
             apply_mask_region_type(masked, region)  # T42: disclose boundary_cells self-heal
 
@@ -2155,7 +2159,7 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
             )
             return None, (ts_payload, variable_name)
 
-        status, result = await asyncio.to_thread(_mask_aggregate_timeseries)
+        status, result = await admission.run_heavy(_mask_aggregate_timeseries)
         if status in ("error", "dimension_choice_required"):
             return json.dumps({"error": result})
         ts_payload, variable_name = result
@@ -2256,7 +2260,8 @@ def make_plot_vertical_profile(mcp_tools: dict[str, BaseTool]):
 
         def _narrow_mask_reduce():
             # CPU-bound narrow -> mask -> reduce chain (T16), run off the event
-            # loop via asyncio.to_thread below.
+            # loop via admission.run_heavy below, which also bounds how many
+            # such reductions may hold memory at once.
             lat_coord = find_lat_coord(da)
             lon_coord = find_lon_coord(da)
             if lat_coord is None or lon_coord is None:
@@ -2381,7 +2386,7 @@ def make_plot_vertical_profile(mcp_tools: dict[str, BaseTool]):
             })
             return None, (payload, resolved_title)
 
-        status, result = await asyncio.to_thread(_narrow_mask_reduce)
+        status, result = await admission.run_heavy(_narrow_mask_reduce)
         if status in ("error", "too_large"):
             emit_status("Vertical profile failed.", stage=STAGE_RENDER)
             return json.dumps({"error": result})

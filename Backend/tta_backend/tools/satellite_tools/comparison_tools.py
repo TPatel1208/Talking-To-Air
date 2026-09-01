@@ -24,6 +24,7 @@ import numpy as np
 from langchain.tools import tool
 from langchain_core.tools import BaseTool
 
+from tta_backend.services import admission
 from tta_backend.config.workflow_stages import STAGE_RENDER
 from tta_backend.datasets.mask_info import col_info_for_variable
 from tta_backend.earthdata_mcp.results import CATEGORY_PROVIDER_UNAVAILABLE, MCPToolError, parse_tool_result
@@ -589,7 +590,7 @@ def make_compare(mcp_tools: dict[str, BaseTool]):
                 return json.dumps({"error": disjoint})
             # CPU-bound mask -> aggregate -> payload chain (T16), run off
             # the event loop.
-            return await asyncio.to_thread(
+            return await admission.run_heavy(
                 _build_region_comparison, handle_a, handle_b, da_a, da_b, label_a, label_b, variable_name, units,
                 ds_a, ds_b,
             )
@@ -645,7 +646,7 @@ def make_compare(mcp_tools: dict[str, BaseTool]):
 
         # CPU-bound mask -> aggregate -> payload chain (T16), run off the
         # event loop.
-        return await asyncio.to_thread(
+        return await admission.run_heavy(
             _build_period_comparison, handle_a, handle_b, aligned_handle, aligned_a, aligned_b,
             label_a, label_b, variable_name, units, threshold, aligned_ds_a, aligned_ds_b,
         )

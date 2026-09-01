@@ -53,6 +53,7 @@ from tta_backend.repositories.user_connector_repository import (
     upsert_connector,
 )
 from tta_backend.repositories.artifact_repository import ensure_artifact_table
+from tta_backend.services import admission
 from tta_backend.services import cube_cache, frame_store, warmup
 from tta_backend.services.open_handle import OPEN_PIPELINE_VERSION
 from tta_backend.services.connector_credential_service import EdlCredentialInjector
@@ -60,7 +61,7 @@ from tta_backend.services.connector_token_service import TokenValidationError, d
 from tta_backend.services.artifact_store import artifact_store
 from tta_backend.services.chat_stream_service import ChatStreamService
 from tta_backend.services.chart_service import ChartService
-from tta_backend.services.export_service import ExportService, materialize_first_chunk
+from tta_backend.services.export_service import ExportService, hold_admission, materialize_first_chunk
 from tta_backend.services.history_service import HistoryService
 from tta_backend.services.data_download_service import DataDownloadError, export_converted, iter_file_chunks
 from tta_backend.services.discovery_service import (
@@ -772,6 +773,44 @@ _CATEGORY_STATUS_CODES = {
 }
 
 
+@app.exception_handler(admission.AdmissionOverloaded)
+async def _handle_admission_overloaded(request: Request, exc: Exception) -> JSONResponse:
+    """Too many heavy requests are already resident: refuse, don't queue.
+
+    One handler rather than a try/except on each export route, because the
+    routes have nothing to add -- there is no per-endpoint recovery, and three
+    copies of the same translation is how one of them drifts.
+
+    Only the request/response endpoints reach here. The chat path raises the
+    same exception from inside an already-committed SSE stream, where no status
+    code is available any more; ``ChatStreamService._overloaded_events`` ends
+    that turn instead.
+
+    503 with ``Retry-After`` rather than 429: this is not the caller being too
+    frequent -- their own rate limit is untouched and a retry may well be
+    admitted immediately -- it is the server being momentarily out of memory to
+    serve them with. 429 would tell the client to slow down, which is both
+    untrue and unhelpful advice for a queue that drains in seconds.
+    """
+    logger.warning(
+        "export_shed",
+        extra={
+            "_event": "export_shed",
+            "_path": request.url.path,
+            "_in_flight": admission.in_flight(),
+            "_queued": admission.queued(),
+        },
+    )
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        headers={"Retry-After": "5"},
+        content={"error": {
+            "category": "overloaded",
+            "message": "The server is busy handling other large requests. Please retry shortly.",
+        }},
+    )
+
+
 @app.exception_handler(MCPToolError)
 async def _handle_mcp_tool_error(request: Request, exc: MCPToolError) -> JSONResponse:
     status_code = _CATEGORY_STATUS_CODES.get(exc.category, status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -824,7 +863,7 @@ async def export_chart_csv(chart_id: str, request: Request):
         stream = await materialize_first_chunk(
             iter_with_user_id(
                 request.state.current_user.id,
-                export_service.iter_chart_csv_chunks(payload, tools),
+                hold_admission(export_service.iter_chart_csv_chunks(payload, tools)),
             )
         )
     except ValueError as e:
@@ -836,7 +875,6 @@ async def export_chart_csv(chart_id: str, request: Request):
         headers={
             "Content-Disposition": f'attachment; filename="{export_service.safe_export_name(payload, "csv")}"',
             "Cache-Control": "no-store",
-            "X-Accel-Buffering": "no",
         },
     )
 
@@ -847,7 +885,19 @@ async def export_chart_png(chart_id: str, request: Request):
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
     try:
         with user_id_context(request.state.current_user.id):
-            content = await export_service.build_chart_png(payload, request.app.state.earthdata_mcp_tools)
+            # Gated like the CSV export and for the same reason: _render_png
+            # materialises a full-resolution grid. Unlike CSV this one is not a
+            # stream, so the permit covers the build and is returned before the
+            # bytes go out -- there is no client-paced hold to worry about.
+            async with admission.admit():
+                content = await export_service.build_chart_png(payload, request.app.state.earthdata_mcp_tools)
+    except admission.AdmissionOverloaded:
+        # Ahead of the bare `except Exception` below, which would otherwise
+        # report a busy server as a 422 "this chart cannot be exported" -- a
+        # permanent-sounding answer to a condition that clears in seconds, and
+        # the same swallowing shape that once turned a region refusal into a
+        # globe-wide chart. The handler above turns this into a 503.
+        raise
     except Exception as e:
         raise HTTPException(status_code=422, detail=str(e))
     return Response(
@@ -1100,6 +1150,10 @@ async def export_chart_netcdf(chart_id: str, request: Request):
         headers={
             "Content-Disposition": f'attachment; filename="{export_service.safe_export_name(payload, "nc")}"',
             "Cache-Control": "no-store",
+            # Left unbuffered: this route holds no admission permit (the work is
+            # an MCP-side conversion, and iter_file_chunks is a plain disk read),
+            # so there is nothing for nginx buffering to shorten -- only a large
+            # download for it to spool.
             "X-Accel-Buffering": "no",
         },
     )
@@ -1138,6 +1192,8 @@ async def export_artifact_csv(artifact_id: str, request: Request):
         headers={
             "Content-Disposition": f'attachment; filename="{filename}.csv"',
             "Cache-Control": "no-store",
+            # Same as the NetCDF route above: a store read, not a grid
+            # reduction, so it takes no permit and needs no buffering.
             "X-Accel-Buffering": "no",
         },
     )

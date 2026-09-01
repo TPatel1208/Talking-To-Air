@@ -12,6 +12,7 @@ from typing import Any, AsyncIterator, NamedTuple
 
 import logging
 
+from tta_backend.services import admission
 from tta_backend.utils.colormaps import resolve as resolve_colormap
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,40 @@ async def _to_export_thread(func, *args):
 # rows it holds are a rounding error next to the grid they come from, large
 # enough that a full-resolution export is not thousands of hops.
 _CSV_ROW_BLOCK = 20_000
+
+
+async def hold_admission(chunks: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+    """Hold one memory permit for the whole of ``chunks``.
+
+    Exports are memory consumers of the same kind as the chart reductions --
+    ``_iter_heatmap_csv_rows`` materialises a full-resolution grid and then
+    yields row blocks off it, so the grid is resident for every yield, not just
+    the first. The pool above bounds how many export *threads* run; it never
+    bounded how many grids were resident, so before this the real ceiling was N
+    reductions **plus** four exports and N meant nothing.
+
+    Held across the entire stream rather than re-acquired per worker-thread hop.
+    Per-hop would be cheaper and wrong: the grid stays alive between hops, so
+    the permit would be released while the memory it accounts for is still held
+    -- a counter that reports capacity the process does not have.
+
+    That makes the permit's lifetime the stream's lifetime, which is why the
+    export responses no longer send ``X-Accel-Buffering: no`` and nginx buffers
+    them (see the export location in Frontend/nginx.conf). With buffering nginx
+    drains this generator at network speed and feeds a slow client from its own
+    buffer, so the permit is held for generation time. Without it, TCP
+    backpressure reaches this loop directly and a client on a slow connection
+    would pin one of very few permits for the length of its download --
+    ``proxy_read_timeout`` would not save us, because it measures the gap
+    *between* reads and a steadily-slow reader never trips it.
+
+    Raises :class:`AdmissionOverloaded` on the first pull when the queue is
+    full. Callers put this inside :func:`materialize_first_chunk` so that lands
+    before any 200 is committed and can still become a 503.
+    """
+    async with admission.admit():
+        async for chunk in chunks:
+            yield chunk
 
 
 async def materialize_first_chunk(chunks: AsyncIterator[bytes]) -> AsyncIterator[bytes]:

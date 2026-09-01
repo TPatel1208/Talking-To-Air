@@ -196,7 +196,27 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(csv_response.status_code, 200)
         self.assertEqual(csv_response.headers["content-type"], "text/csv; charset=utf-8")
         self.assertIn("tempo-over-texas.csv", csv_response.headers["content-disposition"])
-        self.assertEqual(csv_response.headers["x-accel-buffering"], "no")
+        # Deliberately ABSENT, where it used to be "no".
+        #
+        # This export holds an admission permit for the whole of its stream
+        # (export_service.hold_admission), because the full-resolution grid it
+        # yields rows from stays resident across every yield. Unbuffered, TCP
+        # backpressure reaches that generator directly and a client on a slow
+        # connection pins one of very few memory permits for its entire
+        # download -- proxy_read_timeout does not help, since it measures the
+        # gap between reads and a steadily-slow reader never trips it.
+        #
+        # So nginx buffers this route (Frontend/nginx.conf) and drains the
+        # backend at network speed. This header would override that directive
+        # and silently turn the whole arrangement into a no-op, which is why
+        # its absence is asserted rather than merely no longer checked. The
+        # SSE and NetCDF routes still send it -- neither holds a permit.
+        self.assertNotIn(
+            "x-accel-buffering", csv_response.headers,
+            "the CSV export re-sent X-Accel-Buffering: no, which overrides the "
+            "nginx buffering that keeps its admission permit held for "
+            "generation time rather than for the client's download time.",
+        )
         self.assertEqual(csv_response.content, b"variable,latitude,longitude,value,units\n")
         self.assertEqual(png_response.status_code, 200)
         self.assertEqual(png_response.headers["content-type"], "image/png")
