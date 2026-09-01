@@ -47,21 +47,27 @@ together rather than letting the two numbers drift.
 
 What is gated, and what deliberately is not
 -------------------------------------------
-**Gated:** the reductions -- every ``.compute()``/``.values`` path -- and CSV/
-PNG/NetCDF export, which holds full-resolution grids of the same kind. Export
-keeps its own ``_EXPORT_MAX_WORKERS`` pool for thread isolation, but that number
-is now subordinate to this one: without sharing this counter the real ceiling
-would be N reductions *plus* four exports, and N would be a number that bounded
-nothing.
+**Gated:** the reductions -- every ``.compute()``/``.values`` path -- and the
+CSV and PNG chart exports, which materialise full-resolution grids of the same
+kind. Export keeps its own ``_EXPORT_MAX_WORKERS`` pool for thread isolation,
+but that number is now subordinate to this one: without sharing this counter the
+real ceiling would be N reductions *plus* four exports, and N would be a number
+that bounded nothing.
 
-**Not gated:** ``open_handle``. Opens are lazy -- ``chunks=_lazy_chunks()``
-throughout, with no ``.load()`` anywhere in that module -- so an open costs
-threads, file descriptors and up to 8 GiB of *disk*, but its RAM is flat. Taking
-a memory permit for a multi-minute zip extraction or an MCP rematerialization
-would hold the scarcest resource in the process to do work that does not use it,
-collapsing effective N under exactly the slow conditions where throughput
-matters most. Bounding opens is a real problem; it is a different one, and
-solving it here would mean this counter no longer measures memory.
+**Not gated**, and the reason is the same each time -- the work costs threads,
+file descriptors or disk, but not resident memory, so a permit spent on it is a
+permit taken from work that does need one:
+
+* ``open_handle``. Opens are lazy (``chunks=_lazy_chunks()`` throughout, no
+  ``.load()`` anywhere in that module), so RAM stays flat while a multi-minute
+  zip extraction or MCP rematerialization runs. Holding the scarcest resource
+  in the process across that would collapse effective N under exactly the slow
+  conditions where throughput matters most. Bounding opens is a real problem;
+  it is a different one, and solving it here would mean this counter no longer
+  measures memory.
+* The **NetCDF export**, whose conversion happens MCP-side and whose response
+  is a plain disk read (``iter_file_chunks``), and the **artifact CSV export**,
+  which is a store read. Both look like exports and neither holds a grid.
 """
 from __future__ import annotations
 
@@ -72,6 +78,7 @@ import contextvars
 import functools
 import logging
 import threading
+import time
 from typing import Any, AsyncIterator, Callable
 
 logger = logging.getLogger(__name__)
@@ -225,8 +232,63 @@ def queued() -> int:
     return 0 if _limiter is None else _limiter.queued
 
 
+def _publish_occupancy(limiter: _Limiter) -> None:
+    """Mirror the counters into Prometheus, best-effort.
+
+    Never raises. Admission is load-bearing for memory safety and its telemetry
+    is not: a collector mid-reconfiguration, or a platform whose RSS reader is
+    unavailable, must cost an observation rather than a permit. The inverse
+    failure -- a raising gauge that strands a permit inside a ``finally`` --
+    would remove capacity for the life of the process and eventually hang every
+    heavy request, which is far worse than a gap in a graph.
+    """
+    try:
+        from tta_backend.utils.metrics import set_admission_occupancy
+
+        set_admission_occupancy(limiter.in_flight, limiter.queued)
+    except Exception:  # noqa: BLE001 - telemetry is never worth a permit
+        logger.debug("admission_occupancy_publish_failed", exc_info=True)
+
+
+def _observe_section(waited_seconds: float) -> None:
+    """Record one completed section: what it waited, and what the process
+    weighed on the way out.
+
+    The RSS reading is a *lower bound* on the section's peak, and is worth
+    having anyway. Catching the true peak would need a sampling thread or
+    tracemalloc on this path; this is close because CPython does not promptly
+    return freed memory to the OS, so RSS after a large reduction still
+    reflects most of what that reduction took -- the same property that puts
+    ``_RESERVE_MB`` above the resting floor rather than at it.
+
+    Best-effort for the same reason as :func:`_publish_occupancy`.
+    """
+    try:
+        from tta_backend.utils.metrics import (
+            current_process_rss_bytes,
+            observe_admission_rss,
+            observe_admission_wait,
+        )
+
+        observe_admission_wait(waited_seconds)
+        rss = current_process_rss_bytes()
+        if rss is not None:
+            observe_admission_rss(rss)
+    except Exception:  # noqa: BLE001 - telemetry is never worth a permit
+        logger.debug("admission_section_observe_failed", exc_info=True)
+
+
+def _record_shed(surface: str) -> None:
+    try:
+        from tta_backend.utils.metrics import record_admission_shed
+
+        record_admission_shed(surface)
+    except Exception:  # noqa: BLE001 - telemetry is never worth a permit
+        logger.debug("admission_shed_record_failed", exc_info=True)
+
+
 @contextlib.asynccontextmanager
-async def admit() -> AsyncIterator[None]:
+async def admit(surface: str = "unspecified") -> AsyncIterator[None]:
     """Hold a memory permit for the duration of the block.
 
     Raises :class:`AdmissionOverloaded` immediately when the queue is already
@@ -248,12 +310,15 @@ async def admit() -> AsyncIterator[None]:
     limiter = _get()
 
     if limiter.queued >= limiter.queue_capacity:
+        _record_shed(surface)
         raise AdmissionOverloaded(
             f"{limiter.in_flight} heavy requests are running and "
             f"{limiter.queued} are already waiting."
         )
 
     limiter.queued += 1
+    _publish_occupancy(limiter)
+    started_waiting = time.monotonic()
     try:
         await limiter.semaphore.acquire()
     finally:
@@ -262,12 +327,20 @@ async def admit() -> AsyncIterator[None]:
         # queue that only ever grows sheds every later arrival forever.
         limiter.queued -= 1
 
+    waited = time.monotonic() - started_waiting
     limiter.in_flight += 1
+    _publish_occupancy(limiter)
     try:
         yield
     finally:
         limiter.in_flight -= 1
         limiter.semaphore.release()
+        _publish_occupancy(limiter)
+        # Observed on the way out, so the RSS reading is taken while the
+        # section's allocations are still most likely resident. Uncontended
+        # admissions are observed too: a wait histogram fed only when callers
+        # queue describes a backend that is always congested.
+        _observe_section(waited)
 
 
 def _get_heavy_executor() -> concurrent.futures.ThreadPoolExecutor:
@@ -290,8 +363,16 @@ def _get_heavy_executor() -> concurrent.futures.ThreadPoolExecutor:
     return _heavy_executor
 
 
-async def run_heavy(func: Callable[..., Any], *args: Any) -> Any:
+async def run_heavy(func: Callable[..., Any], *args: Any, surface: str = "chat") -> Any:
     """Admit, then run ``func`` on the heavy pool.
+
+    ``surface`` defaults to ``chat`` because every caller of this function is a
+    chart/statistic tool running inside an agent turn; the export paths hold
+    their permit differently (across a whole stream) and call :func:`admit`
+    directly. The default keeps the shed counter attributable without threading
+    an identical argument through ten call sites that would all pass the same
+    value -- and a shed here costs a turn the user already paid tokens for,
+    which is what makes the distinction worth recording at all.
 
     The context copy is not incidental, for the same reason ``export_service``
     documents at its own pool: ``run_in_executor`` starts the call with an empty
@@ -300,7 +381,7 @@ async def run_heavy(func: Callable[..., Any], *args: Any) -> Any:
     call reads the wrong workspace, or none -- so this reproduces exactly what
     ``asyncio.to_thread`` does for its callers.
     """
-    async with admit():
+    async with admit(surface=surface):
         loop = asyncio.get_running_loop()
         ctx = contextvars.copy_context()
         return await loop.run_in_executor(

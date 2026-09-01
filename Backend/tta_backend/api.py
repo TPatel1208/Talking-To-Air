@@ -889,7 +889,7 @@ async def export_chart_png(chart_id: str, request: Request):
             # materialises a full-resolution grid. Unlike CSV this one is not a
             # stream, so the permit covers the build and is returned before the
             # bytes go out -- there is no client-paced hold to worry about.
-            async with admission.admit():
+            async with admission.admit(surface="export"):
                 content = await export_service.build_chart_png(payload, request.app.state.earthdata_mcp_tools)
     except admission.AdmissionOverloaded:
         # Ahead of the bare `except Exception` below, which would otherwise

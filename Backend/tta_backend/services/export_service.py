@@ -100,7 +100,7 @@ async def hold_admission(chunks: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
     full. Callers put this inside :func:`materialize_first_chunk` so that lands
     before any 200 is committed and can still become a 503.
     """
-    async with admission.admit():
+    async with admission.admit(surface="export"):
         async for chunk in chunks:
             yield chunk
 
