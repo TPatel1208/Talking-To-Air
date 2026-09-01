@@ -932,35 +932,122 @@ def _extract_members_concurrently(zf: Any, names: list[str], dest: str) -> None:
     _run_bounded_failfast(names, lambda name: zf.extract(name, dest), workers)
 
 
-def _prune_extract_cache(root: str, ttl_seconds: float = _EXTRACT_CACHE_TTL_SECONDS) -> None:
-    """Sweep cache entries (completed or abandoned staging dirs) untouched
-    for longer than the TTL. Reuse touches an entry's mtime, so only bundles
-    nothing has opened for a full TTL are removed — far longer than any
-    single tool call keeps lazy readers on them.
+def _entry_size_bytes(path: str) -> int:
+    """On-disk size of one cache entry. Missing files are skipped rather than
+    raising: a concurrent prune may be removing this entry as we measure it,
+    and a size that is slightly stale is harmless where an exception is not."""
+    total = 0
+    for dirpath, _dirnames, filenames in os.walk(path):
+        for name in filenames:
+            try:
+                total += os.path.getsize(os.path.join(dirpath, name))
+            except OSError:
+                continue
+    return total
 
-    T52: an entry a cube write is currently reading from is pinned and skipped.
-    That writer holds a *lazy* Dataset pointing into this directory, and its
-    reads don't touch mtime — so without the pin a long enough write can have
-    its own source files deleted underneath it."""
+
+def _prune_extract_cache(
+    root: str,
+    ttl_seconds: float = _EXTRACT_CACHE_TTL_SECONDS,
+    max_bytes: int | None = None,
+) -> None:
+    """Bound the extract cache, by age and then by size.
+
+    **Age.** Entries (completed or abandoned staging dirs) untouched for longer
+    than the TTL are swept. Reuse touches an entry's mtime, so only bundles
+    nothing has opened for a full TTL are removed — far longer than any single
+    tool call keeps lazy readers on them.
+
+    **Size.** Whatever the TTL leaves is then trimmed to ``max_bytes``, least
+    recently used first. Age alone never bounded this cache: a single bundle may
+    extract up to ``bundle_open_max_uncompressed_bytes`` (8 GiB), and every
+    bundle opened inside one TTL window is retained, so N busy retrievals hold
+    N x 8 GiB with nothing counting the total. It was the only one of the three
+    on-disk stores without a cap, and unbounded disk growth is not hypothetical
+    in this project's history.
+
+    Deliberately in that order. Evicting by size first would discard entries the
+    TTL was about to reclaim for free, and could evict a *hot* entry to make
+    room for a stale one that has simply not aged out yet.
+
+    T52: an entry a cube write is currently reading from is pinned and skipped —
+    by **both** passes. That writer holds a *lazy* Dataset pointing into this
+    directory, and its reads don't touch mtime, so without the pin a long enough
+    write can have its own source files deleted underneath it. The size pass
+    needs the pin for exactly the same reason the age pass does: a torn write is
+    a worse outcome than a full disk, so disk pressure is not a licence to break
+    one.
+    """
     import shutil
     import time
 
     from tta_backend.services.cube_cache import is_pinned
+
+    if max_bytes is None:
+        max_bytes = get_settings().bundle_extract_cache_max_bytes
 
     cutoff = time.time() - ttl_seconds
     try:
         entries = list(os.scandir(root))
     except OSError:
         return
+
+    survivors: list[tuple[float, int, str]] = []
     for entry in entries:
         try:
             if not entry.is_dir(follow_symlinks=False):
                 continue
-            if entry.stat(follow_symlinks=False).st_mtime >= cutoff or is_pinned(entry.path):
+            mtime = entry.stat(follow_symlinks=False).st_mtime
+            if is_pinned(entry.path):
+                continue  # pinned entries are neither swept nor counted against the cap
+            if mtime < cutoff:
+                shutil.rmtree(entry.path, ignore_errors=True)
                 continue
-            shutil.rmtree(entry.path, ignore_errors=True)
+            survivors.append((mtime, _entry_size_bytes(entry.path), entry.path))
         except OSError:
             continue
+
+    total = sum(size for _mtime, size, _path in survivors)
+    if total <= max_bytes:
+        return
+
+    # Oldest access first, which for this cache is oldest mtime: a hit calls
+    # os.utime on the entry (see _extract_bundle_cached), so mtime is a genuine
+    # last-used stamp rather than a creation date.
+    for _mtime, size, path in sorted(survivors):
+        if total <= max_bytes:
+            break
+        shutil.rmtree(path, ignore_errors=True)
+        total -= size
+        logger.info(
+            "extract_cache_evicted",
+            extra={"_event": "extract_cache_evicted", "_path": path, "_bytes": size},
+        )
+
+
+def sweep_extract_cache() -> None:
+    """Prune the extract cache at startup, before anything extracts.
+
+    The pruner's only other trigger is the beginning of a new extraction, which
+    means a backend that stops receiving bundle retrievals never runs it again
+    and holds whatever the last busy period left — over a quiet weekend, that is
+    disk pinned by a cache nobody is using. ``cube_cache._evict_for`` names this
+    exact failure while explaining why the cube store does not copy this design.
+
+    So this is the third of the three startup sweeps, beside
+    ``cube_cache.sweep_store`` and ``frame_store.sweep_store``. Never raises:
+    reclaiming disk is not worth failing a boot over, and a fresh container has
+    no cache directory at all.
+    """
+    import tempfile
+
+    root = os.path.join(tempfile.gettempdir(), _EXTRACT_CACHE_DIR_NAME)
+    if not os.path.isdir(root):
+        return
+    try:
+        _prune_extract_cache(root)
+    except Exception:  # noqa: BLE001 — a boot is worth more than the disk
+        logger.warning("extract_cache_startup_sweep_failed", exc_info=True)
 
 
 def extract_cache_size_bytes() -> int:

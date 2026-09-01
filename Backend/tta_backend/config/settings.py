@@ -214,6 +214,26 @@ class Settings:
     bundle_open_max_uncompressed_bytes: int = field(
         default_factory=lambda: max(1, _int_env("BUNDLE_OPEN_MAX_UNCOMPRESSED_BYTES", 8 * 1024 ** 3))
     )
+    # The ceiling on the extract cache as a WHOLE, which the limit above does
+    # not imply: that one bounds a single bundle, and the cache retains every
+    # bundle opened within its TTL. Eight GiB each, N retrievals in an hour,
+    # nothing counting the total.
+    #
+    # This was the only one of the three on-disk stores without a byte cap --
+    # cube_store has CUBE_STORE_MAX_BYTES and frame_store has
+    # FRAME_STORE_MAX_BYTES -- and ``cube_cache._evict_for`` already documents
+    # why it deliberately did not copy this cache's age-only design. Unbounded
+    # disk growth is not hypothetical here: this project has had a Docker
+    # virtual disk reach 296 GB and need a manual prune plus a compact.
+    #
+    # 8 GiB rather than the cube store's 4: a single bundle may legitimately
+    # occupy the whole of BUNDLE_OPEN_MAX_UNCOMPRESSED_BYTES, and a cap that
+    # cannot hold one entry would evict it moments after writing it, turning
+    # every open of a large bundle into a re-extraction -- minutes of wall
+    # clock traded for disk that was never scarce.
+    bundle_extract_cache_max_bytes: int = field(
+        default_factory=lambda: max(1, _int_env("BUNDLE_EXTRACT_CACHE_MAX_BYTES", 8 * 1024 ** 3))
+    )
     # The ceiling on a single dask chunk, and with it the pipeline's whole
     # memory profile: a chunk is the unit every task allocates, so peak RAM is
     # roughly this times the in-flight task count (dask num_workers=2, see

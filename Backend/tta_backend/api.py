@@ -55,7 +55,7 @@ from tta_backend.repositories.user_connector_repository import (
 from tta_backend.repositories.artifact_repository import ensure_artifact_table
 from tta_backend.services import admission
 from tta_backend.services import cube_cache, frame_store, warmup
-from tta_backend.services.open_handle import OPEN_PIPELINE_VERSION
+from tta_backend.services.open_handle import OPEN_PIPELINE_VERSION, sweep_extract_cache
 from tta_backend.services.connector_credential_service import EdlCredentialInjector
 from tta_backend.services.connector_token_service import TokenValidationError, decode_token_expiry
 from tta_backend.services.artifact_store import artifact_store
@@ -177,6 +177,16 @@ async def lifespan(app: FastAPI):
     # unreachable — but its manifest is still valid, so nothing else would ever
     # drop it and its bytes would go on counting against the cap.
     frame_store.sweep_store(OPEN_PIPELINE_VERSION)
+
+    # The third on-disk store, and the one that used to be reclaimed only as a
+    # side effect of new work. Its pruner's other trigger is the start of an
+    # extraction, so a backend that stops receiving bundle retrievals -- a quiet
+    # night, a weekend -- never ran it again and held whatever the last busy
+    # period left. Unlike the two above this sweep is not about a version bump:
+    # the cache is bounded by age and size, and this is simply the one moment
+    # those bounds are guaranteed to be applied even if nobody opens a bundle
+    # again for days.
+    sweep_extract_cache()
 
     # Pay the render path's one-time lazy-import cost here rather than charging
     # it to whoever asks the first question: measured at ~0.44 s of dask and
