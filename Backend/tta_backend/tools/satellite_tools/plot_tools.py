@@ -47,7 +47,6 @@ Time-series
   "values":    [float, ...],
 }
 """
-import asyncio
 import json
 import logging
 import os

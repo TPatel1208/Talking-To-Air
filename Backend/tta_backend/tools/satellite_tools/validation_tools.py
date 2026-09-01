@@ -12,7 +12,6 @@ monitor, per T06's TimeseriesArtifactMetadata.
 """
 from __future__ import annotations
 
-import asyncio
 import datetime
 import json
 import uuid
