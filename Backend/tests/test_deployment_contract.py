@@ -455,6 +455,126 @@ class SharedResourcesAreProvisionedTests(unittest.TestCase):
         )
 
 
+def _compose_default(expr: str) -> str:
+    """The literal compose will use when the variable is unset.
+
+    ``${VAR:-default}`` and ``${VAR-default}`` both fall back; a bare
+    ``${VAR}`` has no default and yields the empty string, which is what
+    compose itself would substitute. Returned as text, because the two values
+    this file compares are written in different units and are normalised by
+    :func:`_mem_to_mb` rather than by string equality.
+    """
+    match = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::?-(.*))?\}", expr.strip())
+    if match is None:
+        return expr.strip()
+    return match.group(2) or ""
+
+
+def _mem_to_mb(value: str) -> int:
+    """A compose memory string in MB.
+
+    Compose accepts ``b``/``k``/``m``/``g`` suffixes and a bare byte count, so
+    ``8g``, ``8192m`` and ``8589934592`` are the same ceiling written three
+    ways. Comparing the strings would make this test pass or fail on spelling;
+    comparing the magnitudes makes it about the contract.
+    """
+    text = value.strip().lower()
+    match = re.fullmatch(r"(\d+)\s*([bkmg]?)", text)
+    assert match is not None, f"{value!r} is not a compose memory value"
+    amount, unit = int(match.group(1)), match.group(2)
+    factor = {"": 1, "b": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3}[unit]
+    return amount * factor // (1024 ** 2)
+
+
+class TheMemoryCeilingIsDeclaredAndEnforcedTests(unittest.TestCase):
+    """The container's memory ceiling must exist, and the backend must know it.
+
+    Measured on the live stack 2026-09-01: ``/sys/fs/cgroup/memory.max`` read
+    ``max``. With no limit the container grows until the *host* OOM killer picks
+    a victim -- and it may well pick Postgres, so a runaway chart render can take
+    the database with it. ``mem_limit`` confines the blast radius to the
+    container that caused it, which ``restart: unless-stopped`` then recovers.
+
+    But a ceiling alone makes things *worse*, not better: it lowers the point at
+    which kills happen without doing anything to keep the process underneath it.
+    So these tests also pin the second half -- the backend is told what its
+    ceiling is, and derives its admission limit from that number. The two live in
+    different files (compose declares ``mem_limit``, Python enforces N), and
+    nothing but this test stops them drifting apart. Drift is silent in the worst
+    direction: a lowered ``mem_limit`` with an unchanged N is an OOM that the
+    admission control was supposed to have prevented.
+    """
+
+    def _backend(self) -> dict:
+        return _load(_compose_path())["services"]["backend"]
+
+    def test_the_backend_declares_a_memory_limit(self):
+        self.assertIn(
+            "mem_limit", self._backend(),
+            "the backend service declares no mem_limit, so the container may "
+            "grow until the host OOM killer intervenes and chooses which "
+            "container dies -- possibly the database rather than the backend "
+            "that caused it.",
+        )
+
+    def test_the_memory_limit_is_overridable_per_environment(self):
+        """A dev box and the deployment host do not have the same headroom, and
+        one tracked file serves both. Hardcoding the ceiling means the smaller
+        machine either edits a tracked file or runs with a limit it cannot
+        honour -- measured 2026-09-01: this dev host caps its WSL VM at 4 GiB,
+        where the deployment target is 8 GiB."""
+        mem_limit = str(self._backend().get("mem_limit", ""))
+        self.assertIn(
+            "${BACKEND_MEM_LIMIT", mem_limit,
+            f"mem_limit is {mem_limit!r}, which hardcodes the ceiling. The same "
+            "compose file has to serve a 4 GiB dev VM and an 8 GiB deployment.",
+        )
+
+    def test_the_backend_is_told_the_ceiling_it_must_stay_under(self):
+        env = self._backend().get("environment") or {}
+        self.assertIn(
+            "BACKEND_MEM_LIMIT_MB", env,
+            "the backend is not told its own memory ceiling. A process cannot "
+            "read its cgroup limit portably (it is 'max' when unset, and differs "
+            "across cgroup v1/v2), so the ceiling has to be passed in -- "
+            "otherwise the admission limit is a guess unrelated to the container "
+            "it is protecting.",
+        )
+
+    def test_the_advertised_ceiling_matches_the_enforced_one(self):
+        """The number compose enforces and the number Python plans against must
+        be the same number.
+
+        These are two separate keys that a reader would assume move together.
+        They do not: raising ``mem_limit`` alone buys no throughput because N
+        never rises, and lowering it alone reintroduces the OOM at a lower
+        ceiling with admission control still sized for the old one. Asserted on
+        the *defaults*, since that is what an environment which sets neither
+        variable will actually run with.
+        """
+        backend = self._backend()
+        environment = backend.get("environment") or {}
+        # Stated rather than assumed: without this the test dies on a raw
+        # KeyError, which reads as a broken test rather than as the missing
+        # declaration the sibling tests above name precisely.
+        for key, holder in (("mem_limit", backend), ("BACKEND_MEM_LIMIT_MB", environment)):
+            self.assertIn(
+                key, holder,
+                f"{key} is absent, so the two halves of the memory contract "
+                "cannot be compared -- see the sibling tests in this class.",
+            )
+        declared = _mem_to_mb(_compose_default(str(backend["mem_limit"])))
+        advertised = int(_compose_default(str(environment["BACKEND_MEM_LIMIT_MB"])))
+        self.assertEqual(
+            declared, advertised,
+            f"compose limits the container to {declared} MB but tells the "
+            f"backend it has {advertised} MB. The admission limit is derived "
+            "from the second number and enforced against the first, so any gap "
+            "is either wasted capacity or an OOM that admission control was "
+            "supposed to prevent.",
+        )
+
+
 class TheContractsRemainCheckableTests(unittest.TestCase):
     """The bind mounts these tests read through must not silently vanish.
 

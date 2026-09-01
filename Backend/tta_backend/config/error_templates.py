@@ -101,6 +101,31 @@ def render_turn_timeout_answer(job_handles: list[str] | None = None) -> str:
     return _TURN_TIMEOUT_TEMPLATE.format(jobs_detail=jobs_detail)
 
 
+# Admission control shed this turn: too many heavy reductions were already
+# running or waiting (services/admission.py). Distinct from the timeout
+# template above even though both end a turn, because the honest advice
+# differs -- a timeout says "this may just be slow, check the Jobs panel",
+# while this says "the server is busy, the same question will work shortly".
+# Telling a researcher to check Jobs here would send them to an empty panel.
+#
+# Templated rather than model-composed for the reason the taxonomy answers
+# are, and one more besides: the model never sees this. AdmissionOverloaded
+# subclasses RuntimeError, which LangGraph's ToolNode lets escape rather than
+# converting into a ToolMessage, so the turn ends before the supervisor could
+# read a "busy" tool result and simply call the tool again -- which would make
+# an overloaded backend amplify its own load.
+_OVERLOADED_TEMPLATE = (
+    "The server is busy handling other large requests right now, so this one "
+    "was not started. This was not a problem with your question — wait a "
+    "moment and ask again. Narrowing the region or the time range also makes "
+    "a request much cheaper to run."
+)
+
+
+def render_overloaded_answer() -> str:
+    return _OVERLOADED_TEMPLATE
+
+
 # T46: silent scope substitution. When a retrieval answers a materially
 # different question than the one asked — a single-day request served by a
 # monthly mean, a time range clamped to coverage, a region that resolved to a

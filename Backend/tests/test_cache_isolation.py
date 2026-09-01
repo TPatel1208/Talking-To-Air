@@ -245,15 +245,24 @@ class ClearProcessCachesTests(unittest.TestCase):
 
     def test_it_clears_every_process_global_cache(self) -> None:
         from tta_backend.earthdata_mcp import tool_cache
-        from tta_backend.services import jobs_service
+        from tta_backend.services import admission, jobs_service
 
         tool_cache.store("describe_dataset", _WORKSPACE, _ARGS, "payload")
         jobs_service._TERMINAL_STATUS_CACHE["job_probe"] = {"status": "ready"}
+        # Admission control is the one entry here that does not merely serve a
+        # stale answer when it leaks. A test that dies holding a permit removes
+        # capacity permanently, so the next test that needs one *hangs* instead
+        # of failing -- no name, no traceback, ~29 minutes into a suite. Set
+        # directly rather than by acquiring, because this case is precisely the
+        # one where the release never ran.
+        admission.heavy_limit()  # force a generation to exist
+        admission._limiter.in_flight = 3
 
         clear_process_caches()
 
         assert tool_cache.lookup("describe_dataset", _WORKSPACE, _ARGS) is None
         assert jobs_service._TERMINAL_STATUS_CACHE == {}
+        assert admission.in_flight() == 0
 
     def test_it_also_neutralises_the_api_rate_limiter(self) -> None:
         """Not a cache, but the same leak and the same hook.

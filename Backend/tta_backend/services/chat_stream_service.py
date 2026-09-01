@@ -10,11 +10,15 @@ from typing import Any, AsyncIterator
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from tta_backend.config.error_templates import render_error_answer, render_turn_timeout_answer
+from tta_backend.config.error_templates import (
+    render_error_answer,
+    render_overloaded_answer,
+    render_turn_timeout_answer,
+)
 from tta_backend.config.settings import get_settings
 from tta_backend.earthdata_mcp.results import CATEGORY_CONTRACT
 from tta_backend.models import AgentResult, agent_result_to_json, parse_agent_result, parse_chart_payload
-from tta_backend.services import cube_cache
+from tta_backend.services import admission, cube_cache
 from tta_backend.services.artifact_store import artifact_store
 from tta_backend.services.chart_service import ChartService
 from tta_backend.services.intent_router import route_intent
@@ -152,6 +156,8 @@ class ChatStreamService:
         """
         if isinstance(exc, TimeoutError) and turn_timeout.expired():
             return list(self._turn_timeout_events(request_id, thread_id, job_statuses))
+        if isinstance(exc, admission.AdmissionOverloaded):
+            return list(self._overloaded_events(request_id, thread_id))
         logger.exception("agent_failure", extra={"_request_id": request_id, "_thread_id": thread_id})
         return [self.sse("error", {"detail": render_error_answer(CATEGORY_CONTRACT, "request")})]
 
@@ -483,6 +489,48 @@ class ChatStreamService:
             self.sse("done", {
                 "thread_id": thread_id,
                 "response": render_turn_timeout_answer(in_flight),
+                "image_urls": [],
+                "artifacts": [],
+                "tool_calls": [],
+            }),
+        ]
+
+    def _overloaded_events(self, request_id: str, thread_id: str) -> list[str]:
+        """Admission control refused this turn, so the turn ends here.
+
+        The chat path cannot answer overload the way the export endpoints do.
+        By the time a reduction is attempted the SSE response is long since
+        committed, so there is no status line left to set -- a 503 is not
+        available and the only honest ending is a terminal ``error``/``done``
+        pair, exactly as T38's deadline does above.
+
+        Logged at warning with its own ``_event`` so shedding is countable in
+        the same place turn timeouts are. That number is the one that says
+        whether the admission limit is set correctly: sheds that never happen
+        mean N is generous, and sheds during ordinary traffic mean the
+        container needs more memory rather than the queue needing more depth.
+
+        No ``job_statuses`` parameter, unlike the timeout case. Nothing was
+        started -- that is the entire point -- so there is no in-flight work to
+        name, and pointing a researcher at the Jobs panel would send them
+        somewhere empty.
+        """
+        answer = render_overloaded_answer()
+        logger.warning(
+            "chat_turn_shed",
+            extra={
+                "_event": "chat_turn_shed",
+                "_request_id": request_id,
+                "_thread_id": thread_id,
+                "_in_flight": admission.in_flight(),
+                "_queued": admission.queued(),
+            },
+        )
+        return [
+            self.sse("error", {"detail": answer}),
+            self.sse("done", {
+                "thread_id": thread_id,
+                "response": answer,
                 "image_urls": [],
                 "artifacts": [],
                 "tool_calls": [],

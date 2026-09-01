@@ -46,9 +46,40 @@ services:
     image: ${IMAGE_REGISTRY:-ghcr.io/tpatel1208}/tta-backend:${IMAGE_TAG:-dev}
     container_name: tta-backend
     restart: unless-stopped
+    # The container's memory ceiling, and half of a two-part contract.
+    #
+    # Measured on the live stack 2026-09-01: /sys/fs/cgroup/memory.max read
+    # "max" -- no limit at all. An overshoot was therefore the *host* OOM killer
+    # choosing which container to kill, and nothing said it would choose this
+    # one; a runaway chart render could take Postgres with it. A limit here
+    # confines the blast radius to the container that caused it, and the
+    # `restart: unless-stopped` above turns that into a recovery rather than an
+    # outage.
+    #
+    # A ceiling on its own would make things WORSE, not better: it lowers the
+    # point at which kills happen without doing anything to keep the process
+    # underneath it. So this number is also handed to the backend below as
+    # BACKEND_MEM_LIMIT_MB, which services/admission.py divides into a limit on
+    # how many heavy reductions may hold memory at once. The two must denote the
+    # same ceiling, and a deployment-contract test asserts they do -- they are
+    # separate keys a reader would assume move together, and nothing else would
+    # notice if they stopped.
+    #
+    # Overridable because one tracked file serves two very different machines:
+    # the deployment target has 8 GiB, while a dev checkout measured 2026-09-01
+    # caps its WSL VM at 4 GiB total for every container. That host sets
+    # BACKEND_MEM_LIMIT=3g and BACKEND_MEM_LIMIT_MB=3072 in .env instead of
+    # editing this file.
+    mem_limit: ${BACKEND_MEM_LIMIT:-8g}
     env_file: .env
     environment:
       PORT: "8000"
+      # The other half of the contract above. Passed in rather than discovered:
+      # a process cannot portably read its own cgroup limit (the file moved
+      # between cgroup v1 and v2, and reads "max" when unset -- which is the
+      # state this replaces, so a self-discovering backend would have learned
+      # nothing on the very deployment that needed it most).
+      BACKEND_MEM_LIMIT_MB: "${BACKEND_MEM_LIMIT_MB:-8192}"
       DB_HOST: db
       DB_PORT: "5432"
       DB_NAME: talking_to_air_memory

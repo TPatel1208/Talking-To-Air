@@ -54,6 +54,48 @@ DB_POOL_CONNECTIONS_ACTIVE = Gauge(
     "db_pool_connections_active",
     "Current active PostgreSQL pool connections.",
 )
+# Admission control (services/admission.py). These exist to make N -- how many
+# heavy reductions may hold memory at once -- a measured number rather than the
+# extrapolation it currently is: it was derived by arithmetic from an 8 GiB
+# ceiling, while every other memory constant in this codebase was measured on
+# real data.
+ADMISSION_IN_FLIGHT = Gauge(
+    "admission_in_flight",
+    "Heavy reductions currently holding a memory permit.",
+)
+ADMISSION_QUEUED = Gauge(
+    "admission_queued",
+    "Callers waiting for a memory permit.",
+)
+# Labelled by surface because the two outcomes differ in cost, not just in
+# origin: a shed export is a retry the user barely notices, while a shed chat
+# turn is a lost turn that has already spent its LLM tokens. A single total
+# would average the urgent case into the routine one.
+ADMISSION_SHED_TOTAL = Counter(
+    "admission_shed_total",
+    "Requests refused because the admission queue was full.",
+    ["surface"],
+)
+ADMISSION_WAIT_SECONDS = Histogram(
+    "admission_wait_seconds",
+    "Time spent waiting for a memory permit, including admissions that did not wait.",
+)
+# The measurement that would let N be re-derived. Sampled per section rather
+# than at scrape time (see current_process_rss_bytes) and bucketed generously:
+# the interesting range spans an idle 200 MiB floor to the 1,342 MB largest
+# admitted reduction, and the question a reader asks is which order of
+# magnitude the process is sitting at while N are resident, not its exact
+# bytes.
+ADMISSION_RSS_BYTES = Histogram(
+    "admission_rss_bytes",
+    "Process RSS observed at the end of a heavy section (a lower bound on its peak).",
+    buckets=(
+        256 * 1024 ** 2, 512 * 1024 ** 2, 768 * 1024 ** 2,
+        1024 * 1024 ** 2, 1536 * 1024 ** 2, 2048 * 1024 ** 2,
+        3072 * 1024 ** 2, 4096 * 1024 ** 2, 6144 * 1024 ** 2,
+        8192 * 1024 ** 2, float("inf"),
+    ),
+)
 PROCESS_RSS_BYTES = Gauge(
     "process_rss_bytes",
     "Resident set size of the backend process in bytes.",
@@ -240,6 +282,43 @@ def record_cube_index_invalidation() -> None:
 def set_db_pool_connections_active(value: int | float | None) -> None:
     if value is not None:
         DB_POOL_CONNECTIONS_ACTIVE.set(value)
+
+
+def set_admission_occupancy(in_flight: int, queued: int) -> None:
+    """Publish how many heavy reductions are resident and how many wait.
+
+    One function for both gauges because they are read together and are only
+    meaningful together: in_flight alone cannot distinguish a backend at its
+    limit with nobody waiting (healthy, well-sized) from one at its limit with
+    a queue behind it (undersized), and those call for opposite responses.
+    """
+    ADMISSION_IN_FLIGHT.set(in_flight)
+    ADMISSION_QUEUED.set(queued)
+
+
+def record_admission_shed(surface: str) -> None:
+    ADMISSION_SHED_TOTAL.labels(surface=surface).inc()
+
+
+def observe_admission_wait(seconds: float) -> None:
+    ADMISSION_WAIT_SECONDS.observe(seconds)
+
+
+def observe_admission_rss(rss_bytes: int) -> None:
+    ADMISSION_RSS_BYTES.observe(rss_bytes)
+
+
+def current_process_rss_bytes() -> int | None:
+    """Public name for the RSS reader, for callers outside a /metrics scrape.
+
+    ``refresh_process_gauges`` reads RSS when Prometheus asks, which is the
+    right cadence for a process-health gauge and the wrong one for admission: a
+    reduction that climbs to 1.3 GB and releases between two scrapes never
+    appears, and those are the peaks that cause an OOM. services/admission.py
+    samples per section instead, and goes through here rather than reaching
+    for the private reader.
+    """
+    return _current_process_rss_bytes()
 
 
 # Named so the parse can be exercised on a host that has no /proc -- the field

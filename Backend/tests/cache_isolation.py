@@ -319,10 +319,19 @@ def clear_process_caches() -> None:
     :func:`disable_api_rate_limiter`.
     """
     from tta_backend.earthdata_mcp.tool_cache import clear_tool_cache
+    from tta_backend.services.admission import reset_admission
     from tta_backend.services.jobs_service import clear_terminal_status_cache
 
     clear_tool_cache()
     clear_terminal_status_cache()
+    # Admission control is process-global for the same reason the caches above
+    # are, but it fails differently and worse. A leaked cache entry serves a
+    # stale answer; a leaked *permit* removes one unit of capacity permanently,
+    # so a test that dies holding one makes every later test that needs one hang
+    # rather than fail -- with no attribution, inside a suite that takes around
+    # 29 minutes to reach them. It is also why admission's own tests assert the
+    # permit count is restored: the guard has to be checked, not merely present.
+    reset_admission()
     disable_api_rate_limiter()
 
 

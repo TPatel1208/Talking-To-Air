@@ -12,7 +12,6 @@ monitor, per T06's TimeseriesArtifactMetadata.
 """
 from __future__ import annotations
 
-import asyncio
 import datetime
 import json
 import uuid
@@ -23,6 +22,7 @@ import pandas as pd
 from langchain.tools import tool
 from langchain_core.tools import BaseTool
 
+from tta_backend.services import admission
 from tta_backend.config.workflow_stages import STAGE_RENDER
 from tta_backend.datasets.mask_info import col_info_for_variable
 from tta_backend.earthdata_mcp.results import MCPToolError
@@ -310,7 +310,8 @@ def make_validate_against_ground(mcp_tools: dict[str, BaseTool]):
 
         def _extract_and_pair_monitors():
             # CPU-bound per-monitor mask/extraction/pairing loop (T16), run
-            # off the event loop via asyncio.to_thread below.
+            # off the event loop via admission.run_heavy below, which also bounds
+                # how many such reductions may hold memory at once.
             monitor_results = []
             artifact_refs = []
             pooled_paired = []
@@ -378,7 +379,7 @@ def make_validate_against_ground(mcp_tools: dict[str, BaseTool]):
             return monitor_results, artifact_refs, pooled_paired, monitor_ids
 
         emit_status("Validating against ground monitors...", stage=STAGE_RENDER)
-        monitor_results, artifact_refs, pooled_paired, monitor_ids = await asyncio.to_thread(
+        monitor_results, artifact_refs, pooled_paired, monitor_ids = await admission.run_heavy(
             _extract_and_pair_monitors
         )
 
@@ -504,7 +505,8 @@ def make_exceedance_overlay(mcp_tools: dict[str, BaseTool]):
 
         def _extract_exceedance_monitors():
             # CPU-bound per-monitor mask/extraction loop (T16), run off the
-            # event loop via asyncio.to_thread below.
+            # event loop via admission.run_heavy below, which also bounds how
+            # many such reductions may hold memory at once.
             monitor_results = []
             artifact_refs = []
 
@@ -564,7 +566,7 @@ def make_exceedance_overlay(mcp_tools: dict[str, BaseTool]):
             return monitor_results, artifact_refs
 
         emit_status("Checking exceedance days against the satellite series...", stage=STAGE_RENDER)
-        monitor_results, artifact_refs = await asyncio.to_thread(_extract_exceedance_monitors)
+        monitor_results, artifact_refs = await admission.run_heavy(_extract_exceedance_monitors)
 
         if not monitor_results:
             return json.dumps({"error": f"No exceedance days found for monitors in '{location}'."})
