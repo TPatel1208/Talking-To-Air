@@ -9,6 +9,12 @@ These cover the two phases that close that hole: ``llm_call`` (one provider
 request, from the LangChain callback pair) and ``agent_step`` (one LangGraph
 superstep, from the gap between ``updates`` chunks).
 
+``llm_call`` also carries the provider's token accounting -- input, output,
+and the cached-prefix read that says whether the constant sub-agent prefix is
+hitting the provider's prompt cache. The rule those tests exist to pin is
+that an *absent* count is never recorded as a zero: a working cache and a
+missing usage block must not produce the same number.
+
 Like the timer they record through, both sit on the hot path, so the
 governing constraint is the same: a telemetry failure must never be the
 reason a turn fails.
@@ -40,6 +46,36 @@ def _phase_samples(phase: str) -> tuple[float, float]:
             elif sample.name.endswith("_sum"):
                 total = sample.value
     return count, total
+
+
+def _token_total(model: str, kind: str, agent_type: str = "unknown") -> float:
+    """Tokens currently counted for this model/agent_type/kind. Counters are
+    process-wide state, so every test below asserts on a delta."""
+    from tta_backend.utils.metrics import LLM_TOKENS_TOTAL
+
+    want = {"model": model, "agent_type": agent_type, "kind": kind}
+    for metric in LLM_TOKENS_TOTAL.collect():
+        for sample in metric.samples:
+            if not sample.name.endswith("_total"):
+                continue
+            if all(sample.labels.get(k) == v for k, v in want.items()):
+                return sample.value
+    return 0.0
+
+
+def _llm_result(usage):
+    """An LLMResult shaped the way a chat model delivers one: the usage block
+    rides on the AIMessage of the first generation."""
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, LLMResult
+
+    usage = dict(usage)
+    # LangChain's UsageMetadata requires total_tokens; the tests below care
+    # about the three fields this module reads, so fill the rest in here
+    # rather than restating it in every case.
+    usage.setdefault("total_tokens", usage.get("input_tokens", 0) + usage.get("output_tokens", 0))
+    message = AIMessage(content="ok", usage_metadata=usage)
+    return LLMResult(generations=[[ChatGeneration(message=message)]])
 
 
 class RecordPhaseTests(unittest.TestCase):
@@ -403,6 +439,314 @@ class PhaseVocabularyTests(unittest.TestCase):
                 f'pipeline_phase_duration_seconds_count{{phase="{phase}"}}',
                 rendered,
                 f"phase '{phase}' has no pre-declared series",
+            )
+
+
+@unittest.skipIf(
+    importlib.util.find_spec("langchain_core") is None,
+    "langchain_core is not installed",
+)
+class TokenAccountingTests(unittest.TestCase):
+    """The token half of the ``llm_call`` callback.
+
+    Model latency and model cost are different questions, and a cache hit is
+    invisible in the first one -- a hit and a miss take the same wall clock.
+    These pin the second.
+    """
+
+    def _callback(self):
+        from tta_backend.utils.llm_timing import LlmTimingCallback
+
+        return LlmTimingCallback()
+
+    def _finish(self, callback, response, *, model):
+        """Run one start/end pair and return the phase_timing log record."""
+        run_id = uuid4()
+        callback.on_chat_model_start({}, [], run_id=run_id, invocation_params={"model": model})
+        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as captured:
+            callback.on_llm_end(response, run_id=run_id)
+        return captured.records[-1]
+
+    def test_reported_counts_reach_the_counters_and_the_log(self):
+        model = "gemini-token-happy-path"
+        before = {k: _token_total(model, k) for k in ("input", "output", "cache_read")}
+
+        record = self._finish(
+            self._callback(),
+            _llm_result(
+                {
+                    "input_tokens": 12_000,
+                    "output_tokens": 300,
+                    "total_tokens": 12_300,
+                    "input_token_details": {"cache_read": 11_500},
+                }
+            ),
+            model=model,
+        )
+
+        self.assertEqual(_token_total(model, "input") - before["input"], 12_000)
+        self.assertEqual(_token_total(model, "output") - before["output"], 300)
+        self.assertEqual(_token_total(model, "cache_read") - before["cache_read"], 11_500)
+        # Same log line as the duration, so one event answers both "how long"
+        # and "what did it cost".
+        self.assertEqual(record._phase, "llm_call")
+        self.assertEqual(record._input_tokens, 12_000)
+        self.assertEqual(record._output_tokens, 300)
+        self.assertEqual(record._cache_read_tokens, 11_500)
+
+    def test_an_absent_usage_block_records_no_zero(self):
+        """The load-bearing rule. A streaming response whose usage never
+        arrived must contribute nothing -- recorded as zeros, a cache that is
+        working perfectly would read as a 0% hit rate."""
+        model = "gemini-token-no-usage"
+        before = _token_total(model, "cache_read")
+
+        record = self._finish(self._callback(), None, model=model)
+
+        self.assertEqual(_token_total(model, "cache_read"), before)
+        self.assertFalse(hasattr(record, "_cache_read_tokens"))
+        self.assertFalse(hasattr(record, "_input_tokens"))
+
+    def test_a_call_that_missed_the_cache_records_a_real_zero(self):
+        """The other half of that rule: a *reported* zero is a measurement and
+        must be counted, or a cold cache is indistinguishable from an
+        unmeasured one."""
+        model = "gemini-token-cold-cache"
+
+        record = self._finish(
+            self._callback(),
+            _llm_result(
+                {
+                    "input_tokens": 9_000,
+                    "output_tokens": 40,
+                    "input_token_details": {"cache_read": 0},
+                }
+            ),
+            model=model,
+        )
+
+        self.assertEqual(record._cache_read_tokens, 0)
+        self.assertEqual(_token_total(model, "input"), 9_000)
+
+    def test_a_usage_block_without_cache_detail_still_records_what_it_has(self):
+        """Not every provider reports a cache breakdown; input/output must not
+        be lost because the third field is missing."""
+        model = "gemini-token-no-detail"
+
+        record = self._finish(
+            self._callback(),
+            _llm_result({"input_tokens": 500, "output_tokens": 20}),
+            model=model,
+        )
+
+        self.assertEqual(record._input_tokens, 500)
+        self.assertFalse(hasattr(record, "_cache_read_tokens"))
+        self.assertEqual(_token_total(model, "cache_read"), 0.0)
+
+    def test_the_legacy_llm_output_shape_is_also_read(self):
+        """Integrations disagree on where usage lands, exactly as they do on
+        the model name -- see _model_name for the same problem."""
+        from langchain_core.outputs import LLMResult
+
+        model = "gemini-token-llm-output"
+        response = LLMResult(
+            generations=[[]],
+            llm_output={"usage_metadata": {"input_tokens": 77, "output_tokens": 7}},
+        )
+
+        record = self._finish(self._callback(), response, model=model)
+
+        self.assertEqual(record._input_tokens, 77)
+        self.assertEqual(_token_total(model, "output"), 7)
+
+    def test_a_failed_call_is_timed_but_charged_no_tokens(self):
+        """on_llm_error carries no response, so there is nothing to read --
+        and inventing a count for a call that produced none would corrupt
+        exactly the series this exists to make trustworthy."""
+        from tta_backend.utils.llm_timing import LlmTimingCallback
+
+        model = "gemini-token-error"
+        callback = LlmTimingCallback()
+        run_id = uuid4()
+
+        before = _phase_samples("llm_call")
+        callback.on_chat_model_start({}, [], run_id=run_id, invocation_params={"model": model})
+        callback.on_llm_error(ValueError("429 quota"), run_id=run_id)
+
+        self.assertEqual(_phase_samples("llm_call")[0] - before[0], 1)
+        self.assertEqual(_token_total(model, "input"), 0.0)
+
+    def test_a_malformed_response_costs_the_field_not_the_turn(self):
+        class Exploding:
+            @property
+            def generations(self):
+                raise RuntimeError("provider changed the payload shape")
+
+        model = "gemini-token-malformed"
+        before = _phase_samples("llm_call")
+
+        record = self._finish(self._callback(), Exploding(), model=model)
+
+        # The span is still recorded: losing telemetry must not lose the turn.
+        self.assertEqual(_phase_samples("llm_call")[0] - before[0], 1)
+        self.assertFalse(hasattr(record, "_input_tokens"))
+
+    def test_tokens_are_attributed_to_the_same_model_as_the_span(self):
+        """The sub-agents run different models concurrently; charging a call's
+        tokens to another call's model would make cost-per-model a guess."""
+        callback = self._callback()
+        supervisor, subagent = "gemini-token-supervisor", "gemini-token-subagent"
+
+        run_a, run_b = uuid4(), uuid4()
+        callback.on_chat_model_start({}, [], run_id=run_a, invocation_params={"model": supervisor})
+        callback.on_chat_model_start({}, [], run_id=run_b, invocation_params={"model": subagent})
+        callback.on_llm_end(_llm_result({"input_tokens": 1_000, "output_tokens": 1}), run_id=run_b)
+        callback.on_llm_end(_llm_result({"input_tokens": 5, "output_tokens": 1}), run_id=run_a)
+
+        self.assertEqual(_token_total(subagent, "input"), 1_000)
+        self.assertEqual(_token_total(supervisor, "input"), 5)
+
+    def test_an_end_without_a_start_charges_no_tokens(self):
+        """No start means no measured span and no model to charge it to -- the
+        same rule the histogram already applies."""
+        model = "gemini-token-orphan"
+        callback = self._callback()
+
+        callback.on_llm_end(_llm_result({"input_tokens": 400, "output_tokens": 9}), run_id=uuid4())
+
+        self.assertEqual(_token_total(model, "input"), 0.0)
+
+
+@unittest.skipIf(
+    importlib.util.find_spec("langchain_core") is None,
+    "langchain_core is not installed",
+)
+class AgentAttributionTests(unittest.TestCase):
+    """``agent_type`` exists because ``model`` cannot stand in for it."""
+
+    def _finish(self, callback, response, *, model):
+        run_id = uuid4()
+        callback.on_chat_model_start({}, [], run_id=run_id, invocation_params={"model": model})
+        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as captured:
+            callback.on_llm_end(response, run_id=run_id)
+        return captured.records[-1]
+
+    def test_the_two_subagents_sharing_a_model_id_are_separable(self):
+        """The whole reason this label exists: both sub-agents default to
+        gemini-3.1-flash-lite, so without agent_type their spend is one
+        indivisible series -- and their prefixes differ by ~3x."""
+        from tta_backend.utils.llm_timing import LlmTimingCallback
+
+        model = "gemini-shared-model-id"
+        satellite = LlmTimingCallback("satellite")
+        ground = LlmTimingCallback("ground_sensor")
+
+        self._finish(satellite, _llm_result({"input_tokens": 13_000, "output_tokens": 1}), model=model)
+        self._finish(ground, _llm_result({"input_tokens": 4_100, "output_tokens": 1}), model=model)
+
+        self.assertEqual(_token_total(model, "input", "satellite"), 13_000)
+        self.assertEqual(_token_total(model, "input", "ground_sensor"), 4_100)
+
+    def test_the_agent_type_reaches_the_log_line_too(self):
+        """Not only the counters: per-agent *latency* is the other question
+        the shared llm_call histogram cannot answer on its own."""
+        from tta_backend.utils.llm_timing import LlmTimingCallback
+
+        record = self._finish(
+            LlmTimingCallback("supervisor"),
+            _llm_result({"input_tokens": 900, "output_tokens": 5}),
+            model="gemini-supervisor-log",
+        )
+
+        self.assertEqual(record._agent_type, "supervisor")
+
+    def test_an_undeclared_build_is_visibly_unknown(self):
+        """Defaulted rather than required, so anything building a model
+        outside the three agents still works -- and says so."""
+        from tta_backend.utils.llm_timing import LlmTimingCallback, timing_callbacks
+
+        self.assertEqual(timing_callbacks()[0]._agent_type, "unknown")
+
+        model = "gemini-undeclared"
+        self._finish(LlmTimingCallback(), _llm_result({"input_tokens": 11, "output_tokens": 1}), model=model)
+
+        self.assertEqual(_token_total(model, "input", "unknown"), 11)
+
+    def test_each_callback_keeps_its_own_in_flight_state(self):
+        """Per-model instances replaced a process-wide singleton; two agents'
+        concurrent calls must not pop each other's start entries."""
+        import time
+
+        from tta_backend.utils.llm_timing import LlmTimingCallback
+
+        a, b = LlmTimingCallback("satellite"), LlmTimingCallback("ground_sensor")
+        run = uuid4()  # deliberately the SAME run_id on both instances
+
+        a.on_chat_model_start({}, [], run_id=run, invocation_params={"model": "m"})
+        time.sleep(0.05)
+        b.on_chat_model_start({}, [], run_id=run, invocation_params={"model": "m"})
+
+        before = _phase_samples("llm_call")
+        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as captured:
+            b.on_llm_end(None, run_id=run)
+            a.on_llm_end(None, run_id=run)
+        spans = [r._duration_seconds for r in captured.records if r._phase == "llm_call"]
+
+        # Asserted as a relationship, not against wall-clock thresholds: a
+        # shared map would let b's end pop a's (earlier) start, leaving a's
+        # end with nothing to record -- so "two spans, and the one that
+        # started first is the longer" is the discriminating claim and does
+        # not flake on a slow or coarse clock.
+        self.assertEqual(_phase_samples("llm_call")[0] - before[0], 2)
+        b_seconds, a_seconds = spans
+        self.assertGreater(a_seconds, b_seconds)
+
+
+@unittest.skipIf(
+    importlib.util.find_spec("langchain_google_genai") is None,
+    "langchain_google_genai is not installed",
+)
+class AgentTypeWiringTests(unittest.TestCase):
+    """Each agent must declare itself at the one seam that builds its model;
+    an agent that forgets is silently attributed to "unknown"."""
+
+    def _agent_type_of(self, model):
+        from tta_backend.utils.llm_timing import LlmTimingCallback
+
+        callback = next(
+            cb for cb in (model.callbacks or []) if isinstance(cb, LlmTimingCallback)
+        )
+        return callback._agent_type
+
+    def test_build_chat_model_forwards_the_declared_agent_type(self):
+        from tta_backend.config.model_factory import build_chat_model
+        from tta_backend.config.settings import Settings
+
+        model = build_chat_model(
+            "google", "gemini-3.1-flash-lite", Settings(google_api_key="k"), agent_type="satellite"
+        )
+
+        self.assertEqual(self._agent_type_of(model), "satellite")
+
+    def test_every_agent_declares_a_vocabulary_value_that_joins(self):
+        """The values must match AGENT_REQUESTS_TOTAL's, or tokens-per-agent-
+        call needs a relabel to join. Read off the real build functions rather
+        than restated here, so renaming one and not the other fails."""
+        import re
+
+        expected = {
+            "tta_backend/agents/earthdata_agent.py": "satellite",
+            "tta_backend/agents/ground_sensor_agent.py": "ground_sensor",
+            "tta_backend/agents/supervisor_agent.py": "supervisor",
+        }
+        root = os.path.dirname(TESTS_DIR)
+        for relative, agent_type in expected.items():
+            source = open(os.path.join(root, relative), encoding="utf-8").read()
+            found = re.findall(r"build_chat_model\([^)]*agent_type=\"([^\"]+)\"", source)
+            self.assertEqual(
+                found,
+                [agent_type],
+                f"{relative} does not declare agent_type={agent_type!r} exactly once",
             )
 
 

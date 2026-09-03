@@ -128,6 +128,48 @@ CUBE_INDEX_INVALIDATIONS_TOTAL = Counter(
     "cube_index_invalidations_total",
     "Indexed cubes dropped because a verified export delivered different content.",
 )
+# Token accounting for provider chat completions (utils/llm_timing.py). The
+# ``llm_call`` histogram made model *latency* visible; this makes model *cost*
+# visible, which nothing in this backend could measure before -- so "what does
+# a turn cost" and "is the constant prefix hitting the provider's prompt cache"
+# were both unanswerable.
+#
+# ``kind`` is one of:
+#   input       -- total prompt tokens billed for the call
+#   output      -- completion tokens, thinking/reasoning tokens included
+#   cache_read  -- the SUBSET of ``input`` that hit the provider's prompt cache
+#
+# cache_read is a *breakdown* of input, never additional to it (that is
+# LangChain's UsageMetadata contract: input_token_details decomposes
+# input_tokens). So the cache hit rate is cache_read/input, and summing the
+# three kinds does not give a meaningful total -- an alert that does so is
+# double-counting the cached tokens.
+#
+# Deliberately NOT pre-declared in initialize_labelsets() like every other
+# labelset here: the model label is configuration (config/settings.py resolves
+# it from the environment per agent), not a closed vocabulary, so hardcoding
+# ids here would duplicate _VETTED_MODELS and go stale the first time one is
+# swapped. A model with no series has genuinely never been called.
+# ``agent_type`` uses the SAME vocabulary as AGENT_REQUESTS_TOTAL above
+# ("satellite", "ground_sensor", plus "supervisor" which never makes a subagent
+# call), so tokens-per-agent-call joins across the two without a relabel. The
+# codebase carries two other spellings for the same concept -- "earthdata" in
+# the trim middleware, "ground sensor" in ENVELOPE_SALVAGED_TOTAL -- and this
+# deliberately matches neither of those: the join that pays is against
+# agent_requests_total.
+#
+# The label exists because ``model`` cannot substitute for it. Both sub-agents
+# default to the same model id (gemini-3.1-flash-lite), so without this the
+# earthdata agent's spend and the ground agent's spend are one indivisible
+# series -- and they have very different prefixes, which is exactly what
+# anyone reading this metric is trying to compare.
+LLM_TOKENS_TOTAL = Counter(
+    "llm_tokens_total",
+    "Provider tokens billed for chat completions, by model, agent_type and "
+    "kind. 'cache_read' is the subset of 'input' that hit the prompt cache, "
+    "not an addition to it.",
+    ["model", "agent_type", "kind"],
+)
 PIPELINE_PHASE_DURATION_SECONDS = Histogram(
     "pipeline_phase_duration_seconds",
     "Wall-clock duration of one retrieval/visualization pipeline phase in seconds.",
@@ -253,6 +295,16 @@ def observe_harmony_fetch(duration_seconds: float) -> None:
 
 def observe_phase_duration(phase: str, duration_seconds: float) -> None:
     PIPELINE_PHASE_DURATION_SECONDS.labels(phase=phase).observe(duration_seconds)
+
+
+def record_llm_tokens(model: str, agent_type: str, kind: str, tokens: int) -> None:
+    """Add ``tokens`` to the ``model``/``agent_type``/``kind`` series.
+
+    Called only for a count the provider actually reported -- see
+    utils.llm_timing._usage_context for why an absent count must not be
+    recorded as a zero.
+    """
+    LLM_TOKENS_TOTAL.labels(model=model, agent_type=agent_type, kind=kind).inc(tokens)
 
 
 def record_cache_hit(cache_level: str) -> None:
