@@ -418,6 +418,80 @@ class ConfigLoggingTests(unittest.TestCase):
         )
         loaded.validate_startup()  # must not raise
 
+    def test_map_tile_urls_substitute_the_api_key_placeholder(self):
+        from tta_backend.config.settings import get_settings
+
+        with patch.dict(os.environ, {"MAP_TILE_API_KEY": "abc123"}, clear=True):
+            get_settings.cache_clear()
+            loaded = get_settings()
+
+        # CARTO began watermarking keyless raster tiles in Aug 2026. The key is
+        # the only per-deployment part, so it is its own env var and the URLs
+        # keep their defaults -- the placeholder says where it lands.
+        self.assertEqual(
+            loaded.resolved_map_basemap_light_url,
+            "https://basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png?key=abc123",
+        )
+        self.assertEqual(
+            loaded.resolved_map_basemap_dark_url,
+            "https://basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png?key=abc123",
+        )
+
+    def test_map_tile_terrain_url_never_receives_the_carto_key(self):
+        from tta_backend.config.settings import get_settings
+
+        with patch.dict(os.environ, {"MAP_TILE_API_KEY": "abc123"}, clear=True):
+            get_settings.cache_clear()
+            loaded = get_settings()
+
+        # Terrain is AWS, not CARTO. Blanket-appending the key to whatever URL
+        # is configured would ship a CARTO credential to an unrelated host, so
+        # substitution is opt-in per URL via the placeholder.
+        self.assertNotIn("abc123", loaded.resolved_map_terrain_dem_url)
+        self.assertEqual(loaded.resolved_map_terrain_dem_url, loaded.map_terrain_dem_url)
+
+    def test_map_tile_urls_drop_the_key_parameter_when_no_key_is_configured(self):
+        from tta_backend.config.settings import get_settings
+
+        with patch.dict(os.environ, {}, clear=True):
+            get_settings.cache_clear()
+            loaded = get_settings()
+
+        # An unset key must yield exactly the old keyless URL -- not a dangling
+        # "?key=" and not a literal "{key}" handed to the browser, which is the
+        # failure the endpoint test below would otherwise pass straight through.
+        self.assertEqual(
+            loaded.resolved_map_basemap_light_url,
+            "https://basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png",
+        )
+        self.assertNotIn("{key}", loaded.resolved_map_basemap_dark_url)
+
+    def test_map_tile_url_override_without_a_placeholder_is_left_alone(self):
+        from tta_backend.config.settings import get_settings
+
+        override = "https://tiles.internal.example/dem/{z}/{x}/{y}.png"
+        with patch.dict(
+            os.environ,
+            {"MAP_TILE_API_KEY": "abc123", "MAP_BASEMAP_LIGHT_URL": override},
+            clear=True,
+        ):
+            get_settings.cache_clear()
+            loaded = get_settings()
+
+        # Swapping in a self-hosted or non-CARTO provider stays a URL-only
+        # change: no placeholder, no key, nothing appended.
+        self.assertEqual(loaded.resolved_map_basemap_light_url, override)
+
+    def test_map_tile_api_key_is_url_encoded_into_the_query(self):
+        from tta_backend.config.settings import get_settings
+
+        with patch.dict(os.environ, {"MAP_TILE_API_KEY": "a b&c=d"}, clear=True):
+            get_settings.cache_clear()
+            loaded = get_settings()
+
+        # A key carrying & or = would otherwise forge extra query parameters.
+        self.assertTrue(loaded.resolved_map_basemap_light_url.endswith("?key=a%20b%26c%3Dd"))
+
     def test_settings_normalizes_invalid_modes(self):
         from tta_backend.config.settings import get_settings
 

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
@@ -164,10 +165,22 @@ class LlmTimingCallback(BaseCallbackHandler):
     mean a contextvar the sub-agent dispatch path would have to set and the
     supervisor would have to unset around every delegation -- state that can
     be wrong, standing in for something that never changes.
+
+    ``clock`` exists so tests can drive spans deterministically. The default
+    is the monotonic source every production path uses; overriding it does not
+    change what is measured, only where the numbers come from. It is a seam
+    rather than a mock of ``time`` because patching the module attribute would
+    retime every other thread running alongside the test.
     """
 
-    def __init__(self, agent_type: str = "unknown") -> None:
+    def __init__(
+        self,
+        agent_type: str = "unknown",
+        *,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._agent_type = agent_type
+        self._clock = clock
         self._started: dict[UUID, tuple[float, str]] = {}
         self._retries: dict[UUID, int] = {}
         self._lock = threading.Lock()
@@ -175,7 +188,7 @@ class LlmTimingCallback(BaseCallbackHandler):
     def _begin(self, run_id: UUID, serialized: dict[str, Any] | None, kwargs: dict[str, Any]) -> None:
         model = _model_name(serialized, kwargs)
         with self._lock:
-            self._started[run_id] = (time.monotonic(), model)
+            self._started[run_id] = (self._clock(), model)
             while len(self._started) > _MAX_TRACKED_RUNS:
                 self._started.pop(next(iter(self._started)), None)
 
@@ -191,7 +204,7 @@ class LlmTimingCallback(BaseCallbackHandler):
         started, model = entry
         record_phase(
             "llm_call",
-            time.monotonic() - started,
+            self._clock() - started,
             model=model,
             agent_type=self._agent_type,
             outcome=outcome,

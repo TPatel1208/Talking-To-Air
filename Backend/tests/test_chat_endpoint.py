@@ -1070,9 +1070,14 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status_code, 200)
         body = response.json()
-        self.assertEqual(body["basemap_light_url"], self.api.settings.map_basemap_light_url)
-        self.assertEqual(body["basemap_dark_url"], self.api.settings.map_basemap_dark_url)
-        self.assertEqual(body["terrain_dem_url"], self.api.settings.map_terrain_dem_url)
+        # The *resolved* URLs: comparing against the raw settings would pass
+        # while serving a literal "{key}" to the browser, since the defaults
+        # now carry the MAP_TILE_API_KEY placeholder.
+        self.assertEqual(body["basemap_light_url"], self.api.settings.resolved_map_basemap_light_url)
+        self.assertEqual(body["basemap_dark_url"], self.api.settings.resolved_map_basemap_dark_url)
+        self.assertEqual(body["terrain_dem_url"], self.api.settings.resolved_map_terrain_dem_url)
+        for url in (body["basemap_light_url"], body["basemap_dark_url"], body["terrain_dem_url"]):
+            self.assertNotIn("{key}", url)
         self.assertEqual(body["basemap_attribution"], self.api.settings.map_basemap_attribution)
         self.assertEqual(body["terrain_attribution"], self.api.settings.map_terrain_attribution)
 

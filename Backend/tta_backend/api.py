@@ -745,12 +745,14 @@ async def heap_snapshot(request: Request, limit: int = 25):
 def config_map_tiles(request: Request):
     """T23: basemap/terrain tile sources as configuration, not code, so a
     keyed or self-hosted provider can be swapped in without a redeploy.
-    Unauthenticated -- these are non-sensitive, static URLs the map needs
-    before the chart underneath it can even render."""
+    Unauthenticated -- the map needs these before the chart underneath it can
+    even render, and MAP_TILE_API_KEY (substituted by the resolved_* properties
+    below) is not a secret: the browser must send it to CARTO on every tile
+    regardless, so it is domain-restricted at the provider, not hidden here."""
     return {
-        "basemap_light_url": settings.map_basemap_light_url,
-        "basemap_dark_url": settings.map_basemap_dark_url,
-        "terrain_dem_url": settings.map_terrain_dem_url,
+        "basemap_light_url": settings.resolved_map_basemap_light_url,
+        "basemap_dark_url": settings.resolved_map_basemap_dark_url,
+        "terrain_dem_url": settings.resolved_map_terrain_dem_url,
         "basemap_attribution": settings.map_basemap_attribution,
         "terrain_attribution": settings.map_terrain_attribution,
     }

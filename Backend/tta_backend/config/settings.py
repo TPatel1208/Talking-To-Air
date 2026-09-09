@@ -4,13 +4,18 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from functools import lru_cache
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 from dotenv import load_dotenv
 
 from tta_backend.utils.connector_crypto import ConnectorCryptoError, build_multi_fernet
 
 _VALID_FETCH_MODES = {"auto", "harmony", "opendap", "s3"}
+
+# Where MAP_TILE_API_KEY is substituted into a tile URL. Resolved server-side
+# in config_map_tiles, so it cannot collide with MapLibre's {z}/{x}/{y},
+# which the browser substitutes.
+_TILE_KEY_PLACEHOLDER = "{key}"
 _VALID_LOG_FORMATS = {"text", "json"}
 
 # Model ids reach the provider SDK unvalidated (see config/model_factory.py),
@@ -465,18 +470,35 @@ class Settings:
     # blocking boot (ground/EPA-only deployments never need this).
     connector_encryption_key: str | None = field(default_factory=lambda: os.getenv("CONNECTOR_ENCRYPTION_KEY"))
 
-    # T23 MapLibre basemap/terrain sources -- free-tier defaults, no API key.
-    # Configuration (not code) so a keyed/self-hosted provider can be swapped
-    # in without a redeploy as traffic grows; see the T23 PRD's "Further
-    # Notes" on these providers' lack of an SLA.
+    # T23 MapLibre basemap/terrain sources. Configuration (not code) so a
+    # keyed/self-hosted provider can be swapped in without a redeploy as
+    # traffic grows; see the T23 PRD's "Further Notes" on these providers'
+    # lack of an SLA.
+    #
+    # CARTO began watermarking keyless raster tiles "API KEY REQUIRED" in late
+    # August 2026. The key is free (5M tile requests/month) and is the only
+    # part that varies per deployment, so it gets its own env var and these
+    # URLs keep their defaults -- {key} marks where it lands. Substitution is
+    # opt-in per URL precisely so a non-CARTO override (terrain is AWS) never
+    # receives a CARTO credential.
+    #
+    # This key is not a secret: /config/map-tiles is unauthenticated, and the
+    # browser must send the key to CARTO for every tile regardless. Restrict
+    # it by domain in the CARTO console rather than trying to hide it, and
+    # don't reuse a key that also reaches other CARTO APIs.
+    map_tile_api_key: str | None = field(
+        default_factory=lambda: os.getenv("MAP_TILE_API_KEY", "").strip() or None
+    )
     map_basemap_light_url: str = field(
         default_factory=lambda: os.getenv(
-            "MAP_BASEMAP_LIGHT_URL", "https://basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png"
+            "MAP_BASEMAP_LIGHT_URL",
+            "https://basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png?key={key}",
         )
     )
     map_basemap_dark_url: str = field(
         default_factory=lambda: os.getenv(
-            "MAP_BASEMAP_DARK_URL", "https://basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png"
+            "MAP_BASEMAP_DARK_URL",
+            "https://basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png?key={key}",
         )
     )
     map_terrain_dem_url: str = field(
@@ -490,6 +512,46 @@ class Settings:
     map_terrain_attribution: str = field(
         default_factory=lambda: os.getenv("MAP_TERRAIN_ATTRIBUTION", "Terrain tiles: AWS Terrain Tiles")
     )
+
+    def _resolve_tile_url(self, url: str) -> str:
+        """Substitute MAP_TILE_API_KEY into a tile URL, or strip the parameter
+        holding the placeholder when no key is configured.
+
+        A URL without the placeholder is returned untouched -- that is what
+        keeps a swapped-in provider from being handed CARTO's key.
+
+        Dropping the whole parameter (rather than substituting an empty
+        string) matters: an unset key must reproduce the exact keyless URL
+        this shipped with before, not a dangling "?key=" that some CDNs treat
+        as a malformed request. The placeholder is only recognised in the
+        query string, which is where every provider we ship takes it.
+        """
+        if _TILE_KEY_PLACEHOLDER not in url:
+            return url
+
+        key = (self.map_tile_api_key or "").strip()
+        if key:
+            return url.replace(_TILE_KEY_PLACEHOLDER, quote(key, safe=""))
+
+        parts = urlsplit(url)
+        kept = [
+            (name, value)
+            for name, value in parse_qsl(parts.query, keep_blank_values=True)
+            if _TILE_KEY_PLACEHOLDER not in value and _TILE_KEY_PLACEHOLDER not in name
+        ]
+        return urlunsplit(parts._replace(query=urlencode(kept)))
+
+    @property
+    def resolved_map_basemap_light_url(self) -> str:
+        return self._resolve_tile_url(self.map_basemap_light_url)
+
+    @property
+    def resolved_map_basemap_dark_url(self) -> str:
+        return self._resolve_tile_url(self.map_basemap_dark_url)
+
+    @property
+    def resolved_map_terrain_dem_url(self) -> str:
+        return self._resolve_tile_url(self.map_terrain_dem_url)
 
     def __post_init__(self) -> None:
         if self.data_fetch_mode not in _VALID_FETCH_MODES:
