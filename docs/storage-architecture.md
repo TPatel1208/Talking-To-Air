@@ -4,9 +4,9 @@ Everything this stack persists data to: one PostgreSQL database, four Docker
 named volumes, and one ephemeral OS-tempdir cache. No Redis, no queue, no
 second database — Postgres is the only database in the stack.
 
-## 1. PostgreSQL + PostGIS
+## 1. PostgreSQL
 
-Container `db` (`postgis/postgis:16-3.4`), database `talking_to_air_memory`,
+Container `db` (`postgres:16`), database `talking_to_air_memory`,
 backed by named volume `pg_data`. Connected to via a shared async connection
 pool ([Backend/utils/db.py](../Backend/utils/db.py)).
 
@@ -107,6 +107,70 @@ exact columns are the library's to change):
 (thread_id, checkpoint_ns, checkpoint_id, task_id, idx, channel, type, blob BYTEA, task_path)
   PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx)
 ```
+
+### Migrating a pg_data volume off the PostGIS image
+
+The `db` service ran `postgis/postgis:16-3.4` until it was swapped for
+`postgres:16`. Nothing in this stack ever used PostGIS: no table declares a
+`geometry`/`geography` column and no query calls an `ST_*` function. Region
+masking is done in Python with shapely, in-process, against files — it never
+touches the database. What the PostGIS image did leave behind is its own
+initdb scaffolding: the `postgis`, `postgis_topology`,
+`postgis_tiger_geocoder` and `fuzzystrmatch` extensions, a `template_postgis`
+database, a `spatial_ref_sys` table, and the empty `tiger`/`topology` schemas.
+
+A fresh volume gets none of that. An **already-initialised** `pg_data` volume
+keeps every one of those catalog entries after the image swap, and their
+shared library is now gone from the container. The server still starts and
+every application query still works — none of them resolve a PostGIS symbol —
+but `pg_dump` will emit `CREATE EXTENSION postgis` that no plain-Postgres
+target can restore. Drop them once, **while the PostGIS image is still the
+one running**, then swap:
+
+```bash
+docker compose exec db psql -U postgres -d talking_to_air_memory   -c 'DROP EXTENSION IF EXISTS postgis_tiger_geocoder CASCADE;'   -c 'DROP EXTENSION IF EXISTS postgis_topology CASCADE;'   -c 'DROP EXTENSION IF EXISTS postgis CASCADE;'   -c 'DROP EXTENSION IF EXISTS fuzzystrmatch CASCADE;'   -c 'DROP SCHEMA IF EXISTS tiger CASCADE;'   -c 'DROP SCHEMA IF EXISTS tiger_data CASCADE;'   -c 'DROP SCHEMA IF EXISTS topology CASCADE;'
+docker compose exec db psql -U postgres -c 'DROP DATABASE IF EXISTS template_postgis;'
+```
+
+`template_postgis` is marked as a template, so that last `DROP DATABASE`
+fails until `UPDATE pg_database SET datistemplate = false WHERE datname =
+'template_postgis';` clears the flag. The `CASCADE`s are safe here precisely
+because nothing depends on those objects — confirm with the
+`information_schema.columns` query for `udt_name IN ('geometry','geography')`
+before running them, and expect hits only in `tiger.*`.
+
+If the swap already happened without this, roll `image:` back to
+`postgis/postgis:16-3.4` for one `docker compose up -d db`, run the drops, then
+swap forward again.
+
+#### The collation mismatch the swap also triggers
+
+`postgis/postgis:16-3.4` and today's `postgres:16` are built on different
+Debian releases, so they ship different glibc versions (2.31 vs 2.41). Every
+text index in an existing `pg_data` was sorted under the old rules, and the new
+server compares under the new ones -- which is silent wrong answers on index
+scans, not an error. Postgres reports it only as a `WARNING: database ... has a
+collation version mismatch` on each connect. It is load-bearing here: the PKs on
+`agent_charts.id`, `idx_agent_charts_thread_created (thread_id, ...)`, the
+`user_connectors` UNIQUE, and LangGraph's checkpoint PKs are all TEXT.
+
+Rebuild the indexes, then record the new version, once per database:
+
+```bash
+for d in talking_to_air_memory postgres template1; do
+  docker compose exec db psql -U postgres -d "$d"     -c "REINDEX DATABASE $d;"     -c "ALTER DATABASE $d REFRESH COLLATION VERSION;"
+done
+```
+
+Check it took with `SELECT datname, datcollversion,
+pg_database_collation_actual_version(oid) FROM pg_database;` -- the two columns
+must agree, and connecting must stop warning. `template0` reports no version
+and needs nothing. This is not specific to dropping PostGIS: any image swap
+that moves the base OS across a glibc release wants the same treatment.
+
+Recreating `db` drops the backend's connection pool. It self-heals -- psycopg
+logs `discarding closed connection` and `/health` returns 503 for a poll or two
+before recovering on its own -- so no backend restart is needed.
 
 ## 2. Docker named volumes (file storage)
 
@@ -244,7 +308,7 @@ designer — they can't read the code, so this spells out every fact needed:
 >
 > **Tier 2 — Persistent storage** (Docker named volumes), six boxes below
 > tier 1, each with an arrow up to Backend:
-> 1. **PostgreSQL + PostGIS** (volume `pg_data`) — list inside:
+> 1. **PostgreSQL** (volume `pg_data`) — list inside:
 >    `session_metadata`, `agent_charts`, `agent_artifacts`, `user_connectors`, and LangGraph's own
 >    `checkpoints`/`checkpoint_blobs`/`checkpoint_writes` tables.
 > 2. **plot_outputs** volume — chart PNGs; arrows from *both* Frontend and

@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Must match Backend/Dockerfile's base image (python:3.12-bullseye) â€”
+      # Must match Backend/Dockerfile's base image (python:3.12-bookworm) â€”
       # CI is worthless as a gate if it runs the suite on an interpreter we
       # don't ship. Backend/ruff.toml, Backend/mypy.ini and pyproject.toml's
       # requires-python all say 3.12 too; keep all five in step.

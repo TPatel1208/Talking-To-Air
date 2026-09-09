@@ -1,5 +1,13 @@
 # â”€â”€ Stage 1: Builder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-FROM python:3.12-bullseye AS builder
+# Debian 12 (bookworm), not 11 (bullseye). Bullseye's LTS window closed and
+# its security archive stopped being republished, so the Release file for
+# bullseye-security went past its Valid-Until on 2026-09-07 and `apt-get
+# update` now exits 100 on every build from a cold cache. Nothing in the repo
+# changed to cause it and nothing in the repo could have prevented it -- the
+# base image simply aged out. Pinning an older digest would not help: the
+# expiry is in the archive apt fetches at build time, not in the image.
+# Keep the CI comment in .github/workflows/backend-ci.yml in step with this.
+FROM python:3.12-bookworm AS builder
 
 WORKDIR /app
 
@@ -36,7 +44,7 @@ RUN pip install --no-cache-dir -r requirements-dev.txt
 
 
 # â”€â”€ Stage 3: Runtime â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-FROM python:3.12-bullseye AS runtime
+FROM python:3.12-bookworm AS runtime
 
 WORKDIR /app
 
