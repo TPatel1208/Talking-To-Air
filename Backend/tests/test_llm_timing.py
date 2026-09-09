@@ -150,10 +150,12 @@ class RecordPhaseTests(unittest.TestCase):
     "langchain_core is not installed",
 )
 class LlmTimingCallbackTests(unittest.TestCase):
-    def _callback(self):
+    def _callback(self, clock=None):
         from tta_backend.utils.llm_timing import LlmTimingCallback
 
-        return LlmTimingCallback()
+        if clock is None:
+            return LlmTimingCallback()
+        return LlmTimingCallback(clock=clock)
 
     def test_a_chat_model_call_records_its_span(self):
         """on_chat_model_start, not on_llm_start, is what a chat model
@@ -224,25 +226,50 @@ class LlmTimingCallbackTests(unittest.TestCase):
 
     def test_concurrent_calls_are_not_attributed_to_each_other(self):
         """The sub-agent dispatch path runs several models at once; a single
-        start timestamp would charge one call's span to another."""
-        import time
+        start timestamp would charge one call's span to another.
 
-        callback = self._callback()
+        Driven by an injected clock rather than time.sleep. The wall-clock
+        version asserted an upper bound (fast < 0.05s) on a span covering two
+        callback invocations, so any scheduling delay on a busy machine failed
+        it -- observed 2026-09-08 during a full suite run sharing the host with
+        a docker build, passing immediately in isolation. A fake clock makes
+        both spans exact, which is a stronger assertion than either bound.
+        """
+        ticks = iter([100.0, 100.06, 100.09, 100.20])
+        callback = self._callback(clock=lambda: next(ticks))
         slow, fast = uuid4(), uuid4()
 
-        callback.on_chat_model_start({}, [], run_id=slow)
-        time.sleep(0.06)
-        callback.on_chat_model_start({}, [], run_id=fast)
+        callback.on_chat_model_start({}, [], run_id=slow)  # t=100.00
+        callback.on_chat_model_start({}, [], run_id=fast)  # t=100.06
         with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as captured:
-            callback.on_llm_end(None, run_id=fast)
+            callback.on_llm_end(None, run_id=fast)  # t=100.09
         fast_seconds = captured.records[-1]._duration_seconds
 
         with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as captured:
-            callback.on_llm_end(None, run_id=slow)
+            callback.on_llm_end(None, run_id=slow)  # t=100.20
         slow_seconds = captured.records[-1]._duration_seconds
 
-        self.assertLess(fast_seconds, 0.05)
-        self.assertGreaterEqual(slow_seconds, 0.06)
+        # Each span is measured from its own start, not the other's: charging
+        # fast's end to slow's start would report 0.09, and slow's end to
+        # fast's start 0.14. Both are excluded to within floating-point noise.
+        self.assertAlmostEqual(fast_seconds, 0.03, places=6)
+        self.assertAlmostEqual(slow_seconds, 0.20, places=6)
+
+    def test_the_callback_defaults_to_a_monotonic_clock(self):
+        """The injected clock above is a test seam; the shipped default has to
+        be the monotonic source, or production spans would measure nothing."""
+        import time
+
+        callback = self._callback()
+        run_id = uuid4()
+
+        callback.on_chat_model_start({}, [], run_id=run_id)
+        time.sleep(0.02)
+        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as captured:
+            callback.on_llm_end(None, run_id=run_id)
+
+        # A lower bound only: delays can only push this up, never below.
+        self.assertGreaterEqual(captured.records[-1]._duration_seconds, 0.01)
 
     def test_an_end_without_a_start_records_nothing(self):
         """Recording a span that was never measured would put a fabricated
