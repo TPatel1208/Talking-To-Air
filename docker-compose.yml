@@ -10,9 +10,15 @@
 
 services:
 
-  # ── PostgreSQL + PostGIS (conversation memory) ────────────────────────────────
+  # ── PostgreSQL (conversation memory) ─────────────────────────────────────────
   db:
-    image: postgis/postgis:16-3.4
+    # Plain Postgres, not postgis/postgis: nothing here stores a geometry or
+    # geography column and no query calls an ST_* function -- the PostGIS
+    # image only ever left its own empty tiger/topology scaffolding behind.
+    # Same major version, so an existing pg_data volume mounts unchanged; see
+    # docs/storage-architecture.md for the one-time DROP EXTENSION an already
+    # -initialised volume needs.
+    image: postgres:16
     container_name: tta-db
     restart: unless-stopped
     environment:
