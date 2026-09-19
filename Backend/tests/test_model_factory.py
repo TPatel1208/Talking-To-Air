@@ -1,8 +1,4 @@
-import importlib.util
 import unittest
-
-
-_HAS_GOOGLE_GENAI = importlib.util.find_spec("langchain_google_genai") is not None
 
 
 class ModelFactoryTests(unittest.TestCase):
@@ -18,11 +14,6 @@ class ModelFactoryTests(unittest.TestCase):
         self.assertEqual(model.model_name, "openai/gpt-oss-120b")
         self.assertEqual(model.groq_api_key.get_secret_value(), "groq-secret")
 
-    @unittest.skipUnless(
-        _HAS_GOOGLE_GENAI,
-        "langchain_google_genai is an optional dep not installed on this host "
-        "(installed in the backend-test Docker image; see CLAUDE.md)",
-    )
     def test_google_provider_yields_a_model_bound_to_gemini(self):
         from tta_backend.config.model_factory import build_chat_model
         from tta_backend.config.settings import Settings

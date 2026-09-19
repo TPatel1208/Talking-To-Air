@@ -19,7 +19,6 @@ Like the timer they record through, both sit on the hot path, so the
 governing constraint is the same: a telemetry failure must never be the
 reason a turn fails.
 """
-import importlib.util
 import os
 import sys
 import unittest
@@ -145,10 +144,6 @@ class RecordPhaseTests(unittest.TestCase):
         self.assertGreaterEqual(record._duration_seconds, 0.015)
 
 
-@unittest.skipIf(
-    importlib.util.find_spec("langchain_core") is None,
-    "langchain_core is not installed",
-)
 class LlmTimingCallbackTests(unittest.TestCase):
     def _callback(self, clock=None):
         from tta_backend.utils.llm_timing import LlmTimingCallback
@@ -349,10 +344,6 @@ class LlmTimingCallbackTests(unittest.TestCase):
         callback.on_retry(Hostile(), run_id=uuid4())  # must not raise
 
 
-@unittest.skipIf(
-    importlib.util.find_spec("langchain_google_genai") is None,
-    "langchain_google_genai is not installed",
-)
 class ModelFactoryWiringTests(unittest.TestCase):
     """The timer is only worth having if it is actually attached -- and
     build_chat_model is the one seam that guarantees every agent gets it."""
@@ -374,10 +365,6 @@ class AgentStepTimingTests(unittest.IsolatedAsyncioTestCase):
     """``agent_step`` covers what ``llm_call`` cannot: checkpointer writes and
     graph overhead. The difference between the two separates "the model was
     slow" from "we were slow around it"."""
-
-    async def asyncSetUp(self):
-        if importlib.util.find_spec("langchain_core") is None:
-            self.skipTest("langchain_core is not installed")
 
     def _agent(self, chunks):
         class FakeAgent:
@@ -469,10 +456,6 @@ class PhaseVocabularyTests(unittest.TestCase):
             )
 
 
-@unittest.skipIf(
-    importlib.util.find_spec("langchain_core") is None,
-    "langchain_core is not installed",
-)
 class TokenAccountingTests(unittest.TestCase):
     """The token half of the ``llm_call`` callback.
 
@@ -644,10 +627,6 @@ class TokenAccountingTests(unittest.TestCase):
         self.assertEqual(_token_total(model, "input"), 0.0)
 
 
-@unittest.skipIf(
-    importlib.util.find_spec("langchain_core") is None,
-    "langchain_core is not installed",
-)
 class AgentAttributionTests(unittest.TestCase):
     """``agent_type`` exists because ``model`` cannot stand in for it."""
 
@@ -729,10 +708,6 @@ class AgentAttributionTests(unittest.TestCase):
         self.assertGreater(a_seconds, b_seconds)
 
 
-@unittest.skipIf(
-    importlib.util.find_spec("langchain_google_genai") is None,
-    "langchain_google_genai is not installed",
-)
 class AgentTypeWiringTests(unittest.TestCase):
     """Each agent must declare itself at the one seam that builds its model;
     an agent that forgets is silently attributed to "unknown"."""
