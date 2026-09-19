@@ -453,6 +453,13 @@ class Settings:
     debug_heap_profiling_enabled: bool = field(
         default_factory=lambda: os.getenv("DEBUG_HEAP_PROFILING_ENABLED", "").strip() == "1"
     )
+    # T63 Phase 2: the kill-switch between the streaming POST and detached
+    # turns. Wholesale, never a blend -- the two disagree about what POST
+    # /chat returns, so a per-request mix would leave the client guessing.
+    # Off until the frontend speaks the 202-then-GET protocol (Phase 5).
+    chat_detached_turns_enabled: bool = field(
+        default_factory=lambda: os.getenv("CHAT_DETACHED_TURNS_ENABLED", "").strip() == "1"
+    )
     long_request_seconds: float = field(default_factory=lambda: float(os.getenv("LONG_REQUEST_SECONDS", "30")))
     # T61: Supabase is the identity provider; our own Postgres stays. Both are
     # required at boot (validate_startup) now that the auth middleware verifies

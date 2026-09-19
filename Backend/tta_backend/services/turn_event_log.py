@@ -193,6 +193,20 @@ class TurnEventLog:
         pipe.expire(key, self._ttl_seconds)
         await pipe.execute()
 
+    async def terminal_of(self, turn_id: str) -> str | None:
+        """How this turn ended, or None while it is still going.
+
+        ``read`` reports a terminal only when the entry carrying it falls
+        inside the page it returned, so a reader resuming from a cursor at or
+        past the end never learns the turn is over. Read off the last entry,
+        which is what the terminal entry always is — nothing writes under a
+        turn id once it is marked.
+        """
+        entries = await self._redis.xrevrange(self._key(turn_id), max="+", min="-", count=1)
+        if not entries:
+            return None
+        return (entries[0][1] or {}).get("terminal")
+
     async def read(self, turn_id: str, cursor: str | None = None) -> TurnEventPage:
         """Everything written after ``cursor``, plus where to resume next.
 

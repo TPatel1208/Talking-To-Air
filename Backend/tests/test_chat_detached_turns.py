@@ -1,0 +1,291 @@
+"""Chat turns that outlive the connection that started them (T63 Phase 2).
+
+``POST /chat`` accepts the message and hands back a turn id; the turn runs on
+its own and writes into the event log; ``GET /chat/{thread_id}/stream`` is the
+only thing that ever produces SSE. Switching away, sleeping a laptop or being
+routed to a different replica costs a reader its cursor, never the turn.
+
+Behind ``CHAT_DETACHED_TURNS_ENABLED``, off by default — the frontend does not
+speak this protocol until Phase 5, so the old streaming POST stays the
+shipped behaviour until it does.
+
+Real Redis, same as the registry and event log tests.
+"""
+from __future__ import annotations
+
+import asyncio
+import importlib.util
+import json
+import os
+import sys
+import unittest
+import uuid
+from unittest.mock import patch
+
+TESTS_DIR = os.path.dirname(__file__)
+if TESTS_DIR not in sys.path:
+    sys.path.insert(0, TESTS_DIR)
+
+import auth_helpers  # noqa: E402 -- needs the TESTS_DIR insert above
+from test_turn_registry import REDIS_URL, requires_redis  # noqa: E402
+
+_REQUIRED = ["fastapi", "httpx", "jwt", "langchain", "langgraph"]
+
+
+@requires_redis
+@unittest.skipIf(
+    any(importlib.util.find_spec(module) is None for module in _REQUIRED),
+    "chat endpoint dependencies are not installed",
+)
+class DetachedChatTurnTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        import httpx
+        import tta_backend.api as api
+        from tta_backend.config.settings import get_settings
+        from tta_backend.services.turn_event_log import TurnEventLog
+        from tta_backend.services.turn_registry import TurnRegistry
+
+        self.httpx = httpx
+        self.api = api
+        self.api.app.state.agent = object()
+        self.api.app.state.earthdata_mcp_tools = {}
+
+        patcher = patch.dict(os.environ, {"CHAT_DETACHED_TURNS_ENABLED": "1"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        get_settings.cache_clear()
+        self.addCleanup(get_settings.cache_clear)
+
+        self.log = TurnEventLog(REDIS_URL)
+        self.addAsyncCleanup(self.log.aclose)
+        self.registry = TurnRegistry(self.log, url=REDIS_URL)
+        self.addAsyncCleanup(self.registry.aclose)
+        self.api.app.state.turn_event_log = self.log
+        self.api.app.state.turn_registry = self.registry
+        self.addCleanup(setattr, self.api.app.state, "turn_registry", None)
+        self.addCleanup(setattr, self.api.app.state, "turn_event_log", None)
+
+        self.user = auth_helpers.user("user-1", email="tester@example.com")
+        token = auth_helpers.make_token(self.user.id, email=self.user.email)
+        self.auth_headers = {"Authorization": f"Bearer {token}"}
+        self.thread_id = str(uuid.uuid4())
+
+    def client(self):
+        return self.httpx.AsyncClient(
+            transport=self.httpx.ASGITransport(app=self.api.app),
+            base_url="http://testserver",
+        )
+
+    def serving(self, *events):
+        """Patch the agent stream so a turn produces these events and ends.
+
+        An ``asyncio.Event`` among them is a place the turn stops until the
+        test lets it go on — which is how a reader gets to leave in the
+        middle of a turn that is genuinely still running.
+        """
+
+        async def fake_stream_response(agent, message, thread_id, **kwargs):
+            for item in events:
+                if isinstance(item, asyncio.Event):
+                    await item.wait()
+                    continue
+                yield item
+
+        async def fake_save(thread_id, first_message, user_id):
+            return None
+
+        async def fake_metadata(thread_id):
+            """This thread is the test user's, without asking Postgres."""
+            return {"user_id": self.user.id}
+
+        async def fake_owns(thread_id, user_id):
+            return user_id == self.user.id
+
+        return (
+            auth_helpers.patch_verifier(),
+            patch.object(self.api, "save_session_metadata_once", fake_save),
+            patch.object(self.api, "get_session_metadata", fake_metadata),
+            patch.object(self.api, "session_belongs_to_user", fake_owns),
+            patch(
+                "tta_backend.services.chat_stream_service.stream_response",
+                fake_stream_response,
+            ),
+        )
+
+    async def test_the_post_hands_back_a_turn_id_instead_of_a_stream(self):
+        verifier, save, metadata, owns, stream = self.serving(("text", "hello"))
+        with verifier, save, metadata, owns, stream:
+            async with self.client() as client:
+                response = await client.post(
+                    "/chat",
+                    json={"message": "hi", "thread_id": self.thread_id},
+                    headers=self.auth_headers,
+                )
+
+        self.assertEqual(response.status_code, 202)
+        body = response.json()
+        self.assertEqual(body["thread_id"], self.thread_id)
+        self.assertTrue(body["turn_id"])
+        self.assertNotIn("event: done", response.text)
+
+        # The turn is running regardless: nothing about the response carried it.
+        await self.registry.wait(body["turn_id"])
+        frames = (await self.log.read(body["turn_id"])).frames
+        self.assertTrue(
+            any('"response": "hello"' in frame for frame in frames),
+            f"the turn's answer never reached the log: {frames}",
+        )
+
+    async def start_turn(self, client, *, message="hi"):
+        """POST a message and return the accepted turn id."""
+        response = await client.post(
+            "/chat",
+            json={"message": message, "thread_id": self.thread_id},
+            headers=self.auth_headers,
+        )
+        self.assertEqual(response.status_code, 202, response.text)
+        return response.json()["turn_id"]
+
+    async def test_the_stream_replays_the_turn_and_closes_at_its_terminal_entry(self):
+        """The GET is the only SSE producer, and it ends on its own.
+
+        Nothing closes this connection from the turn's side — under the old
+        architecture the generator returning was what ended the response. The
+        terminal entry is what takes over that job.
+        """
+        verifier, save, metadata, owns, stream = self.serving(
+            ("status", {"message": "Searching granules"}), ("text", "hello"),
+        )
+        with verifier, save, metadata, owns, stream:
+            async with self.client() as client:
+                turn_id = await self.start_turn(client)
+                await self.registry.wait(turn_id)
+                replay = await client.get(
+                    f"/chat/{self.thread_id}/stream", headers=self.auth_headers,
+                )
+
+        self.assertEqual(replay.status_code, 200)
+        self.assertIn("event: status", replay.text)
+        self.assertIn("event: text", replay.text)
+        self.assertIn("event: done", replay.text)
+        self.assertIn('"response": "hello"', replay.text)
+        # And where to pick up from, so a reader that comes back does not
+        # replay what it already rendered.
+        self.assertIn("event: cursor", replay.text)
+
+
+    async def test_a_second_send_while_a_turn_runs_is_refused_with_the_running_turn(self):
+        """D12. The second tab is told which turn to join, not forked onto its own.
+
+        Two concurrent turns on one thread interleave checkpoint writes, and
+        the only thing preventing that today is the client aborting its own
+        previous request — which detached turns deliberately stop doing.
+        """
+        gate = asyncio.Event()
+        verifier, save, metadata, owns, stream = self.serving(
+            ("status", {"message": "Working"}), gate, ("text", "hello"),
+        )
+        with verifier, save, metadata, owns, stream:
+            async with self.client() as client:
+                running = await self.start_turn(client)
+                refused = await client.post(
+                    "/chat",
+                    json={"message": "again", "thread_id": self.thread_id},
+                    headers=self.auth_headers,
+                )
+                gate.set()
+                await self.registry.wait(running)
+
+        self.assertEqual(refused.status_code, 409)
+        self.assertEqual(refused.json()["turn_id"], running)
+
+    async def test_a_retried_send_is_answered_with_the_turn_it_already_bought(self):
+        """D13. The 202 handshake makes the retry window real.
+
+        A client that retries a send whose response it never saw must not buy
+        a second LLM answer and a second retrieval for one message.
+        """
+        key = {"Idempotency-Key": str(uuid.uuid4()), **self.auth_headers}
+        verifier, save, metadata, owns, stream = self.serving(("text", "hello"))
+        with verifier, save, metadata, owns, stream:
+            async with self.client() as client:
+                first = await client.post(
+                    "/chat", json={"message": "hi", "thread_id": self.thread_id}, headers=key,
+                )
+                await self.registry.wait(first.json()["turn_id"])
+                retry = await client.post(
+                    "/chat", json={"message": "hi", "thread_id": self.thread_id}, headers=key,
+                )
+
+        self.assertEqual(first.status_code, 202)
+        self.assertEqual(retry.status_code, 202)
+        self.assertEqual(retry.json()["turn_id"], first.json()["turn_id"])
+
+    async def test_the_stream_refuses_a_thread_that_is_not_the_callers(self):
+        """A turn id is not a capability — the thread's ownership is the check.
+
+        Guard, not a driver: the endpoint has this check from the start, and
+        losing it would hand one user another's live narration.
+        """
+        async def owned_by_somebody_else(thread_id, user_id):
+            return False
+
+        verifier, save, metadata, owns, stream = self.serving(("text", "hello"))
+        with verifier, save, metadata, stream, patch.object(
+            self.api, "session_belongs_to_user", owned_by_somebody_else
+        ):
+            async with self.client() as client:
+                response = await client.get(
+                    f"/chat/{self.thread_id}/stream", headers=self.auth_headers,
+                )
+
+        self.assertEqual(response.status_code, 404)
+
+    async def test_a_send_fails_with_503_when_the_event_log_is_unreachable(self):
+        """D15. Redis is the transport for every event, the claim and the stop
+        signal, so a backend that cannot reach it is not degraded, it is down.
+
+        The rejected alternatives both hide it: falling back to direct
+        streaming keeps a branch alive that only ever runs during an incident,
+        and running with no narration is a silent five-minute spinner.
+        """
+        from tta_backend.services.turn_registry import TurnRegistry
+
+        unreachable = TurnRegistry(self.log, url="redis://127.0.0.1:1/15")
+        self.addAsyncCleanup(unreachable.aclose)
+        self.api.app.state.turn_registry = unreachable
+
+        verifier, save, metadata, owns, stream = self.serving(("text", "hello"))
+        with verifier, save, metadata, owns, stream:
+            async with self.client() as client:
+                response = await client.post(
+                    "/chat",
+                    json={"message": "hi", "thread_id": self.thread_id},
+                    headers=self.auth_headers,
+                )
+
+        self.assertEqual(response.status_code, 503)
+
+    async def test_with_the_kill_switch_off_the_post_streams_the_turn_itself(self):
+        """Old path or new path, wholesale — never a blend.
+
+        The two disagree about what ``POST /chat`` returns, so this is the one
+        switch that decides, and it stays off until the frontend speaks the
+        202-then-GET protocol.
+        """
+        from tta_backend.config.settings import get_settings
+
+        verifier, save, metadata, owns, stream = self.serving(("text", "hello"))
+        with patch.dict(os.environ, {"CHAT_DETACHED_TURNS_ENABLED": "0"}):
+            get_settings.cache_clear()
+            with verifier, save, metadata, owns, stream:
+                async with self.client() as client:
+                    response = await client.post(
+                        "/chat",
+                        json={"message": "hi", "thread_id": self.thread_id},
+                        headers=self.auth_headers,
+                    )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("event: done", response.text)
+        self.assertIn('"response": "hello"', response.text)
