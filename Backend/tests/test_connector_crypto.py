@@ -1,10 +1,9 @@
 import unittest
 
-# Everything validate_startup() requires unconditionally: T61's identity
-# provider pair, and T63's event log. Every Settings(...) below has to satisfy
-# all of it to reach the assertion it actually cares about, so it lives here --
-# the next required-var change edits one line rather than every construction in
-# the file.
+# Everything validate_startup() requires unconditionally: the identity
+# provider pair and the event log. Every Settings(...) below must satisfy all
+# of it to reach the assertion it cares about, so it lives here -- the next
+# required-var change edits one line, not every construction in the file.
 REQUIRED_KWARGS = {
     "supabase_url": "https://test-project.supabase.co",
     "supabase_publishable_key": "k",

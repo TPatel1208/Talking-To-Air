@@ -308,8 +308,8 @@ class BackendIsReachableOnlyThroughTheEdgeTests(unittest.TestCase):
         0.0.0.0 it reopens the hole to the whole network.
 
         Every service, not just the backend: the overlay grew a second entry
-        for T63's Redis, which takes no credentials at all and would hand any
-        host on the network every chat turn's narration.
+        for the event log's Redis, which takes no credentials at all and would
+        hand any host on the network every chat turn's narration.
         """
         overlay = _load(_repo_file("docker-compose.debug.yml"))
         anything_published = False
@@ -624,12 +624,12 @@ if __name__ == "__main__":
 
 
 class TurnEventLogIsDeployedAndTestedTests(unittest.TestCase):
-    """T63: the chat turn event log needs a Redis, and its tests need one too.
+    """The chat turn event log needs a Redis, and so do its tests.
 
-    The tests skip when no Redis is reachable, which is what keeps a host-side
-    ``pytest`` runnable -- and is also how the whole module could silently stop
-    being covered. These assert the deployment and the test profile each carry
-    the dependency, so that skip can only ever mean "on a developer's host".
+    Those tests skip when none is reachable, which keeps a host-side
+    ``pytest`` runnable and is also how the module could silently stop being
+    covered. Asserting the deployment and the test profile each carry the
+    dependency makes that skip mean "on a developer's host" and nothing else.
     """
 
     def test_the_backend_is_told_where_the_event_log_lives(self):

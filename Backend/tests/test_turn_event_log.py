@@ -1,21 +1,18 @@
-"""T63 Phase 1 — the chat turn event log.
+"""The chat turn event log.
 
-The log is the shared transport that lets a turn outlive the connection that
-started it. A turn appends its rendered SSE frames here; a reader streams them
-out and, when it comes back after switching sessions or sleeping a laptop,
-resumes from a cursor instead of losing the turn.
+A turn appends its rendered SSE frames here; a reader streams them out and,
+after switching sessions or sleeping a laptop, resumes from a cursor instead
+of losing the turn.
 
-These tests run against a **real** Redis. What is under test is largely
-Redis's own behaviour — where ``XREAD`` places a cursor, that a trimmed stream
-still reads, that two readers do not consume each other's entries — and a fake
-would pin our reading of the docs rather than the thing we are relying on.
-They skip when no Redis is reachable so a host-side ``pytest`` still runs;
-``test_deployment_contract.py`` asserts the test profile declares the
-dependency, so the container run cannot skip them silently.
+Run against a **real** Redis, because most of what they pin is Redis's own
+behaviour — where a cursor lands, that a trimmed stream still reads, that two
+readers do not consume each other's entries. They skip when none is reachable
+so a host-side ``pytest`` still runs; ``test_deployment_contract.py`` asserts
+the test profile declares the dependency, so the container run cannot skip
+them silently.
 
-Nothing here flushes. Every test works inside its own ``turn_id`` and lets
-``EXPIRE`` clean up, so pointing ``REDIS_URL`` at the wrong instance cannot
-destroy anything.
+Nothing here flushes: each test owns its ``turn_id`` and lets ``EXPIRE`` clean
+up, so a misconfigured ``REDIS_URL`` cannot destroy anything.
 """
 from __future__ import annotations
 
@@ -61,10 +58,9 @@ class TurnEventLogTests(unittest.IsolatedAsyncioTestCase):
     async def inspect(self, command: str):
         """Ask Redis directly about this turn's stream.
 
-        Through an independent client, so what comes back is the store's own
-        state rather than the log's bookkeeping. Both facts these tests need
-        from here — how many ``XADD``s happened, and what TTL the key carries
-        — are invisible to the reading interface by design.
+        Through an independent client, so the answer is the store's state and
+        not the log's bookkeeping. Both facts needed here — the ``XADD`` count
+        and the key's TTL — are invisible to the reading interface by design.
         """
         from redis import asyncio as aioredis
 
@@ -101,8 +97,8 @@ class TurnEventLogTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_two_readers_each_get_every_frame(self):
         """Two tabs on one thread, each with its own cursor. This is what
-        ruled out a list (D3): ``BRPOP`` is destructive, so one tab would
-        consume frames the other needed and each would render half a turn."""
+        ruled out a list: ``BRPOP`` is destructive, so one tab would consume
+        frames the other needed and each would render half a turn."""
         first_frame = 'event: text\ndata: "Ozone over "\n\n'
         second_frame = 'event: text\ndata: "New Jersey"\n\n'
         await self.log.append(self.turn_id, first_frame)
@@ -115,10 +111,10 @@ class TurnEventLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([first_frame, second_frame], other_tab.frames)
 
     async def test_a_frame_comes_back_byte_identical(self):
-        """D5: the log stores the rendered frame, not a parsed event.
+        """The log stores the rendered frame, not a parsed event, so replay is
+        byte-identical to the live path by construction.
 
-        Replay is then byte-identical to the live path by construction. A unit
-        string is the realistic hazard — this domain's answers are full of
+        Units are the realistic hazard — this domain's answers are full of
         ``µg/m³`` and ``°`` — and so is the ``\\n`` that JSON escapes inside a
         payload but SSE treats as structure.
         """
@@ -134,10 +130,9 @@ class TurnEventLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(frame, page.frames[0])
 
     async def test_a_terminal_entry_delivers_its_frame_and_ends_the_turn(self):
-        """D14: a reader tells "this turn finished" from "the replica running
-        it died" by whether a terminal entry ever arrived. The frame and the
-        marker travel as one entry so a reader cannot see the ``done`` event
-        and still believe the turn is running.
+        """A reader tells "finished" from "the replica running it died" by
+        whether a terminal entry arrived. Frame and marker travel as one
+        entry, so it cannot see ``done`` and still believe the turn is live.
         """
         done = 'event: done\ndata: {"tool_calls": []}\n\n'
         while_running = await self.log.read(self.turn_id)
@@ -150,9 +145,9 @@ class TurnEventLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("done", page.terminal)
 
     async def test_text_frames_coalesce_into_one_entry(self):
-        """D7: a 2,000-token answer is otherwise 2,000 ``XADD``s. Every frame
-        still has to survive — batching is a write-side economy, never a
-        reduction in what the reader receives."""
+        """A 2,000-token answer is otherwise 2,000 ``XADD``s. Every frame still
+        has to survive: batching is a write-side economy, never a reduction in
+        what the reader receives."""
         tokens = ["Ozone ", "over ", "New Jersey"]
         for token in tokens:
             await self.log.append_text(self.turn_id, self.text_frame(token))
@@ -164,10 +159,10 @@ class TurnEventLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, await self.inspect("xlen"))
 
     async def test_a_structural_frame_does_not_jump_ahead_of_buffered_text(self):
-        """Buffering text while writing structural frames straight through
-        would let a chart land before the sentence introducing it, and replay
-        would carry that order forever. Flushing first makes the log's order
-        the order the turn actually produced.
+        """Writing structural frames straight through while text is buffered
+        lets a chart land before the sentence introducing it, and replay
+        carries that order forever. Flushing first makes the log's order the
+        order the turn produced.
         """
         sentence = self.text_frame("Here is the chart: ")
         chart = 'event: chart\ndata: {"chart_id": "c1"}\n\n'
@@ -179,10 +174,9 @@ class TurnEventLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([sentence, chart], page.frames)
 
     async def test_the_last_tokens_of_an_answer_survive_the_terminal_entry(self):
-        """The failure this prevents is quiet and permanent: text still in the
-        buffer when the turn ends is never written, so a reader replaying the
-        turn gets a sentence that stops mid-clause followed by ``done`` — and
-        the log, being the record, agrees with the truncation.
+        """Text still buffered when the turn ends is never written, so a
+        reader replaying it gets a sentence stopping mid-clause followed by
+        ``done`` — and the log, being the record, agrees with the truncation.
         """
         last_words = self.text_frame("\u2026and rising.")
         done = 'event: done\ndata: {"tool_calls": []}\n\n'
@@ -195,9 +189,9 @@ class TurnEventLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("done", page.terminal)
 
     async def test_buffered_text_reaches_the_log_without_another_event(self):
-        """An answer that streams nothing but tokens has no structural frame
-        to push the buffer out, and the turn's own end can be 300s away. The
-        interval is the only thing that makes a live reader see text at all.
+        """An answer of nothing but tokens has no structural frame to push the
+        buffer out, and the turn's end can be 300s away. The interval is the
+        only thing that makes a live reader see text at all.
         """
         from tta_backend.services.turn_event_log import TurnEventLog
 
@@ -212,10 +206,9 @@ class TurnEventLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([frame], page.frames)
 
     async def test_the_stream_stops_growing_once_it_reaches_its_bound(self):
-        """D7's sizing — ~400 KB a turn, 100 turns inside a 0.5 GiB Redis —
-        holds only if the bound is real. D8 makes the cost acceptable: what a
-        reader loses off the back is narration, and once the turn ends
-        HistoryService holds the answer regardless.
+        """The sizing — ~400 KB a turn, 100 turns inside a 0.5 GiB Redis —
+        holds only if the bound is real. The cost is acceptable: what falls
+        off the back is narration, and HistoryService holds the answer.
         """
         from tta_backend.services.turn_event_log import TurnEventLog
 
@@ -248,23 +241,19 @@ class TurnEventLogTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_a_frame_cannot_overtake_a_timer_flush_already_in_flight(self):
-        """The ordering guarantee has a second way to break, through the timer
-        rather than the buffer.
+        """Ordering can also break through the timer rather than the buffer.
 
-        ``flush`` takes the buffered text and then awaits its write. A flush
-        running as the timer's own task can be suspended in that write when the
+        ``flush`` takes the buffered text and then awaits its write, so a
+        flush running as the timer's own task can be suspended there while the
         producer appends a structural frame, whose own flush finds an empty
-        buffer and goes straight to Redis — and the two land in whichever order
-        the server sees them. Measured 7 inversions in 25 under ``asyncio.run``
-        before the fix.
+        buffer and goes straight out. Measured 7 inversions in 25 under
+        ``asyncio.run`` before the fix.
 
-        The delayed client is what makes that deterministic rather than a
-        scheduling accident. It delays only the *first* write, so the flush is
-        still in flight when the append starts: unserialized, the chart always
-        wins; serialized, the append waits and the order always holds. The same
-        sequence on a plain client reproduces on ``asyncio.run`` but never
-        under this test runner's event loop, so without the delay this test
-        would pass whether or not the bug were present.
+        The delayed client is required, not incidental: on a plain client this
+        sequence reproduces under ``asyncio.run`` but never under this
+        runner's event loop, so the test would pass either way. Delaying only
+        the *first* write keeps the flush in flight when the append starts —
+        unserialized the chart always wins, serialized it never does.
         """
         from redis import asyncio as aioredis
 
@@ -289,10 +278,9 @@ class TurnEventLogTests(unittest.IsolatedAsyncioTestCase):
             "a structural frame overtook a flush that was already in flight",
         )
 
-
     async def test_a_flush_that_fails_in_the_background_is_recorded(self):
-        """The timer flush runs as its own task, so a write that raises in it
-        has no caller to surface to: without this the tokens are lost and the
+        """The timer flush runs as its own task, so a write that raises there
+        has no caller to surface to. Without this the tokens are lost and the
         only trace is an unretrieved-task warning naming no turn."""
         from tta_backend.services.turn_event_log import TurnEventLog
 

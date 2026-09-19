@@ -261,7 +261,7 @@ class ACancelledReductionKeepsItsPermitUntilItsThreadStopsTests(
     arriving through this module.
 
     The triggers are ordinary. Today a client disconnect cancels the turn; once
-    turns detach from the connection (T63) it becomes the Stop button and
+    turns detach from the connection it becomes the Stop button and
     ``CHAT_TURN_TIMEOUT_SECONDS``, both deliberate.
 
     Holding the permit is not a new hang risk. The pool is sized

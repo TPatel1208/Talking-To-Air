@@ -37,8 +37,7 @@ cryptography>=42.0.0,<45
 fastmcp==3.4.2
 prometheus-client==0.22.1
 slowapi==0.1.10
-# T63: the chat turn event log. redis.asyncio, not the sync client — every
-# caller is on the event loop.
+# The chat turn event log, via redis.asyncio -- every caller is on the loop.
 redis==8.1.0
 
 # Test/lint tooling is NOT here on purpose — the Dockerfile installs this file

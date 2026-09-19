@@ -18,7 +18,7 @@
 # it (rate limiting, client-IP attribution, forwarded headers) is measuring a
 # path real traffic never takes. Use https://localhost/api/... to exercise that.
 #
-# Redis is published for a different reason: the T63 turn-event-log tests run
+# Redis is published for a different reason: the turn-event-log tests run
 # against a real Redis and skip when they cannot reach one, so without a host
 # mapping a host-side `pytest` silently covers none of that module. The
 # container test profile reaches redis:6379 over the compose network and needs

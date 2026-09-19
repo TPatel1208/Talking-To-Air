@@ -4,11 +4,10 @@ import os
 import unittest
 from unittest.mock import patch
 
-# Everything validate_startup() requires unconditionally: T61's identity
-# provider pair, and T63's event log. Every Settings(...) below has to satisfy
-# all of it to reach the assertion it actually cares about, so it lives here --
-# the next required-var change edits one line rather than every construction in
-# the file.
+# Everything validate_startup() requires unconditionally: the identity
+# provider pair and the event log. Every Settings(...) below must satisfy all
+# of it to reach the assertion it cares about, so it lives here -- the next
+# required-var change edits one line, not every construction in the file.
 REQUIRED_KWARGS = {
     "supabase_url": "https://test-project.supabase.co",
     "supabase_publishable_key": "k",
@@ -544,15 +543,10 @@ class ConfigLoggingTests(unittest.TestCase):
         self.assertIn("timestamp", payload)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class RedisConfigTests(unittest.TestCase):
-    """T63: the turn event log is the transport for every chat event, the
-    per-thread active-turn lock and the stop signal. A backend without one
-    cannot serve a chat turn at all, so it is fatal at boot rather than a
-    per-request surprise."""
+    """The turn event log carries every chat event, the per-thread
+    active-turn lock and the stop signal, so a backend without one cannot
+    serve a turn at all. Fatal at boot, not a per-request surprise."""
 
     def test_validate_startup_requires_a_redis_url(self):
         from tta_backend.config.settings import Settings
@@ -569,3 +563,7 @@ class RedisConfigTests(unittest.TestCase):
             loaded = get_settings()
 
         self.assertEqual("redis://redis:6379/0", loaded.redis_url)
+
+
+if __name__ == "__main__":
+    unittest.main()
