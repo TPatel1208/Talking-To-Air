@@ -306,17 +306,25 @@ class BackendIsReachableOnlyThroughTheEdgeTests(unittest.TestCase):
         """The overlay exists so the base file can stay closed. It is only a
         safe escape hatch while it stays bound to 127.0.0.1 -- published on
         0.0.0.0 it reopens the hole to the whole network.
+
+        Every service, not just the backend: the overlay grew a second entry
+        for T63's Redis, which takes no credentials at all and would hand any
+        host on the network every chat turn's narration.
         """
         overlay = _load(_repo_file("docker-compose.debug.yml"))
-        published = _port_strings(overlay["services"]["backend"])
-        self.assertTrue(published, "the debug overlay no longer publishes anything")
-        for entry in published:
-            self.assertTrue(
-                entry.startswith("127.0.0.1:"),
-                f"docker-compose.debug.yml publishes {entry!r}, which is not "
-                "bound to loopback -- on a shared or internet-facing host that "
-                "exposes the unrate-limited backend to the network.",
-            )
+        anything_published = False
+        for name, service in overlay["services"].items():
+            for entry in _port_strings(service):
+                anything_published = True
+                with self.subTest(service=name, mapping=entry):
+                    self.assertTrue(
+                        entry.startswith("127.0.0.1:"),
+                        f"docker-compose.debug.yml publishes {entry!r} for "
+                        f"{name!r}, which is not bound to loopback -- on a "
+                        "shared or internet-facing host that exposes it to "
+                        "the whole network.",
+                    )
+        self.assertTrue(anything_published, "the debug overlay no longer publishes anything")
 
 
 class ImagesAreReleasableArtifactsTests(unittest.TestCase):
@@ -613,3 +621,68 @@ class TheContractsRemainCheckableTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TurnEventLogIsDeployedAndTestedTests(unittest.TestCase):
+    """T63: the chat turn event log needs a Redis, and its tests need one too.
+
+    The tests skip when no Redis is reachable, which is what keeps a host-side
+    ``pytest`` runnable -- and is also how the whole module could silently stop
+    being covered. These assert the deployment and the test profile each carry
+    the dependency, so that skip can only ever mean "on a developer's host".
+    """
+
+    def test_the_backend_is_told_where_the_event_log_lives(self):
+        backend = _load(_compose_path())["services"]["backend"]
+        self.assertIn(
+            "REDIS_URL", backend.get("environment") or {},
+            "the backend has no REDIS_URL, so it cannot reach the turn event "
+            "log and refuses to boot.",
+        )
+
+    def test_the_test_profile_runs_against_a_real_redis(self):
+        backend_test = _load(_compose_path())["services"]["backend-test"]
+        self.assertIn(
+            "REDIS_URL", backend_test.get("environment") or {},
+            "backend-test has no REDIS_URL, so test_turn_event_log.py skips "
+            "every test in the container run and the module is covered by "
+            "nothing anywhere.",
+        )
+        self.assertIn(
+            "redis", backend_test.get("depends_on") or {},
+            "backend-test does not depend on redis, so the suite races a "
+            "service that may not be up and skips instead of failing.",
+        )
+
+    def test_the_suite_does_not_share_a_keyspace_with_live_data(self):
+        """A test suite pointed at the live stack's database is how this
+        project lost ~196 rows from a live jobs table once already."""
+        compose = _load(_compose_path())["services"]
+        live = compose["backend"]["environment"]["REDIS_URL"]
+        under_test = compose["backend-test"]["environment"]["REDIS_URL"]
+        self.assertNotEqual(
+            live, under_test,
+            f"backend-test writes to {under_test}, the same Redis database the "
+            "running backend uses for live turns.",
+        )
+
+    def test_redis_publishes_no_host_port(self):
+        redis = _load(_compose_path())["services"]["redis"]
+        published = _port_strings(redis)
+        self.assertEqual(
+            published, [],
+            f"redis publishes {published}. Nothing outside this stack has any "
+            "business reading a turn's event log; use docker-compose.debug.yml "
+            "when a host-side test run needs it.",
+        )
+
+    def test_redis_declares_a_memory_limit(self):
+        """The backend's ceiling is enforced and accounted for. An unbounded
+        Redis beside it puts the host back in the position of choosing which
+        container to kill -- which is the state mem_limit was added to end."""
+        redis = _load(_compose_path())["services"]["redis"]
+        self.assertIn(
+            "mem_limit", redis,
+            "the redis service declares no mem_limit, so its dataset bound is "
+            "the only thing standing between it and the host's memory.",
+        )

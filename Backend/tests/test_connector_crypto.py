@@ -1,12 +1,14 @@
 import unittest
 
-# T61: the identity-provider pair validate_startup() now requires. Every
-# Settings(...) below has to satisfy it to reach the assertion it actually
-# cares about, so it lives here -- the next required-var change edits one line
-# rather than every construction in the file.
-SUPABASE_KWARGS = {
+# Everything validate_startup() requires unconditionally: T61's identity
+# provider pair, and T63's event log. Every Settings(...) below has to satisfy
+# all of it to reach the assertion it actually cares about, so it lives here --
+# the next required-var change edits one line rather than every construction in
+# the file.
+REQUIRED_KWARGS = {
     "supabase_url": "https://test-project.supabase.co",
     "supabase_publishable_key": "k",
+    "redis_url": "redis://localhost:6379/0",
 }
 
 
@@ -87,7 +89,7 @@ class SettingsConnectorKeyValidationTests(unittest.TestCase):
         from tta_backend.config.settings import Settings
 
         loaded = Settings(
-            db_password="x", **SUPABASE_KWARGS, google_api_key="x", groq_api_key="x",
+            db_password="x", **REQUIRED_KWARGS, google_api_key="x", groq_api_key="x",
             connector_encryption_key=None,
         )
         loaded.validate_startup()  # must not raise
@@ -98,7 +100,7 @@ class SettingsConnectorKeyValidationTests(unittest.TestCase):
         from tta_backend.config.settings import Settings
 
         loaded = Settings(
-            db_password="x", **SUPABASE_KWARGS, google_api_key="x", groq_api_key="x",
+            db_password="x", **REQUIRED_KWARGS, google_api_key="x", groq_api_key="x",
             connector_encryption_key=Fernet.generate_key().decode(),
         )
         loaded.validate_startup()  # must not raise
@@ -109,7 +111,7 @@ class SettingsConnectorKeyValidationTests(unittest.TestCase):
         from tta_backend.config.settings import Settings
 
         loaded = Settings(
-            db_password="x", **SUPABASE_KWARGS, google_api_key="x", groq_api_key="x",
+            db_password="x", **REQUIRED_KWARGS, google_api_key="x", groq_api_key="x",
             connector_encryption_key=f"{Fernet.generate_key().decode()},{Fernet.generate_key().decode()}",
         )
         loaded.validate_startup()  # must not raise
@@ -118,7 +120,7 @@ class SettingsConnectorKeyValidationTests(unittest.TestCase):
         from tta_backend.config.settings import ConfigurationError, Settings
 
         loaded = Settings(
-            db_password="x", **SUPABASE_KWARGS, google_api_key="x", groq_api_key="x",
+            db_password="x", **REQUIRED_KWARGS, google_api_key="x", groq_api_key="x",
             connector_encryption_key="not-a-valid-fernet-key",
         )
         with self.assertRaisesRegex(ConfigurationError, "CONNECTOR_ENCRYPTION_KEY"):

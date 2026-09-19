@@ -464,6 +464,14 @@ class Settings:
     # built as f"{supabase_url}/auth/v1", and a stray slash rejects every token
     # with no hint as to why. No default is possible for either -- a placeholder
     # URL would verify tokens from the wrong project rather than failing.
+    # T63: where the chat turn event log lives. Optional on the dataclass and
+    # required in validate_startup, for the same reason as the Supabase pair
+    # above. No default: a placeholder would point the event log at a Redis
+    # that isn't there and surface as every turn failing, rather than as a
+    # backend that refuses to boot.
+    redis_url: str | None = field(
+        default_factory=lambda: os.getenv("REDIS_URL", "").strip() or None
+    )
     supabase_url: str | None = field(
         default_factory=lambda: os.getenv("SUPABASE_URL", "").strip().rstrip("/") or None
     )
@@ -605,6 +613,12 @@ class Settings:
         # screen. Drop this branch if Phase 3 ends up somewhere else.
         if not self.supabase_publishable_key:
             missing.append("SUPABASE_PUBLISHABLE_KEY")
+        # T63: every chat event, the per-thread active-turn lock and the stop
+        # signal all travel through the event log. Chat is the product, so a
+        # backend that cannot reach one is not degraded, it is down -- and
+        # saying so at boot beats every turn returning 503.
+        if not self.redis_url:
+            missing.append("REDIS_URL")
         if missing:
             raise RuntimeError(f"Missing required environment variable(s): {', '.join(missing)}")
         unvetted = []

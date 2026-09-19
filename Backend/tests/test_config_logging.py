@@ -4,13 +4,15 @@ import os
 import unittest
 from unittest.mock import patch
 
-# T61: the identity-provider pair validate_startup() now requires. Every
-# Settings(...) below has to satisfy it to reach the assertion it actually
-# cares about, so it lives here -- the next required-var change edits one line
-# rather than every construction in the file.
-SUPABASE_KWARGS = {
+# Everything validate_startup() requires unconditionally: T61's identity
+# provider pair, and T63's event log. Every Settings(...) below has to satisfy
+# all of it to reach the assertion it actually cares about, so it lives here --
+# the next required-var change edits one line rather than every construction in
+# the file.
+REQUIRED_KWARGS = {
     "supabase_url": "https://test-project.supabase.co",
     "supabase_publishable_key": "k",
+    "redis_url": "redis://localhost:6379/0",
 }
 
 
@@ -230,14 +232,14 @@ class ConfigLoggingTests(unittest.TestCase):
         from tta_backend.config.settings import Settings
 
         # Default posture: supervisor, earthdata, and ground agent all on google.
-        loaded = Settings(db_password="x", **SUPABASE_KWARGS, google_api_key=None, groq_api_key="x")
+        loaded = Settings(db_password="x", **REQUIRED_KWARGS, google_api_key=None, groq_api_key="x")
         with self.assertRaisesRegex(RuntimeError, "GOOGLE_API_KEY"):
             loaded.validate_startup()
 
         # No agent resolves to google -> GOOGLE_API_KEY is not required.
         loaded = Settings(
             db_password="x",
-            **SUPABASE_KWARGS,
+            **REQUIRED_KWARGS,
             google_api_key=None,
             groq_api_key="x",
             supervisor_model_provider="groq",
@@ -282,7 +284,7 @@ class ConfigLoggingTests(unittest.TestCase):
 
         # The other half of the check above: proves the two branches reject a
         # missing value rather than rejecting everything.
-        loaded = Settings(db_password="x", google_api_key="x", groq_api_key="x", **SUPABASE_KWARGS)
+        loaded = Settings(db_password="x", google_api_key="x", groq_api_key="x", **REQUIRED_KWARGS)
         loaded.validate_startup()  # must not raise
 
     def test_validate_startup_requires_groq_key_only_when_a_groq_agent_is_configured(self):
@@ -291,7 +293,7 @@ class ConfigLoggingTests(unittest.TestCase):
         # A groq-configured subagent requires GROQ_API_KEY.
         loaded = Settings(
             db_password="x",
-            **SUPABASE_KWARGS,
+            **REQUIRED_KWARGS,
             google_api_key="x",
             groq_api_key=None,
             ground_agent_provider="groq",
@@ -300,7 +302,7 @@ class ConfigLoggingTests(unittest.TestCase):
             loaded.validate_startup()
 
         # Default posture: no agent resolves to groq -> GROQ_API_KEY is not required.
-        loaded = Settings(db_password="x", **SUPABASE_KWARGS, google_api_key="x", groq_api_key=None)
+        loaded = Settings(db_password="x", **REQUIRED_KWARGS, google_api_key="x", groq_api_key=None)
         loaded.validate_startup()
 
     def test_validate_startup_rejects_an_unvetted_model_id(self):
@@ -312,7 +314,7 @@ class ConfigLoggingTests(unittest.TestCase):
 
         loaded = Settings(
             db_password="x",
-            **SUPABASE_KWARGS,
+            **REQUIRED_KWARGS,
             google_api_key="x",
             llm_model="gemini-9.9-imaginary",
         )
@@ -327,7 +329,7 @@ class ConfigLoggingTests(unittest.TestCase):
 
         loaded = Settings(
             db_password="x",
-            **SUPABASE_KWARGS,
+            **REQUIRED_KWARGS,
             google_api_key="x",
             groq_api_key="x",
             ground_agent_provider="groq",
@@ -341,7 +343,7 @@ class ConfigLoggingTests(unittest.TestCase):
         # A config typo (bad scheme, no host) is a bug to fix at boot, not an
         # outage the connection manager should retry (T17).
         loaded = Settings(
-            db_password="x", **SUPABASE_KWARGS, google_api_key="x", groq_api_key="x",
+            db_password="x", **REQUIRED_KWARGS, google_api_key="x", groq_api_key="x",
             earthdata_mcp_url="not-a-url",
         )
         with self.assertRaisesRegex(ConfigurationError, "EARTHDATA_MCP_URL"):
@@ -351,7 +353,7 @@ class ConfigLoggingTests(unittest.TestCase):
         from tta_backend.config.settings import Settings
 
         loaded = Settings(
-            db_password="x", **SUPABASE_KWARGS, google_api_key="x", groq_api_key="x",
+            db_password="x", **REQUIRED_KWARGS, google_api_key="x", groq_api_key="x",
             earthdata_mcp_url="http://mcp:8765/mcp",
         )
         loaded.validate_startup()  # must not raise
@@ -401,7 +403,7 @@ class ConfigLoggingTests(unittest.TestCase):
         # A misconfiguration here would make every retrieval that runs the
         # full await_retrieval_timeout_seconds a guaranteed turn timeout.
         loaded = Settings(
-            db_password="x", **SUPABASE_KWARGS, google_api_key="x", groq_api_key="x",
+            db_password="x", **REQUIRED_KWARGS, google_api_key="x", groq_api_key="x",
             await_retrieval_timeout_seconds=900,
             chat_turn_timeout_seconds=900,
         )
@@ -412,7 +414,7 @@ class ConfigLoggingTests(unittest.TestCase):
         from tta_backend.config.settings import Settings
 
         loaded = Settings(
-            db_password="x", **SUPABASE_KWARGS, google_api_key="x", groq_api_key="x",
+            db_password="x", **REQUIRED_KWARGS, google_api_key="x", groq_api_key="x",
             await_retrieval_timeout_seconds=900,
             chat_turn_timeout_seconds=1800,
         )
@@ -544,3 +546,26 @@ class ConfigLoggingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RedisConfigTests(unittest.TestCase):
+    """T63: the turn event log is the transport for every chat event, the
+    per-thread active-turn lock and the stop signal. A backend without one
+    cannot serve a chat turn at all, so it is fatal at boot rather than a
+    per-request surprise."""
+
+    def test_validate_startup_requires_a_redis_url(self):
+        from tta_backend.config.settings import Settings
+
+        loaded = Settings(db_password="x", **{**REQUIRED_KWARGS, "redis_url": None})
+        with self.assertRaisesRegex(RuntimeError, "REDIS_URL"):
+            loaded.validate_startup()
+
+    def test_a_configured_redis_url_is_read_from_the_environment(self):
+        from tta_backend.config.settings import get_settings
+
+        with patch.dict(os.environ, {"REDIS_URL": "redis://redis:6379/0"}, clear=True):
+            get_settings.cache_clear()
+            loaded = get_settings()
+
+        self.assertEqual("redis://redis:6379/0", loaded.redis_url)

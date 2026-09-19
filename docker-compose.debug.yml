@@ -17,7 +17,17 @@
 # Requests arriving this way still skip nginx, so anything you measure through
 # it (rate limiting, client-IP attribution, forwarded headers) is measuring a
 # path real traffic never takes. Use https://localhost/api/... to exercise that.
+#
+# Redis is published for a different reason: the T63 turn-event-log tests run
+# against a real Redis and skip when they cannot reach one, so without a host
+# mapping a host-side `pytest` silently covers none of that module. The
+# container test profile reaches redis:6379 over the compose network and needs
+# no mapping; this is the host loop's escape hatch, on the same loopback-only
+# terms as the backend above.
 services:
   backend:
     ports:
       - "127.0.0.1:8000:8000"
+  redis:
+    ports:
+      - "127.0.0.1:6379:6379"

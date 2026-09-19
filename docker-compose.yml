@@ -34,7 +34,51 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 15s       
+      start_period: 15s
+
+  # ── Redis (chat turn event log) ──────────────────────────────────────────────
+  #  T63: the shared transport for a turn's SSE frames, so a reader that went
+  #  away can resume from a cursor instead of losing the turn. Deliberately a
+  #  separate instance from the harmony-retrieval-mcp stack's `earthdata-redis`
+  #  — that stack deploys independently, and coupling chat availability to it
+  #  would make an unrelated retrieval deploy a chat outage.
+  redis:
+    image: redis:7-alpine
+    container_name: tta-redis
+    restart: unless-stopped
+    # No persistence on purpose. The event log carries narration only: once a
+    # turn ends, HistoryService is the source of truth (the checkpointer holds
+    # the conversation, agent_charts holds the charts). A restart therefore
+    # costs in-flight narration and nothing else, which is the same state a
+    # reader already has to handle when it falls off the back of a stream.
+    # Skipping persistence also means no named volume and no fsync on the
+    # append path.
+    #
+    # noeviction, not allkeys-lru: the same instance holds the per-thread
+    # active-turn lock and the stop flag, and evicting one of those is a
+    # silent correctness failure (two concurrent turns on one thread) rather
+    # than a visible one. Full-and-refusing surfaces as the 503 chat already
+    # returns when Redis is unreachable. Streams are bounded by MAXLEN and
+    # EXPIRE, so reaching this ceiling means something is wrong, not busy.
+    command: >
+      redis-server
+      --save ""
+      --appendonly no
+      --maxmemory 384mb
+      --maxmemory-policy noeviction
+    # Headroom over --maxmemory above, which bounds the dataset and not the
+    # process. Same reasoning as the backend's ceiling: an unbounded container
+    # on a host with a memory limit makes the kernel choose the victim.
+    mem_limit: ${REDIS_MEM_LIMIT:-512m}
+    # No `ports:`, same posture as the backend — reachable only as redis:6379
+    # on the compose network. Nothing outside this stack has any business
+    # reading a turn's event log.
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
 
   # ── FastAPI + LangChain backend ──────────────────────────────────────────────
   backend:
@@ -90,6 +134,10 @@ services:
       DB_PORT: "5432"
       DB_NAME: talking_to_air_memory
       DB_USER: postgres
+      # T63: where the chat turn event log lives. Required at boot — every
+      # turn's frames travel through it, so a backend without one cannot serve
+      # chat at all.
+      REDIS_URL: "redis://redis:6379/0"
       # Which peers uvicorn's --proxy-headers will believe about the client's
       # real address. Scoped to Docker's private bridge range, which is the
       # only hop in front of this service (nginx, in the frontend container).
@@ -162,6 +210,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - default
       - earthdata_net
@@ -194,6 +244,20 @@ services:
       DB_NAME: "talking_to_air_memory"
       DB_USER: "postgres"
       DB_PASSWORD: "test"
+      # T63: the turn-event-log tests run against a real Redis, because what
+      # they are pinning is XREAD/MAXLEN/EXPIRE behaviour — a fake would pin
+      # our reading of the docs instead. They skip when this is unreachable so
+      # a host-side `pytest` still runs; test_deployment_contract.py asserts
+      # this service declares the dependency, so the container run cannot skip
+      # them silently.
+      #
+      # Database 15, not 0: the live stack's event log is on 0, and a test
+      # suite sharing a keyspace with live data is how this project lost ~196
+      # job rows once already.
+      REDIS_URL: "redis://redis:6379/15"
+    depends_on:
+      redis:
+        condition: service_healthy
     volumes:
       # test_chart_repository.py's / test_artifact_repository.py's schema-contract
       # tests read these files straight off disk; they live at the repo root so
