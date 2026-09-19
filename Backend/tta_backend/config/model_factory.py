@@ -33,7 +33,8 @@ def build_chat_model(
     # Attached here rather than per-agent because this is the only place a
     # chat model is constructed: an agent added later is timed without its
     # author having to remember to ask for it. See utils.llm_timing for why
-    # provider latency needed its own series at all.
+    # provider latency needed its own series at all. ``max_retries`` is set
+    # here for the same reason -- see settings.llm_max_retries.
     from tta_backend.utils.llm_timing import timing_callbacks
 
     if provider == "groq":
@@ -42,6 +43,7 @@ def build_chat_model(
         return ChatGroq(
             model=model,
             groq_api_key=settings.groq_api_key,
+            max_retries=settings.llm_max_retries,
             callbacks=timing_callbacks(agent_type),
         )
     if provider == "google":
@@ -50,6 +52,7 @@ def build_chat_model(
         return ChatGoogleGenerativeAI(
             model=model,
             google_api_key=settings.google_api_key,
+            max_retries=settings.llm_max_retries,
             callbacks=timing_callbacks(agent_type),
         )
     raise ConfigurationError(

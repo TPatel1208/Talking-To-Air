@@ -88,6 +88,13 @@ class Settings:
     google_api_key: str | None = field(default_factory=lambda: os.getenv("GOOGLE_API_KEY"))
     groq_api_key: str | None = field(default_factory=lambda: os.getenv("GROQ_API_KEY"))
 
+    # Retries per provider call. Both SDKs default to 6, and those retries
+    # happen inside a single LLM call: the backoff sleeps add to that call's
+    # latency without appearing as separate calls, and the input prompt is
+    # billed again on each attempt. 2 still absorbs a transient failure while
+    # bounding how long a rate-limited call can take.
+    llm_max_retries: int = field(default_factory=lambda: max(0, _int_env("LLM_MAX_RETRIES", 2)))
+
     db_host: str = field(default_factory=lambda: os.getenv("DB_HOST", "localhost"))
     db_port: int = field(default_factory=lambda: _int_env("DB_PORT", 5432))
     db_name: str = field(default_factory=lambda: os.getenv("DB_NAME", os.getenv("POSTGRES_DB", "talking_to_air_memory")))
