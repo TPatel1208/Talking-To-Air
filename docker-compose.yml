@@ -292,6 +292,12 @@ services:
       # than as a whole-repo mount to keep the surface explicit; the tests
       # assert these mounts exist, so deleting one fails rather than silently
       # turning the contracts into no-ops.
+      #
+      # The backend Dockerfile is mounted for the same reason even though the
+      # image already contains it: the image has it at /app/Dockerfile, and the
+      # `../..` expression above lands at /Backend/Dockerfile. Read by the
+      # guards that keep uvicorn PID 1 and bound its shutdown.
+      - ./Backend/Dockerfile:/Backend/Dockerfile:ro
       - ./Frontend/Dockerfile:/Frontend/Dockerfile:ro
       - ./Frontend/nginx.conf:/Frontend/nginx.conf:ro
       - ./Frontend/.dockerignore:/Frontend/.dockerignore:ro

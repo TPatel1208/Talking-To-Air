@@ -692,6 +692,7 @@ class TheContractsRemainCheckableTests(unittest.TestCase):
     #: `docker compose --profile test run backend-test` is the documented local
     #: gate, so a contract that only holds on the host is one the gate misses.
     REQUIRED_MOUNTS = (
+        "./Backend/Dockerfile:/Backend/Dockerfile:ro",
         "./Frontend/Dockerfile:/Frontend/Dockerfile:ro",
         "./Frontend/nginx.conf:/Frontend/nginx.conf:ro",
         "./Frontend/.dockerignore:/Frontend/.dockerignore:ro",
