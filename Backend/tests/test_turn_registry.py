@@ -133,6 +133,22 @@ class TurnRegistryTests(unittest.IsolatedAsyncioTestCase):
             await client.aclose()
         return [fields for _entry_id, fields in raw]
 
+    def terminal_now(self, turn_id: str) -> str | None:
+        """How this turn ended, read with a blocking client on purpose.
+
+        Synchronous so that asking the question grants the event loop no
+        iterations -- see the shutdown test, where "has it been written yet"
+        is the entire assertion.
+        """
+        import redis
+
+        client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+        try:
+            entries = client.xrevrange(f"turn:{turn_id}:events", max="+", min="-", count=1)
+        finally:
+            client.close()
+        return (entries[0][1] or {}).get("terminal") if entries else None
+
     async def ttl(self, key: str) -> int:
         """Seconds left on a key, as Redis reports it (-1 = no expiry)."""
         from redis import asyncio as aioredis
@@ -744,3 +760,319 @@ class TurnRegistryTests(unittest.IsolatedAsyncioTestCase):
 
         await asyncio.wait_for(owner.wait(claim.turn_id), timeout=10.0)
         self.assertEqual(await self.log.terminal_of(claim.turn_id), "stopped")
+
+    async def test_a_replica_going_down_marks_its_live_turns_interrupted(self):
+        """The tracer bullet for shutdown: a deploy tells the reader.
+
+        Without this the stream simply stops mid-sentence and every attached
+        reader spins against a turn nobody is running any more.
+
+        Asserted on what is in Redis rather than on the code path reached:
+        shutting down is a sequence of cancels and awaits in which an entry
+        can be written by a task nobody waited for, well after the call that
+        was supposed to produce it returned, so "the write was reached" and
+        "the write survived" are different claims.
+        """
+        gate = asyncio.Event()
+        self.addCleanup(gate.set)
+        claim = await self.registry.begin(
+            self.thread_id,
+            blocks_until(gate, frame("done", "{}"), before=frame("status", "{}")),
+        )
+        await _until(lambda: self.log.read(claim.turn_id), lambda page: page.frames)
+
+        await self.registry.aclose()
+
+        # Read without yielding the event loop: shutdown's contract is that
+        # the entry is in Redis by the time ``aclose`` returns, because the
+        # next thing the lifespan does is close the pool it was written
+        # through and let the process exit. An ``await`` here would hand the
+        # loop back and let a write nobody waited for land after the fact,
+        # which is how this assertion passes against a drain that does not
+        # actually drain.
+        self.assertEqual(self.terminal_now(claim.turn_id), "interrupted")
+
+    async def test_shutting_down_waits_for_its_turns_to_finish_saying_so(self):
+        """``aclose`` returning has to mean the entries are in Redis.
+
+        What follows it in the lifespan is the close of the pool those
+        entries travel through and then the process exiting, so a shutdown
+        that merely starts the writes loses whichever ones were not quick
+        enough -- and it loses them exactly when Redis is slow, which is when
+        a deploy is most likely to be happening.
+
+        The delayed client is what makes this assertable: without it the
+        write lands during some later await inside ``aclose`` itself, and a
+        shutdown that waits for nothing passes.
+        """
+        from tta_backend.services.turn_event_log import TurnEventLog
+        from tta_backend.services.turn_registry import TurnRegistry
+
+        slow = _DelaysEveryWrite(_client(), delay=0.3)
+        self.addAsyncCleanup(slow.aclose)
+        slow_log = TurnEventLog(client=slow)
+        registry = TurnRegistry(slow_log, url=REDIS_URL)
+        gate = asyncio.Event()
+        self.addCleanup(gate.set)
+        claim = await registry.begin(
+            self.thread_id,
+            blocks_until(gate, frame("done", "{}"), before=frame("status", "{}")),
+        )
+        await _until(lambda: slow_log.read(claim.turn_id), lambda page: page.frames)
+
+        await registry.aclose()
+
+        self.assertEqual(self.terminal_now(claim.turn_id), "interrupted")
+
+    async def test_a_turn_that_already_answered_is_not_relabelled_by_a_shutdown(self):
+        """The hazard a check would be the wrong fix for.
+
+        ``terminal_of`` reads the last entry, so an ``interrupted`` written
+        on top of a finished turn turns a delivered answer into a failure --
+        and the window is real, because a reader can still be collecting that
+        answer when the replica is told to go down. Guarded structurally, the
+        way the stop path guards the same thing: only a turn that still has a
+        consumer to cancel is marked, and a turn that has answered has none.
+        """
+        claim = await self.registry.begin(
+            self.thread_id, produces(frame("done", '{"response": "here it is"}'))
+        )
+        await self.registry.wait(claim.turn_id)
+
+        await self.registry.aclose()
+
+        self.assertEqual(self.terminal_now(claim.turn_id), "done")
+
+    async def test_a_shutdown_hands_back_the_threads_it_was_holding(self):
+        """A replica that dies owing a claim locks the thread out.
+
+        The claim outlives the process -- it is in Redis, with the whole-turn
+        deadline as its TTL -- so a thread whose claim is not released reads
+        as broken to the user for half an hour after a deploy that took two
+        seconds.
+        """
+        from tta_backend.services.turn_registry import TurnRegistry
+
+        gate = asyncio.Event()
+        self.addCleanup(gate.set)
+        await self.registry.begin(
+            self.thread_id,
+            blocks_until(gate, frame("done", "{}"), before=frame("status", "{}")),
+        )
+        await _until(
+            lambda: self.registry.turn_for(self.thread_id), lambda turn: turn is not None
+        )
+
+        await self.registry.aclose()
+
+        after = TurnRegistry(self.log, url=REDIS_URL)
+        self.addAsyncCleanup(after.aclose)
+        claim = await after.begin(self.thread_id, produces(frame("done", "{}")))
+        await after.wait(claim.turn_id)
+        self.assertEqual(claim.outcome, "started")
+
+    async def test_a_reader_attached_to_an_interrupted_turn_is_released(self):
+        """The drain has to reach the reader, not just the log.
+
+        An attached reader is the one the deploy is visible to, and it has no
+        other way to learn: an interrupted turn emits no ``done`` of its own,
+        so without this the stream goes quiet and the bubble spins until the
+        stale window closes thirty seconds later.
+        """
+        gate = asyncio.Event()
+        self.addCleanup(gate.set)
+        claim = await self.registry.begin(
+            self.thread_id,
+            blocks_until(gate, frame("done", "{}"), before=frame("status", "{}")),
+        )
+        reader = asyncio.create_task(_collect(self.registry.follow(claim.turn_id)))
+        await _until(lambda: self.log.read(claim.turn_id), lambda page: page.frames)
+
+        await self.registry.aclose()
+
+        delivered = await asyncio.wait_for(reader, timeout=5.0)
+        self.assertTrue(
+            any(item.startswith("event: interrupted") for item in delivered),
+            f"the reader was never released; it got {delivered}",
+        )
+
+    async def test_an_interrupted_turn_says_which_kind_of_interruption_it_was(self):
+        """Two things end a turn with nobody asking, and they read differently.
+
+        A drained replica knows the answer is gone and is not coming back; a
+        reader that found the stream quiet only knows it cannot see the turn
+        any more. Same event, because the offer to the user is the same
+        retry, but a reader cannot tell a restart from a lost connection
+        without being told, and the two are not the same sentence.
+        """
+        gate = asyncio.Event()
+        self.addCleanup(gate.set)
+        claim = await self.registry.begin(
+            self.thread_id,
+            blocks_until(gate, frame("done", "{}"), before=frame("status", "{}")),
+        )
+        await _until(lambda: self.log.read(claim.turn_id), lambda page: page.frames)
+
+        await self.registry.aclose()
+
+        page = await self.log.read(claim.turn_id)
+        ending = json.loads(page.frames[-1].split("data: ", 1)[1])
+        self.assertEqual(ending["reason"], "shutdown")
+
+    async def test_a_replica_that_is_going_down_refuses_to_start_a_turn(self):
+        """A send landing mid-drain must not be started into a dying process.
+
+        The drain has already been past the turns it is going to mark, so one
+        accepted after it is a turn nobody will interrupt and nobody will
+        finish: it takes the thread's claim with it and the reader sees a
+        stream that simply stops. Refusing is what lets the load balancer
+        send the retry to a replica that is staying up.
+        """
+        from tta_backend.services.turn_registry import RegistryClosing
+
+        await self.registry.drain()
+
+        with self.assertRaises(RegistryClosing):
+            await self.registry.begin(self.thread_id, produces(frame("done", "{}")))
+
+    async def test_a_turn_refused_by_a_shutdown_leaves_the_thread_free(self):
+        """The refusal must not bank the claim it did not use.
+
+        A claim written and never released outlives the process that wrote
+        it, so the replica that stays up would refuse every message on that
+        thread until the whole-turn TTL ran out.
+        """
+        from tta_backend.services.turn_registry import RegistryClosing
+
+        await self.registry.drain()
+
+        with self.assertRaises(RegistryClosing):
+            await self.registry.begin(self.thread_id, produces(frame("done", "{}")))
+
+        self.assertEqual(await self.ttl(f"thread:{self.thread_id}:active_turn"), -2)
+
+    async def test_a_reader_is_told_when_the_turn_it_watches_has_gone_quiet(self):
+        """D14: the tracer bullet for a replica that died without saying so.
+
+        Nothing writes a terminal entry when a process is killed rather than
+        drained -- an OOM, a SIGKILL after the stop timeout, a lost node --
+        so the stream simply stops and every reader on it polls a turn that
+        will never move again. The heartbeat is what makes that detectable:
+        a live turn writes at least every ten seconds, so silence past a
+        multiple of that, with no terminal entry, is a dead owner.
+        """
+        from tta_backend.services.turn_registry import TurnRegistry
+
+        reader = TurnRegistry(self.log, url=REDIS_URL, stale_after=0.4)
+        self.addAsyncCleanup(reader.aclose)
+        turn_id = f"test-turn-{uuid.uuid4()}"
+        await self.log.append(turn_id, frame("status", '{"message": "Searching"}'))
+
+        delivered = await asyncio.wait_for(
+            _collect(reader.follow(turn_id)), timeout=5.0
+        )
+
+        self.assertTrue(
+            any(item.startswith("event: interrupted") for item in delivered),
+            f"the reader was never told; it got {delivered}",
+        )
+
+    async def test_a_turn_that_has_not_written_yet_is_not_already_stale(self):
+        """The resume cursor a reader starts from is dated 1970.
+
+        ``START_CURSOR`` is ``0-0``, so measuring silence from the cursor
+        ``follow`` carries declares every turn decades dead before it writes
+        its first frame -- and a reader attaching the moment the 202 comes
+        back is the ordinary case, not a corner. The turn's own last entry is
+        the only thing that dates the silence, and until there is one the
+        reader can only date it from when it arrived.
+        """
+        from tta_backend.services.turn_registry import TurnRegistry
+
+        reader = TurnRegistry(self.log, url=REDIS_URL, stale_after=0.6)
+        self.addAsyncCleanup(reader.aclose)
+        turn_id = f"test-turn-{uuid.uuid4()}"
+
+        following = asyncio.create_task(_collect(reader.follow(turn_id)))
+        await asyncio.sleep(0.2)
+        await self.log.mark_terminal(turn_id, "done", frame("done", '{"response": "hi"}'))
+        delivered = await asyncio.wait_for(following, timeout=5.0)
+
+        self.assertFalse(
+            any(item.startswith("event: interrupted") for item in delivered),
+            f"a turn that answered was called dead; it got {delivered}",
+        )
+
+    async def test_a_reader_resuming_onto_a_turn_that_died_is_told_at_once(self):
+        """The silence started before this reader did.
+
+        This is the remount case: a tab comes back with a stored cursor onto
+        a turn whose replica died during the deploy that restarted it.
+        Counting the silence from when *this* reader attached makes it wait a
+        further full window to be told what the stream's own timestamps
+        already say, and a reader arriving an hour later waits exactly as
+        long as one arriving a second later.
+        """
+        from tta_backend.services.turn_registry import TurnRegistry
+
+        reader = TurnRegistry(self.log, url=REDIS_URL, stale_after=1.0)
+        self.addAsyncCleanup(reader.aclose)
+        turn_id = f"test-turn-{uuid.uuid4()}"
+        await self.log.append(turn_id, frame("status", "{}"))
+        resume_from = (await self.log.read(turn_id)).cursor
+        await asyncio.sleep(1.2)
+
+        started = asyncio.get_running_loop().time()
+        delivered = await asyncio.wait_for(
+            _collect(reader.follow(turn_id, resume_from)), timeout=5.0
+        )
+        waited = asyncio.get_running_loop().time() - started
+
+        self.assertTrue(any(item.startswith("event: interrupted") for item in delivered))
+        self.assertLess(
+            waited, 0.5, "the reader served out a second silence it had already missed"
+        )
+
+
+async def _collect(stream) -> list[str]:
+    """Everything a follower yields before it lets go."""
+    return [item async for item in stream]
+
+
+def _client():
+    """A real Redis client on the test database."""
+    from redis import asyncio as aioredis
+
+    return aioredis.from_url(REDIS_URL, decode_responses=True)
+
+
+class _DelaysEveryWrite:
+    """A real Redis client whose every pipeline execution takes its time.
+
+    Wraps rather than fakes, so each command still reaches Redis and behaves
+    as Redis does. The only thing added is a window wide enough that a caller
+    which does not wait for the write can be told apart from one that does.
+    """
+
+    def __init__(self, inner, delay: float):
+        self._inner = inner
+        self._delay = delay
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def pipeline(self, *args, **kwargs):
+        return _DelayedPipeline(self._inner.pipeline(*args, **kwargs), self._delay)
+
+
+class _DelayedPipeline:
+    def __init__(self, inner, delay: float):
+        self._inner = inner
+        self._delay = delay
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    async def execute(self, *args, **kwargs):
+        await asyncio.sleep(self._delay)
+        return await self._inner.execute(*args, **kwargs)

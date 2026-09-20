@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Awaitable, Callable
@@ -22,6 +23,7 @@ from tta_backend.services.turn_event_log import (
     TTL_MARGIN_SECONDS,
     TurnEventLog,
 )
+from tta_backend.utils.streaming import HEARTBEAT_INTERVAL_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +45,14 @@ DEFAULT_POLL_INTERVAL_SECONDS = 0.1
 #: One MGET per replica per interval, skipped entirely while it is idle.
 DEFAULT_STOP_POLL_SECONDS = 2.0
 
+#: How long a turn's stream may stay silent before a reader gives up on it
+#: (D14). A multiple of the heartbeat rather than a number of its own: the
+#: watchdog in ``utils.streaming`` is what guarantees a live turn writes at
+#: all during a slow retrieval, so the threshold is only meaningful relative
+#: to it. Three intervals leaves room for two missed heartbeats before a turn
+#: that is merely slow gets called dead.
+STALE_AFTER_SECONDS = 3 * HEARTBEAT_INTERVAL_SECONDS
+
 #: How long a replica waits before resubscribing after its stop channel drops.
 #: Short: the window it covers is one where Stop falls back to the poll.
 DEFAULT_RESUBSCRIBE_DELAY_SECONDS = 0.5
@@ -57,6 +67,18 @@ STOP_CHANNEL = "chat:turn:stop"
 #: got the work that finished, not the answer they asked for (D11).
 STOPPED = "stopped"
 
+#: The terminal kind a turn gets when nobody asked it to end: its replica went
+#: down under it, or a reader found its stream abandoned. Distinct from
+#: ``stopped`` because the user did not choose it and the retry is theirs to
+#: make (D16).
+INTERRUPTED = "interrupted"
+
+#: How long the drain waits for a turn to write its ``interrupted`` entry and
+#: hand its thread back. The work is two Redis round trips per turn, so this
+#: is a bound on a hung connection, not a budget -- a shutdown is already
+#: capped by whatever the orchestrator allows before SIGKILL.
+DEFAULT_DRAIN_TIMEOUT_SECONDS = 5.0
+
 
 #: This caller's message started the turn it is being handed.
 STARTED = "started"
@@ -69,6 +91,15 @@ DUPLICATE = "duplicate"
 #: Told the provider-job handles a stop orphaned, so they do not outlive the
 #: turn that asked for them.
 CancelJobs = Callable[[list[str]], Awaitable[None]]
+
+
+class RegistryClosing(RuntimeError):
+    """This replica is shutting down and will not start another turn.
+
+    Not a ``TurnClaim`` outcome, because there is no turn to name: the caller
+    has to be told to try again somewhere else, and a claim carrying an empty
+    id would make that the route's job to notice.
+    """
 
 
 @dataclass(frozen=True)
@@ -88,6 +119,8 @@ class TurnRegistry:
         poll_interval: float = DEFAULT_POLL_INTERVAL_SECONDS,
         stop_poll_interval: float = DEFAULT_STOP_POLL_SECONDS,
         resubscribe_delay: float = DEFAULT_RESUBSCRIBE_DELAY_SECONDS,
+        drain_timeout: float = DEFAULT_DRAIN_TIMEOUT_SECONDS,
+        stale_after: float = STALE_AFTER_SECONDS,
     ):
         """Opens its own connection pool from ``url``, or borrows ``client``.
 
@@ -107,9 +140,10 @@ class TurnRegistry:
         # and hand the thread back -- cancelling the whole turn would take the
         # bookkeeping with it.
         self._consumers: dict[str, asyncio.Task] = {}
-        #: Turns this replica cancelled deliberately, so ``_run`` can tell a
-        #: stop from a shutdown and only the stop writes a terminal entry.
-        self._stopping: set[str] = set()
+        #: Turns this replica cancelled deliberately, and how each should be
+        #: marked. A turn missing from here was cancelled by something else
+        #: going down on top of it, and writes no terminal entry at all.
+        self._cancelling: dict[str, str] = {}
         self._listener: asyncio.Task | None = None
         self._pubsub: Any = None
         self._listening = asyncio.Lock()
@@ -122,11 +156,17 @@ class TurnRegistry:
         self._poll_interval = poll_interval
         self._stop_poll_interval = stop_poll_interval
         self._resubscribe_delay = resubscribe_delay
+        self._drain_timeout = drain_timeout
+        self._stale_after = stale_after
+        #: Set the moment shutdown begins, and never cleared: this replica is
+        #: on its way out and must not be handed work it cannot finish.
+        self._draining = False
         # An idempotency record has to outlive the turn it names, or a
         # retry arriving late re-buys the answer it already has.
         self._ttl_seconds = int(get_settings().chat_turn_timeout_seconds) + TTL_MARGIN_SECONDS
 
     async def aclose(self) -> None:
+        await self.drain()
         if self._listener is not None:
             self._listener.cancel()
             self._listener = None
@@ -141,6 +181,42 @@ class TurnRegistry:
         self._tasks.clear()
         if self._owns_client:
             await self._redis.aclose()
+
+    async def drain(self) -> None:
+        """Close down every turn this replica is running, and say so.
+
+        Waiting is the point. Shutting down used to cancel each turn's task
+        and return, which starts the bookkeeping and then races it against
+        the pool being closed and the process exiting -- and loses that race
+        precisely when Redis is slow, which is when a deploy is most likely
+        to be under way.
+
+        It cancels the inner consumer rather than the turn's own task, for
+        the same reason a stop does: ``_run`` is then still a live task and
+        can write. Cancelling the outer task happens to leave it able to
+        write too (a cancel delivered through an awaited future does not mark
+        the task itself), but that is an asyncio detail rather than something
+        to build on, and it would give this path a second shape to maintain.
+        """
+        self._draining = True
+        live = list(self._consumers)
+        for turn_id in live:
+            # Only a turn still producing has a consumer to cancel, which is
+            # what keeps ``interrupted`` off a turn that already ended -- the
+            # last entry is what ``terminal_of`` reads, so marking a finished
+            # turn would relabel a delivered answer as a failure.
+            self._cancel_local(turn_id, INTERRUPTED)
+        tasks = [task for task in (self._tasks.get(t) for t in live) if task is not None]
+        if tasks:
+            # Bounded: a replica that will not come down is killed by the
+            # orchestrator, and holding the loop here past that point buys
+            # nothing and delays every turn behind it.
+            _, pending = await asyncio.wait(tasks, timeout=self._drain_timeout)
+            if pending:
+                logger.warning(
+                    "turn_drain_incomplete",
+                    extra={"_event": "turn_drain_incomplete", "_turns": len(pending)},
+                )
 
     def _active_key(self, thread_id: str) -> str:
         return f"thread:{thread_id}:active_turn"
@@ -172,6 +248,11 @@ class TurnRegistry:
         cancelling a retrieval needs MCP tools and the turn's user, neither of
         which has anything to do with owning a turn.
         """
+        if self._draining:
+            # Before anything is minted or claimed: a turn refused here has
+            # spent nothing, so the retry that follows it finds the thread
+            # free and its idempotency key unused.
+            raise RegistryClosing("this replica is shutting down")
         await self._ensure_listening()
         turn_id = str(uuid.uuid4())
         sent = None if idempotency_key is None else self._idempotency_key(idempotency_key)
@@ -306,11 +387,16 @@ class TurnRegistry:
             if flag:
                 self._cancel_local(turn_id)
 
-    def _cancel_local(self, turn_id: str) -> None:
-        """Cancel this turn if this replica is the one running it."""
+    def _cancel_local(self, turn_id: str, kind: str = STOPPED) -> None:
+        """Cancel this turn if this replica is the one running it.
+
+        ``kind`` is the terminal entry the turn will end up carrying, so a
+        reader can tell a user who pressed Stop from a deploy that took the
+        answer away.
+        """
         consumer = self._consumers.get(turn_id)
         if consumer is not None:
-            self._stopping.add(turn_id)
+            self._cancelling[turn_id] = kind
             consumer.cancel()
 
     async def turn_for(self, thread_id: str) -> str | None:
@@ -337,6 +423,10 @@ class TurnRegistry:
         # Resolved up front so an empty first page does not look like
         # progress and send a reader a resume point it already had.
         cursor = cursor or START_CURSOR
+        # What a turn with nothing in its stream yet is measured against. A
+        # reader attaching the instant the 202 comes back is ahead of the
+        # turn's first write, and has no entry to date it from.
+        attached_ms = _now_ms()
         while True:
             page = await self._log.read(turn_id, cursor)
             for frame in page.frames:
@@ -346,11 +436,24 @@ class TurnRegistry:
                 yield _render("cursor", {"turn_id": turn_id, "cursor": cursor})
             if page.terminal is not None:
                 return
-            if not page.frames and await self._log.terminal_of(turn_id) is not None:
-                # Resumed from at or past the terminal entry — a remount
-                # replaying a stored cursor. Only asked when there was nothing
-                # to deliver, so a working turn pays no extra round trip.
-                return
+            if not page.frames:
+                # Only asked when there was nothing to deliver, so a working
+                # turn pays no extra round trip for either question.
+                tail = await self._log.tail(turn_id)
+                if tail.terminal is not None:
+                    # Resumed from at or past the terminal entry — a remount
+                    # replaying a stored cursor.
+                    return
+                quiet_since = attached_ms if tail.written_ms is None else tail.written_ms
+                if _now_ms() - quiet_since > self._stale_after * 1000:
+                    # D14: nobody is writing and nobody marked it finished, so
+                    # the replica that owned it went down without draining —
+                    # killed, OOMed, or taken with its node. Reported rather
+                    # than written: a turn merely paused longer than the
+                    # heartbeat allows is still alive, and recording that
+                    # guess would relabel an answer that is on its way.
+                    yield _render(INTERRUPTED, {"turn_id": turn_id, "reason": "stale"})
+                    return
             await asyncio.sleep(self._poll_interval)
 
     async def wait(self, turn_id: str) -> None:
@@ -377,17 +480,34 @@ class TurnRegistry:
         try:
             await consumer
         except asyncio.CancelledError:
-            if turn_id not in self._stopping:
-                # Not a stop -- this replica is going down under the turn.
-                # Phase 4 writes the ``interrupted`` entry here.
+            kind = self._cancelling.get(turn_id)
+            if kind is None:
+                # Nobody here asked for this -- the cancel came from outside
+                # the registry, and there is nothing this task can still do
+                # about it. A deliberate shutdown goes through ``drain``,
+                # which cancels the consumer and leaves this task alive to
+                # write; a cancel landing here instead leaves the turn
+                # unmarked, and a reader learns it is dead from the stale
+                # stream (D14).
                 raise
-            await self._cancel_orphaned_jobs(turn_id)
-            await self._log.mark_terminal(
-                turn_id, STOPPED, _render(STOPPED, {"thread_id": thread_id}),
-            )
+            if kind == STOPPED:
+                # Only a user's Stop drops the retrievals. An interrupted turn
+                # is one the user will retry, and its cached results are worth
+                # more to that retry than the provider capacity is -- and by
+                # the time a shutdown reaches here the MCP connection is
+                # already closed, so the call would only fail slowly.
+                await self._cancel_orphaned_jobs(turn_id)
+            ending: dict[str, str] = {"thread_id": thread_id}
+            if kind == INTERRUPTED:
+                # Which interruption, because a reader gets ``interrupted``
+                # two ways -- written here by a replica on its way down, or
+                # inferred by a follower that found the stream abandoned --
+                # and only one of them knows the answer is really gone.
+                ending["reason"] = "shutdown"
+            await self._log.mark_terminal(turn_id, kind, _render(kind, ending))
         finally:
             self._consumers.pop(turn_id, None)
-            self._stopping.discard(turn_id)
+            self._cancelling.pop(turn_id, None)
             self._job_statuses.pop(turn_id, None)
             self._cancel_jobs.pop(turn_id, None)
             # Dropped from inside the task, so anyone awaiting it sees the
@@ -463,6 +583,19 @@ class TurnRegistry:
                 await self._log.append(turn_id, frame)
         if held is not None:
             await self._log.mark_terminal(turn_id, _event_name(held), held)
+
+
+def _now_ms() -> int:
+    """Wall clock, to compare against a stream entry's own timestamp.
+
+    Wall clock and not a monotonic one, because the other side of the
+    comparison is Redis's clock. That makes the threshold sensitive to skew
+    between this process and Redis — which is why it is thirty seconds and
+    not one: an NTP-synced pair in the same deployment is out by
+    milliseconds, and the cost of being wrong is telling a reader to retry a
+    turn that was going to answer.
+    """
+    return int(time.time() * 1000)
 
 
 def _render(event: str, data: dict) -> str:

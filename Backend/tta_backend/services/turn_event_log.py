@@ -51,6 +51,17 @@ class TurnEventPage:
     terminal: str | None = None
 
 
+@dataclass(frozen=True)
+class TurnTail:
+    """The last thing written under a turn id, and when."""
+
+    #: Milliseconds since the epoch, off the entry's own id — Redis's clock,
+    #: assigned at the write. None when nothing has been written yet.
+    written_ms: int | None
+    #: How the turn ended, or None while it is still going.
+    terminal: str | None = None
+
+
 class TurnEventLog:
     def __init__(
         self,
@@ -202,10 +213,24 @@ class TurnEventLog:
         which is what the terminal entry always is — nothing writes under a
         turn id once it is marked.
         """
+        return (await self.tail(turn_id)).terminal
+
+    async def tail(self, turn_id: str) -> TurnTail:
+        """The last entry's timestamp and terminal, in one round trip.
+
+        Both answers come off the same entry, and the caller that wants one
+        usually wants the other: "has it ended, and if not, when did it last
+        say anything" is the whole of liveness (D14). Asking separately would
+        double the cost of the one path that polls.
+        """
         entries = await self._redis.xrevrange(self._key(turn_id), max="+", min="-", count=1)
         if not entries:
-            return None
-        return (entries[0][1] or {}).get("terminal")
+            return TurnTail(written_ms=None)
+        entry_id, fields = entries[0]
+        return TurnTail(
+            written_ms=_millis_of(str(entry_id)),
+            terminal=(fields or {}).get("terminal"),
+        )
 
     async def read(self, turn_id: str, cursor: str | None = None) -> TurnEventPage:
         """Everything written after ``cursor``, plus where to resume next.
@@ -228,6 +253,18 @@ class TurnEventLog:
             cursor=str(entries[-1][0]) if entries else resume_from,
             terminal=terminal,
         )
+
+
+def _millis_of(entry_id: str) -> int | None:
+    """When Redis wrote this entry, off the ``<millis>-<seq>`` id itself.
+
+    No second key and no heartbeat table: the stream already carries the one
+    timestamp liveness needs, stamped by the server that stored it.
+    """
+    try:
+        return int(entry_id.split("-", 1)[0])
+    except ValueError:
+        return None
 
 
 def _frames_of(fields: dict[str, str]) -> list[str]:

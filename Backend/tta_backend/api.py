@@ -868,6 +868,20 @@ async def _handle_event_log_unavailable(request: Request, exc: RedisError) -> JS
     )
 
 
+@app.exception_handler(turn_registry.RegistryClosing)
+async def _handle_registry_closing(request: Request, exc: Exception) -> JSONResponse:
+    """T63 Phase 4: this replica is draining, so the send goes elsewhere.
+
+    A 503 rather than a queue or a wait: the turn would have to outlive a
+    process that is on its way out, and the load balancer already has
+    somewhere to send the retry.
+    """
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"detail": "The server is restarting. Try again in a moment."},
+    )
+
+
 def _earthdata_tools(request: Request) -> dict:
     """Discovery/jobs/provenance endpoints' MCP tools, read through
     earthdata_mcp_manager (T17) rather than app.state.earthdata_mcp_tools

@@ -266,6 +266,28 @@ class DetachedChatTurnTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status_code, 503)
 
+    async def test_a_send_landing_mid_shutdown_is_refused_rather_than_started(self):
+        """A deploy drains, and the send that arrives one moment later.
+
+        Starting it would produce the worst of both: the drain has already
+        passed over the turns it was going to mark, so this one gets no
+        ``interrupted`` entry, keeps the thread's claim until its TTL runs
+        out, and leaves its reader watching a stream that simply stops. A 503
+        is what sends the retry to a replica that is staying up.
+        """
+        await self.registry.drain()
+
+        verifier, save, metadata, owns, stream = self.serving(("text", "hello"))
+        with verifier, save, metadata, owns, stream:
+            async with self.client() as client:
+                response = await client.post(
+                    "/chat",
+                    json={"message": "hi", "thread_id": self.thread_id},
+                    headers=self.auth_headers,
+                )
+
+        self.assertEqual(response.status_code, 503)
+
     async def test_with_the_kill_switch_off_the_post_streams_the_turn_itself(self):
         """Old path or new path, wholesale — never a blend.
 
