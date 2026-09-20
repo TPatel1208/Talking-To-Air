@@ -1448,6 +1448,7 @@ async def chat_stream(
     thread_id: ThreadId,
     request: Request,
     cursor: Annotated[str | None, Query(alias="from")] = None,
+    known_turn: Annotated[str | None, Query(alias="turn")] = None,
 ):
     """The only place a chat turn's SSE comes from (T63 D6).
 
@@ -1459,7 +1460,15 @@ async def chat_stream(
     if not await session_belongs_to_user(thread_id, user.id):
         raise HTTPException(status_code=404, detail="Session not found")
     registry = app.state.turn_registry
-    turn_id = await registry.turn_for(thread_id)
+    # Naming a turn says "I am coming back to one I already know about" --
+    # the tab that sent the message, or a remount resuming from its stored
+    # cursor -- and such a reader wants the tail even of a turn that has
+    # just ended, because the answer is not in history until the write-back
+    # lands. Naming none is only asking whether anything is running, and
+    # must not be handed a finished turn to replay over the history it just
+    # loaded. The id is that statement of intent and nothing more: whatever
+    # this thread's turn actually is, is what gets streamed.
+    turn_id = await registry.turn_for(thread_id, include_ended=known_turn is not None)
     if turn_id is None:
         # No turn to attach to. History is the source of truth for anything
         # that finished long enough ago to have been dropped (D8).

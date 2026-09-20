@@ -453,12 +453,17 @@ class Settings:
     debug_heap_profiling_enabled: bool = field(
         default_factory=lambda: os.getenv("DEBUG_HEAP_PROFILING_ENABLED", "").strip() == "1"
     )
-    # T63 Phase 2: the kill-switch between the streaming POST and detached
-    # turns. Wholesale, never a blend -- the two disagree about what POST
-    # /chat returns, so a per-request mix would leave the client guessing.
-    # Off until the frontend speaks the 202-then-GET protocol (Phase 5).
+    # T63: the kill-switch between the streaming POST and detached turns.
+    # Wholesale, never a blend -- the two disagree about what POST /chat
+    # returns, so a per-request mix would leave the client guessing.
+    #
+    # On since Phase 5 taught the frontend the 202-then-GET protocol; this
+    # is now what a rollback turns *off*. A rollback needs nothing but this
+    # variable and a restart: the client branches on the response (200 +
+    # text/event-stream against 202 + JSON) rather than on a flag of its
+    # own, so one bundle serves both and no image is rebuilt.
     chat_detached_turns_enabled: bool = field(
-        default_factory=lambda: os.getenv("CHAT_DETACHED_TURNS_ENABLED", "").strip() == "1"
+        default_factory=lambda: os.getenv("CHAT_DETACHED_TURNS_ENABLED", "1").strip() != "0"
     )
     long_request_seconds: float = field(default_factory=lambda: float(os.getenv("LONG_REQUEST_SECONDS", "30")))
     # T61: Supabase is the identity provider; our own Postgres stays. Both are

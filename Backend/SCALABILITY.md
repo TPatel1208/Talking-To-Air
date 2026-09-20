@@ -20,6 +20,11 @@ persistence calls are still synchronous libraries, so the route advances them
 with `asyncio.to_thread(...)`. This keeps blocking I/O off the FastAPI event
 loop while preserving the existing SSE contract.
 
+Since T63 the SSE leaves over `GET /chat/{thread_id}/stream` rather than the
+POST, which returns 202 and lets the turn run detached from the connection
+that started it. Nothing above changes: the turn is the same coroutine doing
+the same work, and the event log sits between it and the reader.
+
 ## Grid processing offload
 
 Opening a retrieved handle (`services/open_handle.py::_open` — `xr.open_zarr`/

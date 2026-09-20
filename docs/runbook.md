@@ -75,13 +75,46 @@ curl -X POST "https://localhost/api/jobs/<job_handle>/cancel" \
   -H "Authorization: Bearer <token>"
 ```
 
-There is no separate endpoint to cancel an in-flight chat turn that is not a job — but every turn is automatically bounded by `CHAT_TURN_TIMEOUT_SECONDS` (default 1800s), so it cannot hang indefinitely. To force-stop immediately, restart the backend process:
+A chat turn that is not a job is stopped by thread, which is what the Stop button calls. The turn is cancelled wherever it is running — including on another replica — and any provider retrievals it orphaned are cancelled with it:
+
+```bash
+curl -X POST "https://localhost/api/chat/<thread_id>/stop"   -H "Authorization: Bearer <token>"
+```
+
+A 404 means no turn is running on that thread. Every turn is bounded by `CHAT_TURN_TIMEOUT_SECONDS` (default 1800s) regardless, so nothing hangs indefinitely.
+
+Restarting the backend also ends in-flight turns, but no longer silently: shutdown drains, writing an `interrupted` terminal entry to every live stream so readers are told rather than left spinning.
 
 ```bash
 docker compose restart backend
 ```
 
-This interrupts in-flight requests. Conversation history already committed to PostgreSQL remains available after restart.
+Conversation history already committed to PostgreSQL remains available after restart.
+
+## Detached Chat Turns
+
+A chat turn runs independently of the connection that started it: `POST /api/chat` returns 202 with a `turn_id`, and all narration arrives over `GET /api/chat/<thread_id>/stream`. Switching sessions, reloading the page or sleeping a laptop costs a reader its place in the stream, never the turn.
+
+This depends on the `redis` service. While Redis is unreachable chat returns **503** — deliberately, since Redis carries every event, the one-turn-per-thread claim and the stop signal. Check it first when chat is down but the rest of the app is up:
+
+```bash
+docker compose exec redis redis-cli ping
+```
+
+**One turn per thread.** A second send while a turn runs is answered 409 naming the running turn, so a second tab joins it rather than forking a second agent run onto one conversation. A thread whose owning replica was killed outright holds its claim for up to `CLAIM_TTL_SECONDS` (30s) before it lapses on its own; nothing needs doing.
+
+**Rolling back.** Set `CHAT_DETACHED_TURNS_ENABLED=0` and restart the backend. The frontend branches on the response — 200 with a stream against 202 with JSON — so the shipped bundle serves either and no image is rebuilt.
+
+```bash
+CHAT_DETACHED_TURNS_ENABLED=0 docker compose up -d backend
+```
+
+**Deploy ordering matters in the other direction.** A backend running the new protocol against a frontend bundle that predates it leaves the chat bubble spinning forever: the old bundle reads the 202's JSON body into an SSE parser and finds no events. Deploy the frontend first, or set `CHAT_DETACHED_TURNS_ENABLED=0` on the backend until it has:
+
+```bash
+docker compose build frontend && docker compose up -d frontend
+docker compose build backend  && docker compose up -d backend
+```
 
 ## Cube Cache
 

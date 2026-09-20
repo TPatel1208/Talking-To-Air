@@ -5,9 +5,9 @@ its own and writes into the event log; ``GET /chat/{thread_id}/stream`` is the
 only thing that ever produces SSE. Switching away, sleeping a laptop or being
 routed to a different replica costs a reader its cursor, never the turn.
 
-Behind ``CHAT_DETACHED_TURNS_ENABLED``, off by default — the frontend does not
-speak this protocol until Phase 5, so the old streaming POST stays the
-shipped behaviour until it does.
+``CHAT_DETACHED_TURNS_ENABLED`` is the switch between this and the old
+streaming POST. On by default since Phase 5 taught the frontend the protocol;
+setting it to ``0`` is the rollback.
 
 Real Redis, same as the registry and event log tests.
 """
@@ -161,7 +161,10 @@ class DetachedChatTurnTests(unittest.IsolatedAsyncioTestCase):
                 turn_id = await self.start_turn(client)
                 await self.registry.wait(turn_id)
                 replay = await client.get(
-                    f"/chat/{self.thread_id}/stream", headers=self.auth_headers,
+                    f"/chat/{self.thread_id}/stream",
+                    # The reader that sent this message, coming back to it.
+                    params={"turn": turn_id},
+                    headers=self.auth_headers,
                 )
 
         self.assertEqual(replay.status_code, 200)
@@ -173,6 +176,52 @@ class DetachedChatTurnTests(unittest.IsolatedAsyncioTestCase):
         # replay what it already rendered.
         self.assertIn("event: cursor", replay.text)
 
+    async def test_a_reader_that_names_no_turn_is_not_handed_one_that_already_ended(self):
+        """Asking "is anything running?" must not replay a finished turn.
+
+        Phase 5 probes this route on every mount and every session switch. A
+        thread whose last turn finished ten seconds ago still resolves through
+        ``last_turn`` for another ten minutes, so an unqualified probe would
+        replay that whole answer into a fresh bubble on top of the history
+        that already contains it — a duplicate answer, on an ordinary session
+        switch.
+        """
+        verifier, save, metadata, owns, stream = self.serving(("text", "hello"))
+        with verifier, save, metadata, owns, stream:
+            async with self.client() as client:
+                turn_id = await self.start_turn(client)
+                await self.registry.wait(turn_id)
+                probe = await client.get(
+                    f"/chat/{self.thread_id}/stream", headers=self.auth_headers,
+                )
+
+        self.assertEqual(probe.status_code, 404)
+
+    async def test_a_reader_that_names_the_turn_still_gets_it_after_it_ends(self):
+        """The other half, and the reason ``last_turn`` exists at all.
+
+        A reader naming a turn is coming back to one it already knows about —
+        the tab that sent the message, or a remount resuming from a stored
+        cursor. The answer does not reach history until the turn is written
+        back, so the window between "the turn stopped" and "history has it"
+        is exactly what that reader would otherwise fall into.
+
+        The id is a statement of intent, not an assertion: whatever this
+        thread's turn actually is, is what gets streamed.
+        """
+        verifier, save, metadata, owns, stream = self.serving(("text", "hello"))
+        with verifier, save, metadata, owns, stream:
+            async with self.client() as client:
+                turn_id = await self.start_turn(client)
+                await self.registry.wait(turn_id)
+                replay = await client.get(
+                    f"/chat/{self.thread_id}/stream",
+                    params={"turn": turn_id},
+                    headers=self.auth_headers,
+                )
+
+        self.assertEqual(replay.status_code, 200)
+        self.assertIn('"response": "hello"', replay.text)
 
     async def test_a_second_send_while_a_turn_runs_is_refused_with_the_running_turn(self):
         """D12. The second tab is told which turn to join, not forked onto its own.
@@ -311,6 +360,76 @@ class DetachedChatTurnTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("event: done", response.text)
         self.assertIn('"response": "hello"', response.text)
+
+    def test_detached_turns_are_on_unless_something_turns_them_off(self):
+        """Phase 5 flips the default, and the switch reverses with it.
+
+        While the frontend could not speak the 202-then-GET protocol, an
+        unset variable had to mean "off" — reading a 202's JSON body into an
+        SSE parser finds no events and spins forever. It speaks it now, so
+        the default is the shipped path and the variable is what a rollback
+        sets.
+
+        The rollback has to work from the environment alone: the frontend
+        branches on the response rather than on a flag of its own, so turning
+        this off is a backend restart with no image rebuild behind it.
+        """
+        from tta_backend.config.settings import get_settings
+
+        for value, expected in [(None, True), ("0", False), ("1", True)]:
+            with self.subTest(value=value):
+                environment = dict(os.environ)
+                environment.pop("CHAT_DETACHED_TURNS_ENABLED", None)
+                if value is not None:
+                    environment["CHAT_DETACHED_TURNS_ENABLED"] = value
+                with patch.dict(os.environ, environment, clear=True):
+                    get_settings.cache_clear()
+                    self.assertEqual(
+                        get_settings().chat_detached_turns_enabled, expected
+                    )
+        get_settings.cache_clear()
+
+    async def test_the_streams_duration_is_measured_over_the_whole_turn(self):
+        """T45's property, on the route that now holds a turn's minutes.
+
+        The POST used to stream for 100–370s and was the slowest thing in the
+        app; it now returns in milliseconds, and every second of the turn is
+        spent on this GET instead. Measuring it at header time here would
+        reproduce exactly the blind spot T45 closed — a p95 dashboard that
+        cannot see the slowest thing in the app — just one route over.
+        """
+        import tta_backend.api as api
+
+        working = asyncio.Event()
+        self.addCleanup(working.set)
+        turn_seconds = 0.3
+        observed = []
+
+        def fake_observe(method, path, status_code, duration_seconds):
+            observed.append((method, path, status_code, duration_seconds))
+
+        verifier, save, metadata, owns, stream = self.serving(
+            ("status", {"message": "Searching granules"}), working, ("text", "hello"),
+        )
+        with verifier, save, metadata, owns, stream, \
+             patch.object(api, "observe_http_request", fake_observe):
+            async with self.client() as client:
+                turn_id = await self.start_turn(client)
+                # Let the turn go on working while the reader is attached, so
+                # the time being measured is time spent streaming rather than
+                # time spent replaying something already finished.
+                asyncio.get_running_loop().call_later(turn_seconds, working.set)
+                await client.get(
+                    f"/chat/{self.thread_id}/stream",
+                    params={"turn": turn_id},
+                    headers=self.auth_headers,
+                )
+
+        streams = [o for o in observed if o[1].endswith("/stream")]
+        self.assertEqual(len(streams), 1, observed)
+        self.assertEqual(streams[0][0], "GET")
+        self.assertEqual(streams[0][2], 200)
+        self.assertGreaterEqual(streams[0][3], turn_seconds)
 
     async def test_stop_ends_the_threads_running_turn(self):
         """Stop names a thread, not a turn.
