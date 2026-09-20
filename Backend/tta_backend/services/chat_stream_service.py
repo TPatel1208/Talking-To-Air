@@ -16,6 +16,7 @@ from tta_backend.config.error_templates import (
     render_turn_timeout_answer,
 )
 from tta_backend.config.settings import get_settings
+from tta_backend.config.workflow_stages import STAGE_WORKING
 from tta_backend.earthdata_mcp.results import CATEGORY_CONTRACT
 from tta_backend.models import AgentResult, agent_result_to_json, parse_agent_result, parse_chart_payload
 from tta_backend.services import admission, cube_cache
@@ -24,6 +25,7 @@ from tta_backend.services.chart_service import ChartService
 from tta_backend.services.intent_router import route_intent
 from tta_backend.services.retrieval_composites import TERMINAL_STATUSES
 from tta_backend.services.subagent_dispatch import run_ground, run_satellite
+from tta_backend.utils import streaming
 from tta_backend.utils.message_utils import flatten_text_content, normalize_image_url
 from tta_backend.utils.streaming import stream_response, user_id_context
 
@@ -296,6 +298,28 @@ class ChatStreamService:
         started = time.monotonic()
 
         queue: asyncio.Queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+        # Touched by every item the loop below consumes, including the
+        # sub-agent's own bubbled events, so the beat covers genuine silence
+        # only and never talks over a turn that is already narrating.
+        last_activity = {"t": loop.time()}
+
+        async def heartbeat() -> None:
+            # The fast path dispatches sub-agents directly and so never enters
+            # stream_response, where the supervisor route's watchdog lives.
+            # run_ground is one awaited ainvoke with no on_event, so without
+            # this a GROUND turn writes nothing at all until it answers -- and
+            # T63 D14 has readers infer "the replica that owned this turn
+            # died" from exactly that silence.
+            while True:
+                await asyncio.sleep(streaming.HEARTBEAT_CHECK_SECONDS)
+                idle = loop.time() - last_activity["t"]
+                if idle >= streaming.HEARTBEAT_INTERVAL_SECONDS:
+                    await queue.put(("status", {
+                        "message": f"Still working — {int(idle)}s elapsed",
+                        "stage": STAGE_WORKING,
+                        "detail": int(idle),
+                    }))
 
         async def on_event(event_type: str, data: Any) -> None:
             await queue.put((event_type, data))
@@ -315,12 +339,14 @@ class ChatStreamService:
                 await queue.put(("__task_done__", None))
 
         task = asyncio.create_task(run())
+        heartbeat_task = asyncio.create_task(heartbeat())
         result = None
         turn_timeout = asyncio.timeout(self.chat_turn_timeout_seconds)
         try:
             async with turn_timeout:
                 while True:
                     event_type, data = await queue.get()
+                    last_activity["t"] = loop.time()
                     if event_type == "__task_done__":
                         break
                     if event_type == "__error__":
@@ -346,6 +372,7 @@ class ChatStreamService:
         finally:
             if not task.done():
                 task.cancel()
+            heartbeat_task.cancel()
 
         # run() puts __result__ before __task_done__ on every non-exception
         # path, and the except block above returns before this point on
