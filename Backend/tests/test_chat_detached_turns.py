@@ -172,9 +172,11 @@ class DetachedChatTurnTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("event: text", replay.text)
         self.assertIn("event: done", replay.text)
         self.assertIn('"response": "hello"', replay.text)
-        # And where to pick up from, so a reader that comes back does not
-        # replay what it already rendered.
-        self.assertIn("event: cursor", replay.text)
+        # And no resume point past that ending: a reader handed one would
+        # store it, having just rendered the answer, and its next attach
+        # would resume onto an empty stream it could only read as a lost
+        # connection. Mid-turn cursors are covered in test_turn_registry.
+        self.assertNotIn("event: cursor", replay.text)
 
     async def test_a_reader_that_names_no_turn_is_not_handed_one_that_already_ended(self):
         """Asking "is anything running?" must not replay a finished turn.

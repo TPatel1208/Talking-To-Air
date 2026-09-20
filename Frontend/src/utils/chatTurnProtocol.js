@@ -57,6 +57,30 @@ export function classifyStreamEvent(event) {
   return { terminal: TERMINAL_EVENTS.has(event), kind: event }
 }
 
+/**
+ * An ending the turn itself reported, as opposed to the transport dying.
+ *
+ * Both reach the reader's `catch` as a thrown Error and they mean opposite
+ * things: an `error` frame is a message that arrived, so the turn has nothing
+ * left to say, while a severed response body means the turn is very likely
+ * still running and reattaching will find it. Without the distinction a real
+ * explanation gets replaced by "Connection lost" and a reload that cannot
+ * help.
+ */
+export class StreamError extends Error {
+  constructor(detail) {
+    super(detail)
+    // Tagged by name rather than relying on `instanceof`: two copies of this
+    // module in one bundle would make `instanceof` quietly false, and the
+    // symptom would be the confusion above rather than a visible error.
+    this.name = 'StreamError'
+  }
+}
+
+export function isStreamError(err) {
+  return err?.name === 'StreamError'
+}
+
 const STOPPED_WITH_NOTHING = 'Stopped.'
 const INTERRUPTION_NOTICES = {
   shutdown: 'The server restarted before this answer finished. Reload the session to see anything that was saved, then ask again.',

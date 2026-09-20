@@ -290,6 +290,102 @@ class TlsIsSuppliedByTheDeploymentTests(unittest.TestCase):
         )
 
 
+class BackendReceivesTheSignalThatStartsItsShutdownTests(unittest.TestCase):
+    """T63's drain is only reachable if SIGTERM reaches uvicorn.
+
+    Everything the shutdown path does -- telling each reader its turn was
+    interrupted, handing the threads back, flushing what the turns had
+    buffered -- hangs off uvicorn running its lifespan shutdown. Docker sends
+    SIGTERM to PID 1 and to nothing else, and a shell form that does not
+    ``exec`` leaves ``sh`` as PID 1 with uvicorn as its child. ``sh`` does not
+    forward the signal: it dies, the kernel takes the container down with it,
+    and uvicorn is killed without ever shutting down.
+
+    Measured live 2026-09-20 on the deployed stack: a turn running, backend
+    stopped, process gone in 2.5s with no shutdown log of any kind, no
+    ``interrupted`` entry in the event log, and the reader left with a raw
+    network error. A larger ``stop_grace_period`` would not have helped --
+    nothing was waiting on it.
+    """
+
+    def test_the_server_stops_waiting_for_connections_that_never_close(self):
+        """A turn always has an SSE reader attached, so this is every deploy.
+
+        uvicorn's graceful shutdown waits for in-flight requests *before* it
+        runs the lifespan shutdown. The GET that carries a turn is in-flight
+        for the whole turn and only ends when the turn's terminal entry is
+        written -- which the drain writes, in the lifespan shutdown. Without a
+        bound on the wait those two wait for each other: measured live, the
+        log stopped at "Waiting for connections to close." and no drain, no
+        `interrupted` entry and no claim release ever happened.
+        """
+        with open(_repo_file("Backend", "Dockerfile"), "r", encoding="utf-8") as handle:
+            dockerfile = handle.read()
+        started = [
+            line for line in dockerfile.splitlines()
+            if line.strip().startswith(("CMD", "ENTRYPOINT")) and "uvicorn" in line
+        ]
+        self.assertTrue(started, "the backend image declares no server command")
+        self.assertIn(
+            "--timeout-graceful-shutdown", started[0],
+            "uvicorn will wait indefinitely for the SSE stream carrying a "
+            "chat turn, and that stream is waiting for the drain that runs "
+            "after the wait. Bound it.",
+        )
+
+    def test_the_stop_budget_covers_the_shutdown_it_has_to_wait_for(self):
+        """Docker's default is 10s, and the shutdown is a sum, not a step.
+
+        Connections wait, then the MCP client stops, the Supabase warm task
+        stops, the registry drains (bounded separately), the log flushes and
+        the pool closes. A budget under that sum turns a graceful shutdown
+        into a SIGKILL at the last moment, which is the case this whole path
+        exists to avoid -- and does it silently, because the work simply
+        stops partway.
+        """
+        backend = _load(_compose_path())["services"]["backend"]
+        grace = backend.get("stop_grace_period")
+        self.assertIsNotNone(
+            grace,
+            "the backend declares no stop_grace_period, so Docker's default "
+            "10s is the whole budget for the shutdown sequence above.",
+        )
+        seconds = int(re.sub(r"[^0-9]", "", str(grace)) or 0)
+        self.assertGreaterEqual(
+            seconds, 20,
+            f"stop_grace_period is {grace}. The connection wait and the drain "
+            "alone are bounded at 5s each, before the MCP stop, the warm stop "
+            "and the pool close.",
+        )
+
+    def test_the_backend_image_execs_its_server_so_it_is_pid_one(self):
+        with open(_repo_file("Backend", "Dockerfile"), "r", encoding="utf-8") as handle:
+            dockerfile = handle.read()
+        entry = [
+            line.strip() for line in dockerfile.splitlines()
+            if line.strip().startswith(("CMD", "ENTRYPOINT"))
+        ]
+        self.assertTrue(entry, "the backend image declares no CMD or ENTRYPOINT")
+        server = [line for line in entry if "uvicorn" in line]
+        self.assertEqual(
+            len(server), 1,
+            f"expected exactly one line starting the server, found {server}",
+        )
+        started = server[0]
+        # Only the shell form has this problem: an exec-form CMD is already
+        # PID 1. The shell form is here because $PORT has to be expanded.
+        if '"sh"' in started or "'sh'" in started or started.startswith(("CMD sh", "ENTRYPOINT sh")):
+            self.assertIn(
+                "exec uvicorn", started,
+                "the server runs under a shell that is not replaced, so `sh` "
+                "is PID 1 and uvicorn is its child. Docker's SIGTERM goes to "
+                "`sh`, which does not forward it, so uvicorn never runs its "
+                "lifespan shutdown and T63's drain never executes: every "
+                "deploy interrupts every in-flight turn without telling "
+                "anyone. Prefix the command with `exec`.",
+            )
+
+
 class BackendIsReachableOnlyThroughTheEdgeTests(unittest.TestCase):
     def test_the_backend_publishes_no_host_port(self):
         backend = _load(_compose_path())["services"]["backend"]

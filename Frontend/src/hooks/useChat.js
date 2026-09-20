@@ -9,7 +9,9 @@ import {
   classifyChatPost,
   classifyStreamEvent,
   clearTurnRecord,
+  isStreamError,
   readTurnRecord,
+  StreamError,
   streamPath,
   terminalMessagePatch,
   writeTurnRecord,
@@ -394,7 +396,9 @@ export function useChat(onJobProgress) {
         if (ctx.threadId) clearTurnRecord(window.localStorage, ctx.threadId)
         queueAssistantUpdate(streamId, msg => terminalMessagePatch(event, data, msg))
       } else if (event === 'error') {
-        throw new Error(data.detail || 'Stream error')
+        // The turn's own report of how it failed, and it arrived -- so the
+        // reader's catch must not mistake it for the transport going away.
+        throw new StreamError(data.detail || 'Stream error')
       }
     })
 
@@ -591,6 +595,9 @@ export function useChat(onJobProgress) {
     }
 
     const { requestId, streamId, controller } = beginLocalTurn()
+    // Whether the answer had started arriving when something threw. Past
+    // this point a failure is the connection, not the request.
+    let streaming = false
 
     setMessages(prev => [
       ...prev,
@@ -652,7 +659,14 @@ export function useChat(onJobProgress) {
         })
         setError(ALREADY_RUNNING_MESSAGE)
         releaseIfCurrent(requestId)
-        await attachToThread(acceptedThread)
+        // Started, not awaited. Joining lasts as long as the turn being
+        // joined, and the caller is only asking whether its message was
+        // accepted -- which the 409 has already answered. Awaiting this held
+        // that answer for minutes, so the composer took the user's text back
+        // when somebody else's turn ended, into whichever conversation they
+        // were looking at by then. attachToThread handles its own failures
+        // and never rejects.
+        attachToThread(acceptedThread)
         // Refused, so the caller keeps what the user typed. Nothing was
         // sent, and there is nowhere else for that text to have gone.
         return false
@@ -671,6 +685,7 @@ export function useChat(onJobProgress) {
       })
       if (!stream.ok) throw new Error(`HTTP ${stream.status}`)
 
+      streaming = true
       const state = await consumeStream(stream, {
         requestId, streamId, threadId: acceptedThread, userMessage: text,
       })
@@ -679,6 +694,18 @@ export function useChat(onJobProgress) {
       if (err.name === 'AbortError') return
       if (!isCurrentRequest(requestId)) return
 
+      if (streaming && !isStreamError(err)) {
+        // The answer was already arriving and the turn did not say why it
+        // stopped, so this is the transport going away under it -- a backend
+        // rolled mid-turn severs the response body, and reading it throws
+        // rather than returning, which is why the `sawTerminal` check above
+        // never runs. The turn itself is very likely still there: it outlives
+        // this connection by design, and "Reload session" reattaches to it.
+        // Same handling as the reattach path, which is the same situation
+        // reached the other way round.
+        markConnectionLost(streamId)
+        return
+      }
       const msg = err.message || 'Request failed'
       setError(msg)
       queueAssistantUpdate(streamId, prevMsg => ({

@@ -150,3 +150,47 @@ test('the reattach probe runs on mount and on every session switch', () => {
   const fetchBody = callbackBody(USE_CHAT, 'const fetchSessions = useCallback(')
   assert.match(fetchBody, /attachToThread\(/)
 })
+
+test('a refused send answers its caller before it joins the turn it was refused for', () => {
+  // D12's refusal has two jobs and they run at different speeds: telling the
+  // caller the message was not accepted, which the 409 already answered, and
+  // joining the turn that refused it, which lasts as long as that turn does.
+  // Awaiting the join does both at the join's speed -- live, the composer
+  // took its text back four minutes later, when somebody else's turn ended.
+  // Worse, the composer is not per-thread: a user who switches conversation
+  // while the join runs gets the refused text handed back in whichever one
+  // they are looking at by then.
+  //
+  // Matched on the shape rather than on today's spelling: what is banned is
+  // suspending the refusal branch on the attach, however it is written.
+  const body = callbackBody(USE_CHAT, 'const sendMessage = useCallback(')
+  assert.ok(body, 'sendMessage is no longer a useCallback -- re-point this guard')
+  const joined = body.slice(body.indexOf("outcome.kind === 'joined'"))
+  assert.ok(joined, "the joined branch is gone -- re-point this guard")
+  const refusal = joined.slice(0, joined.indexOf('return false'))
+  assert.match(refusal, /attachToThread\(/, 'a refused send must still join the running turn')
+  assert.doesNotMatch(refusal, /await\s+attachToThread\(/)
+})
+
+test('a stream that dies mid-answer is a lost connection on both paths', () => {
+  // The reattach path already gets this right; the send path did not. A
+  // backend that goes away mid-turn severs the response body, so the read
+  // *throws* rather than returning -- which skipped the `!sawTerminal` check
+  // below it and landed in the generic catch. Live, a deploy rolled under a
+  // running turn showed "Error: network error" in a dead-end bubble, with no
+  // "Reload session" affordance, on a turn whose answer was still recoverable
+  // by reattaching.
+  //
+  // Both callbacks, because the two are the same situation reached from
+  // different directions and only one of them was handled.
+  for (const marker of [
+    'const sendMessage = useCallback(',
+    'const attachToThread = useCallback(',
+  ]) {
+    const body = callbackBody(USE_CHAT, marker)
+    assert.ok(body, `${marker} is no longer a useCallback -- re-point this guard`)
+    const caught = body.slice(body.indexOf('} catch ('))
+    assert.ok(caught, `${marker} no longer catches -- re-point this guard`)
+    assert.match(caught, /markConnectionLost\(/, marker)
+  }
+})

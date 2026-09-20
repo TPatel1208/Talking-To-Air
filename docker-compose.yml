@@ -89,6 +89,14 @@ services:
     # .github/workflows/release.yml and IMAGE_REGISTRY/IMAGE_TAG in .env.example.
     image: ${IMAGE_REGISTRY:-ghcr.io/tpatel1208}/tta-backend:${IMAGE_TAG:-dev}
     container_name: tta-backend
+    # Docker's default is 10s, and the shutdown is a sum: up to 5s waiting
+    # for connections, then the MCP client stop, the Supabase warm stop, up
+    # to 5s draining the turns still running, the log flush and the pool
+    # close. Under budget the sequence is SIGKILLed partway through, which
+    # costs exactly what it exists to save -- every in-flight turn ends
+    # with no `interrupted` entry and its thread stays claimed until the
+    # claim TTL lapses.
+    stop_grace_period: 30s
     restart: unless-stopped
     # The container's memory ceiling, and half of a two-part contract.
     #

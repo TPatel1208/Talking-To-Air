@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 
 import {
   CHAT_TURN_STORAGE_KEY,
+  StreamError,
+  isStreamError,
   classifyChatPost,
   classifyStreamEvent,
   clearTurnRecord,
@@ -200,4 +202,33 @@ test('a bare probe names no turn, which is what makes it a probe', () => {
 
 test('a thread id is encoded, so it cannot forge a query of its own', () => {
   assert.equal(streamPath('/api', 'th 1/../x', {}), '/api/chat/th%201%2F..%2Fx/stream')
+})
+
+test('an ending the turn reported is told apart from the transport dying', () => {
+  // Both arrive at the same `catch` as a thrown Error, and they are opposite
+  // situations: a turn that reported an `error` frame got its message all the
+  // way to the reader and has nothing left to say, while a severed body means
+  // the turn is very likely still running and reattaching will find it.
+  // Mistaking the first for the second replaces a real explanation with
+  // "Connection lost", and offers a reload that cannot help.
+  const reported = new StreamError('The request hit an internal error.')
+  assert.ok(isStreamError(reported))
+  assert.equal(reported.message, 'The request hit an internal error.')
+
+  // Everything else is the transport. `TypeError: network error` is what a
+  // severed response body actually throws.
+  assert.equal(isStreamError(new TypeError('network error')), false)
+  assert.equal(isStreamError(new Error('HTTP 502')), false)
+  assert.equal(isStreamError(null), false)
+  assert.equal(isStreamError(undefined), false)
+})
+
+test('a stream error is recognised across module instances', () => {
+  // Tagged by name rather than by `instanceof`: a bundle that ends up with
+  // two copies of this module would make `instanceof` silently false, and the
+  // symptom would be the "Connection lost" confusion above rather than an
+  // error anyone could see.
+  const lookalike = new Error('boom')
+  lookalike.name = 'StreamError'
+  assert.ok(isStreamError(lookalike))
 })

@@ -496,11 +496,18 @@ class TurnRegistry:
             page = await self._log.read(turn_id, cursor)
             for frame in page.frames:
                 yield frame
+            if page.terminal is not None:
+                # No resume point past the end, and the order matters: the
+                # cursor trails the page it accounts for, so offering one here
+                # would name the entry carrying the ending the reader has just
+                # rendered. Handing that back on the next attach resumes onto
+                # a stream with nothing left in it -- 200, no frames, no
+                # terminal -- which a reader can only read as a lost
+                # connection.
+                return
             if page.cursor != cursor:
                 cursor = page.cursor
                 yield _render("cursor", {"turn_id": turn_id, "cursor": cursor})
-            if page.terminal is not None:
-                return
             if not page.frames:
                 # Only asked when there was nothing to deliver, so a working
                 # turn pays no extra round trip for either question.

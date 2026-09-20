@@ -97,10 +97,22 @@ async def _until(read, ready, timeout: float = 2.0):
 
 def cursor_of(items: list[str]) -> str:
     """The resume point the last cursor frame carried."""
+    cursor = cursor_or_none(items)
+    if cursor is None:
+        raise AssertionError(f"no cursor frame among {items}")
+    return cursor
+
+
+def cursor_or_none(items: list[str]) -> str | None:
+    """The last resume point offered, or ``None`` if none was.
+
+    A reader stores what it is given and hands it straight back, so ``None``
+    here is what a reader that was offered nothing reattaches with.
+    """
     for item in reversed(items):
         if item.startswith("event: cursor"):
             return json.loads(item.split("data: ", 1)[1])["cursor"]
-    raise AssertionError(f"no cursor frame among {items}")
+    return None
 
 
 @requires_redis
@@ -148,6 +160,21 @@ class TurnRegistryTests(unittest.IsolatedAsyncioTestCase):
         finally:
             client.close()
         return (entries[0][1] or {}).get("terminal") if entries else None
+
+    async def last_entry_id(self, turn_id: str) -> str:
+        """The id of this turn's last entry, straight from Redis.
+
+        A cursor naming the end is no longer something a reader can be given,
+        so a test that needs one has to take it from the log itself.
+        """
+        from redis import asyncio as aioredis
+
+        client = aioredis.from_url(REDIS_URL, decode_responses=True)
+        try:
+            entries = await client.xrevrange(f"turn:{turn_id}:events", max="+", min="-", count=1)
+        finally:
+            await client.aclose()
+        return str(entries[0][0])
 
     async def ttl(self, key: str) -> int:
         """Seconds left on a key, as Redis reports it (-1 = no expiry)."""
@@ -520,18 +547,47 @@ class TurnRegistryTests(unittest.IsolatedAsyncioTestCase):
         it. A reader resuming from beyond that point sees an empty page
         forever, and would hold its connection open against a turn that ended
         long ago.
+
+        The cursor comes from the log rather than from a cursor frame: no
+        reader is handed one past the end any more (see the test below), so
+        the only way to be in this position is an old client or a stale store.
         """
         claim = await self.registry.begin(
             self.thread_id, produces(frame("done", '{"response": "hello"}'))
         )
         await self.registry.wait(claim.turn_id)
-        everything = await asyncio.wait_for(self.collect(claim.turn_id), timeout=5)
+        await asyncio.wait_for(self.collect(claim.turn_id), timeout=5)
 
         again = await asyncio.wait_for(
-            self.collect(claim.turn_id, cursor_of(everything)), timeout=5
+            self.collect(claim.turn_id, await self.last_entry_id(claim.turn_id)),
+            timeout=5,
         )
 
         self.assertEqual(again, [])
+
+    async def test_a_reader_that_saw_the_end_is_never_sent_back_to_an_empty_stream(self):
+        """The resume point a reader is given must never be the end itself.
+
+        The cursor frame trails the page it accounts for, so a page carrying
+        the turn's last frame was being followed by a cursor naming it — which
+        the reader stores, having just rendered the ending. Its next attach
+        then resumes onto a stream with nothing left in it: 200, no frames, no
+        terminal, and no way to tell a finished turn from a dead one. Live,
+        that reported "connection lost" on top of the answer already on
+        screen, and did it after every completed turn.
+        """
+        claim = await self.registry.begin(
+            self.thread_id, produces(frame("done", '{"response": "hello"}'))
+        )
+        await self.registry.wait(claim.turn_id)
+
+        delivered = await asyncio.wait_for(self.collect(claim.turn_id), timeout=5)
+        resumed = await asyncio.wait_for(
+            self.collect(claim.turn_id, cursor_or_none(delivered)), timeout=5
+        )
+
+        self.assertTrue(any(item.startswith("event: done") for item in delivered))
+        self.assertTrue(any(item.startswith("event: done") for item in resumed))
 
     async def test_a_cursor_left_over_from_an_earlier_turn_skips_nothing(self):
         """Phase 5 persists one cursor per thread, and reuses it blind.
@@ -553,7 +609,10 @@ class TurnRegistryTests(unittest.IsolatedAsyncioTestCase):
             self.thread_id, produces(frame("done", '{"response": "first"}'))
         )
         await self.registry.wait(first.turn_id)
-        spent = cursor_of(await asyncio.wait_for(self.collect(first.turn_id), timeout=5))
+        # The last id the first turn ever wrote: the furthest forward a
+        # leftover cursor can point, and so the most adversarial one the
+        # second turn can be resumed with.
+        spent = await self.last_entry_id(first.turn_id)
 
         second = await self.registry.begin(
             self.thread_id,

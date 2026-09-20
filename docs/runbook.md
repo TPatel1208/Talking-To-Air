@@ -116,6 +116,45 @@ docker compose build frontend && docker compose up -d frontend
 docker compose build backend  && docker compose up -d backend
 ```
 
+Note that `docker compose up -d <service>` also recreates any *dependency* whose
+image has changed, so `up -d frontend` can silently redeploy the backend under
+you. Confirm what is actually running rather than what you asked for:
+
+```bash
+docker inspect tta-backend --format '{{.State.StartedAt}} {{.Image}}'
+```
+
+**What a deploy does to a turn that is running.** On SIGTERM the backend stops
+accepting, waits up to `--timeout-graceful-shutdown` (5s) for in-flight
+requests, then runs the drain: every turn still producing is marked
+`interrupted` with reason `shutdown`, its thread's claim is released and its
+provider jobs are deliberately left alone (the user will retry, and the cached
+retrievals are worth more to that retry than the provider capacity). The whole
+sequence is budgeted by `stop_grace_period: 30s`; a full shutdown under load
+was measured at **8.6s**, so Docker's 10s default is not enough.
+
+Three settings make this work and all three are load-bearing:
+
+| Setting | Where | Why |
+|---|---|---|
+| `exec uvicorn` | `Backend/Dockerfile` | Without it `sh` is PID 1 and never forwards SIGTERM, so uvicorn is killed outright and none of the below runs |
+| `--timeout-graceful-shutdown 5` | `Backend/Dockerfile` | The GET carrying a turn is in-flight for the whole turn and ends only when the drain marks it, which happens *after* this wait. Unbounded, the two wait for each other |
+| `stop_grace_period: 30s` | `docker-compose.yml` | The sequence above is a sum, and Docker's 10s default SIGKILLs it partway |
+
+A reader watching a turn when the backend goes down has its connection severed
+before the `interrupted` entry is written, so it shows "Connection lost" with a
+**Reload session** button; reloading reattaches and delivers the real ending
+("The server restarted before this answer finished"). Deploys log one
+`CancelledError: Task cancelled, timeout graceful shutdown exceeded` traceback
+per open stream — that is uvicorn cutting the SSE connections at the 5s bound,
+and it is expected.
+
+**A replica that is killed outright** (SIGKILL, OOM) writes nothing. Its
+readers are told `interrupted` with reason `stale` about 30s after the last
+frame, and the thread's claim lapses on its own at `CLAIM_TTL_SECONDS` —
+measured at **31s** — after which the thread accepts new messages normally.
+Nothing needs doing.
+
 ## Cube Cache
 
 The T52 cube cache (`cube_store` volume) holds opened-and-reduced Zarr cubes, keyed so it self-invalidates when the underlying export changes. It evicts on its own — LRU by last access, run before every write — to stay under `CUBE_STORE_MAX_BYTES` (default 4 GiB); no manual pruning endpoint exists or is needed. Watch `cube_store_bytes` and `cube_evictions_total` in `/metrics` to see it working.
