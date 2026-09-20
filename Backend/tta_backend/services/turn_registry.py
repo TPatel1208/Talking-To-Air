@@ -53,6 +53,21 @@ DEFAULT_STOP_POLL_SECONDS = 2.0
 #: that is merely slow gets called dead.
 STALE_AFTER_SECONDS = 3 * HEARTBEAT_INTERVAL_SECONDS
 
+#: How long a thread's claim survives without its owner renewing it.
+#:
+#: The same number a reader uses to give up on a silent stream, and for the
+#: same reason: a turn nobody would still call alive is a turn whose thread
+#: should be free. Bounding it by the whole-turn deadline instead (~40 min)
+#: wedges a thread for that long every time a replica is SIGKILLed or OOMed,
+#: because the reader is then correctly told ``interrupted`` and the retry it
+#: offers is answered with a 409 naming a turn that is already dead.
+#:
+#: Safe only because the owner renews it on ``DEFAULT_STOP_POLL_SECONDS``,
+#: fifteen times over before it could lapse. Losing a claim here means a
+#: replica that stopped running its own event loop — a turn that is not
+#: writing frames either, so its reader has already given up on it.
+CLAIM_TTL_SECONDS = int(STALE_AFTER_SECONDS)
+
 #: How long a replica waits before resubscribing after its stop channel drops.
 #: Short: the window it covers is one where Stop falls back to the poll.
 DEFAULT_RESUBSCRIBE_DELAY_SECONDS = 0.5
@@ -121,6 +136,7 @@ class TurnRegistry:
         resubscribe_delay: float = DEFAULT_RESUBSCRIBE_DELAY_SECONDS,
         drain_timeout: float = DEFAULT_DRAIN_TIMEOUT_SECONDS,
         stale_after: float = STALE_AFTER_SECONDS,
+        claim_ttl: int = CLAIM_TTL_SECONDS,
     ):
         """Opens its own connection pool from ``url``, or borrows ``client``.
 
@@ -153,11 +169,15 @@ class TurnRegistry:
         # frames that already pass through. Read only when a turn is stopped.
         self._job_statuses: dict[str, dict[str, str]] = {}
         self._cancel_jobs: dict[str, CancelJobs] = {}
+        #: The thread each running turn claimed, so the renewal loop knows
+        #: which claims are this replica's to keep alive.
+        self._threads: dict[str, str] = {}
         self._poll_interval = poll_interval
         self._stop_poll_interval = stop_poll_interval
         self._resubscribe_delay = resubscribe_delay
         self._drain_timeout = drain_timeout
         self._stale_after = stale_after
+        self._claim_ttl = claim_ttl
         #: Set the moment shutdown begins, and never cleared: this replica is
         #: on its way out and must not be handed work it cannot finish.
         self._draining = False
@@ -266,9 +286,10 @@ class TurnRegistry:
                 return TurnClaim(turn_id=str(already), outcome=DUPLICATE)
         key = self._active_key(thread_id)
         # Expiring, because the turn that would release it may die with its
-        # replica. Bounded by the whole-turn deadline: a claim that outlives
-        # the longest legitimate turn is a thread nobody can message again.
-        if not await self._redis.set(key, turn_id, nx=True, ex=self._ttl_seconds):
+        # replica -- and expiring *soon*, because until it does, that thread
+        # refuses every message. Short enough to be wrong about a live turn,
+        # which is why the owner renews it (``_refresh_claims``).
+        if not await self._redis.set(key, turn_id, nx=True, ex=self._claim_ttl):
             if sent is not None:
                 # This send bought nothing, so its key is not spent. Only the
                 # record written a moment ago on this path is dropped.
@@ -277,6 +298,9 @@ class TurnRegistry:
             return TurnClaim(turn_id=str(running), outcome=ALREADY_RUNNING)
         if cancel_jobs is not None:
             self._cancel_jobs[turn_id] = cancel_jobs
+        # Recorded before the task is spawned, so the first renewal tick
+        # cannot land on a turn this replica owns but has not yet listed.
+        self._threads[turn_id] = thread_id
         self._tasks[turn_id] = asyncio.create_task(self._run(turn_id, thread_id, frames))
         return TurnClaim(turn_id=turn_id)
 
@@ -317,7 +341,7 @@ class TurnRegistry:
             await pubsub.subscribe(STOP_CHANNEL)
             self._pubsub = pubsub
             self._listener = asyncio.create_task(self._listen(pubsub))
-            self._watchdog = asyncio.create_task(self._watch_stops())
+            self._watchdog = asyncio.create_task(self._watch_turns())
 
     async def _listen(self, pubsub: Any) -> None:
         """Take stops off the channel, and keep taking them across a drop.
@@ -353,15 +377,51 @@ class TurnRegistry:
             # are the only record of a stop that fell in the gap.
             await self._recheck_stops()
 
-    async def _watch_stops(self) -> None:
-        """Re-read the stop flags of every turn this replica is running.
+    async def _watch_turns(self) -> None:
+        """Both things a replica must keep doing for the turns it runs.
 
-        The channel usually gets there first; this is what holds when it
-        does not.
+        One loop, because both are the same question asked of the same set --
+        is this turn still mine, and does anyone still want it -- and two
+        loops on the same cadence would only give the two answers a chance to
+        disagree.
         """
         while True:
             await asyncio.sleep(self._stop_poll_interval)
             await self._recheck_stops()
+            await self._refresh_claims()
+
+    async def _refresh_claims(self) -> None:
+        """Keep this replica's thread claims from lapsing under its turns.
+
+        The claim's TTL is deliberately shorter than a turn may run
+        (``CLAIM_TTL_SECONDS``), so a claim is only ever held by a replica
+        still running its own event loop. This is what makes that safe for a
+        turn that is merely slow.
+
+        A finished turn leaves ``_threads`` before its release is awaited, so
+        it is normally off this list first. ``EXPIRE`` rather than a write
+        covers the window that leaves: the list is snapshotted and *then* the
+        round trip is awaited, so a turn ending inside it has already deleted
+        its claim -- EXPIRE on a missing key does nothing, where a SET would
+        put the claim back with nobody left to release it.
+
+        Failures are logged and swallowed: this shares a loop with the stop
+        poll, whose death would take Stop's only guarantee with it.
+        """
+        live = list(self._threads.items())
+        if not live:
+            return
+        try:
+            pipe = self._redis.pipeline(transaction=False)
+            for _, thread_id in live:
+                pipe.expire(self._active_key(thread_id), self._claim_ttl)
+            await pipe.execute()
+        except Exception:
+            logger.warning(
+                "turn_claim_refresh_failed",
+                exc_info=True,
+                extra={"_event": "turn_claim_refresh_failed", "_turns": len(live)},
+            )
 
     async def _recheck_stops(self) -> None:
         """Cancel any turn here whose stop flag is set.
@@ -399,16 +459,21 @@ class TurnRegistry:
             self._cancelling[turn_id] = kind
             consumer.cancel()
 
-    async def turn_for(self, thread_id: str) -> str | None:
+    async def turn_for(self, thread_id: str, *, include_ended: bool = True) -> str | None:
         """Which turn a reader attaching to this thread should stream.
 
-        The turn that just ended still counts. Its claim is dropped the
-        instant it stops producing, but its terminal entry is what tells a
-        returning reader the answer is ready — and history does not hold
-        that answer until the turn is written back.
+        The turn that just ended still counts, for a reader that knows about
+        it. Its claim is dropped the instant it stops producing, but its
+        terminal entry is what tells a returning reader the answer is ready —
+        and history does not hold that answer until the turn is written back.
+
+        ``include_ended=False`` is for the other kind of reader: one that is
+        only asking whether anything is running here. The pointer to the last
+        turn outlives that turn by ten minutes, so handing it to a reader that
+        just loaded history would replay an answer it is already showing.
         """
         running = await self._redis.get(self._active_key(thread_id))
-        if not running:
+        if not running and include_ended:
             running = await self._redis.get(self._last_key(thread_id))
         return str(running) if running else None
 
@@ -510,6 +575,7 @@ class TurnRegistry:
             self._cancelling.pop(turn_id, None)
             self._job_statuses.pop(turn_id, None)
             self._cancel_jobs.pop(turn_id, None)
+            self._threads.pop(turn_id, None)
             # Dropped from inside the task, so anyone awaiting it sees the
             # registry already let go. Holding every turn a replica ever ran
             # keeps its coroutine frame, and everything that frame captured,

@@ -336,15 +336,23 @@ class TurnRegistryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(retry.outcome, "duplicate")
         self.assertEqual(dispatched, [])
 
-    async def test_a_claim_left_behind_by_a_dead_replica_expires(self):
-        """A claim is released by the turn that holds it — unless nothing is
-        left to release it.
+    async def test_a_claim_left_behind_by_a_dead_replica_expires_within_the_silence_readers_tolerate(self):
+        """A replica killed mid-turn must not wedge its thread for 40 minutes.
 
-        A replica killed mid-turn leaves its claim in Redis with no owner, and
-        a claim with no expiry would refuse every later message on that thread
-        for good. The bound is the longest a turn may legitimately run.
+        A claim is released by the turn that holds it — unless nothing is left
+        to release it, which is exactly what a SIGKILL or an OOM leaves
+        behind. Bounding it by the longest a turn may legitimately run
+        (`chat_turn_timeout` + margin, ~40 min) makes the sequence a reader
+        already walks — stream goes quiet, reader reports `interrupted`, user
+        retries — answer 409 naming a turn that is dead, for the rest of that
+        window.
+
+        So the bound is the same silence a reader is willing to believe in
+        (D14): a turn nobody would still call alive is a turn whose thread is
+        free. The owner keeps its own claim fresh (below), so a *live* turn
+        is never bounded by this at all.
         """
-        from tta_backend.config.settings import get_settings
+        from tta_backend.services import turn_registry as registry_module
 
         gate = asyncio.Event()
         claim = await self.registry.begin(
@@ -352,10 +360,95 @@ class TurnRegistryTests(unittest.IsolatedAsyncioTestCase):
         )
 
         remaining = await self.ttl(f"thread:{self.thread_id}:active_turn")
-        self.assertGreater(remaining, int(get_settings().chat_turn_timeout_seconds))
+        self.assertGreater(remaining, 0)
+        self.assertLessEqual(remaining, registry_module.CLAIM_TTL_SECONDS)
 
         gate.set()
         await self.registry.wait(claim.turn_id)
+
+    async def test_a_live_turn_keeps_its_own_claim_past_the_ttl_it_was_given(self):
+        """The other half: a short claim is only safe if its owner renews it.
+
+        Without this the bound above would start refusing messages on threads
+        whose turn is still working — turns run 100–370s. The owner renews on
+        the same loop that re-reads the stop flags, so a claim is lost only by
+        a replica that has stopped running its own event loop, which is the
+        case the bound exists for.
+        """
+        from tta_backend.services.turn_registry import TurnRegistry
+
+        registry = TurnRegistry(
+            self.log, url=REDIS_URL, claim_ttl=2, stop_poll_interval=0.2,
+        )
+        self.addAsyncCleanup(registry.aclose)
+        gate = asyncio.Event()
+        claim = await registry.begin(
+            self.thread_id, blocks_until(gate, frame("done", "{}"))
+        )
+        key = f"thread:{self.thread_id}:active_turn"
+
+        # Past the TTL the claim was written with, so only a renewal can
+        # explain it still being there.
+        await asyncio.sleep(3.0)
+
+        self.assertEqual(await self.registry.turn_for(self.thread_id), claim.turn_id)
+        self.assertGreater(await self.ttl(key), 0)
+
+        gate.set()
+        await registry.wait(claim.turn_id)
+        # And it is still handed back the moment the turn ends, renewals or no.
+        self.assertEqual(await self.ttl(key), -2)
+
+    async def test_the_turn_stops_being_renewed_the_moment_it_ends(self):
+        """First guard: a finished turn is off the renewal list.
+
+        It leaves that list in the same ``finally`` that hands the thread
+        back, before the release is even awaited, so the ordinary case never
+        reaches the race below at all.
+        """
+        from tta_backend.services.turn_registry import TurnRegistry
+
+        registry = TurnRegistry(
+            self.log, url=REDIS_URL, claim_ttl=2, stop_poll_interval=0.05,
+        )
+        self.addAsyncCleanup(registry.aclose)
+        claim = await registry.begin(self.thread_id, produces(frame("done", "{}")))
+        await registry.wait(claim.turn_id)
+
+        # Several renewal ticks after the turn let go of the thread.
+        await asyncio.sleep(0.3)
+
+        self.assertEqual(await self.ttl(f"thread:{self.thread_id}:active_turn"), -2)
+        # Left on the list it would renew nothing (EXPIRE on a missing key
+        # does nothing), so the cost is invisible until it is one dict entry
+        # per turn for the life of the process -- the same leak dropping
+        # ``_tasks`` from inside this ``finally`` exists to avoid.
+        self.assertEqual(registry._threads, {})
+
+    async def test_a_renewal_never_creates_a_claim_that_is_not_there(self):
+        """Second guard, for the window the first one cannot cover.
+
+        ``_refresh_claims`` snapshots which threads to renew and then awaits
+        the round trip; a turn ending inside that await has already deleted
+        its claim by the time the renewal lands. EXPIRE on a missing key does
+        nothing. A renewal written as SET-with-TTL — the obvious alternative,
+        and the one that also re-asserts ownership — would put the claim back
+        with nobody left to release it, wedging the thread until the TTL runs
+        out every single time a turn ends mid-tick.
+
+        Called directly because the race is a scheduling accident: staging it
+        through the public path would pin the timing, not the property.
+        """
+        from tta_backend.services.turn_registry import TurnRegistry
+
+        registry = TurnRegistry(self.log, url=REDIS_URL, claim_ttl=2)
+        self.addAsyncCleanup(registry.aclose)
+        key = f"thread:{self.thread_id}:active_turn"
+        registry._threads[f"turn-{uuid.uuid4()}"] = self.thread_id
+
+        await registry._refresh_claims()
+
+        self.assertEqual(await self.ttl(key), -2)
 
     async def collect(self, turn_id: str, cursor: str | None = None) -> list[str]:
         """Everything a reader following this turn is handed, until it ends."""
@@ -439,6 +532,46 @@ class TurnRegistryTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(again, [])
+
+    async def test_a_cursor_left_over_from_an_earlier_turn_skips_nothing(self):
+        """Phase 5 persists one cursor per thread, and reuses it blind.
+
+        A remount learns which turn is running only from the frames it is
+        already being handed, so the cursor it resumes with may belong to the
+        *previous* turn on that thread. That is safe for one reason and one
+        only: a stream id is a wall-clock millisecond, so an older turn's
+        cursor sorts before every entry a newer turn writes and the range
+        read returns all of them.
+
+        Pinned because it is load-bearing and invisible. Numbering entries
+        per turn instead — the obvious thing to reach for if ids ever get
+        tidied up — would make that same cursor land in the middle of the new
+        turn and silently drop the beginning of the answer, with no error on
+        either side.
+        """
+        first = await self.registry.begin(
+            self.thread_id, produces(frame("done", '{"response": "first"}'))
+        )
+        await self.registry.wait(first.turn_id)
+        spent = cursor_of(await asyncio.wait_for(self.collect(first.turn_id), timeout=5))
+
+        second = await self.registry.begin(
+            self.thread_id,
+            produces(
+                frame("status", '{"message": "Searching granules"}'),
+                frame("done", '{"response": "second"}'),
+            ),
+        )
+        await self.registry.wait(second.turn_id)
+
+        resumed = await asyncio.wait_for(
+            self.collect(second.turn_id, spent), timeout=5
+        )
+
+        self.assertNotEqual(first.turn_id, second.turn_id)
+        joined = "".join(resumed)
+        self.assertIn("Searching granules", joined)
+        self.assertIn('"response": "second"', joined)
 
     async def test_a_finished_turn_is_not_kept_after_it_ends(self):
         """The registry holds a turn while it runs, and lets go when it stops.
