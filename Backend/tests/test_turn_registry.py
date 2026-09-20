@@ -59,6 +59,17 @@ async def produces(*frames: str):
         yield item
 
 
+async def _buffers_then_blocks(gate, *frames: str):
+    """Emits these frames and hangs without ever closing the turn.
+
+    Nothing flushes the text among them -- that is the point: the batcher
+    still holds it when the stop arrives.
+    """
+    for item in frames:
+        yield item
+    await gate.wait()
+
+
 async def blocks_until(gate, *frames: str, before: str | None = None):
     """A turn that emits ``before``, then waits for the test to let it end."""
     if before is not None:
@@ -66,6 +77,22 @@ async def blocks_until(gate, *frames: str, before: str | None = None):
     await gate.wait()
     for item in frames:
         yield item
+
+
+async def _until(read, ready, timeout: float = 2.0):
+    """Poll ``read`` until ``ready`` accepts its result, or fail the wait.
+
+    Turns run as their own tasks, so "the turn has got as far as X" is not
+    something a test can await directly.
+    """
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        result = await read()
+        if ready(result):
+            return result
+        if asyncio.get_running_loop().time() > deadline:
+            raise AssertionError(f"condition never held; last saw {result}")
+        await asyncio.sleep(0.02)
 
 
 def cursor_of(items: list[str]) -> str:
@@ -443,3 +470,277 @@ class TurnRegistryTests(unittest.IsolatedAsyncioTestCase):
         )
         self.addAsyncCleanup(self.registry.wait, retry.turn_id)
         self.assertEqual(retry.outcome, "started")
+
+    async def test_stopping_a_running_turn_ends_it_and_marks_the_log_stopped(self):
+        """The tracer bullet for Stop: the turn stops producing and says so.
+
+        A reader has no other way to learn the turn is over -- a stopped turn
+        emits no ``done`` of its own, so without the terminal entry the stream
+        just goes quiet and looks like a dead replica (D14).
+        """
+        gate = asyncio.Event()
+        self.addCleanup(gate.set)
+        claim = await self.registry.begin(
+            self.thread_id, blocks_until(gate, frame("done", '{"response": "never"}'))
+        )
+
+        await self.registry.stop(claim.turn_id)
+        await self.registry.wait(claim.turn_id)
+
+        self.assertEqual(await self.log.terminal_of(claim.turn_id), "stopped")
+
+    async def test_a_stopped_turn_keeps_what_it_produced_before_the_stop(self):
+        """D11: a stopped turn shows the work done, not a blank cancelled turn.
+
+        Including the answer tokens still sitting in the text batcher when the
+        cancel lands. Text is held ~50ms to spare the log an XADD per token,
+        so a stop mid-sentence is the ordinary case, not a corner: losing that
+        buffer truncates the partial answer the user was reading.
+        """
+        gate = asyncio.Event()
+        self.addCleanup(gate.set)
+        chart = frame("chart", '{"chart_id": "c-1"}')
+        tail = frame("text", '{"content": "the levels were"}')
+        claim = await self.registry.begin(
+            self.thread_id, _buffers_then_blocks(gate, chart, tail)
+        )
+        await _until(lambda: self.log.read(claim.turn_id), lambda page: page.frames)
+
+        await self.registry.stop(claim.turn_id)
+        await self.registry.wait(claim.turn_id)
+
+        page = await self.log.read(claim.turn_id)
+        self.assertEqual(page.frames[:2], [chart, tail])
+        self.assertEqual(page.terminal, "stopped")
+
+    async def test_a_stopped_turn_hands_the_thread_back(self):
+        """Stop then retype: the next message has to be accepted.
+
+        A claim the stop path forgets to release refuses every later message
+        on that thread until its TTL runs out -- and that TTL is the whole
+        turn deadline, so the thread reads as broken for half an hour.
+        """
+        gate = asyncio.Event()
+        self.addCleanup(gate.set)
+        stopped = await self.registry.begin(
+            self.thread_id, blocks_until(gate, frame("done", "{}"))
+        )
+
+        await self.registry.stop(stopped.turn_id)
+        await self.registry.wait(stopped.turn_id)
+
+        nxt = await self.registry.begin(self.thread_id, produces(frame("done", "{}")))
+        self.addAsyncCleanup(self.registry.wait, nxt.turn_id)
+        self.assertEqual(nxt.outcome, "started")
+
+    async def test_a_reader_following_a_stopped_turn_is_released(self):
+        """The follower loop has to end, not hold a connection on a dead turn.
+
+        Its exit is driven by the terminal entry alone -- a stopped turn never
+        emits ``done`` -- so this is what proves the ``stopped`` marker is
+        wired to the reader and not just written.
+        """
+        gate = asyncio.Event()
+        self.addCleanup(gate.set)
+        claim = await self.registry.begin(
+            self.thread_id, blocks_until(gate, frame("done", "{}"))
+        )
+
+        async def read_to_the_end() -> list[str]:
+            return [item async for item in self.registry.follow(claim.turn_id)]
+
+        reader = asyncio.create_task(read_to_the_end())
+        await self.registry.stop(claim.turn_id)
+
+        delivered = await asyncio.wait_for(reader, timeout=5.0)
+        self.assertTrue(any(item.startswith("event: stopped") for item in delivered))
+
+    async def test_a_stop_from_another_replica_reaches_the_turns_owner(self):
+        """The case sticky sessions fail silently.
+
+        Behind an ALB the Stop POST lands wherever it lands, which is usually
+        not the replica running the turn. The stopping registry has no task to
+        cancel -- it has never heard of this turn -- so the signal has to
+        cross the process boundary or Stop does nothing for half the users
+        who press it.
+        """
+        from tta_backend.services.turn_event_log import TurnEventLog
+        from tta_backend.services.turn_registry import TurnRegistry
+
+        other_log = TurnEventLog(REDIS_URL)
+        self.addAsyncCleanup(other_log.aclose)
+        other_replica = TurnRegistry(other_log, url=REDIS_URL)
+        self.addAsyncCleanup(other_replica.aclose)
+
+        gate = asyncio.Event()
+        self.addCleanup(gate.set)
+        claim = await self.registry.begin(
+            self.thread_id, blocks_until(gate, frame("done", "{}"))
+        )
+        await _until(lambda: self.log.terminal_of(claim.turn_id), lambda _: self.registry.in_flight == 1)
+
+        await other_replica.stop(claim.turn_id)
+
+        await asyncio.wait_for(self.registry.wait(claim.turn_id), timeout=5.0)
+        self.assertEqual(await self.log.terminal_of(claim.turn_id), "stopped")
+
+    async def test_stopping_a_finished_turn_leaves_its_ending_alone(self):
+        """Stop is racy by nature and must be a no-op when it loses.
+
+        The route resolves a thread to its *last* turn, not only a running
+        one, so a Stop pressed as the answer lands resolves to a turn that is
+        already over. Writing ``stopped`` on top of ``done`` would relabel a
+        completed answer as cancelled -- and since ``terminal_of`` reads the
+        last entry, the relabelling would win.
+        """
+        claim = await self.registry.begin(
+            self.thread_id, produces(frame("done", '{"response": "ready"}'))
+        )
+        await self.registry.wait(claim.turn_id)
+        self.assertEqual(await self.log.terminal_of(claim.turn_id), "done")
+
+        await self.registry.stop(claim.turn_id)
+        await asyncio.sleep(0.1)
+
+        self.assertEqual(await self.log.terminal_of(claim.turn_id), "done")
+        self.assertEqual(len(await self.entries(claim.turn_id)), 1)
+
+    async def test_a_stop_whose_publish_is_lost_still_stops_the_turn(self):
+        """Why there is a persisted flag as well as a channel.
+
+        Pub/sub delivers to whoever is subscribed *now*: a replica between
+        reconnects, or one whose turn was announced in the instant before it
+        finished subscribing, simply never hears. The stopping replica gets no
+        acknowledgement either way, so without the flag a Stop can be
+        swallowed with the user watching a turn it was told had stopped.
+
+        Staged with a replica whose subscription never delivers, which is what
+        a lost message looks like from the owner's side.
+        """
+        from tta_backend.services.turn_event_log import TurnEventLog
+        from tta_backend.services.turn_registry import TurnRegistry
+
+        class _DeafReplica(TurnRegistry):
+            async def _listen(self, pubsub):
+                await asyncio.Event().wait()
+
+        deaf_log = TurnEventLog(REDIS_URL)
+        self.addAsyncCleanup(deaf_log.aclose)
+        owner = _DeafReplica(deaf_log, url=REDIS_URL)
+        self.addAsyncCleanup(owner.aclose)
+
+        gate = asyncio.Event()
+        self.addCleanup(gate.set)
+        claim = await owner.begin(self.thread_id, blocks_until(gate, frame("done", "{}")))
+
+        await self.registry.stop(claim.turn_id)
+
+        await asyncio.wait_for(owner.wait(claim.turn_id), timeout=5.0)
+        self.assertEqual(await self.log.terminal_of(claim.turn_id), "stopped")
+
+    async def test_stopping_cancels_the_provider_jobs_the_turn_left_running(self):
+        """D10: a hard cancel abandons provider work unless someone says so.
+
+        Cancelling the turn's task does nothing to a retrieval already running
+        at the provider -- it outlives the connection that asked for it. The
+        server tracks the same last-seen statuses the client used to, because
+        a user who reattached mid-turn never saw those ``job_progress`` events
+        and their Stop would leak every one of them.
+        """
+        gate = asyncio.Event()
+        self.addCleanup(gate.set)
+        cancelled: list[str] = []
+
+        async def cancel_jobs(handles):
+            cancelled.extend(handles)
+
+        claim = await self.registry.begin(
+            self.thread_id,
+            blocks_until(
+                gate,
+                frame("done", "{}"),
+                before=frame("job_progress", '{"job_handle": "job-a", "status": "running"}'),
+            ),
+            cancel_jobs=cancel_jobs,
+        )
+        await _until(lambda: self.log.read(claim.turn_id), lambda page: page.frames)
+
+        await self.registry.stop(claim.turn_id)
+        await self.registry.wait(claim.turn_id)
+
+        self.assertEqual(cancelled, ["job-a"])
+
+    async def test_stopping_leaves_alone_the_jobs_that_already_finished(self):
+        """Only what is still running is cancelled.
+
+        A retrieval that reached ``ready`` produced a result the user keeps
+        (D11) and may already be cached; cancelling it at the provider throws
+        that away and can turn a completed job into a ``cancelled`` row in the
+        Jobs panel, which reads as data loss rather than as a stop.
+        """
+        gate = asyncio.Event()
+        self.addCleanup(gate.set)
+        cancelled: list[str] = []
+
+        async def cancel_jobs(handles):
+            cancelled.extend(handles)
+
+        claim = await self.registry.begin(
+            self.thread_id,
+            _buffers_then_blocks(
+                gate,
+                frame("job_progress", '{"job_handle": "job-a", "status": "running"}'),
+                frame("job_progress", '{"job_handle": "job-b", "status": "running"}'),
+                # The same handle again: what matters is its *last* status,
+                # not that it was ever seen running.
+                frame("job_progress", '{"job_handle": "job-a", "status": "ready"}'),
+            ),
+            cancel_jobs=cancel_jobs,
+        )
+        await _until(
+            lambda: self.log.read(claim.turn_id), lambda page: len(page.frames) >= 3
+        )
+
+        await self.registry.stop(claim.turn_id)
+        await self.registry.wait(claim.turn_id)
+
+        self.assertEqual(cancelled, ["job-b"])
+
+    async def test_a_replica_whose_redis_connection_blips_still_hears_stops(self):
+        """The subscription has to survive a dropped connection.
+
+        redis-py does not resubscribe on its own: the read raises once and, if
+        nothing catches it, the listener task dies and takes the channel with
+        it for the rest of the process's life. Correctness survives that --
+        the flag watchdog still stops the turn -- but every Stop on that
+        replica silently degrades to the poll interval, for hours, with
+        nothing in the logs saying why.
+
+        Pinned by giving this registry a watchdog too slow to help, so only
+        the channel can satisfy it.
+        """
+        from tta_backend.services.turn_event_log import TurnEventLog
+        from tta_backend.services.turn_registry import TurnRegistry
+
+        owner_log = TurnEventLog(REDIS_URL)
+        self.addAsyncCleanup(owner_log.aclose)
+        owner = TurnRegistry(owner_log, url=REDIS_URL, stop_poll_interval=3600.0)
+        self.addAsyncCleanup(owner.aclose)
+
+        gate = asyncio.Event()
+        self.addCleanup(gate.set)
+        warmup = await owner.begin(self.thread_id, produces(frame("done", "{}")))
+        await owner.wait(warmup.turn_id)
+
+        # Straight at the socket: this is an environmental fault, not a seam
+        # worth carving into the registry.
+        await owner._pubsub.connection.disconnect()
+
+        second_thread = f"test-thread-{uuid.uuid4()}"
+        claim = await owner.begin(second_thread, blocks_until(gate, frame("done", "{}")))
+        await _until(lambda: self.log.terminal_of(claim.turn_id), lambda _: owner.in_flight == 1)
+
+        await self.registry.stop(claim.turn_id)
+
+        await asyncio.wait_for(owner.wait(claim.turn_id), timeout=10.0)
+        self.assertEqual(await self.log.terminal_of(claim.turn_id), "stopped")

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
-import json
 import os
 import sys
 import unittest
@@ -27,6 +26,7 @@ if TESTS_DIR not in sys.path:
     sys.path.insert(0, TESTS_DIR)
 
 import auth_helpers  # noqa: E402 -- needs the TESTS_DIR insert above
+from tta_backend.earthdata_mcp.connection import STATE_READY  # noqa: E402
 from test_turn_registry import REDIS_URL, requires_redis  # noqa: E402
 
 _REQUIRED = ["fastapi", "httpx", "jwt", "langchain", "langgraph"]
@@ -289,3 +289,117 @@ class DetachedChatTurnTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("event: done", response.text)
         self.assertIn('"response": "hello"', response.text)
+
+    async def test_stop_ends_the_threads_running_turn(self):
+        """Stop names a thread, not a turn.
+
+        The button is pressed in a tab that may have joined the turn rather
+        than started it (D12) — after a reattach it knows the thread and
+        nothing else — so the server resolves which turn that is.
+        """
+        blocked = asyncio.Event()
+        self.addCleanup(blocked.set)
+        verifier, save, metadata, owns, stream = self.serving(
+            ("status", {"message": "Reducing"}), blocked, ("text", "never"),
+        )
+        with verifier, save, metadata, owns, stream:
+            async with self.client() as client:
+                turn_id = await self.start_turn(client)
+
+                response = await client.post(
+                    f"/chat/{self.thread_id}/stop", headers=self.auth_headers,
+                )
+
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()["turn_id"], turn_id)
+                await asyncio.wait_for(self.registry.wait(turn_id), timeout=5.0)
+
+        self.assertEqual(await self.log.terminal_of(turn_id), "stopped")
+
+    async def test_stop_on_a_thread_with_no_turn_is_a_404(self):
+        """There is nothing to stop, and saying so beats a cheerful 200.
+
+        A 200 here would tell a frontend its Stop landed when the turn it
+        meant is running somewhere the server could not find.
+        """
+        verifier, save, metadata, owns, stream = self.serving(("text", "hi"))
+        with verifier, save, metadata, owns, stream:
+            async with self.client() as client:
+                response = await client.post(
+                    f"/chat/{uuid.uuid4()}/stop", headers=self.auth_headers,
+                )
+
+        self.assertEqual(response.status_code, 404)
+
+    async def test_stop_on_someone_elses_thread_is_a_404(self):
+        """Stop is a write on another user's turn; it gets the same gate the
+        stream does, and the same answer that does not confirm the thread
+        exists."""
+        blocked = asyncio.Event()
+        self.addCleanup(blocked.set)
+        verifier, save, metadata, owns, stream = self.serving(
+            ("status", {"message": "Reducing"}), blocked, ("text", "never"),
+        )
+        intruder = auth_helpers.make_token("user-2", email="other@example.com")
+        with verifier, save, metadata, owns, stream:
+            async with self.client() as client:
+                turn_id = await self.start_turn(client)
+
+                response = await client.post(
+                    f"/chat/{self.thread_id}/stop",
+                    headers={"Authorization": f"Bearer {intruder}"},
+                )
+
+                self.assertEqual(response.status_code, 404)
+                # And the turn it tried to stop is untouched.
+                self.assertIsNone(await self.log.terminal_of(turn_id))
+                await self.registry.stop(turn_id)
+                await asyncio.wait_for(self.registry.wait(turn_id), timeout=5.0)
+
+    async def test_stop_cancels_the_retrievals_the_turn_left_at_the_provider(self):
+        """D10: the whole point of moving Stop's job cancellation server-side.
+
+        The client used to do this from the ``job_progress`` events it had
+        seen. A reader that reattached mid-turn never saw them, so its Stop
+        left every retrieval running — the cost falling on exactly the users
+        detached turns were built for.
+        """
+        cancelled: list[str] = []
+
+        async def fake_cancel_job(job_handle, tools):
+            cancelled.append(job_handle)
+            return {"job_handle": job_handle, "status": "cancelled"}
+
+        class _ReadyMCP:
+            state = STATE_READY
+            tools: dict = {}
+
+        self.api.app.state.earthdata_mcp_manager = _ReadyMCP()
+        self.addCleanup(setattr, self.api.app.state, "earthdata_mcp_manager", None)
+
+        blocked = asyncio.Event()
+        self.addCleanup(blocked.set)
+        verifier, save, metadata, owns, stream = self.serving(
+            ("job_progress", {"job_handle": "job-a", "status": "running"}),
+            blocked,
+            ("text", "never"),
+        )
+        with verifier, save, metadata, owns, stream, patch.object(
+            self.api, "cancel_job", fake_cancel_job
+        ):
+            async with self.client() as client:
+                turn_id = await self.start_turn(client)
+                await self.await_frames(turn_id)
+
+                await client.post(f"/chat/{self.thread_id}/stop", headers=self.auth_headers)
+                await asyncio.wait_for(self.registry.wait(turn_id), timeout=5.0)
+
+        self.assertEqual(cancelled, ["job-a"])
+
+    async def await_frames(self, turn_id: str, timeout: float = 3.0):
+        """Wait until the turn has written something, so it is genuinely mid-flight."""
+        deadline = asyncio.get_running_loop().time() + timeout
+        while not (await self.log.read(turn_id)).frames:
+            if asyncio.get_running_loop().time() > deadline:
+                raise AssertionError("the turn never produced a frame")
+            await asyncio.sleep(0.02)

@@ -1349,7 +1349,10 @@ async def chat(req: ChatRequest, request: Request):
         # reattach path is exercised by every turn and cannot rot.
         registry = app.state.turn_registry
         claim = await registry.begin(
-            thread_id, frames, idempotency_key=request.headers.get("Idempotency-Key"),
+            thread_id,
+            frames,
+            idempotency_key=request.headers.get("Idempotency-Key"),
+            cancel_jobs=_job_canceller(user.id),
         )
         # D12: a refused send still names the turn, so the caller joins the one
         # in flight rather than being told only that it cannot send.
@@ -1363,6 +1366,66 @@ async def chat(req: ChatRequest, request: Request):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+def _job_canceller(user_id: str) -> turn_registry.CancelJobs:
+    """What a stopped turn uses to drop the retrievals it orphaned (T63 D10).
+
+    The MCP is resolved inside the closure rather than captured: the turn
+    outlives the request that started it, so whether the provider was reachable
+    at POST time says nothing about whether it is reachable when Stop is
+    pressed minutes later.
+    """
+
+    async def cancel(handles: list[str]) -> None:
+        manager = getattr(app.state, "earthdata_mcp_manager", None)
+        if manager is None or manager.state != STATE_READY:
+            logger.warning(
+                "turn_stop_jobs_unreachable",
+                extra={
+                    "_event": "turn_stop_jobs_unreachable",
+                    "_job_handles": handles,
+                },
+            )
+            return
+        with user_id_context(user_id):
+            for handle in handles:
+                # One at a time and each guarded: a provider that refuses one
+                # handle must not keep the rest running.
+                try:
+                    await cancel_job(handle, manager.tools)
+                except Exception:
+                    logger.warning(
+                        "turn_stop_job_cancel_failed",
+                        exc_info=True,
+                        extra={
+                            "_event": "turn_stop_job_cancel_failed",
+                            "_job_handle": handle,
+                        },
+                    )
+
+    return cancel
+
+
+@app.post("/chat/{thread_id}/stop")
+@limiter.limit("30/minute")
+async def chat_stop(thread_id: ThreadId, request: Request):
+    """Stop the turn running on this thread, from any tab or any replica.
+
+    Named by thread rather than by turn: after a reattach the tab pressing
+    Stop may have joined the turn rather than started it (D12), and knows only
+    which conversation it is looking at.
+    """
+    user = request.state.current_user
+    if not await session_belongs_to_user(thread_id, user.id):
+        raise HTTPException(status_code=404, detail="Session not found")
+    registry = app.state.turn_registry
+    turn_id = await registry.turn_for(thread_id)
+    if turn_id is None:
+        # Nothing to stop. A 200 here would tell the caller its Stop landed.
+        raise HTTPException(status_code=404, detail="No turn is running on this thread")
+    await registry.stop(turn_id)
+    return {"turn_id": turn_id, "thread_id": thread_id}
 
 
 @app.get("/chat/{thread_id}/stream")

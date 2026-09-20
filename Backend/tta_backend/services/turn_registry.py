@@ -8,18 +8,22 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
 from dataclasses import dataclass
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 from redis import asyncio as aioredis
 
 from tta_backend.config.settings import get_settings
+from tta_backend.services.retrieval_composites import TERMINAL_STATUSES
 from tta_backend.services.turn_event_log import (
     START_CURSOR,
     TTL_MARGIN_SECONDS,
     TurnEventLog,
 )
+
+logger = logging.getLogger(__name__)
 
 #: Events that can be the last thing a turn says. A turn timing out or
 #: shedding emits ``error`` then ``done``; the generic failure path emits
@@ -31,6 +35,28 @@ _CLOSING_EVENTS = frozenset({"done", "error"})
 #: delay measured in tenths of a second against turns that run minutes.
 DEFAULT_POLL_INTERVAL_SECONDS = 0.1
 
+#: How often a replica re-reads the stop flags of the turns it is running.
+#: The channel is what makes Stop feel instant; this is what makes it certain.
+#: Redis pub/sub is fire-and-forget -- a message published while a subscriber
+#: is between connections is gone, with no error on either side -- so without
+#: a second look the button silently does nothing for that turn's whole life.
+#: One MGET per replica per interval, skipped entirely while it is idle.
+DEFAULT_STOP_POLL_SECONDS = 2.0
+
+#: How long a replica waits before resubscribing after its stop channel drops.
+#: Short: the window it covers is one where Stop falls back to the poll.
+DEFAULT_RESUBSCRIBE_DELAY_SECONDS = 0.5
+
+
+#: Where stops are announced. One channel for the whole fleet rather than one
+#: per turn: a replica subscribes once at startup instead of on every turn,
+#: and the ids it does not recognise cost it a dict lookup.
+STOP_CHANNEL = "chat:turn:stop"
+
+#: The terminal kind a stopped turn is marked with. Not ``done``: the user
+#: got the work that finished, not the answer they asked for (D11).
+STOPPED = "stopped"
+
 
 #: This caller's message started the turn it is being handed.
 STARTED = "started"
@@ -38,6 +64,11 @@ STARTED = "started"
 ALREADY_RUNNING = "already_running"
 #: This exact send was already accepted; the id is what it got the first time.
 DUPLICATE = "duplicate"
+
+
+#: Told the provider-job handles a stop orphaned, so they do not outlive the
+#: turn that asked for them.
+CancelJobs = Callable[[list[str]], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -55,6 +86,8 @@ class TurnRegistry:
         url: str | None = None,
         client: Any = None,
         poll_interval: float = DEFAULT_POLL_INTERVAL_SECONDS,
+        stop_poll_interval: float = DEFAULT_STOP_POLL_SECONDS,
+        resubscribe_delay: float = DEFAULT_RESUBSCRIBE_DELAY_SECONDS,
     ):
         """Opens its own connection pool from ``url``, or borrows ``client``.
 
@@ -69,12 +102,40 @@ class TurnRegistry:
             url, decode_responses=True
         )
         self._tasks: dict[str, asyncio.Task] = {}
+        # The inner task doing the agent's work, separately cancellable. Stop
+        # takes this one and leaves ``_run`` alive to write the terminal entry
+        # and hand the thread back -- cancelling the whole turn would take the
+        # bookkeeping with it.
+        self._consumers: dict[str, asyncio.Task] = {}
+        #: Turns this replica cancelled deliberately, so ``_run`` can tell a
+        #: stop from a shutdown and only the stop writes a terminal entry.
+        self._stopping: set[str] = set()
+        self._listener: asyncio.Task | None = None
+        self._pubsub: Any = None
+        self._listening = asyncio.Lock()
+        self._watchdog: asyncio.Task | None = None
+        # Last-seen provider status per job_handle, per turn -- the same map
+        # ``_LiveTurn`` keeps for the timeout answer, rebuilt here from the
+        # frames that already pass through. Read only when a turn is stopped.
+        self._job_statuses: dict[str, dict[str, str]] = {}
+        self._cancel_jobs: dict[str, CancelJobs] = {}
         self._poll_interval = poll_interval
+        self._stop_poll_interval = stop_poll_interval
+        self._resubscribe_delay = resubscribe_delay
         # An idempotency record has to outlive the turn it names, or a
         # retry arriving late re-buys the answer it already has.
         self._ttl_seconds = int(get_settings().chat_turn_timeout_seconds) + TTL_MARGIN_SECONDS
 
     async def aclose(self) -> None:
+        if self._listener is not None:
+            self._listener.cancel()
+            self._listener = None
+        if self._watchdog is not None:
+            self._watchdog.cancel()
+            self._watchdog = None
+        if self._pubsub is not None:
+            await self._pubsub.aclose()
+            self._pubsub = None
         for task in list(self._tasks.values()):
             task.cancel()
         self._tasks.clear()
@@ -90,18 +151,28 @@ class TurnRegistry:
     def _idempotency_key(self, key: str) -> str:
         return f"send:{key}:turn"
 
+    def _stop_key(self, turn_id: str) -> str:
+        return f"turn:{turn_id}:stop"
+
     async def begin(
         self,
         thread_id: str,
         frames: AsyncIterator[str],
         idempotency_key: str | None = None,
+        cancel_jobs: CancelJobs | None = None,
     ) -> TurnClaim:
         """Start a turn on this thread, unless one is already running.
 
         The claim is in Redis rather than in this process because the second
         tab's message can land on a different replica, which is the case
         sticky sessions fail silently.
+
+        ``cancel_jobs`` is awaited with the handles a stop orphaned. Injected
+        rather than imported so the registry stays a Redis-and-tasks module:
+        cancelling a retrieval needs MCP tools and the turn's user, neither of
+        which has anything to do with owning a turn.
         """
+        await self._ensure_listening()
         turn_id = str(uuid.uuid4())
         sent = None if idempotency_key is None else self._idempotency_key(idempotency_key)
         if sent is not None:
@@ -123,8 +194,124 @@ class TurnRegistry:
                 await self._redis.delete(sent)
             running = await self._redis.get(key)
             return TurnClaim(turn_id=str(running), outcome=ALREADY_RUNNING)
+        if cancel_jobs is not None:
+            self._cancel_jobs[turn_id] = cancel_jobs
         self._tasks[turn_id] = asyncio.create_task(self._run(turn_id, thread_id, frames))
         return TurnClaim(turn_id=turn_id)
+
+    async def stop(self, turn_id: str) -> None:
+        """Cancel this turn now, wherever it is running.
+
+        Hard, not cooperative (D9): waiting for a superstep boundary makes
+        Stop's latency the slowest step's, and a button that takes 40s to
+        visibly stop reads as broken.
+        """
+        # Persisted first, then cancelled, and that order is the whole point.
+        # A turn's owner registers its consumer before it reads this flag, so
+        # a stop arriving in that window is caught by one side or the other:
+        # write-then-cancel means we cannot both miss the consumer and be
+        # missed by the flag read. Cancel-then-write could do exactly that.
+        await self._redis.set(self._stop_key(turn_id), "1", ex=self._ttl_seconds)
+        # Both, not either: the channel is what makes Stop feel instant, the
+        # flag is what makes it certain. A publish reaches only whoever is
+        # subscribed at that moment and is acknowledged by nobody, so on its
+        # own it can be swallowed silently; the flag is re-read on a timer
+        # and cannot be.
+        await self._redis.publish(STOP_CHANNEL, turn_id)
+        self._cancel_local(turn_id)
+
+    async def _ensure_listening(self) -> None:
+        """Subscribe this replica to the stop channel, once.
+
+        Awaited before a turn id is minted, so by the time anyone could ask
+        for this turn to stop, the replica that will own it is already
+        listening.
+        """
+        if self._listener is not None:
+            return
+        async with self._listening:
+            if self._listener is not None:
+                return
+            pubsub = self._redis.pubsub()
+            await pubsub.subscribe(STOP_CHANNEL)
+            self._pubsub = pubsub
+            self._listener = asyncio.create_task(self._listen(pubsub))
+            self._watchdog = asyncio.create_task(self._watch_stops())
+
+    async def _listen(self, pubsub: Any) -> None:
+        """Take stops off the channel, and keep taking them across a drop.
+
+        redis-py surfaces a dropped connection as an exception out of the read
+        and does not put the subscription back. Left uncaught, the task dies
+        and this replica never hears another stop -- Stop still works, via the
+        watchdog, but at poll latency forever and with nothing saying why.
+        """
+        while True:
+            try:
+                async for message in pubsub.listen():
+                    if message.get("type") != "message":
+                        continue
+                    # Most of these name turns other replicas own. Cancelling
+                    # a turn we do not run is a no-op, so nothing is filtered.
+                    self._cancel_local(str(message["data"]))
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning(
+                    "turn_stop_listener_reconnecting",
+                    exc_info=True,
+                    extra={"_event": "turn_stop_listener_reconnecting"},
+                )
+            await asyncio.sleep(self._resubscribe_delay)
+            try:
+                await pubsub.subscribe(STOP_CHANNEL)
+            except Exception:
+                continue
+            # Whatever was published while this replica was away is gone --
+            # pub/sub keeps nothing for an absent subscriber -- so the flags
+            # are the only record of a stop that fell in the gap.
+            await self._recheck_stops()
+
+    async def _watch_stops(self) -> None:
+        """Re-read the stop flags of every turn this replica is running.
+
+        The channel usually gets there first; this is what holds when it
+        does not.
+        """
+        while True:
+            await asyncio.sleep(self._stop_poll_interval)
+            await self._recheck_stops()
+
+    async def _recheck_stops(self) -> None:
+        """Cancel any turn here whose stop flag is set.
+
+        One round trip for the whole replica however many turns it holds, so
+        the cost does not scale with load. A failure is logged and swallowed
+        rather than raised: this runs from a loop whose death would take
+        Stop's only guarantee with it.
+        """
+        live = list(self._consumers)
+        if not live:
+            return
+        try:
+            flags = await self._redis.mget([self._stop_key(t) for t in live])
+        except Exception:
+            logger.warning(
+                "turn_stop_watch_failed",
+                exc_info=True,
+                extra={"_event": "turn_stop_watch_failed"},
+            )
+            return
+        for turn_id, flag in zip(live, flags):
+            if flag:
+                self._cancel_local(turn_id)
+
+    def _cancel_local(self, turn_id: str) -> None:
+        """Cancel this turn if this replica is the one running it."""
+        consumer = self._consumers.get(turn_id)
+        if consumer is not None:
+            self._stopping.add(turn_id)
+            consumer.cancel()
 
     async def turn_for(self, thread_id: str) -> str | None:
         """Which turn a reader attaching to this thread should stream.
@@ -178,9 +365,31 @@ class TurnRegistry:
         return len(self._tasks)
 
     async def _run(self, turn_id: str, thread_id: str, frames: AsyncIterator[str]) -> None:
+        consumer = asyncio.create_task(self._produce(turn_id, frames))
+        # Registered before the first await, so a stop racing the turn's own
+        # startup finds it here even though ``begin`` returned before this
+        # coroutine ever ran.
+        self._consumers[turn_id] = consumer
+        if await self._redis.exists(self._stop_key(turn_id)):
+            # Stopped before the owner was listening -- the case the flag
+            # exists for, and the one pub/sub alone cannot cover.
+            self._cancel_local(turn_id)
         try:
-            await self._produce(turn_id, frames)
+            await consumer
+        except asyncio.CancelledError:
+            if turn_id not in self._stopping:
+                # Not a stop -- this replica is going down under the turn.
+                # Phase 4 writes the ``interrupted`` entry here.
+                raise
+            await self._cancel_orphaned_jobs(turn_id)
+            await self._log.mark_terminal(
+                turn_id, STOPPED, _render(STOPPED, {"thread_id": thread_id}),
+            )
         finally:
+            self._consumers.pop(turn_id, None)
+            self._stopping.discard(turn_id)
+            self._job_statuses.pop(turn_id, None)
+            self._cancel_jobs.pop(turn_id, None)
             # Dropped from inside the task, so anyone awaiting it sees the
             # registry already let go. Holding every turn a replica ever ran
             # keeps its coroutine frame, and everything that frame captured,
@@ -195,20 +404,60 @@ class TurnRegistry:
             pipe.delete(self._active_key(thread_id))
             await pipe.execute()
 
+    async def _cancel_orphaned_jobs(self, turn_id: str) -> None:
+        """Tell the provider to drop whatever this turn left running.
+
+        Best effort, and deliberately not fatal: the turn is already stopping,
+        and a provider that will not take the cancel must not also cost the
+        user the ``stopped`` entry that ends their spinner.
+        """
+        cancel = self._cancel_jobs.get(turn_id)
+        if cancel is None:
+            return
+        orphaned = [
+            handle
+            for handle, status in self._job_statuses.get(turn_id, {}).items()
+            if status not in TERMINAL_STATUSES
+        ]
+        if not orphaned:
+            return
+        try:
+            await cancel(orphaned)
+        except Exception:
+            logger.warning(
+                "turn_stop_job_cancel_failed",
+                exc_info=True,
+                extra={"_event": "turn_stop_job_cancel_failed", "_turn_id": turn_id},
+            )
+
+    def _note_job_status(self, turn_id: str, frame: str) -> None:
+        """Remember what this turn last heard about a retrieval job."""
+        _, _, data = frame.partition("data: ")
+        try:
+            payload = json.loads(data)
+        except ValueError:
+            return
+        handle = payload.get("job_handle")
+        if handle:
+            self._job_statuses.setdefault(turn_id, {})[handle] = payload.get("status", "")
+
     async def _produce(self, turn_id: str, frames: AsyncIterator[str]) -> None:
         held: str | None = None
         async for frame in frames:
             if held is not None:
                 await self._log.append(turn_id, held)
                 held = None
-            if _event_name(frame) in _CLOSING_EVENTS:
+            event = _event_name(frame)
+            if event == "job_progress":
+                self._note_job_status(turn_id, frame)
+            if event in _CLOSING_EVENTS:
                 # Held rather than appended: whichever closing frame is still
                 # in hand when the turn stops producing is the one that
                 # belongs in the terminal entry. Holding costs no latency —
                 # both names are only ever emitted at the end of a turn, and a
                 # held frame is released the moment another arrives.
                 held = frame
-            elif _event_name(frame) == "text":
+            elif event == "text":
                 await self._log.append_text(turn_id, frame)
             else:
                 await self._log.append(turn_id, frame)
