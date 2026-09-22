@@ -8,15 +8,17 @@ import { apiFetch } from '../utils/apiFetch.js'
 import {
   classifyChatPost,
   classifyStreamEvent,
+  classifyTurnStatus,
   clearTurnRecord,
   isStreamError,
   readTurnRecord,
   StreamError,
   streamPath,
   terminalMessagePatch,
+  turnRecordThreadIds,
   writeTurnRecord,
 } from '../utils/chatTurnProtocol.js'
-import { isTurnFrame, sessionsWithThread } from '../utils/sessionList.js'
+import { isTurnFrame, mergeSessions, sessionsWithThread } from '../utils/sessionList.js'
 
 const API_BASE = '/api'
 const ACTIVE_THREAD_STORAGE_KEY = 'tta.activeThreadId'
@@ -31,6 +33,11 @@ const UNAVAILABLE_MESSAGE = 'Chat is temporarily unavailable. Try again in a mom
 // How often a reader's resume point is written down while a turn streams.
 const CURSOR_PERSIST_MS = 1000
 const CONNECTION_LOST_MESSAGE = 'Connection lost before the response finished. The backend may still be working — reload this session to see any results.'
+// How often a thread the user is not looking at is checked for whether its
+// turn is still going. Only threads the sidebar is badging are polled at
+// all, so this trades a little latency on the badge turning green for not
+// opening a request per second per background thread.
+const BACKGROUND_STATUS_POLL_MS = 3000
 
 function newIdempotencyKey() {
   // D13: the 202 handshake makes the retry window real, so a resent POST has
@@ -46,6 +53,11 @@ export function useChat(onJobProgress) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [historyError, setHistoryError] = useState(null)
+  // Sidebar badge state per thread: 'running' | 'done' | 'error', absent for
+  // a thread with nothing to report. Keyed independently of `messages` and
+  // `threadId` because its whole point is to outlive the user switching away
+  // from the thread it describes (T63's detached turns keep running there).
+  const [turnStatus, setTurnStatus] = useState({})
 
   const abortControllerRef = useRef(null)
   const activeRequestIdRef = useRef(0)
@@ -54,6 +66,8 @@ export function useChat(onJobProgress) {
   const loadingRef = useRef(false)
   const pendingAssistantUpdatesRef = useRef([])
   const threadIdRef = useRef(null)
+  const turnStatusRef = useRef({})
+  const sessionsRef = useRef([])
   const didRestoreRef = useRef(false)
   // Held rather than closed over. The stream reader now sits between the
   // mount effect and this callback — effect -> fetchSessions ->
@@ -72,6 +86,14 @@ export function useChat(onJobProgress) {
   useEffect(() => {
     threadIdRef.current = threadId
   }, [threadId])
+
+  useEffect(() => {
+    turnStatusRef.current = turnStatus
+  }, [turnStatus])
+
+  useEffect(() => {
+    sessionsRef.current = sessions
+  }, [sessions])
 
   const persistActiveThread = useCallback((id) => {
     if (id) {
@@ -95,6 +117,21 @@ export function useChat(onJobProgress) {
   // produces nothing leaves no empty conversation behind.
   const listThread = useCallback((id, message) => {
     setSessions(prev => sessionsWithThread(prev, id, message))
+  }, [])
+
+  const markTurnStatus = useCallback((id, status) => {
+    if (!id) return
+    setTurnStatus(prev => (prev[id] === status ? prev : { ...prev, [id]: status }))
+  }, [])
+
+  const clearTurnStatus = useCallback((id) => {
+    if (!id) return
+    setTurnStatus(prev => {
+      if (!(id in prev)) return prev
+      const next = { ...prev }
+      delete next[id]
+      return next
+    })
   }, [])
 
   const flushAssistantUpdates = useCallback(() => {
@@ -289,7 +326,14 @@ export function useChat(onJobProgress) {
       }
 
       const { terminal, kind } = classifyStreamEvent(event)
-      if (terminal) state.sawTerminal = true
+      if (terminal) {
+        state.sawTerminal = true
+        // Independent of whether this reader is attached because it sent
+        // the message or because it reattached to a thread the sidebar was
+        // badging: either way, the badge for this thread should now say how
+        // the turn ended rather than that it is still running.
+        markTurnStatus(ctx.threadId, classifyTurnStatus(kind))
+      }
 
       // The turn has started narrating, so this conversation has something in
       // it and belongs in the sidebar (utils/sessionList.js). The server
@@ -426,7 +470,7 @@ export function useChat(onJobProgress) {
     parser.end()
 
     return state
-  }, [isCurrentRequest, listThread, persistActiveThread, queueAssistantUpdate])
+  }, [isCurrentRequest, listThread, markTurnStatus, persistActiveThread, queueAssistantUpdate])
 
   const markConnectionLost = useCallback((streamId) => {
     // The stream stopped without saying why — a proxy idle timeout, a dropped
@@ -509,8 +553,10 @@ export function useChat(onJobProgress) {
       if (res.status === 404) {
         releaseIfCurrent(requestId)
         // Nothing is running, so nothing this client remembers about a turn
-        // on this thread is worth keeping.
+        // on this thread is worth keeping -- including any badge it was
+        // showing for it.
         clearTurnRecord(window.localStorage, id)
+        clearTurnStatus(id)
         return
       }
       if (!res.ok) {
@@ -518,6 +564,11 @@ export function useChat(onJobProgress) {
         return
       }
 
+      // Confirmed against the server rather than assumed from the stored
+      // record: this path also runs for a thread the sidebar only guessed
+      // was still running (seeded from a leftover record on mount), and a
+      // 200 here is what turns that guess into fact.
+      markTurnStatus(id, 'running')
       setMessages(prev => [
         ...prev,
         // What was asked, if this client is the one that asked it. A tab
@@ -539,6 +590,14 @@ export function useChat(onJobProgress) {
       } else if (!state.sawTerminal) {
         markConnectionLost(streamId)
       }
+      if (state.sawTerminal) {
+        // Whatever this attach just showed -- a replay of an ending that had
+        // already happened, or one that landed while the user watched -- they
+        // have now seen it directly. The badge exists to say "go look at
+        // this"; visiting discharges it, so it does not reappear until
+        // something new actually happens on this thread.
+        clearTurnStatus(id)
+      }
     } catch (err) {
       if (err.name === 'AbortError') return
       if (!isCurrentRequest(requestId) || !rendered) return
@@ -547,8 +606,9 @@ export function useChat(onJobProgress) {
       releaseIfCurrent(requestId)
     }
   }, [
-    assistantPlaceholder, beginLocalTurn, consumeStream, isCurrentRequest,
-    loadHistory, markConnectionLost, releaseIfCurrent,
+    assistantPlaceholder, beginLocalTurn, clearTurnStatus, consumeStream,
+    isCurrentRequest, loadHistory, markConnectionLost, markTurnStatus,
+    releaseIfCurrent,
   ])
 
   const fetchSessions = useCallback(async () => {
@@ -563,6 +623,7 @@ export function useChat(onJobProgress) {
       if (loaded === 'not-found') {
         persistActiveThread(null)
         clearTurnRecord(window.localStorage, storedThreadId)
+        clearTurnStatus(storedThreadId)
         return
       }
       await attachToThread(storedThreadId)
@@ -587,9 +648,85 @@ export function useChat(onJobProgress) {
       // Non-fatal; the active chat can continue without the sidebar list.
       await restore()
     }
-  }, [attachToThread, loadHistory, persistActiveThread])
+  }, [attachToThread, clearTurnStatus, loadHistory, persistActiveThread])
 
   useEffect(() => { fetchSessions() }, [fetchSessions])
+
+  // Seeds the badge for every thread this browser still has a turn record
+  // for, before anything has confirmed whether those turns are still going.
+  // Optimistic on purpose: `attachToThread` (above, for the restored active
+  // thread) and the poll below (for every other one) each correct their own
+  // entry within one round trip, and the alternative -- waiting for that
+  // round trip before showing anything -- is the "can I navigate back to it"
+  // question arriving late on exactly the reload this is for.
+  useEffect(() => {
+    const ids = turnRecordThreadIds(window.localStorage)
+    if (!ids.length) return
+    setTurnStatus(prev => {
+      const next = { ...prev }
+      let changed = false
+      for (const id of ids) {
+        if (next[id]) continue
+        next[id] = 'running'
+        changed = true
+      }
+      return changed ? next : prev
+    })
+  }, [])
+
+  // Watches every thread the badge calls 'running' that is not the one on
+  // screen right now -- the active thread's own status comes from the live
+  // stream above, which is cheaper and more current than a poll could be.
+  useEffect(() => {
+    const tick = async () => {
+      const active = threadIdRef.current
+      const badged = Object.keys(turnStatusRef.current)
+
+      // A thread the badge already knows about but the sidebar does not: the
+      // user sent the message and switched away before its first frame got
+      // here, so `sessionsWithThread`'s own optimistic add never ran on this
+      // tab (see useChat's send/reattach paths). The server lists the thread
+      // the moment its turn narrates regardless of who is watching, so this
+      // is what brings the row -- and the badge sitting on it -- in without
+      // the user having to reload.
+      const known = new Set(sessionsRef.current.map(getSessionId))
+      if (badged.some(id => !known.has(id))) {
+        try {
+          const res = await apiFetch(`${API_BASE}/sessions`)
+          if (res.ok) {
+            const data = await res.json()
+            setSessions(prev => mergeSessions(prev, data.sessions || []))
+          }
+        } catch {
+          // Best-effort; the next tick tries again.
+        }
+      }
+
+      const pending = Object.entries(turnStatusRef.current)
+        .filter(([id, status]) => status === 'running' && id !== active)
+        .map(([id]) => id)
+      if (!pending.length) return
+      await Promise.all(pending.map(async (id) => {
+        try {
+          const res = await apiFetch(`${API_BASE}/chat/${encodeURIComponent(id)}/status`)
+          if (res.status === 404) {
+            // Nothing this replica remembers any more -- past the ten-minute
+            // window `last_turn` covers, most likely. Nothing to badge: an
+            // unknown ending is worth less than no badge at all.
+            clearTurnStatus(id)
+            return
+          }
+          if (!res.ok) return
+          const body = await res.json()
+          markTurnStatus(id, classifyTurnStatus(body.terminal))
+        } catch {
+          // Transient; the next tick tries again rather than guessing.
+        }
+      }))
+    }
+    const interval = window.setInterval(tick, BACKGROUND_STATUS_POLL_MS)
+    return () => window.clearInterval(interval)
+  }, [clearTurnStatus, getSessionId, markTurnStatus])
 
   const sendMessage = useCallback(async (text) => {
     const message = text.trim()
@@ -688,6 +825,10 @@ export function useChat(onJobProgress) {
       writeTurnRecord(window.localStorage, acceptedThread, {
         turnId: outcome.turnId, cursor: null, userMessage: text,
       })
+      // The moment the sidebar has something to badge: this send bought a
+      // turn, whether or not the user is still looking at this thread by the
+      // time it finishes.
+      markTurnStatus(acceptedThread, 'running')
       const stream = await apiFetch(streamPath(API_BASE, acceptedThread, {
         turnId: outcome.turnId,
       }), {
@@ -733,7 +874,7 @@ export function useChat(onJobProgress) {
     }
   }, [
     assistantPlaceholder, attachToThread, beginLocalTurn, consumeStream,
-    isCurrentRequest, markConnectionLost, persistActiveThread,
+    isCurrentRequest, markConnectionLost, markTurnStatus, persistActiveThread,
     queueAssistantUpdate, releaseIfCurrent,
   ])
 
@@ -761,10 +902,11 @@ export function useChat(onJobProgress) {
     if (loaded === 'not-found') {
       persistActiveThread(null)
       clearTurnRecord(window.localStorage, id)
+      clearTurnStatus(id)
       return
     }
     await attachToThread(id)
-  }, [attachToThread, cancelScheduledFlush, detach, loadHistory, persistActiveThread])
+  }, [attachToThread, cancelScheduledFlush, clearTurnStatus, detach, loadHistory, persistActiveThread])
 
   // The reload affordance on a connection-lost or interrupted message (T41,
   // T63): reuses switchSession on the same thread so there's exactly one
@@ -780,11 +922,12 @@ export function useChat(onJobProgress) {
       }
       setSessions(prev => prev.filter(session => getSessionId(session) !== id))
       clearTurnRecord(window.localStorage, id)
+      clearTurnStatus(id)
       if (id === threadIdRef.current) newSession()
     } catch (err) {
       setError(err.message ? `Failed to delete session: ${err.message}` : 'Failed to delete session. Please try again.')
     }
-  }, [getSessionId, newSession])
+  }, [clearTurnStatus, getSessionId, newSession])
 
   const clearError = useCallback(() => {
     setError(null)
@@ -801,6 +944,7 @@ export function useChat(onJobProgress) {
     historyError,
     threadId,
     sessions,
+    turnStatus,
     sendMessage,
     newSession,
     switchSession,

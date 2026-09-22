@@ -7,10 +7,12 @@ import {
   isStreamError,
   classifyChatPost,
   classifyStreamEvent,
+  classifyTurnStatus,
   clearTurnRecord,
   readTurnRecord,
   streamPath,
   terminalMessagePatch,
+  turnRecordThreadIds,
   writeTurnRecord,
 } from '../src/utils/chatTurnProtocol.js'
 
@@ -141,6 +143,8 @@ function fakeStorage(initial = {}) {
     getItem: (k) => (map.has(k) ? map.get(k) : null),
     setItem: (k, v) => map.set(k, String(v)),
     removeItem: (k) => map.delete(k),
+    get length() { return map.size },
+    key: (i) => Array.from(map.keys())[i] ?? null,
     _dump: () => Object.fromEntries(map),
   }
 }
@@ -231,4 +235,56 @@ test('a stream error is recognised across module instances', () => {
   const lookalike = new Error('boom')
   lookalike.name = 'StreamError'
   assert.ok(isStreamError(lookalike))
+})
+
+/* ── classifyTurnStatus: the sidebar badge's three colors ── */
+
+test('no terminal yet reads as still running', () => {
+  assert.equal(classifyTurnStatus(null), 'running')
+  assert.equal(classifyTurnStatus(undefined), 'running')
+})
+
+test('done and stopped both read as the badge going green', () => {
+  // D11: a stopped turn still left an answer on screen, same as done.
+  assert.equal(classifyTurnStatus('done'), 'done')
+  assert.equal(classifyTurnStatus('stopped'), 'done')
+})
+
+test('error and interrupted both read as the badge going red', () => {
+  assert.equal(classifyTurnStatus('error'), 'error')
+  assert.equal(classifyTurnStatus('interrupted'), 'error')
+})
+
+/* ── turnRecordThreadIds: seeding the badge across a reload ── */
+
+test('every thread with a stored turn record is found', () => {
+  const storage = fakeStorage()
+  writeTurnRecord(storage, 'th-1', { turnId: 't-1', cursor: '1-0' })
+  writeTurnRecord(storage, 'th-2', { turnId: 't-2', cursor: '2-0' })
+
+  assert.deepEqual(turnRecordThreadIds(storage).sort(), ['th-1', 'th-2'])
+})
+
+test('unrelated storage keys are not mistaken for a turn record', () => {
+  const storage = fakeStorage({ 'tta.activeThreadId': 'th-1', unrelated: 'x' })
+  writeTurnRecord(storage, 'th-1', { turnId: 't-1', cursor: '1-0' })
+
+  assert.deepEqual(turnRecordThreadIds(storage), ['th-1'])
+})
+
+test('a thread with no record is not among the ones found', () => {
+  const storage = fakeStorage()
+  writeTurnRecord(storage, 'th-1', { turnId: 't-1', cursor: '1-0' })
+  clearTurnRecord(storage, 'th-1')
+
+  assert.deepEqual(turnRecordThreadIds(storage), [])
+})
+
+test('storage that throws on enumeration yields no threads rather than a crash', () => {
+  const hostile = {
+    getItem() { throw new Error('denied') },
+    get length() { throw new Error('denied') },
+    key() { throw new Error('denied') },
+  }
+  assert.deepEqual(turnRecordThreadIds(hostile), [])
 })

@@ -477,6 +477,24 @@ class TurnRegistry:
             running = await self._redis.get(self._last_key(thread_id))
         return str(running) if running else None
 
+    async def status(self, thread_id: str) -> tuple[str | None, str | None]:
+        """This thread's turn and how it last stood, without attaching to it.
+
+        For a caller that wants to know "is it still working" about every
+        thread it is *not* looking at -- a sidebar badge, not a reader. Two
+        GETs, no subscription, no stream: cheap enough to poll for several
+        threads a caller has not visited in a while.
+
+        Terminal is ``None`` while the turn is still going, one of
+        ``done``/``stopped``/``error``/``interrupted`` once it is not, mirroring
+        what ``follow`` would eventually report but without waiting for it.
+        """
+        turn_id = await self.turn_for(thread_id)
+        if turn_id is None:
+            return None, None
+        tail = await self._log.tail(turn_id)
+        return turn_id, tail.terminal
+
     async def follow(self, turn_id: str, cursor: str | None = None):
         """Replay this turn from ``cursor``, then follow it until it ends.
 

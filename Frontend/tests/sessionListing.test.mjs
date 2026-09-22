@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
-import { isTurnFrame, localSessionFor, sessionsWithThread } from '../src/utils/sessionList.js'
+import { isTurnFrame, localSessionFor, mergeSessions, sessionsWithThread } from '../src/utils/sessionList.js'
 
 /* ── When a thread joins "Recent analyses" ──
    The backend lists a thread once its turn has produced a frame. The sidebar
@@ -40,6 +40,36 @@ test('a thread with no id and no message is not invented', () => {
   const sessions = [{ id: 'th-1' }]
   assert.equal(sessionsWithThread(sessions, null, 'hello'), sessions)
   assert.equal(sessionsWithThread(sessions, 'th-2', ''), sessions)
+})
+
+/* ── mergeSessions: catching up a row this tab never optimistically added ──
+   For a thread whose local stream was aborted (the user switched away)
+   before its first frame arrived here -- the server lists it anyway, and a
+   background poll of /sessions uses this to bring the row in without a
+   reload. */
+
+test('a thread the server has listed but this tab has not is added at the top', () => {
+  const got = mergeSessions([{ id: 'old' }], [{ id: 'old' }, { id: 'new' }])
+  assert.deepEqual(got.map(s => s.id), ['new', 'old'])
+})
+
+test('a thread this tab already has -- optimistic or not -- is not duplicated', () => {
+  const sessions = [{ id: 'th-1', title: 'local optimistic title' }]
+  const got = mergeSessions(sessions, [{ id: 'th-1', title: 'server title' }])
+  // The local entry wins: this is a catch-up for missing rows, not a refresh
+  // of ones already there, so it cannot flicker a title mid-stream.
+  assert.equal(got, sessions)
+})
+
+test('nothing new returns the same array, not a copy', () => {
+  const sessions = [{ id: 'th-1' }]
+  assert.equal(mergeSessions(sessions, [{ id: 'th-1' }]), sessions)
+  assert.equal(mergeSessions(sessions, []), sessions)
+})
+
+test('mergeSessions works with bare string ids too', () => {
+  const got = mergeSessions(['old'], ['old', 'new'])
+  assert.deepEqual(got, ['new', 'old'])
 })
 
 /* ── Which frames mean the turn is talking ──

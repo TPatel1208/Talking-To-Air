@@ -546,3 +546,74 @@ class DetachedChatTurnTests(unittest.IsolatedAsyncioTestCase):
             if asyncio.get_running_loop().time() > deadline:
                 raise AssertionError("the turn never produced a frame")
             await asyncio.sleep(0.02)
+
+    async def test_status_on_a_thread_with_no_turn_is_a_404(self):
+        """Nothing to report, and saying so beats a cheerful "not running"
+        body — a 404 is what a caller polling many threads can filter on
+        without inspecting a payload."""
+        verifier, save, metadata, owns, stream = self.serving(("text", "hi"))
+        with verifier, save, metadata, owns, stream:
+            async with self.client() as client:
+                response = await client.get(
+                    f"/chat/{uuid.uuid4()}/status", headers=self.auth_headers,
+                )
+
+        self.assertEqual(response.status_code, 404)
+
+    async def test_status_of_a_running_turn_names_it_with_no_terminal(self):
+        """The sidebar badge's "still working" case: a turn id, no ending."""
+        blocked = asyncio.Event()
+        self.addCleanup(blocked.set)
+        verifier, save, metadata, owns, stream = self.serving(
+            ("status", {"message": "Reducing"}), blocked, ("text", "never"),
+        )
+        with verifier, save, metadata, owns, stream:
+            async with self.client() as client:
+                turn_id = await self.start_turn(client)
+                await self.await_frames(turn_id)
+
+                response = await client.get(
+                    f"/chat/{self.thread_id}/status", headers=self.auth_headers,
+                )
+
+                self.assertEqual(response.status_code, 200)
+                body = response.json()
+                self.assertEqual(body["turn_id"], turn_id)
+                self.assertIsNone(body["terminal"])
+
+    async def test_status_of_a_finished_turn_carries_its_terminal(self):
+        """The badge's "done" case, without opening a stream to learn it."""
+        verifier, save, metadata, owns, stream = self.serving(("text", "hello"))
+        with verifier, save, metadata, owns, stream:
+            async with self.client() as client:
+                turn_id = await self.start_turn(client)
+                await self.registry.wait(turn_id)
+
+                response = await client.get(
+                    f"/chat/{self.thread_id}/status", headers=self.auth_headers,
+                )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["turn_id"], turn_id)
+        self.assertEqual(body["terminal"], "done")
+
+    async def test_status_on_someone_elses_thread_is_a_404(self):
+        """Same gate as the stream and stop routes: no confirmation that the
+        thread even exists to a caller who does not own it."""
+        blocked = asyncio.Event()
+        self.addCleanup(blocked.set)
+        verifier, save, metadata, owns, stream = self.serving(
+            ("status", {"message": "Reducing"}), blocked, ("text", "never"),
+        )
+        intruder = auth_helpers.make_token("user-2", email="other@example.com")
+        with verifier, save, metadata, owns, stream:
+            async with self.client() as client:
+                await self.start_turn(client)
+
+                response = await client.get(
+                    f"/chat/{self.thread_id}/status",
+                    headers={"Authorization": f"Bearer {intruder}"},
+                )
+
+        self.assertEqual(response.status_code, 404)

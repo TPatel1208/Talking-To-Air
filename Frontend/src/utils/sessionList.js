@@ -55,3 +55,24 @@ export function sessionsWithThread(sessions, id, message) {
   ))
   return listed ? sessions : [localSessionFor(id, message), ...sessions]
 }
+
+function sessionId(session) {
+  return typeof session === 'string' ? session : session?.id
+}
+
+/** `sessions` with every entry from `incoming` this list does not already
+ * have, added at the top; `sessions` itself if there is nothing new.
+ *
+ * For a thread whose first frame arrived after this tab stopped reading its
+ * stream -- the user sent the message, then switched away before anything
+ * came back, so `sessionsWithThread`'s own optimistic add never ran here.
+ * The server lists the thread the moment its turn narrates regardless of
+ * who is watching; this is what a background poll of `/sessions` uses to
+ * catch that listing up, so the row (and the badge it carries) appears on
+ * this client without waiting for a reload.
+ */
+export function mergeSessions(sessions, incoming) {
+  const known = new Set(sessions.map(sessionId))
+  const additions = incoming.filter(session => !known.has(sessionId(session)))
+  return additions.length ? [...additions, ...sessions] : sessions
+}

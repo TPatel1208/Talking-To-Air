@@ -1485,6 +1485,26 @@ async def chat_stream(
     )
 
 
+@app.get("/chat/{thread_id}/status")
+@limiter.limit("60/minute")
+async def chat_status(thread_id: ThreadId, request: Request):
+    """Whether this thread has a turn in flight, without opening its stream.
+
+    For the sidebar: a thread the user sent a message to and then navigated
+    away from keeps running under it (T63) — this is what lets a badge say so
+    for every thread that is not the one on screen, without paying for a
+    stream connection per row.
+    """
+    user = request.state.current_user
+    if not await session_belongs_to_user(thread_id, user.id):
+        raise HTTPException(status_code=404, detail="Session not found")
+    registry = app.state.turn_registry
+    turn_id, terminal = await registry.status(thread_id)
+    if turn_id is None:
+        raise HTTPException(status_code=404, detail="No turn is running on this thread")
+    return {"turn_id": turn_id, "thread_id": thread_id, "terminal": terminal}
+
+
 async def _resolve_thread(req: ChatRequest, user_id: str) -> str:
     thread_id = req.thread_id or str(uuid.uuid4())
     if req.thread_id:

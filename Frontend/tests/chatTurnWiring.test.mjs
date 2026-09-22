@@ -194,3 +194,34 @@ test('a stream that dies mid-answer is a lost connection on both paths', () => {
     assert.match(caught, /markConnectionLost\(/, marker)
   }
 })
+
+// T63's sidebar badge: which chat the user just left mid-turn, and whether
+// it is still going. Two more invariants live in callbacks jsdom cannot run.
+
+test('visiting a thread discharges whatever badge it was carrying', () => {
+  // A finished or errored badge exists to say "come back and look at this."
+  // Landing on the thread -- a click, a remount, a refused-send join -- is
+  // exactly what that badge was for, so it must not survive the visit that
+  // answers it. Anchored after the reattach's own `consumeStream` call, not
+  // anywhere in the file, so a `clearTurnStatus` sprinkled in for some other
+  // reason does not satisfy this guard.
+  const body = callbackBody(USE_CHAT, 'const attachToThread = useCallback(')
+  assert.ok(body, 'attachToThread is no longer a useCallback -- re-point this guard')
+  const afterStream = body.slice(body.indexOf('const state = await consumeStream('))
+  assert.ok(afterStream, 'the reattach no longer reads state off consumeStream -- re-point this guard')
+  const terminalBranch = afterStream.slice(afterStream.indexOf('if (state.sawTerminal'))
+  assert.ok(terminalBranch.startsWith('if (state.sawTerminal'), 'no sawTerminal branch after the reattach reads its state')
+  assert.match(terminalBranch.slice(0, terminalBranch.indexOf('\n    }')), /clearTurnStatus\(/)
+})
+
+test('a background thread missing from the sidebar is caught up from the server listing', () => {
+  // The gap this closes: the user sent a message and switched away before its
+  // first frame arrived on this tab, so `sessionsWithThread`'s optimistic add
+  // never ran here -- but the server lists the thread the moment its turn
+  // narrates, regardless of who is watching. Without this, that thread's
+  // badge has no row to sit on until the next reload.
+  assert.match(USE_CHAT, /mergeSessions\(/)
+  const tickBody = callbackBody(USE_CHAT, 'const tick = async () => {')
+  assert.ok(tickBody, 'the background poll is no longer named `tick` -- re-point this guard')
+  assert.match(tickBody, /mergeSessions\(/, 'the poll no longer catches up missing rows')
+})

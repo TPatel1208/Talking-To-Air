@@ -171,6 +171,43 @@ export function clearTurnRecord(storage, threadId) {
 }
 
 /**
+ * Every thread this browser remembers a turn for, across a reload.
+ *
+ * Scanned off the storage keys rather than tracked in a second index: the
+ * per-thread record is already the source of truth for "a turn is or was
+ * running here," and a parallel list would just be one more place for the
+ * two to drift out of sync.
+ */
+export function turnRecordThreadIds(storage) {
+  const prefix = `${CHAT_TURN_STORAGE_KEY}.`
+  const ids = []
+  try {
+    for (let i = 0; i < storage.length; i++) {
+      const key = storage.key(i)
+      if (key && key.startsWith(prefix)) ids.push(key.slice(prefix.length))
+    }
+  } catch {
+    // Enumeration throws the same way get/set does in a private window or
+    // with site data blocked -- no threads to seed a badge for beats a crash.
+  }
+  return ids
+}
+
+/**
+ * The sidebar's three-state read of a thread's turn: still going, or ended
+ * with something to show for it, or ended with nothing.
+ *
+ * Four terminal names collapse to two colors here, not in the component, so
+ * the badge's meaning is a pure function a test can pin without rendering
+ * anything. `done` and `stopped` both leave an answer on screen (D11); `error`
+ * and `interrupted` both leave the user with nothing they asked for.
+ */
+export function classifyTurnStatus(terminal) {
+  if (terminal == null) return 'running'
+  return terminal === 'done' || terminal === 'stopped' ? 'done' : 'error'
+}
+
+/**
  * Where this thread's turn streams from.
  *
  * Naming a `turnId` says "I am coming back to a turn I already know about",

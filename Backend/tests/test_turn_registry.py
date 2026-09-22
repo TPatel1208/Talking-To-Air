@@ -323,6 +323,36 @@ class TurnRegistryTests(unittest.IsolatedAsyncioTestCase):
         gate.set()
         await self.registry.wait(claim.turn_id)
 
+    async def test_status_of_a_thread_with_no_turn_names_nothing(self):
+        self.assertEqual(await self.registry.status(self.thread_id), (None, None))
+
+    async def test_status_of_a_running_turn_names_it_with_no_terminal_yet(self):
+        gate = asyncio.Event()
+        claim = await self.registry.begin(
+            self.thread_id, blocks_until(gate, frame("done", "{}"))
+        )
+
+        self.assertEqual(await self.registry.status(self.thread_id), (claim.turn_id, None))
+
+        gate.set()
+        await self.registry.wait(claim.turn_id)
+
+    async def test_status_of_a_finished_turn_carries_its_terminal(self):
+        claim = await self.registry.begin(
+            self.thread_id, produces(frame("done", '{"response": "hi"}'))
+        )
+        await self.registry.wait(claim.turn_id)
+
+        self.assertEqual(await self.registry.status(self.thread_id), (claim.turn_id, "done"))
+
+    async def test_status_of_an_errored_turn_says_error_not_running(self):
+        claim = await self.registry.begin(
+            self.thread_id, produces(frame("error", '{"detail": "boom"}'))
+        )
+        await self.registry.wait(claim.turn_id)
+
+        self.assertEqual(await self.registry.status(self.thread_id), (claim.turn_id, "error"))
+
     async def test_a_reader_arriving_just_after_the_turn_ended_still_finds_its_stream(self):
         """The claim is gone the instant the turn ends, but the stream is not.
 
