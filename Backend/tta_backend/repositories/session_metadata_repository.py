@@ -154,16 +154,34 @@ async def list_session_metadata(user_id: str) -> list[dict[str, Any]]:
 
     A row exists from the moment its message is posted -- it is the only
     record of who owns the thread, and the stream and stop endpoints refuse
-    without it -- but a turn that never narrated leaves a titled row over an
-    empty conversation. ``first_frame_at`` is what separates the two; an
-    unstamped thread stays reachable by id, just not in the sidebar.
+    without it -- but that says nothing about whether the conversation has
+    any content. Two facts answer that, and neither covers both routes:
+
+    - ``first_frame_at``: the turn has narrated. The fast path checkpoints
+      its transcript once, at the end, so this is the only evidence a turn
+      still running leaves.
+    - a checkpoint row: the thread has a transcript. The supervisor route
+      checkpoints the human message at its first superstep, before the first
+      frame is yielded -- so a turn stopped in that window holds the user's
+      question and has narrated nothing.
+
+    Either one lists the thread; neither leaves it out of the sidebar, still
+    reachable by id. The checkpoint tables are LangGraph's own, named here
+    for the same reason ``SessionRepository.delete_session`` names them.
     """
     async with pg_connection() as conn:
         cursor = await conn.execute(
             """
             SELECT thread_id, title, created_at
             FROM session_metadata
-            WHERE user_id = %s AND first_frame_at IS NOT NULL
+            WHERE user_id = %s
+              AND (
+                first_frame_at IS NOT NULL
+                OR EXISTS (
+                    SELECT 1 FROM checkpoints
+                    WHERE checkpoints.thread_id = session_metadata.thread_id
+                )
+              )
             ORDER BY created_at DESC NULLS LAST, thread_id
             """,
             (user_id,),

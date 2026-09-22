@@ -9,7 +9,9 @@ stopped, times out, errors or dies with its replica leaves a titled row over
 an empty conversation, listed forever.
 
 ``first_frame_at`` is the second fact, stamped when the turn first produces
-narration, and the listing reads that one.
+narration. The listing reads it *or* the presence of a checkpoint: the fast
+path narrates long before it checkpoints, and a stopped supervisor turn
+checkpoints without ever narrating, so neither fact alone covers both.
 
 These tests drive the repository against a recording connection, so they pin
 the SQL each function issues rather than what Postgres does with it. That is
@@ -80,6 +82,38 @@ class SessionListingTests(unittest.IsolatedAsyncioTestCase):
             selects[0],
             "an unstamped thread is one whose turn never said anything -- listing it "
             "is the empty-conversation row this column exists to hide",
+        )
+
+    async def test_a_thread_with_a_transcript_lists_even_with_no_stamp(self):
+        """"Has something in it" is narration OR a transcript, not narration
+        alone -- and the difference is a live bug, not a hypothetical.
+
+        The stamp only sees frames from the turn's own generator. On the
+        supervisor route LangGraph checkpoints the human message at the first
+        superstep, well before the first frame is yielded, and a Stop in that
+        window is written by the registry -- which the stamp never sees. The
+        thread then holds the user's question and nothing lists it. Observed
+        on the deployed stack: thread 70dc275f, stopped 26s after it started,
+        two checkpoint rows, no stamp.
+
+        The fast path is the other half and is why the stamp exists at all:
+        it checkpoints once, at the end, so a turn still running has a
+        transcript of nothing.
+        """
+        from tta_backend.repositories.session_metadata_repository import list_session_metadata
+
+        conn = FakeConnection(lambda sql: [("th-1", "How is the air", None)])
+        with connected(conn):
+            await list_session_metadata("user-1")
+
+        listing = conn.sql_matching("FROM session_metadata", "WHERE user_id")[0]
+        self.assertIn("EXISTS", listing)
+        self.assertIn("FROM checkpoints", listing)
+        self.assertIn(
+            "first_frame_at IS NOT NULL OR",
+            listing,
+            "the two conditions are alternatives: a running turn has narrated "
+            "without checkpointing, a stopped one checkpointed without narrating",
         )
 
     async def test_a_listed_row_carries_no_first_frame_column_into_the_response(self):
