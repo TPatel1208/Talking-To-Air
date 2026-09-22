@@ -155,6 +155,28 @@ frame, and the thread's claim lapses on its own at `CLAIM_TTL_SECONDS` —
 measured at **31s** — after which the thread accepts new messages normally.
 Nothing needs doing.
 
+**Why a thread can be missing from "Recent analyses".** Two different facts
+about a thread are recorded at two different times. `session_metadata` is
+written when the message is posted, because it is the only record of who owns
+the thread and both the reattach stream and stop refuse without it;
+`first_frame_at` is stamped when that thread's turn first produces a frame,
+and `GET /sessions` lists only threads that have one. A turn that was stopped,
+failed or died before narrating therefore leaves an unlisted thread — still
+reachable by id, still deletable, just not in the sidebar. Before this, every
+such thread showed up as a titled row over an empty conversation, because the
+fast path writes the transcript once, at the end of the turn.
+
+How many threads are hidden this way:
+
+```bash
+docker compose exec db psql -U postgres -d talking_to_air_memory   -c "SELECT count(*) FROM session_metadata WHERE first_frame_at IS NULL"
+```
+
+The column is added on startup and backfilled from `created_at` **once**, on
+the run that adds it — so threads that predate it all keep listing. The
+backfill is guarded on the column not already existing: making it
+unconditional would relist every empty thread on the next restart.
+
 ## Cube Cache
 
 The T52 cube cache (`cube_store` volume) holds opened-and-reduced Zarr cubes, keyed so it self-invalidates when the underlying export changes. It evicts on its own — LRU by last access, run before every write — to stay under `CUBE_STORE_MAX_BYTES` (default 4 GiB); no manual pruning endpoint exists or is needed. Watch `cube_store_bytes` and `cube_evictions_total` in `/metrics` to see it working.

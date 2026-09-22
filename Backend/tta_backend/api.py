@@ -8,7 +8,7 @@ import tracemalloc
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Annotated, Optional
+from typing import Annotated, AsyncIterator, Optional
 
 from fastapi import FastAPI, HTTPException, Path, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -44,6 +44,7 @@ from tta_backend.repositories.chart_repository import ensure_chart_table
 from tta_backend.repositories.session_metadata_repository import (
     ensure_session_metadata_table,
     get_session_metadata,
+    mark_session_first_frame,
     save_session_metadata_once,
     session_belongs_to_user,
 )
@@ -1354,8 +1355,12 @@ async def chat(req: ChatRequest, request: Request):
     thread_id = await _resolve_thread(req, user.id)
     request_id = str(uuid.uuid4())
     await _save_session_metadata(thread_id, req.message, user.id, request_id)
-    frames = chat_stream_service.stream_chat_events(
-        active_agent, ground_agent, satellite_agent, req.message, thread_id, user.id, request_id,
+    frames = _listing_on_first_frame(
+        chat_stream_service.stream_chat_events(
+            active_agent, ground_agent, satellite_agent, req.message, thread_id, user.id, request_id,
+        ),
+        thread_id,
+        request_id,
     )
     if get_settings().chat_detached_turns_enabled:
         # T63 D6: the POST only accepts the message. Everything this turn
@@ -1494,6 +1499,45 @@ async def _save_session_metadata(thread_id: str, message: str, user_id: str, req
         await save_session_metadata_once(thread_id, message, user_id)
     except Exception:
         logger.exception("session_metadata_save_failed", extra={"_request_id": request_id, "_thread_id": thread_id})
+
+
+async def _listing_on_first_frame(
+    frames: AsyncIterator[str], thread_id: str, request_id: str
+) -> AsyncIterator[str]:
+    """Put the thread in "Recent analyses" when its turn starts narrating.
+
+    The metadata row above is written before anything runs because it is the
+    only record of who owns the thread, and both ``/chat/{thread}/stream`` and
+    ``/chat/{thread}/stop`` refuse without one. It therefore cannot double as
+    "this conversation has something in it": the fast path checkpoints the
+    transcript once, at the end, so a turn that is stopped or dies leaves a
+    titled row over an empty conversation.
+
+    Wrapped here rather than inside ChatStreamService, and deliberately: this
+    is the one point both protocols pass through, and it holds whatever the
+    route produced without knowing which route that was. The fast path never
+    enters ``stream_response`` -- the seam T63 Phase 5's heartbeat fell
+    through -- so a stamp written from inside a route is one new route away
+    from leaving threads unlisted.
+
+    Stamped before the frame is yielded: a reader that has seen the frame may
+    ask for the session list in the next breath.
+    """
+    listed = False
+    async for frame in frames:
+        if not listed:
+            listed = True
+            try:
+                await mark_session_first_frame(thread_id)
+            except Exception:
+                # The turn is answering; the sidebar is not worth failing it
+                # for. Same policy as the metadata save above.
+                logger.exception(
+                    "session_first_frame_mark_failed",
+                    extra={"_request_id": request_id, "_thread_id": thread_id},
+                )
+        yield frame
+
 
 # T37: session endpoint catch-alls answer with a fixed generic detail — the
 # real exception goes to the logs with request context, never to the client.

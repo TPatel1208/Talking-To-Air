@@ -61,6 +61,33 @@ async def ensure_session_metadata_table() -> None:
             ADD COLUMN IF NOT EXISTS satellite_context JSONB NOT NULL DEFAULT '{}'::jsonb
             """
         )
+        # Asked before the column is added, because afterwards the answer is
+        # always yes. A NULL in an existing row and a NULL in a new one mean
+        # opposite things -- "predates this column" and "this thread's turn
+        # has not produced yet" -- and only the first may be backfilled. This
+        # runs on every startup, so backfilling unconditionally would relist
+        # every empty thread the day after it was hidden.
+        cursor = await conn.execute(
+            """
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'session_metadata' AND column_name = 'first_frame_at'
+            """
+        )
+        column_existed = await cursor.fetchone() is not None
+        await conn.execute(
+            """
+            ALTER TABLE session_metadata
+            ADD COLUMN IF NOT EXISTS first_frame_at TIMESTAMPTZ
+            """
+        )
+        if not column_existed:
+            await conn.execute(
+                """
+                UPDATE session_metadata
+                SET first_frame_at = created_at
+                WHERE first_frame_at IS NULL
+                """
+            )
         await conn.commit()
 
 
@@ -73,6 +100,25 @@ async def save_session_metadata_once(thread_id: str, first_message: str, user_id
             ON CONFLICT (thread_id) DO NOTHING
             """,
             (thread_id, generate_session_title(first_message), user_id),
+        )
+        await conn.commit()
+
+
+async def mark_session_first_frame(thread_id: str) -> None:
+    """Record that this thread's turn has produced its first frame.
+
+    Called on every turn's first frame, not just the thread's first, so the
+    NULL guard is what keeps it one write per thread -- and what stops a
+    later turn moving a stamp that means "this conversation began".
+    """
+    async with pg_connection() as conn:
+        await conn.execute(
+            """
+            UPDATE session_metadata
+            SET first_frame_at = now()
+            WHERE thread_id = %s AND first_frame_at IS NULL
+            """,
+            (thread_id,),
         )
         await conn.commit()
 
@@ -104,12 +150,20 @@ async def session_belongs_to_user(thread_id: str, user_id: str) -> bool:
 
 
 async def list_session_metadata(user_id: str) -> list[dict[str, Any]]:
+    """This user's threads that have something in them.
+
+    A row exists from the moment its message is posted -- it is the only
+    record of who owns the thread, and the stream and stop endpoints refuse
+    without it -- but a turn that never narrated leaves a titled row over an
+    empty conversation. ``first_frame_at`` is what separates the two; an
+    unstamped thread stays reachable by id, just not in the sidebar.
+    """
     async with pg_connection() as conn:
         cursor = await conn.execute(
             """
             SELECT thread_id, title, created_at
             FROM session_metadata
-            WHERE user_id = %s
+            WHERE user_id = %s AND first_frame_at IS NOT NULL
             ORDER BY created_at DESC NULLS LAST, thread_id
             """,
             (user_id,),

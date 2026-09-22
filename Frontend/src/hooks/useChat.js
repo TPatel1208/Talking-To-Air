@@ -16,6 +16,7 @@ import {
   terminalMessagePatch,
   writeTurnRecord,
 } from '../utils/chatTurnProtocol.js'
+import { isTurnFrame, sessionsWithThread } from '../utils/sessionList.js'
 
 const API_BASE = '/api'
 const ACTIVE_THREAD_STORAGE_KEY = 'tta.activeThreadId'
@@ -88,13 +89,12 @@ export function useChat(onJobProgress) {
     typeof session === 'string' ? session : session?.id
   ), [])
 
-  const makeLocalSession = useCallback((id, message) => {
-    const title = message.trim().replace(/\s+/g, ' ')
-    return {
-      id,
-      title: title.length > 60 ? `${title.slice(0, 57).trim()}...` : title,
-      created_at: new Date().toISOString(),
-    }
+  // A thread joins the sidebar when its turn starts narrating, which is what
+  // the server's own listing now waits for — so the row appears while the
+  // answer is being produced rather than when it lands, and a turn that
+  // produces nothing leaves no empty conversation behind.
+  const listThread = useCallback((id, message) => {
+    setSessions(prev => sessionsWithThread(prev, id, message))
   }, [])
 
   const flushAssistantUpdates = useCallback(() => {
@@ -269,6 +269,9 @@ export function useChat(onJobProgress) {
     // and this is the streaming hot path. Being a second behind costs a
     // resume a second of replay into a bubble that is empty anyway.
     let cursorWrittenAt = 0
+    // Whether this thread has been put in the sidebar yet. One check per
+    // frame, one setSessions per stream.
+    let listed = false
 
     const parser = createSseParser(({ event, data: rawData }) => {
       if (!isCurrentRequest(requestId)) return
@@ -287,6 +290,16 @@ export function useChat(onJobProgress) {
 
       const { terminal, kind } = classifyStreamEvent(event)
       if (terminal) state.sawTerminal = true
+
+      // The turn has started narrating, so this conversation has something in
+      // it and belongs in the sidebar (utils/sessionList.js). The server
+      // stamps the same moment from its side of the stream, which is why the
+      // follower's own frames are excluded: nothing stamps for those, and a
+      // row listed on one would disappear on the next /sessions fetch.
+      if (!listed && isTurnFrame(event)) {
+        listed = true
+        listThread(ctx.threadId, ctx.userMessage)
+      }
 
       if (kind === 'cursor') {
         // The follower's own frame, emitted *after* the page it accounts
@@ -381,13 +394,13 @@ export function useChat(onJobProgress) {
           workflowStage: INITIAL_WORKFLOW_STATE,
           isLoading: false,
         }))
-        if (ctx.userMessage) {
-          setSessions(prev => (
-            prev.some(session => getSessionId(session) === newId)
-              ? prev
-              : [makeLocalSession(newId, ctx.userMessage), ...prev]
-          ))
-        }
+        // The legacy protocol only. Its POST streams the turn itself and
+        // carries the thread id in this frame, so a brand-new thread has no
+        // id to list under until here. Under the detached protocol the 202
+        // named the thread before the first frame arrived and it is already
+        // listed — which is the point: a turn that never finishes still
+        // shows up in the sidebar it is running in.
+        if (!ctx.threadId) listThread(newId, ctx.userMessage)
       } else if (event === 'stopped' || event === 'interrupted') {
         // The two endings the user did not ask for and did not get an answer
         // from. Both leave whatever the turn had already produced in place:
@@ -413,7 +426,7 @@ export function useChat(onJobProgress) {
     parser.end()
 
     return state
-  }, [getSessionId, isCurrentRequest, makeLocalSession, persistActiveThread, queueAssistantUpdate])
+  }, [isCurrentRequest, listThread, persistActiveThread, queueAssistantUpdate])
 
   const markConnectionLost = useCallback((streamId) => {
     // The stream stopped without saying why — a proxy idle timeout, a dropped
@@ -564,20 +577,17 @@ export function useChat(onJobProgress) {
       const nextSessions = data.sessions || []
       setSessions(nextSessions)
 
-      if (!didRestoreRef.current) {
-        const storedThreadId = window.localStorage.getItem(ACTIVE_THREAD_STORAGE_KEY)
-        if (storedThreadId && !nextSessions.some(session => getSessionId(session) === storedThreadId)) {
-          didRestoreRef.current = true
-          persistActiveThread(null)
-          return
-        }
-        await restore()
-      }
+      // Deliberately not gated on the list: a thread whose turn has not
+      // produced a frame yet is not in it, and dropping the stored thread
+      // there would abandon a running turn on a reload — the reattach this
+      // whole protocol exists for. A thread that is genuinely gone is still
+      // caught, one request later, by restore()'s own not-found handling.
+      await restore()
     } catch {
       // Non-fatal; the active chat can continue without the sidebar list.
       await restore()
     }
-  }, [attachToThread, getSessionId, loadHistory, persistActiveThread])
+  }, [attachToThread, loadHistory, persistActiveThread])
 
   useEffect(() => { fetchSessions() }, [fetchSessions])
 
