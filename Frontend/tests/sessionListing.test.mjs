@@ -29,11 +29,40 @@ test('a long message is truncated the same way the server titles it', () => {
   assert.equal(localSessionFor('th-1', 'a'.repeat(60)).title, 'a'.repeat(60))
 })
 
-test('a thread already in the list leaves it untouched, array and all', () => {
-  // Called on every frame of every turn, so the no-op case has to be one:
-  // a fresh array would re-render the sidebar ten times a second.
+test('a thread already at the top leaves the list untouched, array and all', () => {
+  // The common case — you reply in the thread you are reading — and a fresh
+  // array here re-renders the sidebar for no change at all.
   const sessions = [{ id: 'th-1', title: 'How is the air' }]
   assert.equal(sessionsWithThread(sessions, 'th-1', 'anything else'), sessions)
+})
+
+test('replying in an older thread moves it back to the top', () => {
+  // The server orders by when a thread last spoke, and only a full
+  // /sessions fetch re-reads that order — which happens on mount and
+  // nowhere else. Without this the sidebar would show the old order until
+  // a reload rearranged it out from under the user.
+  const sessions = [{ id: 'th-1' }, { id: 'th-2' }, { id: 'th-3' }]
+  const got = sessionsWithThread(sessions, 'th-3', 'and what about ozone?')
+  assert.deepEqual(got.map(s => s.id), ['th-3', 'th-1', 'th-2'])
+})
+
+test('the moved row is the one that was there, not a new one from this message', () => {
+  // Rebuilding it would retitle the thread after every question, and the
+  // title is the server's — set from the message that started it.
+  const listed = { id: 'th-2', title: 'How is the air in Newark?' }
+  const got = sessionsWithThread([{ id: 'th-1' }, listed], 'th-2', 'and ozone?')
+  assert.equal(got[0], listed)
+})
+
+test('moving a thread does not drop or duplicate the rest', () => {
+  const sessions = [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }]
+  const got = sessionsWithThread(sessions, 'b', 'hello')
+  assert.deepEqual(got.map(s => s.id), ['b', 'a', 'c', 'd'])
+  assert.equal(got.length, sessions.length)
+})
+
+test('a bare string id moves too', () => {
+  assert.deepEqual(sessionsWithThread(['old', 'th-1'], 'th-1', 'hello'), ['th-1', 'old'])
 })
 
 test('a thread with no id and no message is not invented', () => {

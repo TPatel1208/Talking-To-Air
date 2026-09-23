@@ -1,5 +1,5 @@
 /**
- * What belongs in "Recent analyses", and when.
+ * What belongs in "Recent analyses", when, and in what order.
  *
  * A thread's row exists on the server from the moment its message is posted —
  * it is the only record of who owns the thread, and the reattach and stop
@@ -7,6 +7,10 @@
  * anything in it. The server lists a thread once its turn has produced a
  * frame; this is the same rule applied locally, so the sidebar shows the same
  * threads between reloads.
+ *
+ * The same frame decides order: the server sorts by when a thread last
+ * narrated, not when it was created, so a thread returned to today sits
+ * above one started yesterday and abandoned.
  */
 
 const MAX_TITLE_LENGTH = 60
@@ -44,16 +48,27 @@ export function localSessionFor(id, message) {
 /** `sessions` with this thread at the top, or `sessions` itself if it is
  * already there.
  *
- * Returning the same array matters: this is called on every frame of every
- * turn, and a new one would re-render the sidebar about ten times a second
- * through an answer.
+ * A thread already in the list is *moved*, not left alone: the server now
+ * orders by when a thread was last used, and this is the same rule applied
+ * locally. Without the move, replying in an old thread would leave it
+ * wherever it was until the next reload silently rearranged the sidebar —
+ * `/sessions` is fetched in full only on mount, and the background poll
+ * merges rows without reordering them.
+ *
+ * The row that moves is the one already there, not a fresh one: it carries
+ * the server's title, and rebuilding it from this turn's message would
+ * rename the thread after every question.
+ *
+ * Returning the same array when the thread is already on top matters. That
+ * is the common case — you usually reply in the thread you are reading —
+ * and a new array re-renders the sidebar for nothing.
  */
 export function sessionsWithThread(sessions, id, message) {
   if (!id || !(message || '').trim()) return sessions
-  const listed = sessions.some(session => (
-    (typeof session === 'string' ? session : session?.id) === id
-  ))
-  return listed ? sessions : [localSessionFor(id, message), ...sessions]
+  const at = sessions.findIndex(session => sessionId(session) === id)
+  if (at === 0) return sessions
+  if (at === -1) return [localSessionFor(id, message), ...sessions]
+  return [sessions[at], ...sessions.slice(0, at), ...sessions.slice(at + 1)]
 }
 
 function sessionId(session) {

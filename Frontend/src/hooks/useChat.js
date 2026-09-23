@@ -111,10 +111,12 @@ export function useChat(onJobProgress) {
     typeof session === 'string' ? session : session?.id
   ), [])
 
-  // A thread joins the sidebar when its turn starts narrating, which is what
-  // the server's own listing now waits for — so the row appears while the
-  // answer is being produced rather than when it lands, and a turn that
-  // produces nothing leaves no empty conversation behind.
+  // A thread joins the sidebar — and returns to the top of it — when its
+  // turn starts narrating, which is what the server both lists and orders
+  // by. So the row appears while the answer is being produced rather than
+  // when it lands, a turn that produces nothing leaves no empty
+  // conversation behind, and a thread picked back up after a week sorts
+  // where it was last used rather than where it was started.
   const listThread = useCallback((id, message) => {
     setSessions(prev => sessionsWithThread(prev, id, message))
   }, [])

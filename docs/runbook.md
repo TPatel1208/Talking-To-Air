@@ -159,12 +159,15 @@ Nothing needs doing.
 about a thread are recorded at two different times. `session_metadata` is
 written when the message is posted, because it is the only record of who owns
 the thread and both the reattach stream and stop refuse without it;
-`first_frame_at` is stamped when that thread's turn first produces a frame,
-and `GET /sessions` lists only threads that have one. A turn that was stopped,
-failed or died before narrating therefore leaves an unlisted thread — still
-reachable by id, still deletable, just not in the sidebar. Before this, every
-such thread showed up as a titled row over an empty conversation, because the
-fast path writes the transcript once, at the end of the turn.
+`first_frame_at` is stamped when that thread's turn first produces a frame.
+`GET /sessions` lists a thread that has that stamp **or** a checkpoint row:
+the fast path narrates long before it checkpoints, and a supervisor turn
+stopped early checkpoints the question without ever narrating, so neither
+fact alone covers both routes. A turn that produced neither therefore leaves
+an unlisted thread — still reachable by id, still deletable, just not in the
+sidebar. Before this, every such thread showed up as a titled row over an
+empty conversation, because the fast path writes the transcript once, at the
+end of the turn.
 
 How many threads are hidden this way:
 
@@ -176,6 +179,24 @@ The column is added on startup and backfilled from `created_at` **once**, on
 the run that adds it — so threads that predate it all keep listing. The
 backfill is guarded on the column not already existing: making it
 unconditional would relist every empty thread on the next restart.
+
+**Why a thread moved in the list.** The sidebar is ordered by when a thread
+was last *used*, not when it was created: `last_event_at` is stamped from the
+same first frame, on every turn rather than only the thread's first. A thread
+you replied to this morning sorts above one you started yesterday and
+abandoned.
+
+`last_event_at` is added on startup and, unlike `first_frame_at`, is **never
+backfilled** — the listing falls back `last_event_at → first_frame_at →
+created_at`, so a thread with an empty column still sorts by the newest fact
+it has. Do not add a backfill: it would have to be guarded the same way, and
+an unguarded one resets the stamp of every thread whose turn was running
+across the restart, dropping live conversations down the list. Threads still
+sorting on the fallback:
+
+```bash
+docker compose exec db psql -U postgres -d talking_to_air_memory   -c "SELECT count(*) FROM session_metadata WHERE last_event_at IS NULL"
+```
 
 ## Cube Cache
 

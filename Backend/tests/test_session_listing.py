@@ -128,34 +128,102 @@ class SessionListingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([set(row) for row in rows], [{"id", "title", "created_at"}])
 
 
-class FirstFrameStampTests(unittest.IsolatedAsyncioTestCase):
+class SessionOrderTests(unittest.IsolatedAsyncioTestCase):
+    """Most recently used first, where "used" is the last turn that spoke.
+
+    Creation order is what the sidebar had before, and it is wrong the
+    moment a thread is returned to: a conversation carried on all week sank
+    below whatever was started after it and never touched again.
+    """
+
+    async def test_threads_are_ordered_by_their_last_turn_not_their_first(self):
+        from tta_backend.repositories.session_metadata_repository import list_session_metadata
+
+        conn = FakeConnection(lambda sql: [("th-1", "How is the air", None)])
+        with connected(conn):
+            await list_session_metadata("user-1")
+
+        listing = conn.sql_matching("FROM session_metadata", "WHERE user_id")[0]
+        self.assertIn("ORDER BY COALESCE(last_event_at,", listing)
+        self.assertIn("DESC", listing.split("ORDER BY")[1])
+
+    async def test_a_thread_with_no_stamps_falls_back_to_when_it_was_created(self):
+        """Two kinds of row have no ``last_event_at`` and both are real:
+        every thread that predates the column (it is added without a
+        backfill), and a thread listed by the checkpoint branch, which was
+        stopped before it narrated and so has no ``first_frame_at`` either.
+        Without the fallback they sort as NULL -- last, together, forever."""
+        from tta_backend.repositories.session_metadata_repository import list_session_metadata
+
+        conn = FakeConnection(lambda sql: [("th-1", "How is the air", None)])
+        with connected(conn):
+            await list_session_metadata("user-1")
+
+        listing = conn.sql_matching("FROM session_metadata", "WHERE user_id")[0]
+        order = listing.split("ORDER BY")[1]
+        self.assertIn("first_frame_at", order)
+        self.assertIn("created_at", order)
+        self.assertIn("thread_id", order, "a stable tiebreak, or equal stamps shuffle")
+
+
+class ActivityStampTests(unittest.IsolatedAsyncioTestCase):
     async def test_the_stamp_records_when_the_thread_first_narrated(self):
-        from tta_backend.repositories.session_metadata_repository import mark_session_first_frame
+        from tta_backend.repositories.session_metadata_repository import mark_session_activity
 
         conn = FakeConnection()
         with connected(conn):
-            await mark_session_first_frame("th-1")
+            await mark_session_activity("th-1")
 
         updates = conn.sql_matching("UPDATE session_metadata", "first_frame_at")
         self.assertEqual(len(updates), 1, conn.statements)
         self.assertEqual(conn.statements[0][1], ("th-1",))
         self.assertEqual(conn.commits, 1)
 
-    async def test_a_later_turn_on_the_same_thread_does_not_move_the_stamp(self):
+    async def test_a_later_turn_on_the_same_thread_does_not_move_the_first_stamp(self):
         """Every turn's first frame calls this, not just the thread's first.
 
-        Without the NULL guard the column would track the newest turn, and a
-        thread would sort and read as though it had just been created every
-        time it was used -- and the write would fire on every turn instead of
-        once per thread.
+        ``first_frame_at`` answers "did this conversation ever begin", and
+        the listing filter reads it. Letting a later turn move it would make
+        a thread read as though it had just been created every time it was
+        used -- which is what ``last_event_at`` is for, and why the two
+        cannot be one column.
         """
-        from tta_backend.repositories.session_metadata_repository import mark_session_first_frame
+        from tta_backend.repositories.session_metadata_repository import mark_session_activity
 
         conn = FakeConnection()
         with connected(conn):
-            await mark_session_first_frame("th-1")
+            await mark_session_activity("th-1")
 
-        self.assertIn("first_frame_at IS NULL", conn.statements[0][0])
+        sql = conn.statements[0][0]
+        self.assertIn("first_frame_at = COALESCE(first_frame_at, now())", sql)
+        self.assertNotIn(
+            "first_frame_at IS NULL",
+            sql,
+            "the guard moved into the SET on purpose: a WHERE that skips an "
+            "already-stamped thread would skip its last_event_at too, and every "
+            "turn after the first would stop reordering the sidebar",
+        )
+
+    async def test_every_turn_moves_the_thread_up_the_list(self):
+        """The half a NULL guard would silently swallow."""
+        from tta_backend.repositories.session_metadata_repository import mark_session_activity
+
+        conn = FakeConnection()
+        with connected(conn):
+            await mark_session_activity("th-1")
+
+        self.assertIn("last_event_at = now()", conn.statements[0][0])
+
+    async def test_both_stamps_are_one_write(self):
+        """This runs on the path that carries every answer, so the two facts
+        share the event that produced them and the round trip."""
+        from tta_backend.repositories.session_metadata_repository import mark_session_activity
+
+        conn = FakeConnection()
+        with connected(conn):
+            await mark_session_activity("th-1")
+
+        self.assertEqual(len(conn.sql_matching("UPDATE session_metadata")), 1, conn.statements)
 
 
 class FirstFrameMigrationTests(unittest.IsolatedAsyncioTestCase):
@@ -225,6 +293,57 @@ class FirstFrameMigrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("information_schema.columns", order[0])
         self.assertIn("ADD COLUMN IF NOT EXISTS first_frame_at", order[1])
         self.assertIn("UPDATE session_metadata", order[2])
+
+
+class LastEventMigrationTests(unittest.IsolatedAsyncioTestCase):
+    """``last_event_at`` takes the other road: added, never filled.
+
+    It can, because the listing COALESCEs down to ``created_at``, so an
+    existing thread sorts sensibly with the column empty. That is worth more
+    than a backfill: filling it on startup would need the same probe as
+    above to avoid running twice, and getting that wrong would reset the
+    stamp of every thread whose turn was running across the restart --
+    dropping live conversations down the sidebar.
+    """
+
+    def _rows_for(self, column_exists: bool):
+        def rows(sql: str):
+            if "information_schema.columns" in sql:
+                return [(1,)] if column_exists else []
+            return []
+
+        return rows
+
+    async def test_the_column_is_added(self):
+        from tta_backend.repositories.session_metadata_repository import (
+            ensure_session_metadata_table,
+        )
+
+        conn = FakeConnection(self._rows_for(column_exists=False))
+        with connected(conn):
+            await ensure_session_metadata_table()
+
+        self.assertEqual(
+            len(conn.sql_matching("ADD COLUMN IF NOT EXISTS last_event_at")), 1, conn.statements
+        )
+
+    async def test_nothing_backfills_it(self):
+        from tta_backend.repositories.session_metadata_repository import (
+            ensure_session_metadata_table,
+        )
+
+        for exists in (True, False):
+            with self.subTest(column_exists=exists):
+                conn = FakeConnection(self._rows_for(column_exists=exists))
+                with connected(conn):
+                    await ensure_session_metadata_table()
+
+                self.assertEqual(
+                    conn.sql_matching("UPDATE session_metadata", "last_event_at"),
+                    [],
+                    "startup must not write this column -- a running turn's stamp "
+                    "would be reset to something older than itself",
+                )
 
 
 if __name__ == "__main__":

@@ -88,6 +88,18 @@ async def ensure_session_metadata_table() -> None:
                 WHERE first_frame_at IS NULL
                 """
             )
+        # Deliberately added without a backfill, unlike the column above. A
+        # NULL here is answered at read time by the COALESCE in
+        # list_session_metadata, so an existing thread sorts by the newest
+        # fact it does have. Writing one on startup would need the same
+        # probe-then-fill dance, and would reset the stamp of every thread
+        # whose turn is running across a restart.
+        await conn.execute(
+            """
+            ALTER TABLE session_metadata
+            ADD COLUMN IF NOT EXISTS last_event_at TIMESTAMPTZ
+            """
+        )
         await conn.commit()
 
 
@@ -104,19 +116,30 @@ async def save_session_metadata_once(thread_id: str, first_message: str, user_id
         await conn.commit()
 
 
-async def mark_session_first_frame(thread_id: str) -> None:
-    """Record that this thread's turn has produced its first frame.
+async def mark_session_activity(thread_id: str) -> None:
+    """Record that a turn on this thread has produced its first frame.
 
-    Called on every turn's first frame, not just the thread's first, so the
-    NULL guard is what keeps it one write per thread -- and what stops a
-    later turn moving a stamp that means "this conversation began".
+    Two stamps, one event, one write. They answer different questions and
+    must not be collapsed into a single column:
+
+    - ``first_frame_at`` means "this conversation began" and decides whether
+      the thread is listed at all. The COALESCE keeps it write-once: every
+      turn's first frame calls this, and a later one must not move it.
+    - ``last_event_at`` means "this conversation was last used" and decides
+      where in the list it sits. It moves on every turn, which is the whole
+      point -- a thread answered an hour ago belongs above one answered last
+      week, however long ago either was started.
+
+    Called once per turn, not once per frame: the caller stops asking after
+    the first one.
     """
     async with pg_connection() as conn:
         await conn.execute(
             """
             UPDATE session_metadata
-            SET first_frame_at = now()
-            WHERE thread_id = %s AND first_frame_at IS NULL
+            SET first_frame_at = COALESCE(first_frame_at, now()),
+                last_event_at = now()
+            WHERE thread_id = %s
             """,
             (thread_id,),
         )
@@ -168,6 +191,14 @@ async def list_session_metadata(user_id: str) -> list[dict[str, Any]]:
     Either one lists the thread; neither leaves it out of the sidebar, still
     reachable by id. The checkpoint tables are LangGraph's own, named here
     for the same reason ``SessionRepository.delete_session`` names them.
+
+    Ordered by when the thread was last *used*, not when it was created: a
+    thread you returned to this morning sorts above one you started
+    yesterday and abandoned. The COALESCE is what lets the column go in
+    without a backfill, and it is not only for old rows -- a thread listed
+    by the checkpoint branch above was stopped before it ever narrated, so
+    it has neither stamp and sorts by ``created_at``, which is the only
+    thing that ever happened to it.
     """
     async with pg_connection() as conn:
         cursor = await conn.execute(
@@ -182,7 +213,8 @@ async def list_session_metadata(user_id: str) -> list[dict[str, Any]]:
                     WHERE checkpoints.thread_id = session_metadata.thread_id
                 )
               )
-            ORDER BY created_at DESC NULLS LAST, thread_id
+            ORDER BY COALESCE(last_event_at, first_frame_at, created_at) DESC NULLS LAST,
+                     thread_id
             """,
             (user_id,),
         )

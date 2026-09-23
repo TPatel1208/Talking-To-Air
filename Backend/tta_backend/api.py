@@ -44,7 +44,7 @@ from tta_backend.repositories.chart_repository import ensure_chart_table
 from tta_backend.repositories.session_metadata_repository import (
     ensure_session_metadata_table,
     get_session_metadata,
-    mark_session_first_frame,
+    mark_session_activity,
     save_session_metadata_once,
     session_belongs_to_user,
 )
@@ -1355,7 +1355,7 @@ async def chat(req: ChatRequest, request: Request):
     thread_id = await _resolve_thread(req, user.id)
     request_id = str(uuid.uuid4())
     await _save_session_metadata(thread_id, req.message, user.id, request_id)
-    frames = _listing_on_first_frame(
+    frames = _stamp_activity_on_first_frame(
         chat_stream_service.stream_chat_events(
             active_agent, ground_agent, satellite_agent, req.message, thread_id, user.id, request_id,
         ),
@@ -1521,10 +1521,19 @@ async def _save_session_metadata(thread_id: str, message: str, user_id: str, req
         logger.exception("session_metadata_save_failed", extra={"_request_id": request_id, "_thread_id": thread_id})
 
 
-async def _listing_on_first_frame(
+async def _stamp_activity_on_first_frame(
     frames: AsyncIterator[str], thread_id: str, request_id: str
 ) -> AsyncIterator[str]:
-    """Put the thread in "Recent analyses" when its turn starts narrating.
+    """Put the thread in "Recent analyses", at the top, when its turn starts
+    narrating.
+
+    Both facts are stamped from this one event: whether the thread is listed
+    at all, and where it sits. The first is stamped once per thread, the
+    second on every turn -- the repository does that part; this only says
+    when the event happened, which is the first frame of each turn and not
+    the message that asked for it. A thread reordered when the message is
+    posted jumps the list on the strength of a turn that may produce
+    nothing.
 
     The metadata row above is written before anything runs because it is the
     only record of who owns the thread, and both ``/chat/{thread}/stream`` and
@@ -1548,7 +1557,7 @@ async def _listing_on_first_frame(
         if not listed:
             listed = True
             try:
-                await mark_session_first_frame(thread_id)
+                await mark_session_activity(thread_id)
             except Exception:
                 # The turn is answering; the sidebar is not worth failing it
                 # for. Same policy as the metadata save above.

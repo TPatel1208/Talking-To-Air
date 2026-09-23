@@ -108,7 +108,7 @@ class FirstFrameStampTests(unittest.IsolatedAsyncioTestCase):
         patches = (
             auth_helpers.patch_verifier(),
             patch.object(self.api, "save_session_metadata_once", fake_save),
-            patch.object(self.api, "mark_session_first_frame", fake_stamp),
+            patch.object(self.api, "mark_session_activity", fake_stamp),
             patch.object(self.api, "get_session_metadata", fake_metadata),
             patch.object(self.api, "session_belongs_to_user", fake_owns),
             patch.object(
