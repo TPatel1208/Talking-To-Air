@@ -683,14 +683,17 @@ export default function Chat({
     if (el) el.scrollTop = el.scrollHeight
   }, [messages, loading])
 
-  const handleSend = (text) => {
+  const handleSend = async (text) => {
     const msg = (text || input).trim()
     if (!msg) return
-    onSend(msg)
     setInput('')
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
     }
+    // A send can be refused: one turn per thread (T63 D12), and this tab may
+    // not have known another was running. Nothing reached the server, so the
+    // composer takes the text back rather than swallowing it.
+    if (await onSend(msg) === false) setInput(msg)
   }
 
   const handleKey = (e) => {

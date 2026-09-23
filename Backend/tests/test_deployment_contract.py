@@ -290,6 +290,102 @@ class TlsIsSuppliedByTheDeploymentTests(unittest.TestCase):
         )
 
 
+class BackendReceivesTheSignalThatStartsItsShutdownTests(unittest.TestCase):
+    """T63's drain is only reachable if SIGTERM reaches uvicorn.
+
+    Everything the shutdown path does -- telling each reader its turn was
+    interrupted, handing the threads back, flushing what the turns had
+    buffered -- hangs off uvicorn running its lifespan shutdown. Docker sends
+    SIGTERM to PID 1 and to nothing else, and a shell form that does not
+    ``exec`` leaves ``sh`` as PID 1 with uvicorn as its child. ``sh`` does not
+    forward the signal: it dies, the kernel takes the container down with it,
+    and uvicorn is killed without ever shutting down.
+
+    Measured live 2026-09-20 on the deployed stack: a turn running, backend
+    stopped, process gone in 2.5s with no shutdown log of any kind, no
+    ``interrupted`` entry in the event log, and the reader left with a raw
+    network error. A larger ``stop_grace_period`` would not have helped --
+    nothing was waiting on it.
+    """
+
+    def test_the_server_stops_waiting_for_connections_that_never_close(self):
+        """A turn always has an SSE reader attached, so this is every deploy.
+
+        uvicorn's graceful shutdown waits for in-flight requests *before* it
+        runs the lifespan shutdown. The GET that carries a turn is in-flight
+        for the whole turn and only ends when the turn's terminal entry is
+        written -- which the drain writes, in the lifespan shutdown. Without a
+        bound on the wait those two wait for each other: measured live, the
+        log stopped at "Waiting for connections to close." and no drain, no
+        `interrupted` entry and no claim release ever happened.
+        """
+        with open(_repo_file("Backend", "Dockerfile"), "r", encoding="utf-8") as handle:
+            dockerfile = handle.read()
+        started = [
+            line for line in dockerfile.splitlines()
+            if line.strip().startswith(("CMD", "ENTRYPOINT")) and "uvicorn" in line
+        ]
+        self.assertTrue(started, "the backend image declares no server command")
+        self.assertIn(
+            "--timeout-graceful-shutdown", started[0],
+            "uvicorn will wait indefinitely for the SSE stream carrying a "
+            "chat turn, and that stream is waiting for the drain that runs "
+            "after the wait. Bound it.",
+        )
+
+    def test_the_stop_budget_covers_the_shutdown_it_has_to_wait_for(self):
+        """Docker's default is 10s, and the shutdown is a sum, not a step.
+
+        Connections wait, then the MCP client stops, the Supabase warm task
+        stops, the registry drains (bounded separately), the log flushes and
+        the pool closes. A budget under that sum turns a graceful shutdown
+        into a SIGKILL at the last moment, which is the case this whole path
+        exists to avoid -- and does it silently, because the work simply
+        stops partway.
+        """
+        backend = _load(_compose_path())["services"]["backend"]
+        grace = backend.get("stop_grace_period")
+        self.assertIsNotNone(
+            grace,
+            "the backend declares no stop_grace_period, so Docker's default "
+            "10s is the whole budget for the shutdown sequence above.",
+        )
+        seconds = int(re.sub(r"[^0-9]", "", str(grace)) or 0)
+        self.assertGreaterEqual(
+            seconds, 20,
+            f"stop_grace_period is {grace}. The connection wait and the drain "
+            "alone are bounded at 5s each, before the MCP stop, the warm stop "
+            "and the pool close.",
+        )
+
+    def test_the_backend_image_execs_its_server_so_it_is_pid_one(self):
+        with open(_repo_file("Backend", "Dockerfile"), "r", encoding="utf-8") as handle:
+            dockerfile = handle.read()
+        entry = [
+            line.strip() for line in dockerfile.splitlines()
+            if line.strip().startswith(("CMD", "ENTRYPOINT"))
+        ]
+        self.assertTrue(entry, "the backend image declares no CMD or ENTRYPOINT")
+        server = [line for line in entry if "uvicorn" in line]
+        self.assertEqual(
+            len(server), 1,
+            f"expected exactly one line starting the server, found {server}",
+        )
+        started = server[0]
+        # Only the shell form has this problem: an exec-form CMD is already
+        # PID 1. The shell form is here because $PORT has to be expanded.
+        if '"sh"' in started or "'sh'" in started or started.startswith(("CMD sh", "ENTRYPOINT sh")):
+            self.assertIn(
+                "exec uvicorn", started,
+                "the server runs under a shell that is not replaced, so `sh` "
+                "is PID 1 and uvicorn is its child. Docker's SIGTERM goes to "
+                "`sh`, which does not forward it, so uvicorn never runs its "
+                "lifespan shutdown and T63's drain never executes: every "
+                "deploy interrupts every in-flight turn without telling "
+                "anyone. Prefix the command with `exec`.",
+            )
+
+
 class BackendIsReachableOnlyThroughTheEdgeTests(unittest.TestCase):
     def test_the_backend_publishes_no_host_port(self):
         backend = _load(_compose_path())["services"]["backend"]
@@ -306,17 +402,25 @@ class BackendIsReachableOnlyThroughTheEdgeTests(unittest.TestCase):
         """The overlay exists so the base file can stay closed. It is only a
         safe escape hatch while it stays bound to 127.0.0.1 -- published on
         0.0.0.0 it reopens the hole to the whole network.
+
+        Every service, not just the backend: the overlay grew a second entry
+        for the event log's Redis, which takes no credentials at all and would
+        hand any host on the network every chat turn's narration.
         """
         overlay = _load(_repo_file("docker-compose.debug.yml"))
-        published = _port_strings(overlay["services"]["backend"])
-        self.assertTrue(published, "the debug overlay no longer publishes anything")
-        for entry in published:
-            self.assertTrue(
-                entry.startswith("127.0.0.1:"),
-                f"docker-compose.debug.yml publishes {entry!r}, which is not "
-                "bound to loopback -- on a shared or internet-facing host that "
-                "exposes the unrate-limited backend to the network.",
-            )
+        anything_published = False
+        for name, service in overlay["services"].items():
+            for entry in _port_strings(service):
+                anything_published = True
+                with self.subTest(service=name, mapping=entry):
+                    self.assertTrue(
+                        entry.startswith("127.0.0.1:"),
+                        f"docker-compose.debug.yml publishes {entry!r} for "
+                        f"{name!r}, which is not bound to loopback -- on a "
+                        "shared or internet-facing host that exposes it to "
+                        "the whole network.",
+                    )
+        self.assertTrue(anything_published, "the debug overlay no longer publishes anything")
 
 
 class ImagesAreReleasableArtifactsTests(unittest.TestCase):
@@ -588,6 +692,7 @@ class TheContractsRemainCheckableTests(unittest.TestCase):
     #: `docker compose --profile test run backend-test` is the documented local
     #: gate, so a contract that only holds on the host is one the gate misses.
     REQUIRED_MOUNTS = (
+        "./Backend/Dockerfile:/Backend/Dockerfile:ro",
         "./Frontend/Dockerfile:/Frontend/Dockerfile:ro",
         "./Frontend/nginx.conf:/Frontend/nginx.conf:ro",
         "./Frontend/.dockerignore:/Frontend/.dockerignore:ro",
@@ -613,3 +718,68 @@ class TheContractsRemainCheckableTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TurnEventLogIsDeployedAndTestedTests(unittest.TestCase):
+    """The chat turn event log needs a Redis, and so do its tests.
+
+    Those tests skip when none is reachable, which keeps a host-side
+    ``pytest`` runnable and is also how the module could silently stop being
+    covered. Asserting the deployment and the test profile each carry the
+    dependency makes that skip mean "on a developer's host" and nothing else.
+    """
+
+    def test_the_backend_is_told_where_the_event_log_lives(self):
+        backend = _load(_compose_path())["services"]["backend"]
+        self.assertIn(
+            "REDIS_URL", backend.get("environment") or {},
+            "the backend has no REDIS_URL, so it cannot reach the turn event "
+            "log and refuses to boot.",
+        )
+
+    def test_the_test_profile_runs_against_a_real_redis(self):
+        backend_test = _load(_compose_path())["services"]["backend-test"]
+        self.assertIn(
+            "REDIS_URL", backend_test.get("environment") or {},
+            "backend-test has no REDIS_URL, so test_turn_event_log.py skips "
+            "every test in the container run and the module is covered by "
+            "nothing anywhere.",
+        )
+        self.assertIn(
+            "redis", backend_test.get("depends_on") or {},
+            "backend-test does not depend on redis, so the suite races a "
+            "service that may not be up and skips instead of failing.",
+        )
+
+    def test_the_suite_does_not_share_a_keyspace_with_live_data(self):
+        """A test suite pointed at the live stack's database is how this
+        project lost ~196 rows from a live jobs table once already."""
+        compose = _load(_compose_path())["services"]
+        live = compose["backend"]["environment"]["REDIS_URL"]
+        under_test = compose["backend-test"]["environment"]["REDIS_URL"]
+        self.assertNotEqual(
+            live, under_test,
+            f"backend-test writes to {under_test}, the same Redis database the "
+            "running backend uses for live turns.",
+        )
+
+    def test_redis_publishes_no_host_port(self):
+        redis = _load(_compose_path())["services"]["redis"]
+        published = _port_strings(redis)
+        self.assertEqual(
+            published, [],
+            f"redis publishes {published}. Nothing outside this stack has any "
+            "business reading a turn's event log; use docker-compose.debug.yml "
+            "when a host-side test run needs it.",
+        )
+
+    def test_redis_declares_a_memory_limit(self):
+        """The backend's ceiling is enforced and accounted for. An unbounded
+        Redis beside it puts the host back in the position of choosing which
+        container to kill -- which is the state mem_limit was added to end."""
+        redis = _load(_compose_path())["services"]["redis"]
+        self.assertIn(
+            "mem_limit", redis,
+            "the redis service declares no mem_limit, so its dataset bound is "
+            "the only thing standing between it and the host's memory.",
+        )

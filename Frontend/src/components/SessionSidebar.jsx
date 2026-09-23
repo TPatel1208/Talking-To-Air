@@ -86,7 +86,33 @@ function FileRow({ tag, title, subtitle, onDownload }) {
   )
 }
 
-export default function SessionSidebar({ sessions, threadId, onSwitch, onNew, onDelete, onLogout, images = [], artifacts = [], onCollapse }) {
+const STATUS_LABEL = { running: 'Still working', done: 'Finished', error: "Didn't finish" }
+
+/** The badge on a "Recent analyses" row: a thread this browser sent a
+ * message to, told apart from an ordinary row by what its turn is doing.
+ *
+ * Absent entirely once the user is looking at the thread it describes
+ * (`SessionSidebar` only passes a status for rows that are not `threadId`):
+ * the chat panel already shows that one's own progress, and a second
+ * indicator saying the same thing would just be noise next to it.
+ */
+function TurnStatusDot({ status }) {
+  if (!status) return null
+  const color = status === 'running' ? 'var(--teal)' : status === 'done' ? 'var(--success)' : 'var(--error)'
+  return (
+    <span
+      title={STATUS_LABEL[status]}
+      aria-label={STATUS_LABEL[status]}
+      style={{
+        width: '7px', height: '7px', borderRadius: '50%', flexShrink: 0,
+        background: color,
+        animation: status === 'running' ? 'tta-turn-pulse 1.1s ease-in-out infinite' : 'none',
+      }}
+    />
+  )
+}
+
+export default function SessionSidebar({ sessions, threadId, turnStatus = {}, onSwitch, onNew, onDelete, onLogout, images = [], artifacts = [], onCollapse }) {
   const [nav, setNav] = useState('chats')
 
   const getSessionId = (session) => typeof session === 'string' ? session : session?.id
@@ -207,6 +233,7 @@ export default function SessionSidebar({ sessions, threadId, onSwitch, onNew, on
               return (
                 <div
                   key={id}
+                  className="session-row"
                   onClick={() => onSwitch(id)}
                   style={{
                     display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px',
@@ -230,18 +257,24 @@ export default function SessionSidebar({ sessions, threadId, onSwitch, onNew, on
                       {title}
                     </span>
                   </div>
-                  <button
-                    onClick={e => handleDelete(e, id)}
-                    className="session-delete-btn"
-                    title="Delete session"
-                    style={{
-                      background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer',
-                      fontSize: '13px', padding: '2px 4px', borderRadius: '4px', flexShrink: 0, lineHeight: 1,
-                      opacity: 0, transition: 'opacity 0.15s, color 0.15s',
-                    }}
-                  >
-                    ✕
-                  </button>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                    {/* Not shown for the thread on screen: its own progress is
+                        already visible in the chat panel next to it. This is
+                        for the one the user just navigated away from. */}
+                    {!isActive && <TurnStatusDot status={turnStatus[id]} />}
+                    <button
+                      onClick={e => handleDelete(e, id)}
+                      className="session-delete-btn"
+                      title="Delete session"
+                      style={{
+                        background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer',
+                        fontSize: '13px', padding: '2px 4px', borderRadius: '4px', flexShrink: 0, lineHeight: 1,
+                        opacity: 0, transition: 'opacity 0.15s, color 0.15s',
+                      }}
+                    >
+                      ✕
+                    </button>
+                  </div>
                 </div>
               )
             })}
@@ -319,8 +352,12 @@ export default function SessionSidebar({ sessions, threadId, onSwitch, onNew, on
       </div>
 
       <style>{`
-        div:hover > .session-delete-btn,
+        .session-row:hover .session-delete-btn,
         .session-delete-btn:focus { opacity: 1 !important; }
+        @keyframes tta-turn-pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.25; }
+        }
       `}</style>
     </div>
   )

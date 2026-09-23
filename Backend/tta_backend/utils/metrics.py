@@ -80,6 +80,17 @@ ADMISSION_WAIT_SECONDS = Histogram(
     "admission_wait_seconds",
     "Time spent waiting for a memory permit, including admissions that did not wait.",
 )
+# A permit whose worker thread outlived the caller that asked for it. Python
+# cannot interrupt a running thread, so a cancelled reduction keeps its
+# intermediates resident; the permit is held until the thread stops rather than
+# returned when the await unwinds (services/admission.py run_heavy). A rising
+# count is capacity spent on work nobody is waiting for. Labelled by surface for
+# the same reason the shed counter is.
+ADMISSION_ORPHANED_TOTAL = Counter(
+    "admission_orphaned_total",
+    "Heavy sections whose worker thread outlived the cancelled caller.",
+    ["surface"],
+)
 # The measurement that would let N be re-derived. Sampled per section rather
 # than at scrape time (see current_process_rss_bytes) and bucketed generously:
 # the interesting range spans an idle 200 MiB floor to the 1,342 MB largest
@@ -356,6 +367,10 @@ def observe_admission_wait(seconds: float) -> None:
     ADMISSION_WAIT_SECONDS.observe(seconds)
 
 
+def record_admission_orphaned(surface: str) -> None:
+    ADMISSION_ORPHANED_TOTAL.labels(surface=surface).inc()
+
+
 def observe_admission_rss(rss_bytes: int) -> None:
     ADMISSION_RSS_BYTES.observe(rss_bytes)
 
@@ -543,6 +558,9 @@ def initialize_labelsets() -> None:
             AGENT_REQUESTS_TOTAL.labels(agent_type=agent_type, outcome=outcome)
     for agent_type in ("earthdata", "ground sensor"):
         ENVELOPE_SALVAGED_TOTAL.labels(agent_type=agent_type)
+    for surface in ("chat", "export"):
+        ADMISSION_SHED_TOTAL.labels(surface=surface)
+        ADMISSION_ORPHANED_TOTAL.labels(surface=surface)
     for cache_level in ("memory", "zarr", "postgis"):
         CACHE_HITS_TOTAL.labels(cache_level=cache_level)
     for phase in PIPELINE_PHASES:

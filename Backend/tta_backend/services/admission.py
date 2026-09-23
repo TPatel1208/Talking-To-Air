@@ -45,6 +45,14 @@ waiting on; the executor is what keeps heavy threads out of the default pool.
 Both are sized to the same N, which is why :func:`reset_admission` rebuilds them
 together rather than letting the two numbers drift.
 
+Sizing both to N is also what makes a cancelled caller safe to account for. A
+worker thread cannot be interrupted, so cancelling :func:`run_heavy` leaves the
+reduction running with its memory resident *and* occupying one of the N workers.
+The permit is therefore held until the thread stops rather than returned when
+the await unwinds, which keeps permits and workers in step: the next caller
+waits at the semaphore, where the wait is counted and overload sheds, instead of
+holding a permit and blocking invisibly inside ``submit()``.
+
 What is gated, and what deliberately is not
 -------------------------------------------
 **Gated:** the reductions -- every ``.compute()``/``.values`` path -- and the
@@ -287,26 +295,33 @@ def _record_shed(surface: str) -> None:
         logger.debug("admission_shed_record_failed", exc_info=True)
 
 
-@contextlib.asynccontextmanager
-async def admit(surface: str = "unspecified") -> AsyncIterator[None]:
-    """Hold a memory permit for the duration of the block.
+def _record_orphan(surface: str) -> None:
+    try:
+        from tta_backend.utils.metrics import record_admission_orphaned
 
-    Raises :class:`AdmissionOverloaded` immediately when the queue is already
-    full, rather than joining it.
+        record_admission_orphaned(surface)
+    except Exception:  # noqa: BLE001 - telemetry is never worth a permit
+        logger.debug("admission_orphan_record_failed", exc_info=True)
 
-    Every exit path returns the permit, which is the property this whole module
-    stands on. A leaked permit does not corrupt anything and does not raise --
-    it removes one unit of capacity permanently, and after N leaks the backend
-    accepts requests and answers none. The cases that matter are ordinary, not
-    exotic: reductions raise routinely (a refused extent, an unreadable
-    granule), and a client disconnect cancels in-flight work.
 
-    Cancellation *while waiting* is the subtle one, and is handled by
-    ``asyncio.Semaphore`` itself on 3.12: a waiter cancelled after being woken
-    hands its permit to the next waiter rather than dropping it. The counter
-    below must not double-count that -- a waiter holds nothing, so its
-    cancellation decrements ``queued`` and touches nothing else.
+class _Permit:
+    """One held permit, so its release can outlive the ``await`` that took it.
+
+    :func:`admit` returns it at the end of its block; :func:`run_heavy` may
+    instead hand it to the worker thread. ``released`` makes the release
+    idempotent -- both owners may call it, and only the first one counts.
     """
+
+    __slots__ = ("limiter", "waited", "released")
+
+    def __init__(self, limiter: "_Limiter", waited: float) -> None:
+        self.limiter = limiter
+        self.waited = waited
+        self.released = False
+
+
+async def _acquire(surface: str) -> _Permit:
+    """Shed, queue, or take a permit. See :func:`admit` for the reasoning."""
     limiter = _get()
 
     if limiter.queued >= limiter.queue_capacity:
@@ -327,20 +342,61 @@ async def admit(surface: str = "unspecified") -> AsyncIterator[None]:
         # queue that only ever grows sheds every later arrival forever.
         limiter.queued -= 1
 
-    waited = time.monotonic() - started_waiting
     limiter.in_flight += 1
     _publish_occupancy(limiter)
+    return _Permit(limiter, time.monotonic() - started_waiting)
+
+
+def _release(permit: _Permit) -> None:
+    """Return a permit, once.
+
+    Releases against the limiter it was taken from, so a permit still
+    outstanding across :func:`reset_admission` cannot over-credit the new
+    generation.
+    """
+    if permit.released:
+        return
+    permit.released = True
+    limiter = permit.limiter
+    limiter.in_flight -= 1
+    limiter.semaphore.release()
+    _publish_occupancy(limiter)
+    # Observed on the way out, so the RSS reading is taken while the section's
+    # allocations are still most likely resident. Uncontended admissions are
+    # observed too: a wait histogram fed only when callers queue describes a
+    # backend that is always congested.
+    _observe_section(permit.waited)
+
+
+@contextlib.asynccontextmanager
+async def admit(surface: str = "unspecified") -> AsyncIterator[None]:
+    """Hold a memory permit for the duration of the block.
+
+    Raises :class:`AdmissionOverloaded` immediately when the queue is already
+    full, rather than joining it.
+
+    Every exit path returns the permit, which is the property this whole module
+    stands on. A leaked permit does not corrupt anything and does not raise --
+    it removes one unit of capacity permanently, and after N leaks the backend
+    accepts requests and answers none. The cases that matter are ordinary, not
+    exotic: reductions raise routinely (a refused extent, an unreadable
+    granule), and a cancelled turn unwinds in-flight work.
+
+    Cancellation *while waiting* is the subtle one, and is handled by
+    ``asyncio.Semaphore`` itself on 3.12: a waiter cancelled after being woken
+    hands its permit to the next waiter rather than dropping it. The counter in
+    :func:`_acquire` must not double-count that -- a waiter holds nothing, so
+    its cancellation decrements ``queued`` and touches nothing else.
+
+    The block is a *coroutine*, so cancelling it genuinely stops the work
+    inside and the permit may safely be scoped to it. :func:`run_heavy` is the
+    case where that is not true.
+    """
+    permit = await _acquire(surface)
     try:
         yield
     finally:
-        limiter.in_flight -= 1
-        limiter.semaphore.release()
-        _publish_occupancy(limiter)
-        # Observed on the way out, so the RSS reading is taken while the
-        # section's allocations are still most likely resident. Uncontended
-        # admissions are observed too: a wait histogram fed only when callers
-        # queue describes a backend that is always congested.
-        _observe_section(waited)
+        _release(permit)
 
 
 def _get_heavy_executor() -> concurrent.futures.ThreadPoolExecutor:
@@ -380,13 +436,61 @@ async def run_heavy(func: Callable[..., Any], *args: Any, surface: str = "chat")
     tools read to decide whose data to open. Losing it does not raise -- the
     call reads the wrong workspace, or none -- so this reproduces exactly what
     ``asyncio.to_thread`` does for its callers.
+
+    Unlike :func:`admit`, the permit is not scoped to this coroutine: it is
+    returned when the *worker thread* stops, which on a cancelled call is later
+    than when this function returns. See the ``finally`` below.
     """
-    async with admit(surface=surface):
-        loop = asyncio.get_running_loop()
-        ctx = contextvars.copy_context()
-        return await loop.run_in_executor(
-            _get_heavy_executor(), functools.partial(ctx.run, func, *args),
-        )
+    permit = await _acquire(surface)
+    loop = asyncio.get_running_loop()
+    ctx = contextvars.copy_context()
+    future = _get_heavy_executor().submit(functools.partial(ctx.run, func, *args))
+    try:
+        return await asyncio.wrap_future(future, loop=loop)
+    finally:
+        # Cancelling this await does not stop the thread -- Python cannot
+        # interrupt one -- so the reduction runs on with its intermediates
+        # still resident. Releasing the permit here would admit the next caller
+        # against memory that is still held, which is the overshoot this module
+        # exists to prevent. The permit goes to the thread instead, and comes
+        # back when the thread really stops.
+        #
+        # The pool says the same thing from the other side: it has exactly N
+        # workers, so an orphan occupies one. An early release would admit a
+        # caller that then blocks inside submit() -- the wait nobody can
+        # observe that the module docstring rejects.
+        future.cancel()  # succeeds only if it never started; then done() below
+        if future.done():
+            _release(permit)
+        else:
+            _hold_permit_until_thread_stops(loop, permit, future, surface)
+
+
+def _hold_permit_until_thread_stops(
+    loop: asyncio.AbstractEventLoop,
+    permit: _Permit,
+    future: "concurrent.futures.Future[Any]",
+    surface: str,
+) -> None:
+    """Return ``permit`` when ``future``'s thread finishes, not before."""
+    _record_orphan(surface)
+    logger.warning(
+        "admission_orphaned_heavy_work",
+        extra={"_event": "admission_orphaned_heavy_work", "_surface": surface},
+    )
+
+    def _on_thread_done(_f: "concurrent.futures.Future[Any]") -> None:
+        # Runs on the worker thread. The semaphore and the counters are loop
+        # state, so the release is scheduled rather than performed here.
+        try:
+            loop.call_soon_threadsafe(_release, permit)
+        except RuntimeError:
+            # Loop already closed (shutdown, or a finished test). Nothing is
+            # waiting on this generation's permits, so there is nowhere to
+            # return them to.
+            logger.debug("admission_orphan_release_skipped", exc_info=True)
+
+    future.add_done_callback(_on_thread_done)
 
 
 def reset_admission() -> None:

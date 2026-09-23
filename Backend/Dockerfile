@@ -77,5 +77,18 @@ USER appuser
 ENV PORT=8000
 EXPOSE ${PORT}
 
-# Entry point is tta_backend/api.py, app object is named "app"
-CMD ["sh", "-c", "uvicorn tta_backend.api:app --host 0.0.0.0 --port ${PORT} --workers 1 --proxy-headers"]
+# Entry point is tta_backend/api.py, app object is named "app".
+#
+# `exec` is load-bearing, not tidiness. The shell is here only to expand
+# ${PORT}; without exec it stays alive as PID 1 with uvicorn as its child, and
+# Docker sends SIGTERM to PID 1 and to nothing else. `sh` does not forward it,
+# so uvicorn never runs its lifespan shutdown -- which is where T63's drain
+# lives, and with it the `interrupted` frame every reader of an in-flight turn
+# is owed on a deploy.
+#
+# --timeout-graceful-shutdown bounds the wait for in-flight requests. It has
+# to: the GET carrying a chat turn is in-flight for the whole turn, and it
+# ends when the turn writes its terminal entry -- which the drain writes,
+# in the lifespan shutdown that runs *after* this wait. Unbounded, the two
+# wait for each other and the drain never runs at all.
+CMD ["sh", "-c", "exec uvicorn tta_backend.api:app --host 0.0.0.0 --port ${PORT} --workers 1 --proxy-headers --timeout-graceful-shutdown 5"]

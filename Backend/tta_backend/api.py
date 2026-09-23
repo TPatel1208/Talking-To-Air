@@ -8,7 +8,7 @@ import tracemalloc
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Annotated, Optional
+from typing import Annotated, AsyncIterator, Optional
 
 from fastapi import FastAPI, HTTPException, Path, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,6 +17,8 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.security.utils import get_authorization_scheme_param
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from redis import asyncio as aioredis
+from redis.exceptions import RedisError
 from starlette.routing import Match
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -42,6 +44,7 @@ from tta_backend.repositories.chart_repository import ensure_chart_table
 from tta_backend.repositories.session_metadata_repository import (
     ensure_session_metadata_table,
     get_session_metadata,
+    mark_session_activity,
     save_session_metadata_once,
     session_belongs_to_user,
 )
@@ -54,7 +57,7 @@ from tta_backend.repositories.user_connector_repository import (
 )
 from tta_backend.repositories.artifact_repository import ensure_artifact_table
 from tta_backend.services import admission
-from tta_backend.services import cube_cache, frame_store, warmup
+from tta_backend.services import cube_cache, frame_store, turn_registry, warmup
 from tta_backend.services.open_handle import OPEN_PIPELINE_VERSION, sweep_extract_cache
 from tta_backend.services.connector_credential_service import EdlCredentialInjector
 from tta_backend.services.connector_token_service import TokenValidationError, decode_token_expiry
@@ -71,6 +74,8 @@ from tta_backend.services.discovery_service import (
     preview_dataset,
     search_datasets,
 )
+from tta_backend.services.turn_event_log import TurnEventLog
+from tta_backend.services.turn_registry import TurnRegistry
 from tta_backend.services.supabase_jwt import (
     AuthenticationError,
     IdentityProviderUnavailable,
@@ -206,6 +211,13 @@ async def lifespan(app: FastAPI):
     # .run_satellite gates on earthdata_mcp_manager.state before ever
     # touching it, so it's never invoked before _on_earthdata_mcp_ready
     # (module scope) fills it in.
+    # T63: one pool behind both. The log writes a turn's frames and the
+    # registry holds the per-thread claim and the idempotency records — same
+    # Redis, and no reason for two sets of connections to it.
+    app.state.redis = aioredis.from_url(settings.redis_url, decode_responses=True)
+    app.state.turn_event_log = TurnEventLog(client=app.state.redis)
+    app.state.turn_registry = TurnRegistry(app.state.turn_event_log, client=app.state.redis)
+
     app.state.earthdata_mcp_tools = {}
     app.state.earthdata_mcp_manager = earthdata_mcp_manager
     app.state.satellite_agent = LazySatelliteAgent()
@@ -238,6 +250,14 @@ async def lifespan(app: FastAPI):
         app.state.satellite_agent = None
         app.state.earthdata_mcp_tools = None
         app.state.earthdata_mcp_manager = None
+        # The registry cancels whatever turns are still running; the log
+        # flushes what they had buffered. Both before the pool they share.
+        await app.state.turn_registry.aclose()
+        await app.state.turn_event_log.aclose()
+        await app.state.redis.aclose()
+        app.state.turn_registry = None
+        app.state.turn_event_log = None
+        app.state.redis = None
         await close_db_pool()
         logger.info("shutdown_complete")
 
@@ -832,6 +852,37 @@ async def _handle_mcp_tool_error(request: Request, exc: MCPToolError) -> JSONRes
     return JSONResponse(status_code=status_code, content={"error": body})
 
 
+@app.exception_handler(RedisError)
+async def _handle_event_log_unavailable(request: Request, exc: RedisError) -> JSONResponse:
+    """D15: chat is down, not degraded, while the event log is unreachable.
+
+    Every event, the per-thread claim and the stop signal all travel through
+    it. The rejected alternatives both hide the outage — a direct-streaming
+    fallback keeps a branch alive that only runs during an incident, and
+    running without narration is a silent five-minute spinner.
+    """
+    logger.warning("turn_event_log_unavailable", exc_info=True,
+                   extra={"_event": "turn_event_log_unavailable"})
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"detail": "Chat is temporarily unavailable. Try again in a moment."},
+    )
+
+
+@app.exception_handler(turn_registry.RegistryClosing)
+async def _handle_registry_closing(request: Request, exc: Exception) -> JSONResponse:
+    """T63 Phase 4: this replica is draining, so the send goes elsewhere.
+
+    A 503 rather than a queue or a wait: the turn would have to outlive a
+    process that is on its way out, and the load balancer already has
+    somewhere to send the retry.
+    """
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"detail": "The server is restarting. Try again in a moment."},
+    )
+
+
 def _earthdata_tools(request: Request) -> dict:
     """Discovery/jobs/provenance endpoints' MCP tools, read through
     earthdata_mcp_manager (T17) rather than app.state.earthdata_mcp_tools
@@ -1304,13 +1355,154 @@ async def chat(req: ChatRequest, request: Request):
     thread_id = await _resolve_thread(req, user.id)
     request_id = str(uuid.uuid4())
     await _save_session_metadata(thread_id, req.message, user.id, request_id)
-    return StreamingResponse(
+    frames = _stamp_activity_on_first_frame(
         chat_stream_service.stream_chat_events(
             active_agent, ground_agent, satellite_agent, req.message, thread_id, user.id, request_id,
         ),
+        thread_id,
+        request_id,
+    )
+    if get_settings().chat_detached_turns_enabled:
+        # T63 D6: the POST only accepts the message. Everything this turn
+        # narrates goes to the event log and leaves over the GET, so the
+        # reattach path is exercised by every turn and cannot rot.
+        registry = app.state.turn_registry
+        claim = await registry.begin(
+            thread_id,
+            frames,
+            idempotency_key=request.headers.get("Idempotency-Key"),
+            cancel_jobs=_job_canceller(user.id),
+        )
+        # D12: a refused send still names the turn, so the caller joins the one
+        # in flight rather than being told only that it cannot send.
+        accepted = 409 if claim.outcome == turn_registry.ALREADY_RUNNING else 202
+        return JSONResponse(
+            status_code=accepted,
+            content={"turn_id": claim.turn_id, "thread_id": thread_id},
+        )
+    return StreamingResponse(
+        frames,
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+def _job_canceller(user_id: str) -> turn_registry.CancelJobs:
+    """What a stopped turn uses to drop the retrievals it orphaned (T63 D10).
+
+    The MCP is resolved inside the closure rather than captured: the turn
+    outlives the request that started it, so whether the provider was reachable
+    at POST time says nothing about whether it is reachable when Stop is
+    pressed minutes later.
+    """
+
+    async def cancel(handles: list[str]) -> None:
+        manager = getattr(app.state, "earthdata_mcp_manager", None)
+        if manager is None or manager.state != STATE_READY:
+            logger.warning(
+                "turn_stop_jobs_unreachable",
+                extra={
+                    "_event": "turn_stop_jobs_unreachable",
+                    "_job_handles": handles,
+                },
+            )
+            return
+        with user_id_context(user_id):
+            for handle in handles:
+                # One at a time and each guarded: a provider that refuses one
+                # handle must not keep the rest running.
+                try:
+                    await cancel_job(handle, manager.tools)
+                except Exception:
+                    logger.warning(
+                        "turn_stop_job_cancel_failed",
+                        exc_info=True,
+                        extra={
+                            "_event": "turn_stop_job_cancel_failed",
+                            "_job_handle": handle,
+                        },
+                    )
+
+    return cancel
+
+
+@app.post("/chat/{thread_id}/stop")
+@limiter.limit("30/minute")
+async def chat_stop(thread_id: ThreadId, request: Request):
+    """Stop the turn running on this thread, from any tab or any replica.
+
+    Named by thread rather than by turn: after a reattach the tab pressing
+    Stop may have joined the turn rather than started it (D12), and knows only
+    which conversation it is looking at.
+    """
+    user = request.state.current_user
+    if not await session_belongs_to_user(thread_id, user.id):
+        raise HTTPException(status_code=404, detail="Session not found")
+    registry = app.state.turn_registry
+    turn_id = await registry.turn_for(thread_id)
+    if turn_id is None:
+        # Nothing to stop. A 200 here would tell the caller its Stop landed.
+        raise HTTPException(status_code=404, detail="No turn is running on this thread")
+    await registry.stop(turn_id)
+    return {"turn_id": turn_id, "thread_id": thread_id}
+
+
+@app.get("/chat/{thread_id}/stream")
+@limiter.limit("60/minute")
+async def chat_stream(
+    thread_id: ThreadId,
+    request: Request,
+    cursor: Annotated[str | None, Query(alias="from")] = None,
+    known_turn: Annotated[str | None, Query(alias="turn")] = None,
+):
+    """The only place a chat turn's SSE comes from (T63 D6).
+
+    A reader hands back the cursor it last saw and gets only what it missed,
+    so switching sessions, sleeping a laptop or landing on a different replica
+    costs it nothing.
+    """
+    user = request.state.current_user
+    if not await session_belongs_to_user(thread_id, user.id):
+        raise HTTPException(status_code=404, detail="Session not found")
+    registry = app.state.turn_registry
+    # Naming a turn says "I am coming back to one I already know about" --
+    # the tab that sent the message, or a remount resuming from its stored
+    # cursor -- and such a reader wants the tail even of a turn that has
+    # just ended, because the answer is not in history until the write-back
+    # lands. Naming none is only asking whether anything is running, and
+    # must not be handed a finished turn to replay over the history it just
+    # loaded. The id is that statement of intent and nothing more: whatever
+    # this thread's turn actually is, is what gets streamed.
+    turn_id = await registry.turn_for(thread_id, include_ended=known_turn is not None)
+    if turn_id is None:
+        # No turn to attach to. History is the source of truth for anything
+        # that finished long enough ago to have been dropped (D8).
+        raise HTTPException(status_code=404, detail="No turn is running on this thread")
+    return StreamingResponse(
+        registry.follow(turn_id, cursor),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/chat/{thread_id}/status")
+@limiter.limit("60/minute")
+async def chat_status(thread_id: ThreadId, request: Request):
+    """Whether this thread has a turn in flight, without opening its stream.
+
+    For the sidebar: a thread the user sent a message to and then navigated
+    away from keeps running under it (T63) — this is what lets a badge say so
+    for every thread that is not the one on screen, without paying for a
+    stream connection per row.
+    """
+    user = request.state.current_user
+    if not await session_belongs_to_user(thread_id, user.id):
+        raise HTTPException(status_code=404, detail="Session not found")
+    registry = app.state.turn_registry
+    turn_id, terminal = await registry.status(thread_id)
+    if turn_id is None:
+        raise HTTPException(status_code=404, detail="No turn is running on this thread")
+    return {"turn_id": turn_id, "thread_id": thread_id, "terminal": terminal}
 
 
 async def _resolve_thread(req: ChatRequest, user_id: str) -> str:
@@ -1327,6 +1519,54 @@ async def _save_session_metadata(thread_id: str, message: str, user_id: str, req
         await save_session_metadata_once(thread_id, message, user_id)
     except Exception:
         logger.exception("session_metadata_save_failed", extra={"_request_id": request_id, "_thread_id": thread_id})
+
+
+async def _stamp_activity_on_first_frame(
+    frames: AsyncIterator[str], thread_id: str, request_id: str
+) -> AsyncIterator[str]:
+    """Put the thread in "Recent analyses", at the top, when its turn starts
+    narrating.
+
+    Both facts are stamped from this one event: whether the thread is listed
+    at all, and where it sits. The first is stamped once per thread, the
+    second on every turn -- the repository does that part; this only says
+    when the event happened, which is the first frame of each turn and not
+    the message that asked for it. A thread reordered when the message is
+    posted jumps the list on the strength of a turn that may produce
+    nothing.
+
+    The metadata row above is written before anything runs because it is the
+    only record of who owns the thread, and both ``/chat/{thread}/stream`` and
+    ``/chat/{thread}/stop`` refuse without one. It therefore cannot double as
+    "this conversation has something in it": the fast path checkpoints the
+    transcript once, at the end, so a turn that is stopped or dies leaves a
+    titled row over an empty conversation.
+
+    Wrapped here rather than inside ChatStreamService, and deliberately: this
+    is the one point both protocols pass through, and it holds whatever the
+    route produced without knowing which route that was. The fast path never
+    enters ``stream_response`` -- the seam T63 Phase 5's heartbeat fell
+    through -- so a stamp written from inside a route is one new route away
+    from leaving threads unlisted.
+
+    Stamped before the frame is yielded: a reader that has seen the frame may
+    ask for the session list in the next breath.
+    """
+    listed = False
+    async for frame in frames:
+        if not listed:
+            listed = True
+            try:
+                await mark_session_activity(thread_id)
+            except Exception:
+                # The turn is answering; the sidebar is not worth failing it
+                # for. Same policy as the metadata save above.
+                logger.exception(
+                    "session_first_frame_mark_failed",
+                    extra={"_request_id": request_id, "_thread_id": thread_id},
+                )
+        yield frame
+
 
 # T37: session endpoint catch-alls answer with a fixed generic detail — the
 # real exception goes to the logs with request context, never to the client.

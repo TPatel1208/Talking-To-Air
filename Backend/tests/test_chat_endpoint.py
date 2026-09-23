@@ -43,6 +43,20 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         return auth_helpers.patch_verifier()
 
     async def test_chat_streams_done_event(self):
+        """The streaming POST, which is now the rollback path (T63).
+
+        Pinned with the kill switch explicitly off. Detached turns are the
+        default since Phase 5 — ``POST /chat`` answers 202 and the stream
+        comes from the GET — but this contract is what
+        ``CHAT_DETACHED_TURNS_ENABLED=0`` restores, and a rollback that
+        restores something untested is not a rollback.
+        """
+        from tta_backend.config.settings import get_settings
+
+        self.enterContext(patch.dict(os.environ, {"CHAT_DETACHED_TURNS_ENABLED": "0"}))
+        get_settings.cache_clear()
+        self.addCleanup(get_settings.cache_clear)
+
         async def fake_stream_response(agent, message, thread_id, **kwargs):
             yield "status", {"message": "Downloading satellite granules...", "stage": "progress", "detail": 40}
             yield "text", "hello"

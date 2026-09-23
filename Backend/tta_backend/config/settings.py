@@ -453,6 +453,18 @@ class Settings:
     debug_heap_profiling_enabled: bool = field(
         default_factory=lambda: os.getenv("DEBUG_HEAP_PROFILING_ENABLED", "").strip() == "1"
     )
+    # T63: the kill-switch between the streaming POST and detached turns.
+    # Wholesale, never a blend -- the two disagree about what POST /chat
+    # returns, so a per-request mix would leave the client guessing.
+    #
+    # On since Phase 5 taught the frontend the 202-then-GET protocol; this
+    # is now what a rollback turns *off*. A rollback needs nothing but this
+    # variable and a restart: the client branches on the response (200 +
+    # text/event-stream against 202 + JSON) rather than on a flag of its
+    # own, so one bundle serves both and no image is rebuilt.
+    chat_detached_turns_enabled: bool = field(
+        default_factory=lambda: os.getenv("CHAT_DETACHED_TURNS_ENABLED", "1").strip() != "0"
+    )
     long_request_seconds: float = field(default_factory=lambda: float(os.getenv("LONG_REQUEST_SECONDS", "30")))
     # T61: Supabase is the identity provider; our own Postgres stays. Both are
     # required at boot (validate_startup) now that the auth middleware verifies
@@ -464,6 +476,13 @@ class Settings:
     # built as f"{supabase_url}/auth/v1", and a stray slash rejects every token
     # with no hint as to why. No default is possible for either -- a placeholder
     # URL would verify tokens from the wrong project rather than failing.
+    # Where the chat turn event log lives. Optional on the dataclass and
+    # required in validate_startup, same as the Supabase pair below. No
+    # default -- a placeholder would surface as every turn failing rather than
+    # as a backend that refuses to boot.
+    redis_url: str | None = field(
+        default_factory=lambda: os.getenv("REDIS_URL", "").strip() or None
+    )
     supabase_url: str | None = field(
         default_factory=lambda: os.getenv("SUPABASE_URL", "").strip().rstrip("/") or None
     )
@@ -605,6 +624,11 @@ class Settings:
         # screen. Drop this branch if Phase 3 ends up somewhere else.
         if not self.supabase_publishable_key:
             missing.append("SUPABASE_PUBLISHABLE_KEY")
+        # Every chat event travels through the event log, so a backend that
+        # cannot reach one is not degraded, it is down. Saying so at boot
+        # beats every turn returning 503.
+        if not self.redis_url:
+            missing.append("REDIS_URL")
         if missing:
             raise RuntimeError(f"Missing required environment variable(s): {', '.join(missing)}")
         unvetted = []

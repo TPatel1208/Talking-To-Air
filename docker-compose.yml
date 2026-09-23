@@ -34,7 +34,45 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 15s       
+      start_period: 15s
+
+  # ── Redis (chat turn event log) ──────────────────────────────────────────────
+  #  Carries a turn's SSE frames, so a reader that went away resumes from a
+  #  cursor instead of losing the turn. Separate from the harmony-retrieval-mcp
+  #  stack's `earthdata-redis`: that stack deploys independently, and sharing
+  #  would make an unrelated retrieval deploy a chat outage.
+  redis:
+    image: redis:7-alpine
+    container_name: tta-redis
+    restart: unless-stopped
+    # No persistence: the log carries narration only, so once a turn ends
+    # HistoryService is the source of truth and a restart costs in-flight
+    # narration and nothing else -- the state a reader already handles when it
+    # falls off the back of a stream. Also means no volume and no fsync.
+    #
+    # noeviction, not allkeys-lru: this instance also holds the per-thread
+    # active-turn lock and the stop flag, where eviction is a silent
+    # correctness failure (two concurrent turns on one thread) rather than a
+    # visible one. Streams are bounded by MAXLEN and EXPIRE, so reaching this
+    # ceiling means something is wrong, not busy.
+    command: >
+      redis-server
+      --save ""
+      --appendonly no
+      --maxmemory 384mb
+      --maxmemory-policy noeviction
+    # Headroom over --maxmemory, which bounds the dataset and not the process.
+    # Same reasoning as the backend's ceiling: an unbounded container leaves
+    # the kernel to choose the victim.
+    mem_limit: ${REDIS_MEM_LIMIT:-512m}
+    # No `ports:`, same posture as the backend -- reachable only as redis:6379
+    # on the compose network.
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
 
   # ── FastAPI + LangChain backend ──────────────────────────────────────────────
   backend:
@@ -51,6 +89,14 @@ services:
     # .github/workflows/release.yml and IMAGE_REGISTRY/IMAGE_TAG in .env.example.
     image: ${IMAGE_REGISTRY:-ghcr.io/tpatel1208}/tta-backend:${IMAGE_TAG:-dev}
     container_name: tta-backend
+    # Docker's default is 10s, and the shutdown is a sum: up to 5s waiting
+    # for connections, then the MCP client stop, the Supabase warm stop, up
+    # to 5s draining the turns still running, the log flush and the pool
+    # close. Under budget the sequence is SIGKILLed partway through, which
+    # costs exactly what it exists to save -- every in-flight turn ends
+    # with no `interrupted` entry and its thread stays claimed until the
+    # claim TTL lapses.
+    stop_grace_period: 30s
     restart: unless-stopped
     # The container's memory ceiling, and half of a two-part contract.
     #
@@ -90,6 +136,9 @@ services:
       DB_PORT: "5432"
       DB_NAME: talking_to_air_memory
       DB_USER: postgres
+      # Where the chat turn event log lives. Required at boot: every turn's
+      # frames travel through it.
+      REDIS_URL: "redis://redis:6379/0"
       # Which peers uvicorn's --proxy-headers will believe about the client's
       # real address. Scoped to Docker's private bridge range, which is the
       # only hop in front of this service (nginx, in the frontend container).
@@ -162,6 +211,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - default
       - earthdata_net
@@ -194,6 +245,18 @@ services:
       DB_NAME: "talking_to_air_memory"
       DB_USER: "postgres"
       DB_PASSWORD: "test"
+      # The turn-event-log tests run against a real Redis -- they pin
+      # XREAD/MAXLEN/EXPIRE behaviour, which a fake would not. They skip when
+      # this is unreachable so a host-side `pytest` still runs, and
+      # test_deployment_contract.py asserts this service declares the
+      # dependency so the container run cannot skip them silently.
+      #
+      # Database 15, not 0: a suite sharing a keyspace with live data is how
+      # this project lost ~196 job rows once already.
+      REDIS_URL: "redis://redis:6379/15"
+    depends_on:
+      redis:
+        condition: service_healthy
     volumes:
       # test_chart_repository.py's / test_artifact_repository.py's schema-contract
       # tests read these files straight off disk; they live at the repo root so
@@ -229,6 +292,12 @@ services:
       # than as a whole-repo mount to keep the surface explicit; the tests
       # assert these mounts exist, so deleting one fails rather than silently
       # turning the contracts into no-ops.
+      #
+      # The backend Dockerfile is mounted for the same reason even though the
+      # image already contains it: the image has it at /app/Dockerfile, and the
+      # `../..` expression above lands at /Backend/Dockerfile. Read by the
+      # guards that keep uvicorn PID 1 and bound its shutdown.
+      - ./Backend/Dockerfile:/Backend/Dockerfile:ro
       - ./Frontend/Dockerfile:/Frontend/Dockerfile:ro
       - ./Frontend/nginx.conf:/Frontend/nginx.conf:ro
       - ./Frontend/.dockerignore:/Frontend/.dockerignore:ro

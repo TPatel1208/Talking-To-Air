@@ -44,6 +44,19 @@ class StreamingRequestMetricsTests(unittest.IsolatedAsyncioTestCase):
         return auth_helpers.patch_verifier()
 
     async def test_chat_stream_duration_covers_the_full_stream_not_just_headers(self):
+        """Measured on the streaming POST, which is the rollback path now.
+
+        T63 moved the streaming to ``GET /chat/{thread_id}/stream``, so that
+        is where a turn's minutes are measured today — see
+        test_chat_detached_turns.py. This one keeps the property pinned for
+        ``CHAT_DETACHED_TURNS_ENABLED=0``, where the POST streams again.
+        """
+        from tta_backend.config.settings import get_settings
+
+        self.enterContext(patch.dict(os.environ, {"CHAT_DETACHED_TURNS_ENABLED": "0"}))
+        get_settings.cache_clear()
+        self.addCleanup(get_settings.cache_clear)
+
         sleep_seconds = 0.3
 
         async def fake_stream_chat_events(

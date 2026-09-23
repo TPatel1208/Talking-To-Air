@@ -246,13 +246,15 @@ function AuthenticatedApp({ onLogout }) {
     historyError,
     threadId,
     sessions,
+    turnStatus,
     sendMessage,
     newSession,
     switchSession,
     reloadSession,
     retryHistory,
     deleteSession,
-    abortActiveRequest,
+    stopTurn,
+    detach,
     clearError,
   } = useChat(applyJobProgress)
 
@@ -376,12 +378,15 @@ function AuthenticatedApp({ onLogout }) {
     return { images: allImages, artifacts: dedupedArtifacts }
   }, [messages])
 
-  // Stop the stream first, then hand off. Revoking the session upstream is the
-  // root component's job now -- there is no backend auth route left to call.
+  // Detach, don't stop. Logging out is going away, not "abandon this work":
+  // the turn keeps running, finishes, and its answer is in history at the
+  // next sign-in. Stopping would also race the session revocation below --
+  // the stop endpoint needs the credential we are about to throw away -- and
+  // would cancel provider retrievals the user has already paid for.
   const handleLogout = useCallback(() => {
-    abortActiveRequest(true)
+    detach()
     onLogout()
-  }, [abortActiveRequest, onLogout])
+  }, [detach, onLogout])
 
   return (
     // Horizontally scrollable, not clipped. The three side panels are all
@@ -411,6 +416,7 @@ function AuthenticatedApp({ onLogout }) {
         <SessionSidebar
           sessions={sessions}
           threadId={threadId}
+          turnStatus={turnStatus}
           onSwitch={handleSwitchSession}
           onNew={handleNewSession}
           onDelete={deleteSession}
@@ -434,13 +440,7 @@ function AuthenticatedApp({ onLogout }) {
             onReloadSession={reloadSession}
             chatTitle={chatTitle}
             onSend={sendMessage}
-            onAbort={() => {
-              // Stop must mean stop: abort the stream AND cancel whatever
-              // retrieval jobs this turn reported as still in flight —
-              // locally and (best-effort) upstream at the provider.
-              const inFlightJobs = abortActiveRequest(true) || []
-              inFlightJobs.forEach(handle => cancelJob(handle))
-            }}
+            onAbort={stopTurn}
             onClearError={clearError}
             focusedOutput={focusedOutput}
             onFocusOutput={setFocusedOutput}
