@@ -125,6 +125,34 @@ class DeleteSessionOwnershipOrderingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("artifacts", calls[:-1])
         self.assertIn("checkpoints", calls[:-1])
 
+    async def test_checkpoints_are_deleted_before_charts(self):
+        """Checkpoints still name the thread's charts. If the cascade stops
+        after the charts are gone but before the checkpoints are, the thread
+        stays loadable and points at charts that no longer exist."""
+        from tta_backend.repositories.session_repository import SessionRepository
+
+        calls: list[str] = []
+
+        conn = MagicMock()
+
+        async def record_execute(sql, *args, **kwargs):
+            calls.append("checkpoints")
+
+        conn.execute = AsyncMock(side_effect=record_execute)
+        conn.commit = AsyncMock()
+
+        async def record_charts(*args, **kwargs):
+            calls.append("charts")
+
+        with patch("tta_backend.repositories.session_repository.session_belongs_to_user", AsyncMock(return_value=True)), \
+             patch("tta_backend.repositories.session_repository.delete_charts_for_session", AsyncMock(side_effect=record_charts)), \
+             patch("tta_backend.repositories.session_repository.delete_artifacts_for_session", AsyncMock()), \
+             patch("tta_backend.repositories.session_repository.delete_session_metadata", AsyncMock(return_value=True)), \
+             patch("tta_backend.repositories.session_repository.pg_connection", self._pg_connection_cm(conn)):
+            await SessionRepository().delete_session("thread-1", "user-1")
+
+        self.assertLess(calls.index("checkpoints"), calls.index("charts"), f"order: {calls}")
+
 
 if __name__ == "__main__":
     unittest.main()

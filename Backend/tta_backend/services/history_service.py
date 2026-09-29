@@ -23,8 +23,21 @@ class HistoryService:
         if not state or not state.values:
             return []
 
+        messages = state.values.get("messages", [])
+        tool_outputs = {}
+        for index, msg in enumerate(messages):
+            if getattr(msg, "type", None) == "tool":
+                tool_text = flatten_text_content(msg.content)
+                _, charts = self.chart_service.parse_charts(tool_text)
+                tool_outputs[index] = (tool_text, charts)
+        # History is a read: charts are looked up in one query and never
+        # saved, so a GET cannot recreate a row a delete removed.
+        resolved = iter(await self.chart_service.resolve_charts(
+            [chart for _, charts in tool_outputs.values() for chart in charts], user_id,
+        ))
+
         result = []
-        for msg in state.values.get("messages", []):
+        for index, msg in enumerate(messages):
             role = getattr(msg, "type", None)
             if role == "human":
                 result.append({
@@ -36,7 +49,9 @@ class HistoryService:
             elif role == "ai":
                 result.append(self._assistant_message(msg))
             elif role == "tool":
-                await self._attach_tool_output(result, msg, thread_id, user_id)
+                tool_text, charts = tool_outputs[index]
+                chart_payloads = [next(resolved) for _ in charts]
+                await self._attach_tool_output(result, tool_text, chart_payloads, thread_id, user_id)
         return self._merge_adjacent_assistant_messages(result)
 
     def _assistant_message(self, msg: Any) -> dict[str, Any]:
@@ -79,14 +94,12 @@ class HistoryService:
     async def _attach_tool_output(
         self,
         result: list[dict[str, Any]],
-        msg: Any,
+        tool_text: str,
+        chart_payloads: list[dict[str, Any] | None],
         thread_id: str,
         user_id: str,
     ) -> None:
-        tool_text = flatten_text_content(msg.content)
-        _, charts = self.chart_service.parse_charts(tool_text)
-        for chart in charts:
-            chart_payload = await self.chart_service.persist_chart_payload(thread_id, chart, user_id)
+        for chart_payload in chart_payloads:
             if chart_payload is None:
                 continue
             assistant = self._last_assistant(result)

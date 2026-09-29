@@ -559,8 +559,12 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         async def fake_get_chart(chart_id):
             return saved.get(chart_id)
 
+        async def fake_get_charts(chart_ids, user_id):
+            return {c: saved[c] for c in chart_ids if c in saved and saved[c]["user_id"] == user_id}
+
         with patch("tta_backend.services.chat_stream_service.run_satellite", AsyncMock(return_value=satellite_result)), \
              patch("tta_backend.services.chart_service.chart_repository.get_chart", AsyncMock(side_effect=fake_get_chart)), \
+             patch("tta_backend.services.chart_service.chart_repository.get_charts", AsyncMock(side_effect=fake_get_charts)), \
              patch("tta_backend.services.chart_service.chart_repository.save_chart", AsyncMock(side_effect=fake_save_chart)):
             [
                 event

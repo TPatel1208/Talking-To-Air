@@ -25,8 +25,8 @@ class SessionRepository:
         # reporting "not found" as though the delete had succeeded.
         if not await session_belongs_to_user(thread_id, user_id):
             return False
-        await delete_charts_for_session(thread_id, user_id)
-        await delete_artifacts_for_session(thread_id, user_id)
+        # Checkpoints before the charts and artifacts they name, so a partial
+        # failure never leaves a loadable thread pointing at deleted rows.
         # LangGraph does not currently expose a session-delete helper here.
         # These table names are internal to LangGraph's Postgres checkpointer
         # and should be revisited when upgrading LangGraph.
@@ -37,6 +37,8 @@ class SessionRepository:
                     (thread_id,),
                 )
             await conn.commit()
+        await delete_charts_for_session(thread_id, user_id)
+        await delete_artifacts_for_session(thread_id, user_id)
         # Last: once this row is gone the thread is unauthorisable, so
         # nothing that still needs authorising may follow it.
         await delete_session_metadata(thread_id, user_id)

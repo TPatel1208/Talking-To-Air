@@ -29,6 +29,26 @@ class ChartService:
             return None
         return await chart_repository.save_chart(thread_id, payload, user_id)
 
+    async def resolve_charts(self, charts: list[Any], user_id: str) -> list[dict[str, Any] | None]:
+        """``charts`` as stored rows, in order, from one read and no writes.
+
+        A chart without a row this user owns resolves to None if it is a
+        reference, and to its own inline payload otherwise (checkpoints
+        written before references carry the whole grid)."""
+        payloads = [c.model_dump(exclude_none=True) if hasattr(c, "model_dump") else dict(c) for c in charts]
+        chart_ids = [p["chart_id"] for p in payloads if p.get("chart_id")]
+        stored = await chart_repository.get_charts(chart_ids, user_id) if chart_ids else {}
+        resolved: list[dict[str, Any] | None] = []
+        for payload in payloads:
+            row = stored.get(payload.get("chart_id", ""))
+            if row is not None:
+                resolved.append(row)
+            elif is_chart_reference(payload):
+                resolved.append(None)
+            else:
+                resolved.append(payload)
+        return resolved
+
     async def checkpoint_envelope(self, result: AgentResult, thread_id: str, user_id: str) -> str:
         """``result`` as the JSON a checkpointed ToolMessage carries.
 
