@@ -92,8 +92,8 @@ def chart_reference(stored: dict[str, Any]) -> ChartPayload:
     The row is the source of truth for the grid; ``reference=True`` tells a
     reader to look the chart up rather than persist what it was handed."""
     fields = {key: stored[key] for key in _CHART_REFERENCE_KEYS if stored.get(key) is not None}
-    metadata = stored.get("metadata") if isinstance(stored.get("metadata"), dict) else {}
-    name = metadata.get("name")
+    metadata = stored.get("metadata")
+    name = metadata.get("name") if isinstance(metadata, dict) else None
     return ChartPayload(
         **fields,
         metadata={"name": name} if name else {},
