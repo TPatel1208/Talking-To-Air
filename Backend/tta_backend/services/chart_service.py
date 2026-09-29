@@ -2,18 +2,46 @@ from __future__ import annotations
 
 from typing import Any
 
-from tta_backend.models import parse_agent_result, parse_chart_payload
+from tta_backend.models import (
+    AgentResult,
+    agent_result_to_json,
+    chart_reference,
+    is_chart_reference,
+    parse_agent_result,
+    parse_chart_payload,
+)
 from tta_backend.repositories import chart_repository
 
 
 class ChartService:
-    async def persist_chart_payload(self, thread_id: str, chart: Any, user_id: str) -> dict[str, Any]:
+    async def persist_chart_payload(self, thread_id: str, chart: Any, user_id: str) -> dict[str, Any] | None:
+        """Store ``chart`` and return the stored row.
+
+        A chart reference is only ever looked up: it carries no grid, so
+        saving it would replace the real row with a stub. None means the
+        reference names no chart this user owns."""
         payload = chart.model_dump(exclude_none=True) if hasattr(chart, "model_dump") else dict(chart)
         if payload.get("chart_id"):
             stored = await chart_repository.get_chart(payload["chart_id"])
             if stored and stored.get("user_id") == user_id:
                 return stored
+        if is_chart_reference(payload):
+            return None
         return await chart_repository.save_chart(thread_id, payload, user_id)
+
+    async def checkpoint_envelope(self, result: AgentResult, thread_id: str, user_id: str) -> str:
+        """``result`` as the JSON a checkpointed ToolMessage carries.
+
+        Each chart is persisted first and then replaced by a reference to its
+        agent_charts row. The checkpoint rewrites a thread's whole message
+        list at every step, so a grid kept here would be stored again on
+        every later turn."""
+        references = []
+        for chart in result.charts:
+            stored = await self.persist_chart_payload(thread_id, chart, user_id)
+            if stored is not None:
+                references.append(chart_reference(stored))
+        return agent_result_to_json(result.model_copy(update={"charts": references}))
 
     async def get_chart(self, chart_id: str) -> dict[str, Any] | None:
         return await chart_repository.get_chart(chart_id)

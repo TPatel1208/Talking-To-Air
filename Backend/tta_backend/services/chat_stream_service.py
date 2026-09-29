@@ -18,7 +18,7 @@ from tta_backend.config.error_templates import (
 from tta_backend.config.settings import get_settings
 from tta_backend.config.workflow_stages import STAGE_WORKING
 from tta_backend.earthdata_mcp.results import CATEGORY_CONTRACT
-from tta_backend.models import AgentResult, agent_result_to_json, parse_agent_result, parse_chart_payload
+from tta_backend.models import AgentResult, parse_agent_result, parse_chart_payload
 from tta_backend.services import admission, cube_cache
 from tta_backend.services.artifact_store import artifact_store
 from tta_backend.services.chart_service import ChartService
@@ -395,7 +395,7 @@ class ChatStreamService:
         final_text = f"{_AGENT_CONSULTED_HEADERS[intent]}\n\n{result.text}"
         yield self.sse("text", {"content": final_text})
 
-        await self._write_back_turn(supervisor_agent, thread_id, message, final_text, intent, result)
+        await self._write_back_turn(supervisor_agent, thread_id, user_id, message, final_text, intent, result)
 
         done_payload = {
             "thread_id": thread_id,
@@ -421,6 +421,7 @@ class ChatStreamService:
         self,
         agent: Any,
         thread_id: str,
+        user_id: str,
         user_message: str,
         final_answer: str,
         intent: str,
@@ -435,8 +436,9 @@ class ChatStreamService:
         When the result carries a chart or artifact, writes the same
         tool_call/ToolMessage/AIMessage shape the supervisor's own agent loop
         produces for ask_ground_sensor_agent / ask_earthdata_agent
-        (supervisor_agent.py), carrying the full AgentResult JSON in the
-        ToolMessage. HistoryService only ever reconstructs a turn's chart/
+        (supervisor_agent.py), carrying the AgentResult JSON in the
+        ToolMessage with each chart reduced to a reference to its
+        agent_charts row (ChartService.checkpoint_envelope). HistoryService only ever reconstructs a turn's chart/
         artifact cards from a role=="tool" message (see _attach_tool_output)
         — a bare Human/AI pair here left fast-pathed charts undiscoverable
         after a reload, even though they were already durably persisted in
@@ -466,7 +468,7 @@ class ChatStreamService:
                     tool_calls=[{"name": tool_name, "args": {"task": user_message}, "id": tool_call_id}],
                 ),
                 ToolMessage(
-                    content=agent_result_to_json(result),
+                    content=await self.chart_service.checkpoint_envelope(result, thread_id, user_id),
                     tool_call_id=tool_call_id,
                     name=tool_name,
                 ),
@@ -719,12 +721,15 @@ class ChatStreamService:
     ) -> str | None:
         """Persist and build the "chart" SSE event for ``chart``, or return
         None if its chart_id was already emitted this turn (T13 dedup — see
-        the comment on stream_chat_events' emitted_chart_ids)."""
+        the comment on stream_chat_events' emitted_chart_ids) or it is a
+        reference to a chart this user does not own."""
         payload = chart.model_dump(exclude_none=True) if hasattr(chart, "model_dump") else dict(chart)
         chart_id = payload.get("chart_id")
         if chart_id is not None and chart_id in emitted_chart_ids:
             return None
         stored = await self.chart_service.persist_chart_payload(thread_id, chart, user_id)
+        if stored is None:
+            return None
         stored_id = stored.get("chart_id") if isinstance(stored, dict) else None
         emitted_id = stored_id or chart_id
         if emitted_id is not None:
