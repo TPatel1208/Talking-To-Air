@@ -50,12 +50,23 @@ class FakeChartStore:
         row = self.rows.get(chart_id)
         return dict(row) if row is not None else None
 
+    async def get_charts(self, chart_ids, user_id):
+        self.batch_reads += 1
+        return {
+            chart_id: dict(self.rows[chart_id])
+            for chart_id in chart_ids
+            if chart_id in self.rows and self.rows[chart_id]["user_id"] == user_id
+        }
+
     @contextmanager
     def installed(self):
+        self.batch_reads = 0
         with patch("tta_backend.services.chart_service.chart_repository.save_chart",
                    AsyncMock(side_effect=self.save_chart)), \
              patch("tta_backend.services.chart_service.chart_repository.get_chart",
-                   AsyncMock(side_effect=self.get_chart)):
+                   AsyncMock(side_effect=self.get_chart)), \
+             patch("tta_backend.services.chart_service.chart_repository.get_charts",
+                   AsyncMock(side_effect=self.get_charts)):
             yield self
 
 
@@ -183,6 +194,32 @@ class ReferenceReadTests(unittest.IsolatedAsyncioTestCase):
         charts = [c for m in history for c in m.get("charts", [])]
         self.assertEqual(len(charts), 1)
         self.assertEqual(charts[0]["lats"], [40.0, 40.5, 41.0])
+
+    async def test_loading_history_never_writes_a_chart(self):
+        """A GET must not recreate a chart whose row is gone, e.g. one a
+        session delete already removed."""
+        store = FakeChartStore()
+
+        await self._history_for(
+            [_grid_chart_payload(chart_id="map_deleted"), _grid_chart_payload(title="no id")],
+            store,
+        )
+
+        self.assertEqual(store.saves, 0)
+        self.assertEqual(store.rows, {})
+
+    async def test_history_resolves_every_chart_in_one_read(self):
+        store = FakeChartStore()
+        for chart_id in ("map_1", "map_2", "map_3"):
+            store.rows[chart_id] = {**_grid_chart_payload(chart_id=chart_id), "thread_id": "thread-1", "user_id": "user-1"}
+        references = [{"chart_id": c, "type": "heatmap", "reference": True} for c in ("map_1", "map_2", "map_3")]
+
+        history = await self._history_for(references, store)
+
+        self.assertEqual(store.batch_reads, 1)
+        charts = [c for m in history for c in m.get("charts", [])]
+        self.assertEqual([c["chart_id"] for c in charts], ["map_1", "map_2", "map_3"])
+        self.assertEqual(charts[0]["values"], [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
 
 
 class ToolThenAnswerModel:

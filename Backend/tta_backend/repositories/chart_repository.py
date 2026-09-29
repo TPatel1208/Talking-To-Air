@@ -102,6 +102,26 @@ async def get_chart(chart_id: str) -> dict[str, Any] | None:
     return payload
 
 
+async def get_charts(chart_ids: list[str], user_id: str) -> dict[str, dict[str, Any]]:
+    """The charts among ``chart_ids`` that ``user_id`` owns, keyed by id."""
+    if not chart_ids:
+        return {}
+    async with pg_connection() as conn:
+        cursor = await conn.execute(
+            "SELECT id, payload, thread_id, user_id FROM agent_charts WHERE id = ANY(%s) AND user_id = %s",
+            (list(chart_ids), user_id),
+        )
+        rows = await cursor.fetchall()
+    charts = {}
+    for chart_id, payload, thread_id, owner in rows:
+        chart = dict(payload)
+        chart.setdefault("chart_id", chart_id)
+        chart["thread_id"] = thread_id
+        chart["user_id"] = owner
+        charts[chart_id] = chart
+    return charts
+
+
 async def delete_charts_for_session(thread_id: str, user_id: str) -> None:
     async with pg_connection() as conn:
         await conn.execute(

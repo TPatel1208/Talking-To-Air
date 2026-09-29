@@ -92,8 +92,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
 
         from tta_backend.services.artifact_store import artifact_store
 
-        with patch("tta_backend.services.chart_service.chart_repository.get_chart", AsyncMock(return_value=None)), \
-             patch("tta_backend.services.chart_service.chart_repository.save_chart", AsyncMock(side_effect=_echo_saved_chart)), \
+        with patch("tta_backend.services.chart_service.chart_repository.get_charts", AsyncMock(return_value={})), \
              patch.object(artifact_store, "claim", side_effect=AssertionError("map artifacts must not go through the table artifact_store")) as claim:
             messages = await HistoryService(ChartService()).build_history(FakeAgent(), "thread-1", "user-1")
 
