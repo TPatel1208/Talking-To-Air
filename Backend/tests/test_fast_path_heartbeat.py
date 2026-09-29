@@ -157,15 +157,20 @@ class FastPathHeartbeatTests(unittest.IsolatedAsyncioTestCase):
         Mutation guard for the activity clock: a watchdog that fires on a
         bare timer would talk over a sub-agent that is already narrating,
         which is the thing the supervisor route's watchdog is careful not to
-        do. The sub-agent here speaks every 0.03s for 0.30s -- five times the
-        heartbeat interval, and never once silent for one.
+        do. The sub-agent here speaks every 0.01s for at least 0.8s -- longer
+        than the 0.5s heartbeat interval, so a bare timer would fire, yet never
+        silent for anywhere near one.
+
+        The gap is 1/50 of the interval because these are wall-clock sleeps: a
+        loaded machine stretches each one, and a 2x margin (0.03s against
+        0.06s) failed every run with all cores busy.
         """
         import tta_backend.utils.streaming as streaming
 
-        with patch.object(streaming, "HEARTBEAT_INTERVAL_SECONDS", 0.06), \
+        with patch.object(streaming, "HEARTBEAT_INTERVAL_SECONDS", 0.5), \
              patch.object(streaming, "HEARTBEAT_CHECK_SECONDS", 0.01):
             frames = await _fast_path_frames(
-                satellite=ChattySatelliteAgent(rounds=10, gap_seconds=0.03),
+                satellite=ChattySatelliteAgent(rounds=80, gap_seconds=0.01),
             )
 
         self.assertEqual(_working_statuses(frames), [], "".join(frames))
