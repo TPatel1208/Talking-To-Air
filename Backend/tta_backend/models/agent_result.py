@@ -81,6 +81,30 @@ def agent_result_to_json(result: AgentResult) -> str:
     return result.model_dump_json(exclude_none=True)
 
 
+# The few scalar fields a checkpointed chart reference keeps: enough for the
+# supervisor's chart summary and for history to find the stored row again.
+_CHART_REFERENCE_KEYS = ("chart_id", "type", "title", "variable", "units")
+
+
+def chart_reference(stored: dict[str, Any]) -> ChartPayload:
+    """A persisted chart reduced to a pointer at its agent_charts row.
+
+    The row is the source of truth for the grid; ``reference=True`` tells a
+    reader to look the chart up rather than persist what it was handed."""
+    fields = {key: stored[key] for key in _CHART_REFERENCE_KEYS if stored.get(key) is not None}
+    metadata = stored.get("metadata") if isinstance(stored.get("metadata"), dict) else {}
+    name = metadata.get("name")
+    return ChartPayload(
+        **fields,
+        metadata={"name": name} if name else {},
+        reference=True,
+    )
+
+
+def is_chart_reference(payload: dict[str, Any]) -> bool:
+    return payload.get("reference") is True and bool(payload.get("chart_id"))
+
+
 def parse_agent_result(raw: Any) -> AgentResult | None:
     if isinstance(raw, AgentResult):
         return raw

@@ -19,11 +19,12 @@ from collections.abc import Awaitable, Callable
 from tta_backend.config.model_factory import build_chat_model
 from tta_backend.config.settings import get_settings
 from tta_backend.config.supervisor_prompt import SUPERVISOR_PROMPT
-from tta_backend.models import agent_result_to_json, parse_agent_result, parse_chart_payload
+from tta_backend.models import AgentResult, agent_result_to_json, parse_agent_result, parse_chart_payload
+from tta_backend.services.chart_service import ChartService
 from tta_backend.services.subagent_dispatch import run_ground, run_satellite
 from tta_backend.utils.db import get_checkpointer
 from tta_backend.utils.message_utils import truncate_text
-from tta_backend.utils.streaming import current_thread_id
+from tta_backend.utils.streaming import current_thread_id, current_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +110,7 @@ async def build_agent(
                 exceedance dates, and peak concentration values.
         """
         result = await run_ground(ground_agent, task, current_thread_id())
-        return agent_result_to_json(result)
+        return await _checkpoint_envelope(result)
 
     @tool
     async def ask_earthdata_agent(task: str) -> str:
@@ -128,7 +129,7 @@ async def build_agent(
         Output: text summary with plot path and spatial statistics.
         """
         result = await run_satellite(satellite_agent, task, current_thread_id(), mcp_manager=mcp_manager)
-        return agent_result_to_json(result)
+        return await _checkpoint_envelope(result)
 
     # ── Build supervisor ──────────────────────────────────────────────────────
     checkpointer = await get_checkpointer()
@@ -147,6 +148,18 @@ async def build_agent(
 # live in services/subagent_dispatch.py — shared by these tool wrappers and
 # the router fast path (T14). Only supervisor-model-input compaction (used
 # solely by this module's own trim_middleware) stays here.
+
+
+async def _checkpoint_envelope(result: AgentResult) -> str:
+    """The tool's return value, which LangGraph checkpoints as a ToolMessage.
+
+    Charts go in as references to their agent_charts rows. Without a bound
+    user and thread there is no row to point at, so the charts stay inline
+    rather than being lost."""
+    thread_id, user_id = current_thread_id(), current_user_id()
+    if not result.charts or thread_id is None or user_id is None:
+        return agent_result_to_json(result)
+    return await ChartService().checkpoint_envelope(result, thread_id, user_id)
 
 
 def _truncate_text(text: str, max_chars: int, agent_name: str, request_id: str | None = None) -> str:

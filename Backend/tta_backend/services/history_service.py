@@ -87,6 +87,8 @@ class HistoryService:
         _, charts = self.chart_service.parse_charts(tool_text)
         for chart in charts:
             chart_payload = await self.chart_service.persist_chart_payload(thread_id, chart, user_id)
+            if chart_payload is None:
+                continue
             assistant = self._last_assistant(result)
             if assistant is not None:
                 assistant.setdefault("charts", [])
