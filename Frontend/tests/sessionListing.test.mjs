@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
-import { isTurnFrame, localSessionFor, mergeSessions, sessionsWithThread } from '../src/utils/sessionList.js'
+import { appendSessions, isTurnFrame, localSessionFor, mergeSessions, sessionsWithThread } from '../src/utils/sessionList.js'
 
 /* ── When a thread joins "Recent analyses" ──
    The backend lists a thread once its turn has produced a frame. The sidebar
@@ -101,6 +101,30 @@ test('mergeSessions works with bare string ids too', () => {
   assert.deepEqual(got, ['new', 'old'])
 })
 
+/* ── appendSessions: the next, older page ──
+   /sessions is paged. "Load more" asks for the page after the cursor it was
+   given, and those rows are older than everything shown, so they go at the
+   bottom. The list can shift between the two fetches — a thread used in the
+   meantime moves up — so a row can arrive that is already listed. */
+
+test('an older page is added below the rows already listed', () => {
+  const got = appendSessions([{ id: 'a' }, { id: 'b' }], [{ id: 'c' }, { id: 'd' }])
+  assert.deepEqual(got.map(s => s.id), ['a', 'b', 'c', 'd'])
+})
+
+test('a row this list already has is not listed twice', () => {
+  const listed = { id: 'b', title: 'already here' }
+  const got = appendSessions([{ id: 'a' }, listed], [{ id: 'b', title: 'from the page' }, { id: 'c' }])
+  assert.deepEqual(got.map(s => s.id), ['a', 'b', 'c'])
+  assert.equal(got[1], listed, 'the row in place stays where it is and as it is')
+})
+
+test('a page with nothing new returns the same array', () => {
+  const sessions = [{ id: 'a' }]
+  assert.equal(appendSessions(sessions, [{ id: 'a' }]), sessions)
+  assert.equal(appendSessions(sessions, []), sessions)
+})
+
 /* ── Which frames mean the turn is talking ──
    Not all of them come from the turn. The follower synthesizes `cursor`
    frames, and writes `stopped`/`interrupted` itself when a turn is cut short
@@ -149,6 +173,14 @@ test('the sidebar is no longer driven from the end of the turn', () => {
 test('a frame lists the thread as it arrives', () => {
   assert.match(USE_CHAT, /sessionsWithThread\(/)
   assert.match(USE_CHAT, /isTurnFrame\(/)
+})
+
+test('the first page keeps the cursor it was given, and loading more appends the next page', () => {
+  // Dropping the cursor would strand every thread past the first page:
+  // nothing else in the app can reach them from the sidebar.
+  assert.match(USE_CHAT, /setSessionsCursor\(data\.next_cursor \?\? null\)/)
+  assert.match(USE_CHAT, /\/sessions\?cursor=\$\{encodeURIComponent\(/)
+  assert.match(USE_CHAT, /appendSessions\(prev, data\.sessions/)
 })
 
 test('restoring the active thread does not wait for it to be listed', () => {

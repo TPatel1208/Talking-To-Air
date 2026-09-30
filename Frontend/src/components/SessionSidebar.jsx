@@ -112,7 +112,7 @@ function TurnStatusDot({ status }) {
   )
 }
 
-export default function SessionSidebar({ sessions, threadId, turnStatus = {}, onSwitch, onNew, onDelete, onLogout, images = [], artifacts = [], onCollapse }) {
+export default function SessionSidebar({ sessions, hasMoreSessions = false, onLoadMoreSessions, threadId, turnStatus = {}, onSwitch, onNew, onDelete, onLogout, images = [], artifacts = [], onCollapse }) {
   const [nav, setNav] = useState('chats')
 
   const getSessionId = (session) => typeof session === 'string' ? session : session?.id
@@ -278,6 +278,19 @@ export default function SessionSidebar({ sessions, threadId, turnStatus = {}, on
                 </div>
               )
             })}
+            {hasMoreSessions && (
+              <button
+                type="button"
+                onClick={onLoadMoreSessions}
+                style={{
+                  background: 'transparent', border: 'none', cursor: 'pointer', textAlign: 'left',
+                  padding: '9px 10px', borderRadius: '8px', fontSize: '12px', fontWeight: 600,
+                  color: 'var(--text-muted)',
+                }}
+              >
+                Load older analyses
+              </button>
+            )}
           </div>
         </>
       )}

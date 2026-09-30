@@ -198,6 +198,18 @@ sorting on the fallback:
 docker compose exec db psql -U postgres -d talking_to_air_memory   -c "SELECT count(*) FROM session_metadata WHERE last_event_at IS NULL"
 ```
 
+**Why an old thread is not in the list until "Load older analyses".**
+`GET /sessions` returns one page (default 50, `?limit=` capped at 100) plus a
+`next_cursor`; the sidebar fetches the next page only when asked. Pages are
+cut by key — the `(recency, thread_id)` of the last row — not by offset, so a
+thread used between two page fetches is not repeated or skipped at a
+boundary. One consequence: a thread on a page not yet loaded that is used
+from **another tab or device** moves above the cursor and will not arrive on
+a later page; it appears on the next reload. The listing is served by
+`idx_session_metadata_user_recency`, built on startup on the exact ORDER BY
+expression — if that expression changes, the index must change with it or
+every sidebar load goes back to sorting the user's whole history.
+
 ## Cube Cache
 
 The T52 cube cache (`cube_store` volume) holds opened-and-reduced Zarr cubes, keyed so it self-invalidates when the underlying export changes. It evicts on its own — LRU by last access, run before every write — to stay under `CUBE_STORE_MAX_BYTES` (default 4 GiB); no manual pruning endpoint exists or is needed. Watch `cube_store_bytes` and `cube_evictions_total` in `/metrics` to see it working.

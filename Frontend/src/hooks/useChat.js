@@ -18,7 +18,7 @@ import {
   turnRecordThreadIds,
   writeTurnRecord,
 } from '../utils/chatTurnProtocol.js'
-import { isTurnFrame, mergeSessions, sessionsWithThread } from '../utils/sessionList.js'
+import { appendSessions, isTurnFrame, mergeSessions, sessionsWithThread } from '../utils/sessionList.js'
 
 const API_BASE = '/api'
 const ACTIVE_THREAD_STORAGE_KEY = 'tta.activeThreadId'
@@ -50,6 +50,9 @@ export function useChat(onJobProgress) {
   const [messages, setMessages] = useState([])
   const [threadId, setThreadId] = useState(null)
   const [sessions, setSessions] = useState([])
+  // Where the next, older page of /sessions starts; null once the last page
+  // is listed.
+  const [sessionsCursor, setSessionsCursor] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [historyError, setHistoryError] = useState(null)
@@ -69,6 +72,7 @@ export function useChat(onJobProgress) {
   const turnStatusRef = useRef({})
   const sessionsRef = useRef([])
   const didRestoreRef = useRef(false)
+  const loadingMoreSessionsRef = useRef(false)
   // Held rather than closed over. The stream reader now sits between the
   // mount effect and this callback — effect -> fetchSessions ->
   // attachToThread -> consumeStream — so depending on it directly would make
@@ -639,6 +643,7 @@ export function useChat(onJobProgress) {
       const data = await res.json()
       const nextSessions = data.sessions || []
       setSessions(nextSessions)
+      setSessionsCursor(data.next_cursor ?? null)
 
       // Deliberately not gated on the list: a thread whose turn has not
       // produced a frame yet is not in it, and dropping the stored thread
@@ -931,6 +936,24 @@ export function useChat(onJobProgress) {
     }
   }, [clearTurnStatus, getSessionId, newSession])
 
+  const loadMoreSessions = useCallback(async () => {
+    if (!sessionsCursor || loadingMoreSessionsRef.current) return
+    loadingMoreSessionsRef.current = true
+    try {
+      const res = await apiFetch(`${API_BASE}/sessions?cursor=${encodeURIComponent(sessionsCursor)}`)
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`)
+      }
+      const data = await res.json()
+      setSessions(prev => appendSessions(prev, data.sessions || []))
+      setSessionsCursor(data.next_cursor ?? null)
+    } catch {
+      // Non-fatal; the cursor is kept, so the button can be pressed again.
+    } finally {
+      loadingMoreSessionsRef.current = false
+    }
+  }, [sessionsCursor])
+
   const clearError = useCallback(() => {
     setError(null)
   }, [])
@@ -946,6 +969,8 @@ export function useChat(onJobProgress) {
     historyError,
     threadId,
     sessions,
+    hasMoreSessions: sessionsCursor !== null,
+    loadMoreSessions,
     turnStatus,
     sendMessage,
     newSession,

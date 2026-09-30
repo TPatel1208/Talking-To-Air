@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import re
 from datetime import datetime
@@ -8,6 +9,12 @@ from typing import Any
 from tta_backend.utils.db import pg_connection
 
 MAX_TITLE_LENGTH = 60
+SESSION_PAGE_SIZE = 50
+
+# When a thread was last used: the listing's sort key and page cursor. The
+# index that serves the listing is built on this exact expression, so the two
+# must not drift apart.
+_RECENCY = "COALESCE(last_event_at, first_frame_at, created_at)"
 
 
 def generate_session_title(message: str) -> str:
@@ -100,6 +107,14 @@ async def ensure_session_metadata_table() -> None:
             ADD COLUMN IF NOT EXISTS last_event_at TIMESTAMPTZ
             """
         )
+        # Serves list_session_metadata's ORDER BY row for row, so a page is a
+        # LIMIT read off the index instead of a sort of the user's history.
+        await conn.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS idx_session_metadata_user_recency
+            ON session_metadata (user_id, {_RECENCY} DESC, thread_id DESC)
+            """
+        )
         await conn.commit()
 
 
@@ -172,8 +187,30 @@ async def session_belongs_to_user(thread_id: str, user_id: str) -> bool:
     return metadata is not None and metadata["user_id"] == user_id
 
 
-async def list_session_metadata(user_id: str) -> list[dict[str, Any]]:
-    """This user's threads that have something in them.
+class InvalidSessionCursor(ValueError):
+    """A page cursor this module did not issue."""
+
+
+def _encode_session_cursor(sort_at: datetime, thread_id: str) -> str:
+    payload = json.dumps({"at": sort_at.isoformat(), "id": thread_id})
+    return base64.urlsafe_b64encode(payload.encode()).decode()
+
+
+def _decode_session_cursor(cursor: str) -> tuple[datetime, str]:
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(cursor.encode()))
+        sort_at, thread_id = datetime.fromisoformat(payload["at"]), payload["id"]
+    except (ValueError, TypeError, KeyError) as exc:
+        raise InvalidSessionCursor(cursor) from exc
+    if not isinstance(thread_id, str) or sort_at.tzinfo is None:
+        raise InvalidSessionCursor(cursor)
+    return sort_at, thread_id
+
+
+async def list_session_metadata(
+    user_id: str, *, limit: int = SESSION_PAGE_SIZE, cursor: str | None = None
+) -> dict[str, Any]:
+    """One page of this user's threads that have something in them.
 
     A row exists from the moment its message is posted -- it is the only
     record of who owns the thread, and the stream and stop endpoints refuse
@@ -199,11 +236,21 @@ async def list_session_metadata(user_id: str) -> list[dict[str, Any]]:
     by the checkpoint branch above was stopped before it ever narrated, so
     it has neither stamp and sorts by ``created_at``, which is the only
     thing that ever happened to it.
+
+    Paged by key, not offset: ``next_cursor`` is the recency and id of the
+    last row returned. ``last_event_at`` moves on every turn, so an offset
+    would repeat or skip a row whenever a thread was used between fetches.
+    One row past ``limit`` is read to learn whether another page exists.
     """
+    after: tuple[Any, ...] = ()
+    resume = ""
+    if cursor is not None:
+        after = _decode_session_cursor(cursor)
+        resume = f"AND ({_RECENCY}, thread_id) < (%s, %s)"
     async with pg_connection() as conn:
-        cursor = await conn.execute(
-            """
-            SELECT thread_id, title, created_at
+        result = await conn.execute(
+            f"""
+            SELECT thread_id, title, created_at, {_RECENCY}
             FROM session_metadata
             WHERE user_id = %s
               AND (
@@ -213,21 +260,26 @@ async def list_session_metadata(user_id: str) -> list[dict[str, Any]]:
                     WHERE checkpoints.thread_id = session_metadata.thread_id
                 )
               )
-            ORDER BY COALESCE(last_event_at, first_frame_at, created_at) DESC NULLS LAST,
-                     thread_id
+              {resume}
+            ORDER BY {_RECENCY} DESC, thread_id DESC
+            LIMIT %s
             """,
-            (user_id,),
+            (user_id, *after, limit + 1),
         )
-        rows = await cursor.fetchall()
+        rows = await result.fetchall()
 
-    return [
-        {
-            "id": row[0],
-            "title": row[1],
-            "created_at": _serialize_created_at(row[2]),
-        }
-        for row in rows
-    ]
+    page, more = rows[:limit], len(rows) > limit
+    return {
+        "sessions": [
+            {
+                "id": row[0],
+                "title": row[1],
+                "created_at": _serialize_created_at(row[2]),
+            }
+            for row in page
+        ],
+        "next_cursor": _encode_session_cursor(page[-1][3], page[-1][0]) if more else None,
+    }
 
 
 async def get_ground_monitor_context(thread_id: str) -> dict[str, str]:

@@ -100,9 +100,12 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         self.api.app.state.agent = FakeAgent()
         transport = self.httpx.ASGITransport(app=self.api.app)
-        async def fake_list_sessions(user_id):
+        async def fake_list_sessions(user_id, *, limit, cursor):
             fake_list_sessions.called_with = user_id
-            return [{"id": "thread-1", "title": "hi", "created_at": "2026-06-09T00:00:00+00:00"}]
+            return {
+                "sessions": [{"id": "thread-1", "title": "hi", "created_at": "2026-06-09T00:00:00+00:00"}],
+                "next_cursor": None,
+            }
 
         async def fake_delete_session(thread_id, user_id):
             fake_delete_session.called_with = (thread_id, user_id)
@@ -128,7 +131,10 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             sessions.json(),
-            {"sessions": [{"id": "thread-1", "title": "hi", "created_at": "2026-06-09T00:00:00+00:00"}]},
+            {
+                "sessions": [{"id": "thread-1", "title": "hi", "created_at": "2026-06-09T00:00:00+00:00"}],
+                "next_cursor": None,
+            },
         )
         self.assertEqual(fake_list_sessions.called_with, self.user.id)
         self.assertEqual(history.status_code, 200)
@@ -142,6 +148,63 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(deleted.json(), {"deleted": "thread-1"})
         self.assertEqual(fake_delete_session.called_with, ("thread-1", self.user.id))
 
+    async def _get_sessions(self, url, list_sessions):
+        transport = self.httpx.ASGITransport(app=self.api.app)
+        with self._auth_patch(), \
+             patch.object(self.api.session_repository, "list_sessions", list_sessions):
+            async with self.httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                return await client.get(url, headers=self.auth_headers)
+
+    async def test_sessions_are_served_a_page_at_a_time(self):
+        """The sidebar asks for a bounded page and hands back the cursor it
+        was given to get the next one."""
+        async def fake_list_sessions(user_id, *, limit, cursor):
+            fake_list_sessions.called_with = (user_id, limit, cursor)
+            return {"sessions": [{"id": "thread-1"}], "next_cursor": "next"}
+
+        response = await self._get_sessions("/sessions?limit=10&cursor=abc", fake_list_sessions)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"sessions": [{"id": "thread-1"}], "next_cursor": "next"})
+        self.assertEqual(fake_list_sessions.called_with, (self.user.id, 10, "abc"))
+
+    async def test_sessions_default_to_the_first_page(self):
+        from tta_backend.repositories.session_metadata_repository import SESSION_PAGE_SIZE
+
+        async def fake_list_sessions(user_id, *, limit, cursor):
+            fake_list_sessions.called_with = (limit, cursor)
+            return {"sessions": [], "next_cursor": None}
+
+        response = await self._get_sessions("/sessions", fake_list_sessions)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(fake_list_sessions.called_with, (SESSION_PAGE_SIZE, None))
+
+    async def test_a_page_size_outside_the_cap_is_refused(self):
+        """The cap is the point: without it ``?limit=1000000`` is the
+        unbounded listing again."""
+        async def fake_list_sessions(user_id, *, limit, cursor):
+            raise AssertionError("must be refused before the repository")
+
+        for limit in (0, 101):
+            with self.subTest(limit=limit):
+                response = await self._get_sessions(f"/sessions?limit={limit}", fake_list_sessions)
+                self.assertEqual(response.status_code, 422)
+
+    async def test_a_forged_cursor_is_a_400_not_a_500(self):
+        from tta_backend.repositories.session_metadata_repository import InvalidSessionCursor
+
+        async def fake_list_sessions(user_id, *, limit, cursor):
+            raise InvalidSessionCursor(cursor)
+
+        response = await self._get_sessions("/sessions?cursor=forged", fake_list_sessions)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertNotIn("forged", response.text)
+
     async def test_session_endpoint_500s_never_leak_the_exception_text(self):
         # T37: internal error text (driver messages, paths) must go to the
         # logs, not the client — every 500 body carries the generic detail.
@@ -151,7 +214,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         self.api.app.state.agent = FakeAgent()
 
-        async def raising_list_sessions(user_id):
+        async def raising_list_sessions(user_id, *, limit, cursor):
             raise RuntimeError("secret driver path C:\\db\\creds")
 
         async def raising_delete_session(thread_id, user_id):
