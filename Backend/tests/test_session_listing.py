@@ -71,7 +71,7 @@ class SessionListingTests(unittest.IsolatedAsyncioTestCase):
     async def test_the_listing_leaves_out_a_thread_that_never_produced_a_frame(self):
         from tta_backend.repositories.session_metadata_repository import list_session_metadata
 
-        conn = FakeConnection(lambda sql: [("th-1", "How is the air", None)])
+        conn = FakeConnection(lambda sql: listed(1))
         with connected(conn):
             await list_session_metadata("user-1")
 
@@ -102,7 +102,7 @@ class SessionListingTests(unittest.IsolatedAsyncioTestCase):
         """
         from tta_backend.repositories.session_metadata_repository import list_session_metadata
 
-        conn = FakeConnection(lambda sql: [("th-1", "How is the air", None)])
+        conn = FakeConnection(lambda sql: listed(1))
         with connected(conn):
             await list_session_metadata("user-1")
 
@@ -121,11 +121,15 @@ class SessionListingTests(unittest.IsolatedAsyncioTestCase):
         frontend reads, which still shapes a row as id/title/created_at."""
         from tta_backend.repositories.session_metadata_repository import list_session_metadata
 
-        conn = FakeConnection(lambda sql: [("th-1", "How is the air", None)])
+        conn = FakeConnection(lambda sql: listed(1))
         with connected(conn):
-            rows = await list_session_metadata("user-1")
+            page = await list_session_metadata("user-1")
 
-        self.assertEqual([set(row) for row in rows], [{"id", "title", "created_at"}])
+        self.assertEqual(
+            [set(row) for row in page["sessions"]],
+            [{"id", "title", "created_at"}],
+            "the recency key is selected to cut the cursor from, not to be sent",
+        )
 
 
 class SessionOrderTests(unittest.IsolatedAsyncioTestCase):
@@ -139,7 +143,7 @@ class SessionOrderTests(unittest.IsolatedAsyncioTestCase):
     async def test_threads_are_ordered_by_their_last_turn_not_their_first(self):
         from tta_backend.repositories.session_metadata_repository import list_session_metadata
 
-        conn = FakeConnection(lambda sql: [("th-1", "How is the air", None)])
+        conn = FakeConnection(lambda sql: listed(1))
         with connected(conn):
             await list_session_metadata("user-1")
 
@@ -155,7 +159,7 @@ class SessionOrderTests(unittest.IsolatedAsyncioTestCase):
         Without the fallback they sort as NULL -- last, together, forever."""
         from tta_backend.repositories.session_metadata_repository import list_session_metadata
 
-        conn = FakeConnection(lambda sql: [("th-1", "How is the air", None)])
+        conn = FakeConnection(lambda sql: listed(1))
         with connected(conn):
             await list_session_metadata("user-1")
 
@@ -164,6 +168,160 @@ class SessionOrderTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("first_frame_at", order)
         self.assertIn("created_at", order)
         self.assertIn("thread_id", order, "a stable tiebreak, or equal stamps shuffle")
+
+
+def listed(n: int, start: int = 0):
+    """``n`` listing rows, newest first, as the SELECT returns them:
+    id, title, created_at, then the recency key the page cursor is cut from."""
+    from datetime import datetime, timedelta, timezone
+
+    base = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    return [
+        (f"th-{i}", f"Thread {i}", base, base - timedelta(minutes=i))
+        for i in range(start, start + n)
+    ]
+
+
+class SessionPageTests(unittest.IsolatedAsyncioTestCase):
+    """The listing returns one page, not every thread the user ever made.
+
+    Each sidebar load used to fetch, filter and sort the whole history in
+    memory. A page is bounded by ``limit``, and ``next_cursor`` is what the
+    client hands back to get the page after it -- a key, not an offset,
+    because ``last_event_at`` moves on every turn and an offset would repeat
+    or skip a row whenever a thread was used between two fetches.
+    """
+
+    async def test_a_page_holds_at_most_limit_threads_and_says_there_are_more(self):
+        from tta_backend.repositories.session_metadata_repository import list_session_metadata
+
+        conn = FakeConnection(lambda sql: listed(3))
+        with connected(conn):
+            page = await list_session_metadata("user-1", limit=2)
+
+        self.assertEqual([row["id"] for row in page["sessions"]], ["th-0", "th-1"])
+        self.assertIsNotNone(page["next_cursor"])
+
+    async def test_the_last_page_has_no_cursor(self):
+        from tta_backend.repositories.session_metadata_repository import list_session_metadata
+
+        conn = FakeConnection(lambda sql: listed(2))
+        with connected(conn):
+            page = await list_session_metadata("user-1", limit=2)
+
+        self.assertEqual(len(page["sessions"]), 2)
+        self.assertIsNone(page["next_cursor"])
+
+    async def test_the_database_is_asked_for_one_row_past_the_page(self):
+        """The extra row is how "is there more" is answered without a COUNT,
+        and the LIMIT is what lets Postgres stop reading the index early."""
+        from tta_backend.repositories.session_metadata_repository import list_session_metadata
+
+        conn = FakeConnection(lambda sql: listed(0))
+        with connected(conn):
+            await list_session_metadata("user-1", limit=2)
+
+        sql, params = conn.statements[0]
+        self.assertIn("LIMIT %s", sql)
+        self.assertEqual(params[-1], 3)
+
+    async def test_the_cursor_resumes_strictly_after_the_last_row_it_was_cut_from(self):
+        from tta_backend.repositories.session_metadata_repository import list_session_metadata
+
+        rows = listed(3)
+        conn = FakeConnection(lambda sql: rows)
+        with connected(conn):
+            first = await list_session_metadata("user-1", limit=2)
+            await list_session_metadata("user-1", limit=2, cursor=first["next_cursor"])
+
+        sql, params = conn.statements[1]
+        last_sort_at, last_id = rows[1][3], rows[1][0]
+        self.assertIn(
+            "(COALESCE(last_event_at, first_frame_at, created_at), thread_id) < (%s, %s)",
+            sql,
+        )
+        self.assertEqual(params, ("user-1", last_sort_at, last_id, 3))
+
+    async def test_the_first_page_has_no_resume_condition(self):
+        from tta_backend.repositories.session_metadata_repository import list_session_metadata
+
+        conn = FakeConnection(lambda sql: listed(0))
+        with connected(conn):
+            await list_session_metadata("user-1", limit=2)
+
+        sql, params = conn.statements[0]
+        self.assertNotIn("< (%s, %s)", sql)
+        self.assertEqual(params, ("user-1", 3))
+
+    async def test_a_cursor_that_was_not_issued_here_is_refused(self):
+        """It arrives from the client, so it is untrusted input: a malformed
+        one must be a clear refusal the API can answer 400 for, not a 500
+        from deep inside the driver."""
+        from tta_backend.repositories.session_metadata_repository import (
+            InvalidSessionCursor,
+            list_session_metadata,
+        )
+
+        for bad in ("not-base64!", "e30=", "eyJhdCI6ICJ4IiwgImlkIjogMX0="):
+            with self.subTest(cursor=bad):
+                conn = FakeConnection(lambda sql: listed(0))
+                with connected(conn), self.assertRaises(InvalidSessionCursor):
+                    await list_session_metadata("user-1", limit=2, cursor=bad)
+                self.assertEqual(conn.statements, [], "refused before any query")
+
+    async def test_the_tiebreak_runs_the_same_way_as_the_cursor_comparison(self):
+        """A row-value ``<`` compares both columns in one direction. With the
+        recency DESC but thread_id ascending, two threads stamped in the same
+        microsecond would be skipped or repeated at a page boundary."""
+        from tta_backend.repositories.session_metadata_repository import list_session_metadata
+
+        conn = FakeConnection(lambda sql: listed(0))
+        with connected(conn):
+            await list_session_metadata("user-1", limit=2)
+
+        order = conn.statements[0][0].split("ORDER BY")[1].split("LIMIT")[0].strip()
+        self.assertEqual(
+            order, "COALESCE(last_event_at, first_frame_at, created_at) DESC, thread_id DESC"
+        )
+
+
+class RecencyIndexTests(unittest.IsolatedAsyncioTestCase):
+    """The LIMIT only saves work if an index hands rows over already in
+    listing order. Postgres matches an expression index textually, so the
+    index is only used if it is built on the listing's ORDER BY verbatim."""
+
+    async def test_the_listing_order_is_indexed_per_user(self):
+        from tta_backend.repositories.session_metadata_repository import (
+            ensure_session_metadata_table,
+            list_session_metadata,
+        )
+
+        conn = FakeConnection()
+        with connected(conn):
+            await ensure_session_metadata_table()
+            await list_session_metadata("user-1", limit=2)
+
+        indexes = conn.sql_matching("CREATE INDEX IF NOT EXISTS idx_session_metadata_user_recency")
+        self.assertEqual(len(indexes), 1, conn.statements)
+        listing = conn.statements[-1][0]
+        order = listing.split("ORDER BY")[1].split("LIMIT")[0].strip()
+        self.assertIn(f"(user_id, {order})", indexes[0])
+
+    async def test_the_index_is_built_after_the_column_it_reads(self):
+        """On a database that predates ``last_event_at`` the index would
+        fail to build, and startup with it."""
+        from tta_backend.repositories.session_metadata_repository import (
+            ensure_session_metadata_table,
+        )
+
+        conn = FakeConnection()
+        with connected(conn):
+            await ensure_session_metadata_table()
+
+        statements = [sql for sql, _ in conn.statements]
+        column = next(i for i, sql in enumerate(statements) if "ADD COLUMN IF NOT EXISTS last_event_at" in sql)
+        index = next(i for i, sql in enumerate(statements) if "idx_session_metadata_user_recency" in sql)
+        self.assertLess(column, index)
 
 
 class ActivityStampTests(unittest.IsolatedAsyncioTestCase):
@@ -288,7 +446,10 @@ class FirstFrameMigrationTests(unittest.IsolatedAsyncioTestCase):
         with connected(conn):
             await ensure_session_metadata_table()
 
-        order = [sql for sql, _ in conn.statements if "first_frame_at" in sql]
+        order = [
+            sql for sql, _ in conn.statements
+            if "first_frame_at" in sql and "CREATE INDEX" not in sql
+        ]
         self.assertEqual(len(order), 3, order)
         self.assertIn("information_schema.columns", order[0])
         self.assertIn("ADD COLUMN IF NOT EXISTS first_frame_at", order[1])

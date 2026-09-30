@@ -42,6 +42,8 @@ from tta_backend.earthdata_mcp.results import (
 )
 from tta_backend.repositories.chart_repository import ensure_chart_table
 from tta_backend.repositories.session_metadata_repository import (
+    SESSION_PAGE_SIZE,
+    InvalidSessionCursor,
     ensure_session_metadata_table,
     get_session_metadata,
     mark_session_activity,
@@ -1572,14 +1574,26 @@ async def _stamp_activity_on_first_frame(
 # real exception goes to the logs with request context, never to the client.
 _INTERNAL_ERROR_DETAIL = "Internal server error"
 
+# A client-chosen page size above this is refused, or ?limit= is the
+# unbounded listing again.
+MAX_SESSION_PAGE_SIZE = 100
+
 
 @app.get("/sessions")
 @limiter.limit("60/minute")
-async def get_sessions(request: Request):
+async def get_sessions(
+    request: Request,
+    limit: int = Query(default=SESSION_PAGE_SIZE, ge=1, le=MAX_SESSION_PAGE_SIZE),
+    cursor: str | None = None,
+):
     try:
-        return {"sessions": await session_repository.list_sessions(request.state.current_user.id)}
+        return await session_repository.list_sessions(
+            request.state.current_user.id, limit=limit, cursor=cursor
+        )
     except HTTPException:
         raise
+    except InvalidSessionCursor:
+        raise HTTPException(status_code=400, detail="Invalid session cursor")
     except Exception:
         logger.exception("sessions_list_failed", extra={"_user_id": request.state.current_user.id})
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)

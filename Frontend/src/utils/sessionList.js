@@ -52,7 +52,7 @@ export function localSessionFor(id, message) {
  * orders by when a thread was last used, and this is the same rule applied
  * locally. Without the move, replying in an old thread would leave it
  * wherever it was until the next reload silently rearranged the sidebar —
- * `/sessions` is fetched in full only on mount, and the background poll
+ * `/sessions` is re-read (first page only) on mount, and the background poll
  * merges rows without reordering them.
  *
  * The row that moves is the one already there, not a fresh one: it carries
@@ -87,7 +87,24 @@ function sessionId(session) {
  * this client without waiting for a reload.
  */
 export function mergeSessions(sessions, incoming) {
-  const known = new Set(sessions.map(sessionId))
-  const additions = incoming.filter(session => !known.has(sessionId(session)))
+  const additions = unlisted(sessions, incoming)
   return additions.length ? [...additions, ...sessions] : sessions
+}
+
+/** `sessions` with every entry from the next, older page it does not
+ * already have, added at the bottom; `sessions` itself if there is nothing
+ * new.
+ *
+ * `/sessions` is paged by a cursor on when a thread was last used. A thread
+ * used between two page fetches moves above the cursor and can arrive again,
+ * so rows already listed are skipped, not duplicated or moved.
+ */
+export function appendSessions(sessions, older) {
+  const additions = unlisted(sessions, older)
+  return additions.length ? [...sessions, ...additions] : sessions
+}
+
+function unlisted(sessions, incoming) {
+  const known = new Set(sessions.map(sessionId))
+  return incoming.filter(session => !known.has(sessionId(session)))
 }

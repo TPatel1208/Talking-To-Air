@@ -13,8 +13,10 @@ from tta_backend.utils.db import pg_connection
 
 
 class SessionRepository:
-    async def list_sessions(self, user_id: str) -> list[dict[str, Any]]:
-        return await list_session_metadata(user_id)
+    async def list_sessions(
+        self, user_id: str, *, limit: int, cursor: str | None = None
+    ) -> dict[str, Any]:
+        return await list_session_metadata(user_id, limit=limit, cursor=cursor)
 
     async def delete_session(self, thread_id: str, user_id: str) -> bool:
         # Ownership is established by a read, and the row that proves it is

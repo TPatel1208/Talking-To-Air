@@ -246,6 +246,8 @@ function AuthenticatedApp({ onLogout }) {
     historyError,
     threadId,
     sessions,
+    hasMoreSessions,
+    loadMoreSessions,
     turnStatus,
     sendMessage,
     newSession,
@@ -415,6 +417,8 @@ function AuthenticatedApp({ onLogout }) {
       ) : (
         <SessionSidebar
           sessions={sessions}
+          hasMoreSessions={hasMoreSessions}
+          onLoadMoreSessions={loadMoreSessions}
           threadId={threadId}
           turnStatus={turnStatus}
           onSwitch={handleSwitchSession}
