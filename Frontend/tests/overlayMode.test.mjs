@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { resolveOverlayMode } from '../src/utils/overlayMode.js'
+import { resolveOverlayMode, resolveThumbnailMode } from '../src/utils/overlayMode.js'
 
 test('no override with a native overlay url resolves to native', () => {
   assert.equal(resolveOverlayMode(null, '/chart/abc.png'), 'native')
@@ -35,4 +35,26 @@ test('a selected frame forces canvas, whatever the scale and url say (T59)', () 
 
 test('leaving scrubber mode hands the native overlay back', () => {
   assert.equal(resolveOverlayMode(null, '/chart/abc.png', null), 'native')
+})
+
+test('a thumbnail with an overlay url shows the native png', () => {
+  assert.equal(resolveThumbnailMode('/chart/abc/overlay.png?panel=0', null), 'native')
+})
+
+test('a thumbnail with no overlay url draws the canvas', () => {
+  assert.equal(resolveThumbnailMode(undefined, null), 'canvas')
+})
+
+test('a thumbnail whose overlay failed to load falls back to the canvas', () => {
+  // An evicted overlay 404s, and an <img> cannot send the bearer token, so
+  // the native png can fail on any load. The payload still carries the grid.
+  const url = '/chart/abc/overlay.png?panel=0'
+  assert.equal(resolveThumbnailMode(url, url), 'canvas')
+})
+
+test('a failure recorded for a different overlay url does not force the canvas', () => {
+  assert.equal(
+    resolveThumbnailMode('/chart/new/overlay.png?panel=0', '/chart/old/overlay.png?panel=0'),
+    'native',
+  )
 })

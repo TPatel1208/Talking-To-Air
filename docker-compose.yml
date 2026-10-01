@@ -186,6 +186,8 @@ services:
       # its own named volume — without one, a container recreate wipes every
       # overlay while its chart payload persists in Postgres, and the map
       # silently degrades to the canvas fallback ("quality lowered on restart").
+      # Bounded by OVERLAY_STORE_MAX_BYTES (1 GiB), LRU by last read; an
+      # evicted overlay degrades the same way.
       - overlay_store:/app/overlay_store
       # T52 Zarr cube cache — the open pipeline's output, keyed so it self-
       # invalidates. Backend-only and read-write, same posture as
@@ -196,10 +198,9 @@ services:
       # not by free space.
       - cube_store:/app/cube_store
       # T59 frame blob store — the float32 stack behind a chart's time
-      # scrubber. Its own volume rather than a corner of overlay_store, which
-      # has no eviction policy and grows forever: an LRU sweeper sharing a
-      # directory with an unbounded store would evict frames to make room for
-      # PNGs that never leave. Bounded by FRAME_STORE_MAX_BYTES (1 GiB), not by
+      # scrubber. Its own volume rather than a corner of overlay_store: each
+      # store's startup sweep and size accounting assume it owns its
+      # directory. Bounded by FRAME_STORE_MAX_BYTES (1 GiB), not by
       # free space. Without a volume, a container recreate strips the scrubber
       # off every chart ever plotted while the frame axis persists in Postgres
       # and goes on advertising it — and D8 forbids rebuilding the blob.

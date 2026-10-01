@@ -193,13 +193,21 @@ definition.
 
 ### `overlay_store` — private, backend-only
 Backend writes to `/app/overlay_store/overlays`
-([Backend/tta_backend/tools/satellite_tools/plot_tools.py:100](../Backend/tta_backend/tools/satellite_tools/plot_tools.py:100),
+([Backend/tta_backend/services/overlay_store.py](../Backend/tta_backend/services/overlay_store.py),
 path from `OVERLAY_STORE_DIR`).
 **Not** mounted into the frontend; only reachable through the authenticated
 `GET /chart/{chart_id}/overlay.png` route, which checks chart ownership
 against the requesting user before streaming bytes. Holds server-rendered
 MapLibre heatmap overlay PNGs (T23). Kept out of `plot_outputs` on purpose —
 see the difference table below.
+
+Bounded by `OVERLAY_STORE_MAX_BYTES` (default 1 GiB) and evicted LRU by last
+read, checked before each write. Writes are staged and renamed into place, and
+the startup sweep removes staging files an interrupted write left behind. The
+route resolves a chart's recorded `_path` by file name inside the store as
+currently configured. An evicted overlay 404s, and the frontend draws the grid
+carried in the chart payload instead (the map's canvas fallback, or the
+comparison thumbnail's `ThumbnailCanvas`).
 
 `OVERLAY_STORE_DIR` exists for the same reason as `CUBE_STORE_DIR`: so the test
 suite can redirect the store at a per-process tempdir. Until it did, the path
@@ -245,10 +253,9 @@ Backend writes to `/app/frame_store`
 ([Backend/tta_backend/services/frame_store.py](../Backend/tta_backend/services/frame_store.py),
 path from `FRAME_STORE_DIR`). **Not** mounted into the frontend and served by
 no route directly — the float32 values behind a chart's T59 time scrubber.
-Deliberately its own volume rather than a corner of `overlay_store`: that
-store has no eviction policy and grows forever, and an LRU sweeper sharing a
-directory with an unbounded store would evict frames to make room for PNGs
-that never leave.
+Deliberately its own volume rather than a corner of `overlay_store`: each
+store's startup sweep and size accounting assume it owns its directory, and
+each is sized against its own cap.
 
 Split by durability (D13): the frame **axis** and every per-frame disclosure
 (valid fraction, QA pass rate, statistics) live in the chart's Postgres jsonb
@@ -315,13 +322,13 @@ designer — they can't read the code, so this spells out every fact needed:
 >    Backend (nginx serves it directly and unauthenticated at `/outputs`;
 >    backend writes to it).
 > 3. **overlay_store** volume — server-rendered map overlay PNGs; Backend-only,
->    reachable solely via an authenticated route, deliberately separate from
->    `plot_outputs` because that one is public.
+>    reachable solely via an authenticated route, size-capped and LRU-evicted,
+>    deliberately separate from `plot_outputs` because that one is public.
 > 4. **cube_store** volume — cached Zarr cubes of opened datasets; Backend-only,
 >    served by no route at all, size-capped and LRU-evicted.
 > 5. **frame_store** volume — float32 values behind a chart's time scrubber;
 >    Backend-only, size-capped and LRU-evicted, its own volume separate from
->    `overlay_store` specifically because that one has no eviction policy.
+>    `overlay_store` so each store owns its directory and its cap.
 > 6. **earthdata_data** volume — dotted/foreign-styled box, "external,
 >    read-only, owned by a different repo/stack (harmony-retrieval-mcp)";
 >    mounted read-only at `/data`.

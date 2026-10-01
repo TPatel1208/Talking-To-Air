@@ -15,3 +15,12 @@ export function resolveOverlayMode(override, overlayUrl, frame = null) {
   if (frame) return 'canvas'
   return !override && overlayUrl ? 'native' : 'canvas'
 }
+
+// The same decision for a comparison thumbnail, which is a plain <img> rather
+// than a map source. The native png can fail to load: the overlay store evicts
+// old entries, and an <img> cannot send the bearer token. The chart payload
+// still carries the grid, so a failed load falls back to the canvas.
+// `failedUrl` is the url whose load failed, so a different url is tried again.
+export function resolveThumbnailMode(overlayUrl, failedUrl) {
+  return overlayUrl && overlayUrl !== failedUrl ? 'native' : 'canvas'
+}

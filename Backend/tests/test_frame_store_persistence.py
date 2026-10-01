@@ -8,10 +8,9 @@ in Postgres and goes on advertising a scrub that 404s. The overlay PNG store
 shipped exactly that way once ("chart quality lowered on refresh or restart"),
 and the cube store nearly did.
 
-The store is also bounded, which is the other half of why it is separate:
-``overlay_store`` has no eviction policy and grows forever (PRD finding 9).
-That is real and tracked elsewhere and deliberately **not** fixed here — but it
-is precisely why frames were not put in it.
+The store is also bounded by its own cap, which is the other half of why it is
+separate: each store's startup sweep and size accounting assume it owns its
+directory, and ``overlay_store`` is sized against a different cap.
 """
 from __future__ import annotations
 
@@ -91,13 +90,12 @@ def test_the_frame_store_is_backed_by_a_persisted_named_volume():
 
 
 def test_the_frame_store_has_its_own_volume_rather_than_riding_the_overlay_store():
-    """Frames are bounded; overlays are not.
+    """Frames and overlays are bounded by separate caps.
 
-    ``overlay_store`` has no eviction policy and grows forever (PRD finding 9),
-    which is *why* frames get their own volume rather than joining it: an LRU
-    sweeper on a directory shared with an unbounded store would evict frames to
-    make room for PNGs that never leave. Sharing would also make one store's
-    growth the other's eviction pressure, with no disclosure surface anywhere.
+    Each store's startup sweep and size accounting assume it owns its
+    directory. A shared directory would make each store's correctness depend
+    on never misreading the other's files, and the two caps would no longer
+    describe the disk the volume actually uses.
     """
     compose = _load_compose()
     frame_dir = deployment_frame_store_dir()
