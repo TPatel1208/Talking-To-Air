@@ -139,7 +139,7 @@ Run a subset while iterating:
 docker compose --profile test run --build --rm backend-test sh -c "pytest tests/test_subagent_dispatch.py -q"
 ```
 
-`.github/workflows/backend-ci.yml` runs on every push and PR to `main`: backend installs system geo deps, syntax-checks with `compileall`, lints with `ruff`, type-checks selected packages with `mypy`, then runs the test suite with coverage; frontend runs `npm ci`, `npm run lint`, `npm test`, `npm run build`, a Docker image build, and a `docker compose config` validation of both compose files. The frontend image build is also the clean-checkout guard — it runs against exactly what a fresh clone contains, so anything that sneaks a gitignored file into the build fails there.
+`.github/workflows/backend-ci.yml` runs on every push and PR to `main`: backend installs system geo deps, lints with `ruff`, audits dependencies with `pip-audit`, type-checks the package with `mypy`, runs the test suite against a Redis service with an 87% whole-package coverage gate, then builds the backend image and boots it until `/health` answers (`scripts/smoke-backend-image.sh`); frontend runs `npm ci`, `npm audit` (shipped dependencies), `npm run lint`, `npm test`, `npm run build`, a Docker image build, and a `docker compose config` validation of both compose files. The frontend image build is also the clean-checkout guard — it runs against exactly what a fresh clone contains, so anything that sneaks a gitignored file into the build fails there.
 
 Postgres schema changes go in `sql/init_agent_charts.sql` / `sql/init_agent_artifacts.sql` — these only run against a fresh volume, so apply a local change with `docker compose down -v` then `docker compose up --build`.
 

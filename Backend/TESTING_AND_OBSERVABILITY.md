@@ -53,11 +53,11 @@ python -m unittest discover -s Backend/tests -p "test_*.py"
 Run coverage locally:
 
 ```bash
-coverage run -m unittest discover -s Backend/tests -p "test_*.py"
+PYTHONPATH=Backend coverage run -m pytest Backend/tests
 coverage report
 ```
 
-The CI workflow runs syntax linting, tests, and coverage reporting. Coverage is focused on backend API/config/logging/cache/routing/helper logic and currently requires at least 60%.
+Coverage is measured over all of `tta_backend` and CI requires at least 87% (`.coveragerc`). The Redis-backed turn tests skip on a host with no Redis; set `TTA_REQUIRE_REDIS=1` to make that a failure, as CI and the `backend-test` compose profile do.
 
 ## The scripted eval as a required gate
 
