@@ -9,6 +9,22 @@ on:
 jobs:
   backend:
     runs-on: ubuntu-latest
+
+    # The turn event log, the turn registry and the detached-turn routes are
+    # tested against a real Redis (Backend/tests/redis_helpers.py). Without
+    # this service ~85 of them skipped and the job still went green, leaving
+    # services/turn_registry.py at ~21% coverage. Same image as compose's.
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
     defaults:
       run:
         working-directory: .
@@ -57,10 +73,16 @@ jobs:
       #     subclasses, so the two persistence-contract modules were invisible.
       # This is also the runner CLAUDE.md documents for the local gate, so CI and
       # `docker compose --profile test run backend-test` now check the same suite.
+      #
+      # TTA_REQUIRE_REDIS makes an unreachable Redis a collection error rather
+      # than a skip; the suite reaches the service above at its default
+      # redis://127.0.0.1:6379/15. `-rs` lists every remaining skip and its
+      # reason in the log.
       - name: Run unit and integration tests with coverage
         env:
           PYTHONPATH: Backend
-        run: coverage run -m pytest Backend/tests
+          TTA_REQUIRE_REDIS: "1"
+        run: coverage run -m pytest Backend/tests -rs
 
       - name: Coverage report
         env:

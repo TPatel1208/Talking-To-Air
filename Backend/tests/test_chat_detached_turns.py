@@ -27,7 +27,7 @@ if TESTS_DIR not in sys.path:
 
 import auth_helpers  # noqa: E402 -- needs the TESTS_DIR insert above
 from tta_backend.earthdata_mcp.connection import STATE_READY  # noqa: E402
-from test_turn_registry import REDIS_URL, requires_redis  # noqa: E402
+from redis_helpers import REDIS_URL, requires_redis  # noqa: E402
 
 _REQUIRED = ["fastapi", "httpx", "jwt", "langchain", "langgraph"]
 
