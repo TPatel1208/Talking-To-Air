@@ -39,7 +39,7 @@ jobs:
         working-directory: .
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Must match Backend/Dockerfile's base image (python:3.12-bookworm) —
       # CI is worthless as a gate if it runs the suite on an interpreter we
@@ -133,9 +133,9 @@ jobs:
         working-directory: .
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: npm
