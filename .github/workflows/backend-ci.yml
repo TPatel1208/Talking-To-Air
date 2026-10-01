@@ -82,7 +82,7 @@ jobs:
           python -m pip_audit --disable-pip --no-deps -r "$RUNNER_TEMP/locked-requirements.txt" \
             --progress-spinner off
 
-      # The whole package. mypy.ini decides which error codes apply where.
+      # The whole package, strictly (Backend/mypy.ini).
       - name: Type check backend
         run: python -m mypy Backend/tta_backend --config-file Backend/mypy.ini
 

@@ -40,7 +40,8 @@ DEFAULT_PARAM_CODE = "42602"  # NO2
 # A module-global dict is what actually spans the tool calls of a turn (and
 # of later turns, which is the point: see _cache_ttl_seconds).
 # Values are (expires_at, payload).
-_response_cache: dict = {}
+# cache key -> (expires_at, response payload)
+_response_cache: dict[tuple[Any, ...], tuple[float, Dict[str, Any]]] = {}
 
 # Settled measurements never change, so the only bound on reuse is process
 # lifetime; unsettled ones must lapse soon enough that a researcher asking
@@ -192,7 +193,7 @@ def _cache_ttl_seconds(params: Dict[str, Any]) -> float:
     return _UNSETTLED_TTL_SECONDS
 
 
-def _cache_key(endpoint: str, params: Dict[str, Any]) -> tuple:
+def _cache_key(endpoint: str, params: Dict[str, Any]) -> tuple[Any, ...]:
     """Cache identity for a request, excluding credentials.
 
     AQS serves public measurements: the bytes EPA returns for a given
@@ -204,7 +205,7 @@ def _cache_key(endpoint: str, params: Dict[str, Any]) -> tuple:
     return (endpoint, tuple(sorted((k, str(v)) for k, v in params.items())))
 
 
-def _remember_response(cache_key: tuple, data: Dict[str, Any], ttl_seconds: float) -> None:
+def _remember_response(cache_key: tuple[Any, ...], data: Dict[str, Any], ttl_seconds: float) -> None:
     """Store a response, dropping whatever has expired and then the oldest
     entries if the cache is still over its ceiling."""
     now = _now()
@@ -259,7 +260,7 @@ async def _aqs_get(endpoint: str, params: Dict[str, Any]) -> Dict[str, Any]:
             )
         except (ValueError, KeyError):
             resp.raise_for_status()
-    data = resp.json()
+    data: Dict[str, Any] = resp.json()
     header = data.get("Header", [{}])
     status = header[0].get("status", "").lower()
     rows = len(data.get("Data", data.get("Body", [])))
@@ -330,7 +331,7 @@ def _positive_int(value: Union[int, str], name: str) -> int:
     return parsed
 
 
-def _resolve_dates(bdate: Optional[str], edate: Optional[str]):
+def _resolve_dates(bdate: Optional[str], edate: Optional[str]) -> tuple[date, date, str, str]:
     """
     Parse and validate bdate/edate strings (YYYY-MM-DD).
     Defaults: bdate = 1 year ago, edate = bdate.
@@ -433,8 +434,10 @@ def _upstream_error_response(message: str) -> Dict[str, Any]:
     return {"Header": [{"status": "upstream_error", "note": message}], "Body": []}
 
 
-async def _fetch_active_monitors(bbox, param_code, bdate_str, edate_str, k=1):
-    best = []
+async def _fetch_active_monitors(
+    bbox: List[float], param_code: str, bdate_str: str, edate_str: str, k: int = 1,
+) -> List[Dict[str, Any]]:
+    best: List[Dict[str, Any]] = []
     for expansion in _BBOX_EXPANSIONS:
         south, north, west, east = _expand_bbox(bbox, expansion)
         data = await _aqs_get(
@@ -458,7 +461,7 @@ async def _fetch_active_monitors(bbox, param_code, bdate_str, edate_str, k=1):
     return best
 
 
-def _nearest_k(monitors: List[Dict], lat_q: float, lon_q: float, k: int) -> List[Dict]:
+def _nearest_k(monitors: List[Dict[str, Any]], lat_q: float, lon_q: float, k: int) -> List[Dict[str, Any]]:
     """Linear haversine scan — correct and fast for the small byBox result sets."""
     for m in monitors:
         m["_dist"] = _haversine_miles(lat_q, lon_q, float(m["latitude"]), float(m["longitude"]))
@@ -466,7 +469,7 @@ def _nearest_k(monitors: List[Dict], lat_q: float, lon_q: float, k: int) -> List
     return monitors[: min(k, len(monitors))]
 
 
-def _build_body(nearest: List[Dict], param_code: str) -> List[Dict]:
+def _build_body(nearest: List[Dict[str, Any]], param_code: str) -> List[Dict[str, Any]]:
     """Format monitor dicts into the standard response Body shape."""
     body = []
     for m in nearest:
@@ -632,9 +635,9 @@ async def find_closest_monitor_by_coords(
 
 def _resolve_filter(
     prefix: str,
-    state_code, county_code, site_number,
-    cbsa_code, minlat, maxlat, minlon, maxlon,
-) -> tuple:
+    state_code: Optional[str], county_code: Optional[str], site_number: Optional[str],
+    cbsa_code: Optional[str], minlat: Optional[Union[float, str]], maxlat: Optional[Union[float, str]], minlon: Optional[Union[float, str]], maxlon: Optional[Union[float, str]],
+) -> tuple[str, Dict[str, Any]]:
     """Return (endpoint, filter_params) for a given data prefix and filter inputs."""
     if site_number and ((county_code and state_code) or "-" in str(site_number)):
         state_code, county_code, site_number = _normalise_site_filter(
@@ -651,7 +654,7 @@ def _resolve_filter(
     elif cbsa_code:
         cbsa_code = _normalise_numeric_filter("cbsa_code", cbsa_code)
         return f"{prefix}/byCBSA", {"cbsa": cbsa_code}
-    elif all(v is not None for v in [minlat, maxlat, minlon, maxlon]):
+    elif minlat is not None and maxlat is not None and minlon is not None and maxlon is not None:
         minlat, maxlat = float(minlat), float(maxlat)
         minlon, maxlon = float(minlon), float(maxlon)
         return f"{prefix}/byBox", {"minlat": minlat, "maxlat": maxlat, "minlon": minlon, "maxlon": maxlon}
@@ -663,7 +666,7 @@ def _resolve_filter(
         )
 
 
-def _normalise_numeric_filter(name: str, value, *, min_width: int = 0) -> str:
+def _normalise_numeric_filter(name: str, value: Any, *, min_width: int = 0) -> str:
     text = str(value).strip()
     if text.lower() in _PLACEHOLDER_FILTER_VALUES:
         raise ValueError(
@@ -675,7 +678,7 @@ def _normalise_numeric_filter(name: str, value, *, min_width: int = 0) -> str:
     return text.zfill(min_width) if min_width else text
 
 
-def _normalise_site_filter(state_code, county_code, site_number) -> tuple[str, str, str]:
+def _normalise_site_filter(state_code: Optional[str], county_code: Optional[str], site_number: Optional[str]) -> tuple[str, str, str]:
     site_text = str(site_number).strip()
     if "-" in site_text:
         parts = site_text.split("-")
@@ -699,11 +702,11 @@ def _normalise_site_filter(state_code, county_code, site_number) -> tuple[str, s
 async def _fetch_summary(
     prefix: str,
     param_code: str,
-    bdate_obj, edate_obj, bdate_str, edate_str,
-    state_code, county_code, site_number,
-    cbsa_code, minlat, maxlat, minlon, maxlon,
-    cbdate, cedate, pollutant_standard,
-) -> tuple:
+    bdate_obj: date, edate_obj: date, bdate_str: str, edate_str: str,
+    state_code: Optional[str], county_code: Optional[str], site_number: Optional[str],
+    cbsa_code: Optional[str], minlat: Optional[Union[float, str]], maxlat: Optional[Union[float, str]], minlon: Optional[Union[float, str]], maxlon: Optional[Union[float, str]],
+    cbdate: Optional[str], cedate: Optional[str], pollutant_standard: Optional[str],
+) -> tuple[List[Dict[str, Any]], str, Dict[str, Any]]:
     """
     Shared fetch + filter logic for daily, quarterly, and annual summaries.
     Returns (records, endpoint, filter_params).
@@ -738,8 +741,9 @@ async def _fetch_summary(
 
 
 def _build_summary_header(
-    rows, endpoint, param_code, bdate_obj, edate_obj, pollutant_standard
-):
+    rows: int, endpoint: str, param_code: str, bdate_obj: date, edate_obj: date,
+    pollutant_standard: Optional[str],
+) -> List[Dict[str, Any]]:
     return [{
         "status": "success",
         "rows": rows,
@@ -788,11 +792,11 @@ def _artifact_table_response(
     }
 
 
-def _site_id(r):
+def _site_id(r: Dict[str, Any]) -> str:
     return "-".join([r.get("state_code", "??"), r.get("county_code", "??"), r.get("site_number", "??")])
 
 
-def _float_or_none(value):
+def _float_or_none(value: Any) -> Optional[float]:
     if value is None or value == "":
         return None
     try:
@@ -1189,7 +1193,7 @@ async def find_exceedance_days(
         return _upstream_error_response(str(exc))
 
     # Extract the measurement value for each day
-    def _val(r):
+    def _val(r: Dict[str, Any]) -> Optional[float]:
         v = r.get(measurement_field)
         return float(v) if v is not None else None
 
@@ -1206,7 +1210,7 @@ async def find_exceedance_days(
         percentile_cutoff = sorted_vals[idx]
 
     # Flag days
-    body = []
+    body: List[Dict[str, Any]] = []
     for r, v in zip(records, values, strict=True):
         if v is None:
             continue
@@ -1226,7 +1230,8 @@ async def find_exceedance_days(
             "local_site_name": r.get("local_site_name"),
         })
 
-    body.sort(key=lambda x: x["date"])
+    # A record with no date_local sorts first rather than raising on None < str.
+    body.sort(key=lambda x: x["date"] or "")
 
     header = [{
             "status": "success",

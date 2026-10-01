@@ -87,7 +87,9 @@ import functools
 import logging
 import threading
 import time
-from typing import Any, AsyncIterator, Callable
+from typing import Any, AsyncIterator, Callable, TypeVar
+
+_T = TypeVar("_T")
 
 logger = logging.getLogger(__name__)
 
@@ -419,7 +421,7 @@ def _get_heavy_executor() -> concurrent.futures.ThreadPoolExecutor:
     return _heavy_executor
 
 
-async def run_heavy(func: Callable[..., Any], *args: Any, surface: str = "chat") -> Any:
+async def run_heavy(func: Callable[..., _T], *args: Any, surface: str = "chat") -> _T:
     """Admit, then run ``func`` on the heavy pool.
 
     ``surface`` defaults to ``chat`` because every caller of this function is a
@@ -446,7 +448,8 @@ async def run_heavy(func: Callable[..., Any], *args: Any, surface: str = "chat")
     ctx = contextvars.copy_context()
     future = _get_heavy_executor().submit(functools.partial(ctx.run, func, *args))
     try:
-        return await asyncio.wrap_future(future, loop=loop)
+        result: _T = await asyncio.wrap_future(future, loop=loop)
+        return result
     finally:
         # Cancelling this await does not stop the thread -- Python cannot
         # interrupt one -- so the reduction runs on with its intermediates
