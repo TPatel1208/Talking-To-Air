@@ -354,6 +354,15 @@ class Settings:
     overlay_store_dir: str = field(
         default_factory=lambda: os.getenv("OVERLAY_STORE_DIR", "/app/overlay_store/overlays")
     )
+    # A fixed byte cap rather than a share of free space, which would expand to
+    # fill whatever disk the volume is on. Eviction is LRU by last read, run
+    # before each write (services/overlay_store.py). An evicted overlay
+    # degrades the chart to the frontend's canvas fallback, drawn from the grid
+    # in the chart payload, so this is a cache bound rather than a retention
+    # policy.
+    overlay_store_max_bytes: int = field(
+        default_factory=lambda: max(1, _int_env("OVERLAY_STORE_MAX_BYTES", 1024 ** 3))
+    )
     # T52: the L4 Zarr cube cache (services/cube_cache.py). A backend-only
     # Docker named volume, NOT a tempdir — cubes cost minutes to build and
     # `tta-backend` is rebuilt constantly, so a tempdir store would be empty
@@ -393,8 +402,8 @@ class Settings:
     )
     # T59 Phase 4: the frame blob store (services/frame_store.py). Its own
     # backend-only named volume, and deliberately NOT inside overlay_store:
-    # that store has no eviction policy and grows forever, which is precisely
-    # why frames get a separate *bounded* one instead of joining it.
+    # each store's startup sweep and size accounting assume it owns its
+    # directory, and each is sized against its own cap.
     frame_store_dir: str = field(
         default_factory=lambda: os.getenv("FRAME_STORE_DIR", "/app/frame_store")
     )

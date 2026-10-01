@@ -524,121 +524,118 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("no longer available", response.json()["detail"])
 
     async def test_chart_overlay_endpoint_streams_the_stored_png(self):
-        import os
-        import tempfile
-
-        fd, overlay_path = tempfile.mkstemp(suffix=".png")
-        os.close(fd)
-        with open(overlay_path, "wb") as f:
-            f.write(b"\x89PNG\r\n\x1a\nOVERLAYBYTES")
+        from tta_backend.services import overlay_store
 
         payload = {
             "chart_id": "chart-1",
             "title": "TEMPO over Texas",
-            "overlay": {"bounds": [0, 0, 1, 1], "_path": overlay_path},
+            "overlay": {
+                "bounds": [0, 0, 1, 1],
+                "_path": overlay_store.write_overlay(b"\x89PNG\r\n\x1a\nOVERLAYBYTES"),
+            },
             "user_id": self.user.id,
         }
 
-        transport = self.httpx.ASGITransport(app=self.api.app)
-        async def fake_get_chart(chart_id):
-            return payload
-
-        try:
-            auth_patches = self._auth_patch()
-            with auth_patches, \
-                 patch.object(self.api.chart_service, "get_chart", fake_get_chart):
-                async with self.httpx.AsyncClient(
-                    transport=transport,
-                    base_url="http://testserver",
-                ) as client:
-                    response = await client.get("/chart/chart-1/overlay.png", headers=self.auth_headers)
-        finally:
-            os.remove(overlay_path)
+        response = await self._get_overlay(payload)
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers["content-type"], "image/png")
         self.assertEqual(response.content, b"\x89PNG\r\n\x1a\nOVERLAYBYTES")
 
     async def test_chart_overlay_endpoint_serves_the_requested_panel(self):
-        import os
-        import tempfile
-
-        fd, path_a = tempfile.mkstemp(suffix=".png")
-        os.close(fd)
-        with open(path_a, "wb") as f:
-            f.write(b"\x89PNG\r\n\x1a\nPANEL_A")
-        fd, path_b = tempfile.mkstemp(suffix=".png")
-        os.close(fd)
-        with open(path_b, "wb") as f:
-            f.write(b"\x89PNG\r\n\x1a\nPANEL_B")
+        from tta_backend.services import overlay_store
 
         payload = {
             "chart_id": "chart-1",
             "type": "heatmap_multi",
             "panels": [
-                {"overlay": {"bounds": [0, 0, 1, 1], "_path": path_a}},
-                {"overlay": {"bounds": [0, 0, 1, 1], "_path": path_b}},
+                {"overlay": {"bounds": [0, 0, 1, 1],
+                             "_path": overlay_store.write_overlay(b"\x89PNG\r\n\x1a\nPANEL_A")}},
+                {"overlay": {"bounds": [0, 0, 1, 1],
+                             "_path": overlay_store.write_overlay(b"\x89PNG\r\n\x1a\nPANEL_B")}},
             ],
             "user_id": self.user.id,
         }
 
-        transport = self.httpx.ASGITransport(app=self.api.app)
-        async def fake_get_chart(chart_id):
-            return payload
-
-        try:
-            auth_patches = self._auth_patch()
-            with auth_patches, \
-                 patch.object(self.api.chart_service, "get_chart", fake_get_chart):
-                async with self.httpx.AsyncClient(
-                    transport=transport,
-                    base_url="http://testserver",
-                ) as client:
-                    resp_a = await client.get("/chart/chart-1/overlay.png?panel=0", headers=self.auth_headers)
-                    resp_b = await client.get("/chart/chart-1/overlay.png?panel=1", headers=self.auth_headers)
-                    resp_missing = await client.get("/chart/chart-1/overlay.png?panel=5", headers=self.auth_headers)
-        finally:
-            os.remove(path_a)
-            os.remove(path_b)
+        resp_a = await self._get_overlay(payload, "?panel=0")
+        resp_b = await self._get_overlay(payload, "?panel=1")
+        resp_missing = await self._get_overlay(payload, "?panel=5")
 
         self.assertEqual(resp_a.content, b"\x89PNG\r\n\x1a\nPANEL_A")
         self.assertEqual(resp_b.content, b"\x89PNG\r\n\x1a\nPANEL_B")
         self.assertEqual(resp_missing.status_code, 404)
 
     async def test_chart_overlay_endpoint_serves_the_difference_panel(self):
-        import os
-        import tempfile
-
-        fd, path = tempfile.mkstemp(suffix=".png")
-        os.close(fd)
-        with open(path, "wb") as f:
-            f.write(b"\x89PNG\r\n\x1a\nDIFF")
+        from tta_backend.services import overlay_store
 
         payload = {
             "chart_id": "chart-1",
             "type": "heatmap_multi",
             "mode": "difference",
-            "difference": {"overlay": {"bounds": [0, 0, 1, 1], "_path": path}},
+            "difference": {"overlay": {
+                "bounds": [0, 0, 1, 1],
+                "_path": overlay_store.write_overlay(b"\x89PNG\r\n\x1a\nDIFF"),
+            }},
             "user_id": self.user.id,
         }
 
+        response = await self._get_overlay(payload)
+
+        self.assertEqual(response.content, b"\x89PNG\r\n\x1a\nDIFF")
+
+    async def _get_overlay(self, payload, query: str = ""):
         transport = self.httpx.ASGITransport(app=self.api.app)
+
         async def fake_get_chart(chart_id):
             return payload
 
-        try:
-            auth_patches = self._auth_patch()
-            with auth_patches, \
-                 patch.object(self.api.chart_service, "get_chart", fake_get_chart):
-                async with self.httpx.AsyncClient(
-                    transport=transport,
-                    base_url="http://testserver",
-                ) as client:
-                    response = await client.get("/chart/chart-1/overlay.png", headers=self.auth_headers)
-        finally:
-            os.remove(path)
+        with self._auth_patch(), \
+             patch.object(self.api.chart_service, "get_chart", fake_get_chart):
+            async with self.httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                return await client.get(f"/chart/chart-1/overlay.png{query}", headers=self.auth_headers)
 
-        self.assertEqual(response.content, b"\x89PNG\r\n\x1a\nDIFF")
+    async def test_chart_overlay_endpoint_resolves_the_recorded_path_inside_the_store(self):
+        """Chart rows record the overlay's absolute path at render time. The
+        route looks the file up by name in the store as configured now, so a
+        row written under the deployment mount still serves."""
+        import os
+
+        from tta_backend.services import overlay_store
+
+        stored = overlay_store.write_overlay(b"\x89PNG\r\n\x1a\nRECORDED")
+        payload = {
+            "chart_id": "chart-1",
+            "overlay": {
+                "bounds": [0, 0, 1, 1],
+                "_path": "/app/overlay_store/overlays/" + os.path.basename(stored),
+            },
+            "user_id": self.user.id,
+        }
+
+        response = await self._get_overlay(payload)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"\x89PNG\r\n\x1a\nRECORDED")
+
+    async def test_chart_overlay_endpoint_404s_once_the_overlay_is_evicted(self):
+        """An evicted overlay is a normal state: the frontend falls back to
+        drawing the grid in the chart payload."""
+        from tta_backend.services import overlay_store
+
+        stored = overlay_store.write_overlay(b"\x89PNG\r\n\x1a\nEVICTED")
+        overlay_store.evict_to_fit(10 ** 15)  # more than any cap: evicts everything
+        payload = {
+            "chart_id": "chart-1",
+            "overlay": {"bounds": [0, 0, 1, 1], "_path": stored},
+            "user_id": self.user.id,
+        }
+
+        response = await self._get_overlay(payload)
+
+        self.assertEqual(response.status_code, 404)
 
     async def test_chart_overlay_endpoint_404s_when_no_overlay_was_rendered(self):
         payload = {"chart_id": "chart-1", "title": "TEMPO over Texas", "user_id": self.user.id}
@@ -1032,7 +1029,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         async def fake_get_chart(chart_id):
             return payload
 
-        def slow_read_overlay_bytes(path):
+        def slow_read_overlay(path):
             time.sleep(0.5)
             return b"\x89PNG\r\n\x1a\nSLOW"
 
@@ -1047,8 +1044,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         auth_patches = self._auth_patch()
         with auth_patches, \
              patch.object(self.api.chart_service, "get_chart", fake_get_chart), \
-             patch("os.path.isfile", return_value=True), \
-             patch.object(self.api, "_read_overlay_bytes", slow_read_overlay_bytes):
+             patch.object(self.api.overlay_store, "read_overlay", slow_read_overlay):
             async with self.httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",

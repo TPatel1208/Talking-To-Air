@@ -59,7 +59,7 @@ from tta_backend.repositories.user_connector_repository import (
 )
 from tta_backend.repositories.artifact_repository import ensure_artifact_table
 from tta_backend.services import admission
-from tta_backend.services import cube_cache, frame_store, turn_registry, warmup
+from tta_backend.services import cube_cache, frame_store, overlay_store, turn_registry, warmup
 from tta_backend.services.open_handle import OPEN_PIPELINE_VERSION, sweep_extract_cache
 from tta_backend.services.connector_credential_service import EdlCredentialInjector
 from tta_backend.services.connector_token_service import TokenValidationError, decode_token_expiry
@@ -184,6 +184,11 @@ async def lifespan(app: FastAPI):
     # unreachable — but its manifest is still valid, so nothing else would ever
     # drop it and its bytes would go on counting against the cap.
     frame_store.sweep_store(OPEN_PIPELINE_VERSION)
+
+    # Overlay writes are staged and renamed into place; this removes staging
+    # files a process killed mid-write left behind. Size is bounded at write
+    # time by eviction, so there is nothing else to reclaim here.
+    overlay_store.sweep_store()
 
     # The third on-disk store, and the one that used to be reclaimed only as a
     # side effect of new work. Its pruner's other trigger is the start of an
@@ -985,19 +990,19 @@ def _chart_overlay_path(payload: dict, panel: int | None) -> str | None:
     return (payload.get("overlay") or {}).get("_path")
 
 
-def _read_overlay_bytes(path: str) -> bytes:
-    with open(path, "rb") as f:
-        return f.read()
-
-
 @app.get("/chart/{chart_id}/overlay.png")
 @limiter.limit("120/minute")
 async def chart_overlay_png(chart_id: str, request: Request, panel: int | None = None):
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
     overlay_path = _chart_overlay_path(payload, panel)
-    if not overlay_path or not os.path.isfile(overlay_path):
+    # A 404 covers both a chart that never had an overlay and one whose overlay
+    # the store has evicted. The frontend falls back to drawing the payload's
+    # grid in either case.
+    content = None
+    if overlay_path:
+        content = await asyncio.to_thread(overlay_store.read_overlay, overlay_path)
+    if content is None:
         raise HTTPException(status_code=404, detail="This chart has no rendered overlay.")
-    content = await asyncio.to_thread(_read_overlay_bytes, overlay_path)
     return Response(content=content, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 

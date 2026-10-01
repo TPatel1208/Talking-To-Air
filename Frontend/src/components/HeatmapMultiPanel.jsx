@@ -11,6 +11,7 @@
 import { useEffect, useRef, useState } from 'react'
 import MapLibreHeatmapPanel from './MapLibreHeatmapPanel.jsx'
 import { buildCanvasFallbackFrame } from '../utils/canvasFallback.js'
+import { resolveThumbnailMode } from '../utils/overlayMode.js'
 
 function ThumbnailCanvas({ lats, lons, values, vmin, vmax, lut }) {
   const ref = useRef(null)
@@ -27,6 +28,7 @@ function ThumbnailCanvas({ lats, lons, values, vmin, vmax, lut }) {
 
 function PanelThumbnail({ panel, onClick }) {
   const { title, overlay, lats, lons, values, vmin, vmax, colormap, bounds } = panel
+  const [failedUrl, setFailedUrl] = useState(null)
   const [minx, miny, maxx, maxy] = bounds || overlay?.bounds || [0, 0, 1, 1]
   const aspect = (maxx - minx) > 0 && (maxy - miny) > 0 ? (maxx - minx) / (maxy - miny) : 1
 
@@ -40,10 +42,11 @@ function PanelThumbnail({ panel, onClick }) {
       }}
     >
       <div style={{ position: 'relative', width: '100%', aspectRatio: aspect, background: '#e4e1d8' }}>
-        {overlay?.url ? (
+        {resolveThumbnailMode(overlay?.url, failedUrl) === 'native' ? (
           <img
             src={`/api${overlay.url}`}
             alt={title || 'comparison panel'}
+            onError={() => setFailedUrl(overlay.url)}
             style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
           />
         ) : (

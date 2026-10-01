@@ -49,7 +49,6 @@ Time-series
 """
 import json
 import logging
-import os
 import uuid
 import numpy as np
 from langchain.tools import tool
@@ -58,6 +57,7 @@ from typing import Annotated, List, Optional
 from pydantic import Field
 
 from tta_backend.services import admission
+from tta_backend.services import overlay_store
 from tta_backend.config.settings import get_settings
 from tta_backend.config.workflow_stages import STAGE_RENDER
 from tta_backend.datasets.mask_info import col_info_for_variable, resolve_mask_info
@@ -263,18 +263,12 @@ def _render_and_store_overlay(lats: np.ndarray, lons: np.ndarray, arr: np.ndarra
     failed render must degrade the chart (no overlay.url; the frontend
     falls back to canvas-from-arrays), never fail the whole tool call.
 
-    The store directory is created here rather than at import: this is the only
-    function that writes into it, so nothing else has a reason to bring it into
-    existence. A failed mkdir degrades exactly like a failed render, which is
-    the same behaviour the read-only-mount case already had."""
+    The store creates its directory on first write and evicts older overlays
+    to stay under its byte cap (services/overlay_store.py). A failed write
+    degrades exactly like a failed render."""
     try:
         png_bytes = render_overlay_png(lats, lons, arr, lut, vmin, vmax)
-        store = overlay_store_dir()
-        os.makedirs(store, exist_ok=True)
-        path = os.path.join(store, f"{uuid.uuid4().hex}.png")
-        with open(path, "wb") as f:
-            f.write(png_bytes)
-        return path
+        return overlay_store.write_overlay(png_bytes)
     except Exception:
         logger.warning("overlay_render_failed", exc_info=True)
         return None

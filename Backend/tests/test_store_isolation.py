@@ -147,6 +147,20 @@ class OverlayStoreIsolationTests(StoreStateAssertions):
             "a branch switch invisibly",
         )
 
+    def test_the_overlay_store_is_never_the_deployment_volume(self) -> None:
+        """The overlay store evicts, so a test that writes past its cap deletes
+        the coldest overlays. Pointed at the deployment volume, that would
+        degrade charts nobody touched. Checked separately from the checkout
+        test because on a Windows host the deployment path resolves outside
+        the checkout."""
+        from tta_backend.tools.satellite_tools import plot_tools
+
+        self.assertNotEqual(
+            os.path.abspath(plot_tools.overlay_store_dir()),
+            os.path.abspath(deployment_overlay_store_dir()),
+            "the overlay store resolves to the deployment volume during tests",
+        )
+
     def test_importing_plot_tools_does_not_create_the_checkout_store(self) -> None:
         """Import must be free of filesystem side effects.
 
