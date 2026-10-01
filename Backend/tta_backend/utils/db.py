@@ -12,6 +12,7 @@ import contextlib
 import asyncio
 import logging
 from collections.abc import AsyncIterator
+from typing import Any
 
 import psycopg
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -28,7 +29,7 @@ _checkpointer_pool: AsyncConnectionPool[AsyncConnection[DictRow]] | None = None
 _checkpointer: AsyncPostgresSaver | None = None
 
 
-def _db_config() -> dict:
+def _db_config() -> dict[str, Any]:
     return get_settings().db_kwargs
 
 

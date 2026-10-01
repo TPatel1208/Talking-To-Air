@@ -13,7 +13,7 @@ import copy
 import functools
 import json
 import logging
-from typing import Any, Callable, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 from langchain_core.tools import BaseTool, StructuredTool
 
@@ -28,6 +28,9 @@ from tta_backend.earthdata_mcp.results import (
     parse_tool_result,
 )
 from tta_backend.utils.streaming import emit_status
+
+if TYPE_CHECKING:
+    from tta_backend.utils.plotting import RegionResolver
 
 logger = logging.getLogger(__name__)
 
@@ -101,8 +104,11 @@ def bind_workspace(
     return bound
 
 
-def _schema_properties(schema) -> dict:
-    return schema.get("properties", {}) if isinstance(schema, dict) else schema.schema().get("properties", {})
+def _schema_properties(schema: Any) -> dict[str, Any]:
+    properties: dict[str, Any] = (
+        schema.get("properties", {}) if isinstance(schema, dict) else schema.schema().get("properties", {})
+    )
+    return properties
 
 
 def _bind_one(
@@ -120,7 +126,7 @@ def _bind_one(
     schema = _schema_without_hidden_params(tool.args_schema)
     stage_info = _STAGE_BY_TOOL_NAME.get(tool.name)
 
-    async def _call(**kwargs):
+    async def _call(**kwargs: Any) -> Any:
         user_id = user_id_getter()
         if user_id is None:
             exc = MissingUserContextError(
@@ -226,17 +232,17 @@ def _bind_one(
     )
 
 
-def _schema_without_hidden_params(schema):
-    schema = copy.deepcopy(schema)
-    properties = schema.get("properties", {})
+def _schema_without_hidden_params(schema: Any) -> dict[str, Any]:
+    stripped: dict[str, Any] = copy.deepcopy(schema)
+    properties = stripped.get("properties", {})
     for name in _HIDDEN_PARAMS:
         properties.pop(name, None)
-    schema["required"] = [name for name in schema.get("required", []) if name not in _HIDDEN_PARAMS]
-    return schema
+    stripped["required"] = [name for name in stripped.get("required", []) if name not in _HIDDEN_PARAMS]
+    return stripped
 
 
 @functools.lru_cache(maxsize=1)
-def _region_resolver():
+def _region_resolver() -> RegionResolver:
     """One shared RegionResolver for the translation, built lazily.
 
     Lazy because ``utils.plotting`` pulls in cartopy/rasterio, and
@@ -296,7 +302,7 @@ def region_aware_area_of_interest(tool: BaseTool) -> BaseTool:
     """
     from tta_backend.utils import region_buffer, region_composition, region_dispatch
 
-    async def _call(**kwargs):
+    async def _call(**kwargs: Any) -> Any:
         location = kwargs.get("location")
         if isinstance(location, str):
             resolver = _region_resolver()
@@ -378,7 +384,7 @@ def model_view_describe_dataset(tool: BaseTool) -> BaseTool:
     need the full per-variable records.
     """
 
-    async def _call(**kwargs):
+    async def _call(**kwargs: Any) -> Any:
         raw = await tool.ainvoke(kwargs)
         try:
             result = parse_tool_result(raw)
@@ -398,7 +404,7 @@ def model_view_describe_dataset(tool: BaseTool) -> BaseTool:
     )
 
 
-def _compact_describe_dataset_result(result: dict) -> dict:
+def _compact_describe_dataset_result(result: dict[str, Any]) -> dict[str, Any]:
     variables = result.get("variables")
     if not isinstance(variables, list):
         return result
@@ -409,7 +415,7 @@ def _compact_describe_dataset_result(result: dict) -> dict:
     return compacted
 
 
-def _compact_variable(var: dict) -> dict:
+def _compact_variable(var: dict[str, Any]) -> dict[str, Any]:
     """name/long_name/units/advisory_notes plus a one-line mask_note derived
     from fill/range presence — the model needs variable names to subset, not
     every fill-value/valid-range record (T13 story #11)."""

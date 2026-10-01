@@ -179,7 +179,7 @@ class EarthdataMCPConnectionManager:
         self._edl_injector = edl_injector
         self._state = STATE_CONNECTING
         self._tools: dict[str, BaseTool] | None = None
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[Any] | None = None
 
     @property
     def state(self) -> str:
@@ -205,7 +205,7 @@ class EarthdataMCPConnectionManager:
         # /health keeps reporting the last state and no reconnect ever runs.
         self._task.add_done_callback(self._log_if_loop_died)
 
-    def _log_if_loop_died(self, task: asyncio.Task) -> None:
+    def _log_if_loop_died(self, task: asyncio.Task[Any]) -> None:
         if task.cancelled():
             return
         exc = task.exception()

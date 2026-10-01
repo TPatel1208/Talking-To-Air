@@ -119,7 +119,7 @@ def _colorize(arr: np.ndarray, lut: list[list[int]], vmin: float, vmax: float) -
     # Gather straight into the output rather than allocating zeros and filling
     # the valid pixels through a second fancy-index (which built two more
     # temporaries sized by the valid count).
-    rgba = lut_arr[idx]
+    rgba: np.ndarray = lut_arr[idx]
     np.logical_not(valid, out=valid)
     rgba[valid] = 0          # no-data stays fully transparent, as before
     return rgba

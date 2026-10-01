@@ -13,6 +13,7 @@ import uuid
 from typing import Any
 
 from langchain.agents import create_agent
+from langgraph.graph.state import CompiledStateGraph
 
 from tta_backend.agents.subagent_trim import build_subagent_trim_middleware
 from tta_backend.config.model_factory import build_chat_model
@@ -40,7 +41,7 @@ class LazySatelliteAgent:
     normal operation.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._real: Any = None
 
     def set_real(self, agent: Any) -> None:
@@ -81,7 +82,7 @@ def build_earthdata_agent(
     model: str | None = None,
     provider: str | None = None,
     mcp_tools: dict[str, Any] | None = None,
-):
+) -> CompiledStateGraph[Any, Any, Any, Any]:
     """
     Build and return a stateless earthdata agent.
 

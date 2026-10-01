@@ -189,7 +189,7 @@ def _split_valid_range_attr(valid_range: Any) -> tuple[Any, Any]:
 
 def _first_fill_value(fill_values: list[dict[str, Any]] | None) -> float | None:
     for entry in fill_values or []:
-        value = entry.get("value") if isinstance(entry, dict) else entry
+        value: float | None = entry.get("value") if isinstance(entry, dict) else entry
         if value is not None:
             return value
     return None

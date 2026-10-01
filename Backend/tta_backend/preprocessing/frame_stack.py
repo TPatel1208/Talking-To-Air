@@ -24,6 +24,8 @@ lives in one place, so a frame's mean cannot drift from the map's.
 """
 from __future__ import annotations
 
+from typing import Any
+
 from dataclasses import dataclass, field as dataclass_field
 
 import numpy as np
@@ -361,7 +363,7 @@ class Frame:
     #: absent, not a maximum of zero. Unrounded: formatting is the payload's
     #: business, and rounding here would make the D14 tier-1 identity between
     #: the frames and the period map uncheckable.
-    statistics: dict
+    statistics: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -389,7 +391,7 @@ class StatisticPlane:
     #: two live bundles. It is computed rather than asserted because a promised
     #: zero and a measured one are different claims -- the same reason
     #: ``frame_grid_delta`` exists at all.
-    frame_grid_delta: dict
+    frame_grid_delta: dict[str, Any]
     #: THIS plane's own pooled 2-98 clip (D9), never the mean plane's: one
     #: colour has to mean one value at every stop of a scrub, and a max plane
     #: rendered against the mean's clip saturates at exactly the stops someone
@@ -398,7 +400,7 @@ class StatisticPlane:
     #: D6a decision 9, on the ``"max"`` plane only: how much ground a rendered
     #: peak claims (see ``_extent_overstatement``). ``None`` on every other
     #: plane, and on a chart that never coarsened.
-    extent_overstatement: dict | None = None
+    extent_overstatement: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -431,7 +433,7 @@ class FrameStack:
     #: and ``max_abs`` (the worst pixel, in the field's physical units).
     #: ``None`` in the cadence tier -- the relationship there is identity, and
     #: saying so is different from measuring it and finding nothing.
-    delta: dict | None
+    delta: dict[str, Any] | None
     #: The same metric applied to ``values`` and ``period_values`` themselves:
     #: what a reader gets by averaging the blob against the plane beside it.
     #: Present in BOTH tiers, because the block mean disagrees with the
@@ -439,7 +441,7 @@ class FrameStack:
     #: -- 1.876% on a real regional TEMPO chart whose native delta is
     #: 0.000002%. Never interchangeable with ``delta``; neither bounds the
     #: other.
-    frame_grid_delta: dict
+    frame_grid_delta: dict[str, Any]
     #: The scrubber's pooled 2-98 clip (D9), or ``None`` when nothing survived.
     #: The Map tab's own range is untouched: deriving it from the stack would
     #: make a map's colours depend on whether frames happened to be built.
@@ -503,7 +505,7 @@ def build_frame_stack(
     target_cells: int = FRAME_CELL_CEILING,
     max_frames: int = MAX_FRAMES,
     region_area: float | None = None,
-    qa_counts: dict | None = None,
+    qa_counts: dict[str, Any] | None = None,
     value_bracket: tuple[float, float] | None = None,
     statistics: tuple[str, ...] = ("mean",),
 ) -> FrameStack:
@@ -711,7 +713,7 @@ def _planes(
     return planes
 
 
-def _extent_overstatement(computed: xr.Dataset, k: tuple[int, int]) -> dict | None:
+def _extent_overstatement(computed: xr.Dataset, k: tuple[int, int]) -> dict[str, Any] | None:
     """D6a decision 9's disclosure: how much ground a rendered peak claims.
 
     ``headline`` pools every finite block of every frame into ONE ratio of
@@ -760,7 +762,7 @@ EXTENT_OVERSTATEMENT_BASIS = (
 )
 
 
-def _bracket_from_counts(qa_counts: dict | None) -> tuple[float, float] | None:
+def _bracket_from_counts(qa_counts: dict[str, Any] | None) -> tuple[float, float] | None:
     """The value range ``apply_quality_mask`` already measured, if it ran.
 
     Read straight off the counters rather than asked for separately: the real
@@ -779,7 +781,7 @@ def _bracket_from_counts(qa_counts: dict | None) -> tuple[float, float] | None:
 def _pooled_bin_edges(
     da: xr.DataArray,
     value_bracket: tuple[float, float] | None,
-    qa_counts: dict | None,
+    qa_counts: dict[str, Any] | None,
 ) -> np.ndarray:
     """Bin edges spanning every value the pooled distribution can hold.
 
@@ -829,7 +831,7 @@ def _histogram(field: xr.DataArray, edges: np.ndarray) -> xr.DataArray:
     if clipped.chunks is not None:
         import dask.array as dask_array
 
-        counts, _ = dask_array.histogram(clipped.data, bins=edges)
+        counts, _ = dask_array.histogram(clipped.data, bins=edges)  # type: ignore[no-untyped-call]  # dask ships no annotations
     else:
         counts, _ = np.histogram(np.asarray(clipped.values), bins=edges)
     return xr.DataArray(counts, dims=["pooled_bin"])
@@ -912,7 +914,8 @@ def _grouped_by(buckets: xr.DataArray, group: int, how: str) -> xr.DataArray:
         return buckets
     labelless = buckets.drop_vars("bucket")
     coarsened = labelless.coarsen(bucket=group, boundary="pad")
-    return getattr(coarsened, how)(skipna=True)
+    reduced: xr.DataArray = getattr(coarsened, how)(skipna=True)
+    return reduced
 
 
 def _plane_terms(
@@ -1100,7 +1103,8 @@ def _block_reduce(
     if (k_lat, k_lon) == (1, 1):
         return field
     coarsened = field.coarsen({lat_dim: k_lat, lon_dim: k_lon}, boundary="pad")
-    return getattr(coarsened, how)(skipna=True)
+    reduced: xr.DataArray = getattr(coarsened, how)(skipna=True)
+    return reduced
 
 
 def _bare_grid(field: xr.DataArray, lat_dim: str, lon_dim: str) -> xr.DataArray:
@@ -1217,7 +1221,7 @@ def _delta_terms(
     }
 
 
-def _delta(computed: xr.Dataset, group: int) -> dict | None:
+def _delta(computed: xr.Dataset, group: int) -> dict[str, Any] | None:
     """The D16 disclosure: a ratio of weighted sums, and the worst pixel.
 
     NEVER a mean of per-pixel ratios. Geophysical fields go near zero, so
@@ -1258,7 +1262,7 @@ def _frame_grid_delta(
     weights: np.ndarray | None,
     *,
     combine: str = "mean",
-) -> dict:
+) -> dict[str, Any]:
     """D16's metric applied to the arrays that SHIP -- a second quantity beside
     ``_delta``, never a replacement for it.
 
@@ -1386,7 +1390,7 @@ PLANE_AGREEMENT_BASIS = {
 
 
 def _qa_pass_rates(
-    qa_counts: dict | None,
+    qa_counts: dict[str, Any] | None,
     axis_labels: list[str],
     cadence: str,
     group: int,
@@ -1470,7 +1474,7 @@ def _native_statistics(
     return stats
 
 
-def _statistics_per_frame(computed: xr.Dataset, n_frames: int) -> list[dict]:
+def _statistics_per_frame(computed: xr.Dataset, n_frames: int) -> list[dict[str, Any]]:
     """The computed reductions, per frame, absent where nothing survived."""
     columns = {
         name: np.atleast_1d(np.asarray(computed[f"stat_{name}"].values, dtype="float64"))
@@ -1478,7 +1482,7 @@ def _statistics_per_frame(computed: xr.Dataset, n_frames: int) -> list[dict]:
     }
     counts = np.nan_to_num(np.asarray(computed["stat_count"].values), nan=0.0)
 
-    out: list[dict] = []
+    out: list[dict[str, Any]] = []
     for index in range(n_frames):
         count = int(counts[index])
         # A bucket with no surviving cell has no mean, no floor and no peak.

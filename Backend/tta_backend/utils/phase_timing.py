@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from types import TracebackType
 from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
@@ -88,7 +89,7 @@ class _PhaseTimer:
     def __enter__(self) -> dict[str, Any]:
         return self._start()
 
-    def __exit__(self, exc_type, exc, tb) -> Literal[False]:
+    def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None) -> Literal[False]:
         # A phase that raised still took time, and that time is exactly what a
         # "why was this turn slow" investigation needs -- record it, then let
         # the exception propagate untouched (False).
@@ -98,7 +99,7 @@ class _PhaseTimer:
     async def __aenter__(self) -> dict[str, Any]:
         return self._start()
 
-    async def __aexit__(self, exc_type, exc, tb) -> bool:
+    async def __aexit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None) -> Literal[False]:
         self._finish()
         return False
 

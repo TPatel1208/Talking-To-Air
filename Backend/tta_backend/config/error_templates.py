@@ -16,6 +16,8 @@ wrong: it can misclassify a failure, but it can never narrate one.
 """
 from __future__ import annotations
 
+from typing import Any
+
 from tta_backend.earthdata_mcp.results import (
     CATEGORY_CONTRACT,
     CATEGORY_NOT_FOUND,
@@ -221,7 +223,7 @@ def render_variable_note(
     return f"Note: showing {label} (highest-ranked populated field)."
 
 
-def render_scope_note(requested_scope: dict | None, delivered_scope: dict | None) -> str | None:
+def render_scope_note(requested_scope: dict[str, Any] | None, delivered_scope: dict[str, Any] | None) -> str | None:
     """A one-line disclosure when the delivered scope differs materially from
     the requested one, or ``None`` when they match (don't nag on an exact
     request). Filled only from observed facts — never a guess at why the

@@ -9,7 +9,10 @@ The supervisor is solely responsible for conversation history.
 """
 import logging
 
+from typing import Any
+
 from langchain.agents import create_agent
+from langgraph.graph.state import CompiledStateGraph
 
 from tta_backend.agents.subagent_trim import build_subagent_trim_middleware
 from tta_backend.config.model_factory import build_chat_model
@@ -21,7 +24,7 @@ from tta_backend.utils.streaming import stream_response
 logger = logging.getLogger(__name__)
 
 
-def build_ground_agent(model: str | None = None, provider: str | None = None):
+def build_ground_agent(model: str | None = None, provider: str | None = None) -> CompiledStateGraph[Any, Any, Any, Any]:
     """
     Build and return a stateless ground sensor agent.
 

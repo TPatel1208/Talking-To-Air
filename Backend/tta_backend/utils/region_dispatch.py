@@ -18,7 +18,11 @@ network-free lookup so both resolvers can share one copy of it (D11b's
 sync/async fork only becomes necessary when CUSTOM lands).
 """
 from dataclasses import dataclass
-from typing import Any
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from tta_backend.utils.plotting import RegionResolver
 
 from tta_backend.datasets.us_states import US_STATES
 
@@ -134,7 +138,7 @@ class ExtentDispatch:
 EXTENT_NOT_CLAIMED = ExtentDispatch(claimed=False)
 
 
-def _bbox_string(bounds) -> str:
+def _bbox_string(bounds: Sequence[float]) -> str:
     """``"W,S,E,N"`` decimal degrees -- the channel the Phase 1.5 gate chose.
 
     V5 measured both channels live: the MCP accepts the 12,951-byte OTR
@@ -153,7 +157,7 @@ def _bbox_string(bounds) -> str:
     return ",".join(f"{v:.6f}" for v in bounds)
 
 
-def dispatch_extent(normalized_name: str, global_regions: dict) -> ExtentDispatch:
+def dispatch_extent(normalized_name: str, global_regions: dict[str, Any]) -> ExtentDispatch:
     """Translate a T60 vocabulary word into an extent the MCP can consume.
 
     ``normalized_name`` must already have been through
@@ -211,7 +215,7 @@ class AliasCollisionError(RuntimeError):
     """An alias or coalition id shadows something that already resolves."""
 
 
-def assert_no_alias_collisions(global_regions: dict) -> None:
+def assert_no_alias_collisions(global_regions: dict[str, Any]) -> None:
     """Fail loudly if the hand-maintained tables shadow anything (D12a).
 
     A table that silently shadows ``"georgia"`` or ``"us"`` is the cheapest
@@ -241,7 +245,7 @@ def assert_no_alias_collisions(global_regions: dict) -> None:
             )
 
 
-def dispatch(normalized_name: str, resolver) -> DispatchResult:
+def dispatch(normalized_name: str, resolver: "RegionResolver") -> DispatchResult:
     """Resolve ``normalized_name`` if it is in this module's vocabulary.
 
     ``normalized_name`` must already have been through
@@ -274,7 +278,7 @@ def dispatch(normalized_name: str, resolver) -> DispatchResult:
 
     # An alias onto an existing preset: resolve *through* the canonical key so
     # the object is identical to the one that key produces.
-    preset = resolver.global_regions.get(target)
-    if preset is None:
+    canonical = resolver.global_regions.get(target)
+    if canonical is None:
         return DispatchResult(claimed=True, region=None)
-    return DispatchResult(claimed=True, region=resolver._finalize_preset(preset, target))
+    return DispatchResult(claimed=True, region=resolver._finalize_preset(canonical, target))

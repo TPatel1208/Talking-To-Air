@@ -20,10 +20,15 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from langchain_core.callbacks import BaseCallbackHandler
+
+if TYPE_CHECKING:
+    from langchain_core.messages import BaseMessage
+    from langchain_core.outputs import LLMResult
+    from tenacity import RetryCallState
 
 from tta_backend.utils.phase_timing import record_phase
 
@@ -220,23 +225,25 @@ class LlmTimingCallback(BaseCallbackHandler):
     # on_chat_model_start, not on_llm_start, is what a chat model raises --
     # both are implemented because build_chat_model is not the only thing
     # that could ever be handed this callback.
-    def on_chat_model_start(self, serialized, messages, *, run_id, **kwargs) -> None:
+    def on_chat_model_start(
+        self, serialized: dict[str, Any], messages: list[list[BaseMessage]], *, run_id: UUID, **kwargs: Any,
+    ) -> None:
         self._begin(run_id, serialized, kwargs)
 
-    def on_llm_start(self, serialized, prompts, *, run_id, **kwargs) -> None:
+    def on_llm_start(self, serialized: dict[str, Any], prompts: list[str], *, run_id: UUID, **kwargs: Any) -> None:
         self._begin(run_id, serialized, kwargs)
 
-    def on_llm_end(self, response, *, run_id, **kwargs) -> None:
+    def on_llm_end(self, response: LLMResult, *, run_id: UUID, **kwargs: Any) -> None:
         # Usage is read here rather than in _end because this is the only
         # callback that receives the provider's response at all: on_llm_error
         # has no usage block to read, and a failed call is charged its span
         # with no token context.
         self._end(run_id, "success", **_usage_context(response))
 
-    def on_llm_error(self, error, *, run_id, **kwargs) -> None:
+    def on_llm_error(self, error: BaseException, *, run_id: UUID, **kwargs: Any) -> None:
         self._end(run_id, "error", error_type=type(error).__name__)
 
-    def on_retry(self, retry_state, *, run_id, **kwargs) -> None:
+    def on_retry(self, retry_state: RetryCallState, *, run_id: UUID, **kwargs: Any) -> None:
         """Count a LangChain-driven retry and log the sleep it is about to take.
 
         ``idle_for`` is tenacity's cumulative backoff so far, which is the

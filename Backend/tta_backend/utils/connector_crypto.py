@@ -8,7 +8,12 @@ the API boundary.
 """
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from cryptography.fernet import Fernet, MultiFernet
+
+if TYPE_CHECKING:
+    from tta_backend.config.settings import Settings
 
 
 class ConnectorCryptoError(ValueError):
@@ -31,7 +36,7 @@ def build_multi_fernet(raw: str) -> MultiFernet:
         raise ConnectorCryptoError(f"CONNECTOR_ENCRYPTION_KEY is malformed: {exc}") from exc
 
 
-def get_connector_cipher(settings) -> MultiFernet | None:
+def get_connector_cipher(settings: Settings) -> MultiFernet | None:
     """None means the feature is unconfigured on this deployment -- callers
     turn that into the structured 503, never an exception."""
     if not settings.connector_encryption_key:

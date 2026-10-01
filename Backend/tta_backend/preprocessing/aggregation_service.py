@@ -91,7 +91,7 @@ _TEMPORAL_START_ATTRS = (("time_coverage_start", None), ("RangeBeginningDate", "
 _TEMPORAL_END_ATTRS = (("time_coverage_end", None), ("RangeEndingDate", "RangeEndingTime"))
 
 
-def _attr_timestamp(attrs: dict, candidates: tuple) -> str:
+def _attr_timestamp(attrs: dict[str, Any], candidates: tuple[tuple[str, str | None], ...]) -> str:
     for date_key, time_key in candidates:
         date = attrs.get(date_key)
         if not date:
@@ -104,7 +104,7 @@ def _attr_timestamp(attrs: dict, candidates: tuple) -> str:
     return ""
 
 
-def attrs_time_range(attrs: dict | None) -> tuple[str, str]:
+def attrs_time_range(attrs: dict[str, Any] | None) -> tuple[str, str]:
     """Granule temporal coverage from global attributes -- the fallback for
     files whose date exists only as metadata, never as a time coordinate."""
     attrs = attrs or {}
@@ -135,7 +135,7 @@ def fill_match(values: Any, fill: Any) -> Any:
     return np.isclose(values, fill_f, rtol=1e-6, atol=1e-9)
 
 
-def _decode_encoding(da: xr.DataArray, source_ds: xr.Dataset | None = None) -> dict:
+def _decode_encoding(da: xr.DataArray, source_ds: xr.Dataset | None = None) -> dict[str, Any]:
     """The scale/offset encoding xarray recorded when it decoded ``da``.
 
     Prefers the *unmasked* source Dataset's copy of the variable: in-place ops
@@ -1232,7 +1232,7 @@ class AggregationService:
         """
         if not qa_pixel_counts:
             return None
-        flags = qa_pixel_counts.get("valid_time_flags")
+        flags: list[bool] | None = qa_pixel_counts.get("valid_time_flags")
         if flags is None or qa_pixel_counts.get("valid_time_dim") != time_dim:
             return None
         if len(flags) != da.sizes.get(time_dim):
@@ -1431,11 +1431,11 @@ class AggregationService:
         }
 
     @staticmethod
-    def _date_only(value) -> str:
+    def _date_only(value: Any) -> str:
         if not value:
             return ""
         try:
-            return pd.Timestamp(value).isoformat()[:10]
+            return str(pd.Timestamp(value).isoformat())[:10]
         except Exception:
             return str(value)[:10]
 
@@ -1448,6 +1448,6 @@ class AggregationService:
         if not start or not end:
             return None
         try:
-            return (pd.Timestamp(end) - pd.Timestamp(start)).total_seconds() / 86400.0
+            return float((pd.Timestamp(end) - pd.Timestamp(start)).total_seconds()) / 86400.0
         except Exception:
             return None

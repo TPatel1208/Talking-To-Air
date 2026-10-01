@@ -13,13 +13,21 @@ rather than assumed to be whichever axis happened to be first.
 """
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 import math
 import re
 from dataclasses import dataclass
 
 import numpy as np
 
+from tta_backend.utils import xarray_ops
 from tta_backend.utils.geo_utils import vertical_axis_kind
+
+if TYPE_CHECKING:
+    import xarray as xr
+
+    from tta_backend.earthdata_mcp.results import MCPToolError
 
 
 @dataclass(frozen=True)
@@ -34,7 +42,7 @@ class LevelRequest:
 _LEVEL_PATTERN = re.compile(r"^\s*([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*([A-Za-z/^0-9_-]+)\s*$")
 
 
-def parse_level(text: str, available: dict | None = None) -> LevelRequest:
+def parse_level(text: str, available: dict[str, Any] | None = None) -> LevelRequest:
     """Parse ``"500 hPa"`` / ``"26 km"`` into a request, or refuse.
 
     Strict on purpose (D11). A bare ``"500"`` is not an under-specified request
@@ -55,7 +63,7 @@ def parse_level(text: str, available: dict | None = None) -> LevelRequest:
     return LevelRequest(value=float(value), kind=kind, units=units)
 
 
-def _vocabulary(available: dict | None) -> str:
+def _vocabulary(available: dict[str, Any] | None) -> str:
     if not available:
         return "Specify a physical level with its units, such as `500 hPa` or `10 km`."
     published = ", ".join(f"{kind} in {units}" for kind, units in sorted(available.items()))
@@ -119,7 +127,9 @@ class LevelResolution:
     axis_variable: str
 
 
-def resolve_level(narrowed, dim: str, level: str, dataset=None) -> LevelResolution:
+def resolve_level(
+    narrowed: xr.DataArray, dim: str, level: str, dataset: xr.Dataset | None = None,
+) -> LevelResolution:
     """Resolve ``level`` to a single index along ``dim`` on ``narrowed``.
 
     ``narrowed`` is the region-narrowed, PRE-aggregation array. That is not a
@@ -196,7 +206,7 @@ def resolve_level(narrowed, dim: str, level: str, dataset=None) -> LevelResoluti
     )
 
 
-def _axis_candidates(narrowed, dim: str, dataset) -> dict:
+def _axis_candidates(narrowed: xr.DataArray, dim: str, dataset: xr.Dataset | None) -> dict[str, Any]:
     """``{kind: (name, DataArray)}`` for every physical vertical axis spanning
     ``dim``, from the narrowed array's coordinates first and the opened
     Dataset's data variables second.
@@ -226,11 +236,11 @@ def _axis_candidates(narrowed, dim: str, dataset) -> dict:
     return found
 
 
-def _in_region_mask(narrowed, axis, dim: str):
+def _in_region_mask(narrowed: xr.DataArray, axis: xr.DataArray, dim: str) -> xr.DataArray:
     """Where the science variable actually has a value, broadcast over the
     axis. ``narrowed`` may carry dimensions the axis does not (or vice versa),
     so this aligns rather than assuming a shared shape."""
-    present = np.isfinite(narrowed)
+    present = xarray_ops.isfinite(narrowed)
     if not set(axis.dims) - set(narrowed.dims):
         return present.broadcast_like(axis)
     # An axis with extra dimensions: a cell counts if the science variable has
@@ -238,7 +248,7 @@ def _in_region_mask(narrowed, axis, dim: str):
     return present.any(dim=[d for d in narrowed.dims if d not in axis.dims]).broadcast_like(axis)
 
 
-def _selector_value(coordinate, index: int, request):
+def _selector_value(coordinate: xr.DataArray | None, index: int, request: LevelRequest) -> float:
     """What the existing selection seam should be handed for the resolved layer.
 
     A coordinate with duplicate or non-monotonic values cannot be selected by
@@ -257,7 +267,7 @@ def _selector_value(coordinate, index: int, request):
     return float(values[index])
 
 
-def _error_fraction_of_gap(values, index: int, requested: float) -> float:
+def _error_fraction_of_gap(values: np.ndarray, index: int, requested: float) -> float:
     """How far the request sits toward the midpoint between the resolved layer
     and its neighbour ON THE REQUESTED SIDE, as a fraction. 0 is exactly on the
     layer, 1 is exactly halfway to the next one.
@@ -284,7 +294,7 @@ def _error_fraction_of_gap(values, index: int, requested: float) -> float:
     return min(1.0, float(abs(values[index] - requested) / half_gap))
 
 
-def _layer_spread(axis, dim: str, index: int) -> float:
+def _layer_spread(axis: xr.DataArray, dim: str, index: int) -> float:
     """max-minus-min of one layer's level across the analyzed region."""
     layer = axis.isel({dim: index})
     finite = np.asarray(layer.values, dtype="float64")
@@ -335,7 +345,7 @@ def _convert(value: float, from_units: str, to_units: str, kind: str) -> float:
     return value * source / target
 
 
-def _unconvertible_axis_error(from_units: str, to_units: str, kind: str):
+def _unconvertible_axis_error(from_units: str, to_units: str, kind: str) -> MCPToolError:
     from tta_backend.earthdata_mcp.results import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
 
     known = ", ".join(sorted(_TO_CANONICAL[kind]))
@@ -352,7 +362,7 @@ def _unconvertible_axis_error(from_units: str, to_units: str, kind: str):
     )
 
 
-def _refuse_if_outside_the_axis(requested: float, values, axis_units: str, request) -> None:
+def _refuse_if_outside_the_axis(requested: float, values: np.ndarray, axis_units: str, request: LevelRequest) -> None:
     """Refuse a level the product's axis does not span, instead of snapping to
     its top or bottom layer.
 
@@ -391,7 +401,7 @@ def _within(value: float, low: float, high: float) -> bool:
     return math.isclose(value, low, rel_tol=1e-9) or math.isclose(value, high, rel_tol=1e-9)
 
 
-def _axis_units_unknown_error(request, axis_name: str):
+def _axis_units_unknown_error(request: LevelRequest, axis_name: str) -> MCPToolError:
     from tta_backend.earthdata_mcp.results import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
 
     return MCPToolError(
@@ -404,7 +414,7 @@ def _axis_units_unknown_error(request, axis_name: str):
     )
 
 
-def _no_usable_column_error(request):
+def _no_usable_column_error(request: LevelRequest) -> MCPToolError:
     from tta_backend.earthdata_mcp.results import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
 
     return MCPToolError(
@@ -415,7 +425,7 @@ def _no_usable_column_error(request):
     )
 
 
-def _unselectable_dimension_error(request, problem: str):
+def _unselectable_dimension_error(request: LevelRequest, problem: str) -> MCPToolError:
     from tta_backend.earthdata_mcp.results import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
 
     return MCPToolError(
@@ -426,7 +436,7 @@ def _unselectable_dimension_error(request, problem: str):
     )
 
 
-def _axis_not_published_error(request, available: dict):
+def _axis_not_published_error(request: LevelRequest, available: dict[str, Any]) -> MCPToolError:
     from tta_backend.earthdata_mcp.results import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
 
     return MCPToolError(
@@ -437,7 +447,7 @@ def _axis_not_published_error(request, available: dict):
     )
 
 
-def _per_pixel_agreement(axis, dim: str, requested: float) -> dict:
+def _per_pixel_agreement(axis: xr.DataArray, dim: str, requested: float) -> dict[str, Any]:
     """How much of the analyzed region would independently pick the same layer.
 
     Each pixel column resolves the request against its OWN vertical coordinate;
@@ -515,7 +525,7 @@ def _per_pixel_agreement(axis, dim: str, requested: float) -> dict:
     }
 
 
-def _column_weights(ordered, dim: str, lat_weights) -> np.ndarray:
+def _column_weights(ordered: xr.DataArray, dim: str, lat_weights: xr.DataArray | None) -> np.ndarray:
     """One weight per flattened non-vertical column, aligned with the same
     ``reshape(n_layers, -1)`` the values went through.
 
@@ -542,7 +552,8 @@ _MIN_DOMINANT_FRACTION = 0.5
 
 
 def _refuse_if_not_honestly_one_layer(
-    request, requested: float, axis_units: str, index, dominant, agreement, values,
+    request: LevelRequest, requested: float, axis_units: str, index: int, dominant: int | None,
+    agreement: dict[str, Any], values: np.ndarray,
 ) -> None:
     """Refuse when a single index cannot honestly stand for the request (D6)."""
     from tta_backend.earthdata_mcp.results import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
@@ -607,7 +618,7 @@ def _refuse_if_not_honestly_one_layer(
         )
 
 
-def _unparseable_level_error(raw: str, available: dict | None):
+def _unparseable_level_error(raw: str, available: dict[str, Any] | None) -> MCPToolError:
     from tta_backend.earthdata_mcp.results import CATEGORY_USER_INPUT, MCPToolError
 
     return MCPToolError(
