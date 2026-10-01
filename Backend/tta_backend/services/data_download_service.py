@@ -9,6 +9,7 @@ export contract) rather than adding a parallel download system.
 """
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any, AsyncIterator
 from urllib.parse import urlparse
@@ -59,12 +60,17 @@ def iter_file_chunks(storage_uri: str, chunk_size: int = 64 * 1024) -> AsyncIter
     path = Path(url2pathname(parsed.path))
 
     async def _chunks() -> AsyncIterator[bytes]:
-        with path.open("rb") as handle_file:
+        # Reads go to a worker thread so a slow disk stalls this download,
+        # not every other request on the event loop.
+        handle_file = await asyncio.to_thread(path.open, "rb")
+        try:
             while True:
-                chunk = handle_file.read(chunk_size)
+                chunk = await asyncio.to_thread(handle_file.read, chunk_size)
                 if not chunk:
                     break
                 yield chunk
+        finally:
+            handle_file.close()
 
     return _chunks()
 

@@ -68,7 +68,7 @@ class ChartPayloadStreamingTests(unittest.IsolatedAsyncioTestCase):
 
         class OuterAgent:
             async def astream(self, input_, config, stream_mode):
-                async for event_type, data in stream_response(InnerAgent(), "nested", "inner-thread"):
+                async for _event_type, _data in stream_response(InnerAgent(), "nested", "inner-thread"):
                     pass
                 await asyncio.sleep(0)
                 yield "messages", (SimpleNamespace(content="outer done", type="ai", tool_calls=None), {})

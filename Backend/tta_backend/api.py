@@ -662,7 +662,7 @@ async def set_connector_token_endpoint(connector_type: ConnectorType, req: SetCo
     try:
         expires_at = decode_token_expiry(req.token)
     except TokenValidationError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
     encrypted_secret = encrypt_secret(cipher, req.token)
     row = await upsert_connector(
@@ -937,7 +937,7 @@ async def export_chart_csv(chart_id: str, request: Request):
             )
         )
     except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=422, detail=str(e)) from e
 
     return StreamingResponse(
         stream,
@@ -969,7 +969,7 @@ async def export_chart_png(chart_id: str, request: Request):
         # globe-wide chart. The handler above turns this into a 503.
         raise
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=422, detail=str(e)) from e
     return Response(
         content=content,
         media_type="image/png",
@@ -1169,7 +1169,7 @@ async def chart_methods_endpoint(chart_id: str, request: Request):
         )
     except MCPToolError:
         raise
-    except Exception:
+    except Exception as exc:
         # Any surprise inside the methods assembly (e.g. a KeyError on a
         # shifted provenance shape) is a contract failure, not a stack trace
         # to leak: classify it through the shared taxonomy handler with a
@@ -1180,7 +1180,7 @@ async def chart_methods_endpoint(chart_id: str, request: Request):
         raise MCPToolError(
             CATEGORY_CONTRACT,
             "The methods document could not be assembled for this chart.",
-        )
+        ) from exc
     return Response(
         content=markdown,
         media_type="text/markdown; charset=utf-8",
@@ -1203,16 +1203,16 @@ async def export_chart_netcdf(chart_id: str, request: Request):
         with user_id_context(request.state.current_user.id):
             export = await export_converted(source_handles[0], "netcdf", tools)
     except DataDownloadError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=422, detail=str(e)) from e
 
     # T37: materialize the first chunk before committing to a 200 — an
     # evicted/vanished converted file raises here instead of streaming a
     # truncated "successful" download.
     try:
         stream = await materialize_first_chunk(iter_file_chunks(export["storage_uri"]))
-    except OSError:
+    except OSError as exc:
         logger.exception("export_netcdf_file_unreadable", extra={"_chart_id": chart_id})
-        raise HTTPException(status_code=422, detail="The converted export is no longer available. Please retry the export.")
+        raise HTTPException(status_code=422, detail="The converted export is no longer available. Please retry the export.") from exc
 
     return StreamingResponse(
         stream,
@@ -1239,8 +1239,8 @@ async def get_artifact(
 ):
     try:
         return await artifact_store.get_page(artifact_id, request.state.current_user.id, offset, limit)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Artifact not found")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Artifact not found") from exc
 
 
 @app.get("/artifacts/{artifact_id}/csv")
@@ -1252,8 +1252,8 @@ async def export_artifact_csv(artifact_id: str, request: Request):
         # iter_csv_chunks re-checks, but as an async generator it would not do
         # so until the first chunk, long after headers had gone out.
         artifact = await artifact_store.reference(artifact_id, request.state.current_user.id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Artifact not found")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Artifact not found") from exc
 
     filename = _safe_artifact_filename(artifact.title or artifact.id)
     return StreamingResponse(
@@ -1597,11 +1597,11 @@ async def get_sessions(
         )
     except HTTPException:
         raise
-    except InvalidSessionCursor:
-        raise HTTPException(status_code=400, detail="Invalid session cursor")
-    except Exception:
+    except InvalidSessionCursor as exc:
+        raise HTTPException(status_code=400, detail="Invalid session cursor") from exc
+    except Exception as exc:
         logger.exception("sessions_list_failed", extra={"_user_id": request.state.current_user.id})
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from exc
 
 @app.get("/session/{thread_id}/history")
 @limiter.limit("60/minute")
@@ -1616,9 +1616,9 @@ async def get_history(thread_id: ThreadId, request: Request):
         return {"messages": await history_service.build_history(active_agent, thread_id, user_id)}
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
         logger.exception("session_history_failed", extra={"_thread_id": thread_id})
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from exc
 
 
 @app.delete("/session/{thread_id}")
@@ -1631,6 +1631,6 @@ async def remove_session(thread_id: ThreadId, request: Request):
         return {"deleted": thread_id}
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
         logger.exception("session_delete_failed", extra={"_thread_id": thread_id})
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from exc

@@ -647,7 +647,7 @@ def build_frame_stack(
                 statistics=stats,
             )
             for (start, end), count, fraction, qa_rate, stats in zip(
-                intervals, counts, coverage, qa_rates, statistics,
+                intervals, counts, coverage, qa_rates, statistics, strict=True,
             )
         ],
         values=shipped,
@@ -1426,7 +1426,7 @@ def _qa_pass_rates(
     labels = [start.isoformat() for start in _bucket_starts(stamps, cadence)]
     checked_sum = [0.0] * n_frames
     passing_sum = [0.0] * n_frames
-    for label, checked_area, passing_area in zip(labels, checked, passing):
+    for label, checked_area, passing_area in zip(labels, checked, passing, strict=True):
         index = frame_of.get(label)
         if index is None or index >= n_frames:
             continue

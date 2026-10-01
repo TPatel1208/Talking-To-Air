@@ -194,7 +194,7 @@ class ReducingOverTheAnalyzedRegionKeepsOneNamedAxisTests(unittest.TestCase):
             (5.5 * w10 + 7.5 * w70) / (w10 + w70),
         ]
         self.assertEqual(reduced.dims, ("time",))
-        for got, want in zip(reduced.values, expected):
+        for got, want in zip(reduced.values, expected, strict=True):
             self.assertAlmostEqual(float(got), want, places=9)
 
     def test_keeping_time_and_the_vertical_axis_yields_the_profile_intermediate(self):

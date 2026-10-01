@@ -443,7 +443,7 @@ class TurnRegistry:
                 extra={"_event": "turn_stop_watch_failed"},
             )
             return
-        for turn_id, flag in zip(live, flags):
+        for turn_id, flag in zip(live, flags, strict=True):
             if flag:
                 self._cancel_local(turn_id)
 

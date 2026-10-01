@@ -39,7 +39,8 @@ def make_compute_statistic_tool(mcp_tools: dict[str, BaseTool]):
     async def compute_statistic_tool(
         handle: Annotated[str, Field(description="An obs_/cube_ handle from a retrieval or transform tool.")],
         location: str,
-        stats: list[str] = ["mean", "median", "max", "min"],
+        # Never mutated; a literal default is what the tool schema shows the model.
+        stats: list[str] = ["mean", "median", "max", "min"],  # noqa: B006
         variable: Optional[str] = None,
         dimension: Optional[str] = None,
         dimension_value: Optional[float] = None,

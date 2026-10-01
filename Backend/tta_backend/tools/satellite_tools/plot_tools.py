@@ -1392,7 +1392,7 @@ def _vertical_axis_candidates(narrowed, ds, vertical_dim: str, region: dict) -> 
     averaged over a continent.
     """
     found: dict[str, object] = {}
-    for name, var in narrowed.coords.items():
+    for var in narrowed.coords.values():
         if vertical_dim not in getattr(var, "dims", ()):
             continue
         kind = vertical_axis_kind(var)
@@ -1819,7 +1819,7 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
 
         panels = []
         variable_name = ""
-        for handle, location in zip(handles, locations):
+        for handle, location in zip(handles, locations, strict=True):
             try:
                 ds = await open_handle(handle, mcp_tools)
                 # See plot_singular: normalize the whole Dataset's longitude
@@ -2114,8 +2114,8 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
             # key so aggregation_meta's granule_dates/date-range (built from
             # it below) agree with the chart's actual plotted order, even
             # when source timesteps arrive non-chronologically.
-            paired = sorted(zip(times, values, valid_time_indices))
-            sorted_times, sorted_values, sorted_valid_time_indices = zip(*paired)
+            paired = sorted(zip(times, values, valid_time_indices, strict=True))
+            sorted_times, sorted_values, sorted_valid_time_indices = zip(*paired, strict=True)
 
             # T32: same aggregation_label/granule_dates/n_granules/cadence
             # summary the heatmap/comparison paths get from aggregate() --

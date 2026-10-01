@@ -74,8 +74,8 @@ def load_pool(pool_dir: str, target: int, kind: str,
     arrs = [np.load(p) for p in paths]
     shapes = [a.shape[1:] for a in arrs]
     modal = max(set(shapes), key=shapes.count)
-    keep = [(p, a) for p, a in zip(paths, arrs) if a.shape[1:] == modal]
-    dropped = [os.path.basename(p) for p, a in zip(paths, arrs) if a.shape[1:] != modal]
+    keep = [(p, a) for p, a in zip(paths, arrs, strict=True) if a.shape[1:] == modal]
+    dropped = [os.path.basename(p) for p, a in zip(paths, arrs, strict=True) if a.shape[1:] != modal]
     if dropped:
         print(f"    (excluded from the {modal} pool, different grid: {', '.join(dropped)})")
     stack = np.concatenate([a for _p, a in keep], axis=0).astype(np.float32)
@@ -100,8 +100,8 @@ def measure(stack: np.ndarray, n_frames: int, out_dir: str, label: str) -> dict:
     }
 
     for level in GZIP_LEVELS:
-        ct, blob = best_of(lambda: gzip.compress(raw, compresslevel=level))
-        dt, back = best_of(lambda: gzip.decompress(blob))
+        ct, blob = best_of(lambda level=level: gzip.compress(raw, compresslevel=level))
+        dt, back = best_of(lambda blob=blob: gzip.decompress(blob))
         assert back == raw, "gzip round-trip changed the bytes"
         row["levels"][str(level)] = {
             "gzip_bytes": len(blob),

@@ -102,7 +102,7 @@ def _extract_monitor_series(
     raw_times = np.atleast_1d(series["time"].values) if "time" in series.coords else [None] * n_total
 
     times, values = [], []
-    for t, v in zip(raw_times, raw_values):
+    for t, v in zip(raw_times, raw_values, strict=True):
         if not np.isfinite(v):
             continue
         times.append(pd.Timestamp(t).isoformat() if t is not None else None)
@@ -128,7 +128,7 @@ def _pair_daily(times: list[str], values: list[float], ground_daily: dict[str, f
     Returns records sorted by date: {date, satellite, ground}.
     """
     daily_sat: dict[str, list[float]] = {}
-    for t, v in zip(times, values):
+    for t, v in zip(times, values, strict=True):
         date = t[:10]
         daily_sat.setdefault(date, []).append(v)
 

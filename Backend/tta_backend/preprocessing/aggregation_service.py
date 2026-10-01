@@ -417,7 +417,7 @@ def _by_time_rates(passing_area: xr.DataArray, checked_area: xr.DataArray) -> li
     rates: list[float | None] = []
     for numerator, denominator in zip(
         np.asarray(passing_area.values, dtype="float64"),
-        np.asarray(checked_area.values, dtype="float64"),
+        np.asarray(checked_area.values, dtype="float64"), strict=True,
     ):
         rates.append(round(float(numerator) / float(denominator), 6) if denominator > 0 else None)
     return rates

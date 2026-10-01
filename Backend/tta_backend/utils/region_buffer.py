@@ -20,6 +20,7 @@ surfaces against the live code.
 import math
 import re
 from dataclasses import dataclass
+from itertools import pairwise
 from typing import Any
 
 # D16, and V22 chose the spellings deliberately rather than accepting whatever
@@ -265,7 +266,7 @@ def _crosses_antimeridian(geometry) -> bool:
     """
     for ring in _rings(geometry):
         lons = [x for x, _ in ring.coords]
-        if any(abs(a - b) > 180 for a, b in zip(lons, lons[1:])):
+        if any(abs(a - b) > 180 for a, b in pairwise(lons)):
             return True
     return False
 

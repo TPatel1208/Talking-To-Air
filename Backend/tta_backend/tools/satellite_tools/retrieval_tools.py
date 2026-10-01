@@ -120,12 +120,12 @@ def _series_from_table(table, variable: str) -> tuple[list[str], list[float]]:
     values_raw = table.column(value_col).to_pylist()
     paired = sorted(
         (pd.Timestamp(t).isoformat(), round(float(v), 6))
-        for t, v in zip(times_raw, values_raw)
+        for t, v in zip(times_raw, values_raw, strict=True)
         if v is not None
     )
     if not paired:
         return [], []
-    times, values = zip(*paired)
+    times, values = zip(*paired, strict=True)
     return list(times), list(values)
 
 

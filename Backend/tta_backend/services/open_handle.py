@@ -557,7 +557,7 @@ def _open_netcdf_bundle(path: str, timing: dict | None = None) -> Any:
             f"Retrieved bundle at '{path}' is not a readable zip archive — this is "
             "usually an incomplete or failed retrieval; retrying the retrieval "
             f"typically resolves it. Underlying error: {exc}"
-        )
+        ) from exc
 
     with zf:
         # Granule filenames sort chronologically, so name order is time order.
@@ -602,7 +602,7 @@ def _open_netcdf_bundle(path: str, timing: dict | None = None) -> Any:
         raise OpenHandleError(
             f"Could not combine the {len(members)} granules in bundle '{path}' onto a "
             f"shared time axis: {exc}"
-        )
+        ) from exc
     return _order_bundle_time(combined, path)
 
 
@@ -810,7 +810,7 @@ def _chunk_ceiling_spec(groups: dict, limit: int) -> dict | None:
     spec: dict[Any, int] = {}
     for var in variables:
         chunk_sizes = (
-            {dim: max(sizes) for dim, sizes in zip(var.dims, var.chunks)}
+            {dim: max(sizes) for dim, sizes in zip(var.dims, var.chunks, strict=True)}
             if var.chunks is not None
             else dict(var.sizes)
         )
@@ -1277,7 +1277,7 @@ def _apply_declared_dimension_names(ds: Any) -> Any:
         names = [name.strip() for name in str(declared).split(",")]
         if len(names) != len(var.dims):
             continue
-        for dim, name in zip(var.dims, names):
+        for dim, name in zip(var.dims, names, strict=True):
             if not name or name == dim:
                 continue
             if mapping.get(dim, name) != name:
@@ -1408,8 +1408,11 @@ _PIPELINE_SOURCE_FUNCTIONS = (
 # _promote_lat_lon_coords; that shifts the hash while every cube written by the
 # old logic stays a correct interpretation, so the fingerprint was re-pinned
 # and the version deliberately left at "1". Bumping it would have evicted the
-# whole cube cache for a rename. The cube-cache *wiring*
+# whole cube cache for a rename. Re-pinned the same way for the ruff B904/B905
+# pass: `raise ... from exc` in _open_netcdf_bundle only adds a traceback cause,
+# and zip(..., strict=True) in _apply_declared_dimension_names sits behind a
+# length check that already skips every mismatched pair. The cube-cache *wiring*
 # deliberately lives outside these functions (in _open_by_media_type) so this
 # fingerprint tracks interpretation only, and cache plumbing changes don't
 # spuriously invalidate every cube.
-OPEN_PIPELINE_SOURCE_FINGERPRINT = "0682d593fca8bc02f86dd6850218764f6ec4753d12365722419f69f29b21b5fe"
+OPEN_PIPELINE_SOURCE_FINGERPRINT = "5c9a71bc7180bd3232a5a49ebffd395bcc9c73684e930e184f6fa6f53ea4eae5"

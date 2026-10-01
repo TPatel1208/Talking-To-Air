@@ -778,7 +778,7 @@ class ExportService:
 
         stat = export.get("aggregation", "")
         units = export.get("units", "")
-        return [[variable, time, stat, value, units] for time, value in zip(times, values)]
+        return [[variable, time, stat, value, units] for time, value in zip(times, values, strict=True)]
 
     def _plot_heatmap_axis(self, ax, export: dict[str, Any], da, title: str):
         lat_coord, lon_coord = self._export_lat_lon_names(da)

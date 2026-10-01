@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from unittest.mock import patch
 
@@ -122,13 +123,12 @@ class RestartSurvivalTests(unittest.IsolatedAsyncioTestCase):
 
 class UnclaimedArtifactExpiryTests(unittest.IsolatedAsyncioTestCase):
     async def test_unclaimed_artifact_expires_after_its_ttl(self):
-        import time
         from tta_backend.services.artifact_store import ArtifactStore
 
         fake_repo = FakeArtifactRepository()
         store = ArtifactStore(ttl_seconds=0)
         ref = store.put_table("Sample Table", ["date", "value"], [{"date": "2024-01-01", "value": 10}])
-        time.sleep(0.01)
+        await asyncio.sleep(0.01)
 
         with patch("tta_backend.services.artifact_store.artifact_repository", fake_repo):
             with self.assertRaises(KeyError):

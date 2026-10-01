@@ -323,8 +323,8 @@ def _bbox_from_point(lat: float, lon: float) -> List[float]:
 def _positive_int(value: Union[int, str], name: str) -> int:
     try:
         parsed = int(value)
-    except (TypeError, ValueError):
-        raise ValueError(f"Invalid {name}: '{value}' must be an integer or castable to integer.")
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid {name}: '{value}' must be an integer or castable to integer.") from exc
     if parsed < 1:
         raise ValueError(f"Invalid {name}: {parsed} must be >= 1.")
     return parsed
@@ -597,8 +597,8 @@ async def find_closest_monitor_by_coords(
     try:
         latitude = float(latitude)
         longitude = float(longitude)
-    except ValueError:
-        raise ValueError(f"Invalid latitude or longitude: '{latitude}', '{longitude}' must be float or castable to float.")
+    except ValueError as exc:
+        raise ValueError(f"Invalid latitude or longitude: '{latitude}', '{longitude}' must be float or castable to float.") from exc
     k = _positive_int(k, "k")
     bdate_obj, edate_obj, bdate_str, edate_str = _resolve_dates(bdate, edate)
 
@@ -1207,7 +1207,7 @@ async def find_exceedance_days(
 
     # Flag days
     body = []
-    for r, v in zip(records, values):
+    for r, v in zip(records, values, strict=True):
         if v is None:
             continue
         triggered = []
