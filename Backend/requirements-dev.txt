@@ -9,8 +9,9 @@
 # installs this file; the default (runtime) target does not.
 -r requirements.txt
 
-pytest>=8.3.0
-pytest-asyncio>=0.24.0
-ruff>=0.8.0
-mypy>=1.13.0
-coverage>=7.6.0
+pytest==9.1.1
+pytest-asyncio==1.4.0
+ruff==0.16.3
+mypy==2.3.1
+coverage==7.15.4
+pip-audit==2.10.1
