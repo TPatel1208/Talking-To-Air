@@ -69,9 +69,7 @@ async def build_agent(
 
     # ── Trim middleware — keeps the supervisor's context window bounded ───────
 
-    # langchain types @wrap_model_call for sync functions only; it detects and
-    # awaits a coroutine function at runtime.
-    @wrap_model_call  # type: ignore[arg-type]
+    @wrap_model_call
     async def trim_middleware(
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],

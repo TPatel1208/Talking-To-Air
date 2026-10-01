@@ -32,9 +32,7 @@ def build_subagent_trim_middleware(agent_type: str, max_tokens: int | None = Non
     """
     ceiling = max_tokens if max_tokens is not None else get_settings().subagent_trim_token_ceiling
 
-    # langchain types @wrap_model_call for sync functions only; it detects and
-    # awaits a coroutine function at runtime.
-    @wrap_model_call  # type: ignore[arg-type]
+    @wrap_model_call
     async def trim_middleware(
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
