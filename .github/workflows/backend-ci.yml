@@ -44,14 +44,14 @@ jobs:
       # Must match Backend/Dockerfile's base image (python:3.12-bookworm) —
       # CI is worthless as a gate if it runs the suite on an interpreter we
       # don't ship. Backend/ruff.toml, Backend/mypy.ini and pyproject.toml's
-      # requires-python all say 3.12 too; keep all five in step.
-      - uses: actions/setup-python@v5
+      # requires-python all say 3.12 too; keep all five in step. The uv version
+      # matches the one the Dockerfile copies in.
+      - uses: astral-sh/setup-uv@v10
         with:
+          version: "0.12.21"
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: |
-            Backend/requirements.txt
-            Backend/requirements-dev.txt
+          enable-cache: true
+          cache-dependency-glob: Backend/uv.lock
 
       - name: Install system dependencies
         run: |
@@ -59,25 +59,31 @@ jobs:
           sudo apt-get install -y libproj-dev proj-data proj-bin libgeos-dev \
             libgdal-dev gdal-bin libhdf5-dev libnetcdf-dev
 
+      # Exactly what uv.lock pins, dev group included. --locked fails the job
+      # when pyproject.toml has changed without the lock being regenerated.
       - name: Install Python dependencies
+        working-directory: Backend
         run: |
-          python -m pip install --upgrade pip
-          pip install -r Backend/requirements-dev.txt
-          pip install -e Backend
+          uv sync --locked
+          echo "$GITHUB_WORKSPACE/Backend/.venv/bin" >> "$GITHUB_PATH"
 
       # Also the syntax check: ruff fails on any file it cannot parse, which is
       # all the old `compileall` step verified.
       - name: Lint Python
         run: python -m ruff check Backend/
 
-      # Audits the environment just installed from the pins (pip-audit is in
-      # requirements-dev.txt). Each ignore needs a reason and an exit plan:
+      # Audits every package uv.lock pins, as exported with its hashes, without
+      # resolving anything (pip-audit is in the dev group). Each ignore needs a
+      # reason and an exit plan:
       #   PYSEC-2026-2192 -- langchain < 1.3.9 path confinement in the
       #     file-search middleware and prompt/chain config loaders. Neither is
       #     used here (create_agent + wrap_model_call only). The fix needs
       #     langgraph 1.1 -> 1.2, the agent runtime, as its own change.
       - name: Audit Python dependencies
-        run: python -m pip_audit --skip-editable --progress-spinner off --ignore-vuln PYSEC-2026-2192
+        run: |
+          uv export --locked --project Backend --no-emit-project --format requirements-txt -o "$RUNNER_TEMP/locked-requirements.txt"
+          python -m pip_audit --disable-pip --no-deps -r "$RUNNER_TEMP/locked-requirements.txt" \
+            --progress-spinner off --ignore-vuln PYSEC-2026-2192
 
       # The whole package. mypy.ini decides which error codes apply where.
       - name: Type check backend

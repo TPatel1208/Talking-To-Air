@@ -6,7 +6,68 @@ build-backend = "setuptools.build_meta"
 name = "tta-backend"
 version = "0.1.0"
 description = "Talking to Air backend services and agents"
-requires-python = ">=3.12"
+# 3.12 only: must match Backend/Dockerfile's base image, the CI Python, ruff's
+# target-version and mypy's python_version. Bounded above so uv.lock resolves
+# for the one interpreter this ships on rather than every future one.
+requires-python = ">=3.12,<3.13"
+# Lower bounds only. The exact version of every package, direct and indirect,
+# on every platform, is in uv.lock; change it with `uv lock --upgrade-package`.
+# Everything here ships in the runtime image -- test and lint tools belong in
+# the dev group below.
+dependencies = [
+    "affine>=2.4.0",
+    "cartopy>=0.25.0",
+    "earthaccess>=0.17.0",
+    "fastapi>=0.135.3",
+    "uvicorn>=0.35.0",
+    "python-multipart>=0.0.32",
+    "langchain>=1.2.15",
+    "langchain_google_genai>=4.2.1",
+    "langchain_ollama>=1.1.0",
+    "langgraph>=1.1.6",
+    "langgraph-checkpoint-postgres>=3.1.2",
+    "langchain-mcp-adapters>=0.3.0",
+    "matplotlib>=3.10.8",
+    "netCDF4>=1.7.4",
+    "numpy>=2.5.2",
+    "pandas>=3.0.5",
+    "parsedatetime>=2.6",
+    "pydantic>=2.12.5",
+    "python-dotenv>=1.2.3",
+    "rasterio>=1.4.3",
+    "requests>=2.33.1",
+    "Shapely>=2.0.7",
+    "xarray>=2025.6.1",
+    "psycopg[binary]>=3.3.4",
+    "psycopg_pool>=3.3.1",
+    "zarr>=3.1.6",
+    "pyarrow>=24.0.0",
+    "h5py>=3.16.0",
+    "h5netcdf>=1.8.1",
+    "PyYAML>=6.0.2",
+    "httpx>=0.28.1",
+    "tenacity>=9.1.4",
+    "langchain_groq>=1.1.2",
+    "dask>=2026.7.1",
+    "PyJWT>=2.15.1",
+    "cryptography>=50.0.2",
+    "fastmcp>=3.4.2",
+    "prometheus-client>=0.22.1",
+    "slowapi>=0.1.10",
+    "redis>=8.1.0",
+]
+
+[dependency-groups]
+# Installed by `uv sync` (the default) and the Dockerfile's devtools stage,
+# never by the runtime stage (`uv sync --no-dev`).
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.16.3",
+    "mypy>=2.3.1",
+    "coverage>=7.15.4",
+    "pip-audit>=2.10.1",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

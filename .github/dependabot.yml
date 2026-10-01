@@ -1,10 +1,10 @@
-# Backend requirements are pinned exactly, so nothing moves unless a PR moves
-# it. These weekly PRs are how pins advance, each one gated by the full CI run.
+# Backend/uv.lock pins every Python package exactly, so nothing moves unless a
+# PR moves it. These weekly PRs are how pins advance, each one gated by the full CI run.
 # Minor and patch bumps are grouped per ecosystem to keep it to about one PR a
 # week each; major bumps arrive one per PR because they need reading.
 version: 2
 updates:
-  - package-ecosystem: pip
+  - package-ecosystem: uv
     directory: /Backend
     schedule:
       interval: weekly

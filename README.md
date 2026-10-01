@@ -139,7 +139,18 @@ Run a subset while iterating:
 docker compose --profile test run --build --rm backend-test sh -c "pytest tests/test_subagent_dispatch.py -q"
 ```
 
-`.github/workflows/backend-ci.yml` runs on every push and PR to `main`: backend installs system geo deps, lints with `ruff`, audits dependencies with `pip-audit`, type-checks the package with `mypy`, runs the test suite against a Redis service with an 87% whole-package coverage gate, then builds the backend image and boots it until `/health` answers (`scripts/smoke-backend-image.sh`); frontend runs `npm ci`, `npm audit` (shipped dependencies), `npm run lint`, `npm test`, `npm run build`, a Docker image build, and a `docker compose config` validation of both compose files. The frontend image build is also the clean-checkout guard — it runs against exactly what a fresh clone contains, so anything that sneaks a gitignored file into the build fails there.
+**Python dependencies** are managed with [uv](https://docs.astral.sh/uv/). `Backend/pyproject.toml` declares them (runtime under `dependencies`, test and lint tools in the `dev` group) and `Backend/uv.lock` pins every package, direct and indirect, for every platform. The Docker image, CI and your editor's environment all install from that lock:
+
+```bash
+cd Backend && uv sync                        # create/refresh Backend/.venv from uv.lock
+cd Backend && uv add 'somepkg>=1.2'         # add a runtime dependency (updates pyproject + lock)
+cd Backend && uv add --dev 'sometool>=3'    # add a dev-only tool
+cd Backend && uv lock --upgrade-package somepkg   # move one pin
+```
+
+Commit `uv.lock` with any `pyproject.toml` change: CI and the image build run `uv sync --locked`, which fails when the two disagree.
+
+`.github/workflows/backend-ci.yml` runs on every push and PR to `main`: backend installs system geo deps, lints with `ruff`, audits every package in `uv.lock` with `pip-audit`, type-checks the package with `mypy`, runs the test suite against a Redis service with an 87% whole-package coverage gate, then builds the backend image and boots it until `/health` answers (`scripts/smoke-backend-image.sh`); frontend runs `npm ci`, `npm audit` (shipped dependencies), `npm run lint`, `npm test`, `npm run build`, a Docker image build, and a `docker compose config` validation of both compose files. The frontend image build is also the clean-checkout guard — it runs against exactly what a fresh clone contains, so anything that sneaks a gitignored file into the build fails there.
 
 Postgres schema changes go in `sql/init_agent_charts.sql` / `sql/init_agent_artifacts.sql` — these only run against a fresh volume, so apply a local change with `docker compose down -v` then `docker compose up --build`.
 

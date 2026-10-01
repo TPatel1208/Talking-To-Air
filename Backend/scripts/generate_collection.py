@@ -32,7 +32,7 @@ Requirements
 ------------
     earthaccess >= 0.9  (for granule download)
     netCDF4 or h5py     (for granule inspection)
-    pyyaml, pydantic    (already in requirements.txt)
+    pyyaml, pydantic    (already backend dependencies)
 """
 
 import argparse
