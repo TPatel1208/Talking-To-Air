@@ -58,7 +58,7 @@ class SupabaseJwtVerifier:
         # blocking fetch. See _serve_stale_or_fail.
         self._cold_retry_deadline: float | None = None
         self._throttled_kid_refreshes = 0
-        self._warm_task: asyncio.Task | None = None
+        self._warm_task: asyncio.Task[Any] | None = None
         # warm() fetches on a worker thread while requests run on the event
         # loop, so every read-modify-write of the state above is guarded.
         # The fetch itself deliberately happens outside the lock: holding
@@ -135,7 +135,7 @@ class SupabaseJwtVerifier:
         except asyncio.CancelledError:
             pass
 
-    def _log_if_warm_died(self, task: asyncio.Task) -> None:
+    def _log_if_warm_died(self, task: asyncio.Task[Any]) -> None:
         # warm() swallows its own failures, so reaching here means something
         # escaped it -- a bug, not an outage. Without this the exception is
         # retrievable only from a task nobody ever inspects.

@@ -255,6 +255,8 @@ services:
       # Database 15, not 0: a suite sharing a keyspace with live data is how
       # this project lost ~196 job rows once already.
       REDIS_URL: "redis://redis:6379/15"
+      # A Redis is provisioned here, so its absence must fail the run, not skip.
+      TTA_REQUIRE_REDIS: "1"
     depends_on:
       redis:
         condition: service_healthy
@@ -306,6 +308,7 @@ services:
       - ./docker-compose.debug.yml:/docker-compose.debug.yml:ro
       - ./scripts/provision.sh:/scripts/provision.sh:ro
       - ./.github/workflows/release.yml:/.github/workflows/release.yml:ro
+      - ./.github/workflows/backend-ci.yml:/.github/workflows/backend-ci.yml:ro
       # Pins LF for the scripts a container executes; a CRLF shebang makes
       # the kernel report the script itself as 'not found'.
       - ./.gitattributes:/.gitattributes:ro

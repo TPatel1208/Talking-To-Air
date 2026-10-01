@@ -9,10 +9,11 @@ Memory model
                it passes to each subagent tool.
 """
 import logging
-from typing import Any
+from typing import Any, cast
 from langchain.agents import create_agent
+from langgraph.graph.state import CompiledStateGraph
 from langchain.tools import tool
-from langchain_core.messages import trim_messages
+from langchain_core.messages import AnyMessage, trim_messages
 from langchain.agents.middleware import wrap_model_call, ModelRequest, ModelResponse
 from collections.abc import Awaitable, Callable
 
@@ -38,7 +39,7 @@ async def build_agent(
     ground_agent: Any,
     satellite_agent: Any,
     mcp_manager: Any = None,
-):
+) -> CompiledStateGraph[Any, Any, Any, Any]:
     """
     Build and return the supervisor agent.
 
@@ -74,7 +75,7 @@ async def build_agent(
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
         messages = [_compact_model_input_message(msg) for msg in request.state["messages"]]
-        trimmed = trim_messages(
+        trimmed: list[AnyMessage] = cast(list[AnyMessage], trim_messages(
             messages,
             max_tokens=8000,
             strategy="last",
@@ -82,7 +83,7 @@ async def build_agent(
             include_system=True,
             allow_partial=False,
             start_on="human",
-        )
+        ))
         # Gemini rejects an empty contents list, so never let trimming remove
         # the only usable turn from a request. Fall back to the original
         # message list if trimming collapses everything.
@@ -166,7 +167,7 @@ def _truncate_text(text: str, max_chars: int, agent_name: str, request_id: str |
     return truncate_text(text, max_chars, agent_name, request_id)
 
 
-def _compact_model_input_message(msg):
+def _compact_model_input_message(msg: Any) -> Any:
     """Replace bulky chart payloads with concise summaries before LLM calls."""
     content = getattr(msg, "content", None)
     compacted = _compact_model_input_content(content)
@@ -182,7 +183,7 @@ def _compact_model_input_message(msg):
         return msg
 
 
-def _compact_model_input_content(content):
+def _compact_model_input_content(content: Any) -> Any:
     if not isinstance(content, str):
         return content
 
@@ -203,9 +204,10 @@ def _compact_model_input_content(content):
     return content
 
 
-def _chart_summary(chart) -> str:
+def _chart_summary(chart: Any) -> str:
     payload = chart.model_dump(exclude_none=True) if hasattr(chart, "model_dump") else dict(chart)
-    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    raw_metadata = payload.get("metadata")
+    metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
     chart_type = str(payload.get("type") or "").strip() or "chart"
     title = str(payload.get("title") or metadata.get("name") or "").strip()
     variable = payload.get("variable")

@@ -13,7 +13,7 @@ Yields:
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Callable, Optional
@@ -35,27 +35,27 @@ _status_emitter: ContextVar[Optional[Callable[..., None]]] = ContextVar(
     default=None,
 )
 _turn_started_at: ContextVar[Optional[float]] = ContextVar("turn_started_at", default=None)
-_job_progress_emitter: ContextVar[Optional[Callable[[dict], None]]] = ContextVar(
+_job_progress_emitter: ContextVar[Optional[Callable[[dict[str, Any]], None]]] = ContextVar(
     "job_progress_emitter",
     default=None,
 )
-_chart_emitter: ContextVar[Optional[Callable[[dict], None]]] = ContextVar(
+_chart_emitter: ContextVar[Optional[Callable[[dict[str, Any]], None]]] = ContextVar(
     "chart_emitter",
     default=None,
 )
-_variable_choice_emitter: ContextVar[Optional[Callable[[dict], None]]] = ContextVar(
+_variable_choice_emitter: ContextVar[Optional[Callable[[dict[str, Any]], None]]] = ContextVar(
     "variable_choice_emitter",
     default=None,
 )
 _current_thread_id: ContextVar[Optional[str]] = ContextVar("current_thread_id", default=None)
 _current_user_id: ContextVar[Optional[str]] = ContextVar("current_user_id", default=None)
-_call_budget: ContextVar[Optional[dict]] = ContextVar("call_budget", default=None)
+_call_budget: ContextVar[Optional[dict[str, Any]]] = ContextVar("call_budget", default=None)
 # Per-turn MCP transport-failure circuit breaker state (storm containment,
 # 2026-07-20). A mutable dict {"consecutive": int, "tripped": bool} bound once
 # per turn — mutated in place, never re-``set()``, so it survives the ToolNode
 # gather-Task context copy exactly like _call_budget does (see
 # get_mcp_failure_state / get_call_budget).
-_mcp_failure_state: ContextVar[Optional[dict]] = ContextVar("mcp_failure_state", default=None)
+_mcp_failure_state: ContextVar[Optional[dict[str, Any]]] = ContextVar("mcp_failure_state", default=None)
 
 
 def emit_status(message: str, *, stage: str | None = None, detail: Any = None) -> None:
@@ -89,7 +89,7 @@ def emit_status(message: str, *, stage: str | None = None, detail: Any = None) -
 def emit_job_progress(
     job_handle: str,
     status: str,
-    progress=None,
+    progress: float | None = None,
     phase: str | None = None,
     message: str | None = None,
     note: str | None = None,
@@ -113,7 +113,7 @@ def emit_job_progress(
         })
 
 
-def emit_chart(payload: dict) -> None:
+def emit_chart(payload: dict[str, Any]) -> None:
     """Emit a full chart render payload for the active SSE stream, out-of-band
     from the tool's model-facing return value (T13 two-audience split: the
     model gets a compact summary, the frontend gets this full payload via the
@@ -123,7 +123,7 @@ def emit_chart(payload: dict) -> None:
         emitter(payload)
 
 
-def emit_variable_choice(payload: dict) -> None:
+def emit_variable_choice(payload: dict[str, Any]) -> None:
     """T49: emit the deterministic variable-choice picker for the active SSE
     stream, out-of-band from the tool's model-facing return value -- the same
     two-audience split as emit_chart. The model gets a compact, P1-bounded 'a
@@ -136,7 +136,7 @@ def emit_variable_choice(payload: dict) -> None:
         emitter(payload)
 
 
-def get_call_budget() -> dict:
+def get_call_budget() -> dict[str, Any]:
     """Return the current request's mutable per-agent call-budget counters.
 
     langgraph.prebuilt.tool_node.ToolNode wraps every tool call in
@@ -156,7 +156,7 @@ def get_call_budget() -> dict:
     return budget
 
 
-def get_mcp_failure_state() -> dict | None:
+def get_mcp_failure_state() -> dict[str, Any] | None:
     """The active turn's MCP transport-failure circuit-breaker state, or None
     when called outside a chat turn.
 
@@ -185,7 +185,7 @@ def current_user_id() -> str | None:
 
 
 @contextmanager
-def user_id_context(user_id: str):
+def user_id_context(user_id: str) -> Iterator[None]:
     """Bind ``current_user_id()`` for non-chat endpoints (e.g. the jobs
     endpoint) that call workspace-bound MCP tools outside of stream_response,
     which normally sets this for the duration of a chat turn."""
@@ -196,7 +196,7 @@ def user_id_context(user_id: str):
         _current_user_id.reset(token)
 
 
-async def iter_with_user_id(user_id: str, chunks: AsyncGenerator) -> AsyncGenerator:
+async def iter_with_user_id(user_id: str, chunks: AsyncIterator[Any]) -> AsyncGenerator[Any, None]:
     """Re-bind ``current_user_id()`` around every pull of ``chunks``.
 
     A StreamingResponse body iterates *after* the endpoint handler has
@@ -214,7 +214,7 @@ async def iter_with_user_id(user_id: str, chunks: AsyncGenerator) -> AsyncGenera
         yield chunk
 
 
-def _message_text_chunk(message) -> str:
+def _message_text_chunk(message: Any) -> str:
     tool_calls = getattr(message, "tool_calls", None)
     if tool_calls:
         return ""
@@ -228,12 +228,12 @@ def _message_text_chunk(message) -> str:
 
 
 async def stream_response(
-    agent,
+    agent: Any,
     user_input: str,
     thread_id: str,
-    thread_ref: Optional[dict] = None,
+    thread_ref: Optional[dict[str, Any]] = None,
     user_id: Optional[str] = None,
-) -> AsyncGenerator[tuple, None]:
+) -> AsyncGenerator[tuple[str, Any], None]:
     """
     Stream one conversation turn, yielding (event_type, data) tuples.
 
@@ -252,7 +252,7 @@ async def stream_response(
         "configurable": {"thread_id": thread_id},
         "recursion_limit": get_settings().agent_recursion_limit,
     }
-    queue: asyncio.Queue = asyncio.Queue()
+    queue: asyncio.Queue[Any] = asyncio.Queue()
     done = object()
     loop = asyncio.get_running_loop()
     parent_emitter = _status_emitter.get()
@@ -279,25 +279,25 @@ async def stream_response(
             payload["detail"] = detail
         loop.call_soon_threadsafe(queue.put_nowait, ("status", payload))
 
-    def publish_job_progress(data: dict) -> None:
+    def publish_job_progress(data: dict[str, Any]) -> None:
         _touch()
         if parent_job_progress_emitter:
             parent_job_progress_emitter(data)
         loop.call_soon_threadsafe(queue.put_nowait, ("job_progress", data))
 
-    def publish_chart_payload(data: dict) -> None:
+    def publish_chart_payload(data: dict[str, Any]) -> None:
         _touch()
         if parent_chart_emitter:
             parent_chart_emitter(data)
         loop.call_soon_threadsafe(queue.put_nowait, ("chart_payload", data))
 
-    def publish_variable_choice(data: dict) -> None:
+    def publish_variable_choice(data: dict[str, Any]) -> None:
         _touch()
         if parent_variable_choice_emitter:
             parent_variable_choice_emitter(data)
         loop.call_soon_threadsafe(queue.put_nowait, ("variable_choice", data))
 
-    async def publish(event_type: str, data) -> None:
+    async def publish(event_type: str, data: Any) -> None:
         _touch()
         await queue.put((event_type, data))
 

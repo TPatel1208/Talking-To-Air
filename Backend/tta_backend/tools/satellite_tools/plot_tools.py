@@ -53,7 +53,8 @@ import uuid
 import numpy as np
 from langchain.tools import tool
 from langchain_core.tools import BaseTool
-from typing import Annotated, List, Optional
+from typing import Annotated, Any, List, Optional
+import xarray as xr
 from pydantic import Field
 
 from tta_backend.services import admission
@@ -77,6 +78,7 @@ from tta_backend.services.open_handle import (
 from tta_backend.utils.geo_utils import find_lat_coord, find_lon_coord, vertical_axis_kind
 from tta_backend.utils.colormaps import resolve as resolve_colormap
 from tta_backend.utils.overlay_render import render_overlay_png
+from tta_backend.utils import xarray_ops
 from tta_backend.utils.phase_timing import phase_timer
 from tta_backend.utils.plotting import (
     _normalize_to_2d,
@@ -90,6 +92,7 @@ from tta_backend.utils.plotting import (
 from tta_backend.utils.streaming import emit_chart, emit_status
 from tta_backend.preprocessing.aggregation_service import (
     VARIABLE_RESOLUTION_ATTR,
+    AggregatedResult,
     AggregationService,
     VariableChoiceRequired,
     area_weighted_mean,
@@ -131,7 +134,7 @@ def overlay_store_dir() -> str:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _percentile_bounds(arr: np.ndarray):
+def _percentile_bounds(arr: np.ndarray) -> tuple[float, float]:
     valid = arr[np.isfinite(arr)]
     if len(valid) == 0:
         return 0.0, 1.0
@@ -160,7 +163,7 @@ def _percentile_bounds(arr: np.ndarray):
 _MAX_GRID_CELLS = 8_000
 
 
-def _normalize_longitudes(da, lon_coord):
+def _normalize_longitudes(da: xr.DataArray, lon_coord: str) -> xr.DataArray:
     """Convert 0..360 longitude coordinates to -180..180 and keep them sorted."""
     lon_vals = np.asarray(da[lon_coord].values)
     finite_lons = lon_vals[np.isfinite(lon_vals)]
@@ -171,7 +174,7 @@ def _normalize_longitudes(da, lon_coord):
     return da.assign_coords({lon_coord: normalized}).sortby(lon_coord)
 
 
-def _downsample_grid(lats: np.ndarray, lons: np.ndarray, arr: np.ndarray):
+def _downsample_grid(lats: np.ndarray, lons: np.ndarray, arr: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Uniformly thin a 2-D (lat × lon) grid so it contains at most _MAX_GRID_CELLS
     non-null cells.  Returns (lats_ds, lons_ds, arr_ds).
@@ -194,7 +197,7 @@ def _downsample_grid(lats: np.ndarray, lons: np.ndarray, arr: np.ndarray):
     return lats[::row_step], lons[::col_step], arr[::row_step, ::col_step]
 
 
-def _field_statistics(arr: np.ndarray, lats: np.ndarray) -> dict:
+def _field_statistics(arr: np.ndarray, lats: np.ndarray) -> dict[str, Any]:
     """Summary statistics for the analyzed region, computed on the FULL
     resolution field -- deliberately before ``_downsample_grid`` thins it, for
     the same reason the overlay PNG is rendered before thinning: what the
@@ -257,7 +260,7 @@ def _area_weighted_mean(arr: np.ndarray, lats: np.ndarray, finite: np.ndarray) -
     return float((contribution * weights).sum() / total)
 
 
-def _render_and_store_overlay(lats: np.ndarray, lons: np.ndarray, arr: np.ndarray, lut: list, vmin: float, vmax: float) -> str | None:
+def _render_and_store_overlay(lats: np.ndarray, lons: np.ndarray, arr: np.ndarray, lut: list[Any], vmin: float, vmax: float) -> str | None:
     """Render the full-native-resolution overlay PNG and persist it to the
     overlay store. Returns the stored path, or None on failure -- a
     failed render must degrade the chart (no overlay.url; the frontend
@@ -275,10 +278,10 @@ def _render_and_store_overlay(lats: np.ndarray, lons: np.ndarray, arr: np.ndarra
 
 
 def _da_to_heatmap_payload(
-    da, title: str, variable: str, units: str, *,
+    da: xr.DataArray, title: str, variable: str, units: str, *,
     diverging: bool = False, render_overlay: bool = False, value_range: tuple[float, float] | None = None,
-    scale_disclosure: dict | None = None,
-) -> dict:
+    scale_disclosure: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     # T51: the overlay PNG rasterization and grid downsampling are pure CPU on
     # the plot path, and are where a "the chart took forever" turn actually
     # spends its time once the data is in memory. Timed at this one seam so
@@ -296,10 +299,10 @@ def _da_to_heatmap_payload(
 
 
 def _build_heatmap_payload(
-    da, title: str, variable: str, units: str, *,
+    da: xr.DataArray, title: str, variable: str, units: str, *,
     diverging: bool = False, render_overlay: bool = False, value_range: tuple[float, float] | None = None,
-    scale_disclosure: dict | None = None,
-) -> dict:
+    scale_disclosure: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     lat_coord = find_lat_coord(da)
     lon_coord = find_lon_coord(da)
     if lat_coord is None or lon_coord is None:
@@ -363,7 +366,7 @@ def _build_heatmap_payload(
 
     colormap = resolve_colormap(variable, diverging=diverging)
 
-    overlay = {"bounds": overlay_bounds}
+    overlay: dict[str, Any] = {"bounds": overlay_bounds}
     if render_overlay:
         # Must run on the full-native-resolution grid, before _downsample_grid
         # below thins lats_out/lons_out/arr for the JSON payload -- visual
@@ -398,7 +401,7 @@ def _build_heatmap_payload(
         "overlay": overlay,
     }
 
-def _heatmap_dims(payload: dict | None) -> list[int] | None:
+def _heatmap_dims(payload: dict[str, Any] | None) -> list[int] | None:
     if not payload:
         return None
     lats, lons = payload.get("lats"), payload.get("lons")
@@ -407,7 +410,7 @@ def _heatmap_dims(payload: dict | None) -> list[int] | None:
     return None
 
 
-def _summary_dims_and_range(payload: dict, render_type: str | None):
+def _summary_dims_and_range(payload: dict[str, Any], render_type: str | None) -> tuple[Any, Any, Any]:
     """Grid dimensions and value range for the compact model-facing summary —
     enough for the agent to describe the chart (T13 story #4) without
     re-reading the raw grid."""
@@ -437,14 +440,15 @@ def _summary_dims_and_range(payload: dict, render_type: str | None):
     return None, payload.get("vmin"), payload.get("vmax")
 
 
-def _chart_model_summary(payload: dict) -> dict:
+def _chart_model_summary(payload: dict[str, Any]) -> dict[str, Any]:
     """The compact, model-facing view of a chart payload (T13): render type,
     title, variable, units, dimensions, value range, artifact id, and source
     handles — everything the agent needs to describe the chart and cite it,
     never the raw grid the frontend renders from ``emit_chart``."""
     render_type = payload.get("type")
     grid_dims, vmin, vmax = _summary_dims_and_range(payload, render_type)
-    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    raw_metadata = payload.get("metadata")
+    metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
     summary = {
         "render_type": render_type,
         "title": payload.get("title"),
@@ -463,7 +467,7 @@ def _chart_model_summary(payload: dict) -> dict:
     return summary
 
 
-def _frames_summary(payload: dict) -> dict:
+def _frames_summary(payload: dict[str, Any]) -> dict[str, Any]:
     """What the model is told about the chart's time axis (T59 D7/D3).
 
     Compact, in T13's posture -- the axis itself is up to 60 labeled intervals
@@ -495,7 +499,7 @@ def _frames_summary(payload: dict) -> dict:
     return {"frames_unavailable": unavailable} if unavailable else {}
 
 
-def _scrubbable_statistics(frames: dict) -> list[str]:
+def _scrubbable_statistics(frames: dict[str, Any]) -> list[str]:
     """Which statistics this chart can actually be scrubbed as.
 
     Derived from the keys that LANDED, never from what was asked for: a plane
@@ -522,12 +526,12 @@ def _scrubbable_statistics(frames: dict) -> list[str]:
     return [name for name in PLANE_STATISTICS if name in landed]
 
 
-def _wire_overlay_url(overlay: dict | None, url: str) -> None:
+def _wire_overlay_url(overlay: dict[str, Any] | None, url: str) -> None:
     if isinstance(overlay, dict) and overlay.get("_path"):
         overlay["url"] = url
 
 
-def _wire_overlay_urls(payload: dict) -> None:
+def _wire_overlay_urls(payload: dict[str, Any]) -> None:
     """Turn each rendered overlay's internal `_path` into a servable `url`,
     now that `_save_chart` has minted `chart_id` -- the render happens
     earlier (admission.run_heavy, before chart_id exists) with a `_path` that
@@ -547,7 +551,7 @@ def _wire_overlay_urls(payload: dict) -> None:
         _wire_overlay_url(payload.get("overlay"), f"/chart/{chart_id}/overlay.png")
 
 
-def _save_chart(payload: dict, name: str) -> str:
+def _save_chart(payload: dict[str, Any], name: str) -> str:
     """Emit the full chart payload out-of-band (frontend chart/artifact
     pipeline) and return a compact model-facing summary (T13).
 
@@ -563,7 +567,7 @@ def _save_chart(payload: dict, name: str) -> str:
     payload.setdefault("metadata", {})
     payload["metadata"].setdefault("name", name)
 
-    prefix = _RENDER_TYPE_TO_ARTIFACT_PREFIX.get(payload.get("type"))
+    prefix = _RENDER_TYPE_TO_ARTIFACT_PREFIX.get(payload.get("type") or "")
     if prefix is not None:
         payload["chart_id"] = f"{prefix}_{uuid.uuid4().hex[:12]}"
         try:
@@ -583,7 +587,7 @@ def _save_chart(payload: dict, name: str) -> str:
 # ── Handle / masking helpers ───────────────────────────────────────────────────
 
 
-def _open_dataarray(ds, handle: str | None = None, variable: str | None = None):
+def _open_dataarray(ds: xr.Dataset, handle: str | None = None, variable: str | None = None) -> xr.DataArray:
     """Pick the science variable off an opened Dataset, unmasked.
 
     Resolution (T25): explicit ``variable`` -> the choice recorded for
@@ -594,7 +598,7 @@ def _open_dataarray(ds, handle: str | None = None, variable: str | None = None):
     return _aggregation_service.to_dataarray(ds, handle=handle, variable=variable)
 
 
-def _build_dim_selector(dimension: str | None, dimension_value: float | None) -> dict | None:
+def _build_dim_selector(dimension: str | None, dimension_value: float | None) -> dict[str, Any] | None:
     """A single-entry {dim_name: value} selector from a tool's optional
     ``dimension``/``dimension_value`` params, or None when no dimension was
     named -- the shape utils.plotting._normalize_to_2d's dim_selector expects."""
@@ -603,7 +607,7 @@ def _build_dim_selector(dimension: str | None, dimension_value: float | None) ->
     return {dimension: dimension_value}
 
 
-def _time_range(da, agg_meta: dict | None = None) -> tuple[str, str]:
+def _time_range(da: xr.DataArray, agg_meta: dict[str, Any] | None = None) -> tuple[str, str]:
     """Temporal range of ``da`` -- from its time coordinate when it still has
     one, else from the aggregation meta. The fallback matters twice over: the
     array reaching provenance/query builders is the *reduced* one (time dim
@@ -622,9 +626,9 @@ def _time_range(da, agg_meta: dict | None = None) -> tuple[str, str]:
     return "", ""
 
 
-def _query_definition(da, region: dict | None, aggregation: str, chart_parameters: dict | None = None, agg_meta: dict | None = None) -> dict:
+def _query_definition(da: xr.DataArray, region: dict[str, Any] | None, aggregation: str, chart_parameters: dict[str, Any] | None = None, agg_meta: dict[str, Any] | None = None) -> dict[str, Any]:
     start_date, end_date = _time_range(da, agg_meta)
-    query = {
+    query: dict[str, Any] = {
         "dataset": da.name or "",
         "start_date": start_date,
         "end_date": end_date,
@@ -636,7 +640,7 @@ def _query_definition(da, region: dict | None, aggregation: str, chart_parameter
     return {k: v for k, v in query.items() if v not in (None, "", [])}
 
 
-def _dataset_facts(col_info: dict | None) -> dict:
+def _dataset_facts(col_info: dict[str, Any] | None) -> dict[str, Any]:
     """Registry facts about the *collection* (T32) -- distinct from
     ``provenance["variable"]``, which names the science variable plotted,
     not the dataset it came from. ``col_info`` is whatever
@@ -663,7 +667,7 @@ def _dataset_facts(col_info: dict | None) -> dict:
     }
 
 
-def _variable_definition(da, col_info: dict | None) -> dict:
+def _variable_definition(da: xr.DataArray, col_info: dict[str, Any] | None) -> dict[str, Any]:
     """long_name/valid-range/mask facts for the plotted variable (T32
     Details -> Variable Definition), sourced from the registry col_info
     already resolved for masking and the CF ``long_name`` attribute the
@@ -694,7 +698,7 @@ def _variable_definition(da, col_info: dict | None) -> dict:
     }
 
 
-def _qa_methodology(col_info: dict | None) -> dict:
+def _qa_methodology(col_info: dict[str, Any] | None) -> dict[str, Any]:
     """The pinned collections.yaml QA rule as general methodology (T32
     Details -> Provenance) -- distinct from ``masking``, which discloses
     what was actually applied to *this* request."""
@@ -707,7 +711,7 @@ def _qa_methodology(col_info: dict | None) -> dict:
     return {k: v for k, v in methodology.items() if v is not None}
 
 
-def _inventory_records(ds) -> list[dict]:
+def _inventory_records(ds: xr.Dataset) -> list[dict[str, Any]]:
     """The opened Dataset's bands as ``classify_inventory`` records. Names
     here are bare leaves (open_handle merges groups without prefixing), so
     each record carries the ``group_path`` attr open_handle stamped — the
@@ -724,7 +728,7 @@ def _inventory_records(ds) -> list[dict]:
     ]
 
 
-def _related_variables(da, col_info: dict | None, ds=None) -> dict:
+def _related_variables(da: xr.DataArray, col_info: dict[str, Any] | None, ds: xr.Dataset | None = None) -> dict[str, Any]:
     """A lightweight related-variables view for the chart page (PRD T35): the
     plotted variable's role plus its QA/uncertainty/context siblings. Built
     from the opened Dataset's actual bands when it travels — the SAME source
@@ -749,18 +753,18 @@ def _related_variables(da, col_info: dict | None, ds=None) -> dict:
             groups=col_info.get("groups"),
             primary_var=col_info.get("primary_var"),
             quality_flag_var=col_info.get("quality_flag_var"),
-            plotted_variable=da.name or "",
+            plotted_variable=str(da.name or ""),
         )
 
 
-def _evi_leaf(name) -> str:
+def _evi_leaf(name: object) -> str:
     """The bare, lowercased leaf name of a (possibly group-qualified) variable
     -- for comparing a classified inventory entry against the plotted science
     variable / QA-flag variable without importing variable_roles' internals."""
     return str(name or "").rsplit("/", 1)[-1].lower()
 
 
-def _crop_band_to_region(band, region):
+def _crop_band_to_region(band: xr.DataArray, region: dict[str, Any]) -> tuple[xr.DataArray | None, int]:
     """Crop a companion band to the plotted science variable's region footprint
     -- the same geometry mask + ``_sel_bounds`` crop the science variable
     received, so the band is co-located pixel-for-pixel (companions share the
@@ -790,7 +794,7 @@ def _crop_band_to_region(band, region):
     return cropped, in_region
 
 
-def _band_time_mean(band, resolved):
+def _band_time_mean(band: xr.DataArray, resolved: dict[str, Any]) -> xr.DataArray:
     """Mask the band's own fill/out-of-range cells, then collapse its time
     dimension to a per-pixel mean, so an evidence fact describes the SAME
     time-reduced field the science variable is plotted as -- not a
@@ -822,7 +826,9 @@ def _band_time_mean(band, resolved):
     return band
 
 
-def _band_mean_fact(band, leaf, role, region, *, pct_of_science=None):
+def _band_mean_fact(
+    band: xr.DataArray, leaf: str, role: str, region: dict[str, Any] | None, *, pct_of_science: float | None = None,
+) -> dict[str, Any] | None:
     """A deterministic mean-over-valid-pixels evidence fact for a context or
     uncertainty band, in the band's own units, carrying an honest coverage
     valid-fraction. ``pct_of_science`` (the masked science mean) adds the
@@ -834,6 +840,10 @@ def _band_mean_fact(band, leaf, role, region, *, pct_of_science=None):
     -- coverage and the pct-of-science ratio then compare like with like."""
     resolved, _ = resolve_mask_info(cf_attrs=dict(band.attrs))
     band = _band_time_mean(band, resolved)
+    # No region, no footprint to co-locate on -- the same outcome the crop's
+    # KeyError used to reach through the caller's catch-all.
+    if region is None:
+        return None
     cropped, in_region = _crop_band_to_region(band, region)
     if cropped is None or in_region == 0:
         return None
@@ -864,7 +874,7 @@ def _band_mean_fact(band, leaf, role, region, *, pct_of_science=None):
     return fact
 
 
-def _evidence(ds, da, col_info: dict | None, region: dict | None) -> list[dict]:
+def _evidence(ds: xr.Dataset | None, da: xr.DataArray, col_info: dict[str, Any] | None, region: dict[str, Any] | None) -> list[dict[str, Any]]:
     """Deterministic companion-evidence facts (PRD T36 Phase 2): the quality
     and context bands sitting unused beside the plotted science variable in the
     same opened Dataset, summarized as co-located facts a scientist can use to
@@ -923,7 +933,7 @@ class _DeferredScienceMean:
     additive, so a failure here must cost the chart nothing.
     """
 
-    def __init__(self, da):
+    def __init__(self, da: xr.DataArray) -> None:
         self._da = da
         self._value: float | None = None
         self.computed = False
@@ -944,11 +954,13 @@ class _DeferredScienceMean:
             return None
 
 
-def _evidence_facts(ds, da, col_info: dict | None, region: dict | None, timing: dict) -> list[dict]:
+def _evidence_facts(
+    ds: xr.Dataset, da: xr.DataArray, col_info: dict[str, Any] | None, region: dict[str, Any] | None, timing: dict[str, Any],
+) -> list[dict[str, Any]]:
     """The body of :func:`_evidence`, split out only so the timer above can
     wrap it and still record the band counts learned partway through."""
     col_info = col_info or {}
-    facts: list[dict] = []
+    facts: list[dict[str, Any]] = []
     science_leaf = _evi_leaf(da.name)
 
     # The masked science mean, for uncertainty-as-percent-of-science. Cos-lat
@@ -1024,7 +1036,7 @@ def _evidence_facts(ds, da, col_info: dict | None, region: dict | None, timing: 
     return facts
 
 
-def _merged_multi_provenance(panels: list[dict]) -> dict:
+def _merged_multi_provenance(panels: list[dict[str, Any]]) -> dict[str, Any]:
     """Top-level provenance for a heatmap_multi payload: panel 0's provenance
     with the region names joined across panels — the pre-existing merge shape
     — minus the per-panel ``evidence``/``related_variables`` sections. Those
@@ -1041,7 +1053,7 @@ def _merged_multi_provenance(panels: list[dict]) -> dict:
     return merged
 
 
-def _delivered_scope(region_name: str, start_date: str, end_date: str, agg_meta: dict | None) -> dict:
+def _delivered_scope(region_name: str, start_date: str, end_date: str, agg_meta: dict[str, Any] | None) -> dict[str, Any]:
     """The scope the retrieval actually delivered — region and the data's own
     date span and cadence. Compared against the recorded requested scope by
     the T46 disclosure template."""
@@ -1053,7 +1065,7 @@ def _delivered_scope(region_name: str, start_date: str, end_date: str, agg_meta:
     }
 
 
-def _requested_scope(handles: list[str]) -> dict | None:
+def _requested_scope(handles: list[str]) -> dict[str, Any] | None:
     """The requested scope a composite recorded for any of this chart's source
     handles (T46), or None if none was recorded (a plot over a handle minted
     outside safe_retrieve/point_timeseries — nothing to disclose against)."""
@@ -1065,10 +1077,10 @@ def _requested_scope(handles: list[str]) -> dict | None:
 
 
 def _provenance(
-    handles: list[str], da, region_name: str, aggregation: str,
-    agg_meta: dict | None = None, col_info: dict | None = None,
-    ds=None, region: dict | None = None,
-) -> dict:
+    handles: list[str], da: xr.DataArray, region_name: str, aggregation: str,
+    agg_meta: dict[str, Any] | None = None, col_info: dict[str, Any] | None = None,
+    ds: xr.Dataset | None = None, region: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     start_date, end_date = _time_range(da, agg_meta)
     provenance = {
         "variable": da.name or "",
@@ -1128,17 +1140,17 @@ def _provenance(
 
 
 def _attach_reproducibility(
-    payload: dict,
+    payload: dict[str, Any],
     handles: list[str],
-    da,
+    da: xr.DataArray,
     region_name: str,
     aggregation: str,
-    chart_parameters: dict | None = None,
-    agg_meta: dict | None = None,
-    region: dict | None = None,
-    col_info: dict | None = None,
-    ds=None,
-) -> dict:
+    chart_parameters: dict[str, Any] | None = None,
+    agg_meta: dict[str, Any] | None = None,
+    region: dict[str, Any] | None = None,
+    col_info: dict[str, Any] | None = None,
+    ds: xr.Dataset | None = None,
+) -> dict[str, Any]:
     aggregation_label = agg_meta["aggregation_label"] if agg_meta else aggregation
     # The outer span. It runs *after* the "render" timer closes and before the
     # tool returns, which is precisely the window that read as a hole in the
@@ -1184,7 +1196,7 @@ def _attach_reproducibility(
 _DISCLOSED_FRAME_REFUSALS = ("cadence_unknown", "span_too_long", "extent_too_large")
 
 
-def _attach_frames(payload: dict, result, masked, agg_meta: dict) -> None:
+def _attach_frames(payload: dict[str, Any], result: AggregatedResult, masked: xr.DataArray, agg_meta: dict[str, Any]) -> None:
     """D7's auto-upgrade: give ``payload`` a browsable time axis, or say why not.
 
     Additive and optional, always (D15). ``type`` stays ``"heatmap"``, the
@@ -1231,6 +1243,8 @@ def _attach_frames(payload: dict, result, masked, agg_meta: dict) -> None:
             # refused or never attempted.
             payload.setdefault("export", {})["frames"] = {"unavailable": disclosure}
         return
+    # frame_gate refuses a missing time axis, so past it there always is one.
+    assert time_dim is not None
 
     # D6a's extra planes, behind their own extent limit. A chart above it is
     # NOT refused -- it keeps exactly the mean scrubber it has always had, and
@@ -1316,7 +1330,7 @@ def _attach_frames(payload: dict, result, masked, agg_meta: dict) -> None:
     }
 
 
-def _wire_frames_url(payload: dict) -> None:
+def _wire_frames_url(payload: dict[str, Any]) -> None:
     """Turn a stored stack's internal ``_key`` into a servable url, now that
     ``_save_chart`` has minted ``chart_id`` -- ``_wire_overlay_urls``' rule, for
     the same reason: the stack is built inside ``admission.run_heavy``, before a
@@ -1357,7 +1371,7 @@ def _wire_frames_url(payload: dict) -> None:
 _MAX_PROFILE_CELLS = 40_000_000
 
 
-def _vertical_dim(da, time_dim: str | None) -> tuple[str | None, list[str]]:
+def _vertical_dim(da: xr.DataArray, time_dim: str | None) -> tuple[str | None, list[str]]:
     """The dimension a profile is plotted against: the one left after latitude,
     longitude and time. Returns ``(dim, all_candidates)`` so a caller can refuse
     an ambiguous file by naming what it found rather than picking one."""
@@ -1368,7 +1382,7 @@ def _vertical_dim(da, time_dim: str | None) -> tuple[str | None, list[str]]:
     return (candidates[0] if len(candidates) == 1 else None), candidates
 
 
-def _vertical_axis_candidates(narrowed, ds, vertical_dim: str, region: dict) -> dict[str, object]:
+def _vertical_axis_candidates(narrowed: xr.DataArray, ds: xr.Dataset | None, vertical_dim: str, region: dict[str, Any]) -> dict[str, xr.DataArray]:
     """The physical vertical axes available for ``vertical_dim``, keyed
     ``"pressure"``/``"altitude"``, each already narrowed to ``region``.
 
@@ -1391,8 +1405,8 @@ def _vertical_axis_candidates(narrowed, ds, vertical_dim: str, region: dict) -> 
     use). Reading it straight off ``ds`` would report a "regional" axis
     averaged over a continent.
     """
-    found: dict[str, object] = {}
-    for name, var in narrowed.coords.items():
+    found: dict[str, xr.DataArray] = {}
+    for var in narrowed.coords.values():
         if vertical_dim not in getattr(var, "dims", ()):
             continue
         kind = vertical_axis_kind(var)
@@ -1412,7 +1426,7 @@ def _vertical_axis_candidates(narrowed, ds, vertical_dim: str, region: dict) -> 
     return found
 
 
-def _layer_order(axis_values: list, kind: str) -> str:
+def _layer_order(axis_values: list[Any], kind: str) -> str:
     """Whether index 0 of the vertical axis is the TOP of the atmosphere or the
     bottom -- MEASURED off the axis, never assumed.
 
@@ -1432,11 +1446,11 @@ def _layer_order(axis_values: list, kind: str) -> str:
     return "bottom_up" if rising else "top_down"
 
 
-def _rounded(values) -> list:
+def _rounded(values: Any) -> list[Any]:
     return [None if not np.isfinite(v) else float(f"{float(v):.6g}") for v in np.asarray(values).ravel()]
 
 
-def _profile_axis_block(axis_da, vertical_dim: str, kind: str, region_mask=None) -> dict:
+def _profile_axis_block(axis_da: xr.DataArray, vertical_dim: str, kind: str, region_mask: xr.DataArray | None = None) -> dict[str, Any]:
     """One physical vertical axis reduced to the analyzed region, with the
     per-layer spread that says how much of an approximation that is.
 
@@ -1469,7 +1483,7 @@ def _profile_axis_block(axis_da, vertical_dim: str, kind: str, region_mask=None)
     }
 
 
-def _per_layer_valid_fraction(masked, vertical_dim: str, region_cells: int | None = None) -> list:
+def _per_layer_valid_fraction(masked: xr.DataArray, vertical_dim: str, region_cells: int | None = None) -> list[Any]:
     """What fraction of the analyzed region's cells actually held a value at
     each layer. A profile drawn from one surviving pixel at 60 km and ten
     thousand at the surface is two different measurements sharing an axis, and
@@ -1484,7 +1498,7 @@ def _per_layer_valid_fraction(masked, vertical_dim: str, region_cells: int | Non
     the array's own size when no footprint was recorded, which is exact for a
     box-shaped region and is what the caller had before.
     """
-    finite = np.isfinite(masked)
+    finite = xarray_ops.isfinite(masked)
     collapsed = [d for d in masked.dims if d != vertical_dim]
     counts = finite.sum(collapsed).values
     spatial_cells = region_cells if region_cells else None
@@ -1506,7 +1520,9 @@ def _per_layer_valid_fraction(masked, vertical_dim: str, region_cells: int | Non
     return [min(1.0, round(float(c) / total, 6)) for c in np.atleast_1d(counts)]
 
 
-def _resolve_level_selector(masked, level: str, dimension, dimension_value, ds=None):
+def _resolve_level_selector(
+    masked: xr.DataArray, level: str, dimension: str | None, dimension_value: float | None, ds: xr.Dataset | None = None,
+) -> tuple[str | None, float, dict[str, Any]]:
     """Turn a physical ``level`` request into the ``(dim, value)`` pair the
     existing selection seam takes, plus the disclosure that travels with it.
 
@@ -1565,7 +1581,7 @@ def _resolve_level_selector(masked, level: str, dimension, dimension_value, ds=N
     return vertical_dim, resolution.selector_value, asdict(resolution)
 
 
-def _profile_scale_guard(narrowed) -> str | None:
+def _profile_scale_guard(narrowed: xr.DataArray) -> str | None:
     cells = int(getattr(narrowed, "size", 0))
     if cells <= _MAX_PROFILE_CELLS:
         return None
@@ -1578,7 +1594,7 @@ def _profile_scale_guard(narrowed) -> str | None:
 # ── Tools ─────────────────────────────────────────────────────────────────────
 
 
-def make_plot_singular(mcp_tools: dict[str, BaseTool]):
+def make_plot_singular(mcp_tools: dict[str, BaseTool]) -> BaseTool:
     @tool
     async def plot_singular(
         handle: Annotated[
@@ -1671,7 +1687,7 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
 
         emit_status("Generating visualization...", stage=STAGE_RENDER)
 
-        def _mask_aggregate_payload():
+        def _mask_aggregate_payload() -> tuple[str | None, dict[str, Any] | None, str | None, Any]:
             # CPU-bound mask -> aggregate -> payload chain (T16): run off the
             # event loop via admission.run_heavy below -- which also bounds how
             # many may run at once -- so a large grid doesn't
@@ -1690,7 +1706,7 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
                 return "mask", None, None, f"Masking failed: {e}"
 
             units = masked.attrs.get("units", "")
-            variable_name = masked.name or ""
+            variable_name = str(masked.name or "")
             col_info = col_info_for_variable(masked, ds)
             # T58 D7 -- resolve early, select late. The vertical axes ride the
             # time dimension, so aggregate() destroys them; a physical level has
@@ -1775,13 +1791,15 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
             emit_status("Visualization failed while building chart data.", stage=STAGE_RENDER)
             return json.dumps({"error": error_message})
 
+        # Every failing stage returned above; a None stage carries both.
+        assert payload is not None and resolved_title is not None
         emit_status("Preparing response...", stage=STAGE_RENDER)
         return _save_chart(payload, resolved_title)
 
     return plot_singular
 
 
-def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
+def make_plot_multiple(mcp_tools: dict[str, BaseTool]) -> BaseTool:
     @tool
     async def plot_multiple(
         handles: Annotated[List[str], Field(description="obs_/cube_ handles, one per location.")],
@@ -1819,7 +1837,7 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
 
         panels = []
         variable_name = ""
-        for handle, location in zip(handles, locations):
+        for handle, location in zip(handles, locations, strict=True):
             try:
                 ds = await open_handle(handle, mcp_tools)
                 # See plot_singular: normalize the whole Dataset's longitude
@@ -1853,7 +1871,10 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
                 emit_status("Location lookup failed.", stage=STAGE_RENDER)
                 return json.dumps({"error": f"Could not geocode location: '{location}'"})
 
-            def _mask_aggregate_panel(da=da, ds=ds, region=region, handle=handle, location=location, variable_name=variable_name):
+            def _mask_aggregate_panel(
+                da: xr.DataArray = da, ds: xr.Dataset | None = ds, region: dict[str, Any] = region, handle: str = handle,
+                location: str = location, variable_name: str = variable_name,
+            ) -> tuple[str | None, dict[str, Any] | None, str | None, Any]:
                 # CPU-bound mask -> aggregate -> payload chain (T16), run off
                 # the event loop via admission.run_heavy below, which also bounds
                 # how many such reductions may hold memory at once.
@@ -1871,7 +1892,7 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
                 bounds = region["bounds"]
                 masked = _sel_bounds(masked, lat_coord, lon_coord, bounds)
 
-                resolved_variable_name = masked.name or variable_name
+                resolved_variable_name = str(masked.name or variable_name)
                 units = masked.attrs.get("units", "")
                 col_info = col_info_for_variable(masked, ds)
 
@@ -1925,10 +1946,12 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
                 emit_status("Visualization failed while building chart data.", stage=STAGE_RENDER)
                 return json.dumps({"error": error_message})
 
+            # Every failing stage returned above; a None stage carries both.
+            assert panel is not None and resolved_variable_name is not None
             variable_name = resolved_variable_name
             panels.append(panel)
 
-        multi_payload = {"type": "heatmap_multi", "title": title or f"{variable_name} Comparison", "panels": panels}
+        multi_payload: dict[str, Any] = {"type": "heatmap_multi", "title": title or f"{variable_name} Comparison", "panels": panels}
         if panels:
             multi_payload["provenance"] = _merged_multi_provenance(panels)
             multi_payload["query"] = {
@@ -1953,7 +1976,7 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
     return plot_multiple
 
 
-def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
+def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]) -> BaseTool:
     @tool
     async def conduct_temporal_statistic(
         handle: Annotated[str, Field(description="An obs_/cube_ handle from a retrieval or transform tool.")],
@@ -2028,7 +2051,7 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
 
         emit_status("Computing time series...", stage=STAGE_RENDER)
 
-        def _mask_aggregate_timeseries():
+        def _mask_aggregate_timeseries() -> tuple[str | None, Any]:
             # CPU-bound mask -> per-timestep aggregate -> payload chain
             # (T16), run off the event loop via admission.run_heavy below, which also
             # bounds how many such reductions may hold memory at once.
@@ -2042,7 +2065,7 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
             bounds = region["bounds"]
             masked = _sel_bounds(masked, lat_coord, lon_coord, bounds)
 
-            variable_name = masked.name or ""
+            variable_name = str(masked.name or "")
             if stat not in AggregationService._STAT_FUNCS:
                 return "error", f"Unknown stat '{stat}'. Use: mean, median, max, min, std"
 
@@ -2064,7 +2087,7 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
             if extra_dims:
                 from tta_backend.utils.plotting import _dimension_choice_error
 
-                return "dimension_choice_required", _dimension_choice_error(masked, extra_dims[0]).to_dict()
+                return "dimension_choice_required", _dimension_choice_error(masked, str(extra_dims[0])).to_dict()
 
             # T25 masking-execution fix: route through the same shared
             # masking-resolution path aggregate() uses (collections.yaml ->
@@ -2114,8 +2137,8 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
             # key so aggregation_meta's granule_dates/date-range (built from
             # it below) agree with the chart's actual plotted order, even
             # when source timesteps arrive non-chronologically.
-            paired = sorted(zip(times, values, valid_time_indices))
-            sorted_times, sorted_values, sorted_valid_time_indices = zip(*paired)
+            paired = sorted(zip(times, values, valid_time_indices, strict=True))
+            sorted_times, sorted_values, sorted_valid_time_indices = zip(*paired, strict=True)
 
             # T32: same aggregation_label/granule_dates/n_granules/cadence
             # summary the heatmap/comparison paths get from aggregate() --
@@ -2162,7 +2185,7 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
     return conduct_temporal_statistic
 
 
-def make_plot_vertical_profile(mcp_tools: dict[str, BaseTool]):
+def make_plot_vertical_profile(mcp_tools: dict[str, BaseTool]) -> BaseTool:
     @tool
     async def plot_vertical_profile(
         handle: Annotated[str, Field(description="An obs_/cube_ handle from a retrieval or transform tool.")],
@@ -2251,7 +2274,7 @@ def make_plot_vertical_profile(mcp_tools: dict[str, BaseTool]):
 
         emit_status("Computing vertical profile...", stage=STAGE_RENDER)
 
-        def _narrow_mask_reduce():
+        def _narrow_mask_reduce() -> tuple[str | None, Any]:
             # CPU-bound narrow -> mask -> reduce chain (T16), run off the event
             # loop via admission.run_heavy below, which also bounds how many
             # such reductions may hold memory at once.
@@ -2283,7 +2306,7 @@ def make_plot_vertical_profile(mcp_tools: dict[str, BaseTool]):
                     suggestion="Narrow the region or the time period and try again.",
                 ).to_dict()
 
-            variable_name = narrowed.name or ""
+            variable_name = str(narrowed.name or "")
             col_info = col_info_for_variable(narrowed, ds)
             masked, masking_provenance = _aggregation_service.resolve_and_mask(
                 narrowed, variable=variable_name, col_info=col_info, source_ds=ds,
@@ -2301,7 +2324,7 @@ def make_plot_vertical_profile(mcp_tools: dict[str, BaseTool]):
                 spatial_of_matrix = [d for d in per_slice.dims if d != time_dim]
                 valid_indices = [
                     i for i, ok in enumerate(
-                        np.atleast_1d(np.isfinite(per_slice).any(spatial_of_matrix).values)
+                        np.atleast_1d(xarray_ops.isfinite(per_slice).any(spatial_of_matrix).values)
                     ) if bool(ok)
                 ]
                 if not valid_indices:
@@ -2318,7 +2341,7 @@ def make_plot_vertical_profile(mcp_tools: dict[str, BaseTool]):
 
             axes = _vertical_axis_candidates(masked, ds, vertical_dim, region)
             vertical = {
-                kind: _profile_axis_block(axis_da, vertical_dim, kind, region_mask=np.isfinite(masked))
+                kind: _profile_axis_block(axis_da, vertical_dim, kind, region_mask=xarray_ops.isfinite(masked))
                 for kind, axis_da in axes.items()
             }
             # Pressure is the default because it is the axis with the smallest
@@ -2347,7 +2370,7 @@ def make_plot_vertical_profile(mcp_tools: dict[str, BaseTool]):
                 "values": values,
                 "vertical": vertical,
                 "default_axis": default_axis,
-                "layer_order": (vertical.get(default_axis) or {}).get("layer_order", "unknown"),
+                "layer_order": (vertical.get(default_axis or "") or {}).get("layer_order", "unknown"),
                 "valid_fraction": _per_layer_valid_fraction(masked, vertical_dim, region_cells),
                 "masking": masking_provenance,
                 "aggregation_meta": agg_meta,
@@ -2384,6 +2407,8 @@ def make_plot_vertical_profile(mcp_tools: dict[str, BaseTool]):
             emit_status("Vertical profile failed.", stage=STAGE_RENDER)
             return json.dumps({"error": result})
         payload, resolved_title = result
+        # Every failing stage returned above; a None stage carries both.
+        assert payload is not None and resolved_title is not None
         emit_status("Preparing response...", stage=STAGE_RENDER)
         return _save_chart(payload, resolved_title)
 

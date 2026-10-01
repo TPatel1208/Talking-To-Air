@@ -44,20 +44,22 @@ Important event names include:
 
 ## Tests
 
-Run the backend tests locally:
+Install the locked environment and run the backend tests locally (pytest, not
+`unittest discover`: the suite's bootstrap lives in `Backend/conftest.py`):
 
 ```bash
-python -m unittest discover -s Backend/tests -p "test_*.py"
+cd Backend && uv sync
+cd Backend && uv run pytest tests
 ```
 
-Run coverage locally:
+Run coverage locally (from the repo root, where `.coveragerc` lives):
 
 ```bash
-coverage run -m unittest discover -s Backend/tests -p "test_*.py"
-coverage report
+PYTHONPATH=Backend Backend/.venv/bin/coverage run -m pytest Backend/tests
+Backend/.venv/bin/coverage report
 ```
 
-The CI workflow runs syntax linting, tests, and coverage reporting. Coverage is focused on backend API/config/logging/cache/routing/helper logic and currently requires at least 60%.
+Coverage is measured over all of `tta_backend` and CI requires at least 87% (`.coveragerc`). The Redis-backed turn tests skip on a host with no Redis; set `TTA_REQUIRE_REDIS=1` to make that a failure, as CI and the `backend-test` compose profile do.
 
 ## The scripted eval as a required gate
 

@@ -1,6 +1,8 @@
 """Centralized runtime configuration for the backend."""
 from __future__ import annotations
 
+from typing import Any
+
 import os
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -595,7 +597,7 @@ class Settings:
             object.__setattr__(self, "log_format", "text")
 
     @property
-    def db_kwargs(self) -> dict:
+    def db_kwargs(self) -> dict[str, Any]:
         return {
             "host": self.db_host,
             "port": self.db_port,

@@ -143,27 +143,29 @@ class TurnRegistry:
         A caller passing a client keeps ownership of it, so the registry and
         the event log can share one pool.
         """
-        if client is None and url is None:
-            raise ValueError("TurnRegistry needs a url or a client")
+        if client is None:
+            if url is None:
+                raise ValueError("TurnRegistry needs a url or a client")
+            client = aioredis.from_url(url, decode_responses=True)
+            self._owns_client = True
+        else:
+            self._owns_client = False
         self._log = log
-        self._owns_client = client is None
-        self._redis = client if client is not None else aioredis.from_url(
-            url, decode_responses=True
-        )
-        self._tasks: dict[str, asyncio.Task] = {}
+        self._redis = client
+        self._tasks: dict[str, asyncio.Task[Any]] = {}
         # The inner task doing the agent's work, separately cancellable. Stop
         # takes this one and leaves ``_run`` alive to write the terminal entry
         # and hand the thread back -- cancelling the whole turn would take the
         # bookkeeping with it.
-        self._consumers: dict[str, asyncio.Task] = {}
+        self._consumers: dict[str, asyncio.Task[Any]] = {}
         #: Turns this replica cancelled deliberately, and how each should be
         #: marked. A turn missing from here was cancelled by something else
         #: going down on top of it, and writes no terminal entry at all.
         self._cancelling: dict[str, str] = {}
-        self._listener: asyncio.Task | None = None
+        self._listener: asyncio.Task[Any] | None = None
         self._pubsub: Any = None
         self._listening = asyncio.Lock()
-        self._watchdog: asyncio.Task | None = None
+        self._watchdog: asyncio.Task[Any] | None = None
         # Last-seen provider status per job_handle, per turn -- the same map
         # ``_LiveTurn`` keeps for the timeout answer, rebuilt here from the
         # frames that already pass through. Read only when a turn is stopped.
@@ -443,7 +445,7 @@ class TurnRegistry:
                 extra={"_event": "turn_stop_watch_failed"},
             )
             return
-        for turn_id, flag in zip(live, flags):
+        for turn_id, flag in zip(live, flags, strict=True):
             if flag:
                 self._cancel_local(turn_id)
 
@@ -495,7 +497,7 @@ class TurnRegistry:
         tail = await self._log.tail(turn_id)
         return turn_id, tail.terminal
 
-    async def follow(self, turn_id: str, cursor: str | None = None):
+    async def follow(self, turn_id: str, cursor: str | None = None) -> AsyncIterator[str]:
         """Replay this turn from ``cursor``, then follow it until it ends.
 
         Yields the turn's own frames byte-for-byte, each page followed by a
@@ -689,7 +691,7 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-def _render(event: str, data: dict) -> str:
+def _render(event: str, data: dict[str, Any]) -> str:
     """An SSE frame in the shape ``ChatStreamService.sse`` renders one.
 
     Rendered here rather than imported from the chat service: the cursor

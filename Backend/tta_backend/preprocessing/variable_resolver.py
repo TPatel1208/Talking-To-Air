@@ -25,6 +25,8 @@ disclosed choice, or refuse -- never a silent wrong pick.
 """
 from __future__ import annotations
 
+from typing import Any
+
 import re
 from dataclasses import dataclass, field
 
@@ -158,7 +160,7 @@ def _leaf(name: str) -> str:
     return name.rsplit("/", 1)[-1]
 
 
-def _is_cf_flag(attrs: dict) -> bool:
+def _is_cf_flag(attrs: dict[str, Any]) -> bool:
     """A CF quality flag declares both ``flag_values`` and ``flag_meanings`` --
     the machine-readable QA signal, the same one apply_quality_mask keys off."""
     return "flag_values" in attrs and "flag_meanings" in attrs
@@ -198,7 +200,7 @@ def _matches_request(name: str, requested: str | None) -> bool:
     return req == n or req == _leaf(name).casefold() or _leaf(req) == _leaf(name).casefold() or req in n
 
 
-def _is_geophysical(name: str, attrs: dict) -> bool:
+def _is_geophysical(name: str, attrs: dict[str, Any]) -> bool:
     """Whether a name / CF label reads as a geophysical measurement (one of
     the documented roots), not plumbing."""
     haystack = " ".join(str(x) for x in (

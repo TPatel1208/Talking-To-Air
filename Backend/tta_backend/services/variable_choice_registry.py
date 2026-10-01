@@ -34,7 +34,7 @@ _pending: dict[str, tuple[str, float]] = {}
 _choices: dict[str, tuple[str, float]] = {}
 
 
-def record_pending(job_handle: str, variable: str | None) -> None:
+def record_pending(job_handle: str | None, variable: str | None) -> None:
     """Record ``variable`` as the single unambiguous choice requested for
     ``job_handle``, once retrieve_subset submits it -- a no-op when
     ``variable`` is falsy (0 or >1 variables requested is not a choice to

@@ -84,6 +84,18 @@ class ParseToolResultClassifierTests(unittest.TestCase):
         self.assertEqual(ctx.exception.category, "contract")
         self.assertIn("aoi_handle", ctx.exception.raw_preview)
 
+    def test_json_that_is_not_an_object_classifies_as_contract(self):
+        from tta_backend.earthdata_mcp.results import MCPToolError, parse_tool_result
+
+        # Valid JSON, but no tool's result is a bare list or number. This used
+        # to be returned as-is and fail later in a caller's `.get` as an
+        # unclassified AttributeError.
+        for raw in ('["dataset_1", "dataset_2"]', "42", [{"type": "text", "text": "[1, 2]"}]):
+            with self.subTest(raw=raw):
+                with self.assertRaises(MCPToolError) as ctx:
+                    parse_tool_result(raw)
+                self.assertEqual(ctx.exception.category, "contract")
+
     def test_nominatim_miss_prose_classifies_as_user_input_with_a_suggestion(self):
         from tta_backend.earthdata_mcp.results import MCPToolError, parse_tool_result
 

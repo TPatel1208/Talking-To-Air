@@ -43,6 +43,9 @@ class EdlCredentialInjector:
         self._settings = settings
         self._cache_ttl = cache_ttl_seconds
         self._cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
+        # The event loop holds only weak references to tasks, so an
+        # unreferenced fire-and-forget write can be collected mid-flight.
+        self._background_writes: set[asyncio.Task[None]] = set()
 
     def invalidate(self, user_id: str) -> None:
         """Called by api.py's set-token/disconnect endpoints so a re-paste
@@ -99,7 +102,9 @@ class EdlCredentialInjector:
                     extra={"_event": "connector_last_used_write_failed"},
                 )
 
-        asyncio.create_task(_write())
+        task = asyncio.create_task(_write())
+        self._background_writes.add(task)
+        task.add_done_callback(self._background_writes.discard)
 
     async def mark_invalid(self, user_id: str) -> None:
         self.invalidate(user_id)

@@ -626,5 +626,31 @@ class SummaryFailureClassificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(issubclass(_epa.AqsNoDataError, RuntimeError))
 
 
+class ExceedanceDaysOrderingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_record_without_a_date_is_reported_rather_than_crashing_the_sort(self):
+        # The rows are sorted by date. A record missing date_local used to put
+        # None beside strings and raise TypeError, losing every exceedance.
+        records = [
+            {"date_local": "2024-06-02", "first_max_value": 5.0},
+            {"first_max_value": 6.0},
+            {"date_local": "2024-06-01", "first_max_value": 7.0},
+        ]
+        captured = {}
+
+        def fake_table_response(header, body, **kwargs):
+            captured["body"] = body
+            return {"ok": True}
+
+        with unittest.mock.patch.object(
+            _epa, "_fetch_summary", unittest.mock.AsyncMock(return_value=(records, "dailyData/byState", {}))
+        ), unittest.mock.patch.object(_epa, "_artifact_table_response", side_effect=fake_table_response):
+            await _epa.find_exceedance_days(
+                param_code="99999", bdate="2024-06-01", edate="2024-06-03",
+                state_code="34", hard_threshold=1.0,
+            )
+
+        self.assertEqual([row["date"] for row in captured["body"]], [None, "2024-06-01", "2024-06-02"])
+
+
 if __name__ == "__main__":
     unittest.main()

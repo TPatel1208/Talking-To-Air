@@ -17,33 +17,11 @@ up, so a misconfigured ``REDIS_URL`` cannot destroy anything.
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import json
-import os
-import socket
 import unittest
 import uuid
-from urllib.parse import urlsplit
 
-#: Database 15 by default, never 0 — the live stack's event log is on 0.
-DEFAULT_TEST_REDIS_URL = "redis://127.0.0.1:6379/15"
-REDIS_URL = os.environ.get("REDIS_URL") or DEFAULT_TEST_REDIS_URL
-
-
-def _redis_is_reachable(url: str) -> bool:
-    if importlib.util.find_spec("redis") is None:
-        return False
-    parsed = urlsplit(url)
-    try:
-        with socket.create_connection((parsed.hostname or "127.0.0.1", parsed.port or 6379), timeout=1.0):
-            return True
-    except OSError:
-        return False
-
-
-requires_redis = unittest.skipUnless(
-    _redis_is_reachable(REDIS_URL), f"no Redis reachable at {REDIS_URL}"
-)
+from redis_helpers import REDIS_URL, requires_redis
 
 
 @requires_redis

@@ -12,10 +12,12 @@ import contextlib
 import asyncio
 import logging
 from collections.abc import AsyncIterator
+from typing import Any
 
 import psycopg
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-from psycopg.rows import dict_row
+from psycopg import AsyncConnection
+from psycopg.rows import DictRow, dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from tta_backend.config.settings import get_settings
@@ -23,11 +25,11 @@ from tta_backend.config.settings import get_settings
 logger = logging.getLogger(__name__)
 
 _pool: AsyncConnectionPool | None = None
-_checkpointer_pool: AsyncConnectionPool | None = None
+_checkpointer_pool: AsyncConnectionPool[AsyncConnection[DictRow]] | None = None
 _checkpointer: AsyncPostgresSaver | None = None
 
 
-def _db_config() -> dict:
+def _db_config() -> dict[str, Any]:
     return get_settings().db_kwargs
 
 
@@ -167,6 +169,9 @@ async def get_checkpointer() -> AsyncPostgresSaver:
         # connection; setup() already ran its migrations by the time
         # concurrent traffic arrives).
         _checkpointer_pool = AsyncConnectionPool(
+            # The class carries the row type the saver requires; row_factory
+            # below is what actually produces it.
+            connection_class=AsyncConnection[DictRow],
             kwargs={**_db_config(), "autocommit": True, "row_factory": dict_row},
             min_size=1,
             max_size=4,

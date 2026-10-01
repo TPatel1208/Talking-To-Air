@@ -33,7 +33,7 @@ _DEFAULT_GRANULE_LIMIT = 10
 _MAX_GRANULE_LIMIT = 50
 
 
-async def search_datasets(query: str, filters: dict | None, tools: dict[str, BaseTool]) -> dict[str, Any]:
+async def search_datasets(query: str, filters: dict[str, Any] | None, tools: dict[str, BaseTool]) -> dict[str, Any]:
     raw = await tools["search_datasets"].ainvoke({"query": query, "filters": filters})
     return parse_tool_result(raw)
 

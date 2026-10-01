@@ -18,9 +18,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Awaitable, Callable, Optional, TypeVar
+from typing import Any, Awaitable, Callable, Optional, TypeVar
 
 import numpy as np
+import xarray as xr
 from langchain.tools import tool
 from langchain_core.tools import BaseTool
 
@@ -65,6 +66,10 @@ _TRANSIENT_RETRY_BASE_DELAY_SECONDS = 1.5
 _TRANSIENT_RETRY_MAX_DELAY_SECONDS = 10.0
 
 _T = TypeVar("_T")
+# An aligned retrieval arrives as either; selection keeps whichever it was.
+_XrT = TypeVar("_XrT", xr.DataArray, xr.Dataset)
+# How one side is picked out of an aligned object: ("sel", label) or ("isel", position).
+SourceSelector = tuple[str, Any]
 
 
 async def _retry_transient(op: Callable[[], Awaitable[_T]], *, label: str) -> _T:
@@ -103,7 +108,7 @@ async def _retry_transient(op: Callable[[], Awaitable[_T]], *, label: str) -> _T
 _PERCENT_CHANGE_FLOOR_FRACTION = 0.05
 
 
-def _difference(da_a, da_b):
+def _difference(da_a: xr.DataArray, da_b: xr.DataArray) -> xr.DataArray:
     """period B minus period A, cell-by-cell.
 
     xarray subtraction already propagates NaN — a cell missing (fill-masked)
@@ -113,7 +118,7 @@ def _difference(da_a, da_b):
     return da_b - da_a
 
 
-def _source_labels(aligned) -> list[str] | None:
+def _source_labels(aligned: xr.DataArray | xr.Dataset) -> list[str] | None:
     """String values of the ``source`` coordinate, if it carries them — the
     handles the MCP stamped for each aligned slice. None when there is no
     ``source`` coordinate to read labels from."""
@@ -122,7 +127,9 @@ def _source_labels(aligned) -> list[str] | None:
     return [str(v) for v in np.atleast_1d(aligned["source"].values)]
 
 
-def _aligned_source_order(aligned, handle_a, handle_b):
+def _aligned_source_order(
+    aligned: xr.DataArray | xr.Dataset, handle_a: str | None, handle_b: str | None,
+) -> tuple[SourceSelector, SourceSelector]:
     """The (A, B) selectors for pulling the two sources out of the aligned
     cube. Prefers *label* selection when the ``source`` coordinate stamps both
     handles (an MCP-side reorder then can't flip which slice is A); falls back
@@ -136,12 +143,12 @@ def _aligned_source_order(aligned, handle_a, handle_b):
     return ("isel", 0), ("isel", 1)
 
 
-def _apply_source_selector(obj, selector):
+def _apply_source_selector(obj: _XrT, selector: SourceSelector) -> _XrT:
     kind, key = selector
     return obj.sel(source=key) if kind == "sel" else obj.isel(source=key)
 
 
-def _split_aligned(aligned, handle_a: str | None = None, handle_b: str | None = None):
+def _split_aligned(aligned: _XrT, handle_a: str | None = None, handle_b: str | None = None) -> tuple[_XrT, _XrT]:
     """Split the MCP `align` transform's output into its two source arrays.
 
     ``align(source_handles=[a, b])`` grid-aligns >=2 gridded inputs into one
@@ -168,7 +175,7 @@ def _split_aligned(aligned, handle_a: str | None = None, handle_b: str | None = 
     return _apply_source_selector(aligned, sel_a), _apply_source_selector(aligned, sel_b)
 
 
-def _percent_change_floor(a_paired_vals) -> float | None:
+def _percent_change_floor(a_paired_vals: np.ndarray) -> float | None:
     """The smallest period-A mean magnitude a percent change may be normalized
     by: ``_PERCENT_CHANGE_FLOOR_FRACTION`` of |A|'s own 2–98th-percentile
     range over the paired-valid cells. Returns None when A has no valid cells
@@ -180,7 +187,7 @@ def _percent_change_floor(a_paired_vals) -> float | None:
     return _PERCENT_CHANGE_FLOOR_FRACTION * spread
 
 
-def _anomaly_stats(da_a, da_b, diff, threshold: float | None) -> dict:
+def _anomaly_stats(da_a: xr.DataArray, da_b: xr.DataArray, diff: xr.DataArray, threshold: float | None) -> dict[str, Any]:
     """Mean difference, percent change (relative to period A's mean), and
     optionally the area exceeding a threshold change magnitude.
 
@@ -222,7 +229,7 @@ def _anomaly_stats(da_a, da_b, diff, threshold: float | None) -> dict:
         else:
             percent_change = (mean_difference / mean_a) * 100.0
 
-    stats = {
+    stats: dict[str, Any] = {
         "n_cells": int(valid_diff.size),
         "mean_difference": mean_difference,
         "percent_change": percent_change,
@@ -241,7 +248,7 @@ def _anomaly_stats(da_a, da_b, diff, threshold: float | None) -> dict:
     return stats
 
 
-def _region_stats(da, *, basis: str | None = None) -> dict | None:
+def _region_stats(da: xr.DataArray, *, basis: str | None = None) -> dict[str, Any] | None:
     """Basic descriptive stats over da's valid cells, or None if none are
     valid. The mean is cos(latitude) area-weighted (``area_weighted_mean``);
     median/max/min are order statistics, which weighting doesn't move enough
@@ -257,7 +264,7 @@ def _region_stats(da, *, basis: str | None = None) -> dict | None:
     valid = values[np.isfinite(values)]
     if valid.size == 0:
         return None
-    stats = {
+    stats: dict[str, Any] = {
         "mean": area_weighted_mean(da),
         "median": float(np.median(valid)),
         "max": float(np.max(valid)),
@@ -269,7 +276,7 @@ def _region_stats(da, *, basis: str | None = None) -> dict | None:
     return stats
 
 
-def _empty_overlap_error(da, label: str) -> str | None:
+def _empty_overlap_error(da: xr.DataArray, label: str) -> str | None:
     """Reject a side with no valid data at all — no overlap with its requested window."""
     values = np.asarray(da.values, dtype=float)
     if not np.isfinite(values).any():
@@ -277,7 +284,7 @@ def _empty_overlap_error(da, label: str) -> str | None:
     return None
 
 
-def _time_range(da) -> tuple[str, str] | tuple[None, None]:
+def _time_range(da: xr.DataArray) -> tuple[str, str] | tuple[None, None]:
     if "time" not in da.coords:
         return None, None
     times = sorted(str(t) for t in np.atleast_1d(da["time"].values))
@@ -286,13 +293,13 @@ def _time_range(da) -> tuple[str, str] | tuple[None, None]:
     return times[0], times[-1]
 
 
-def _disjoint_periods_error(da_a, da_b) -> str | None:
+def _disjoint_periods_error(da_a: xr.DataArray, da_b: xr.DataArray) -> str | None:
     """Region mode compares two AOIs over what should be the same period —
     reject if their time windows don't even overlap (a plain-language guard,
     not a proxy for period-mode's own aligned differencing)."""
     start_a, end_a = _time_range(da_a)
     start_b, end_b = _time_range(da_b)
-    if start_a is None or start_b is None:
+    if start_a is None or end_a is None or start_b is None or end_b is None:
         return None
     if end_a < start_b or end_b < start_a:
         return (
@@ -303,10 +310,10 @@ def _disjoint_periods_error(da_a, da_b) -> str | None:
     return None
 
 
-def _variable_mismatch_error(da_a, da_b) -> str | None:
+def _variable_mismatch_error(da_a: xr.DataArray, da_b: xr.DataArray) -> str | None:
     """Return an error message if da_a/da_b are different variables, else None."""
-    name_a = (da_a.name or "").strip()
-    name_b = (da_b.name or "").strip()
+    name_a = str(da_a.name or "").strip()
+    name_b = str(da_b.name or "").strip()
     if name_a and name_b and name_a != name_b:
         return (
             f"Cannot compare different variables: '{name_a}' (A) vs '{name_b}' (B). "
@@ -315,7 +322,7 @@ def _variable_mismatch_error(da_a, da_b) -> str | None:
     return None
 
 
-def _units_mismatch_error(da_a, da_b) -> str | None:
+def _units_mismatch_error(da_a: xr.DataArray, da_b: xr.DataArray) -> str | None:
     """Return an error message if da_a/da_b carry different (non-empty) units,
     else None.
 
@@ -352,7 +359,7 @@ def _units_mismatch_error(da_a, da_b) -> str | None:
     return None
 
 
-def _prepare_2d(da, variable_name: str, source_ds=None):
+def _prepare_2d(da: xr.DataArray, variable_name: str, source_ds: xr.Dataset | None = None) -> tuple[xr.DataArray, dict[str, Any]]:
     """Apply quality masking and collapse to a single 2-D (lat, lon) snapshot
     (time-mean, matching plot_singular's default) so every side of a
     comparison renders as one map.
@@ -370,7 +377,7 @@ def _prepare_2d(da, variable_name: str, source_ds=None):
     return _normalize_to_2d(reduced), aggregation.meta
 
 
-def _compare_side_provenance(handle: str, da_2d, agg_meta: dict, variable_name: str, units: str) -> dict:
+def _compare_side_provenance(handle: str, da_2d: xr.DataArray, agg_meta: dict[str, Any], variable_name: str, units: str) -> dict[str, Any]:
     """Masking + T46 scope-echo provenance for one side of a comparison,
     mirroring plot_tools._provenance's disclosure facts.
 
@@ -399,7 +406,7 @@ def _compare_side_provenance(handle: str, da_2d, agg_meta: dict, variable_name: 
     return provenance
 
 
-def _bbox_from_da(da) -> list[float]:
+def _bbox_from_da(da: xr.DataArray) -> list[float]:
     lat_coord = find_lat_coord(da)
     lon_coord = find_lon_coord(da)
     lats = np.asarray(da[lat_coord].values, dtype=float)
@@ -415,7 +422,7 @@ _SHARED_SCALE_DISCLOSURE = {"method": "percentile", "p": [2, 98]}
 _DIVERGING_SCALE_DISCLOSURE = {"method": "percentile_magnitude", "p": 98}
 
 
-def _shared_bounds(da_a, da_b) -> tuple[float, float]:
+def _shared_bounds(da_a: xr.DataArray, da_b: xr.DataArray) -> tuple[float, float]:
     combined = np.concatenate([
         np.asarray(da_a.values, dtype=float).ravel(),
         np.asarray(da_b.values, dtype=float).ravel(),
@@ -423,7 +430,7 @@ def _shared_bounds(da_a, da_b) -> tuple[float, float]:
     return _percentile_bounds(combined)
 
 
-def _diverging_bounds(diff_da) -> tuple[float, float]:
+def _diverging_bounds(diff_da: xr.DataArray) -> tuple[float, float]:
     """Symmetric, zero-centered scale sized to the diff's 98th-percentile magnitude."""
     vals = np.asarray(diff_da.values, dtype=float)
     valid = vals[np.isfinite(vals)]
@@ -437,7 +444,7 @@ def _diverging_bounds(diff_da) -> tuple[float, float]:
 
 async def _open_and_prepare_side(
     handle: str, mcp_tools: dict[str, BaseTool], variable: Optional[str], label: str
-):
+) -> tuple[xr.Dataset | None, xr.DataArray | None, str | None, Callable[[], None] | None]:
     """Open one side of a compare (export -> open -> normalize -> select
     variable) and return ``(ds, da, error_json, emit_side_effect)`` — exactly
     one of ``(ds, da)`` or ``error_json`` is populated, never both.
@@ -472,7 +479,7 @@ async def _open_and_prepare_side(
         # side yields a picker instead of a panel; a resolvable side still
         # renders) — but only if this side's error is the one actually
         # returned; see the emit_side_effect docstring note above.
-        def _emit_side_effect(ds=ds, e=e) -> None:
+        def _emit_side_effect(ds: Any = ds, e: Any = e) -> None:
             emit_variable_choice_payload(e.resolution, ds)
             emit_status("Waiting for a variable choice.", stage=STAGE_RENDER)
 
@@ -488,7 +495,7 @@ async def _open_and_prepare_side(
         )
 
 
-def _region_panel(da, handle: str, title: str, variable_name: str, units: str, vmin: float, vmax: float) -> dict:
+def _region_panel(da: xr.DataArray, handle: str, title: str, variable_name: str, units: str, vmin: float, vmax: float) -> dict[str, Any]:
     panel = _da_to_heatmap_payload(
         da, title, variable_name, units, render_overlay=True, value_range=(vmin, vmax),
         scale_disclosure=_SHARED_SCALE_DISCLOSURE,
@@ -498,7 +505,7 @@ def _region_panel(da, handle: str, title: str, variable_name: str, units: str, v
     return panel
 
 
-def make_compare(mcp_tools: dict[str, BaseTool]):
+def make_compare(mcp_tools: dict[str, BaseTool]) -> BaseTool:
     @tool
     async def compare(
         handle_a: str,
@@ -563,6 +570,8 @@ def make_compare(mcp_tools: dict[str, BaseTool]):
             if emit_b:
                 emit_b()
             return err_b
+        # No error from a side means it opened.
+        assert da_a is not None and da_b is not None
 
         mismatch = _variable_mismatch_error(da_a, da_b)
         if mismatch:
@@ -579,7 +588,7 @@ def make_compare(mcp_tools: dict[str, BaseTool]):
         if empty_b:
             return json.dumps({"error": empty_b})
 
-        variable_name = da_a.name or ""
+        variable_name = str(da_a.name or "")
         units = da_a.attrs.get("units", "")
 
         emit_status("Building comparison...", stage=STAGE_RENDER)
@@ -654,7 +663,10 @@ def make_compare(mcp_tools: dict[str, BaseTool]):
     return compare
 
 
-def _build_region_comparison(handle_a, handle_b, da_a, da_b, label_a, label_b, variable_name, units, ds_a=None, ds_b=None) -> str:
+def _build_region_comparison(
+    handle_a: str, handle_b: str, da_a: xr.DataArray, da_b: xr.DataArray, label_a: str, label_b: str,
+    variable_name: str, units: str, ds_a: xr.Dataset | None = None, ds_b: xr.Dataset | None = None,
+) -> str:
     da_a_2d, meta_a = _prepare_2d(da_a, variable_name, source_ds=ds_a)
     da_b_2d, meta_b = _prepare_2d(da_b, variable_name, source_ds=ds_b)
     vmin, vmax = _shared_bounds(da_a_2d, da_b_2d)
@@ -689,8 +701,9 @@ def _build_region_comparison(handle_a, handle_b, da_a, da_b, label_a, label_b, v
 
 
 def _build_period_comparison(
-    handle_a, handle_b, aligned_handle, aligned_a, aligned_b, label_a, label_b, variable_name, units, threshold,
-    aligned_ds_a=None, aligned_ds_b=None,
+    handle_a: str, handle_b: str, aligned_handle: str, aligned_a: xr.DataArray, aligned_b: xr.DataArray,
+    label_a: str, label_b: str, variable_name: str, units: str, threshold: float | None,
+    aligned_ds_a: xr.Dataset | None = None, aligned_ds_b: xr.Dataset | None = None,
 ) -> str:
     da_a_2d, meta_a = _prepare_2d(aligned_a, variable_name, source_ds=aligned_ds_a)
     da_b_2d, meta_b = _prepare_2d(aligned_b, variable_name, source_ds=aligned_ds_b)

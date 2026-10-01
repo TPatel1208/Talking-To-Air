@@ -2,7 +2,7 @@ import json
 import numpy as np
 from langchain.tools import tool
 from langchain_core.tools import BaseTool
-from typing import Annotated, Optional
+from typing import Any, Annotated, Optional
 from pydantic import Field
 
 from tta_backend.services import admission
@@ -28,18 +28,19 @@ _aggregation_service = AggregationService()
 VALID_STATS = {"mean", "median", "max", "min", "std"}
 
 
-def _build_dim_selector(dimension: str | None, dimension_value: float | None) -> dict | None:
+def _build_dim_selector(dimension: str | None, dimension_value: float | None) -> dict[str, Any] | None:
     if dimension is None or dimension_value is None:
         return None
     return {dimension: dimension_value}
 
 
-def make_compute_statistic_tool(mcp_tools: dict[str, BaseTool]):
+def make_compute_statistic_tool(mcp_tools: dict[str, BaseTool]) -> BaseTool:
     @tool
     async def compute_statistic_tool(
         handle: Annotated[str, Field(description="An obs_/cube_ handle from a retrieval or transform tool.")],
         location: str,
-        stats: list[str] = ["mean", "median", "max", "min"],
+        # Never mutated; a literal default is what the tool schema shows the model.
+        stats: list[str] = ["mean", "median", "max", "min"],  # noqa: B006
         variable: Optional[str] = None,
         dimension: Optional[str] = None,
         dimension_value: Optional[float] = None,
@@ -104,7 +105,7 @@ def make_compute_statistic_tool(mcp_tools: dict[str, BaseTool]):
 
         emit_status("Computing statistics...", stage=STAGE_RENDER)
 
-        def _mask_aggregate_stats():
+        def _mask_aggregate_stats() -> tuple[str | None, Any]:
             # CPU-bound mask -> aggregate -> stats chain (T16), run off the
             # event loop via admission.run_heavy below, which also bounds how
             # many such reductions may hold memory at once.
@@ -116,12 +117,12 @@ def make_compute_statistic_tool(mcp_tools: dict[str, BaseTool]):
             col_info = col_info_for_variable(masked, ds)
             dim_selector = _build_dim_selector(dimension, dimension_value)
 
-            def _reduced_field(stat):
+            def _reduced_field(stat: str) -> tuple[Any, Any]:
                 """Mask, reduce over time with ``stat`` per cell, and squeeze
                 to a 2-D (lat, lon) field."""
                 aggregation = _aggregation_service.aggregate(
                     masked,
-                    variable=masked.name,
+                    variable=None if masked.name is None else str(masked.name),
                     stat=stat,
                     col_info=col_info,
                     source_ds=ds,
@@ -208,7 +209,7 @@ def make_compute_statistic_tool(mcp_tools: dict[str, BaseTool]):
     return compute_statistic_tool
 
 
-def make_find_daily_peak(mcp_tools: dict[str, BaseTool]):
+def make_find_daily_peak(mcp_tools: dict[str, BaseTool]) -> BaseTool:
     @tool
     async def find_daily_peak(
         handle: Annotated[str, Field(description="An obs_/cube_ handle from a retrieval or transform tool.")],
@@ -270,7 +271,7 @@ def make_find_daily_peak(mcp_tools: dict[str, BaseTool]):
 
         emit_status("Finding peak value...", stage=STAGE_RENDER)
 
-        def _mask_aggregate_peak():
+        def _mask_aggregate_peak() -> tuple[str | None, Any]:
             # CPU-bound mask -> aggregate -> peak search chain (T16), run
             # off the event loop via admission.run_heavy below, which also bounds
                 # how many such reductions may hold memory at once.
@@ -287,7 +288,7 @@ def make_find_daily_peak(mcp_tools: dict[str, BaseTool]):
                 # extremes and possibly misplacing them.
                 aggregation = _aggregation_service.aggregate(
                     masked,
-                    variable=masked.name,
+                    variable=None if masked.name is None else str(masked.name),
                     stat="max",
                     col_info=col_info,
                     source_ds=ds,

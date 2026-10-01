@@ -140,7 +140,7 @@ class HistoryService:
         return None
 
     def _merge_adjacent_assistant_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        merged = []
+        merged: list[dict[str, Any]] = []
         for msg in messages:
             if msg["role"] == "assistant" and merged and merged[-1]["role"] == "assistant":
                 prev = merged[-1]

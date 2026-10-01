@@ -202,8 +202,8 @@ class ChatStreamService:
                 return
 
             response_text = ""
-            image_urls = []
-            artifacts = []
+            image_urls: list[str] = []
+            artifacts: list[dict[str, Any]] = []
             turn = _LiveTurn()
             # T22 story #8: the last non-None suggested_followups seen from a
             # sub-agent's own AgentResult envelope, whether it arrives batched in
@@ -215,7 +215,7 @@ class ChatStreamService:
             # AgentResult tool_result (run_satellite already filled its
             # prompts) — carried straight through, never synthesized here, the
             # same discipline as suggestions_box.
-            variable_choice_box: dict[str, dict] = {}
+            variable_choice_box: dict[str, dict[str, Any]] = {}
             started = time.monotonic()
             turn_timeout = asyncio.timeout(self.chat_turn_timeout_seconds)
             try:
@@ -257,7 +257,7 @@ class ChatStreamService:
                             for event in events:
                                 yield event
 
-                    done_payload = {
+                    done_payload: dict[str, Any] = {
                         "thread_id": thread_id,
                         "response": self._strip_supervisor_preamble(response_text),
                         "image_urls": image_urls,
@@ -297,7 +297,7 @@ class ChatStreamService:
         turn = _LiveTurn()
         started = time.monotonic()
 
-        queue: asyncio.Queue = asyncio.Queue()
+        queue: asyncio.Queue[Any] = asyncio.Queue()
         loop = asyncio.get_running_loop()
         # Touched by every item the loop below consumes, including the
         # sub-agent's own bubbled events, so the beat covers genuine silence
@@ -379,9 +379,9 @@ class ChatStreamService:
         # __error__ — so reaching here guarantees result was set.
         assert result is not None
         for chart in result.charts:
-            event = await self._emit_chart_once(thread_id, chart, user_id, turn.emitted_chart_ids)
-            if event is not None:
-                yield event
+            chart_event = await self._emit_chart_once(thread_id, chart, user_id, turn.emitted_chart_ids)
+            if chart_event is not None:
+                yield chart_event
         for artifact_ref in result.artifacts:
             payload = await self._resolve_artifact_payload(
                 artifact_ref.model_dump(exclude_none=True), user_id, thread_id,
@@ -580,7 +580,7 @@ class ChatStreamService:
         artifacts: list[dict[str, Any]] | None = None,
         emitted_chart_ids: set[str] | None = None,
         suggestions_box: dict[str, list[str]] | None = None,
-        variable_choice_box: dict[str, dict] | None = None,
+        variable_choice_box: dict[str, dict[str, Any]] | None = None,
     ) -> AsyncIterator[str]:
         if emitted_chart_ids is None:
             emitted_chart_ids = set()
@@ -678,7 +678,7 @@ class ChatStreamService:
         user_id: str,
         emitted_chart_ids: set[str] | None = None,
         suggestions_box: dict[str, list[str]] | None = None,
-        variable_choice_box: dict[str, dict] | None = None,
+        variable_choice_box: dict[str, dict[str, Any]] | None = None,
     ) -> tuple[str, list[str]]:
         if emitted_chart_ids is None:
             emitted_chart_ids = set()

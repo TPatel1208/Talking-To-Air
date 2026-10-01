@@ -22,15 +22,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python -m venv /opt/venv
+# Dependencies come from uv.lock, which pins every package, direct and
+# indirect, with hashes. `--locked` refuses to build if the lock no longer
+# matches pyproject.toml rather than quietly re-resolving. Pinned uv version;
+# keep it in step with the CI workflow's setup-uv.
+COPY --from=ghcr.io/astral-sh/uv:0.12.21 /uv /bin/uv
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_NO_CACHE=1
 ENV PATH="/opt/venv/bin:$PATH"
 
-COPY requirements.txt pyproject.toml ./
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+# Dependencies alone first, so a source-only change reuses this layer.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --locked --no-dev --no-install-project
 
 COPY . .
-RUN pip install --no-cache-dir -e .
+RUN uv sync --locked --no-dev
 
 
 # â”€â”€ Stage 2: Dev tooling (tests/lint only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -40,7 +49,7 @@ RUN pip install --no-cache-dir -e .
 # this stage; nothing else should.
 FROM builder AS devtools
 
-RUN pip install --no-cache-dir -r requirements-dev.txt
+RUN uv sync --locked
 
 
 # â”€â”€ Stage 3: Runtime â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

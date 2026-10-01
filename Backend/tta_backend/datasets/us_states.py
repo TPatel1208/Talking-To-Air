@@ -6,7 +6,9 @@ The 51 U.S. admin-1 units (50 states + DC) as RegionResolver presets.
 source, so the two cannot drift; tests assert they still agree.
 """
 
-US_STATES: dict[str, dict] = {
+from typing import Any
+
+US_STATES: dict[str, dict[str, Any]] = {
     'alabama': {"name": 'Alabama', "postal": 'AL', "kind": 'state',
         "display_name": 'Alabama (U.S. state)', "bounds": (-88.48619, 30.230916, -84.921533, 35.024197)},
     'alaska': {"name": 'Alaska', "postal": 'AK', "kind": 'state',

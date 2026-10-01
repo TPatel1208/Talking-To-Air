@@ -13,7 +13,7 @@ import copy
 import functools
 import json
 import logging
-from typing import Any, Callable, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 from langchain_core.tools import BaseTool, StructuredTool
 
@@ -28,6 +28,9 @@ from tta_backend.earthdata_mcp.results import (
     parse_tool_result,
 )
 from tta_backend.utils.streaming import emit_status
+
+if TYPE_CHECKING:
+    from tta_backend.utils.plotting import RegionResolver
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +79,7 @@ class MissingUserContextError(RuntimeError):
 
 def bind_workspace(
     tools: dict[str, BaseTool],
-    user_id_getter: Callable[[], str],
+    user_id_getter: Callable[[], str | None],
     *,
     edl_injector: EdlCredentialInjector | None = None,
 ) -> dict[str, BaseTool]:
@@ -101,13 +104,16 @@ def bind_workspace(
     return bound
 
 
-def _schema_properties(schema) -> dict:
-    return schema.get("properties", {}) if isinstance(schema, dict) else schema.schema().get("properties", {})
+def _schema_properties(schema: Any) -> dict[str, Any]:
+    properties: dict[str, Any] = (
+        schema.get("properties", {}) if isinstance(schema, dict) else schema.schema().get("properties", {})
+    )
+    return properties
 
 
 def _bind_one(
     tool: BaseTool,
-    user_id_getter: Callable[[], str],
+    user_id_getter: Callable[[], str | None],
     edl_injector: EdlCredentialInjector | None,
 ) -> BaseTool:
     # T31: feature-detected once at bind time, off the MCP's advertised
@@ -120,7 +126,7 @@ def _bind_one(
     schema = _schema_without_hidden_params(tool.args_schema)
     stage_info = _STAGE_BY_TOOL_NAME.get(tool.name)
 
-    async def _call(**kwargs):
+    async def _call(**kwargs: Any) -> Any:
         user_id = user_id_getter()
         if user_id is None:
             exc = MissingUserContextError(
@@ -151,12 +157,14 @@ def _bind_one(
         # nothing otherwise and let the MCP fall back to its shared env
         # credential. edl_injector.resolve() owns the connected/unexpired
         # check and the just-in-time decrypt; it never caches plaintext.
-        injected = False
+        # The injector whose token this call carries, or None for the shared
+        # credential -- held rather than a flag so its use below is typed.
+        injected_by: EdlCredentialInjector | None = None
         if advertises_edl_token and edl_injector is not None:
             token = await edl_injector.resolve(user_id)
             if token is not None:
                 kwargs["edl_token"] = token
-                injected = True
+                injected_by = edl_injector
 
         # T18: bind_workspace is the one place every model-facing MCP tool
         # call passes through — classify here (call_tool catches a raised
@@ -178,8 +186,8 @@ def _bind_one(
             # the entitlement isn't. Never fires for the shared-credential
             # path (injected is False), so one user's bad token can't flip
             # another's connector.
-            if injected and exc.category == CATEGORY_TOKEN_INVALID:
-                await edl_injector.mark_invalid(user_id)
+            if injected_by is not None and exc.category == CATEGORY_TOKEN_INVALID:
+                await injected_by.mark_invalid(user_id)
             # T46 story #4: a rejected AOI *input* must leave a greppable trace.
             # The live 2026-07-17 incident (define_area_of_interest rejected an
             # inverted bbox, the agent improvised "North America") left nothing
@@ -197,10 +205,10 @@ def _bind_one(
                     },
                 )
             return exc.to_tool_json()
-        if injected:
+        if injected_by is not None:
             # Fire-and-forget and coalesced per agent turn inside mark_used
             # itself — never on this call's critical path, never failing it.
-            edl_injector.mark_used(user_id)
+            injected_by.mark_used(user_id)
         # T19 story #3: surface the granule count once check_coverage's own
         # response is known, so a researcher sees why their request is
         # small or large before the (potentially long) retrieval wait.
@@ -224,17 +232,17 @@ def _bind_one(
     )
 
 
-def _schema_without_hidden_params(schema):
-    schema = copy.deepcopy(schema)
-    properties = schema.get("properties", {})
+def _schema_without_hidden_params(schema: Any) -> dict[str, Any]:
+    stripped: dict[str, Any] = copy.deepcopy(schema)
+    properties = stripped.get("properties", {})
     for name in _HIDDEN_PARAMS:
         properties.pop(name, None)
-    schema["required"] = [name for name in schema.get("required", []) if name not in _HIDDEN_PARAMS]
-    return schema
+    stripped["required"] = [name for name in stripped.get("required", []) if name not in _HIDDEN_PARAMS]
+    return stripped
 
 
 @functools.lru_cache(maxsize=1)
-def _region_resolver():
+def _region_resolver() -> RegionResolver:
     """One shared RegionResolver for the translation, built lazily.
 
     Lazy because ``utils.plotting`` pulls in cartopy/rasterio, and
@@ -294,7 +302,7 @@ def region_aware_area_of_interest(tool: BaseTool) -> BaseTool:
     """
     from tta_backend.utils import region_buffer, region_composition, region_dispatch
 
-    async def _call(**kwargs):
+    async def _call(**kwargs: Any) -> Any:
         location = kwargs.get("location")
         if isinstance(location, str):
             resolver = _region_resolver()
@@ -376,7 +384,7 @@ def model_view_describe_dataset(tool: BaseTool) -> BaseTool:
     need the full per-variable records.
     """
 
-    async def _call(**kwargs):
+    async def _call(**kwargs: Any) -> Any:
         raw = await tool.ainvoke(kwargs)
         try:
             result = parse_tool_result(raw)
@@ -396,7 +404,7 @@ def model_view_describe_dataset(tool: BaseTool) -> BaseTool:
     )
 
 
-def _compact_describe_dataset_result(result: dict) -> dict:
+def _compact_describe_dataset_result(result: dict[str, Any]) -> dict[str, Any]:
     variables = result.get("variables")
     if not isinstance(variables, list):
         return result
@@ -407,7 +415,7 @@ def _compact_describe_dataset_result(result: dict) -> dict:
     return compacted
 
 
-def _compact_variable(var: dict) -> dict:
+def _compact_variable(var: dict[str, Any]) -> dict[str, Any]:
     """name/long_name/units/advisory_notes plus a one-line mask_note derived
     from fill/range presence — the model needs variable names to subset, not
     every fill-value/valid-range record (T13 story #11)."""

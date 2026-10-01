@@ -84,7 +84,7 @@ def capture_rate_limit_evidence():
     try:
         yield handler
     finally:
-        for logger, previous_level in zip(watched_loggers, previous_levels):
+        for logger, previous_level in zip(watched_loggers, previous_levels, strict=True):
             logger.removeHandler(handler)
             logger.setLevel(previous_level)
 

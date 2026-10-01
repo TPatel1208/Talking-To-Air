@@ -176,7 +176,7 @@ def _group_segments(name: str | None, group: str | None) -> set[str]:
 
 
 def classify_variable(
-    name: str,
+    name: str | None,
     *,
     group: str | None = None,
     standard_name: str | None = None,

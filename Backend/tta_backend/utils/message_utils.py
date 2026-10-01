@@ -45,7 +45,7 @@ def truncate_text(
 
 
 def extract_last_text(
-    result: dict,
+    result: dict[str, Any],
     fallback: str,
     max_chars: int = 2000,
     agent_name: str = "unknown",

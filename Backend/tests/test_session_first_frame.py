@@ -30,7 +30,7 @@ if TESTS_DIR not in sys.path:
     sys.path.insert(0, TESTS_DIR)
 
 import auth_helpers  # noqa: E402 -- needs the TESTS_DIR insert above
-from test_turn_registry import REDIS_URL, requires_redis  # noqa: E402
+from redis_helpers import REDIS_URL, requires_redis  # noqa: E402
 
 _REQUIRED = ["fastapi", "httpx", "jwt", "langchain", "langgraph"]
 

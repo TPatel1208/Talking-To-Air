@@ -700,6 +700,7 @@ class TheContractsRemainCheckableTests(unittest.TestCase):
         "./docker-compose.debug.yml:/docker-compose.debug.yml:ro",
         "./scripts/provision.sh:/scripts/provision.sh:ro",
         "./.github/workflows/release.yml:/.github/workflows/release.yml:ro",
+        "./.github/workflows/backend-ci.yml:/.github/workflows/backend-ci.yml:ro",
         "./.gitattributes:/.gitattributes:ro",
     )
 
@@ -725,7 +726,7 @@ class TurnEventLogIsDeployedAndTestedTests(unittest.TestCase):
 
     Those tests skip when none is reachable, which keeps a host-side
     ``pytest`` runnable and is also how the module could silently stop being
-    covered. Asserting the deployment and the test profile each carry the
+    covered. Asserting the deployment, the test profile and CI each carry the
     dependency makes that skip mean "on a developer's host" and nothing else.
     """
 
@@ -750,6 +751,35 @@ class TurnEventLogIsDeployedAndTestedTests(unittest.TestCase):
             "backend-test does not depend on redis, so the suite races a "
             "service that may not be up and skips instead of failing.",
         )
+        self.assertEqual(
+            str((backend_test.get("environment") or {}).get("TTA_REQUIRE_REDIS")), "1",
+            "backend-test does not set TTA_REQUIRE_REDIS=1, so an unreachable "
+            "Redis skips the turn tests instead of failing the container run.",
+        )
+
+    def test_ci_runs_the_suite_against_a_real_redis(self):
+        """CI had no Redis for as long as these tests existed: ~85 skipped on
+        every run and the job stayed green."""
+        workflow = _load(_repo_file(".github", "workflows", "backend-ci.yml"))
+        job = workflow["jobs"]["backend"]
+        self.assertIn(
+            "redis", job.get("services") or {},
+            "the backend CI job declares no redis service, so every "
+            "Redis-backed test skips in CI.",
+        )
+        pytest_steps = [
+            step for step in job.get("steps", [])
+            if "pytest" in str(step.get("run", ""))
+        ]
+        self.assertTrue(pytest_steps, "the backend CI job has no step that runs pytest.")
+        for step in pytest_steps:
+            with self.subTest(step=step.get("name")):
+                self.assertEqual(
+                    str((step.get("env") or {}).get("TTA_REQUIRE_REDIS")), "1",
+                    "the CI pytest step does not set TTA_REQUIRE_REDIS=1, so "
+                    "losing the redis service would skip the turn tests "
+                    "rather than fail the job.",
+                )
 
     def test_the_suite_does_not_share_a_keyspace_with_live_data(self):
         """A test suite pointed at the live stack's database is how this

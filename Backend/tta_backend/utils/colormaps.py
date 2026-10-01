@@ -56,7 +56,7 @@ def _resolve_named(name: str) -> ColormapResolution:
     return ColormapResolution(name=name, lut=lut)
 
 
-def _sampled_stops_to_rgba(stops, n: int) -> np.ndarray:
+def _sampled_stops_to_rgba(stops: list[tuple[float, tuple[int, int, int]]], n: int) -> np.ndarray:
     positions = np.array([p for p, _ in stops])
     colors = np.array([c for _, c in stops], dtype=float) / 255.0
     xs = np.linspace(0.0, 1.0, n)

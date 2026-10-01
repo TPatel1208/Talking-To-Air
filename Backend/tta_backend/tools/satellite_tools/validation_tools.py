@@ -15,12 +15,15 @@ from __future__ import annotations
 import datetime
 import json
 import uuid
-from typing import Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import numpy as np
 import pandas as pd
 from langchain.tools import tool
 from langchain_core.tools import BaseTool
+
+if TYPE_CHECKING:
+    import xarray as xr
 
 from tta_backend.services import admission
 from tta_backend.config.workflow_stages import STAGE_RENDER
@@ -38,14 +41,14 @@ _aggregation_service = AggregationService()
 _resolver = RegionResolver()
 
 
-def _nearest_cell_series(da, lat: float, lon: float):
+def _nearest_cell_series(da: xr.DataArray, lat: float, lon: float) -> xr.DataArray:
     """Select the nearest grid cell to (lat, lon) from a lat/lon-indexed DataArray."""
     lat_coord = find_lat_coord(da)
     lon_coord = find_lon_coord(da)
     return da.sel({lat_coord: lat, lon_coord: lon}, method="nearest")
 
 
-def _nearest_cell_dataset(ds, da, lat: float, lon: float):
+def _nearest_cell_dataset(ds: xr.Dataset | None, da: xr.DataArray, lat: float, lon: float) -> xr.Dataset | None:
     """Narrow ``ds`` to the same cell ``_nearest_cell_series`` takes from ``da``.
 
     The sibling QA-flag variable has to be narrowed alongside the science
@@ -66,8 +69,9 @@ def _nearest_cell_dataset(ds, da, lat: float, lon: float):
 
 
 def _extract_monitor_series(
-    da, lat: float, lon: float, col_info: dict | None = None, source_ds=None,
-):
+    da: xr.DataArray, lat: float, lon: float, col_info: dict[str, Any] | None = None,
+    source_ds: xr.Dataset | None = None,
+) -> tuple[list[str], list[float], dict[str, Any], dict[str, Any]]:
     """Extract the satellite time series at the nearest cell to (lat, lon).
 
     Fill values, out-of-range cells, and QA-flagged cells are excluded from
@@ -102,10 +106,11 @@ def _extract_monitor_series(
     raw_times = np.atleast_1d(series["time"].values) if "time" in series.coords else [None] * n_total
 
     times, values = [], []
-    for t, v in zip(raw_times, raw_values):
-        if not np.isfinite(v):
+    for t, v in zip(raw_times, raw_values, strict=True):
+        # An untimed reading cannot be paired with a ground day.
+        if not np.isfinite(v) or t is None:
             continue
-        times.append(pd.Timestamp(t).isoformat() if t is not None else None)
+        times.append(pd.Timestamp(t).isoformat())
         values.append(float(v))
 
     n_valid = len(values)
@@ -118,7 +123,7 @@ def _extract_monitor_series(
     return times, values, coverage, masking
 
 
-def _pair_daily(times: list[str], values: list[float], ground_daily: dict[str, float]) -> list[dict]:
+def _pair_daily(times: list[str], values: list[float], ground_daily: dict[str, float]) -> list[dict[str, Any]]:
     """Aggregate a (possibly sub-daily) satellite series to daily means and pair
     with ground daily values by date.
 
@@ -128,7 +133,7 @@ def _pair_daily(times: list[str], values: list[float], ground_daily: dict[str, f
     Returns records sorted by date: {date, satellite, ground}.
     """
     daily_sat: dict[str, list[float]] = {}
-    for t, v in zip(times, values):
+    for t, v in zip(times, values, strict=True):
         date = t[:10]
         daily_sat.setdefault(date, []).append(v)
 
@@ -144,7 +149,7 @@ def _pair_daily(times: list[str], values: list[float], ground_daily: dict[str, f
     return paired
 
 
-def _correlation_stats(paired: list[dict], total_ground_days: int | None = None) -> dict:
+def _correlation_stats(paired: list[dict[str, Any]], total_ground_days: int | None = None) -> dict[str, Any]:
     """Compute Pearson r, N, and coverage fraction for a list of paired
     {satellite, ground} records (as produced by ``_pair_daily``, one
     monitor's worth or a pooled concatenation across monitors).
@@ -170,7 +175,7 @@ def _correlation_stats(paired: list[dict], total_ground_days: int | None = None)
     }
 
 
-def _time_range(da) -> tuple[str, str]:
+def _time_range(da: xr.DataArray) -> tuple[str, str]:
     if "time" not in da.coords:
         return "", ""
     times = sorted(str(t) for t in np.atleast_1d(da["time"].values))
@@ -179,12 +184,12 @@ def _time_range(da) -> tuple[str, str]:
     return times[0], times[-1]
 
 
-def _station_id(monitor: dict) -> str:
+def _station_id(monitor: dict[str, Any]) -> str:
     return "-".join(str(monitor.get(k, "??")) for k in ("state_code", "county_code", "site_number"))
 
 
 def _exceedance_days(
-    records: list[dict],
+    records: list[dict[str, Any]],
     measurement_field: str,
     hard_threshold: float | None,
     percentile_threshold: float | None,
@@ -206,20 +211,22 @@ def _exceedance_days(
         idx = min(int(len(sorted_vals) * percentile_threshold / 100), len(sorted_vals) - 1)
         percentile_cutoff = sorted_vals[idx]
 
-    exceeded = set()
+    exceeded: set[str] = set()
     for r in records:
         raw = r.get(measurement_field)
-        if raw is None:
+        date = r.get("date_local")
+        # An undated record cannot name an exceedance day.
+        if raw is None or date is None:
             continue
         v = float(raw)
         if hard_threshold is not None and v > hard_threshold:
-            exceeded.add(r.get("date_local"))
+            exceeded.add(date)
         elif percentile_cutoff is not None and v >= percentile_cutoff:
-            exceeded.add(r.get("date_local"))
+            exceeded.add(date)
     return exceeded
 
 
-def make_validate_against_ground(mcp_tools: dict[str, BaseTool]):
+def make_validate_against_ground(mcp_tools: dict[str, BaseTool]) -> BaseTool:
     @tool
     async def validate_against_ground(
         handle: str,
@@ -308,7 +315,7 @@ def make_validate_against_ground(mcp_tools: dict[str, BaseTool]):
         satellite_units = da.attrs.get("units", "")
         variable_name = da.name or ""
 
-        def _extract_and_pair_monitors():
+        def _extract_and_pair_monitors() -> tuple[list[Any], list[Any], list[Any], list[Any]]:
             # CPU-bound per-monitor mask/extraction/pairing loop (T16), run
             # off the event loop via admission.run_heavy below, which also bounds
                 # how many such reductions may hold memory at once.
@@ -410,7 +417,7 @@ def make_validate_against_ground(mcp_tools: dict[str, BaseTool]):
     return validate_against_ground
 
 
-def make_exceedance_overlay(mcp_tools: dict[str, BaseTool]):
+def make_exceedance_overlay(mcp_tools: dict[str, BaseTool]) -> BaseTool:
     @tool
     async def exceedance_overlay(
         handle: str,
@@ -503,7 +510,7 @@ def make_exceedance_overlay(mcp_tools: dict[str, BaseTool]):
         satellite_units = da.attrs.get("units", "")
         variable_name = da.name or ""
 
-        def _extract_exceedance_monitors():
+        def _extract_exceedance_monitors() -> tuple[list[Any], list[Any]]:
             # CPU-bound per-monitor mask/extraction loop (T16), run off the
             # event loop via admission.run_heavy below, which also bounds how
             # many such reductions may hold memory at once.

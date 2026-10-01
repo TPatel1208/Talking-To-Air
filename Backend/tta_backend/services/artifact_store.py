@@ -75,7 +75,8 @@ class ArtifactStore:
         await artifact_repository.save_artifact(
             artifact_id,
             stored.user_id,
-            stored.thread_id,
+            # Set together with user_id on the first claim; `or` only narrows.
+            stored.thread_id or thread_id,
             stored.payload.title,
             stored.payload.columns,
             stored.payload.rows,

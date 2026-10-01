@@ -6,9 +6,34 @@ on:
   pull_request:
     branches: [main]
 
+# A new push to a PR supersedes the run on its previous commit. Pushes to main
+# are never cancelled, so every merge keeps a complete run of its own.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   backend:
     runs-on: ubuntu-latest
+    # The suite takes ~5 min here; a hang should fail in minutes, not after
+    # GitHub's 6-hour default.
+    timeout-minutes: 30
+
+    # The turn event log, the turn registry and the detached-turn routes are
+    # tested against a real Redis (Backend/tests/redis_helpers.py). Without
+    # this service ~85 of them skipped and the job still went green, leaving
+    # services/turn_registry.py at ~21% coverage. Same image as compose's.
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
     defaults:
       run:
         working-directory: .
@@ -16,13 +41,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Must match Backend/Dockerfile's base image (python:3.12-bookworm) â€”
+      # Must match Backend/Dockerfile's base image (python:3.12-bookworm) —
       # CI is worthless as a gate if it runs the suite on an interpreter we
       # don't ship. Backend/ruff.toml, Backend/mypy.ini and pyproject.toml's
-      # requires-python all say 3.12 too; keep all five in step.
-      - uses: actions/setup-python@v5
+      # requires-python all say 3.12 too; keep all five in step. The uv version
+      # matches the one the Dockerfile copies in.
+      # Pinned by commit: setup-uv publishes exact tags only, no moving v10.
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         with:
+          version: "0.12.21"
           python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: Backend/uv.lock
 
       - name: Install system dependencies
         run: |
@@ -30,37 +60,55 @@ jobs:
           sudo apt-get install -y libproj-dev proj-data proj-bin libgeos-dev \
             libgdal-dev gdal-bin libhdf5-dev libnetcdf-dev
 
+      # Exactly what uv.lock pins, dev group included. --locked fails the job
+      # when pyproject.toml has changed without the lock being regenerated.
       - name: Install Python dependencies
+        working-directory: Backend
         run: |
-          python -m pip install --upgrade pip
-          pip install -r Backend/requirements-dev.txt
-          pip install -e Backend
+          uv sync --locked
+          echo "$GITHUB_WORKSPACE/Backend/.venv/bin" >> "$GITHUB_PATH"
 
-      - name: Lint Python syntax
-        run: python -m compileall -q Backend
-
-      - name: Lint Python style
+      # Also the syntax check: ruff fails on any file it cannot parse, which is
+      # all the old `compileall` step verified.
+      - name: Lint Python
         run: python -m ruff check Backend/
 
-      - name: Type check selected backend packages
-        run: python -m mypy Backend/tta_backend/services/ Backend/tta_backend/repositories/ Backend/tta_backend/models/ --ignore-missing-imports --config-file Backend/mypy.ini
+      # Audits every package uv.lock pins, as exported with its hashes, without
+      # resolving anything (pip-audit is in the dev group). No advisory is
+      # ignored; if one ever has to be, pass --ignore-vuln with its id and record
+      # the reason and the exit plan here.
+      - name: Audit Python dependencies
+        run: |
+          uv export --locked --project Backend --no-emit-project --format requirements-txt -o "$RUNNER_TEMP/locked-requirements.txt"
+          python -m pip_audit --disable-pip --no-deps -r "$RUNNER_TEMP/locked-requirements.txt" \
+            --progress-spinner off
+
+      # The whole package, strictly (Backend/mypy.ini).
+      - name: Type check backend
+        run: python -m mypy Backend/tta_backend --config-file Backend/mypy.ini
 
       # pytest, not `unittest discover`: the suite's bootstrap lives in
       # Backend/conftest.py, which only pytest loads. Under unittest CI ran
       # without it and paid for it three ways:
-      #   * no `_isolate_tool_cache` â€” T53's tool cache is process-global, so one
+      #   * no `_isolate_tool_cache` — T53's tool cache is process-global, so one
       #     test's search_datasets(query="no2") was served to the next test's
       #     identical call and that test's handler never ran;
-      #   * no marker exclusions â€” pyproject's `-m "not eval and not live_mcp"`
+      #   * no marker exclusions — pyproject's `-m "not eval and not live_mcp"`
       #     is pytest config, so CI had no idea eval/live_mcp tests exist;
-      #   * no plain pytest-style tests â€” unittest only collects TestCase
+      #   * no plain pytest-style tests — unittest only collects TestCase
       #     subclasses, so the two persistence-contract modules were invisible.
       # This is also the runner CLAUDE.md documents for the local gate, so CI and
       # `docker compose --profile test run backend-test` now check the same suite.
+      #
+      # TTA_REQUIRE_REDIS makes an unreachable Redis a collection error rather
+      # than a skip; the suite reaches the service above at its default
+      # redis://127.0.0.1:6379/15. `-rs` lists every remaining skip and its
+      # reason in the log.
       - name: Run unit and integration tests with coverage
         env:
           PYTHONPATH: Backend
-        run: coverage run -m pytest Backend/tests
+          TTA_REQUIRE_REDIS: "1"
+        run: coverage run -m pytest Backend/tests -rs
 
       - name: Coverage report
         env:
@@ -70,8 +118,16 @@ jobs:
         run: |
            touch .env
            docker compose build backend
+
+      # The suite above runs on the host interpreter; this is the only step
+      # that starts the image itself.
+      - name: Boot backend image and check /health
+        run: |
+          image="$(docker compose config --images | grep -m1 'tta-backend')"
+          ./scripts/smoke-backend-image.sh "$image"
   frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: .
@@ -88,6 +144,12 @@ jobs:
       - name: Install frontend dependencies
         working-directory: Frontend
         run: npm ci
+
+      # Shipped dependencies only: a dev-tool advisory cannot reach a user, and
+      # gating on it would block merges over eslint's transitive tree.
+      - name: Audit frontend dependencies
+        working-directory: Frontend
+        run: npm audit --omit=dev --audit-level=high
 
       - name: Lint frontend
         working-directory: Frontend

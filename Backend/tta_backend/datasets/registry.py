@@ -21,7 +21,7 @@ import math
 import pathlib
 import logging
 from functools import lru_cache
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 import yaml
 from pydantic import BaseModel, field_validator, model_validator
@@ -87,7 +87,7 @@ class CollectionConfig(BaseModel):
 
     @field_validator("fill_value", "valid_min", "valid_max", mode="before")
     @classmethod
-    def _allow_inf(cls, v):
+    def _allow_inf(cls, v: Any) -> float:
         """Accept YAML '.inf' / '-.inf' which PyYAML parses as float('inf')."""
         if isinstance(v, float):
             return v
@@ -132,7 +132,7 @@ def load_registry(path: str | None = None) -> dict[str, CollectionConfig]:
     if not yaml_path.exists():
         raise FileNotFoundError(f"Dataset registry not found: {yaml_path}")
 
-    raw: dict = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+    raw: dict[str, Any] = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
 
     registry: dict[str, CollectionConfig] = {}
     errors: list[str] = []

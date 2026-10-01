@@ -221,7 +221,7 @@ async def run_satellite(
     # (emit_variable_choice) when the T48 resolver couldn't confidently choose.
     # Kept last-wins; attached to the finalized answer below with each
     # candidate's auto-send prompt filled from the ORIGINAL request (task).
-    variable_choice_box: dict[str, dict] = {}
+    variable_choice_box: dict[str, dict[str, Any]] = {}
 
     async def _invoke(task_text: str) -> AgentResult:
         charts = []
@@ -518,7 +518,7 @@ def _guard_aoi_substitution(result: AgentResult, watch: _AoiSubstitutionWatch) -
     )
 
 
-def _chart_provenance(chart: Any) -> dict:
+def _chart_provenance(chart: Any) -> dict[str, Any]:
     """The provenance dict off a finalized chart, whether it survived as a
     ChartPayload (extra='allow', provenance is an attribute) or a plain
     dict."""
@@ -530,7 +530,7 @@ def _chart_provenance(chart: Any) -> dict:
 
 
 def _attach_variable_choice(
-    result: AgentResult, payload: dict | None, original_request: str,
+    result: AgentResult, payload: dict[str, Any] | None, original_request: str,
 ) -> AgentResult:
     """T49: attach the deterministic variable-choice picker to the finalized
     answer, reconstructing each candidate's auto-send prompt from the ORIGINAL
@@ -563,7 +563,7 @@ def _attach_variable_choice(
     return result
 
 
-def _medium_variable_choice_from_charts(result: AgentResult) -> dict | None:
+def _medium_variable_choice_from_charts(result: AgentResult) -> dict[str, Any] | None:
     """The medium-confidence picker stashed in a delivered chart's provenance
     (variable_resolution.variable_choice), or None. This is how a medium
     auto-pick attaches its override picker without a separate out-of-band
@@ -961,7 +961,7 @@ def _artifact_refs_from_content(content: Any) -> list[ArtifactReference]:
     return refs
 
 
-def _extract_artifact_refs(messages: list) -> list[ArtifactReference]:
+def _extract_artifact_refs(messages: list[Any]) -> list[ArtifactReference]:
     """Collect _artifact_refs from ground agent ToolMessages after ainvoke."""
     refs = []
     for msg in messages:
@@ -971,7 +971,7 @@ def _extract_artifact_refs(messages: list) -> list[ArtifactReference]:
     return refs
 
 
-def _parse_tool_content(content: Any) -> dict | None:
+def _parse_tool_content(content: Any) -> dict[str, Any] | None:
     """Normalize a ToolMessage content value to a dict, or return None."""
     if isinstance(content, dict):
         return content
