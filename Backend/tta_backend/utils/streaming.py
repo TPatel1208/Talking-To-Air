@@ -13,7 +13,7 @@ Yields:
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Callable, Optional
@@ -196,7 +196,7 @@ def user_id_context(user_id: str):
         _current_user_id.reset(token)
 
 
-async def iter_with_user_id(user_id: str, chunks: AsyncGenerator) -> AsyncGenerator:
+async def iter_with_user_id(user_id: str, chunks: AsyncIterator[Any]) -> AsyncGenerator[Any, None]:
     """Re-bind ``current_user_id()`` around every pull of ``chunks``.
 
     A StreamingResponse body iterates *after* the endpoint handler has

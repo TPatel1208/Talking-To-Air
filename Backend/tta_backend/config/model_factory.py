@@ -39,10 +39,11 @@ def build_chat_model(
 
     if provider == "groq":
         from langchain_groq import ChatGroq
+        from pydantic import SecretStr
 
         return ChatGroq(
             model=model,
-            groq_api_key=settings.groq_api_key,
+            api_key=SecretStr(settings.groq_api_key) if settings.groq_api_key else None,
             max_retries=settings.llm_max_retries,
             callbacks=timing_callbacks(agent_type),
         )

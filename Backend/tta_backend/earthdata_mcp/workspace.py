@@ -76,7 +76,7 @@ class MissingUserContextError(RuntimeError):
 
 def bind_workspace(
     tools: dict[str, BaseTool],
-    user_id_getter: Callable[[], str],
+    user_id_getter: Callable[[], str | None],
     *,
     edl_injector: EdlCredentialInjector | None = None,
 ) -> dict[str, BaseTool]:
@@ -107,7 +107,7 @@ def _schema_properties(schema) -> dict:
 
 def _bind_one(
     tool: BaseTool,
-    user_id_getter: Callable[[], str],
+    user_id_getter: Callable[[], str | None],
     edl_injector: EdlCredentialInjector | None,
 ) -> BaseTool:
     # T31: feature-detected once at bind time, off the MCP's advertised
@@ -151,12 +151,14 @@ def _bind_one(
         # nothing otherwise and let the MCP fall back to its shared env
         # credential. edl_injector.resolve() owns the connected/unexpired
         # check and the just-in-time decrypt; it never caches plaintext.
-        injected = False
+        # The injector whose token this call carries, or None for the shared
+        # credential -- held rather than a flag so its use below is typed.
+        injected_by: EdlCredentialInjector | None = None
         if advertises_edl_token and edl_injector is not None:
             token = await edl_injector.resolve(user_id)
             if token is not None:
                 kwargs["edl_token"] = token
-                injected = True
+                injected_by = edl_injector
 
         # T18: bind_workspace is the one place every model-facing MCP tool
         # call passes through — classify here (call_tool catches a raised
@@ -178,8 +180,8 @@ def _bind_one(
             # the entitlement isn't. Never fires for the shared-credential
             # path (injected is False), so one user's bad token can't flip
             # another's connector.
-            if injected and exc.category == CATEGORY_TOKEN_INVALID:
-                await edl_injector.mark_invalid(user_id)
+            if injected_by is not None and exc.category == CATEGORY_TOKEN_INVALID:
+                await injected_by.mark_invalid(user_id)
             # T46 story #4: a rejected AOI *input* must leave a greppable trace.
             # The live 2026-07-17 incident (define_area_of_interest rejected an
             # inverted bbox, the agent improvised "North America") left nothing
@@ -197,10 +199,10 @@ def _bind_one(
                     },
                 )
             return exc.to_tool_json()
-        if injected:
+        if injected_by is not None:
             # Fire-and-forget and coalesced per agent turn inside mark_used
             # itself — never on this call's critical path, never failing it.
-            edl_injector.mark_used(user_id)
+            injected_by.mark_used(user_id)
         # T19 story #3: surface the granule count once check_coverage's own
         # response is known, so a researcher sees why their request is
         # small or large before the (potentially long) retrieval wait.

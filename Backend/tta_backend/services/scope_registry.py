@@ -21,14 +21,15 @@ wrong answer.
 from __future__ import annotations
 
 import time
+from typing import Any
 
 _TTL_SECONDS = 24 * 60 * 60
 
-_pending: dict[str, tuple[dict, float]] = {}
-_scopes: dict[str, tuple[dict, float]] = {}
+_pending: dict[str, tuple[dict[str, Any], float]] = {}
+_scopes: dict[str, tuple[dict[str, Any], float]] = {}
 
 
-def record_pending(job_handle: str, requested_scope: dict | None) -> None:
+def record_pending(job_handle: str | None, requested_scope: dict[str, Any] | None) -> None:
     """Record the requested scope for ``job_handle`` once a retrieval submits
     it — a no-op when ``job_handle`` is falsy or ``requested_scope`` carries no
     usable fact (nothing to disclose against)."""
@@ -51,7 +52,7 @@ def finalize(job_handle: str, handle: str | None) -> None:
     _scopes[handle] = (scope, expires_at)
 
 
-def get(handle: str) -> dict | None:
+def get(handle: str) -> dict[str, Any] | None:
     """Return the recorded requested scope for ``handle``, or None if none was
     recorded or it has expired."""
     entry = _scopes.get(handle)

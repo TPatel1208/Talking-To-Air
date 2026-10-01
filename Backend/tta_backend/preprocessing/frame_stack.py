@@ -30,6 +30,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from tta_backend.utils import xarray_ops
 from tta_backend.utils.geo_utils import find_lat_coord, find_lon_coord
 
 # D5's cell ceiling. A CEILING, not a target: ``k`` below is an integer, so a
@@ -230,7 +231,7 @@ def frame_gate(
     # layout says so. Anything else -- a vertical axis the caller has not
     # selected a layer from, above all -- would reduce to a stack that reshapes
     # cleanly and renders the wrong plane.
-    spatial = [dim for dim in da.dims if dim != time_dim]
+    spatial = [str(dim) for dim in da.dims if dim != time_dim]
     try:
         grid = _spatial_dims(da, spatial)
     except ValueError as exc:
@@ -557,13 +558,13 @@ def build_frame_stack(
         coords={time_dim: da[time_dim]},
     ).rename("bucket")
 
-    spatial = [dim for dim in da.dims if dim != time_dim]
+    spatial = [str(dim) for dim in da.dims if dim != time_dim]
     lat_dim, lon_dim = _spatial_dims(da, spatial)
     # "Contributed a value somewhere", the same boolean ``_valid_time_indices``
     # keeps a timestep on: a granule the mask emptied is not a granule this
     # frame was built from, and reporting it as one would make an empty frame
     # look like a measured absence of pollution.
-    contributed = np.isfinite(da).any(spatial)
+    contributed = xarray_ops.isfinite(da).any(spatial)
 
     # Per CADENCE bucket, on the full requested axis: the reindex is what puts
     # the emptied and the never-retrieved intervals back, as NaN.
@@ -613,7 +614,7 @@ def build_frame_stack(
     intervals = _frame_intervals(axis, cadence, group, n_frames)
     counts = np.nan_to_num(np.asarray(computed["n_granules"].values), nan=0.0)
     values = computed["values"].transpose("bucket", lat_dim, lon_dim)
-    statistics = _statistics_per_frame(computed, n_frames)
+    frame_statistics = _statistics_per_frame(computed, n_frames)
     coverage = _valid_fractions(computed, da, (lat_dim, lon_dim), region_area)
     qa_rates = _qa_pass_rates(qa_counts, axis_labels, cadence, group, n_frames)
 
@@ -647,7 +648,7 @@ def build_frame_stack(
                 statistics=stats,
             )
             for (start, end), count, fraction, qa_rate, stats in zip(
-                intervals, counts, coverage, qa_rates, statistics, strict=True,
+                intervals, counts, coverage, qa_rates, frame_statistics, strict=True,
             )
         ],
         values=shipped,
@@ -1137,7 +1138,7 @@ def _observed_area(native: xr.DataArray, spatial: tuple[str, str]) -> xr.DataArr
     from tta_backend.preprocessing.aggregation_service import cos_lat_weights
 
     weights = cos_lat_weights(native)
-    finite = np.isfinite(native)
+    finite = xarray_ops.isfinite(native)
     return (finite if weights is None else finite * weights).sum(list(spatial))
 
 
@@ -1203,10 +1204,10 @@ def _delta_terms(
     from tta_backend.preprocessing.aggregation_service import cos_lat_weights
 
     frames_period = frames_native.mean(dim="bucket", skipna=True)
-    both = np.isfinite(frames_period) & np.isfinite(period_native)
-    difference = np.abs(frames_period - period_native).where(both)
-    magnitude = np.abs(period_native).where(both)
-    weights = cos_lat_weights(period_native)
+    both = xarray_ops.isfinite(frames_period) & xarray_ops.isfinite(period_native)
+    difference = xarray_ops.absolute(frames_period - period_native).where(both)
+    magnitude = xarray_ops.absolute(period_native).where(both)
+    weights: xr.DataArray | float | None = cos_lat_weights(period_native)
     if weights is None:
         weights = 1.0
     return {
@@ -1465,7 +1466,7 @@ def _native_statistics(
         f"stat_{name}": reduce_keeping_axes(native, keep=("bucket",), stat=name)
         for name in _FRAME_STATS
     }
-    stats["stat_count"] = np.isfinite(native).sum(list(spatial))
+    stats["stat_count"] = xarray_ops.isfinite(native).sum(list(spatial))
     return stats
 
 
@@ -1486,7 +1487,7 @@ def _statistics_per_frame(computed: xr.Dataset, n_frames: int) -> list[dict]:
         if count == 0:
             out.append({"count": 0})
             continue
-        stats = {"count": count}
+        stats: dict[str, float] = {"count": count}
         for name, column in columns.items():
             value = float(column[index])
             if np.isfinite(value):

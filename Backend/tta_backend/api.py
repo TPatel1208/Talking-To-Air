@@ -111,7 +111,7 @@ session_repository = SessionRepository()
 # Constructed at import time so tests can patch the verifier before requests.
 # validate_config() runs during lifespan before any request is served, so a missing
 # SUPABASE_URL may briefly produce "None/auth/v1" but cannot be used in a valid boot.
-supabase_verifier = SupabaseJwtVerifier(make_jwks_fetcher(settings.supabase_url),
+supabase_verifier = SupabaseJwtVerifier(make_jwks_fetcher(settings.supabase_url or ""),
                                         issuer = f"{settings.supabase_url}/auth/v1"
                                         )
 
@@ -221,6 +221,7 @@ async def lifespan(app: FastAPI):
     # T63: one pool behind both. The log writes a turn's frames and the
     # registry holds the per-thread claim and the idempotency records — same
     # Redis, and no reason for two sets of connections to it.
+    assert settings.redis_url is not None  # validate_config() refused to boot without it
     app.state.redis = aioredis.from_url(settings.redis_url, decode_responses=True)
     app.state.turn_event_log = TurnEventLog(client=app.state.redis)
     app.state.turn_registry = TurnRegistry(app.state.turn_event_log, client=app.state.redis)
@@ -402,7 +403,9 @@ def _retry_after_seconds(request: Request) -> int | None:
     return max(1, math.ceil(reset_at - time.time()))
 
 
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_response)
+# Starlette types every handler as taking a bare Exception; this one is only
+# ever registered for, and called with, RateLimitExceeded.
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_response)  # type: ignore[arg-type]
 
 # The one live consumer of the public output dir. StaticFiles resolves and
 # checks the directory when it is mounted, so this genuinely has to exist at

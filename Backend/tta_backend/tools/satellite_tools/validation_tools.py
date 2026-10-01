@@ -206,16 +206,18 @@ def _exceedance_days(
         idx = min(int(len(sorted_vals) * percentile_threshold / 100), len(sorted_vals) - 1)
         percentile_cutoff = sorted_vals[idx]
 
-    exceeded = set()
+    exceeded: set[str] = set()
     for r in records:
         raw = r.get(measurement_field)
-        if raw is None:
+        date = r.get("date_local")
+        # An undated record cannot name an exceedance day.
+        if raw is None or date is None:
             continue
         v = float(raw)
         if hard_threshold is not None and v > hard_threshold:
-            exceeded.add(r.get("date_local"))
+            exceeded.add(date)
         elif percentile_cutoff is not None and v >= percentile_cutoff:
-            exceeded.add(r.get("date_local"))
+            exceeded.add(date)
     return exceeded
 
 

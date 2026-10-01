@@ -79,7 +79,7 @@ class FrameBlob:
     etag: str
 
 
-def store_frame_stack(stack: Any, *, pipeline_version: str) -> dict:
+def store_frame_stack(stack: Any, *, pipeline_version: str) -> dict[str, Any]:
     """Store ``stack``'s values and return the block for the chart's jsonb row.
 
     The return value is the *whole* frontend contract minus the field itself:
@@ -220,7 +220,7 @@ def read_frames(
     return FrameBlob(gzipped=payload, etag=str(manifest.get("blob_sha256")))
 
 
-def _intact(payload: bytes, manifest: dict) -> bool:
+def _intact(payload: bytes, manifest: dict[str, Any]) -> bool:
     """Whether these bytes are the bytes that were written.
 
     Length first because it is free and catches the common failure — a write
@@ -493,12 +493,14 @@ def _manifest_path(key: str) -> str:
     return os.path.join(_entry_dir(key), _MANIFEST_NAME)
 
 
-def _read_manifest(key: str) -> dict | None:
+def _read_manifest(key: str) -> dict[str, Any] | None:
     try:
         with open(_manifest_path(key), "r", encoding="utf-8") as f:
-            return json.load(f)
+            manifest = json.load(f)
     except (OSError, ValueError):
         return None
+    # Valid JSON that is not an object is as unusable as a torn write.
+    return manifest if isinstance(manifest, dict) else None
 
 
 def _fsync_tree(path: str) -> None:
@@ -529,7 +531,7 @@ def _shape(source: Any) -> list[int]:
     return [n_frames + 1, ny, nx]
 
 
-def _axis_block(stack: Any, *, pipeline_version: str) -> dict:
+def _axis_block(stack: Any, *, pipeline_version: str) -> dict[str, Any]:
     """Everything about a frame stack except its values.
 
     Rounded and coerced to plain Python here rather than at the call site: this
@@ -609,7 +611,7 @@ def _axis_block(stack: Any, *, pipeline_version: str) -> dict:
     return block
 
 
-def _plane_block(plane: Any) -> dict:
+def _plane_block(plane: Any) -> dict[str, Any]:
     """One statistic's metadata: ``StatisticPlane`` minus the arrays.
 
     Exactly the fields that genuinely differ per plane, and deliberately no

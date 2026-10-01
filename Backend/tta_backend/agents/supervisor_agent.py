@@ -9,10 +9,10 @@ Memory model
                it passes to each subagent tool.
 """
 import logging
-from typing import Any
+from typing import Any, cast
 from langchain.agents import create_agent
 from langchain.tools import tool
-from langchain_core.messages import trim_messages
+from langchain_core.messages import AnyMessage, trim_messages
 from langchain.agents.middleware import wrap_model_call, ModelRequest, ModelResponse
 from collections.abc import Awaitable, Callable
 
@@ -68,13 +68,15 @@ async def build_agent(
 
     # ── Trim middleware — keeps the supervisor's context window bounded ───────
 
-    @wrap_model_call
+    # langchain types @wrap_model_call for sync functions only; it detects and
+    # awaits a coroutine function at runtime.
+    @wrap_model_call  # type: ignore[arg-type]
     async def trim_middleware(
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
         messages = [_compact_model_input_message(msg) for msg in request.state["messages"]]
-        trimmed = trim_messages(
+        trimmed: list[AnyMessage] = cast(list[AnyMessage], trim_messages(
             messages,
             max_tokens=8000,
             strategy="last",
@@ -82,7 +84,7 @@ async def build_agent(
             include_system=True,
             allow_partial=False,
             start_on="human",
-        )
+        ))
         # Gemini rejects an empty contents list, so never let trimming remove
         # the only usable turn from a request. Fall back to the original
         # message list if trimming collapses everything.
@@ -205,7 +207,8 @@ def _compact_model_input_content(content):
 
 def _chart_summary(chart) -> str:
     payload = chart.model_dump(exclude_none=True) if hasattr(chart, "model_dump") else dict(chart)
-    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    raw_metadata = payload.get("metadata")
+    metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
     chart_type = str(payload.get("type") or "").strip() or "chart"
     title = str(payload.get("title") or metadata.get("name") or "").strip()
     variable = payload.get("variable")

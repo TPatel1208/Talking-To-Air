@@ -22,7 +22,7 @@ import logging
 import os
 import shutil
 import tempfile
-from typing import Any
+from typing import Any, Iterator
 
 from tta_backend.config.settings import get_settings
 
@@ -176,19 +176,21 @@ def _cube_path(key: str) -> str:
     return os.path.join(_entry_dir(key), _CUBE_DIR_NAME)
 
 
-def _read_manifest(key: str) -> dict | None:
+def _read_manifest(key: str) -> dict[str, Any] | None:
     try:
         with open(_manifest_path(key), "r", encoding="utf-8") as f:
-            return json.load(f)
+            manifest = json.load(f)
     except (OSError, ValueError):
         return None
+    # Valid JSON that is not an object is as unusable as a torn write.
+    return manifest if isinstance(manifest, dict) else None
 
 
 def _escape_name(name: str) -> str:
     return name.replace("/", _SLASH_ESCAPE)
 
 
-def _capture_encoding(ds: Any) -> dict[str, dict]:
+def _capture_encoding(ds: Any) -> dict[str, dict[str, Any]]:
     """The subset of each variable's ``.encoding`` downstream reads.
 
     Captured *before* the write and restored *after* the read rather than left
@@ -197,7 +199,7 @@ def _capture_encoding(ds: Any) -> dict[str, dict]:
     stripping it without persisting it is the silent-variable-wipe bug this
     exists to prevent.
     """
-    captured: dict[str, dict] = {}
+    captured: dict[str, dict[str, Any]] = {}
     for name, var in list(ds.variables.items()):
         enc = {k: var.encoding[k] for k in _PERSISTED_ENCODING_KEYS if k in var.encoding}
         if enc:
@@ -477,7 +479,7 @@ def _apply_cube_chunks(ds: Any) -> Any:
         return ds
 
 
-def _cube_chunks(ds: Any) -> dict:
+def _cube_chunks(ds: Any) -> dict[str, Any]:
     """``{dim: chunk_size}`` for the cube: spatial dims capped, time as long as
     the byte budget allows.
 
@@ -548,7 +550,7 @@ def lookup(key: str) -> Any | None:
         return None
 
 
-def validate(key: str, manifest: dict | None = None) -> bool:
+def validate(key: str, manifest: dict[str, Any] | None = None) -> bool:
     """Whether the on-disk cube still matches what its manifest recorded.
 
     A file-count and total-bytes sweep via ``os.scandir``, reading no data.
@@ -906,7 +908,7 @@ def _touch(key: str) -> None:
         pass
 
 
-def _read_cube(key: str, manifest: dict) -> Any | None:
+def _read_cube(key: str, manifest: dict[str, Any]) -> Any | None:
     import xarray as xr
 
     ds = xr.open_zarr(_cube_path(key), consolidated=True)
@@ -1086,7 +1088,7 @@ async def _await_quiet_turn() -> bool:
 
 
 @contextlib.contextmanager
-def active_turn():
+def active_turn() -> Iterator[None]:
     """Mark a chat turn as in flight for the duration of the block."""
     global _active_turns
     _active_turns += 1
@@ -1105,7 +1107,7 @@ def turn_is_active() -> bool:
 
 
 @contextlib.contextmanager
-def pin_path(path: str | None):
+def pin_path(path: str | None) -> Iterator[None]:
     """Protect ``path`` from the bundle-extract cache's pruner for the
     duration of the block (see :data:`_pinned_paths`)."""
     if path is None:

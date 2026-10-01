@@ -8,14 +8,26 @@ import functools
 import io
 import re
 import threading
-from typing import Any, AsyncIterator, NamedTuple
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Iterator, NamedTuple, TypeVar
 
 import logging
 
 from tta_backend.services import admission
 from tta_backend.utils.colormaps import resolve as resolve_colormap
 
+if TYPE_CHECKING:
+    import numpy as np
+    import xarray as xr
+    from matplotlib.axes import Axes
+    from matplotlib.collections import QuadMesh
+    from matplotlib.figure import Figure
+
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
+
+#: One CSV row: strings and numbers, written by csv.writer as-is.
+CsvRow = list[Any]
 
 # Exports run on their own bounded pool, never on the default executor.
 #
@@ -49,7 +61,7 @@ def _get_export_executor() -> concurrent.futures.ThreadPoolExecutor:
     return _export_executor
 
 
-async def _to_export_thread(func, *args):
+async def _to_export_thread(func: Callable[..., _T], *args: Any) -> _T:
     """``asyncio.to_thread`` against the export pool.
 
     The context copy is not incidental: ``run_in_executor`` starts the call
@@ -119,7 +131,7 @@ async def materialize_first_chunk(chunks: AsyncIterator[bytes]) -> AsyncIterator
     return _replay_then_stream(first, chunks)
 
 
-async def _resolve_export_region(region_name: str):
+async def _resolve_export_region(region_name: str) -> dict[str, Any] | None:
     """Resolve an export's region, tolerating a *lookup failure* and refusing
     to tolerate a *refusal* (T60 D14).
 
@@ -149,7 +161,8 @@ async def _resolve_export_region(region_name: str):
     from tta_backend.utils.plotting import RegionResolver
 
     try:
-        return await RegionResolver().aresolve_location(region_name)
+        region: dict[str, Any] | None = await RegionResolver().aresolve_location(region_name)
+        return region
     except MCPToolError:
         raise
     except Exception:
@@ -191,7 +204,7 @@ class _HeatmapGrid(NamedTuple):
     indices: Any
 
 
-def _new_figure(width: float, height: float):
+def _new_figure(width: float, height: float) -> Figure:
     """A figure with its own Agg canvas, and nothing filed anywhere global.
 
     The canvas is attached eagerly rather than left to ``savefig`` because
@@ -209,7 +222,7 @@ def _new_figure(width: float, height: float):
     return figure
 
 
-def _at(values: Any, index: int):
+def _at(values: Any, index: int) -> Any:
     """``values[index]`` when it exists, else None — so one short array (an
     axis a product doesn't publish, say) leaves a blank cell rather than
     truncating or misaligning every column after it."""
@@ -219,7 +232,7 @@ def _at(values: Any, index: int):
 
 
 class ExportService:
-    def __init__(self, csv_export_max_granules: int = 50):
+    def __init__(self, csv_export_max_granules: int = 50) -> None:
         self.csv_export_max_granules = csv_export_max_granules
 
     def safe_export_name(self, payload: dict[str, Any], suffix: str) -> str:
@@ -350,7 +363,7 @@ class ExportService:
         fig.savefig(output, format="png", dpi=220, bbox_inches="tight")
         return output.getvalue()
 
-    async def iter_chart_csv_rows(self, payload: dict[str, Any], tools: dict[str, Any]):
+    async def iter_chart_csv_rows(self, payload: dict[str, Any], tools: dict[str, Any]) -> AsyncIterator[CsvRow]:
         export = payload.get("export") or {}
         if not export:
             raise ValueError("This chart does not include full-resolution export metadata.")
@@ -397,7 +410,7 @@ class ExportService:
 
     _PROFILE_AXES = ("pressure", "altitude")
 
-    def _profile_rows(self, export: dict[str, Any]):
+    def _profile_rows(self, export: dict[str, Any]) -> Iterator[CsvRow]:
         """One row per layer, carrying BOTH vertical axes and the per-layer
         spread of each.
 
@@ -431,7 +444,7 @@ class ExportService:
             row.append(_at(valid, index))
             yield row
 
-    def _plot_profile_figure(self, payload: dict[str, Any], export: dict[str, Any]):
+    def _plot_profile_figure(self, payload: dict[str, Any], export: dict[str, Any]) -> Figure:
         """The profile as a static line chart, drawn against its physical axis.
 
         Plotting against the axis rather than the layer index is what makes the
@@ -464,14 +477,16 @@ class ExportService:
         ax.grid(True, which="both", alpha=0.3)
         return fig
 
-    def _export_lat_lon_names(self, da):
+    def _export_lat_lon_names(self, da: xr.DataArray) -> tuple[str, str]:
         lat_coord = next((c for c in ["lat", "latitude", "Latitude"] if c in da.coords), None)
         lon_coord = next((c for c in ["lon", "longitude", "Longitude"] if c in da.coords), None)
         if lat_coord is None or lon_coord is None:
             raise ValueError(f"Cannot find lat/lon coords. Available: {list(da.coords)}")
         return lat_coord, lon_coord
 
-    async def _export_data_array(self, export: dict[str, Any], tools: dict[str, Any], collapse_to_2d: bool = True):
+    async def _export_data_array(
+        self, export: dict[str, Any], tools: dict[str, Any], collapse_to_2d: bool = True,
+    ) -> xr.DataArray:
         """Open the source granule and narrow it to what the export draws.
 
         Only the two genuinely asynchronous steps happen here: the handle open
@@ -507,13 +522,16 @@ class ExportService:
             self._narrow_data_array, ds, export, source_handles[0], region, collapse_to_2d,
         )
 
-    def _narrow_data_array(self, ds, export: dict[str, Any], handle: str, region, collapse_to_2d: bool):
+    def _narrow_data_array(
+        self, ds: xr.Dataset, export: dict[str, Any], handle: str,
+        region: dict[str, Any] | None, collapse_to_2d: bool,
+    ) -> xr.DataArray:
         """The synchronous half of :meth:`_export_data_array`. Runs on a
         worker thread; raises exactly what it raised on the loop, since
         ``to_thread`` re-raises into the awaiting caller unchanged."""
         from tta_backend.preprocessing.aggregation_service import AggregationService, VariableChoiceRequired
-        from tta_backend.tools.satellite_tools.plot_tools import _normalize_longitudes, _sel_bounds
-        from tta_backend.utils.plotting import mask_data_by_geometry
+        from tta_backend.tools.satellite_tools.plot_tools import _normalize_longitudes
+        from tta_backend.utils.plotting import mask_data_by_geometry, sel_bounds
 
         from tta_backend.earthdata_mcp.results import MCPToolError
 
@@ -545,7 +563,7 @@ class ExportService:
 
         if bounds:
             lat_coord, lon_coord = self._export_lat_lon_names(da)
-            da = _sel_bounds(da, lat_coord, lon_coord, bounds)
+            da = sel_bounds(da, lat_coord, lon_coord, bounds)
 
         if collapse_to_2d:
             aggregation = AggregationService().aggregate(
@@ -560,7 +578,9 @@ class ExportService:
 
         return da
 
-    async def _iter_heatmap_csv_rows(self, export: dict[str, Any], tools: dict[str, Any], panel_name: str | None = None):
+    async def _iter_heatmap_csv_rows(
+        self, export: dict[str, Any], tools: dict[str, Any], panel_name: str | None = None,
+    ) -> AsyncIterator[CsvRow]:
         da = await self._export_data_array(export, tools, collapse_to_2d=True)
         grid = await _to_export_thread(self._heatmap_grid, da)
         variable = export.get("variable", "")
@@ -577,7 +597,7 @@ class ExportService:
             for row in rows:
                 yield row
 
-    def _heatmap_grid(self, da) -> _HeatmapGrid:
+    def _heatmap_grid(self, da: xr.DataArray) -> _HeatmapGrid:
         import numpy as np
 
         lat_coord, lon_coord = self._export_lat_lon_names(da)
@@ -589,10 +609,12 @@ class ExportService:
             indices=np.argwhere(np.isfinite(values)),
         )
 
-    def _heatmap_rows(self, grid: _HeatmapGrid, start: int, variable: str, units: str, panel_name: str | None):
-        rows = []
+    def _heatmap_rows(
+        self, grid: _HeatmapGrid, start: int, variable: str, units: str, panel_name: str | None,
+    ) -> list[CsvRow]:
+        rows: list[CsvRow] = []
         for row_idx, col_idx in grid.indices[start:start + _CSV_ROW_BLOCK]:
-            row = []
+            row: CsvRow = []
             if panel_name is not None:
                 row.append(panel_name)
             row.extend([
@@ -607,14 +629,16 @@ class ExportService:
 
     def _unique_headers(self, values: list[str]) -> list[str]:
         counts: dict[str, int] = {}
-        headers = []
+        headers: list[str] = []
         for value in values:
             base = value or "granule"
             counts[base] = counts.get(base, 0) + 1
             headers.append(base if counts[base] == 1 else f"{base}_{counts[base]}")
         return headers
 
-    async def _iter_aggregated_heatmap_csv_rows(self, export: dict[str, Any], tools: dict[str, Any], panel_name: str | None = None):
+    async def _iter_aggregated_heatmap_csv_rows(
+        self, export: dict[str, Any], tools: dict[str, Any], panel_name: str | None = None,
+    ) -> AsyncIterator[CsvRow]:
         import pandas as pd
 
         da = await self._export_data_array(export, tools, collapse_to_2d=False)
@@ -637,7 +661,7 @@ class ExportService:
         if capped:
             yield [f"# CSV granule columns capped at {cap}; additional granules omitted."]
 
-        header = []
+        header: CsvRow = []
         if panel_name is not None:
             header.append("panel")
         header.extend(["variable", "latitude", "longitude", *granule_headers, "mean", "units"])
@@ -661,7 +685,9 @@ class ExportService:
             for row in rows:
                 yield row
 
-    def _aggregated_heatmap_grid(self, da, export: dict[str, Any], meta: dict[str, Any], granule_cap: int):
+    def _aggregated_heatmap_grid(
+        self, da: xr.DataArray, export: dict[str, Any], meta: dict[str, Any], granule_cap: int,
+    ) -> tuple[_HeatmapGrid, np.ndarray]:
         import numpy as np
         from tta_backend.preprocessing.aggregation_service import AggregationService
 
@@ -694,18 +720,18 @@ class ExportService:
         )
         return grid, granule_values
 
-    def _aggregated_heatmap_rows(self, grid: _HeatmapGrid, granule_values, start: int,
-                                 variable: str, units: str, panel_name: str | None):
+    def _aggregated_heatmap_rows(self, grid: _HeatmapGrid, granule_values: np.ndarray, start: int,
+                                 variable: str, units: str, panel_name: str | None) -> list[CsvRow]:
         import numpy as np
 
-        rows = []
+        rows: list[CsvRow] = []
         for row_idx, col_idx in grid.indices[start:start + _CSV_ROW_BLOCK]:
             mean_value = grid.values[row_idx, col_idx]
             row_granules = [
                 float(value) if np.isfinite(value) else ""
                 for value in granule_values[:, row_idx, col_idx]
             ]
-            row = []
+            row: CsvRow = []
             if panel_name is not None:
                 row.append(panel_name)
             row.extend([
@@ -719,7 +745,7 @@ class ExportService:
             rows.append(row)
         return rows
 
-    async def _timeseries_rows(self, export: dict[str, Any], tools: dict[str, Any]):
+    async def _timeseries_rows(self, export: dict[str, Any], tools: dict[str, Any]) -> list[CsvRow]:
         if export.get("aggregation") == "point sample":
             return await self._point_sample_timeseries_rows(export, tools)
 
@@ -738,13 +764,13 @@ class ExportService:
         # timestep's grid in full.
         return await _to_export_thread(self._reduce_timeseries_rows, da, export, stat)
 
-    def _reduce_timeseries_rows(self, da, export: dict[str, Any], stat: str):
+    def _reduce_timeseries_rows(self, da: xr.DataArray, export: dict[str, Any], stat: str) -> list[CsvRow]:
         import numpy as np
         import pandas as pd
         from tta_backend.preprocessing.aggregation_service import AggregationService
 
         service = AggregationService()
-        rows = []
+        rows: list[CsvRow] = []
         for i in range(da.sizes["time"]):
             arr = da.isel(time=i).values.astype(float)
             valid = arr[np.isfinite(arr)]
@@ -759,7 +785,7 @@ class ExportService:
             ])
         return rows
 
-    async def _point_sample_timeseries_rows(self, export: dict[str, Any], tools: dict[str, Any]):
+    async def _point_sample_timeseries_rows(self, export: dict[str, Any], tools: dict[str, Any]) -> list[CsvRow]:
         from tta_backend.services.open_handle import open_handle
         from tta_backend.tools.satellite_tools.retrieval_tools import _series_from_table
 
@@ -780,7 +806,7 @@ class ExportService:
         units = export.get("units", "")
         return [[variable, time, stat, value, units] for time, value in zip(times, values, strict=True)]
 
-    def _plot_heatmap_axis(self, ax, export: dict[str, Any], da, title: str):
+    def _plot_heatmap_axis(self, ax: Axes, export: dict[str, Any], da: xr.DataArray, title: str) -> QuadMesh:
         lat_coord, lon_coord = self._export_lat_lon_names(da)
         mesh = ax.pcolormesh(
             da[lon_coord].values,

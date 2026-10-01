@@ -52,7 +52,7 @@ async def ensure_chart_table() -> None:
 async def save_chart(thread_id: str, payload: dict[str, Any], user_id: str) -> dict[str, Any]:
     # Sanitise before the id hash below too, so a payload that differs only
     # by inf-vs-null dedupes to the same chart_id.
-    stored_payload = _sanitize_non_finite(dict(payload))
+    stored_payload: dict[str, Any] = _sanitize_non_finite(dict(payload))
     # Callers that already minted an id up front (T06 artifact-typed plot
     # payloads, so the id is stable and visible to the LLM before this ever
     # persists) win over the content-hash id generic chart payloads get.

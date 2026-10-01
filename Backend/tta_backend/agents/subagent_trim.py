@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
+from typing import cast
 
 from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse, wrap_model_call
-from langchain_core.messages import trim_messages
+from langchain_core.messages import AnyMessage, trim_messages
 
 from tta_backend.config.settings import get_settings
 
@@ -31,13 +32,15 @@ def build_subagent_trim_middleware(agent_type: str, max_tokens: int | None = Non
     """
     ceiling = max_tokens if max_tokens is not None else get_settings().subagent_trim_token_ceiling
 
-    @wrap_model_call
+    # langchain types @wrap_model_call for sync functions only; it detects and
+    # awaits a coroutine function at runtime.
+    @wrap_model_call  # type: ignore[arg-type]
     async def trim_middleware(
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
         messages = request.state["messages"]
-        trimmed = trim_messages(
+        trimmed: list[AnyMessage] = cast(list[AnyMessage], trim_messages(
             messages,
             max_tokens=ceiling,
             strategy="last",
@@ -45,7 +48,7 @@ def build_subagent_trim_middleware(agent_type: str, max_tokens: int | None = Non
             include_system=True,
             allow_partial=False,
             start_on="human",
-        )
+        ))
         # Never let trimming remove every usable turn from a request.
         if not trimmed:
             trimmed = messages

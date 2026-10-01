@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Awaitable, Callable, Optional, TypeVar
+from typing import Any, Awaitable, Callable, Optional, TypeVar
 
 import numpy as np
 from langchain.tools import tool
@@ -222,7 +222,7 @@ def _anomaly_stats(da_a, da_b, diff, threshold: float | None) -> dict:
         else:
             percent_change = (mean_difference / mean_a) * 100.0
 
-    stats = {
+    stats: dict[str, Any] = {
         "n_cells": int(valid_diff.size),
         "mean_difference": mean_difference,
         "percent_change": percent_change,
@@ -257,7 +257,7 @@ def _region_stats(da, *, basis: str | None = None) -> dict | None:
     valid = values[np.isfinite(values)]
     if valid.size == 0:
         return None
-    stats = {
+    stats: dict[str, Any] = {
         "mean": area_weighted_mean(da),
         "median": float(np.median(valid)),
         "max": float(np.max(valid)),
@@ -292,7 +292,7 @@ def _disjoint_periods_error(da_a, da_b) -> str | None:
     not a proxy for period-mode's own aligned differencing)."""
     start_a, end_a = _time_range(da_a)
     start_b, end_b = _time_range(da_b)
-    if start_a is None or start_b is None:
+    if start_a is None or end_a is None or start_b is None or end_b is None:
         return None
     if end_a < start_b or end_b < start_a:
         return (

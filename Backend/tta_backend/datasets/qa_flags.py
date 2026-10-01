@@ -173,7 +173,7 @@ def resolve_qa_info(
         qa_col_info: dict[str, Any] = {}
         if pinned_good is not None:
             qa_col_info["qa_good_values"] = list(pinned_good)
-        else:
+        elif pinned_bad is not None:
             qa_col_info["qa_bad_values"] = list(pinned_bad)
         return qa_col_info, {"qa_status": QA_VERIFIED, "qa_source": "collections_yaml"}
 

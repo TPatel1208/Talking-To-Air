@@ -94,11 +94,13 @@ def chart_reference(stored: dict[str, Any]) -> ChartPayload:
     fields = {key: stored[key] for key in _CHART_REFERENCE_KEYS if stored.get(key) is not None}
     metadata = stored.get("metadata")
     name = metadata.get("name") if isinstance(metadata, dict) else None
-    return ChartPayload(
+    # model_validate, not the constructor: `reference` is an extra field
+    # (extra="allow"), which a typed constructor call does not declare.
+    return ChartPayload.model_validate({
         **fields,
-        metadata={"name": name} if name else {},
-        reference=True,
-    )
+        "metadata": {"name": name} if name else {},
+        "reference": True,
+    })
 
 
 def is_chart_reference(payload: dict[str, Any]) -> bool:

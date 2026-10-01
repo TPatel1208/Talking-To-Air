@@ -40,7 +40,7 @@ try:
 
     dask.config.set(num_workers=2)
 except ImportError:  # pragma: no cover — dask is a declared dependency
-    dask = None
+    dask = None  # type: ignore[assignment]
 
 # Bundle members are extracted here (under tempfile.gettempdir()) rather than
 # a per-call tempdir: members are opened lazily, so their files are read well
@@ -117,7 +117,7 @@ async def open_handle(handle: str, tools: dict[str, BaseTool]) -> Any:
         return ds
 
 
-async def _open_export(export: dict) -> Any:
+async def _open_export(export: dict[str, Any]) -> Any:
     """Open a ready export off the event loop, carrying the whole response.
 
     The delivered-content fields (``content_digest``/``partial``, upstream PRD
@@ -159,7 +159,7 @@ def _serve_from_index(handle: str) -> Any | None:
         return None
 
 
-def _cube_identity(export: dict) -> tuple[str, str, str] | None:
+def _cube_identity(export: dict[str, Any]) -> tuple[str, str, str] | None:
     """``(cache_key, source_identity, local_path)`` for a cubeable export.
 
     None for anything the interpretation pipeline doesn't touch: a Zarr export
@@ -195,7 +195,7 @@ def _cube_identity(export: dict) -> tuple[str, str, str] | None:
     return cache_key(source, OPEN_PIPELINE_VERSION, netcdf_engine_signature()), source, path
 
 
-def _consider_cube(export: dict, ds: Any) -> None:
+def _consider_cube(export: dict[str, Any], ds: Any) -> None:
     """Let the cube cache earn a write off this open (T52).
 
     Scheduled here, in the async caller, rather than inside ``_open``: that
@@ -229,7 +229,7 @@ def _consider_cube(export: dict, ds: Any) -> None:
         logger.debug("cube_consider_failed", exc_info=True)
 
 
-async def _export(handle: str, tools: dict[str, BaseTool]) -> dict:
+async def _export(handle: str, tools: dict[str, BaseTool]) -> dict[str, Any]:
     # T51: the MCP round-trip is its own phase — a turn that felt slow "opening
     # data" may have spent all of it here, waiting on the MCP, and never
     # touched a byte of the file.
@@ -245,7 +245,7 @@ async def _export(handle: str, tools: dict[str, BaseTool]) -> dict:
     return export
 
 
-async def _recover(handle: str, tools: dict[str, BaseTool]) -> dict:
+async def _recover(handle: str, tools: dict[str, BaseTool]) -> dict[str, Any]:
     emit_status("Rematerializing expired data...", stage=STAGE_OPEN)
     remat_raw = await tools["rematerialize"].ainvoke({"handle": handle})
     remat = parse_tool_result(remat_raw)
@@ -266,7 +266,7 @@ async def _recover(handle: str, tools: dict[str, BaseTool]) -> dict:
     return second_export
 
 
-def _open(storage_uri: str, media_type: str, *, export: dict | None = None) -> Any:
+def _open(storage_uri: str, media_type: str, *, export: dict[str, Any] | None = None) -> Any:
     """Time the read as the ``open`` phase and dispatch by media type (T51).
 
     Timed here rather than inside each per-format branch so a Zarr, a bare
@@ -287,7 +287,7 @@ def _open(storage_uri: str, media_type: str, *, export: dict | None = None) -> A
 
 
 def _open_by_media_type(
-    storage_uri: str, media_type: str, timing: dict | None = None, *, export: dict | None = None
+    storage_uri: str, media_type: str, timing: dict[str, Any] | None = None, *, export: dict[str, Any] | None = None
 ) -> Any:
     parsed = urlparse(storage_uri)
     if parsed.scheme != "file":
@@ -317,7 +317,7 @@ def _open_by_media_type(
     if "parquet" in mt:
         import pyarrow.parquet as pq
 
-        return pq.read_table(path)
+        return pq.read_table(path)  # type: ignore[no-untyped-call]  # pyarrow ships no annotations
     if "hdf4" in mt or "native-archive" in mt:
         # The MCP materialized the provider's native distribution (HDF4 or a
         # mixed archive) because no NetCDF conversion service exists for the
@@ -338,7 +338,7 @@ def _open_by_media_type(
     raise OpenHandleError(f"Unsupported media_type '{media_type}' for exported handle.")
 
 
-def _export_or_synthetic(export: dict | None, storage_uri: str, media_type: str) -> dict:
+def _export_or_synthetic(export: dict[str, Any] | None, storage_uri: str, media_type: str) -> dict[str, Any]:
     """The ready export, or the minimum a direct ``_open`` caller implies.
 
     A synthetic one carries no ``content_digest``, so it keys on filesystem
@@ -347,7 +347,7 @@ def _export_or_synthetic(export: dict | None, storage_uri: str, media_type: str)
     return export if export is not None else {"storage_uri": storage_uri, "media_type": media_type}
 
 
-def _serve_from_cube_or_open(export: dict, timing: dict | None, opener: Any) -> Any:
+def _serve_from_cube_or_open(export: dict[str, Any], timing: dict[str, Any] | None, opener: Any) -> Any:
     """Return the cached cube for this export if there is a good one, else run
     the open pipeline (T52).
 
@@ -385,7 +385,7 @@ def _serve_from_cube_or_open(export: dict, timing: dict | None, opener: Any) -> 
     return opener()
 
 
-def _open_netcdf(path: str, chunks: dict | None = None, *, timing: dict | None = None) -> Any:
+def _open_netcdf(path: str, chunks: dict[str, Any] | None = None, *, timing: dict[str, Any] | None = None) -> Any:
     """Open a NetCDF file, descending into HDF5 subgroups when the root
     group carries no data variables.
 
@@ -453,14 +453,14 @@ def _open_netcdf(path: str, chunks: dict | None = None, *, timing: dict | None =
     # simply nothing left to say what altitude a layer is at. The root group
     # was already exempted from this skip for the same reason (see the merge
     # below); the root is just the case that happened to be found first.
-    group_datasets = []
+    named_groups: list[tuple[str, Any]] = []
     for group_key, gds in groups.items():
         group_path = group_key.strip("/")
         if group_path:
             for var in gds.data_vars.values():
                 var.attrs.setdefault("group_path", group_path)
-        group_datasets.append((group_path, gds))
-    if not any(gds.data_vars for _, gds in group_datasets):
+        named_groups.append((group_path, gds))
+    if not any(gds.data_vars for _, gds in named_groups):
         return root if root is not None else xr.Dataset()
 
     # A leaf name that appears in MORE than one group must not be merged by
@@ -473,7 +473,7 @@ def _open_netcdf(path: str, chunks: dict | None = None, *, timing: dict | None =
     # AggregationService.to_dataarray's refuse-with-candidates error rather
     # than a silent pick (the T25 doctrine).
     leaf_counts: dict[str, int] = {}
-    for _, gds in group_datasets:
+    for _, gds in named_groups:
         for name in gds.data_vars:
             leaf_counts[name] = leaf_counts.get(name, 0) + 1
     collided = {name for name, count in leaf_counts.items() if count > 1}
@@ -482,16 +482,16 @@ def _open_netcdf(path: str, chunks: dict | None = None, *, timing: dict | None =
             "netcdf_group_leaf_name_collision",
             extra={"_event": "netcdf_group_leaf_name_collision", "_names": sorted(collided), "_path": path},
         )
-        group_datasets = [
+        named_groups = [
             (
                 group_path,
                 gds.rename({n: f"{group_path}/{n}" for n in gds.data_vars if n in collided})
                 if group_path and collided.intersection(gds.data_vars)
                 else gds,
             )
-            for group_path, gds in group_datasets
+            for group_path, gds in named_groups
         ]
-    group_datasets = [gds for _, gds in group_datasets]
+    group_datasets = [gds for _, gds in named_groups]
 
     # The root group can carry the shared grid coordinates (lat/lon/time)
     # with no data_vars of its own -- a TEMPO L3 single-variable subset
@@ -515,7 +515,7 @@ def _is_zipfile(path: str) -> bool:
     return zipfile.is_zipfile(path)
 
 
-def _open_netcdf_bundle(path: str, timing: dict | None = None) -> Any:
+def _open_netcdf_bundle(path: str, timing: dict[str, Any] | None = None) -> Any:
     """Open a ``application/netcdf-bundle+zip`` export — a zip of NetCDF
     granule subsets — into one Dataset, concatenated on ``time``.
 
@@ -606,7 +606,7 @@ def _open_netcdf_bundle(path: str, timing: dict | None = None) -> Any:
     return _order_bundle_time(combined, path)
 
 
-def _run_bounded_failfast(items: list, fn: Any, workers: int) -> list:
+def _run_bounded_failfast(items: list[Any], fn: Any, workers: int) -> list[Any]:
     """Run ``fn(item)`` for every item in ``items``, bounded to ``workers``
     concurrent threads, preserving ``items`` order in the returned list.
 
@@ -634,7 +634,7 @@ def _run_bounded_failfast(items: list, fn: Any, workers: int) -> list:
         return [future.result() for future in futures]
 
 
-def _open_bundle_members_concurrently(extract_dir: str, names: list[str], chunks: dict | None) -> list[Any]:
+def _open_bundle_members_concurrently(extract_dir: str, names: list[str], chunks: dict[str, Any] | None) -> list[Any]:
     """Open every bundle member and synthesize its time coordinate, using a
     small bounded thread pool instead of one file at a time.
 
@@ -694,7 +694,7 @@ def _gate_bundle_size(zf: Any, path: str) -> None:
     )
 
 
-def _open_groups_bounded(path: str, chunks: dict | None) -> dict:
+def _open_groups_bounded(path: str, chunks: dict[str, Any] | None) -> dict[str, Any]:
     """Open every group in ``path`` with no dask chunk larger than
     ``open_max_chunk_bytes``.
 
@@ -751,7 +751,7 @@ _WIDEST_WORKING_ITEMSIZE = 8
 _FLOAT32_SAFE_PACKED_ITEMSIZE = 2
 
 
-def _narrow_packed_dtypes(groups: dict) -> dict:
+def _narrow_packed_dtypes(groups: dict[str, Any]) -> dict[str, Any]:
     """Undo CF unpacking's gratuitous widening to float64.
 
     ``scale_factor``/``add_offset`` are conventionally written float64, and
@@ -779,7 +779,7 @@ def _narrow_packed_dtypes(groups: dict) -> dict:
     return groups
 
 
-def _chunk_ceiling_spec(groups: dict, limit: int) -> dict | None:
+def _chunk_ceiling_spec(groups: dict[str, Any], limit: int) -> dict[str, Any] | None:
     """``{dim: size}`` that keeps every variable's chunk within ``limit``
     bytes, or None when they all already fit.
 
@@ -833,7 +833,7 @@ def _chunk_ceiling_spec(groups: dict, limit: int) -> dict | None:
     return spec
 
 
-def _lazy_chunks() -> dict | None:
+def _lazy_chunks() -> dict[str, Any] | None:
     """The *request* for dask-backed opening — ``{}`` when dask is installed,
     None otherwise, where xarray's plain lazy arrays materialize whole at the
     first compute and the size gate is the only protection.
@@ -1212,7 +1212,7 @@ def _strip_concat_unsafe_coord_attrs(ds: Any) -> Any:
     return ds
 
 
-def _open_all_groups(path: str, chunks: dict | None = None) -> dict[str, Any]:
+def _open_all_groups(path: str, chunks: dict[str, Any] | None = None) -> dict[str, Any]:
     """Open every HDF5 group in the file, keyed by group path ("/" for the
     root). Tries h5netcdf first -- pure-Python via h5py (already a
     dependency), so no compiled netCDF-C library needed -- then falls back
@@ -1411,8 +1411,10 @@ _PIPELINE_SOURCE_FUNCTIONS = (
 # whole cube cache for a rename. Re-pinned the same way for the ruff B904/B905
 # pass: `raise ... from exc` in _open_netcdf_bundle only adds a traceback cause,
 # and zip(..., strict=True) in _apply_declared_dimension_names sits behind a
-# length check that already skips every mismatched pair. The cube-cache *wiring*
+# length check that already skips every mismatched pair. And again for the mypy
+# pass: generic arguments on bare dict/list annotations, and a rename in
+# _open_netcdf separating its (path, dataset) list from its dataset list. The cube-cache *wiring*
 # deliberately lives outside these functions (in _open_by_media_type) so this
 # fingerprint tracks interpretation only, and cache plumbing changes don't
 # spuriously invalidate every cube.
-OPEN_PIPELINE_SOURCE_FINGERPRINT = "5c9a71bc7180bd3232a5a49ebffd395bcc9c73684e930e184f6fa6f53ea4eae5"
+OPEN_PIPELINE_SOURCE_FINGERPRINT = "198ce24e52c1ff7cdd4b71569a890ffc1973d66716bb1f4f93c2ef1cd3a8c1fd"

@@ -53,8 +53,11 @@ import uuid
 import numpy as np
 from langchain.tools import tool
 from langchain_core.tools import BaseTool
-from typing import Annotated, List, Optional
+from typing import TYPE_CHECKING, Annotated, Any, List, Optional
 from pydantic import Field
+
+if TYPE_CHECKING:
+    import xarray as xr
 
 from tta_backend.services import admission
 from tta_backend.services import overlay_store
@@ -77,6 +80,7 @@ from tta_backend.services.open_handle import (
 from tta_backend.utils.geo_utils import find_lat_coord, find_lon_coord, vertical_axis_kind
 from tta_backend.utils.colormaps import resolve as resolve_colormap
 from tta_backend.utils.overlay_render import render_overlay_png
+from tta_backend.utils import xarray_ops
 from tta_backend.utils.phase_timing import phase_timer
 from tta_backend.utils.plotting import (
     _normalize_to_2d,
@@ -160,7 +164,7 @@ def _percentile_bounds(arr: np.ndarray):
 _MAX_GRID_CELLS = 8_000
 
 
-def _normalize_longitudes(da, lon_coord):
+def _normalize_longitudes(da: "xr.DataArray", lon_coord: str) -> "xr.DataArray":
     """Convert 0..360 longitude coordinates to -180..180 and keep them sorted."""
     lon_vals = np.asarray(da[lon_coord].values)
     finite_lons = lon_vals[np.isfinite(lon_vals)]
@@ -363,7 +367,7 @@ def _build_heatmap_payload(
 
     colormap = resolve_colormap(variable, diverging=diverging)
 
-    overlay = {"bounds": overlay_bounds}
+    overlay: dict[str, Any] = {"bounds": overlay_bounds}
     if render_overlay:
         # Must run on the full-native-resolution grid, before _downsample_grid
         # below thins lats_out/lons_out/arr for the JSON payload -- visual
@@ -444,7 +448,8 @@ def _chart_model_summary(payload: dict) -> dict:
     never the raw grid the frontend renders from ``emit_chart``."""
     render_type = payload.get("type")
     grid_dims, vmin, vmax = _summary_dims_and_range(payload, render_type)
-    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    raw_metadata = payload.get("metadata")
+    metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
     summary = {
         "render_type": render_type,
         "title": payload.get("title"),
@@ -563,7 +568,7 @@ def _save_chart(payload: dict, name: str) -> str:
     payload.setdefault("metadata", {})
     payload["metadata"].setdefault("name", name)
 
-    prefix = _RENDER_TYPE_TO_ARTIFACT_PREFIX.get(payload.get("type"))
+    prefix = _RENDER_TYPE_TO_ARTIFACT_PREFIX.get(payload.get("type") or "")
     if prefix is not None:
         payload["chart_id"] = f"{prefix}_{uuid.uuid4().hex[:12]}"
         try:
@@ -1231,6 +1236,8 @@ def _attach_frames(payload: dict, result, masked, agg_meta: dict) -> None:
             # refused or never attempted.
             payload.setdefault("export", {})["frames"] = {"unavailable": disclosure}
         return
+    # frame_gate refuses a missing time axis, so past it there always is one.
+    assert time_dim is not None
 
     # D6a's extra planes, behind their own extent limit. A chart above it is
     # NOT refused -- it keeps exactly the mean scrubber it has always had, and
@@ -1690,7 +1697,7 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]):
                 return "mask", None, None, f"Masking failed: {e}"
 
             units = masked.attrs.get("units", "")
-            variable_name = masked.name or ""
+            variable_name = str(masked.name or "")
             col_info = col_info_for_variable(masked, ds)
             # T58 D7 -- resolve early, select late. The vertical axes ride the
             # time dimension, so aggregate() destroys them; a physical level has
@@ -1871,7 +1878,7 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
                 bounds = region["bounds"]
                 masked = _sel_bounds(masked, lat_coord, lon_coord, bounds)
 
-                resolved_variable_name = masked.name or variable_name
+                resolved_variable_name = str(masked.name or variable_name)
                 units = masked.attrs.get("units", "")
                 col_info = col_info_for_variable(masked, ds)
 
@@ -1928,7 +1935,7 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]):
             variable_name = resolved_variable_name
             panels.append(panel)
 
-        multi_payload = {"type": "heatmap_multi", "title": title or f"{variable_name} Comparison", "panels": panels}
+        multi_payload: dict[str, Any] = {"type": "heatmap_multi", "title": title or f"{variable_name} Comparison", "panels": panels}
         if panels:
             multi_payload["provenance"] = _merged_multi_provenance(panels)
             multi_payload["query"] = {
@@ -2042,7 +2049,7 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
             bounds = region["bounds"]
             masked = _sel_bounds(masked, lat_coord, lon_coord, bounds)
 
-            variable_name = masked.name or ""
+            variable_name = str(masked.name or "")
             if stat not in AggregationService._STAT_FUNCS:
                 return "error", f"Unknown stat '{stat}'. Use: mean, median, max, min, std"
 
@@ -2064,7 +2071,7 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]):
             if extra_dims:
                 from tta_backend.utils.plotting import _dimension_choice_error
 
-                return "dimension_choice_required", _dimension_choice_error(masked, extra_dims[0]).to_dict()
+                return "dimension_choice_required", _dimension_choice_error(masked, str(extra_dims[0])).to_dict()
 
             # T25 masking-execution fix: route through the same shared
             # masking-resolution path aggregate() uses (collections.yaml ->
@@ -2283,7 +2290,7 @@ def make_plot_vertical_profile(mcp_tools: dict[str, BaseTool]):
                     suggestion="Narrow the region or the time period and try again.",
                 ).to_dict()
 
-            variable_name = narrowed.name or ""
+            variable_name = str(narrowed.name or "")
             col_info = col_info_for_variable(narrowed, ds)
             masked, masking_provenance = _aggregation_service.resolve_and_mask(
                 narrowed, variable=variable_name, col_info=col_info, source_ds=ds,
@@ -2301,7 +2308,7 @@ def make_plot_vertical_profile(mcp_tools: dict[str, BaseTool]):
                 spatial_of_matrix = [d for d in per_slice.dims if d != time_dim]
                 valid_indices = [
                     i for i, ok in enumerate(
-                        np.atleast_1d(np.isfinite(per_slice).any(spatial_of_matrix).values)
+                        np.atleast_1d(xarray_ops.isfinite(per_slice).any(spatial_of_matrix).values)
                     ) if bool(ok)
                 ]
                 if not valid_indices:
@@ -2347,7 +2354,7 @@ def make_plot_vertical_profile(mcp_tools: dict[str, BaseTool]):
                 "values": values,
                 "vertical": vertical,
                 "default_axis": default_axis,
-                "layer_order": (vertical.get(default_axis) or {}).get("layer_order", "unknown"),
+                "layer_order": (vertical.get(default_axis or "") or {}).get("layer_order", "unknown"),
                 "valid_fraction": _per_layer_valid_fraction(masked, vertical_dim, region_cells),
                 "masking": masking_provenance,
                 "aggregation_meta": agg_meta,

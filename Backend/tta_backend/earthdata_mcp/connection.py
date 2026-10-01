@@ -144,7 +144,7 @@ class EarthdataMCPConnectionManager:
     def __init__(
         self,
         settings: Settings,
-        user_id_getter: Callable[[], str],
+        user_id_getter: Callable[[], str | None],
         *,
         on_ready: OnReady | None = None,
         session_scope: SessionScope | None = None,

@@ -122,7 +122,7 @@ def make_compute_statistic_tool(mcp_tools: dict[str, BaseTool]):
                 to a 2-D (lat, lon) field."""
                 aggregation = _aggregation_service.aggregate(
                     masked,
-                    variable=masked.name,
+                    variable=None if masked.name is None else str(masked.name),
                     stat=stat,
                     col_info=col_info,
                     source_ds=ds,
@@ -288,7 +288,7 @@ def make_find_daily_peak(mcp_tools: dict[str, BaseTool]):
                 # extremes and possibly misplacing them.
                 aggregation = _aggregation_service.aggregate(
                     masked,
-                    variable=masked.name,
+                    variable=None if masked.name is None else str(masked.name),
                     stat="max",
                     col_info=col_info,
                     source_ds=ds,

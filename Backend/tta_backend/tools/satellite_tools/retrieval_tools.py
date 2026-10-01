@@ -170,10 +170,12 @@ def make_point_timeseries(mcp_tools: dict[str, BaseTool]):
         except MCPToolError as exc:
             return json.dumps({"error": exc.to_dict()})
 
-        if status.get("status") != "ready":
+        handle = status.get("obs_handle")
+        # A "ready" status with no handle is as unusable as a failed one, and
+        # is reported the same way rather than crashing inside open_handle.
+        if status.get("status") != "ready" or not handle:
             return json.dumps(status)
 
-        handle = status.get("obs_handle")
         try:
             table = await open_handle(handle, mcp_tools)
         except MCPToolError as exc:

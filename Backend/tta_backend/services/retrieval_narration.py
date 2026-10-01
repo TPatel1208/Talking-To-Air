@@ -31,10 +31,11 @@ from __future__ import annotations
 
 import time
 from datetime import date, datetime
+from typing import Any
 
 _TTL_SECONDS = 60 * 60
 
-_narrations: dict[str, tuple[dict, float]] = {}
+_narrations: dict[str, tuple[dict[str, Any], float]] = {}
 
 # Spelled out rather than taken from ``strftime("%b")``, which is locale-
 # dependent: the backend container and a developer's machine would render

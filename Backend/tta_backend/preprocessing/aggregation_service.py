@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import warnings
 from dataclasses import dataclass
-from typing import Any, NamedTuple
+from typing import Any, Callable, NamedTuple, cast
 
 import numpy as np
 import pandas as pd
@@ -22,6 +22,7 @@ from tta_backend.datasets.registry import load_registry
 from tta_backend.earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED, MCPToolError
 from tta_backend.preprocessing.variable_resolver import Resolution, resolve
 from tta_backend.services import variable_choice_registry
+from tta_backend.utils import xarray_ops
 from tta_backend.utils.geo_utils import identify_time
 from tta_backend.utils.phase_timing import phase_timer
 
@@ -199,6 +200,11 @@ def _sample_std(a: Any, **kwargs: Any) -> Any:
         return np.nanstd(a, ddof=1, **kwargs)
 
 
+def _da_name(da: xr.DataArray) -> str | None:
+    """``da.name`` as the str it always is here; xarray types it Hashable."""
+    return None if da.name is None else str(da.name)
+
+
 def cos_lat_weights(da: xr.DataArray) -> xr.DataArray | None:
     """Cos(latitude) cell weights broadcastable over ``da``, or ``None`` when
     no latitude dimension is identifiable (point data, an already-flattened
@@ -218,7 +224,8 @@ def cos_lat_weights(da: xr.DataArray) -> xr.DataArray | None:
     lat_name = find_lat_coord(da)
     if lat_name is None or lat_name not in da.dims:
         return None
-    return np.cos(np.deg2rad(da[lat_name].astype("float64")))
+    # A DataArray at runtime (ufunc dispatch); numpy's stubs say ndarray.
+    return cast(xr.DataArray, np.cos(np.deg2rad(da[lat_name].astype("float64"))))
 
 
 def area_weighted_mean(da: xr.DataArray) -> float:
@@ -283,7 +290,7 @@ def _count_qa_pixels(da: xr.DataArray, qf: xr.DataArray, condition: xr.DataArray
         # valid-timestep scan below, whose definition of "this timestep
         # survived masking" excludes +-inf as well as NaN. It has to be
         # exactly that boolean to be allowed to replace it.
-        finite = np.isfinite(da)
+        finite = xarray_ops.isfinite(da)
         checked, finite, qf, condition = xr.align(
             checked, finite, qf, condition, join="inner",
         )
@@ -305,7 +312,7 @@ def _count_qa_pixels(da: xr.DataArray, qf: xr.DataArray, condition: xr.DataArray
         # area-weighted mean over-counts shrunken poleward cells (Finding #13).
         # The raw integer counts are kept alongside -- they are the honest "how
         # many observations" fact the disclosure text needs.
-        weights = cos_lat_weights(checked)
+        weights: xr.DataArray | float | None = cos_lat_weights(checked)
         if weights is None:
             weights = 1.0
         checked_area, passing_area = checked * weights, passing * weights
@@ -507,7 +514,7 @@ def _cell_count(data: xr.Dataset | xr.DataArray) -> int:
 class AggregationService:
     """Single entry point for satellite data validity filtering and reductions."""
 
-    _STAT_FUNCS = {
+    _STAT_FUNCS: dict[str, Callable[..., Any]] = {
         "mean": np.nanmean,
         "median": np.nanmedian,
         "max": np.nanmax,
@@ -740,7 +747,7 @@ class AggregationService:
         bundle, and no other caller has to know they exist.
         """
         yaml_info = col_info or self._collection_info(collection_id, variable)
-        umm_var_variable = match_umm_var_variable(umm_var_facts, variable or da.name)
+        umm_var_variable = match_umm_var_variable(umm_var_facts, variable or _da_name(da))
         resolved_col_info, masking_provenance = resolve_mask_info(
             yaml_info=yaml_info, umm_var_variable=umm_var_variable, cf_attrs=da.attrs,
         )
@@ -1047,7 +1054,7 @@ class AggregationService:
         """
         col_info = col_info or {}
         if umm_var_facts is not None:
-            umm_var_variable = match_umm_var_variable(umm_var_facts, variable or da.name)
+            umm_var_variable = match_umm_var_variable(umm_var_facts, variable or _da_name(da))
             col_info, _ = resolve_mask_info(yaml_info=col_info, umm_var_variable=umm_var_variable, cf_attrs=da.attrs)
         actual_fill = col_info.get("fill_value", da.attrs.get("_FillValue"))
         valid_min = col_info.get("valid_min")
@@ -1206,7 +1213,8 @@ class AggregationService:
         flags = self._fused_valid_flags(da, time_dim, qa_pixel_counts)
         if flags is None:
             spatial = [d for d in da.dims if d != time_dim]
-            flags = np.atleast_1d(np.asarray(np.isfinite(da).any(spatial).values))
+            found = np.atleast_1d(np.asarray(xarray_ops.isfinite(da).any(spatial).values))
+            return [i for i, is_valid in enumerate(found) if bool(is_valid)]
         return [i for i, is_valid in enumerate(flags) if bool(is_valid)]
 
     @staticmethod
@@ -1312,7 +1320,7 @@ class AggregationService:
         # have a finite value HERE. ``.sel(bucket=bucket_of)`` scatters the
         # per-bucket count back across the timesteps that share a bucket.
         contributing = (
-            np.isfinite(da).groupby(bucket_of).sum(dim=time_dim).sel(bucket=bucket_of)
+            xarray_ops.isfinite(da).groupby(bucket_of).sum(dim=time_dim).sel(bucket=bucket_of)
         )
         # ``.where`` before the reciprocal, not after: dividing by a zero count
         # would warn and produce an inf that ``fillna`` would then miss. A pixel

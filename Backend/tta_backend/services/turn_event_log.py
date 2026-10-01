@@ -9,9 +9,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from redis import asyncio as aioredis
+from redis.typing import EncodableT, FieldT
 
 from tta_backend.config.settings import get_settings
 
@@ -76,12 +77,14 @@ class TurnEventLog:
         A caller passing a client keeps ownership of it, so several logs can
         share one pool.
         """
-        if client is None and url is None:
-            raise ValueError("TurnEventLog needs a url or a client")
-        self._owns_client = client is None
-        self._redis = client if client is not None else aioredis.from_url(
-            url, decode_responses=True
-        )
+        if client is None:
+            if url is None:
+                raise ValueError("TurnEventLog needs a url or a client")
+            client = aioredis.from_url(url, decode_responses=True)
+            self._owns_client = True
+        else:
+            self._owns_client = False
+        self._redis = client
         self._flush_interval = flush_interval
         self._max_entries = max_entries
         # From settings, not baked in: a log must not expire under a turn
@@ -92,7 +95,7 @@ class TurnEventLog:
             else int(get_settings().chat_turn_timeout_seconds) + TTL_MARGIN_SECONDS
         )
         self._buffered_text: dict[str, list[str]] = {}
-        self._flush_timers: dict[str, asyncio.Task] = {}
+        self._flush_timers: dict[str, asyncio.Task[Any]] = {}
         self._write_locks: dict[str, asyncio.Lock] = {}
 
     async def aclose(self) -> None:
@@ -190,7 +193,7 @@ class TurnEventLog:
         boundaries already known — and numbered rather than positional,
         because field order is not worth relying on.
         """
-        fields: dict[str, str] = {f"f{i}": frame for i, frame in enumerate(frames)}
+        fields: dict[FieldT, EncodableT] = {f"f{i}": frame for i, frame in enumerate(frames)}
         if terminal is not None:
             fields["terminal"] = terminal
         key = self._key(turn_id)
@@ -229,7 +232,7 @@ class TurnEventLog:
         entry_id, fields = entries[0]
         return TurnTail(
             written_ms=_millis_of(str(entry_id)),
-            terminal=(fields or {}).get("terminal"),
+            terminal=_decoded(fields).get("terminal"),
         )
 
     async def read(self, turn_id: str, cursor: str | None = None) -> TurnEventPage:
@@ -245,7 +248,7 @@ class TurnEventLog:
         frames: list[str] = []
         terminal: str | None = None
         for _entry_id, entry_fields in entries:
-            fields = entry_fields or {}
+            fields = _decoded(entry_fields)
             frames.extend(_frames_of(fields))
             terminal = terminal or fields.get("terminal")
         return TurnEventPage(
@@ -253,6 +256,16 @@ class TurnEventLog:
             cursor=str(entries[-1][0]) if entries else resume_from,
             terminal=terminal,
         )
+
+
+def _decoded(fields: Any) -> dict[str, str]:
+    """A stream entry's fields as the str->str dict they are.
+
+    Every client here is built with ``decode_responses=True``, so Redis hands
+    back ``str``; redis-py's annotations cannot express that and say
+    ``bytes | str``.
+    """
+    return cast(dict[str, str], fields or {})
 
 
 def _millis_of(entry_id: str) -> int | None:

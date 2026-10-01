@@ -273,7 +273,7 @@ def plot_map(
 
         if time_dim is None:
             # Assume first dimension is time if not found
-            time_dim = data_array.dims[0]
+            time_dim = str(data_array.dims[0])
 
         # Select time slice
         if time_slice is None:
@@ -334,7 +334,7 @@ def plot_map(
                 lon_range,
                 lat_range,
             )
-            fig_width, fig_height = 10, 6
+            fig_width, fig_height = 10.0, 6.0
         else:
             aspect_ratio = lon_range / lat_range
 
@@ -560,7 +560,7 @@ def _normalize_to_2d(data_array: xr.DataArray, dim_selector: dict | None = None)
 
     extra_dims = [d for d in data_array.dims if d not in non_selectable]
     if extra_dims:
-        raise _dimension_choice_error(data_array, extra_dims[0])
+        raise _dimension_choice_error(data_array, str(extra_dims[0]))
 
     return data_array
 
@@ -678,7 +678,9 @@ def half_cell(coords: np.ndarray) -> float:
     return 0.5
 
 
-def sel_bounds(da, lat_coord, lon_coord, bounds):
+def sel_bounds(
+    da: xr.DataArray, lat_coord: str, lon_coord: str, bounds: tuple[float, float, float, float],
+) -> xr.DataArray:
     """
     Crop a DataArray to (minx, miny, maxx, maxy) bounds in a coordinate-order-
     safe way.  xarray slice() requires start <= stop when coords are increasing
@@ -729,7 +731,7 @@ def _crop_to_mask_footprint(
     and must never be the reason a turn fails or a number moves.
     """
     try:
-        lat_dim, lon_dim = mask_da.dims
+        lat_dim, lon_dim = map(str, mask_da.dims)
         if lat_dim not in data_array.dims or lon_dim not in data_array.dims:
             return data_array, mask_da
 
@@ -892,7 +894,7 @@ class GeocodingService:
     def __init__(self, cache_ttl_seconds: int = 24 * 60 * 60):
         self.cache = {}
         self.cache_ttl_seconds = cache_ttl_seconds
-        self.last_request = 0
+        self.last_request = 0.0
         # Guards the read-modify-write on last_request below: geocode()
         # (sync, sometimes run in a worker thread) and ageocode() (async, on
         # the event loop) share this one throttle timestamp, and without
