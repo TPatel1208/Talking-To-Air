@@ -24,13 +24,22 @@
  * shows.
  */
 import { useEffect, useRef } from 'react'
-import maplibregl from 'maplibre-gl'
+// maplibre-gl 6 is ESM-only with no default export.
+import * as maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
+// maplibre 6 derives its worker's URL at runtime from import.meta.url, which
+// Vite can neither follow (dev serves the pre-bundled copy, so the URL 404s)
+// nor emit (the build ships no worker file). Without a worker no source ever
+// loads: the map draws its background and nothing else. `?worker&url` has Vite
+// bundle the worker with its shared chunk and hand back the emitted URL.
+import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 import { colorbarGeometry, scaleClipNote } from '../utils/colorbarGeometry.js'
 import { buildCanvasFallbackFrame } from '../utils/canvasFallback.js'
 import { fetchUsStatesGeoJSON, isConusBounds } from '../utils/regionBorders.js'
 import { resolveOverlayMode } from '../utils/overlayMode.js'
 import { currentAccessToken } from '../utils/apiFetch.js'
+
+maplibregl.setWorkerUrl(maplibreWorkerUrl)
 
 const FALLBACK_TILE_CONFIG = {
   basemap_light_url: 'https://basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png',
