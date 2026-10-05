@@ -147,8 +147,12 @@ test('the reattach probe runs on mount and on every session switch', () => {
   // just server-side-politely instead of by aborting it.
   const switchBody = callbackBody(USE_CHAT, 'const switchSession = useCallback(')
   assert.match(switchBody, /attachToThread\(/)
+  // The mount path is fetchSessions -> restoreActiveThread -> attachToThread.
   const fetchBody = callbackBody(USE_CHAT, 'const fetchSessions = useCallback(')
-  assert.match(fetchBody, /attachToThread\(/)
+  assert.match(fetchBody, /restoreActiveThread\(/)
+  const restoreBody = callbackBody(USE_CHAT, 'const restoreActiveThread = useCallback(')
+  assert.ok(restoreBody, 'restoreActiveThread is no longer a useCallback -- re-point this guard')
+  assert.match(restoreBody, /attachToThread\(/)
 })
 
 test('a refused send answers its caller before it joins the turn it was refused for', () => {

@@ -10,31 +10,39 @@ const API_BASE = '/api'
 // at its last-seen status ("Processing — 0%") until a manual Refresh.
 const ACTIVE_JOB_POLL_MS = 15000
 
+async function requestJobs() {
+  const res = await apiFetch(`${API_BASE}/jobs`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const data = await res.json()
+  return data.jobs || []
+}
+
 export function useJobs() {
   const [jobs, setJobs] = useState([])
-  const [loading, setLoading] = useState(false)
+  // True from the start: the mount effect below loads straight away.
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
-  const fetchJobs = useCallback(async () => {
+  // State is set only in promise callbacks, so the mount effect can call this
+  // (react-hooks/set-state-in-effect flags a direct setState anywhere in a
+  // function an effect calls, even one after an await).
+  const loadJobs = useCallback(() => (
+    requestJobs()
+      .then(next => { setJobs(next); setError(null) })
+      .catch(err => setError(err.message || 'Failed to load jobs'))
+      .finally(() => setLoading(false))
+  ), [])
+
+  const fetchJobs = useCallback(() => {
     setLoading(true)
-    try {
-      const res = await apiFetch(`${API_BASE}/jobs`)
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = await res.json()
-      setJobs(data.jobs || [])
-      setError(null)
-    } catch (err) {
-      setError(err.message || 'Failed to load jobs')
-    } finally {
-      setLoading(false)
-    }
-  }, [])
+    return loadJobs()
+  }, [loadJobs])
 
   // Populated from the backend on mount so reloading the page never loses
   // running jobs — the panel never relies on chat history to know what's in
   // flight. Stable now that no token is threaded in, so this runs once rather
   // than again on every silent token rotation.
-  useEffect(() => { fetchJobs() }, [fetchJobs])
+  useEffect(() => { loadJobs() }, [loadJobs])
 
   // Keep in-flight rows live even when no chat stream is feeding
   // job_progress events (stopped request, reloaded page, job started in
