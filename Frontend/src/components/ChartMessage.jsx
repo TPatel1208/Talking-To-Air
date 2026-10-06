@@ -84,7 +84,7 @@ function filenameFromDisposition(disposition, fallback) {
 async function downloadFromUrl(url, fallbackFilename) {
   const response = await apiFetch(url)
   if (!response.ok) {
-    let detail = ''
+    let detail
     try {
       const body = await response.json()
       detail = body?.detail || ''
