@@ -46,6 +46,12 @@ function newIdempotencyKey() {
   return `send-${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
 
+async function requestSessions() {
+  const res = await apiFetch(`${API_BASE}/sessions`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
 export function useChat(onJobProgress) {
   const [messages, setMessages] = useState([])
   const [threadId, setThreadId] = useState(null)
@@ -60,7 +66,17 @@ export function useChat(onJobProgress) {
   // a thread with nothing to report. Keyed independently of `messages` and
   // `threadId` because its whole point is to outlive the user switching away
   // from the thread it describes (T63's detached turns keep running there).
-  const [turnStatus, setTurnStatus] = useState({})
+  //
+  // Seeded with 'running' for every thread this browser still has a turn
+  // record for, before anything has confirmed whether those turns are still
+  // going. Optimistic on purpose: `attachToThread` (for the restored active
+  // thread) and the poll below (for every other one) each correct their own
+  // entry within one round trip, and the alternative -- waiting for that
+  // round trip before showing anything -- is the "can I navigate back to it"
+  // question arriving late on exactly the reload this is for.
+  const [turnStatus, setTurnStatus] = useState(() => (
+    Object.fromEntries(turnRecordThreadIds(window.localStorage).map(id => [id, 'running']))
+  ))
 
   const abortControllerRef = useRef(null)
   const activeRequestIdRef = useRef(0)
@@ -617,69 +633,45 @@ export function useChat(onJobProgress) {
     releaseIfCurrent,
   ])
 
-  const fetchSessions = useCallback(async () => {
-    const restore = async () => {
-      if (didRestoreRef.current) return
-      didRestoreRef.current = true
-      const storedThreadId = window.localStorage.getItem(ACTIVE_THREAD_STORAGE_KEY)
-      if (!storedThreadId) return
-      setThreadId(storedThreadId)
-      threadIdRef.current = storedThreadId
-      const loaded = await loadHistory(storedThreadId)
-      if (loaded === 'not-found') {
-        persistActiveThread(null)
-        clearTurnRecord(window.localStorage, storedThreadId)
-        clearTurnStatus(storedThreadId)
-        return
-      }
-      await attachToThread(storedThreadId)
+  const restoreActiveThread = useCallback(async () => {
+    if (didRestoreRef.current) return
+    didRestoreRef.current = true
+    const storedThreadId = window.localStorage.getItem(ACTIVE_THREAD_STORAGE_KEY)
+    if (!storedThreadId) return
+    setThreadId(storedThreadId)
+    threadIdRef.current = storedThreadId
+    const loaded = await loadHistory(storedThreadId)
+    if (loaded === 'not-found') {
+      persistActiveThread(null)
+      clearTurnRecord(window.localStorage, storedThreadId)
+      clearTurnStatus(storedThreadId)
+      return
     }
+    await attachToThread(storedThreadId)
+  }, [attachToThread, clearTurnStatus, loadHistory, persistActiveThread])
 
-    try {
-      const res = await apiFetch(`${API_BASE}/sessions`)
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`)
-      }
-      const data = await res.json()
-      const nextSessions = data.sessions || []
-      setSessions(nextSessions)
-      setSessionsCursor(data.next_cursor ?? null)
-
+  // State is set only in promise callbacks, so the mount effect can call this
+  // (react-hooks/set-state-in-effect flags a direct setState anywhere in a
+  // function an effect calls, even one after an await).
+  const fetchSessions = useCallback(() => (
+    requestSessions()
+      .then(data => {
+        setSessions(data.sessions || [])
+        setSessionsCursor(data.next_cursor ?? null)
+      })
+      .catch(() => {
+        // Non-fatal; the active chat can continue without the sidebar list.
+      })
       // Deliberately not gated on the list: a thread whose turn has not
       // produced a frame yet is not in it, and dropping the stored thread
       // there would abandon a running turn on a reload — the reattach this
       // whole protocol exists for. A thread that is genuinely gone is still
-      // caught, one request later, by restore()'s own not-found handling.
-      await restore()
-    } catch {
-      // Non-fatal; the active chat can continue without the sidebar list.
-      await restore()
-    }
-  }, [attachToThread, clearTurnStatus, loadHistory, persistActiveThread])
+      // caught, one request later, by restoreActiveThread's own not-found
+      // handling.
+      .then(() => restoreActiveThread())
+  ), [restoreActiveThread])
 
   useEffect(() => { fetchSessions() }, [fetchSessions])
-
-  // Seeds the badge for every thread this browser still has a turn record
-  // for, before anything has confirmed whether those turns are still going.
-  // Optimistic on purpose: `attachToThread` (above, for the restored active
-  // thread) and the poll below (for every other one) each correct their own
-  // entry within one round trip, and the alternative -- waiting for that
-  // round trip before showing anything -- is the "can I navigate back to it"
-  // question arriving late on exactly the reload this is for.
-  useEffect(() => {
-    const ids = turnRecordThreadIds(window.localStorage)
-    if (!ids.length) return
-    setTurnStatus(prev => {
-      const next = { ...prev }
-      let changed = false
-      for (const id of ids) {
-        if (next[id]) continue
-        next[id] = 'running'
-        changed = true
-      }
-      return changed ? next : prev
-    })
-  }, [])
 
   // Watches every thread the badge calls 'running' that is not the one on
   // screen right now -- the active thread's own status comes from the live
