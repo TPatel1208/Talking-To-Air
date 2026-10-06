@@ -878,7 +878,7 @@ class AggregationService:
         if not data.data_vars:
             raise RuntimeError("Dataset has no data variables.")
 
-        data_vars = list(data.data_vars)
+        data_vars = [str(k) for k in data.data_vars]
         name = self._match_var(variable, data_vars)
         if name is None and handle:
             name = self._match_var(variable_choice_registry.get(handle), data_vars)
@@ -1179,7 +1179,7 @@ class AggregationService:
                     return candidate, dict(ds[candidate].attrs)
 
         candidates = [
-            name for name, var in ds.data_vars.items()
+            str(name) for name, var in ds.data_vars.items()
             if name != da.name and "flag_values" in var.attrs and "flag_meanings" in var.attrs
         ]
         if len(candidates) == 1:
