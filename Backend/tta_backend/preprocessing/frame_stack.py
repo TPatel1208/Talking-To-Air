@@ -914,7 +914,9 @@ def _grouped_by(buckets: xr.DataArray, group: int, how: str) -> xr.DataArray:
         return buckets
     labelless = buckets.drop_vars("bucket")
     coarsened = labelless.coarsen(bucket=group, boundary="pad")
-    reduced: xr.DataArray = getattr(coarsened, how)(skipna=True)
+    # No skipna=: xarray 2026.9's Coarsen reductions raise TypeError on it.
+    # The default already skips NaN for float data, which the pad makes this.
+    reduced: xr.DataArray = getattr(coarsened, how)()
     return reduced
 
 
@@ -1103,7 +1105,9 @@ def _block_reduce(
     if (k_lat, k_lon) == (1, 1):
         return field
     coarsened = field.coarsen({lat_dim: k_lat, lon_dim: k_lon}, boundary="pad")
-    reduced: xr.DataArray = getattr(coarsened, how)(skipna=True)
+    # No skipna=: xarray 2026.9's Coarsen reductions raise TypeError on it.
+    # The default already skips NaN for float data, which the pad makes this.
+    reduced: xr.DataArray = getattr(coarsened, how)()
     return reduced
 
 
