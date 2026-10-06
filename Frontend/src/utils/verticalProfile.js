@@ -112,7 +112,7 @@ export function profileLayout(chart, requested, { height = 420 } = {}) {
     autosize: true,
     height,
     xaxis: {
-      title: `${chart?.stat || 'mean'} (${chart?.units || ''})`,
+      title: { text: `${chart?.stat || 'mean'} (${chart?.units || ''})` },
       // The fixed margins above keep the plot filling the panel; automargin is
       // what stops that thrift from clipping a label. Measured on the real
       // 4-decade pressure axis, "1000" rendered as "00" and the rotated axis
@@ -121,7 +121,7 @@ export function profileLayout(chart, requested, { height = 420 } = {}) {
       showgrid: true, gridcolor: 'rgba(0,0,0,0.06)', zeroline: false, tickfont: { size: 10 },
     },
     yaxis: {
-      title: axis.label,
+      title: { text: axis.label },
       // A log axis silently DROPS a zero or negative point rather than
       // failing, so a pressure axis that contains one stays linear -- a
       // missing layer is a worse lie than a squashed one.

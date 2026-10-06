@@ -288,8 +288,8 @@ export function TimeSeriesPanel({ payload }) {
     margin: { t: 40, r: 16, b: 40, l: 16 },
     title:  { text: title, font: { size: 13, weight: 500 }, x: 0.5, xanchor: 'center' },
     height: 300,
-    xaxis:  { title: 'Time', showgrid: true, gridcolor: 'rgba(0,0,0,0.06)', zeroline: false, tickfont: { size: 10 } },
-    yaxis:  { title: `${stat} (${units})`, showgrid: true, gridcolor: 'rgba(0,0,0,0.06)', zeroline: false, tickfont: { size: 10 }, exponentformat: 'e' },
+    xaxis:  { title: { text: 'Time' }, showgrid: true, gridcolor: 'rgba(0,0,0,0.06)', zeroline: false, tickfont: { size: 10 } },
+    yaxis:  { title: { text: `${stat} (${units})` }, showgrid: true, gridcolor: 'rgba(0,0,0,0.06)', zeroline: false, tickfont: { size: 10 }, exponentformat: 'e' },
     datarevision: revision,
   }
 
@@ -389,8 +389,8 @@ export function TimeSeriesOverlayPanel({ series, height = 320 }) {
     margin: { t: 40, r: 16, b: 60, l: 16 },
     title:  { text: 'Comparison', font: { size: 13, weight: 500 }, x: 0.5, xanchor: 'center' },
     height,
-    xaxis:  { title: 'Time', showgrid: true, gridcolor: 'rgba(0,0,0,0.06)', zeroline: false, tickfont: { size: 10 } },
-    yaxis:  { title: units, showgrid: true, gridcolor: 'rgba(0,0,0,0.06)', zeroline: false, tickfont: { size: 10 }, exponentformat: 'e' },
+    xaxis:  { title: { text: 'Time' }, showgrid: true, gridcolor: 'rgba(0,0,0,0.06)', zeroline: false, tickfont: { size: 10 } },
+    yaxis:  { title: { text: units }, showgrid: true, gridcolor: 'rgba(0,0,0,0.06)', zeroline: false, tickfont: { size: 10 }, exponentformat: 'e' },
     showlegend: true,
     legend: { orientation: 'h', y: -0.25 },
     datarevision: revision,
