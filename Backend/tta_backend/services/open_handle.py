@@ -317,7 +317,7 @@ def _open_by_media_type(
     if "parquet" in mt:
         import pyarrow.parquet as pq
 
-        return pq.read_table(path)  # type: ignore[no-untyped-call]  # pyarrow ships no annotations
+        return pq.read_table(path)
     if "hdf4" in mt or "native-archive" in mt:
         # The MCP materialized the provider's native distribution (HDF4 or a
         # mixed archive) because no NetCDF conversion service exists for the
