@@ -58,14 +58,14 @@ test('pressure is drawn on a reversed log axis so the sky is at the top', () => 
   const layout = profileLayout(profile, 'pressure')
   assert.equal(layout.yaxis.type, 'log')
   assert.equal(layout.yaxis.autorange, 'reversed')
-  assert.match(layout.yaxis.title, /hPa/)
+  assert.match(layout.yaxis.title.text, /hPa/)
 })
 
 test('altitude is drawn upward on a linear axis', () => {
   const layout = profileLayout(profile, 'altitude')
   assert.equal(layout.yaxis.type, 'linear')
   assert.notEqual(layout.yaxis.autorange, 'reversed')
-  assert.match(layout.yaxis.title, /km/)
+  assert.match(layout.yaxis.title.text, /km/)
 })
 
 test('a bottom-up product renders the same way up', () => {
@@ -217,17 +217,17 @@ const indexOnly = { ...profile, vertical: {}, default_axis: null }
 test('a top-down product falls back to an index axis that still puts the sky up', () => {
   const layout = profileLayout(indexOnly, 'pressure')
   assert.equal(layout.yaxis.autorange, 'reversed')
-  assert.match(layout.yaxis.title, /top/i)
+  assert.match(layout.yaxis.title.text, /top/i)
 })
 
 test('a bottom-up product falls back to an ordinary ascending index axis', () => {
   const layout = profileLayout({ ...indexOnly, layer_order: 'bottom_up' }, 'pressure')
   assert.notEqual(layout.yaxis.autorange, 'reversed')
-  assert.match(layout.yaxis.title, /surface|bottom/i)
+  assert.match(layout.yaxis.title.text, /surface|bottom/i)
 })
 
 test('an unknown layer order does not pretend to know which way is up', () => {
   const layout = profileLayout({ ...indexOnly, layer_order: 'unknown' }, 'pressure')
   assert.notEqual(layout.yaxis.autorange, 'reversed')
-  assert.equal(layout.yaxis.title, 'layer')
+  assert.equal(layout.yaxis.title.text, 'layer')
 })
