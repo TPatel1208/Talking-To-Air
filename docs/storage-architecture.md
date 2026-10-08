@@ -174,22 +174,9 @@ before recovering on its own -- so no backend restart is needed.
 
 ## 2. Docker named volumes (file storage)
 
-### `plot_outputs` — public, shared
-Backend writes to `/app/outputs`; the same volume is mounted into the
-frontend nginx container at `/usr/share/nginx/html/outputs` and served
-**unauthenticated** at `/outputs` (`StaticFiles` mount,
-[Backend/tta_backend/api.py:210](../Backend/tta_backend/api.py:210), path from
-`OUTPUT_DIR`). Holds matplotlib chart PNGs.
-
-The `StaticFiles` mount resolves its directory at import, so unlike the overlay
-store this one legitimately has to exist before any request arrives — the
-`os.makedirs` in `api.py` stays, and `OUTPUT_DIR` is what keeps it from landing
-in the checkout during a test run
-([Backend/tests/cache_isolation.py](../Backend/tests/cache_isolation.py)).
-`plot_tools` and `stat_tools` each used to carry their own `APP_ROOT`-relative
-`OUTPUT_DIR` with an import-time `os.makedirs`, neither of which was ever read;
-both were deleted rather than redirected, so `api.py` is now the only
-definition.
+None of these volumes is mounted into the frontend container. Every PNG and
+data file the backend writes is reached through an authenticated backend
+route, so nginx serves only the built SPA.
 
 ### `overlay_store` — private, backend-only
 Backend writes to `/app/overlay_store/overlays`
@@ -198,8 +185,7 @@ path from `OVERLAY_STORE_DIR`).
 **Not** mounted into the frontend; only reachable through the authenticated
 `GET /chart/{chart_id}/overlay.png` route, which checks chart ownership
 against the requesting user before streaming bytes. Holds server-rendered
-MapLibre heatmap overlay PNGs (T23). Kept out of `plot_outputs` on purpose —
-see the difference table below.
+MapLibre heatmap overlay PNGs (T23).
 
 Bounded by `OVERLAY_STORE_MAX_BYTES` (default 1 GiB) and evicted LRU by last
 read, checked before each write. Writes are staged and renamed into place, and
@@ -214,12 +200,11 @@ suite can redirect the store at a per-process tempdir. Until it did, the path
 was `APP_ROOT`-relative and created at import, so the suite created and wrote
 `Backend/overlay_store/` inside the checkout — gitignored, so the pollution
 survived branch switches and never showed up in `git status`.
-[test_store_isolation.py](../Backend/tests/test_store_isolation.py) guards both
-stores; the deployment mounts are guarded by
+[test_store_isolation.py](../Backend/tests/test_store_isolation.py) guards the
+store; the deployment mount is guarded by
 [test_overlay_store_persistence.py](../Backend/tests/test_overlay_store_persistence.py),
-which reads the container paths through `deployment_overlay_store_dir()` /
-`deployment_output_dir()` precisely because the isolation has taken the live
-settings away from it.
+which reads the container path through `deployment_overlay_store_dir()`
+precisely because the isolation has taken the live settings away from it.
 
 ### `cube_store` — private, backend-only
 Backend writes to `/app/cube_store`
@@ -286,21 +271,6 @@ multi-file data bundles before they're opened lazily with dask. TTL-pruned
 bundles was killing the container before this lazy/TTL/size-capped approach
 existed. Wiped on container restart; nothing here is meant to survive one.
 
-## `plot_outputs` vs `overlay_store`
-
-| | `plot_outputs` | `overlay_store` |
-|---|---|---|
-| Contents | matplotlib chart PNGs (timeseries, comparisons, static plots) | server-rendered MapLibre heatmap overlay PNGs |
-| Written by | Backend | Backend (same source file, separate dir) |
-| Served by | nginx, directly off disk | Backend route `/chart/{chart_id}/overlay.png` |
-| Auth | **none** — anyone with the URL can fetch it | **checked** — verifies the requester owns that chart |
-| Mounted in frontend container? | yes | no |
-
-The split exists because `plot_outputs` has to stay unauthenticated (nginx
-serves it with no app logic in front), so anything needing per-user access
-control was deliberately kept in a separate volume the frontend never
-touches.
-
 ## Image-generation / hand-off prompt
 
 Paste this into an image-gen model (Midjourney, DALL·E, etc.) or hand it to a
@@ -313,23 +283,19 @@ designer — they can't read the code, so this spells out every fact needed:
 > bidirectional arrow: "Frontend (React/Vite, nginx)" and "Backend (FastAPI +
 > LangGraph)".
 >
-> **Tier 2 — Persistent storage** (Docker named volumes), six boxes below
+> **Tier 2 — Persistent storage** (Docker named volumes), five boxes below
 > tier 1, each with an arrow up to Backend:
 > 1. **PostgreSQL** (volume `pg_data`) — list inside:
 >    `session_metadata`, `agent_charts`, `agent_artifacts`, `user_connectors`, and LangGraph's own
 >    `checkpoints`/`checkpoint_blobs`/`checkpoint_writes` tables.
-> 2. **plot_outputs** volume — chart PNGs; arrows from *both* Frontend and
->    Backend (nginx serves it directly and unauthenticated at `/outputs`;
->    backend writes to it).
-> 3. **overlay_store** volume — server-rendered map overlay PNGs; Backend-only,
->    reachable solely via an authenticated route, size-capped and LRU-evicted,
->    deliberately separate from `plot_outputs` because that one is public.
-> 4. **cube_store** volume — cached Zarr cubes of opened datasets; Backend-only,
+> 2. **overlay_store** volume — server-rendered map overlay PNGs; Backend-only,
+>    reachable solely via an authenticated route, size-capped and LRU-evicted.
+> 3. **cube_store** volume — cached Zarr cubes of opened datasets; Backend-only,
 >    served by no route at all, size-capped and LRU-evicted.
-> 5. **frame_store** volume — float32 values behind a chart's time scrubber;
+> 4. **frame_store** volume — float32 values behind a chart's time scrubber;
 >    Backend-only, size-capped and LRU-evicted, its own volume separate from
 >    `overlay_store` so each store owns its directory and its cap.
-> 6. **earthdata_data** volume — dotted/foreign-styled box, "external,
+> 5. **earthdata_data** volume — dotted/foreign-styled box, "external,
 >    read-only, owned by a different repo/stack (harmony-retrieval-mcp)";
 >    mounted read-only at `/data`.
 >

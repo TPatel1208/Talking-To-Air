@@ -178,7 +178,6 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
                     "plain tool text",
                     "thread-1",
                     "user-1",
-                    [],
                 )
             ]
 
@@ -205,7 +204,6 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
                     content,
                     "thread-1",
                     "user-1",
-                    [],
                     [],
                 )
             ]
@@ -249,7 +247,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
              patch("tta_backend.services.chart_service.chart_repository.save_chart", AsyncMock(side_effect=_echo_saved_chart)):
             events = [
                 event
-                async for event in service._tool_result_events(content, "thread-1", "user-1", [], [])
+                async for event in service._tool_result_events(content, "thread-1", "user-1", [])
             ]
 
         self.assertEqual(len(events), 2)
@@ -272,7 +270,6 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
                     '{"type":',
                     "thread-1",
                     "user-1",
-                    [],
                 )
             ]
 

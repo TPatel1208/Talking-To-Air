@@ -72,7 +72,7 @@ test('all four terminal events are recognised as ending the stream', () => {
 })
 
 test('narration events do not end the stream', () => {
-  for (const event of ['text', 'status', 'chart', 'artifact', 'tool_call', 'job_progress', 'image']) {
+  for (const event of ['text', 'status', 'chart', 'artifact', 'tool_call', 'job_progress']) {
     assert.equal(classifyStreamEvent(event).terminal, false, event)
   }
 })

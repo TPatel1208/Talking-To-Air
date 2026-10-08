@@ -141,8 +141,8 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             history.json()["messages"],
             [
-                {"role": "user", "content": "hi", "toolCalls": [], "imageUrls": []},
-                {"role": "assistant", "content": "hello", "toolCalls": [], "imageUrls": [], "charts": [], "artifacts": []},
+                {"role": "user", "content": "hi", "toolCalls": []},
+                {"role": "assistant", "content": "hello", "toolCalls": [], "charts": [], "artifacts": []},
             ],
         )
         self.assertEqual(deleted.json(), {"deleted": "thread-1"})

@@ -8,7 +8,6 @@ import { starterMessage } from '../utils/starterPrompts'
 import { compareBadgeLabel, isChartComparable, isSelectionFull, slotIndexOf } from '../utils/compareMode'
 import { reachableArtifacts } from '../utils/artifactReachability'
 import VariableChoicePicker from './VariableChoicePicker'
-import { apiFetch } from '../utils/apiFetch.js'
 
 const TYPE_LABEL = { map: 'Map', comparison: 'Comparison', timeseries: 'Time series', table: 'Table' }
 
@@ -32,13 +31,6 @@ function outputLabel(item) {
 }
 
 const API_BASE = '/api'
-
-function toImageUrl(path) {
-  if (!path) return null
-  if (path.startsWith('http')) return path
-  if (path.startsWith('/outputs/')) return `/api${path}`
-  return path
-}
 
 /* ── One step inside the collapsed tool-call card ── */
 function ToolStep({ tc }) {
@@ -235,80 +227,6 @@ function LoadingMessage({ toolCalls, statusMessage, workflowStage, startedAt }) 
   )
 }
 
-/* ── Inline image with lightbox ── */
-function InlineImage({ url }) {
-  const [lightbox, setLightbox] = useState(false)
-  const [blobUrl, setBlobUrl] = useState(null)
-  const src = toImageUrl(url)
-  // Only authed /api/outputs/ images go through the blob fetch. Deriving this
-  // lets the effect bail without a setState (react-hooks/set-state-in-effect):
-  // the render below ignores blobUrl when it doesn't apply, which is what the
-  // old setBlobUrl(null) reset was for.
-  const needsAuthedFetch = Boolean(src && src.startsWith('/api/outputs/'))
-
-  useEffect(() => {
-    if (!needsAuthedFetch) return undefined
-
-    let cancelled = false
-    let objectUrl = null
-
-    apiFetch(src)
-      .then(response => response.ok ? response.blob() : null)
-      .then(blob => {
-        if (!blob || cancelled) return
-        objectUrl = URL.createObjectURL(blob)
-        setBlobUrl(objectUrl)
-      })
-      .catch(() => {
-        if (!cancelled) setBlobUrl(null)
-      })
-
-    return () => {
-      cancelled = true
-      if (objectUrl) URL.revokeObjectURL(objectUrl)
-    }
-  }, [src, needsAuthedFetch])
-
-  if (!src) return null
-  const displaySrc = (needsAuthedFetch && blobUrl) || src
-
-  return (
-    <>
-      <div style={{ margin: '8px 0' }}>
-        <img
-          src={displaySrc}
-          alt="output"
-          onClick={() => setLightbox(true)}
-          style={{
-            maxWidth: '100%', maxHeight: '400px',
-            borderRadius: '10px', border: '1px solid var(--border)',
-            display: 'block', cursor: 'zoom-in', objectFit: 'contain',
-          }}
-        />
-        <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '4px' }}>
-          Click to enlarge
-        </div>
-      </div>
-
-      {lightbox && (
-        <div
-          onClick={() => setLightbox(false)}
-          style={{
-            position: 'fixed', inset: 0, background: 'rgba(44,42,40,0.82)',
-            zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center',
-            cursor: 'zoom-out',
-          }}
-        >
-          <img
-            src={displaySrc} alt="fullscreen"
-            style={{ maxWidth: '92vw', maxHeight: '92vh', borderRadius: '10px', objectFit: 'contain' }}
-          />
-        </div>
-      )}
-    </>
-  )
-}
-
 /* ── Follow-up suggestion chips (T22) ── */
 function FollowupChips({ suggestions, onSend }) {
   if (!suggestions?.length) return null
@@ -421,7 +339,7 @@ function MessageBubble({
           <ToolStepsCard toolCalls={msg.toolCalls} error={msg.isError} />
         )}
 
-        {(msg.content || msg.imageUrls?.length > 0 || isUser) && (
+        {(msg.content || isUser) && (
           <div
             className="msg-bubble"
             style={{
@@ -517,9 +435,6 @@ function MessageBubble({
                     {msg.content}
                   </ReactMarkdown>
                 )}
-                {msg.imageUrls?.filter(Boolean).map((url, i) => (
-                  <InlineImage key={i} url={url} />
-                ))}
                 {msg.isConnectionLost && <ReloadSessionButton onReloadSession={onReloadSession} />}
               </>
             )}

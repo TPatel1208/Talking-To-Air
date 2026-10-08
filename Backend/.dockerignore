@@ -4,10 +4,9 @@ __pycache__/
 venv/
 
 # These are mounted as volumes — don't bake into image. The Dockerfile
-# pre-creates all four as mount points, so a dev's local copy baked into a
+# pre-creates them as mount points, so a dev's local copy baked into a
 # layer is pure waste (and, for cube_store, potentially GBs of it).
 data/
-outputs/
 overlay_store/
 cube_store/
 *.zarr

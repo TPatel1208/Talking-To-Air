@@ -26,7 +26,7 @@ from tta_backend.services.intent_router import route_intent
 from tta_backend.services.retrieval_composites import TERMINAL_STATUSES
 from tta_backend.services.subagent_dispatch import run_ground, run_satellite
 from tta_backend.utils import streaming
-from tta_backend.utils.message_utils import flatten_text_content, normalize_image_url
+from tta_backend.utils.message_utils import flatten_text_content
 from tta_backend.utils.streaming import stream_response, user_id_context
 
 logger = logging.getLogger(__name__)
@@ -105,7 +105,7 @@ class ChatStreamService:
 
         Returns ``None`` when ``event_type`` is not one of them, so each route
         goes on to handle what is unique to it: the supervisor forwards
-        tool_result/image/text, while the fast path deliberately forwards none
+        tool_result/text, while the fast path deliberately forwards none
         of those — its sub-agent's text is a raw AgentResult envelope, and the
         one synthesized answer arrives after the loop (T14). An empty list
         means "handled, nothing to send" — a chart already emitted this turn.
@@ -202,7 +202,6 @@ class ChatStreamService:
                 return
 
             response_text = ""
-            image_urls: list[str] = []
             artifacts: list[dict[str, Any]] = []
             turn = _LiveTurn()
             # T22 story #8: the last non-None suggested_followups seen from a
@@ -234,18 +233,12 @@ class ChatStreamService:
                                 data.get("content", ""),
                                 thread_id,
                                 user_id,
-                                image_urls,
                                 artifacts,
                                 turn.emitted_chart_ids,
                                 suggestions_box,
                                 variable_choice_box,
                             ):
                                 yield event
-                        elif event_type == "image":
-                            url = normalize_image_url(data.get("path", ""))
-                            if url:
-                                image_urls.append(url)
-                                yield self.sse("image", {"url": url})
                         elif event_type == "text":
                             text, events = await self._text_events(
                                 data, thread_id, user_id, turn.emitted_chart_ids, suggestions_box,
@@ -260,7 +253,6 @@ class ChatStreamService:
                     done_payload: dict[str, Any] = {
                         "thread_id": thread_id,
                         "response": self._strip_supervisor_preamble(response_text),
-                        "image_urls": image_urls,
                         "artifacts": artifacts,
                         "tool_calls": turn.tool_calls,
                     }
@@ -400,7 +392,6 @@ class ChatStreamService:
         done_payload = {
             "thread_id": thread_id,
             "response": self._strip_supervisor_preamble(final_text),
-            "image_urls": [],
             "artifacts": artifacts,
             "tool_calls": turn.tool_calls,
         }
@@ -518,7 +509,6 @@ class ChatStreamService:
             self.sse("done", {
                 "thread_id": thread_id,
                 "response": render_turn_timeout_answer(in_flight),
-                "image_urls": [],
                 "artifacts": [],
                 "tool_calls": [],
             }),
@@ -560,7 +550,6 @@ class ChatStreamService:
             self.sse("done", {
                 "thread_id": thread_id,
                 "response": answer,
-                "image_urls": [],
                 "artifacts": [],
                 "tool_calls": [],
             }),
@@ -576,7 +565,6 @@ class ChatStreamService:
         content: str,
         thread_id: str,
         user_id: str,
-        image_urls: list[str],
         artifacts: list[dict[str, Any]] | None = None,
         emitted_chart_ids: set[str] | None = None,
         suggestions_box: dict[str, list[str]] | None = None,

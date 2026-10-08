@@ -113,9 +113,9 @@ _aggregation_service = AggregationService()
 def overlay_store_dir() -> str:
     """Where rendered overlay PNGs are persisted.
 
-    Overlay PNGs live outside the public output dir on purpose: that one is
-    mounted unauthenticated at /outputs (api.py), and overlays must only be
-    reachable through the authenticated /chart/{id}/overlay.png route (T23).
+    Overlays must only be reachable through the authenticated
+    /chart/{id}/overlay.png route (T23), so nothing serves this directory
+    statically.
 
     Resolved per call from settings, and *not* a module constant with an
     ``os.makedirs`` beside it, as it was until this became a setting. A constant
@@ -125,10 +125,6 @@ def overlay_store_dir() -> str:
     into the developer's own store. Gitignored, so that state survived branch
     switches and stayed invisible to ``git status``. The directory is now
     created at write time by the one function that writes.
-
-    The module's ``OUTPUT_DIR`` constant is gone entirely rather than converted:
-    nothing here ever read it, and it created ``Backend/outputs/`` at import for
-    no one's benefit. ``api.py`` owns that path now.
     """
     return get_settings().overlay_store_dir
 

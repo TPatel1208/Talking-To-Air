@@ -8,15 +8,9 @@ on refresh/restart. The overlay PNG must therefore persist across a container
 recreate too, or a restart silently downgrades every prior chart to the
 canvas fallback ("chart quality lowered on refresh or restart").
 
-Overlays are deliberately stored OUTSIDE ``/app/outputs`` (that dir is served
-unauthenticated at /outputs), so they cannot ride the ``plot_outputs`` volume
-and need their own named volume. This test asserts the deployment gives them
-one.
-
-The public ``/app/outputs`` dir is covered here too, and the separation between
-the two is asserted at the *deployment* level rather than only in settings —
-a volume layout that quietly put the private store inside the public one would
-be an access-control regression that no unit test of either path would catch.
+The overlays need their own named volume, and it must not be one the
+frontend also mounts: nginx would then serve the PNGs without the ownership
+check the overlay route performs.
 """
 from __future__ import annotations
 
@@ -29,10 +23,7 @@ TESTS_DIR = os.path.dirname(__file__)
 if TESTS_DIR not in sys.path:
     sys.path.insert(0, TESTS_DIR)
 
-from cache_isolation import (  # noqa: E402 -- needs the TESTS_DIR insert above
-    deployment_output_dir,
-    deployment_overlay_store_dir,
-)
+from cache_isolation import deployment_overlay_store_dir  # noqa: E402 -- needs the TESTS_DIR insert above
 
 # Bind-mounted into the backend-test container (see docker-compose.yml),
 # because docker-compose.yml lives at the repo root, outside the ./Backend
@@ -105,69 +96,13 @@ def test_overlay_store_is_backed_by_a_persisted_volume():
     )
 
 
-def test_the_output_dir_is_backed_by_the_volume_the_frontend_serves():
-    """``/app/outputs`` must land on the shared ``plot_outputs`` volume.
-
-    This directory had no deployment-contract test at all until now — the
-    overlay store and the cube store each had one, and the public output dir,
-    the *oldest* of the three, was never covered. It became testable when
-    ``OUTPUT_DIR`` stopped being an ``APP_ROOT``-relative constant, because
-    ``deployment_output_dir()`` can now name the container path.
-
-    The property asserted is functional rather than "a volume called
-    plot_outputs": the volume backing ``/app/outputs`` must be the same one
-    mounted into the frontend, because that shared mount is precisely how a
-    chart PNG written by the backend becomes reachable at ``/outputs`` without
-    the backend serving it. A named volume the frontend did not mount would
-    persist the files and still 404 every one of them.
+def test_the_overlay_store_is_not_on_a_volume_the_frontend_mounts():
+    """Overlays are authenticated (``/chart/{id}/overlay.png`` checks chart
+    ownership). A volume shared with nginx would make every overlay PNG
+    world-readable while both paths kept working exactly as before.
     """
     compose = _load_compose()
-    output_path = deployment_output_dir()
-    top_level = compose.get("volumes", {}) or {}
-
-    backend_mounts = _named_volume_mounts(compose["services"]["backend"], top_level)
-    frontend_sources = {
-        source
-        for source, _target in _named_volume_mounts(
-            compose["services"].get("frontend", {}), top_level
-        )
-    }
-
-    covering = [source for source, target in backend_mounts if _covers(target, output_path)]
-
-    assert covering, (
-        f"output dir {output_path!r} is not covered by any persisted named volume on "
-        f"the backend service (named-volume targets: "
-        f"{[t for _s, t in backend_mounts]}). Chart PNGs would be wiped on every "
-        "container recreate while the chart payloads referencing them persist in "
-        "Postgres."
-    )
-    assert frontend_sources.intersection(covering), (
-        f"output dir {output_path!r} is on volume(s) {covering} but the frontend "
-        f"mounts {sorted(frontend_sources)}. nginx serves /outputs straight off the "
-        "shared volume, so a backend-only volume persists the PNGs and still 404s "
-        "every one of them."
-    )
-
-
-def test_the_overlay_store_is_not_inside_the_publicly_served_output_volume():
-    """The two stores must not collapse onto one directory *in the deployment*.
-
-    Overlays are authenticated (``/chart/{id}/overlay.png`` checks chart
-    ownership); ``/outputs`` is not served by the backend at all, it is handed to
-    nginx wholesale. If the overlay store ever resolved inside the output dir,
-    every overlay PNG would become world-readable — an access-control regression
-    that no unit test of either path would notice, because both would keep
-    working exactly as before.
-    """
-    compose = _load_compose()
-    output_path = deployment_output_dir().rstrip("/")
     overlay_path = deployment_overlay_store_dir().rstrip("/")
-
-    assert not _covers(output_path, overlay_path), (
-        f"the overlay store {overlay_path!r} is inside the public output dir "
-        f"{output_path!r}, so nginx would serve every overlay PNG unauthenticated"
-    )
 
     top_level = compose.get("volumes", {}) or {}
     frontend_sources = {
