@@ -1,7 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
 import { apiFetch } from '../utils/apiFetch.js'
-
-const API_BASE = '/api'
+import { API_BASE } from '../config.js'
 
 // 503 means the server has no connector store configured, not a failure.
 async function requestConnectors() {

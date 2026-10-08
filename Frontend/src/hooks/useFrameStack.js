@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { apiFetch } from '../utils/apiFetch.js'
 import { decodeFrameStack } from '../utils/frameStack.js'
-
-const API_BASE = '/api'
+import { API_BASE } from '../config.js'
 
 /**
  * Fetches and decodes a chart's frame blob (T59 D13).

@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { sortArtifactRows } from '../utils/artifactTable'
 import { apiFetch } from '../utils/apiFetch.js'
+import { API_BASE } from '../config.js'
 
-const API_BASE = '/api'
 const PAGE_SIZE = 100
 
 function filenameFromDisposition(disposition, fallback) {

@@ -1,8 +1,7 @@
 import { useCallback, useState } from 'react'
 import { normalizeSearchResults } from '../utils/discoveryResults'
 import { apiFetch } from '../utils/apiFetch.js'
-
-const API_BASE = '/api'
+import { API_BASE } from '../config.js'
 
 export function useDiscovery() {
   const [query, setQuery] = useState('')

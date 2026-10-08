@@ -14,6 +14,7 @@ import { resolveCsvExport, resolveNetcdfExport } from '../utils/chartExport.js'
 import { buildOverlayTraces } from '../utils/timeseriesCompare.js'
 import { availableAxes, profileLayout, profileTraces, spreadCaveat } from '../utils/verticalProfile.js'
 import { apiFetch } from '../utils/apiFetch.js'
+import { API_BASE } from '../config.js'
 
 // react-plotly.js/factory is CommonJS, so the shape of its default import is
 // whatever the bundler's interop decides. Under the dev pre-bundler it is the
@@ -169,7 +170,7 @@ export function ChartToolbar({ chart, plotRootRef }) {
     if (chart.chart_id && chart.export) {
       try {
         setExportState({ status: 'progress', message: 'Export in progress' })
-        await downloadFromUrl(`/api/chart/${chart.chart_id}/export.png`, `${fileBase}.png`)
+        await downloadFromUrl(`${API_BASE}/chart/${chart.chart_id}/export.png`, `${fileBase}.png`)
         setExportState({ status: 'complete', message: 'Export complete' })
         window.setTimeout(() => setExportState({ status: '', message: '' }), 2200)
       } catch (error) {

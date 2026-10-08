@@ -19,8 +19,8 @@ import {
   writeTurnRecord,
 } from '../utils/chatTurnProtocol.js'
 import { appendSessions, isTurnFrame, mergeSessions, sessionsWithThread } from '../utils/sessionList.js'
+import { API_BASE } from '../config.js'
 
-const API_BASE = '/api'
 const ACTIVE_THREAD_STORAGE_KEY = 'tta.activeThreadId'
 
 // D12: one turn per thread. The server answers a second send with a 409, so
