@@ -10,9 +10,6 @@ FastAPI initializes shared resources in `api.lifespan`:
 - builds the supervisor agent
 - closes database resources on shutdown
 
-EarthAccess is intentionally excluded from startup. Authentication happens only
-when an S3 or CMR satellite path calls `get_earthaccess_auth()`.
-
 ## Async request boundary
 
 `POST /chat` is an async endpoint. The LangGraph streaming iterator and chart
