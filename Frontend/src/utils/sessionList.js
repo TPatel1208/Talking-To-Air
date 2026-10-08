@@ -17,13 +17,13 @@ const MAX_TITLE_LENGTH = 60
 
 /** The turn's narration, as opposed to the follower's bookkeeping.
  *
- * `cursor` is synthesized by the follower, and `stopped`/`interrupted` are
- * written by the registry around a turn that was cut short or found
- * abandoned. The server's stamp wraps the turn's own frame generator and so
- * never sees any of them — listing on one would add a row that the next
- * /sessions fetch takes straight back out.
+ * `cursor` and `truncated` are synthesized by the follower, and
+ * `stopped`/`interrupted` are written by the registry around a turn that was
+ * cut short or found abandoned. The server's stamp wraps the turn's own frame
+ * generator and so never sees any of them — listing on one would add a row
+ * that the next /sessions fetch takes straight back out.
  */
-const FOLLOWER_FRAMES = new Set(['cursor', 'stopped', 'interrupted'])
+const FOLLOWER_FRAMES = new Set(['cursor', 'stopped', 'interrupted', 'truncated'])
 
 export function isTurnFrame(event) {
   return !FOLLOWER_FRAMES.has(event)

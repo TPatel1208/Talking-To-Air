@@ -9,6 +9,7 @@ import {
   classifyStreamEvent,
   classifyTurnStatus,
   clearTurnRecord,
+  endsWithHistoryReload,
   readTurnRecord,
   streamPath,
   terminalMessagePatch,
@@ -83,6 +84,31 @@ test('the cursor event is the follower talking to the reader, not the turn talki
   const got = classifyStreamEvent('cursor')
   assert.equal(got.terminal, false)
   assert.equal(got.kind, 'cursor')
+})
+
+test('the truncated event is the follower talking too, and ends nothing', () => {
+  const got = classifyStreamEvent('truncated')
+  assert.equal(got.terminal, false)
+  assert.equal(got.kind, 'truncated')
+})
+
+/* ── endsWithHistoryReload: whose finished bubble history replaces ──
+   A reader told its stream was trimmed past its place rendered the far side
+   of a hole as if it followed on. The `done` frame restores the answer text
+   but not the charts or artifacts that fell into the hole; history has all
+   three. */
+
+test('a reader that was told of a gap reloads history when the turn ends', () => {
+  assert.equal(endsWithHistoryReload({ reattached: false, truncated: true }), true)
+})
+
+test('a reader that joined the turn still reloads history, gap or not', () => {
+  assert.equal(endsWithHistoryReload({ reattached: true, truncated: false }), true)
+})
+
+test('the reader that sent the message and saw all of it keeps what it streamed', () => {
+  assert.equal(endsWithHistoryReload({ reattached: false, truncated: false }), false)
+  assert.equal(endsWithHistoryReload({}), false)
 })
 
 /* ── terminalMessagePatch: what the bubble says at each ending ── */

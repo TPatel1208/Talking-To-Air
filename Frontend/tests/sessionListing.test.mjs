@@ -139,7 +139,7 @@ test('the events the turn itself produces list the thread', () => {
 })
 
 test('the follower\'s own frames do not', () => {
-  for (const event of ['cursor', 'stopped', 'interrupted']) {
+  for (const event of ['cursor', 'stopped', 'interrupted', 'truncated']) {
     assert.equal(isTurnFrame(event), false, event)
   }
 })

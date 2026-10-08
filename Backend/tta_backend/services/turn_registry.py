@@ -88,6 +88,12 @@ STOPPED = "stopped"
 #: make (D16).
 INTERRUPTED = "interrupted"
 
+#: The follower's frame telling a reader that what comes next does not join
+#: onto what it already has: the log was trimmed past its cursor. Not
+#: terminal, and never written to the log -- it is about one reader's
+#: position, not about the turn.
+TRUNCATED = "truncated"
+
 #: How long the drain waits for a turn to write its ``interrupted`` entry and
 #: hand its thread back. The work is two Redis round trips per turn, so this
 #: is a bound on a hung connection, not a budget -- a shutdown is already
@@ -514,6 +520,8 @@ class TurnRegistry:
         attached_ms = _now_ms()
         while True:
             page = await self._log.read(turn_id, cursor)
+            if page.truncated:
+                yield _render(TRUNCATED, {"turn_id": turn_id})
             for frame in page.frames:
                 yield frame
             if page.terminal is not None:

@@ -548,6 +548,49 @@ class TurnRegistryTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(opening, after)
         self.assertIn(closing, after)
 
+    async def test_a_follower_that_fell_behind_the_trim_is_told_before_the_frames_after_it(self):
+        """A reader away long enough for its place to be trimmed is handed
+        what survived, which joins onto what it already rendered with a hole
+        in the middle. Said before those frames, so the reader knows which
+        side of the gap they are on."""
+        from tta_backend.services.turn_event_log import TurnEventLog
+        from tta_backend.services.turn_registry import TurnRegistry
+
+        log = TurnEventLog(REDIS_URL, max_entries=3)
+        self.addAsyncCleanup(log.aclose)
+        registry = TurnRegistry(log, url=REDIS_URL)
+        self.addAsyncCleanup(registry.aclose)
+        self.registry = registry
+        gate = asyncio.Event()
+        progress = [frame("status", f'{{"n": {n}}}') for n in range(6)]
+        closing = frame("done", '{"response": "hello"}')
+        claim = await registry.begin(
+            self.thread_id,
+            blocks_until(gate, *progress, closing, before=frame("status", '{"n": "first"}')),
+        )
+
+        before = await asyncio.wait_for(self.follow_until_cursor(claim.turn_id), timeout=5)
+        gate.set()
+        await registry.wait(claim.turn_id)
+        after = await asyncio.wait_for(
+            self.collect(claim.turn_id, cursor_of(before)), timeout=5
+        )
+
+        self.assertTrue(after and after[0].startswith("event: truncated\n"), after)
+        self.assertEqual(claim.turn_id, json.loads(after[0].split("data: ", 1)[1])["turn_id"])
+        self.assertEqual([*progress[-2:], closing], after[1:])
+
+    async def test_a_follower_that_kept_up_is_never_told_of_a_gap(self):
+        claim = await self.registry.begin(
+            self.thread_id,
+            produces(*[frame("status", f'{{"n": {n}}}') for n in range(5)], frame("done", "{}")),
+        )
+        await self.registry.wait(claim.turn_id)
+
+        got = await asyncio.wait_for(self.collect(claim.turn_id), timeout=5)
+
+        self.assertFalse([item for item in got if item.startswith("event: truncated")])
+
     async def test_a_follower_that_resumes_past_the_end_stops_instead_of_waiting(self):
         """A remount replays from a stored cursor — which may already be the last one.
 
