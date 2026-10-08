@@ -37,24 +37,27 @@ test('leaving scrubber mode hands the native overlay back', () => {
   assert.equal(resolveOverlayMode(null, '/chart/abc.png', null), 'native')
 })
 
-test('a thumbnail with an overlay url shows the native png', () => {
-  assert.equal(resolveThumbnailMode('/chart/abc/overlay.png?panel=0', null), 'native')
+const OVERLAY = '/chart/abc/overlay.png?panel=0'
+
+test('a thumbnail draws the canvas while its png is still loading', () => {
+  // The grid is already in the payload, so there is something to show at
+  // once; a blank tile while the authed fetch is in flight would be a step
+  // back from the canvas every thumbnail has drawn until now.
+  assert.equal(resolveThumbnailMode(OVERLAY, null), 'canvas')
+})
+
+test('a thumbnail shows the native png once its blob has loaded', () => {
+  assert.equal(resolveThumbnailMode(OVERLAY, { url: OVERLAY, objectUrl: 'blob:x' }), 'native')
 })
 
 test('a thumbnail with no overlay url draws the canvas', () => {
   assert.equal(resolveThumbnailMode(undefined, null), 'canvas')
 })
 
-test('a thumbnail whose overlay failed to load falls back to the canvas', () => {
-  // An evicted overlay 404s, and an <img> cannot send the bearer token, so
-  // the native png can fail on any load. The payload still carries the grid.
-  const url = '/chart/abc/overlay.png?panel=0'
-  assert.equal(resolveThumbnailMode(url, url), 'canvas')
-})
-
-test('a failure recorded for a different overlay url does not force the canvas', () => {
-  assert.equal(
-    resolveThumbnailMode('/chart/new/overlay.png?panel=0', '/chart/old/overlay.png?panel=0'),
-    'native',
-  )
+test('a blob loaded for a previous overlay url is not shown for the new one', () => {
+  // When the url changes, the old load's cleanup revokes its blob, but the
+  // component still holds it until the new one lands. Showing it would be a
+  // dead blob: url at best and the wrong region at worst.
+  const stale = { url: '/chart/old/overlay.png?panel=0', objectUrl: 'blob:old' }
+  assert.equal(resolveThumbnailMode('/chart/new/overlay.png?panel=0', stale), 'canvas')
 })
