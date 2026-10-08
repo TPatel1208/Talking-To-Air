@@ -364,12 +364,10 @@ function AuthenticatedApp({ onLogout }) {
     return (active && typeof active === 'object' ? active.title : null) || (messages.length ? 'Chat' : 'New analysis')
   }, [sessions, threadId, messages.length])
 
-  const { images, artifacts } = useMemo(() => {
+  const artifacts = useMemo(() => {
     const seenArtifactIds = new Set()
     const dedupedArtifacts = []
-    const allImages = []
     for (const msg of messages) {
-      for (const url of msg.imageUrls || []) allImages.push(url)
       for (const artifact of msg.artifacts || []) {
         const key = artifact.id || JSON.stringify(artifact)
         if (seenArtifactIds.has(key)) continue
@@ -377,7 +375,7 @@ function AuthenticatedApp({ onLogout }) {
         dedupedArtifacts.push(artifact)
       }
     }
-    return { images: allImages, artifacts: dedupedArtifacts }
+    return dedupedArtifacts
   }, [messages])
 
   // Detach, don't stop. Logging out is going away, not "abandon this work":
@@ -425,7 +423,6 @@ function AuthenticatedApp({ onLogout }) {
           onNew={handleNewSession}
           onDelete={deleteSession}
           onLogout={handleLogout}
-          images={images}
           artifacts={artifacts}
           onCollapse={toggleSessionsCollapsed}
         />

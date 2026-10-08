@@ -133,6 +133,6 @@ def test_the_cube_store_is_not_mounted_on_the_frontend():
     sources = [source for source, _target, _mode in _named_volume_mounts(frontend, top_level)]
 
     assert not any("cube" in source for source in sources), (
-        f"the cube store is mounted on the frontend ({sources}); unlike plot_outputs it is "
-        "not public content and nginx has no reason to serve it."
+        f"the cube store is mounted on the frontend ({sources}); it is not public "
+        "content and nginx has no reason to serve it."
     )

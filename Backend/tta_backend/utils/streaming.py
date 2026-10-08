@@ -368,7 +368,7 @@ async def stream_response(
                 step_started = loop.time()
                 streamed_chunks = 0
 
-                # updates stream owns tool calls, tool results, and images only.
+                # updates stream owns tool calls and tool results only.
                 # AIMessage content is intentionally not published here — the
                 # messages stream handles it. Publishing from both paths is what
                 # produces duplicate responses.

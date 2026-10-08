@@ -1,18 +1,14 @@
-"""Hermeticity guard for the overlay store and the public output dir.
+"""Hermeticity guard for the overlay store.
 
-Both used to be ``APP_ROOT``-relative module constants with an ``os.makedirs``
-beside them, so *importing* ``plot_tools`` or ``api`` — never mind running a
-test that renders anything — created ``Backend/overlay_store/`` and
-``Backend/outputs/`` inside the checkout. That is the cube-store
+Importing ``plot_tools`` or ``api`` must not create ``Backend/overlay_store/``
+or ``Backend/outputs/`` inside the checkout. That is the cube-store
 non-hermeticity again (:func:`cache_isolation.isolate_cube_store`), with two
 extra twists:
 
   * the suite writes into directories a developer also uses, and that Docker
     backs with named volumes; and
-  * both are gitignored, so the polluted state survives a branch switch and
-    never shows up in ``git status``. ``Backend/outputs/`` was created *empty*,
-    and git omits empty directories from status entirely — not even
-    ``--ignored`` showed it.
+  * a stray directory would be untracked, so the polluted state survives a
+    branch switch, and an *empty* one never shows up in ``git status``.
 
 These tests assert the *property* — no test-suite write lands inside the
 checkout — rather than the mechanism, so they keep failing if a redirect is
@@ -37,9 +33,7 @@ if TESTS_DIR not in sys.path:
     sys.path.insert(0, TESTS_DIR)
 
 from cache_isolation import (  # noqa: E402 -- needs the TESTS_DIR insert above
-    deployment_output_dir,
     deployment_overlay_store_dir,
-    isolate_output_dir,
     isolate_overlay_store,
 )
 
@@ -50,9 +44,9 @@ CHECKOUT_OUTPUTS = os.path.join(APP_ROOT, "outputs")
 IN_CHECKOUT_STORES = (CHECKOUT_OVERLAY_STORE, CHECKOUT_OUTPUTS)
 
 # `APP_ROOT` is a source checkout on a developer machine and `/app` in the
-# container — and in the *runtime* image `/app/outputs` and `/app/overlay_store`
-# legitimately exist, because the Dockerfile pre-creates them so their named
-# volumes inherit appuser's ownership. "This directory must not exist" is
+# container — and in the *runtime* image `/app/overlay_store` legitimately
+# exists, because the Dockerfile pre-creates it so its named volume inherits
+# appuser's ownership. "This directory must not exist" is
 # therefore a statement about a checkout, not about every environment; asserting
 # it unconditionally would either fail in a runtime image or pass only by the
 # accident that `backend-test` builds the `builder` target, which does not run
@@ -75,8 +69,8 @@ def _is_inside(path: str, root: str) -> bool:
 def _store_state(path: str) -> tuple[bool, tuple[str, ...]]:
     """Existence plus contents, so a test can prove it neither created nor wrote.
 
-    Absent and empty are deliberately distinguishable: ``Backend/outputs/`` was
-    created *empty*, which is both the bug and the reason it stayed invisible.
+    Absent and empty are deliberately distinguishable: an *empty* directory is
+    invisible to ``git status``.
     """
     if not os.path.exists(path):
         return (False, ())
@@ -96,11 +90,11 @@ class StoreStateAssertions(unittest.TestCase):
 
         Deliberately *not* "the deployment path is outside APP_ROOT". That reads
         correctly on a developer machine and is flatly wrong in the container,
-        where APP_ROOT is ``/app`` and the deployment paths — ``/app/outputs``,
-        ``/app/overlay_store/overlays`` — are supposed to live inside it.
+        where APP_ROOT is ``/app`` and the deployment path —
+        ``/app/overlay_store/overlays`` — is supposed to live inside it.
 
         No ``os.path.isabs`` check either: the deployment value is a POSIX
-        container path, and ``ntpath.isabs('/app/outputs')`` is False on the
+        container path, and ``ntpath.isabs('/app/overlay_store')`` is False on the
         Windows development host, so that would test the host's path parser
         rather than the deployment value.
 
@@ -230,72 +224,22 @@ class OverlayStoreIsolationTests(StoreStateAssertions):
                 )
 
 
-class OutputDirIsolationTests(StoreStateAssertions):
-    """The public /outputs directory, same contract as the overlay store.
-
-    This one could not be made lazy: ``api.py`` hands it to a ``StaticFiles``
-    mount, which resolves the directory at mount time. So the import-time
-    ``os.makedirs`` stays and the redirect is what keeps it out of the checkout —
-    which makes these tests the only thing standing between the suite and
-    ``Backend/outputs/``.
-    """
-
-    def test_the_output_dir_resolves_outside_the_checkout(self) -> None:
-        from tta_backend.config.settings import get_settings
-
-        output_dir = get_settings().output_dir
-
-        self.assertFalse(
-            _is_inside(output_dir, APP_ROOT),
-            f"the output dir resolves to {output_dir!r}, inside the checkout",
-        )
+class OutputsDirRemovedTests(StoreStateAssertions):
+    """``/outputs`` was a public static mount that nothing wrote to. Importing
+    the API must not recreate the directory or the route."""
 
     def test_importing_the_api_does_not_create_the_checkout_outputs(self) -> None:
-        """Importing ``api`` mounts StaticFiles, which is what created the
-        directory. It must now create the isolated one instead."""
-        api = importlib.import_module("tta_backend.api")
+        importlib.import_module("tta_backend.api")
 
-        self.assertFalse(
-            _is_inside(api.OUTPUT_DIR, APP_ROOT),
-            f"api.OUTPUT_DIR is {api.OUTPUT_DIR!r}, inside the checkout",
-        )
-        self.assertTrue(
-            os.path.isdir(api.OUTPUT_DIR),
-            "StaticFiles needs the directory to exist at mount time, so api.py "
-            "must still create it — just not in the checkout",
-        )
         self.assertUntouched(CHECKOUT_OUTPUTS)
 
-    def test_the_dead_output_dir_constants_are_gone(self) -> None:
-        """``plot_tools`` and ``stat_tools`` each defined an ``OUTPUT_DIR`` and
-        created it at import, and neither ever read it again — pure import-time
-        side effect with no consumer. Redirecting dead constants would have kept
-        them alive in a new place, so they were deleted; ``api.py`` owns that
-        path now. This test is what stops one coming back.
-        """
-        from tta_backend.tools.satellite_tools import plot_tools, stat_tools
+    def test_the_api_serves_nothing_at_outputs(self) -> None:
+        api = importlib.import_module("tta_backend.api")
 
-        self.assertFalse(hasattr(plot_tools, "OUTPUT_DIR"))
-        self.assertFalse(hasattr(stat_tools, "OUTPUT_DIR"))
-
-    def test_the_deployment_output_path_survives_the_isolation(self) -> None:
-        self.assertSurvivesIsolation(deployment_output_dir(), isolate_output_dir())
-
-    def test_the_output_dir_and_the_overlay_store_stay_separate(self) -> None:
-        """The whole reason overlays are not in /outputs: that mount is
-        unauthenticated. Isolation must not accidentally collapse them onto one
-        tempdir and make a test pass that would fail in the container."""
-        from tta_backend.tools.satellite_tools import plot_tools
-
-        overlays = os.path.abspath(plot_tools.overlay_store_dir())
-        outputs = os.path.abspath(isolate_output_dir())
-
-        self.assertFalse(_is_inside(overlays, outputs))
-        self.assertFalse(_is_inside(outputs, overlays))
+        paths = [getattr(route, "path", "") for route in api.app.routes]
         self.assertFalse(
-            _is_inside(deployment_overlay_store_dir(), deployment_output_dir()),
-            "in the container the overlay store would be served unauthenticated "
-            "at /outputs",
+            [path for path in paths if path == "/outputs" or path.startswith("/outputs/")],
+            f"a route is mounted under /outputs: {paths}",
         )
 
 

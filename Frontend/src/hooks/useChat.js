@@ -285,9 +285,6 @@ export function useChat(onJobProgress) {
         const hydrated = (data.messages || []).map(m => ({
           ...m,
           artifacts: m.artifacts || [],
-          imageUrls: (m.imageUrls || []).map(u =>
-            u.startsWith('http') ? u : `${API_BASE}${u}`
-          ),
         }))
         action = { type: 'loaded', messages: hydrated }
       }
@@ -393,10 +390,6 @@ export function useChat(onJobProgress) {
           statusMessage: data.message || '',
           workflowStage: applyWorkflowEvent(msg.workflowStage || INITIAL_WORKFLOW_STATE, 'status', data),
         }))
-      } else if (event === 'image') {
-        queueAssistantUpdate(streamId, msg => ({
-          imageUrls: [...(msg.imageUrls || []), `${API_BASE}${data.url}`],
-        }))
       } else if (event === 'chart') {
         if (!data || typeof data !== 'object' || !data.type) {
           console.warn('[useChat] Ignoring non-object chart event:', data)
@@ -449,7 +442,6 @@ export function useChat(onJobProgress) {
         if (ctx.reattached) state.reconcile = newId
         queueAssistantUpdate(streamId, msg => ({
           content: data.response || msg.content || '',
-          imageUrls: (data.image_urls || []).map(u => `${API_BASE}${u}`),
           charts: msg.charts || [],
           artifacts: msg.artifacts?.length ? msg.artifacts : (data.artifacts || []),
           suggestedFollowups: extractSuggestedFollowups(data),
@@ -529,7 +521,6 @@ export function useChat(onJobProgress) {
     statusMessage: '',
     workflowStage: INITIAL_WORKFLOW_STATE,
     startedAt: Date.now(),
-    imageUrls: [],
     charts: [],
     artifacts: [],
     suggestedFollowups: [],

@@ -16,7 +16,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.security.utils import get_authorization_scheme_param
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from redis import asyncio as aioredis
 from redis.exceptions import RedisError
@@ -409,16 +408,6 @@ def _retry_after_seconds(request: Request) -> int | None:
 # Starlette types every handler as taking a bare Exception; this one is only
 # ever registered for, and called with, RateLimitExceeded.
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_response)  # type: ignore[arg-type]
-
-# The one live consumer of the public output dir. StaticFiles resolves and
-# checks the directory when it is mounted, so this genuinely has to exist at
-# import — which is why the makedirs stays here while the two dead copies of
-# this constant (plot_tools, stat_tools) were simply deleted. Resolved from
-# settings so the test suite lands in a tempdir instead of creating
-# `Backend/outputs/` inside the checkout.
-OUTPUT_DIR = settings.output_dir
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-app.mount("/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
 
 PUBLIC_ENDPOINTS = {
     ("GET", "/health"),

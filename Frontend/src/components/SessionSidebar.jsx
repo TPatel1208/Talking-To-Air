@@ -30,13 +30,6 @@ async function downloadArtifact(artifact) {
   downloadBlob(filenameFromDisposition(res.headers.get('content-disposition'), `${artifact.title || artifact.id}.csv`), blob)
 }
 
-async function downloadImage(url) {
-  const res = await apiFetch(url)
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  const blob = await res.blob()
-  downloadBlob(url.split('/').pop() || 'image.png', blob)
-}
-
 const TYPE_TAG = { table: 'CSV', map: 'MAP', comparison: 'CMP', timeseries: 'TS' }
 
 function FileRow({ tag, title, subtitle, onDownload }) {
@@ -112,7 +105,7 @@ function TurnStatusDot({ status }) {
   )
 }
 
-export default function SessionSidebar({ sessions, hasMoreSessions = false, onLoadMoreSessions, threadId, turnStatus = {}, onSwitch, onNew, onDelete, onLogout, images = [], artifacts = [], onCollapse }) {
+export default function SessionSidebar({ sessions, hasMoreSessions = false, onLoadMoreSessions, threadId, turnStatus = {}, onSwitch, onNew, onDelete, onLogout, artifacts = [], onCollapse }) {
   const [nav, setNav] = useState('chats')
 
   const getSessionId = (session) => typeof session === 'string' ? session : session?.id
@@ -301,7 +294,7 @@ export default function SessionSidebar({ sessions, hasMoreSessions = false, onLo
             Exported files
           </div>
           <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            {artifacts.length === 0 && images.length === 0 && (
+            {artifacts.length === 0 && (
               <div style={{ padding: '12px 10px', color: 'var(--text-muted)', fontSize: '12px', fontStyle: 'italic' }}>
                 No outputs yet
               </div>
@@ -313,15 +306,6 @@ export default function SessionSidebar({ sessions, hasMoreSessions = false, onLo
                 title={artifact.title || 'Untitled output'}
                 subtitle={artifact.type}
                 onDownload={() => downloadArtifact(artifact)}
-              />
-            ))}
-            {images.map((url, i) => (
-              <FileRow
-                key={`img-${i}`}
-                tag="IMG"
-                title={url.split('/').pop() || `image-${i + 1}`}
-                subtitle="Image"
-                onDownload={() => downloadImage(url)}
               />
             ))}
           </div>

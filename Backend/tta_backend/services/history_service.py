@@ -44,7 +44,6 @@ class HistoryService:
                     "role": "user",
                     "content": msg.content if isinstance(msg.content, str) else "",
                     "toolCalls": [],
-                    "imageUrls": [],
                 })
             elif role == "ai":
                 result.append(self._assistant_message(msg))
@@ -86,7 +85,6 @@ class HistoryService:
             "role": "assistant",
             "content": content,
             "toolCalls": tool_calls,
-            "imageUrls": [],
             "charts": [],
             "artifacts": [],
         }
@@ -147,9 +145,6 @@ class HistoryService:
                 prev["toolCalls"].extend(msg["toolCalls"])
                 if msg["content"]:
                     prev["content"] += ("\n\n" if prev["content"] else "") + msg["content"]
-                for url in msg["imageUrls"]:
-                    if url not in prev["imageUrls"]:
-                        prev["imageUrls"].append(url)
                 for chart in msg.get("charts", []):
                     prev.setdefault("charts", [])
                     if chart not in prev["charts"]:

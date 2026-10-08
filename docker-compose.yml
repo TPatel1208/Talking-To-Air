@@ -180,10 +180,8 @@ services:
     # it on loopback when you want a browser pointed at /docs:
     #   docker compose -f docker-compose.yml -f docker-compose.debug.yml up
     volumes:
-      - plot_outputs:/app/outputs
-      # Server-rendered map overlay PNGs (T23). Kept OUT of /app/outputs on
-      # purpose (that dir is served unauthenticated at /outputs), so it needs
-      # its own named volume — without one, a container recreate wipes every
+      # Server-rendered map overlay PNGs (T23). Needs its own named volume —
+      # without one, a container recreate wipes every
       # overlay while its chart payload persists in Postgres, and the map
       # silently degrades to the canvas fallback ("quality lowered on restart").
       # Bounded by OVERLAY_STORE_MAX_BYTES (1 GiB), LRU by last read; an
@@ -345,7 +343,6 @@ services:
       - "5173:80"
       - "443:443"
     volumes:
-      - plot_outputs:/usr/share/nginx/html/outputs  # serves images directly from volume
       # TLS keypair, mounted rather than baked into the image. nginx.conf reads
       # /etc/nginx/certs/tls.crt + tls.key; scripts/setup-tls.sh writes them.
       # This is what makes the frontend image buildable from a clean checkout:
@@ -381,8 +378,6 @@ networks:
 # ── Named volumes ─────────────────────────────────────────────────────────────
 volumes:
   pg_data:
-    driver: local
-  plot_outputs:
     driver: local
   overlay_store:
     driver: local
