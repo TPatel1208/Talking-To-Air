@@ -30,7 +30,9 @@ decision (primary_var, units). Everything else is auto-populated from CMR.
 
 Requirements
 ------------
-    earthaccess >= 0.9  (for granule download)
+    earthaccess >= 0.9  (for granule download; not a backend dependency,
+                         so run with `uv run --with earthaccess ...` or
+                         pass --no-granule)
     netCDF4 or h5py     (for granule inspection)
     pyyaml, pydantic    (already backend dependencies)
 """
