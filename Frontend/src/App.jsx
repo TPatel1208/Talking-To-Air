@@ -21,6 +21,7 @@ import {
   userIdOf,
 } from './utils/authSession'
 import { useCallback, useEffect, useMemo, useReducer, useState } from 'react'
+import { API_BASE } from './config.js'
 
 // Thin clickable rail standing in for a side column while it's manually
 // collapsed -- keeps a one-click way back rather than the column just
@@ -46,7 +47,6 @@ function CollapsedRail({ label, onExpand }) {
   )
 }
 
-const API_BASE = '/api'
 // There is deliberately no token key here. supabase-js owns session
 // persistence and refresh (decision 6); a second copy of the token in our own
 // storage would be a rival source of truth, and the stale one wins on reload.

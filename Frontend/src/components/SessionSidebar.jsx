@@ -1,8 +1,7 @@
 import { useState } from 'react'
 import ConnectorsPanel from './ConnectorsPanel'
 import { apiFetch } from '../utils/apiFetch.js'
-
-const API_BASE = '/api'
+import { API_BASE } from '../config.js'
 
 function downloadBlob(filename, blob) {
   const url = URL.createObjectURL(blob)

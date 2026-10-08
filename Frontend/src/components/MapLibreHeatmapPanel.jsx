@@ -38,6 +38,7 @@ import { buildCanvasFallbackFrame } from '../utils/canvasFallback.js'
 import { fetchUsStatesGeoJSON, isConusBounds } from '../utils/regionBorders.js'
 import { resolveOverlayMode } from '../utils/overlayMode.js'
 import { currentAccessToken } from '../utils/apiFetch.js'
+import { API_BASE } from '../config.js'
 
 maplibregl.setWorkerUrl(maplibreWorkerUrl)
 
@@ -52,7 +53,7 @@ const FALLBACK_TILE_CONFIG = {
 let _tileConfigPromise = null
 function fetchTileConfig() {
   if (_tileConfigPromise) return _tileConfigPromise
-  _tileConfigPromise = fetch('/api/config/map-tiles')
+  _tileConfigPromise = fetch(`${API_BASE}/config/map-tiles`)
     .then(r => (r.ok ? r.json() : null))
     .then(config => ({ ...FALLBACK_TILE_CONFIG, ...(config || {}) }))
     .catch(() => FALLBACK_TILE_CONFIG)
@@ -94,10 +95,14 @@ function buildMapStyle(tileConfig) {
 
 // A request is "ours" (needs the bearer token) only when it targets our own
 // backend's chart overlay route -- never the third-party CARTO/terrarium
-// tile hosts, which must never see the user's access token.
+// tile hosts, which must never see the user's access token. The comparison is
+// on the full href, so the origin has to match as well as the path: API_BASE
+// may be another origin, and a tile host could serve a path that happens to
+// look like ours.
 function isOwnOverlayRequest(url) {
   try {
-    return new URL(url, window.location.origin).pathname.startsWith('/api/chart/')
+    const ownChartRoute = new URL(`${API_BASE}/chart/`, window.location.origin).href
+    return new URL(url, window.location.origin).href.startsWith(ownChartRoute)
   } catch {
     return false
   }
@@ -232,7 +237,7 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, colorScale
         if (!map.getSource('overlay')) {
           map.addSource('overlay', {
             type: 'image',
-            url: `/api${overlay.url}`,
+            url: `${API_BASE}${overlay.url}`,
             coordinates: overlayCornersFromBounds(overlay.bounds || bounds),
           })
         }

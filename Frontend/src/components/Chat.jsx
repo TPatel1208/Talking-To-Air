@@ -8,6 +8,7 @@ import { starterMessage } from '../utils/starterPrompts'
 import { compareBadgeLabel, isChartComparable, isSelectionFull, slotIndexOf } from '../utils/compareMode'
 import { reachableArtifacts } from '../utils/artifactReachability'
 import VariableChoicePicker from './VariableChoicePicker'
+import { API_BASE } from '../config.js'
 
 const TYPE_LABEL = { map: 'Map', comparison: 'Comparison', timeseries: 'Time series', table: 'Table' }
 
@@ -29,8 +30,6 @@ function outputLabel(item) {
   const artifact = item.data
   return { title: artifact.title || 'Output', subtitle: TYPE_LABEL[artifact.type] || artifact.type }
 }
-
-const API_BASE = '/api'
 
 /* ── One step inside the collapsed tool-call card ── */
 function ToolStep({ tc }) {

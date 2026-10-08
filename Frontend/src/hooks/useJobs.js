@@ -1,8 +1,7 @@
 import { useState, useCallback, useEffect } from 'react'
 import { sortJobs, hasProgressingJob } from '../utils/jobCard.js'
 import { apiFetch } from '../utils/apiFetch.js'
-
-const API_BASE = '/api'
+import { API_BASE } from '../config.js'
 
 // While any job is non-terminal the panel re-fetches on this cadence. Its
 // only other live update channel is the chat stream's job_progress events —

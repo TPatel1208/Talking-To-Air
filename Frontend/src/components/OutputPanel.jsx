@@ -35,6 +35,7 @@ import {
   rawArtifactMetadataJson,
 } from '../utils/artifactMetadataDisplay'
 import { apiFetch } from '../utils/apiFetch.js'
+import { API_BASE } from '../config.js'
 
 // Every render branch of this panel is the same flex child of the app's one
 // row, so every one of them needs the same floor. It used to be `minWidth: 0`
@@ -494,7 +495,7 @@ function useTableColumnsPreview(artifact) {
   useEffect(() => {
     if (!artifact?.id || artifact.type !== 'table') return undefined
     let cancelled = false
-    apiFetch(`/api/artifacts/${artifact.id}?offset=0&limit=1`)
+    apiFetch(`${API_BASE}/artifacts/${artifact.id}?offset=0&limit=1`)
       .then(response => (response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`))))
       .then(page => { if (!cancelled) setState({ page, status: 'ready' }) })
       .catch(() => { if (!cancelled) setState({ page: null, status: 'failed' }) })
@@ -532,7 +533,7 @@ function TableCsvExport({ artifact }) {
   async function downloadCsv() {
     setState('downloading')
     try {
-      const response = await apiFetch(`/api/artifacts/${artifact.id}/csv`)
+      const response = await apiFetch(`${API_BASE}/artifacts/${artifact.id}/csv`)
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const blob = await response.blob()
       const disposition = response.headers.get('content-disposition')
