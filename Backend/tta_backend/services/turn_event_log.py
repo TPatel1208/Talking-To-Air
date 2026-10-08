@@ -27,9 +27,10 @@ START_CURSOR = "0-0"
 #: One XADD per batch rather than per token on a long answer.
 DEFAULT_FLUSH_INTERVAL_SECONDS = 0.05
 
-#: How many entries a turn's log keeps. A guess — size it against p99
-#: events-per-turn once there is traffic to measure. A reader away long enough
-#: to be trimmed loses narration; HistoryService still holds the answer.
+#: How many entries a turn's log keeps. A guess — size it against p99 of the
+#: ``turn_event_log_size`` record each turn logs as it ends. A reader away long
+#: enough to be trimmed loses narration and is told so (``truncated``);
+#: HistoryService still holds the answer.
 DEFAULT_MAX_ENTRIES = 4000
 
 #: Added to the whole-turn deadline to get a log's lifetime, covering the gap
@@ -50,6 +51,9 @@ class TurnEventPage:
     #: None on a stream that has gone quiet means the replica that owned the
     #: turn died.
     terminal: str | None = None
+    #: True when entries after the cursor were trimmed before this read, so
+    #: ``frames`` resume past a gap rather than where the reader left off.
+    truncated: bool = False
 
 
 @dataclass(frozen=True)
@@ -61,6 +65,14 @@ class TurnTail:
     written_ms: int | None
     #: How the turn ended, or None while it is still going.
     terminal: str | None = None
+
+
+@dataclass
+class _Written:
+    """What this replica has written under one turn id so far."""
+
+    last_id: str | None = None
+    entries: int = 0
 
 
 class TurnEventLog:
@@ -97,6 +109,7 @@ class TurnEventLog:
         self._buffered_text: dict[str, list[str]] = {}
         self._flush_timers: dict[str, asyncio.Task[Any]] = {}
         self._write_locks: dict[str, asyncio.Lock] = {}
+        self._written: dict[str, _Written] = {}
 
     async def aclose(self) -> None:
         for turn_id in list(self._buffered_text):
@@ -182,6 +195,19 @@ class TurnEventLog:
             await self._write(turn_id, [frame], terminal=kind)
         # The turn is over; nothing may write under this id again.
         self._write_locks.pop(turn_id, None)
+        written = self._written.pop(turn_id, None)
+        # Counted in entries, the cap's unit, including any trimming removed.
+        # Sized against p99 of this once there is traffic.
+        logger.info(
+            "turn_event_log_size",
+            extra={
+                "_event": "turn_event_log_size",
+                "_turn_id": turn_id,
+                "_terminal": kind,
+                "_entries": written.entries if written else 0,
+                "_max_entries": self._max_entries,
+            },
+        )
 
     async def _write(
         self, turn_id: str, frames: list[str], terminal: str | None = None
@@ -196,6 +222,14 @@ class TurnEventLog:
         fields: dict[FieldT, EncodableT] = {f"f{i}": frame for i, frame in enumerate(frames)}
         if terminal is not None:
             fields["terminal"] = terminal
+        # The entry before this one, so a reader can tell a trimmed gap from
+        # an unbroken run. Redis's max-deleted-entry-id would be the natural
+        # source, but MAXLEN trimming never updates it — only XDEL does.
+        # Safe to hold in memory: callers hold the turn's lock, and one
+        # replica writes a turn.
+        written = self._written.setdefault(turn_id, _Written())
+        if written.last_id is not None:
+            fields[_PREVIOUS_FIELD] = written.last_id
         key = self._key(turn_id)
         # Pipelined so bounding the log costs no extra round trip.
         pipe = self._redis.pipeline(transaction=False)
@@ -205,7 +239,9 @@ class TurnEventLog:
         pipe.xadd(key, fields, maxlen=self._max_entries, approximate=False)
         # Refreshed per write, so lifetime runs from the turn's last activity.
         pipe.expire(key, self._ttl_seconds)
-        await pipe.execute()
+        entry_id, _ = await pipe.execute()
+        written.last_id = str(entry_id)
+        written.entries += 1
 
     async def terminal_of(self, turn_id: str) -> str | None:
         """How this turn ended, or None while it is still going.
@@ -240,6 +276,11 @@ class TurnEventLog:
 
         The cursor is exclusive: a reader that hands back what it last saw is
         not sent it a second time.
+
+        Truncation is read off the first entry returned: its predecessor is
+        newer than the cursor only if that predecessor is gone, since a
+        surviving one would have been returned first. Exact, and costs nothing
+        beyond the range itself.
         """
         resume_from = cursor or START_CURSOR
         entries = (
@@ -247,15 +288,33 @@ class TurnEventLog:
         ) or []
         frames: list[str] = []
         terminal: str | None = None
-        for _entry_id, entry_fields in entries:
+        truncated = False
+        for index, (_entry_id, entry_fields) in enumerate(entries):
             fields = _decoded(entry_fields)
+            if index == 0 and _PREVIOUS_FIELD in fields:
+                truncated = _id_order(fields[_PREVIOUS_FIELD]) > _id_order(resume_from)
             frames.extend(_frames_of(fields))
             terminal = terminal or fields.get("terminal")
         return TurnEventPage(
             frames=frames,
             cursor=str(entries[-1][0]) if entries else resume_from,
             terminal=terminal,
+            truncated=truncated,
         )
+
+
+#: The field naming an entry's predecessor. Not ``f``-prefixed, so
+#: ``_frames_of`` never mistakes it for a frame.
+_PREVIOUS_FIELD = "prev"
+
+
+def _id_order(entry_id: str) -> tuple[int, int]:
+    """A stream id as something that compares the way Redis orders it.
+
+    A missing sequence reads as 0, as it does in an XRANGE bound.
+    """
+    millis, _, sequence = entry_id.partition("-")
+    return int(millis), int(sequence or 0)
 
 
 def _decoded(fields: Any) -> dict[str, str]:

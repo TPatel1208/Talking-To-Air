@@ -10,6 +10,7 @@ import {
   classifyStreamEvent,
   classifyTurnStatus,
   clearTurnRecord,
+  endsWithHistoryReload,
   isStreamError,
   readTurnRecord,
   StreamError,
@@ -317,7 +318,7 @@ export function useChat(onJobProgress) {
     if (!res.body) throw new Error('Streaming response was empty')
 
     const { requestId, streamId } = ctx
-    const state = { sawTerminal: false, reconcile: false }
+    const state = { sawTerminal: false, reconcile: false, truncated: false }
     const decoder = new TextDecoder()
     const reader = res.body.getReader()
     // The follower emits a cursor after every page it delivers, which during
@@ -381,6 +382,11 @@ export function useChat(onJobProgress) {
             userMessage: ctx.userMessage,
           })
         }
+      } else if (kind === 'truncated') {
+        // The log was trimmed past this reader's place, so what follows does
+        // not join onto what is on screen. Nothing to render now; the turn's
+        // end swaps the bubble for history, which has all of it.
+        state.truncated = true
       } else if (event === 'tool_call') {
         queueAssistantUpdate(streamId, msg => ({
           toolCalls: [...(msg.toolCalls || []), { name: data.name, args: data.args }],
@@ -431,15 +437,18 @@ export function useChat(onJobProgress) {
         // A turn that ended is history's to tell, not this stream's (D8).
         // A reader that only *joined* this turn — a remount, a second tab —
         // is sitting on top of a history fetch that may already contain the
-        // same answer, so it reloads history and lets that replace what it
-        // rendered. The write-back happens before the `done` frame, so by
-        // now history has it.
+        // same answer, and one told it was `truncated` rendered a hole; both
+        // reload history and let that replace what they rendered. The
+        // write-back happens before the `done` frame, so by now history has
+        // it.
         //
         // The bubble is still completed first, and deliberately: the reload
         // can fail transiently, and T41 keeps the current messages when it
         // does — which would leave this bubble spinning on an answer that
         // had already arrived.
-        if (ctx.reattached) state.reconcile = newId
+        if (endsWithHistoryReload({ reattached: ctx.reattached, truncated: state.truncated })) {
+          state.reconcile = newId
+        }
         queueAssistantUpdate(streamId, msg => ({
           content: data.response || msg.content || '',
           charts: msg.charts || [],
@@ -830,7 +839,12 @@ export function useChat(onJobProgress) {
       const state = await consumeStream(stream, {
         requestId, streamId, threadId: acceptedThread, userMessage: text,
       })
-      if (!state.sawTerminal && isCurrentRequest(requestId)) markConnectionLost(streamId)
+      if (!isCurrentRequest(requestId)) return
+      if (state.reconcile) {
+        await loadHistory(state.reconcile)
+      } else if (!state.sawTerminal) {
+        markConnectionLost(streamId)
+      }
     } catch (err) {
       if (err.name === 'AbortError') return
       if (!isCurrentRequest(requestId)) return
@@ -864,8 +878,8 @@ export function useChat(onJobProgress) {
     }
   }, [
     assistantPlaceholder, attachToThread, beginLocalTurn, consumeStream,
-    isCurrentRequest, markConnectionLost, markTurnStatus, persistActiveThread,
-    queueAssistantUpdate, releaseIfCurrent,
+    isCurrentRequest, loadHistory, markConnectionLost, markTurnStatus,
+    persistActiveThread, queueAssistantUpdate, releaseIfCurrent,
   ])
 
   const newSession = useCallback(() => {

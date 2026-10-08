@@ -81,6 +81,19 @@ export function isStreamError(err) {
   return err?.name === 'StreamError'
 }
 
+/**
+ * Whether a finished turn's bubble should be replaced by history.
+ *
+ * A reader that joined the turn sits on a history fetch that may already
+ * hold the answer. A reader the follower told was `truncated` rendered the
+ * far side of a hole as if it followed on; `done` carries the answer text
+ * again, but not the charts or artifacts that fell into the hole. History
+ * has all of it in both cases.
+ */
+export function endsWithHistoryReload({ reattached = false, truncated = false } = {}) {
+  return reattached || truncated
+}
+
 const STOPPED_WITH_NOTHING = 'Stopped.'
 const INTERRUPTION_NOTICES = {
   shutdown: 'The server restarted before this answer finished. Reload the session to see anything that was saved, then ask again.',

@@ -200,6 +200,88 @@ class TurnEventLogTests(unittest.IsolatedAsyncioTestCase):
         page = await log.read(self.turn_id)
         self.assertEqual(frames[-5:], page.frames)
 
+    async def test_a_reader_whose_cursor_was_trimmed_away_is_told_so(self):
+        """XRANGE from a cursor whose entry is gone just starts at whatever
+        survived, so without this the reader renders the far side of the gap
+        as if it followed on from what it already had."""
+        from tta_backend.services.turn_event_log import TurnEventLog
+
+        log = TurnEventLog(REDIS_URL, max_entries=5)
+        self.addAsyncCleanup(log.aclose)
+        await log.append(self.turn_id, 'event: status\ndata: {"n": 0}\n\n')
+        before_sleep = await log.read(self.turn_id)
+        for n in range(1, 11):
+            await log.append(self.turn_id, f'event: status\ndata: {{"n": {n}}}\n\n')
+
+        resumed = await log.read(self.turn_id, cursor=before_sleep.cursor)
+
+        self.assertTrue(resumed.truncated, "a reader that missed frames was not told")
+        self.assertEqual(5, len(resumed.frames))
+
+    async def test_a_reader_that_missed_nothing_is_not_told_it_did(self):
+        """The boundary is the case a cheaper check gets wrong: the reader's
+        own last entry has been trimmed, but the one after it survived, so
+        nothing it needed is gone. A false alarm here sends a reader that
+        kept up through a recovery it has no reason to run."""
+        from tta_backend.services.turn_event_log import TurnEventLog
+
+        log = TurnEventLog(REDIS_URL, max_entries=3)
+        self.addAsyncCleanup(log.aclose)
+        await log.append(self.turn_id, 'event: status\ndata: {"n": 0}\n\n')
+        kept_up = await log.read(self.turn_id)
+        for n in range(1, 4):
+            await log.append(self.turn_id, f'event: status\ndata: {{"n": {n}}}\n\n')
+
+        resumed = await log.read(self.turn_id, cursor=kept_up.cursor)
+
+        self.assertEqual(3, len(resumed.frames), "the cursor's successor should have survived")
+        self.assertFalse(resumed.truncated, "a reader that missed nothing was told it did")
+
+    async def test_a_reader_starting_on_a_trimmed_log_is_told_its_beginning_is_gone(self):
+        """A tab attaching late from the start gets an answer with no opening,
+        which is the same gap reached without ever having had a cursor."""
+        from tta_backend.services.turn_event_log import TurnEventLog
+
+        log = TurnEventLog(REDIS_URL, max_entries=3)
+        self.addAsyncCleanup(log.aclose)
+        for n in range(6):
+            await log.append(self.turn_id, f'event: status\ndata: {{"n": {n}}}\n\n')
+
+        page = await log.read(self.turn_id)
+
+        self.assertTrue(page.truncated)
+
+    async def test_a_reader_on_an_untrimmed_log_is_never_told_of_a_gap(self):
+        first_visit = None
+        for n in range(4):
+            await self.log.append(self.turn_id, f'event: status\ndata: {{"n": {n}}}\n\n')
+            page = await self.log.read(self.turn_id, cursor=first_visit and first_visit.cursor)
+            self.assertFalse(page.truncated)
+            first_visit = page
+        self.assertFalse((await self.log.read(self.turn_id)).truncated)
+
+    async def test_a_turn_that_ends_records_how_many_entries_it_wrote(self):
+        """The cap is a guess until there is a distribution to size it
+        against. Counted in entries, the cap's own unit, and including the
+        ones trimming removed -- a turn that overflowed must not report the
+        cap as its size."""
+        from tta_backend.services.turn_event_log import TurnEventLog
+
+        log = TurnEventLog(REDIS_URL, max_entries=5)
+        self.addAsyncCleanup(log.aclose)
+        for n in range(7):
+            await log.append(self.turn_id, f'event: status\ndata: {{"n": {n}}}\n\n')
+
+        with self.assertLogs("tta_backend.services.turn_event_log", level="INFO") as captured:
+            await log.mark_terminal(self.turn_id, "done", 'event: done\ndata: {}\n\n')
+
+        sizes = [r for r in captured.records if r.getMessage() == "turn_event_log_size"]
+        self.assertEqual(1, len(sizes), captured.output)
+        self.assertEqual(self.turn_id, getattr(sizes[0], "_turn_id", None))
+        self.assertEqual(8, getattr(sizes[0], "_entries", None))
+        self.assertEqual(5, getattr(sizes[0], "_max_entries", None))
+        self.assertEqual("done", getattr(sizes[0], "_terminal", None))
+
     async def test_a_turns_log_outlives_the_longest_turn_and_then_expires(self):
         """Two failures in one bound. Too short and a turn's own log expires
         underneath it while it is still running; absent and every abandoned

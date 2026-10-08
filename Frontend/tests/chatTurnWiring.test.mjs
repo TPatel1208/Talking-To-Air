@@ -229,3 +229,21 @@ test('a background thread missing from the sidebar is caught up from the server 
   assert.ok(tickBody, 'the background poll is no longer named `tick` -- re-point this guard')
   assert.match(tickBody, /mergeSessions\(/, 'the poll no longer catches up missing rows')
 })
+
+test('a reader told of a gap finishes on history, on both paths', () => {
+  // The follower's `truncated` frame is worth nothing unless the hook acts on
+  // it: the decision is pure (endsWithHistoryReload), but whether `done`
+  // consults it and whether each caller then loads history live in callbacks.
+  // The send path never reloaded at all, because only a joining reader needed
+  // to -- a sender that fell behind the trim is the first case where it must.
+  assert.match(USE_CHAT, /kind === 'truncated'/, 'the hook ignores the truncated frame')
+  assert.match(USE_CHAT, /endsWithHistoryReload\(/, '`done` no longer asks whether to reload history')
+  for (const marker of [
+    'const sendMessage = useCallback(',
+    'const attachToThread = useCallback(',
+  ]) {
+    const body = callbackBody(USE_CHAT, marker)
+    assert.ok(body, `${marker} is no longer a useCallback -- re-point this guard`)
+    assert.match(body, /if \(state\.reconcile\)[\s\S]{0,80}loadHistory\(state\.reconcile\)/, marker)
+  }
+})
