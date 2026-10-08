@@ -149,6 +149,19 @@ test('no token travels through props, and one module builds the header', () => {
   )
 })
 
+test('no <img> points straight at the API', () => {
+  // The browser fetches an <img> itself and cannot add a bearer header, so an
+  // <img src={`${API_BASE}...`}> 401s every time. Compare thumbnails did this
+  // from the start and showed a broken-image icon until a canvas fallback hid
+  // it. Fetch through apiFetch into a blob: URL instead (loadThumbnail).
+  // The lazy scan stops at the tag's `/>` so an arrow in onError cannot end it.
+  assert.deepEqual(
+    offenders(/<img\b(?:(?!\/>)[\s\S])*?\bsrc=\{[^}]*API_BASE/),
+    [],
+    'an API url in an <img> src can never authenticate',
+  )
+})
+
 test('every session change reaches the synchronous token snapshot', () => {
   // maplibre's transformRequest cannot await a session, so it reads apiFetch's
   // snapshot. Requests alone leave that snapshot wrong for however long an idle

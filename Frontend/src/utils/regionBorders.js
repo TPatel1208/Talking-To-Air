@@ -2,6 +2,24 @@
 // panel (Plotly scattergeo traces previously, MapLibre GeoJSON layers now).
 const STATES_URL = 'https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json'
 
+// How a state border is drawn, on the single map and on the comparison
+// thumbnails alike, so a thumbnail looks like the map it expands into. A dark
+// line on a light halo: the dark line alone vanished on viridis's dark purple,
+// and a light one alone would vanish on its yellow. The halo is drawn first.
+export const BORDER_LINE = {
+  color: 'rgba(20,20,20,0.9)',
+  width: 1.1,
+  haloColor: 'rgba(255,255,255,0.7)',
+  haloWidth: 2.8,
+}
+
+// The beforeId for a data overlay layer: under the border halo once the
+// borders exist. The overlay is re-added on every recolor, and MapLibre puts a
+// layer added without a beforeId on top, which buried the borders.
+export function overlayBeforeId(map) {
+  return map.getLayer('region-borders-halo') ? 'region-borders-halo' : undefined
+}
+
 let _bordersPromise = null
 export function fetchUsStatesGeoJSON() {
   if (_bordersPromise) return _bordersPromise

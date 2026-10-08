@@ -35,7 +35,7 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 import { colorbarGeometry, scaleClipNote } from '../utils/colorbarGeometry.js'
 import { buildCanvasFallbackFrame } from '../utils/canvasFallback.js'
-import { fetchUsStatesGeoJSON, isConusBounds } from '../utils/regionBorders.js'
+import { BORDER_LINE, fetchUsStatesGeoJSON, isConusBounds, overlayBeforeId } from '../utils/regionBorders.js'
 import { resolveOverlayMode } from '../utils/overlayMode.js'
 import { currentAccessToken } from '../utils/apiFetch.js'
 import { API_BASE } from '../config.js'
@@ -172,7 +172,7 @@ function addCanvasFallbackOverlay(map, payload, { animate = false } = {}) {
     type: 'raster',
     source: 'overlay-canvas',
     paint: { 'raster-resampling': 'nearest', 'raster-fade-duration': 0 },
-  })
+  }, overlayBeforeId(map))
 }
 
 function addBorderLayer(map, geojson) {
@@ -180,10 +180,16 @@ function addBorderLayer(map, geojson) {
   if (map.getSource('region-borders')) return
   map.addSource('region-borders', { type: 'geojson', data: geojson })
   map.addLayer({
+    id: 'region-borders-halo',
+    type: 'line',
+    source: 'region-borders',
+    paint: { 'line-color': BORDER_LINE.haloColor, 'line-width': BORDER_LINE.haloWidth },
+  })
+  map.addLayer({
     id: 'region-borders',
     type: 'line',
     source: 'region-borders',
-    paint: { 'line-color': 'rgba(30,30,30,0.85)', 'line-width': 1.1 },
+    paint: { 'line-color': BORDER_LINE.color, 'line-width': BORDER_LINE.width },
   })
 }
 
@@ -212,6 +218,16 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, colorScale
   // in which case the aggregate stays drawn, on whatever scale is current.
   const frameRef = useRef(frame)
   useEffect(() => { frameRef.current = frame }, [frame])
+
+  // maplibre tracks window resizes only. The container also changes size when
+  // a side panel collapses or a fitted parent re-measures its height.
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return undefined
+    const observer = new ResizeObserver(() => mapRef.current?.resize())
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
 
   const [minx, miny, maxx, maxy] = bounds || [
     Math.min(...(lons || [])), Math.min(...(lats || [])),
@@ -247,7 +263,7 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, colorScale
             type: 'raster',
             source: 'overlay',
             paint: { 'raster-resampling': 'nearest', 'raster-fade-duration': 0 },
-          })
+          }, overlayBeforeId(map))
         }
         return
       }
