@@ -86,6 +86,39 @@ test('a done event resets the strip back to its initial state', () => {
   assert.deepEqual(next, INITIAL_WORKFLOW_STATE)
 })
 
+test('cleanStatusMessage strips elapsed seconds phrases', () => {
+  import('../src/utils/workflowStage.js').then(({ cleanStatusMessage }) => {
+    assert.equal(cleanStatusMessage('Still working — 10s elapsed'), 'Still working')
+    assert.equal(cleanStatusMessage('Still working - 10 seconds elapsed'), 'Still working')
+    assert.equal(cleanStatusMessage('Still working (10s elapsed)'), 'Still working')
+    assert.equal(cleanStatusMessage('- 10 seconds elapsed'), '')
+    assert.equal(cleanStatusMessage('Resolving area of interest...'), 'Resolving area of interest...')
+    assert.equal(cleanStatusMessage('Checking coverage — 14 granules...'), 'Checking coverage — 14 granules...')
+  })
+})
+
+test('a stage change does not retain detail from an earlier stage', () => {
+  const withDetail = applyWorkflowEvent(INITIAL_WORKFLOW_STATE, 'status', {
+    message: 'Checking coverage...', stage: 'coverage', detail: 14,
+  })
+  assert.equal(withDetail.detail, 14)
+
+  const nextStage = applyWorkflowEvent(withDetail, 'status', {
+    message: 'Resolving area of interest...', stage: 'aoi',
+  })
+  assert.equal(nextStage.stage, 'aoi')
+  assert.equal(nextStage.detail, null)
+})
+
+test('stage working suppresses heartbeat elapsed detail from becoming strip detail', () => {
+  const working = applyWorkflowEvent(INITIAL_WORKFLOW_STATE, 'status', {
+    message: 'Still working — 10s elapsed', stage: 'working', detail: 10,
+  })
+  assert.equal(working.stage, 'working')
+  assert.equal(working.label, 'Still working')
+  assert.equal(working.detail, null)
+})
+
 // T64 Phase 4: narration lanes. Sub-agents the supervisor runs in parallel
 // narrate into one stream; an event carrying a lane updates that lane's own
 // row instead of overwriting the single strip.

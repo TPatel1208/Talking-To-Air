@@ -3,6 +3,9 @@
 // repo's existing node:test pattern -- no React-rendering infra required.
 
 export function focusChartPayload(chart) {
+  if (chart?.type === 'table' || chart?.type === 'map') {
+    return { kind: 'artifact', data: chart }
+  }
   return { kind: 'chart', data: chart }
 }
 

@@ -11,6 +11,7 @@ from typing import Any, AsyncIterator, Literal
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from tta_backend.config.error_templates import (
+    format_exception_error,
     render_error_answer,
     render_overloaded_answer,
     render_turn_timeout_answer,

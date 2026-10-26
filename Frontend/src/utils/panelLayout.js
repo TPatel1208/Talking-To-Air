@@ -25,3 +25,7 @@ export const PANEL_PADDING_X = 22
 // one quietly stops fitting inside the outer one -- the same "one measurement,
 // two homes" failure this codebase keeps meeting, in pixels instead of prose.
 export const PANEL_MIN_WIDTH = SCRUB_TRACK_MIN_WIDTH + PANEL_PADDING_X * 2
+
+// The shared height for top headers across adjacent panels (Chat, OutputPanel)
+// so their bottom borders level seamlessly across the column seam.
+export const PANEL_HEADER_HEIGHT = 56

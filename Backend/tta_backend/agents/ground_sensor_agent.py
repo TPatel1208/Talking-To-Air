@@ -46,7 +46,13 @@ def build_ground_agent(model: str | None = None, provider: str | None = None) ->
         "ground_agent_model",
         extra={"_event": "ground_agent_model", "_model": model, "_provider": provider},
     )
-    llm = build_chat_model(provider, model, settings, agent_type="ground_sensor")
+    llm = build_chat_model(
+        provider,
+        model,
+        settings,
+        agent_type="ground_sensor",
+        fallback_model=settings.ground_agent_fallback_model,
+    )
 
     agent = create_agent(
         model=llm,

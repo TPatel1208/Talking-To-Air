@@ -33,6 +33,7 @@ _VETTED_MODELS: dict[str, frozenset[str]] = {
     "google": frozenset({
         "gemini-3.8-flash",
         "gemini-3.7-flash",
+        "gemini-3.5-flash-lite",
         "gemini-3.1-flash-lite",
         "gemini-3.5-flash-lite",
     }),
@@ -68,17 +69,26 @@ class Settings:
     """Application settings loaded once from environment at startup/import."""
 
     llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "gemini-3.7-flash"))
+    llm_fallback_model: str | None = field(
+        default_factory=lambda: os.getenv("LLM_FALLBACK_MODEL", "gemini-3.1-flash-lite")
+    )
     ground_agent_model: str = field(
         default_factory=lambda: os.getenv(
             "GROUND_AGENT_MODEL",
             "gemini-3.1-flash-lite",
         )
     )
+    ground_agent_fallback_model: str | None = field(
+        default_factory=lambda: os.getenv("GROUND_AGENT_FALLBACK_MODEL", "gemini-3.1-flash-lite")
+    )
     earthdata_agent_model: str = field(
         default_factory=lambda: os.getenv(
             "EARTHDATA_AGENT_MODEL",
             os.getenv("SATELLITE_AGENT_MODEL", "gemini-3.1-flash-lite"),
         )
+    )
+    earthdata_agent_fallback_model: str | None = field(
+        default_factory=lambda: os.getenv("EARTHDATA_AGENT_FALLBACK_MODEL", "gemini-3.1-flash-lite")
     )
     supervisor_model_provider: str = field(
         default_factory=lambda: os.getenv("SUPERVISOR_MODEL_PROVIDER", "google")
@@ -651,9 +661,14 @@ class Settings:
         unvetted = []
         for label, provider, model in (
             ("LLM_MODEL", self.supervisor_model_provider, self.llm_model),
+            ("LLM_FALLBACK_MODEL", self.supervisor_model_provider, self.llm_fallback_model),
             ("EARTHDATA_AGENT_MODEL", self.earthdata_agent_provider, self.earthdata_agent_model),
+            ("EARTHDATA_AGENT_FALLBACK_MODEL", self.earthdata_agent_provider, self.earthdata_agent_fallback_model),
             ("GROUND_AGENT_MODEL", self.ground_agent_provider, self.ground_agent_model),
+            ("GROUND_AGENT_FALLBACK_MODEL", self.ground_agent_provider, self.ground_agent_fallback_model),
         ):
+            if not model:
+                continue
             vetted = _VETTED_MODELS.get(provider)
             if vetted is not None and model not in vetted:
                 unvetted.append(f"{label}={model!r} for provider {provider!r}")

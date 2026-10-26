@@ -19,6 +19,7 @@ function hasMatchingChart(artifact, charts) {
 export function isReachableArtifact(artifact, charts) {
   if (!artifact) return false
   if (artifact.type === 'table') return true
+  if (artifact.type === 'map' && artifact.id?.startsWith('tbl_')) return true
   if (artifact.type === 'timeseries') return !hasMatchingChart(artifact, charts)
   return false
 }

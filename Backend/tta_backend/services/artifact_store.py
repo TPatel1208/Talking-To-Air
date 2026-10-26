@@ -43,14 +43,18 @@ class ArtifactStore:
         columns: list[str],
         rows: list[dict[str, Any]],
         metadata: dict[str, Any] | None = None,
+        artifact_type: str = "table",
     ) -> ArtifactReference:
         self.cleanup()
         artifact_id = f"tbl_{uuid.uuid4().hex[:12]}"
+        meta = dict(metadata or {})
+        meta["artifact_type"] = artifact_type
         payload = TableArtifactPayload(
+            type=artifact_type,
             title=title,
             columns=columns,
             rows=rows,
-            metadata=metadata or {},
+            metadata=meta,
         )
         now = time.time()
         stored = StoredArtifact(
@@ -168,11 +172,21 @@ class ArtifactStore:
         )
 
     def _rehydrate(self, artifact_id: str, row: dict[str, Any]) -> StoredArtifact:
+        rows = row["rows"]
+        meta = row.get("metadata") or {}
+        artifact_type = meta.get("artifact_type")
+        if not artifact_type:
+            has_coords = any(
+                isinstance(r, dict) and r.get("latitude") is not None and r.get("longitude") is not None
+                for r in rows
+            )
+            artifact_type = "map" if has_coords else "table"
         payload = TableArtifactPayload(
+            type=artifact_type,
             title=row["title"],
             columns=row["columns"],
-            rows=row["rows"],
-            metadata=row.get("metadata") or {},
+            rows=rows,
+            metadata=meta,
         )
         now = time.time()
         stored = StoredArtifact(

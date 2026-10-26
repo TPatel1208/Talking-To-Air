@@ -26,6 +26,39 @@ export function MetadataOverview({ chart, onViewStatistics, onViewFullMetadata, 
   const maturity = useMemo(() => maturityFields(chart), [chart])
   const level = useMemo(() => levelResolutionFields(chart), [chart])
 
+  if (chart?.type === 'table' || chart?.type === 'map') {
+    const firstRow = chart.rows?.[0] || {}
+    const pollutant = firstRow.pollutant_standard || chart.title || 'Ground AQI'
+    const date = firstRow.date || firstRow.period || '—'
+    const units = firstRow.units || '—'
+    const monitorsCount = chart.rows?.length ? `${chart.rows.length} stations` : '—'
+
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' }}>
+          <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)' }}>
+            {chart.type === 'map' ? 'Ground monitor map' : 'Ground monitor table'}
+          </div>
+          {onViewFullMetadata && (
+            <button type="button" onClick={onViewFullMetadata} style={{
+              border: 0, background: 'transparent', color: 'var(--teal-text)',
+              fontSize: '11px', fontWeight: 700, cursor: 'pointer', padding: 0, flexShrink: 0,
+            }}>
+              View full metadata →
+            </button>
+          )}
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px' }}>
+          <MetaField label="Source" value="EPA Air Quality System (AQS)" />
+          <MetaField label="Pollutant" value={pollutant} />
+          <MetaField label="Date" value={date} />
+          <MetaField label="Units" value={units} />
+          <MetaField label="Monitors" value={monitorsCount} />
+        </div>
+      </div>
+    )
+  }
+
   if (!hasProvenance(chart)) {
     return (
       <div style={{ fontSize: '12px', color: 'var(--text-muted)', padding: '10px 0' }}>

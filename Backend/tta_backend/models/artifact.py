@@ -105,7 +105,7 @@ class ArtifactReference(BaseModel):
 
 
 class TableArtifactPayload(BaseModel):
-    type: Literal["table"] = "table"
+    type: str = "table"
     title: str
     columns: list[str]
     rows: list[dict[str, Any]]

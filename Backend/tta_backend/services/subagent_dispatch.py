@@ -22,6 +22,7 @@ from typing import Any
 from tta_backend.config.error_templates import (
     CATEGORY_RATE_LIMITED,
     CATEGORY_RECURSION_EXHAUSTED,
+    format_exception_error,
     render_error_answer,
     render_scope_note,
 )
@@ -445,7 +446,7 @@ def render_unexpected_exception(exc: Exception, stage: str) -> str:
         extra={"_event": "subagent_unexpected_exception", "_stage": stage, "_category": category},
         exc_info=exc,
     )
-    return render_error_answer(category, stage)
+    return format_exception_error(exc)
 
 
 def _finalize_sub_agent_result(result: AgentResult, agent_label: str) -> AgentResult:

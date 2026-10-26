@@ -21,7 +21,7 @@ function filenameFromDisposition(disposition, fallback) {
 }
 
 async function downloadArtifact(artifact) {
-  const url = artifact.type === 'table'
+  const url = (artifact.type === 'table' || artifact.id?.startsWith('tbl_'))
     ? `${API_BASE}/artifacts/${artifact.id}/csv`
     : `${API_BASE}/chart/${artifact.id}/export.csv`
   const res = await apiFetch(url)
@@ -120,6 +120,168 @@ export default function SessionSidebar({ sessions, hasMoreSessions = false, onLo
     onDelete(id)
   }
 
+  if (collapsed) {
+    return (
+      <div style={{
+        width:         '60px',
+        flexShrink:    0,
+        background:    'var(--bg-card)',
+        borderRight:   '1px solid var(--border)',
+        display:       'flex',
+        flexDirection: 'column',
+        alignItems:    'center',
+        overflow:      'hidden',
+        padding:       '14px 10px',
+        boxSizing:     'border-box',
+      }}>
+        {/* Top: Expand and New chat */}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', marginBottom: '16px', width: '100%' }}>
+          {onExpand && (
+            <button
+              type="button"
+              onClick={onExpand}
+              title="Expand sidebar"
+              aria-label="Expand sidebar"
+              style={{
+                background: 'transparent', border: 'none', padding: '4px', cursor: 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                borderRadius: '6px', color: 'var(--text-muted)',
+                transition: 'color 0.15s, background 0.15s',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.color = 'var(--text-primary)'; e.currentTarget.style.background = 'var(--bg-secondary)' }}
+              onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.background = 'transparent' }}
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="9 18 15 12 9 6" />
+              </svg>
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onNew}
+            title="New chat"
+            aria-label="New chat"
+            style={{
+              width: '36px', height: '36px', borderRadius: '9px', background: 'var(--teal)',
+              color: 'white', border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: '18px', fontWeight: 700, cursor: 'pointer', lineHeight: 1,
+              transition: 'opacity 0.15s',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.opacity = '0.9' }}
+            onMouseLeave={e => { e.currentTarget.style.opacity = '1' }}
+          >
+            +
+          </button>
+        </div>
+
+        {/* Navigation icons: Chats, Files, Connectors */}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px', marginBottom: '16px', width: '100%' }}>
+          <button
+            type="button"
+            onClick={() => { setNav('chats'); if (onExpand) onExpand() }}
+            title="Chats"
+            aria-label="Chats"
+            style={{
+              width: '36px', height: '36px', borderRadius: '8px', border: 'none',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              background: nav === 'chats' ? 'var(--bg-secondary)' : 'transparent',
+              color: nav === 'chats' ? 'var(--text-primary)' : 'var(--text-secondary)',
+              cursor: 'pointer', transition: 'background 0.15s, color 0.15s',
+            }}
+            onMouseEnter={e => { if (nav !== 'chats') e.currentTarget.style.background = 'var(--bg-secondary)' }}
+            onMouseLeave={e => { if (nav !== 'chats') e.currentTarget.style.background = 'transparent' }}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
+              <path d="M4 5.5h16v10.5H9.5L5 20v-4H4z" strokeLinejoin="round" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            onClick={() => { setNav('files'); if (onExpand) onExpand() }}
+            title="Files"
+            aria-label="Files"
+            style={{
+              width: '36px', height: '36px', borderRadius: '8px', border: 'none',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              background: nav === 'files' ? 'var(--bg-secondary)' : 'transparent',
+              color: nav === 'files' ? 'var(--text-primary)' : 'var(--text-secondary)',
+              cursor: 'pointer', transition: 'background 0.15s, color 0.15s',
+            }}
+            onMouseEnter={e => { if (nav !== 'files') e.currentTarget.style.background = 'var(--bg-secondary)' }}
+            onMouseLeave={e => { if (nav !== 'files') e.currentTarget.style.background = 'transparent' }}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
+              <path d="M4 6.5h6l1.6 2H20V18H4z" strokeLinejoin="round" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            onClick={() => { setNav('connectors'); if (onExpand) onExpand() }}
+            title="Connectors"
+            aria-label="Connectors"
+            style={{
+              width: '36px', height: '36px', borderRadius: '8px', border: 'none',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              background: nav === 'connectors' ? 'var(--bg-secondary)' : 'transparent',
+              color: nav === 'connectors' ? 'var(--text-primary)' : 'var(--text-secondary)',
+              cursor: 'pointer', transition: 'background 0.15s, color 0.15s',
+            }}
+            onMouseEnter={e => { if (nav !== 'connectors') e.currentTarget.style.background = 'var(--bg-secondary)' }}
+            onMouseLeave={e => { if (nav !== 'connectors') e.currentTarget.style.background = 'transparent' }}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
+              <path d="M9 12a3 3 0 1 0 6 0 3 3 0 0 0-6 0z" />
+              <path d="M6 12H3m18 0h-3M12 6V3m0 18v-3" strokeLinecap="round" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Bottom: Profile picture and Logout */}
+        <div style={{
+          borderTop: '1px solid var(--border)',
+          paddingTop: '12px',
+          marginTop: 'auto',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: '8px',
+          width: '100%',
+        }}>
+          <div
+            title="Talking to Air"
+            style={{
+              width: '32px', height: '32px', borderRadius: '50%', background: 'var(--teal)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700,
+              fontSize: '12px', flexShrink: 0, color: 'white',
+            }}
+          >
+            T
+          </div>
+          <button
+            type="button"
+            onClick={onLogout}
+            title="Sign out"
+            aria-label="Sign out"
+            style={{
+              background: 'transparent', border: 'none', padding: '6px', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+              borderRadius: '6px', color: 'var(--text-muted)',
+              transition: 'color 0.15s, background 0.15s',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.color = 'var(--text-primary)'; e.currentTarget.style.background = 'var(--bg-secondary)' }}
+            onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.background = 'transparent' }}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+              <path d="M16 17l5-5-5-5" />
+              <path d="M21 12H9" />
+            </svg>
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div style={{
       width:         '232px',
@@ -148,12 +310,16 @@ export default function SessionSidebar({ sessions, hasMoreSessions = false, onLo
           <button
             type="button"
             onClick={onCollapse}
-            title="Collapse sessions"
-            aria-label="Collapse sessions"
+            title="Minimize sidebar"
+            aria-label="Minimize sidebar"
             style={{
-              background: 'transparent', border: 'none', padding: '2px', cursor: 'pointer',
-              display: 'flex', flexShrink: 0, color: 'var(--text-muted)',
+              background: 'transparent', border: 'none', padding: '4px', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+              color: 'var(--text-muted)', borderRadius: '4px',
+              transition: 'color 0.15s, background 0.15s',
             }}
+            onMouseEnter={e => { e.currentTarget.style.color = 'var(--text-primary)'; e.currentTarget.style.background = 'var(--bg-secondary)' }}
+            onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.background = 'transparent' }}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="15 6 9 12 15 18" />
@@ -313,12 +479,12 @@ export default function SessionSidebar({ sessions, hasMoreSessions = false, onLo
       )}
 
       {nav === 'connectors' && (
-        <>
+        <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
           <div style={{ fontSize: '10.5px', fontWeight: 700, letterSpacing: '0.06em', color: 'var(--text-muted)', textTransform: 'uppercase', padding: '0 10px 8px' }}>
             Connected services
           </div>
           <ConnectorsPanel />
-        </>
+        </div>
       )}
 
       <AccountMenu user={user} onLogout={onLogout} onManageConnectors={() => setNav('connectors')} />

@@ -53,7 +53,7 @@ const FALLBACK_TILE_CONFIG = {
 }
 
 let _tileConfigPromise = null
-function fetchTileConfig() {
+export function fetchTileConfig() {
   if (_tileConfigPromise) return _tileConfigPromise
   _tileConfigPromise = fetch(`${API_BASE}/config/map-tiles`)
     .then(r => (r.ok ? r.json() : null))
@@ -62,7 +62,7 @@ function fetchTileConfig() {
   return _tileConfigPromise
 }
 
-function buildMapStyle(tileConfig) {
+export function buildMapStyle(tileConfig) {
   return {
     version: 8,
     sources: {

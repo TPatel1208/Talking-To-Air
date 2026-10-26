@@ -239,6 +239,7 @@ function AuthenticatedApp({ user, onLogout }) {
     applyJobProgress,
     cancelJob,
   } = useJobs()
+  const hasRunningJobs = jobs.some(job => !['ready', 'failed', 'expired', 'cancelled'].includes(job.status))
 
   const {
     messages,
@@ -272,6 +273,7 @@ function AuthenticatedApp({ user, onLogout }) {
     const when = windowPhrase(timeRange)
     if (when) parts.push(when)
     sendMessage(`${parts.join(' ')}.`)
+    setRightPanelTab('jobs')
   }, [sendMessage])
 
   // A job card's "View result" action hands off to the agent rather than
@@ -323,10 +325,11 @@ function AuthenticatedApp({ user, onLogout }) {
   // mode changes.
   const [sessionsCollapsed, setSessionsCollapsed] = useState(false)
   const [chatCollapsed, setChatCollapsed] = useState(false)
-  const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false)
+  const [rightPanelTab, setRightPanelTab] = useState(null)
+  const rightPanelCollapsed = rightPanelTab === null
   const toggleSessionsCollapsed = useCallback(() => setSessionsCollapsed(v => !v), [])
   const toggleChatCollapsed = useCallback(() => setChatCollapsed(v => !v), [])
-  const toggleRightPanelCollapsed = useCallback(() => setRightPanelCollapsed(v => !v), [])
+  const toggleRightPanelCollapsed = useCallback(() => setRightPanelTab(tab => tab ? null : 'discover'), [])
 
   const resetCompare = useCallback(() => {
     setCompareMode('off')
@@ -473,12 +476,15 @@ function AuthenticatedApp({ user, onLogout }) {
         rightPanelCollapsed={rightPanelCollapsed}
         onCollapseSessions={toggleSessionsCollapsed}
         onCollapseRightPanel={toggleRightPanelCollapsed}
+        rightPanelTab={rightPanelTab}
+        onSelectRightPanelTab={setRightPanelTab}
+        hasRunningJobs={hasRunningJobs}
       />
 
-      {rightPanelCollapsed ? (
-        <CollapsedRail label="jobs and discover" onExpand={toggleRightPanelCollapsed} />
-      ) : (
+      {rightPanelTab !== null && (
         <RightPanel
+          tab={rightPanelTab}
+          onSelectTab={setRightPanelTab}
           discovery={discovery}
           jobs={jobs}
           jobsError={jobsError}
@@ -486,7 +492,6 @@ function AuthenticatedApp({ user, onLogout }) {
           onRefreshJobs={fetchJobs}
           onRetrieve={handleRetrieve}
           onViewResult={handleViewResult}
-          onCollapse={toggleRightPanelCollapsed}
         />
       )}
     </div>

@@ -108,7 +108,13 @@ def build_earthdata_agent(
         "earthdata_agent_model",
         extra={"_event": "earthdata_agent_model", "_model": model, "_provider": provider},
     )
-    llm = build_chat_model(provider, model, settings, agent_type="satellite")
+    llm = build_chat_model(
+        provider,
+        model,
+        settings,
+        agent_type="satellite",
+        fallback_model=settings.earthdata_agent_fallback_model,
+    )
 
     agent = create_agent(
         model=llm,

@@ -6,19 +6,25 @@
 // Map and timeseries charts are both comparable (T28 + T29), but never
 // mixed within one comparison session -- whichever kind the first-added
 // slot establishes is the only kind selectable for the rest of that session.
-export const COMPARABLE_CHART_TYPES = ['heatmap', 'timeseries']
+export const COMPARABLE_CHART_TYPES = ['heatmap', 'timeseries', 'map']
 
 // The kind (heatmap|timeseries) the current selection has committed to, or
 // null when every slot is still empty and either kind may start it.
 export function activeCompareKind(selection) {
   const first = (selection || []).find(Boolean)
-  return first ? first.type : null
+  if (!first) return null
+  if (first.type === 'heatmap' || first.type === 'map') return 'heatmap'
+  return first.type
 }
 
 export function isChartComparable(chart, selection = []) {
   if (!chart || !COMPARABLE_CHART_TYPES.includes(chart.type)) return false
   const activeKind = activeCompareKind(selection)
-  return activeKind === null || chart.type === activeKind
+  if (activeKind === null) return true
+  if (activeKind === 'heatmap') {
+    return chart.type === 'heatmap' || chart.type === 'map'
+  }
+  return chart.type === activeKind
 }
 
 export function createEmptySelection(count) {

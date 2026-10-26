@@ -98,6 +98,17 @@ test('isChartComparable gates on the kind the first-added slot established (T29)
   assert.equal(isChartComparable({ type: 'timeseries', title: 'E' }, timeseriesSession), true)
 })
 
+test('isChartComparable accepts map artifacts when comparing heatmaps and vice versa, but rejects non-geo table artifacts', () => {
+  const mapArtifact = { type: 'map', title: 'EPA Summary' }
+  const table = { type: 'table', title: 'Metadata Table' }
+  assert.equal(isChartComparable(mapArtifact, []), true)
+  assert.equal(isChartComparable(mapArtifact, [heatmapA, null]), true)
+  assert.equal(isChartComparable(heatmapA, [mapArtifact, null]), true)
+  assert.equal(isChartComparable(mapArtifact, [timeseries, null]), false)
+  assert.equal(isChartComparable(timeseries, [mapArtifact, null]), false)
+  assert.equal(isChartComparable(table, []), false)
+})
+
 test('isChartComparable defaults selection to empty (both kinds open) when the caller omits it', () => {
   assert.equal(isChartComparable(heatmapA), true)
   assert.equal(isChartComparable(timeseries), true)

@@ -868,12 +868,20 @@ def _table_columns(rows: List[Dict[str, Any]]) -> list[str]:
     return columns
 
 
+def _has_coordinates(rows: List[Dict[str, Any]]) -> bool:
+    return any(
+        isinstance(r, dict) and r.get("latitude") is not None and r.get("longitude") is not None
+        for r in rows
+    )
+
+
 def _artifact_table_response(
     header: list[dict[str, Any]],
     body: list[dict[str, Any]],
     title: str,
     metadata: dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
+    artifact_type = "map" if _has_coordinates(body) else "table"
     artifact_ref = artifact_store.put_table(
         title=title,
         columns=_table_columns(body),
@@ -884,6 +892,7 @@ def _artifact_table_response(
         # metadata.dataset) has a fact to show instead of "Not available".
         # Callers' own metadata still wins if they ever name it themselves.
         metadata={"dataset": "EPA AQS", **(metadata or {})},
+        artifact_type=artifact_type,
     )
     header[0]["artifact_count"] = 1
     header[0]["table_artifact_id"] = artifact_ref.id
@@ -1008,7 +1017,9 @@ def _aggregate_summary_records(
             "site_id": site_id,
             **_period_fields(first, period),
             "local_site_name": first.get("local_site_name"),
-            "monitor_name": first.get("local_site_name"),
+            "longitude": _float_or_none(first.get("longitude")),
+            "latitude": _float_or_none(first.get("latitude")),
+            "monitor_name": first.get("monitor_name") or first.get("local_site_name"),
             "units": first.get("units_of_measure"),
             "pollutant_standard": first.get("pollutant_standard"),
             "sample_duration": first.get("sample_duration"),

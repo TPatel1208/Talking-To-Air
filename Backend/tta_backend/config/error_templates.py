@@ -66,6 +66,47 @@ _TEMPLATES: dict[str, str] = {
 
 _DEFAULT_DETAIL = "No further detail is available."
 
+import re
+
+
+def format_exception_error(exc: BaseException) -> str:
+    """Format an exception into a human-readable 'Error (###): <description>' string.
+
+    Extracts HTTP status codes (404, 503, 429, etc.) or error codes when present,
+    along with the specific error message, rather than a generic opaque message.
+    """
+    status_code: int | None = None
+    for attr in ("status_code", "code", "http_status"):
+        val = getattr(exc, attr, None)
+        if isinstance(val, int):
+            status_code = val
+            break
+        if isinstance(val, str) and val.isdigit():
+            status_code = int(val)
+            break
+
+    raw_msg = str(exc).strip()
+    if not status_code:
+        m = re.search(r"\b([45]\d{2})\b", raw_msg)
+        if m:
+            status_code = int(m.group(1))
+
+    # Extract clean message if embedded in JSON or structured error string
+    message = raw_msg
+    m_msg = re.search(r'"message":\s*"([^"]+)"', raw_msg)
+    if m_msg:
+        message = m_msg.group(1).encode("utf-8").decode("unicode_escape").strip()
+    else:
+        # Strip redundant leading Error: prefixes
+        message = re.sub(r"^(?:Error\s*:?\s*)?(?:\d{3}\s*)?", "", message).strip()
+
+    if not message:
+        message = exc.__class__.__name__
+
+    if status_code:
+        return f"Error ({status_code}): {message}"
+    return f"Error ({exc.__class__.__name__}): {message}"
+
 
 def render_error_answer(category: str, stage: str, detail: str | None = None) -> str:
     """A fixed, honest chat answer for ``category`` — filled only with

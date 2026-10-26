@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
 import WorkflowStrip from './WorkflowStrip'
+import { cleanStatusMessage } from '../utils/workflowStage'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
@@ -11,6 +12,8 @@ import { compareBadgeLabel, isChartComparable, isSelectionFull, slotIndexOf } fr
 import { reachableArtifacts } from '../utils/artifactReachability'
 import { toolStepsTitle } from '../utils/toolSteps'
 import VariableChoicePicker from './VariableChoicePicker'
+import { apiFetch } from '../utils/apiFetch.js'
+import { PANEL_HEADER_HEIGHT } from '../utils/panelLayout.js'
 import { API_BASE } from '../config.js'
 
 const TYPE_LABEL = { map: 'Map', comparison: 'Comparison', timeseries: 'Time series', table: 'Table' }
@@ -26,7 +29,12 @@ function outputLabel(item) {
     }
   }
   const artifact = item.data
-  return { title: artifact.title || 'Output', subtitle: TYPE_LABEL[artifact.type] || artifact.type }
+  const rowCount = artifact.rows?.length || artifact.row_count
+  let subtitle = TYPE_LABEL[artifact.type] || artifact.type
+  if (rowCount) {
+    subtitle = artifact.type === 'map' ? `Map · ${rowCount} monitors` : `Table · ${rowCount} rows`
+  }
+  return { title: artifact.title || 'Output', subtitle }
 }
 
 /* ── One step inside the collapsed tool-call card ── */
@@ -178,7 +186,7 @@ function LoadingMessage({ toolCalls, statusMessage, workflowStage, startedAt }) 
               <div style={{ marginTop: '5px', paddingLeft: '3px' }}>
                 <WorkflowStrip workflowStage={workflowStage} startedAt={startedAt} />
               </div>
-            ) : statusMessage && (
+            ) : cleanStatusMessage(statusMessage) && (
               <div style={{
                 marginTop: '5px',
                 paddingLeft: '3px',
@@ -186,7 +194,7 @@ function LoadingMessage({ toolCalls, statusMessage, workflowStage, startedAt }) 
                 fontSize: '12px',
                 lineHeight: 1.45,
               }}>
-                {statusMessage}
+                {cleanStatusMessage(statusMessage)}
               </div>
             )}
             <div style={{ display: 'flex', gap: '4px', paddingTop: '8px' }}>
@@ -201,9 +209,9 @@ function LoadingMessage({ toolCalls, statusMessage, workflowStage, startedAt }) 
           </div>
         ) : hasWorkflowStrip ? (
           <WorkflowStrip workflowStage={workflowStage} startedAt={startedAt} />
-        ) : statusMessage ? (
+        ) : cleanStatusMessage(statusMessage) ? (
           <div style={{ color: 'var(--text-muted)', fontSize: '12px', lineHeight: 1.45 }}>
-            {statusMessage}
+            {cleanStatusMessage(statusMessage)}
           </div>
         ) : (
           <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
@@ -299,8 +307,17 @@ function MessageBubble({
   }
 
   const handleArtifactCardClick = (artifact) => {
-    if (comparing) return // table artifacts aren't comparable in T28
-    onFocusOutput({ kind: 'artifact', data: artifact })
+    if (!comparing) {
+      onFocusOutput({ kind: 'artifact', data: artifact })
+      return
+    }
+    if (!isChartComparable(artifact, compareSelection)) return
+    const alreadyIn = slotIndexOf(compareSelection, artifact) !== -1
+    if (!alreadyIn && isSelectionFull(compareSelection)) {
+      onCompareCapFull()
+      return
+    }
+    onToggleCompareSlot(artifact)
   }
 
   return (
@@ -457,7 +474,8 @@ function MessageBubble({
                 key={artifact.id || `artifact-${i}`}
                 item={{ kind: 'artifact', data: artifact }}
                 active={!comparing && focusedOutput?.kind === 'artifact' && focusedOutput.data === artifact}
-                inert={comparing}
+                inert={comparing && !isChartComparable(artifact, compareSelection)}
+                slotBadge={comparing ? compareBadgeLabel(compareSelection, artifact) : null}
                 onClick={() => handleArtifactCardClick(artifact)}
               />
             ))}
@@ -630,9 +648,16 @@ export default function Chat({
 
       {/* Top bar */}
       <div style={{
-        padding: '16px 20px 14px', borderBottom: '1px solid var(--border)',
-        background: 'var(--bg-card)', flexShrink: 0,
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px',
+        height: `${PANEL_HEADER_HEIGHT}px`,
+        padding: '0 20px',
+        borderBottom: '1px solid var(--border)',
+        background: 'var(--bg-card)',
+        flexShrink: 0,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: '8px',
+        boxSizing: 'border-box',
       }}>
         <span style={{
           fontSize: '15px', fontWeight: '800', color: 'var(--text-primary)',
@@ -787,7 +812,6 @@ export default function Chat({
       <div style={{
         padding: '12px 16px 16px',
         background: 'var(--bg-primary)',
-        borderTop: isEmpty ? 'none' : '1px solid var(--border)',
         flexShrink: 0,
       }}>
         <div style={{
