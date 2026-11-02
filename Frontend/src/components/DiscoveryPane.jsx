@@ -1,4 +1,101 @@
+import { useEffect, useState } from 'react'
 import VariableInventory from './VariableInventory'
+import { parseWindow, windowError, windowString } from '../utils/dateWindow.js'
+import { debounce } from '../utils/latestRequest.js'
+
+const fieldStyle = {
+  minWidth: 0, height: '28px', fontSize: '11px', padding: '0 8px',
+  border: '1px solid var(--border)', borderRadius: '7px',
+  background: 'var(--bg-secondary)', color: 'var(--text-primary)', fontFamily: 'var(--font)',
+}
+
+function ModeButton({ active, onClick, children }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      style={{
+        flex: 1, height: '24px', fontSize: '11px', fontWeight: active ? 700 : 500,
+        border: 'none', borderRadius: '6px', cursor: 'pointer',
+        background: active ? 'var(--bg-card)' : 'transparent',
+        color: active ? 'var(--text-primary)' : 'var(--text-muted)',
+        boxShadow: active ? 'var(--shadow-sm)' : 'none',
+      }}
+    >
+      {children}
+    </button>
+  )
+}
+
+function DateField({ label, value, min, onChange }) {
+  return (
+    <label style={{ display: 'flex', flexDirection: 'column', gap: '3px', minWidth: 0, fontSize: '10px', color: 'var(--text-muted)' }}>
+      {label}
+      <input type="date" value={value} min={min} onChange={event => onChange(event.target.value)} style={{ ...fieldStyle, width: '100%' }} />
+    </label>
+  )
+}
+
+// A day or a range, picked from calendars. Only a complete, ordered window
+// reaches `onChange`; anything else reports an empty window, which the
+// coverage, granule and Retrieve actions already refuse.
+function DateWindowPicker({ value, onChange }) {
+  const initial = parseWindow(value)
+  const [mode, setMode] = useState(initial.start && initial.start !== initial.end ? 'range' : 'day')
+  const [start, setStart] = useState(initial.start)
+  const [end, setEnd] = useState(initial.end)
+  const error = mode === 'range' ? windowError(start, end) : null
+
+  const emit = (nextMode, nextStart, nextEnd) => {
+    if (nextMode === 'day') return onChange(windowString(nextStart, nextStart))
+    if (!nextStart || !nextEnd || windowError(nextStart, nextEnd)) return onChange('')
+    onChange(windowString(nextStart, nextEnd))
+  }
+
+  const pickMode = (nextMode) => {
+    setMode(nextMode)
+    emit(nextMode, start, end)
+  }
+  const pickStart = (next) => {
+    setStart(next)
+    emit(mode, next, end)
+  }
+  const pickEnd = (next) => {
+    setEnd(next)
+    emit(mode, start, next)
+  }
+  const clear = () => {
+    setStart('')
+    setEnd('')
+    onChange('')
+  }
+
+  return (
+    <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+        <div role="group" aria-label="Time window" style={{ flex: 1, display: 'flex', gap: '2px', padding: '2px', borderRadius: '8px', background: 'var(--bg-secondary)' }}>
+          <ModeButton active={mode === 'day'} onClick={() => pickMode('day')}>Single day</ModeButton>
+          <ModeButton active={mode === 'range'} onClick={() => pickMode('range')}>Date range</ModeButton>
+        </div>
+        {(start || end) && (
+          <button type="button" onClick={clear} style={{ fontSize: '11px', background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '0 2px' }}>
+            Clear
+          </button>
+        )}
+      </div>
+      {mode === 'day' ? (
+        <DateField label="Date" value={start} onChange={pickStart} />
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+          <DateField label="From" value={start} onChange={pickStart} />
+          <DateField label="To" value={end} min={start || undefined} onChange={pickEnd} />
+        </div>
+      )}
+      {error && <div style={{ fontSize: '10.5px', color: 'var(--error)' }}>{error}</div>}
+    </div>
+  )
+}
 
 function GranulesTable({ granules }) {
   return (
@@ -191,6 +288,11 @@ export default function DiscoveryPane({
   previews, coverages, granules, inventories,
   onSearch, onPreview, onCoverage, onGranules, onInspect, onRetrieve,
 }) {
+  // Each call hands over the onSearch of its own render, so the run that
+  // fires uses the latest query rather than the one current at creation.
+  const [researchForWindow] = useState(() => debounce((windowValue, search) => search(windowValue), 400))
+  useEffect(() => () => researchForWindow.cancel(), [researchForWindow])
+
   return (
     <div style={{
       flex:          1,
@@ -216,7 +318,7 @@ export default function DiscoveryPane({
             onChange={event => setQuery(event.target.value)}
             placeholder="soil moisture, formaldehyde…"
             style={{
-              flex: 1, height: '32px', fontSize: '12px', padding: '0 10px',
+              flex: 1, minWidth: 0, height: '32px', fontSize: '12px', padding: '0 10px',
               border: '1px solid var(--border)', borderRadius: '9px',
               background: 'var(--bg-secondary)', color: 'var(--text-primary)',
             }}
@@ -233,30 +335,24 @@ export default function DiscoveryPane({
           </button>
         </form>
 
-        <div style={{ display: 'flex', gap: '6px', marginTop: '8px' }}>
-          <input
-            value={location}
-            onChange={event => setLocation(event.target.value)}
-            placeholder="Area (e.g. Raritan basin)"
-            style={{
-              flex: 1, height: '28px', fontSize: '11px', padding: '0 8px',
-              border: '1px solid var(--border)', borderRadius: '7px',
-              background: 'var(--bg-secondary)', color: 'var(--text-primary)',
-            }}
-          />
-          <input
-            value={timeRange}
-            onChange={event => setTimeRange(event.target.value)}
-            placeholder="Window (e.g. 2026-06-01/2026-06-30)"
-            style={{
-              flex: 1, height: '28px', fontSize: '11px', padding: '0 8px',
-              border: '1px solid var(--border)', borderRadius: '7px',
-              background: 'var(--bg-secondary)', color: 'var(--text-primary)',
-            }}
-          />
-        </div>
+        <input
+          value={location}
+          onChange={event => setLocation(event.target.value)}
+          placeholder="Area (e.g. Raritan basin)"
+          aria-label="Area"
+          style={{ ...fieldStyle, width: '100%', marginTop: '8px' }}
+        />
+        <DateWindowPicker
+          value={timeRange}
+          onChange={(next) => {
+            setTimeRange(next)
+            // Picking dates filters the results already on screen. Debounced:
+            // typing a year emits a valid date per keystroke.
+            if (query.trim() && results.length > 0) researchForWindow(next, onSearch)
+          }}
+        />
         <div style={{ fontSize: '10px', color: 'var(--text-hint)', marginTop: '4px' }}>
-          Quick-look, coverage checks, and Retrieve below use this area/window.
+          Search shows datasets with data in this window. Quick-look, coverage checks, and Retrieve use this area and window.
         </div>
       </div>
 

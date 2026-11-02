@@ -6,11 +6,12 @@ other exhaustible resource a burst of large retrievals can run the container
 out of -- and the one this project has already been bitten by (docker_data.vhdx
 grew to 296 GB and needed a prune plus a diskpart compact to reclaim ~280 GB).
 
-The extract cache is the odd one out among the three on-disk stores:
+The extract cache is the odd one out among the on-disk stores:
 
-    cube_store            CUBE_STORE_MAX_BYTES   = 4 GiB   swept at startup
-    frame_store           FRAME_STORE_MAX_BYTES  = 1 GiB   swept at startup
-    bundle extract cache  (none)                           swept only on write
+    cube_store            CUBE_STORE_MAX_BYTES     = 4 GiB   swept at startup
+    frame_store           FRAME_STORE_MAX_BYTES    = 1 GiB   swept at startup
+    overlay_store         OVERLAY_STORE_MAX_BYTES  = 1 GiB   swept at startup
+    bundle extract cache  (none)                             swept only on write
 
 Nothing caps it, and ``bundle_open_max_uncompressed_bytes`` allows a *single*
 bundle to extract up to 8 GiB, so N retrievals inside one TTL window retain

@@ -56,26 +56,30 @@ class PhaseTimerTests(unittest.TestCase):
 
     def test_nested_phases_each_record_their_own_span(self):
         """``open`` contains ``extract``; the outer phase must not be charged
-        only for the part outside the inner one, nor the inner for the whole."""
-        import time
+        only for the part outside the inner one, nor the inner for the whole.
 
+        Driven by a fake clock rather than sleeps: a real 20 ms gap measured
+        as 15 ms on a 15.6 ms-tick Windows clock and failed this test."""
+        from unittest.mock import patch
+
+        from tta_backend.utils import phase_timing
         from tta_backend.utils.phase_timing import phase_timer
 
+        now = [100.0]
         outer_before = _phase_samples("open")
         inner_before = _phase_samples("extract")
-        with phase_timer("open"):
-            time.sleep(0.02)
-            with phase_timer("extract"):
-                time.sleep(0.05)
+        with patch.object(phase_timing.time, "perf_counter", lambda: now[0]):
+            with phase_timer("open"):
+                now[0] += 0.02
+                with phase_timer("extract"):
+                    now[0] += 0.05
         outer_after = _phase_samples("open")
         inner_after = _phase_samples("extract")
 
         self.assertEqual(outer_after[0] - outer_before[0], 1)
         self.assertEqual(inner_after[0] - inner_before[0], 1)
-        outer_seconds = outer_after[1] - outer_before[1]
-        inner_seconds = inner_after[1] - inner_before[1]
-        self.assertGreaterEqual(inner_seconds, 0.04)
-        self.assertGreaterEqual(outer_seconds, inner_seconds + 0.015)
+        self.assertAlmostEqual(outer_after[1] - outer_before[1], 0.07, places=9)
+        self.assertAlmostEqual(inner_after[1] - inner_before[1], 0.05, places=9)
 
     def test_a_phase_that_raises_still_records_and_re_raises(self):
         """A slow phase that then failed is exactly what a "why was that turn

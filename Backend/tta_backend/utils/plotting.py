@@ -27,7 +27,7 @@ from shapely.geometry import box, shape, Polygon, MultiPolygon
 from rasterio.features import rasterize
 from affine import Affine
 
-from typing import Optional, Tuple, Union
+from typing import Any, Optional, Tuple, Union
 
 from tta_backend.config.settings import get_settings
 from tta_backend.datasets.us_states import US_STATES
@@ -89,7 +89,7 @@ _ZERO_AREA_GEOJSON_TYPES = frozenset(
 
 
 @functools.lru_cache(maxsize=1)
-def load_preset_polygons() -> dict:
+def load_preset_polygons() -> dict[str, Any]:
     """``{preset_id: shapely geometry}`` from the checked-in preset GeoJSON,
     parsed once. Returns ``{}`` (so callers fall back to bounding boxes) if
     the asset is missing or unreadable rather than failing region resolution
@@ -125,7 +125,7 @@ _ADMIN0_COUNTRIES_PATH = os.path.join(
 
 
 @functools.lru_cache(maxsize=1)
-def load_admin0_polygons() -> dict:
+def load_admin0_polygons() -> dict[str, Any]:
     """``{normalized ADMIN: {"name": ADMIN, "geometry": geom}}``, parsed once.
 
     Keys are already normalized by the builder, so ``"bahamas"`` resolves even
@@ -214,7 +214,7 @@ def plot_map(
     percentile_scale: bool = True,
     add_gridlines: bool = True,
     time_slice: Optional[int] = None
-):
+) -> tuple[Figure, Any]:
     """
     Plot air quality data on a Cartopy map with proper extent and masking.
 
@@ -273,7 +273,7 @@ def plot_map(
 
         if time_dim is None:
             # Assume first dimension is time if not found
-            time_dim = data_array.dims[0]
+            time_dim = str(data_array.dims[0])
 
         # Select time slice
         if time_slice is None:
@@ -334,7 +334,7 @@ def plot_map(
                 lon_range,
                 lat_range,
             )
-            fig_width, fig_height = 10, 6
+            fig_width, fig_height = 10.0, 6.0
         else:
             aspect_ratio = lon_range / lat_range
 
@@ -420,7 +420,7 @@ def plot_map(
 
     return fig, ax
 
-def _non_selectable_dims(data_array: xr.DataArray) -> set:
+def _non_selectable_dims(data_array: xr.DataArray) -> set[Any]:
     """Dims that never require an explicit selection: spatial (lat/lon, by
     CF identification -- T24) and time (by CF identification -- T25, the one
     transparent auto-reduction)."""
@@ -469,7 +469,7 @@ def _dimension_choice_error(data_array: xr.DataArray, dim: str) -> MCPToolError:
     )
 
 
-def _select_dim_nearest(data_array: xr.DataArray, dim_name: str, value) -> xr.DataArray:
+def _select_dim_nearest(data_array: xr.DataArray, dim_name: str, value: Any) -> xr.DataArray:
     """Select ``value`` along ``dim_name`` by nearest match, but refuse a
     request that falls outside the coordinate's own min--max range instead of
     silently snapping to an edge level. ``method="nearest"`` alone turns a
@@ -496,7 +496,7 @@ def _select_dim_nearest(data_array: xr.DataArray, dim_name: str, value) -> xr.Da
     return data_array.sel({dim_name: value}, method="nearest")
 
 
-def _select_dim_positional(data_array: xr.DataArray, dim_name: str, value) -> xr.DataArray:
+def _select_dim_positional(data_array: xr.DataArray, dim_name: str, value: Any) -> xr.DataArray:
     """Select by integer position along a coordinate-less ``dim_name``,
     keeping the same refuse-don't-snap contract as ``_select_dim_nearest``:
     a fractional or out-of-range index is a structured, range-naming error,
@@ -532,7 +532,7 @@ def _dimension_out_of_range_error(
     )
 
 
-def _normalize_to_2d(data_array: xr.DataArray, dim_selector: dict | None = None) -> xr.DataArray:
+def _normalize_to_2d(data_array: xr.DataArray, dim_selector: dict[str, Any] | None = None) -> xr.DataArray:
     """
     Squeeze a DataArray down to 2D (lat, lon):
       1. Drop all size-1 dimensions (handles Time=1 cleanly).
@@ -560,7 +560,7 @@ def _normalize_to_2d(data_array: xr.DataArray, dim_selector: dict | None = None)
 
     extra_dims = [d for d in data_array.dims if d not in non_selectable]
     if extra_dims:
-        raise _dimension_choice_error(data_array, extra_dims[0])
+        raise _dimension_choice_error(data_array, str(extra_dims[0]))
 
     return data_array
 
@@ -678,7 +678,9 @@ def half_cell(coords: np.ndarray) -> float:
     return 0.5
 
 
-def sel_bounds(da, lat_coord, lon_coord, bounds):
+def sel_bounds(
+    da: xr.DataArray, lat_coord: str, lon_coord: str, bounds: tuple[float, float, float, float],
+) -> xr.DataArray:
     """
     Crop a DataArray to (minx, miny, maxx, maxy) bounds in a coordinate-order-
     safe way.  xarray slice() requires start <= stop when coords are increasing
@@ -729,7 +731,7 @@ def _crop_to_mask_footprint(
     and must never be the reason a turn fails or a number moves.
     """
     try:
-        lat_dim, lon_dim = mask_da.dims
+        lat_dim, lon_dim = map(str, mask_da.dims)
         if lat_dim not in data_array.dims or lon_dim not in data_array.dims:
             return data_array, mask_da
 
@@ -862,7 +864,7 @@ def mask_data_by_geometry(
     return masked
 
 
-def apply_mask_region_type(masked: xr.DataArray, region: dict) -> None:
+def apply_mask_region_type(masked: xr.DataArray, region: dict[str, Any]) -> None:
     """Downgrade ``region['region_type']`` to the masking-time fact when the
     mask self-healed (T42): a sub-cell region that ``geometry_mask`` rescued
     with ``all_touched`` is ``boundary_cells``, not the polygon/box/point the
@@ -889,10 +891,11 @@ def apply_mask_region_type(masked: xr.DataArray, region: dict) -> None:
 class GeocodingService:
     """Free geocoding using Nominatim (OpenStreetMap) with polygon and bounding box"""
 
-    def __init__(self, cache_ttl_seconds: int = 24 * 60 * 60):
-        self.cache = {}
+    def __init__(self, cache_ttl_seconds: int = 24 * 60 * 60) -> None:
+        # normalized name -> (expires_at, geocode result)
+        self.cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self.cache_ttl_seconds = cache_ttl_seconds
-        self.last_request = 0
+        self.last_request = 0.0
         # Guards the read-modify-write on last_request below: geocode()
         # (sync, sometimes run in a worker thread) and ageocode() (async, on
         # the event loop) share this one throttle timestamp, and without
@@ -919,7 +922,7 @@ class GeocodingService:
     def _cache_key(self, location_name: str) -> str:
         return " ".join(location_name.lower().strip().split())
 
-    def _get_cached(self, location_name: str):
+    def _get_cached(self, location_name: str) -> dict[str, Any] | None:
         key = self._cache_key(location_name)
         entry = self.cache.get(key)
         if not entry:
@@ -935,11 +938,11 @@ class GeocodingService:
         logger.info("satellite_geocode_cache_miss", extra={"_location": location_name})
         return None
 
-    def _store_cached(self, location_name: str, result: dict):
+    def _store_cached(self, location_name: str, result: dict[str, Any]) -> None:
         key = self._cache_key(location_name)
         self.cache[key] = (time.time() + self.cache_ttl_seconds, result)
 
-    def geocode(self, location_name):
+    def geocode(self, location_name: str) -> dict[str, Any] | None:
         """Convert location name to coordinates, polygon, and bounding box"""
         cached = self._get_cached(location_name)
         if cached is not None:
@@ -951,7 +954,7 @@ class GeocodingService:
             time.sleep(wait_seconds)
 
         url = "https://nominatim.openstreetmap.org/search"
-        params = {
+        params: dict[str, str | int] = {
             'q': location_name,
             'format': 'json',
             'limit': 1,
@@ -1005,7 +1008,7 @@ class GeocodingService:
 
         return None
 
-    async def ageocode(self, location_name):
+    async def ageocode(self, location_name: str) -> dict[str, Any] | None:
         """Async version of geocode() for agent tools running on the event loop."""
         cached = self._get_cached(location_name)
         if cached is not None:
@@ -1016,7 +1019,7 @@ class GeocodingService:
             await asyncio.sleep(wait_seconds)
 
         url = "https://nominatim.openstreetmap.org/search"
-        params = {
+        params: dict[str, str | int] = {
             'q': location_name,
             'format': 'json',
             'limit': 1,
@@ -1165,7 +1168,7 @@ class RegionResolver:
         **{key: key for key in US_STATES},
     }
 
-    def _finalize_preset(self, preset: dict, key: str) -> dict:
+    def _finalize_preset(self, preset: dict[str, Any], key: str) -> dict[str, Any]:
         """Return a preset enriched with the T42 fidelity disclosure fields.
         A multi-country concept (US, a continent) is upgraded to its real
         Natural Earth polygon and labelled ``region_type: polygon``; every
@@ -1185,7 +1188,7 @@ class RegionResolver:
         return region
 
     @staticmethod
-    def _geocoded_region(geo_result: dict) -> dict:
+    def _geocoded_region(geo_result: dict[str, Any]) -> dict[str, Any]:
         """Build a RegionResult from a geocoder hit, disclosing which kind of
         footprint it is: ``polygon`` when Nominatim returned a real boundary,
         or ``point_buffer`` when it didn't and we mint a 0.1° box around the
@@ -1232,7 +1235,7 @@ class RegionResolver:
         normalized = " ".join(location_name.lower().strip().split())
         return normalized.removeprefix("the ")
 
-    def resolve_location(self, location_name: str):
+    def resolve_location(self, location_name: str) -> dict[str, Any] | None:
         """Convert location name to RegionResult with geometry"""
         # T60 D5/D11a: the ``+`` grammar reads the RAW string, ahead of
         # normalization, because the split has to happen before "the " is
@@ -1273,7 +1276,7 @@ class RegionResolver:
 
         return self._geocoded_region(geo_result)
 
-    async def aresolve_location(self, location_name: str):
+    async def aresolve_location(self, location_name: str) -> dict[str, Any] | None:
         """Async version of resolve_location() for agent tool execution."""
         # T60 D5: the same gate, in the same place, for the same reason as the
         # sync twin -- the composition tier is pure, so both share one copy.
@@ -1301,7 +1304,7 @@ class RegionResolver:
 
         return self._geocoded_region(geo_result)
 
-    def plot_singular(self, data_array, location_name, **kwargs):
+    def plot_singular(self, data_array: xr.DataArray, location_name: str, **kwargs: Any) -> tuple[Figure, Any]:
         """Plot data for a single location"""
         region = self.resolve_location(location_name)
         if region is None:

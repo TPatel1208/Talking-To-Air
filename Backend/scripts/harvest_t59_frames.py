@@ -126,7 +126,7 @@ def main() -> int:
         "budgets": [],
     }
 
-    for target, k, arr in zip(args.cells, ks, computed):
+    for target, k, arr in zip(args.cells, ks, computed, strict=True):
         vals = np.asarray(arr.values, dtype=np.float32)
         path = os.path.join(args.out_dir, f"{tag}_{infix}{target}.npy")
         np.save(path, vals)

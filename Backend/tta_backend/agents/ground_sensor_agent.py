@@ -9,7 +9,10 @@ The supervisor is solely responsible for conversation history.
 """
 import logging
 
+from typing import Any
+
 from langchain.agents import create_agent
+from langgraph.graph.state import CompiledStateGraph
 
 from tta_backend.agents.subagent_trim import build_subagent_trim_middleware
 from tta_backend.config.model_factory import build_chat_model
@@ -21,7 +24,7 @@ from tta_backend.utils.streaming import stream_response
 logger = logging.getLogger(__name__)
 
 
-def build_ground_agent(model: str | None = None, provider: str | None = None):
+def build_ground_agent(model: str | None = None, provider: str | None = None) -> CompiledStateGraph[Any, Any, Any, Any]:
     """
     Build and return a stateless ground sensor agent.
 
@@ -55,32 +58,37 @@ def build_ground_agent(model: str | None = None, provider: str | None = None):
     # This agent is stateless (no checkpointer), so subagent_dispatch's T15
     # retry demotion — one structured-output re-prompt instead of a full
     # tool-workflow re-run — has no other way to reach the raw chat model.
-    agent.subagent_model = llm
+    agent.subagent_model = llm  # type: ignore[attr-defined]  # an ad-hoc attribute; see above
     return agent
 
 
 if __name__ == "__main__":
+    import asyncio
     import uuid
 
-    agent = build_ground_agent()
-    print("Ground sensor agent started (stateless REPL)")
+    async def _repl() -> None:
+        # stream_response is an async generator, so the REPL has to run on a loop.
+        agent = build_ground_agent()
+        print("Ground sensor agent started (stateless REPL)")
 
-    while True:
-        try:
-            user_input = input("You: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\nGoodbye!")
-            break
+        while True:
+            try:
+                user_input = (await asyncio.to_thread(input, "You: ")).strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\nGoodbye!")
+                break
 
-        if not user_input or user_input.lower() in {"quit", "exit", "q"}:
-            break
+            if not user_input or user_input.lower() in {"quit", "exit", "q"}:
+                break
 
-        # In stateless mode each REPL turn is a fresh invocation.
-        for event_type, data in stream_response(agent, user_input, thread_id=str(uuid.uuid4())):
-            if event_type == "tool_call":
-                print(f"\n⚙ Calling: {data['name']} | args: {data['args']}")
-            elif event_type == "tool_result":
-                print(f"[{data['name']}]: {data['content']}")
-            elif event_type == "text":
-                print(f"\n{data}")
-        print()
+            # Stateless: each REPL turn is a fresh invocation.
+            async for event_type, data in stream_response(agent, user_input, thread_id=str(uuid.uuid4())):
+                if event_type == "tool_call":
+                    print(f"\n⚙ Calling: {data['name']} | args: {data['args']}")
+                elif event_type == "tool_result":
+                    print(f"[{data['name']}]: {data['content']}")
+                elif event_type == "text":
+                    print(f"\n{data}")
+            print()
+
+    asyncio.run(_repl())

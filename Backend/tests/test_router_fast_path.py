@@ -86,9 +86,8 @@ def _no_monitor_context():
 @unittest.skipIf(importlib.util.find_spec("langchain") is None, "langchain is not installed")
 class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        from tta_backend.services import subagent_dispatch
-
-        subagent_dispatch.get_call_budget().clear()
+        from tta_backend.utils.streaming import get_call_budget
+        get_call_budget().clear()
 
     async def test_ground_only_message_invokes_only_the_ground_agent(self):
         from tta_backend.services.chat_stream_service import ChatStreamService
@@ -112,7 +111,7 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(ground_agent.invocations), 1)
         joined = "".join(events)
         self.assertIn("event: text", joined)
-        self.assertIn("Agent consulted: GROUND", joined)
+        self.assertIn("Data sources: EPA AQS", joined)
         self.assertIn("event: done", joined)
 
     async def test_satellite_only_message_invokes_only_the_satellite_agent(self):
@@ -135,7 +134,7 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(satellite_agent.invocations, 1)
         joined = "".join(events)
         self.assertIn("event: tool_call", joined)  # forwarded live from the sub-agent's own stream
-        self.assertIn("Agent consulted: SATELLITE", joined)
+        self.assertIn("Data sources: NASA Earthdata", joined)
         self.assertIn("event: done", joined)
 
     async def test_satellite_fast_path_suppresses_the_sub_agents_own_text_and_tool_result(self):
@@ -148,7 +147,7 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         that JSON to the researcher and then repeat the same answer again as
         the synthesized final message (T14 Out of Scope: no sub-agent token
         streaming through this path). Exactly one text event may reach the
-        wire: the finalized answer under its "Agent consulted" header.
+        wire: the finalized answer under its "Data sources" header.
         """
         from tta_backend.services.chat_stream_service import ChatStreamService
         from tta_backend.services.chart_service import ChartService
@@ -168,7 +167,7 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(joined.count("event: text"), 1, joined)
         self.assertNotIn("event: tool_result", joined)
         # The one text event is the synthesized answer, not the raw envelope.
-        self.assertIn("Agent consulted: SATELLITE", joined)
+        self.assertIn("Data sources: NASA Earthdata", joined)
         self.assertNotIn('\\"summary\\"', joined)
 
     async def test_satellite_fast_path_forwards_the_stage_and_detail_fields_over_sse(self):
@@ -556,8 +555,15 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
             saved.setdefault(payload["chart_id"], {**payload, "thread_id": thread_id, "user_id": user_id})
             return saved[payload["chart_id"]]
 
+        async def fake_get_chart(chart_id):
+            return saved.get(chart_id)
+
+        async def fake_get_charts(chart_ids, user_id):
+            return {c: saved[c] for c in chart_ids if c in saved and saved[c]["user_id"] == user_id}
+
         with patch("tta_backend.services.chat_stream_service.run_satellite", AsyncMock(return_value=satellite_result)), \
-             patch("tta_backend.services.chart_service.chart_repository.get_chart", AsyncMock(return_value=None)), \
+             patch("tta_backend.services.chart_service.chart_repository.get_chart", AsyncMock(side_effect=fake_get_chart)), \
+             patch("tta_backend.services.chart_service.chart_repository.get_charts", AsyncMock(side_effect=fake_get_charts)), \
              patch("tta_backend.services.chart_service.chart_repository.save_chart", AsyncMock(side_effect=fake_save_chart)):
             [
                 event

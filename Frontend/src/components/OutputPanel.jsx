@@ -22,6 +22,8 @@ import { MetaField } from './metadataPrimitives.jsx'
 import { smallButtonStyle, copyToClipboard } from '../utils/metadataUiHelpers.js'
 import { resolveMasking, resolveRegionFidelity, formatQaPassRate, regionTypeNote, regionOriginNote } from '../utils/maskingProvenance'
 import { evidenceRows } from '../utils/evidenceSummary'
+import { compactDateRange, formatStatValue, formatUnits } from '../utils/displayFormat.js'
+import SciText from './SciText.jsx'
 import { filledCharts } from '../utils/compareMode'
 import { focusChartPayload } from '../utils/compareSlotOverview'
 import { shouldShowCollapseHint } from '../utils/compareLayoutHint'
@@ -36,6 +38,7 @@ import {
   rawArtifactMetadataJson,
 } from '../utils/artifactMetadataDisplay'
 import { apiFetch } from '../utils/apiFetch.js'
+import { API_BASE } from '../config.js'
 
 // Every render branch of this panel is the same flex child of the app's one
 // row, so every one of them needs the same floor. It used to be `minWidth: 0`
@@ -56,9 +59,41 @@ const panelRootStyle = {
 // not, because it centres its content rather than scrolling it.
 const panelRootClipped = { ...panelRootStyle, overflow: 'hidden' }
 
-function compactDate(value) {
-  if (!value) return ''
-  return String(value).replace('T00:00:00', '').replace('T23:59:59', '').replace(/Z$/, '')
+const SINGLE_MAP_MAX_HEIGHT = 560
+const SINGLE_MAP_MIN_HEIGHT = 320
+
+// The single map, sized to the visible height of the scroll pane it sits in so
+// the map, its title and its colorbar fit on a laptop screen without scrolling.
+// Capped at the old fixed height so taller screens look the same. It mounts
+// only once measured, so maplibre is built at its real size.
+function FittedSingleMap(props) {
+  const ref = useRef(null)
+  const [height, setHeight] = useState(null)
+  useEffect(() => {
+    const wrapper = ref.current
+    const pane = wrapper?.parentElement
+    if (!pane) return undefined
+    const measure = () => {
+      const style = getComputedStyle(pane)
+      const visible = pane.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)
+      // `height` sizes the map and colorbar only; the panel's title sits on
+      // top of it and wraps with the width, so take off whatever the last
+      // render drew beyond `height`.
+      setHeight((prev) => {
+        const extra = prev === null ? 0 : wrapper.offsetHeight - prev
+        return Math.floor(Math.min(SINGLE_MAP_MAX_HEIGHT, Math.max(SINGLE_MAP_MIN_HEIGHT, visible - extra)))
+      })
+    }
+    const observer = new ResizeObserver(measure)
+    observer.observe(pane)
+    observer.observe(wrapper)
+    return () => observer.disconnect()
+  }, [])
+  return (
+    <div ref={ref} style={{ flexShrink: 0 }}>
+      {height !== null && <MapLibreHeatmapPanel {...props} height={height} />}
+    </div>
+  )
 }
 
 function chartTitle(chart) {
@@ -70,8 +105,8 @@ function chartMetaChips(chart) {
   const chips = []
   if (p.dataset) chips.push(p.dataset)
   const units = chart.units || p.units
-  if (units) chips.push(units)
-  const dateRange = [compactDate(p.start_date), compactDate(p.end_date)].filter(Boolean).join(' → ')
+  if (units) chips.push(formatUnits(units))
+  const dateRange = compactDateRange(p.start_date, p.end_date, ' → ')
   if (dateRange) chips.push(dateRange)
   if (p.region_name) chips.push(p.region_name)
   return chips
@@ -81,7 +116,7 @@ function artifactMetaChips(artifact) {
   const meta = artifact.metadata || {}
   const chips = []
   if (meta.variable) chips.push(meta.variable)
-  if (meta.units) chips.push(meta.units)
+  if (meta.units) chips.push(formatUnits(meta.units))
   if (Array.isArray(meta.bbox)) chips.push(meta.bbox.map(v => Number(v).toFixed(2)).join(', '))
   return chips
 }
@@ -109,7 +144,7 @@ function MetaChip({ children }) {
       background: 'var(--bg-secondary)', border: '1px solid var(--border)',
       borderRadius: '7px', padding: '5px 10px',
     }}>
-      {children}
+      <SciText>{children}</SciText>
     </div>
   )
 }
@@ -123,7 +158,7 @@ function StatCard({ label, value, subtitle }) {
       borderRadius: '10px', padding: '11px 13px',
     }}>
       <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '5px' }}>{label}</div>
-      <div style={{ fontSize: '15px', fontWeight: 800, fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>{value}</div>
+      <div style={{ fontSize: '15px', fontWeight: 800, fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}><SciText>{value}</SciText></div>
       {subtitle && (
         <div style={{ fontSize: '10.5px', color: 'var(--text-muted)', marginTop: '4px', lineHeight: 1.35 }}>
           {subtitle}
@@ -231,7 +266,7 @@ function EvidenceSection({ chart }) {
               )}
             </div>
             <div style={{ fontSize: '13px', fontWeight: 800, fontFamily: 'var(--font-mono)', color: 'var(--text-primary)', whiteSpace: 'nowrap', textAlign: 'right' }}>
-              {row.valueText}
+              <SciText>{row.valueText}</SciText>
             </div>
           </div>
         ))}
@@ -306,7 +341,6 @@ function StatisticsTab({ chart, stop, statistic = 'mean' }) {
       </div>
     )
   }
-  const fmt = (n) => Number.isFinite(n) ? n.toExponential(3) : '—'
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
       {isInterval && (
@@ -320,9 +354,9 @@ function StatisticsTab({ chart, stop, statistic = 'mean' }) {
             they are of -- the regional max of the MEAN field is a different
             number from the max plane's peak (50.5 against 100.0 on Phase 12's
             fixture), and they wear the same word. */}
-        <StatCard label="Mean" value={`${fmt(stats.mean)} ${stats.units || ''}`} subtitle={stats.fieldNote} />
-        <StatCard label="Max" value={`${fmt(stats.max)} ${stats.units || ''}`} subtitle={stats.fieldNote} />
-        <StatCard label="Min" value={`${fmt(stats.min)} ${stats.units || ''}`} subtitle={stats.fieldNote} />
+        <StatCard label="Mean" value={formatStatValue(stats.mean, stats.units)} subtitle={stats.fieldNote} />
+        <StatCard label="Max" value={formatStatValue(stats.max, stats.units)} subtitle={stats.fieldNote} />
+        <StatCard label="Min" value={formatStatValue(stats.min, stats.units)} subtitle={stats.fieldNote} />
         {/* "Valid values" answers "did we get data at all"; the QA pass rate
             answers "how much of what we got survived the quality mask". Both
             stay, and each states its basis so they can't be conflated. The
@@ -416,7 +450,7 @@ function VariableDefinitionSection({ chart }) {
   return (
     <>
       <MetaField label="Long name" value={longName} />
-      <MetaField label="Units" value={units} />
+      <MetaField label="Units" value={formatUnits(units)} />
       <MetaField label="Advisory notes" value={advisoryNotes} />
       <MetaField label="Valid range" value={validRange} />
       <MetaField label="Mask note" value={maskNote} />
@@ -495,7 +529,7 @@ function useTableColumnsPreview(artifact) {
   useEffect(() => {
     if (!artifact?.id || artifact.type !== 'table') return undefined
     let cancelled = false
-    apiFetch(`/api/artifacts/${artifact.id}?offset=0&limit=1`)
+    apiFetch(`${API_BASE}/artifacts/${artifact.id}?offset=0&limit=1`)
       .then(response => (response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`))))
       .then(page => { if (!cancelled) setState({ page, status: 'ready' }) })
       .catch(() => { if (!cancelled) setState({ page: null, status: 'failed' }) })
@@ -533,7 +567,7 @@ function TableCsvExport({ artifact }) {
   async function downloadCsv() {
     setState('downloading')
     try {
-      const response = await apiFetch(`/api/artifacts/${artifact.id}/csv`)
+      const response = await apiFetch(`${API_BASE}/artifacts/${artifact.id}/csv`)
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const blob = await response.blob()
       const disposition = response.headers.get('content-disposition')
@@ -1063,9 +1097,8 @@ export default function OutputPanel({
       <div ref={plotRootRef} style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '18px 22px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
         {activeTab === 'map' && chart.type === 'heatmap' && (
           <>
-            <MapLibreHeatmapPanel
+            <FittedSingleMap
               payload={chart}
-              height={480}
               colorScaleOverride={scrubScale}
               frame={activeFrame}
             />

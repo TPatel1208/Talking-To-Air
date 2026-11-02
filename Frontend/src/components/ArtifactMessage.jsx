@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { sortArtifactRows } from '../utils/artifactTable'
 import { apiFetch } from '../utils/apiFetch.js'
+import { formatUnits } from '../utils/displayFormat.js'
+import SciText from './SciText.jsx'
+import { API_BASE } from '../config.js'
 
-const API_BASE = '/api'
 const PAGE_SIZE = 100
 
 function filenameFromDisposition(disposition, fallback) {
@@ -116,7 +118,7 @@ export function MetaRow({ label, value }) {
   return (
     <div style={{ display: 'flex', gap: '6px', marginBottom: '4px' }}>
       <span style={{ color: 'var(--text-muted)', flexShrink: 0 }}>{label}:</span>
-      <span style={{ overflowWrap: 'anywhere' }}>{value}</span>
+      <span style={{ overflowWrap: 'anywhere' }}><SciText>{value}</SciText></span>
     </div>
   )
 }
@@ -126,7 +128,7 @@ function MapArtifactCard({ artifact }) {
   return (
     <CardShell artifact={artifact}>
       <MetaRow label="Variable" value={meta.variable} />
-      <MetaRow label="Units" value={meta.units} />
+      <MetaRow label="Units" value={formatUnits(meta.units)} />
       <MetaRow label="Bounding box" value={meta.bbox?.map(v => Number(v).toFixed(2)).join(', ')} />
       <MetaRow label="Color range" value={meta.colorbar ? `${meta.colorbar.vmin} to ${meta.colorbar.vmax}` : null} />
       <MetaRow label="Source handles" value={meta.source_handles?.join(', ')} />
@@ -142,11 +144,11 @@ function ProfileArtifactCard({ artifact }) {
   return (
     <CardShell artifact={artifact}>
       <MetaRow label="Variable" value={meta.variable} />
-      <MetaRow label="Units" value={meta.units} />
+      <MetaRow label="Units" value={formatUnits(meta.units)} />
       <MetaRow label="Layers" value={meta.layer_count} />
       <MetaRow
         label="Vertical axis"
-        value={meta.vertical_axis && `${meta.vertical_axis}${meta.vertical_units ? ` (${meta.vertical_units})` : ''}`}
+        value={meta.vertical_axis && `${meta.vertical_axis}${meta.vertical_units ? ` (${formatUnits(meta.vertical_units)})` : ''}`}
       />
       <MetaRow label="Layer order" value={meta.layer_order} />
       <MetaRow label="Source handles" value={meta.source_handles?.join(', ')} />

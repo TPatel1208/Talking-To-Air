@@ -10,15 +10,17 @@ FastAPI initializes shared resources in `api.lifespan`:
 - builds the supervisor agent
 - closes database resources on shutdown
 
-EarthAccess is intentionally excluded from startup. Authentication happens only
-when an S3 or CMR satellite path calls `get_earthaccess_auth()`.
-
 ## Async request boundary
 
 `POST /chat` is an async endpoint. The LangGraph streaming iterator and chart
 persistence calls are still synchronous libraries, so the route advances them
 with `asyncio.to_thread(...)`. This keeps blocking I/O off the FastAPI event
 loop while preserving the existing SSE contract.
+
+Since T63 the SSE leaves over `GET /chat/{thread_id}/stream` rather than the
+POST, which returns 202 and lets the turn run detached from the connection
+that started it. Nothing above changes: the turn is the same coroutine doing
+the same work, and the event log sits between it and the reader.
 
 ## Grid processing offload
 

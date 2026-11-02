@@ -8,15 +8,17 @@ import tracemalloc
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Annotated, Optional
+from collections.abc import Awaitable, Callable
+from typing import Any, Annotated, AsyncIterator, Optional, Protocol, cast
 
 from fastapi import FastAPI, HTTPException, Path, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.security.utils import get_authorization_scheme_param
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
+from redis import asyncio as aioredis
+from redis.exceptions import RedisError
 from starlette.routing import Match
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -27,7 +29,7 @@ from tta_backend.agents.ground_sensor_agent import build_ground_agent
 from tta_backend.agents.supervisor_agent import build_agent
 from tta_backend.config.connectors import CONNECTOR_REGISTRY, CONNECTOR_REGISTRY_BY_TYPE
 from tta_backend.config.settings import get_settings
-from tta_backend.config.starter_prompts import STARTER_PROMPTS
+from tta_backend.config.starter_prompts import STARTER_PROMPTS, StarterPrompt
 from tta_backend.earthdata_mcp.connection import STATE_CONNECTING, STATE_READY, EarthdataMCPConnectionManager
 from tta_backend.earthdata_mcp.results import (
     CATEGORY_CONTRACT,
@@ -40,8 +42,11 @@ from tta_backend.earthdata_mcp.results import (
 )
 from tta_backend.repositories.chart_repository import ensure_chart_table
 from tta_backend.repositories.session_metadata_repository import (
+    SESSION_PAGE_SIZE,
+    InvalidSessionCursor,
     ensure_session_metadata_table,
     get_session_metadata,
+    mark_session_activity,
     save_session_metadata_once,
     session_belongs_to_user,
 )
@@ -54,9 +59,14 @@ from tta_backend.repositories.user_connector_repository import (
 )
 from tta_backend.repositories.artifact_repository import ensure_artifact_table
 from tta_backend.services import admission
-from tta_backend.services import cube_cache, frame_store, warmup
+from tta_backend.services import cube_cache, frame_store, overlay_store, turn_registry, warmup
 from tta_backend.services.open_handle import OPEN_PIPELINE_VERSION, sweep_extract_cache
-from tta_backend.services.connector_credential_service import EdlCredentialInjector
+from tta_backend.services.connector_credential_service import (
+    CONNECTOR_TYPE_EARTHDATA,
+    CONNECTOR_TYPE_EPA_AQS,
+    EdlCredentialInjector,
+    get_aqs_credential_injector,
+)
 from tta_backend.services.connector_token_service import TokenValidationError, decode_token_expiry
 from tta_backend.services.artifact_store import artifact_store
 from tta_backend.services.chat_stream_service import ChatStreamService
@@ -71,6 +81,8 @@ from tta_backend.services.discovery_service import (
     preview_dataset,
     search_datasets,
 )
+from tta_backend.services.turn_event_log import TurnEventLog
+from tta_backend.services.turn_registry import TurnRegistry
 from tta_backend.services.supabase_jwt import (
     AuthenticationError,
     IdentityProviderUnavailable,
@@ -80,6 +92,8 @@ from tta_backend.services.supabase_jwt import (
 from tta_backend.services.jobs_service import cancel_job, list_jobs
 from tta_backend.services.methods_export_service import build_methods_markdown
 from tta_backend.services.provenance_service import get_citations, get_lineage
+from cryptography.fernet import MultiFernet
+
 from tta_backend.utils.connector_crypto import encrypt_secret, get_connector_cipher
 from tta_backend.utils.db import active_pool_connections, check_db_pool, close_db_pool, init_db_pool, validate_config
 from tta_backend.utils.logging import configure_logging
@@ -89,6 +103,11 @@ from tta_backend.utils.metrics import (
     refresh_process_gauges,
     render_prometheus_metrics,
     set_db_pool_connections_active,
+)
+from tta_backend.tools.ground_sensor_tools.epa_aqs_tools import (
+    AqsCredentialsRejected,
+    AqsUnavailable,
+    validate_aqs_credentials,
 )
 from tta_backend.utils.streaming import current_user_id, iter_with_user_id, user_id_context
 
@@ -104,11 +123,11 @@ session_repository = SessionRepository()
 # Constructed at import time so tests can patch the verifier before requests.
 # validate_config() runs during lifespan before any request is served, so a missing
 # SUPABASE_URL may briefly produce "None/auth/v1" but cannot be used in a valid boot.
-supabase_verifier = SupabaseJwtVerifier(make_jwks_fetcher(settings.supabase_url),
+supabase_verifier = SupabaseJwtVerifier(make_jwks_fetcher(settings.supabase_url or ""),
                                         issuer = f"{settings.supabase_url}/auth/v1"
                                         )
 
-async def _on_earthdata_mcp_ready(tools: dict) -> None:
+async def _on_earthdata_mcp_ready(tools: dict[str, Any]) -> None:
     """earthdata_mcp_manager's on_ready hook (T17): refreshes the persistent
     app.state.earthdata_mcp_tools dict (read directly by the unmigrated chart
     export.png endpoint; export.csv/.nc moved to the readiness gate in T37) and
@@ -116,7 +135,7 @@ async def _on_earthdata_mcp_ready(tools: dict) -> None:
     current lifespan cycle assigned to app.state.satellite_agent — see
     agents/earthdata_agent.py for why a mutable placeholder, not a reassigned
     reference, is what makes this visible to the supervisor's already-built
-    ask_earthdata_agent tool closure.
+    dispatch tool closure.
 
     In-flight recovery (2026-07-21): the MCP server crash-restarts, killing the
     long-lived session; the manager reconnects and re-fires this hook with a new
@@ -137,6 +156,9 @@ async def _on_earthdata_mcp_ready(tools: dict) -> None:
 # last_used_at coalescing are only meaningful as process-lifetime state, and
 # the connector endpoints below invalidate it directly on re-paste/disconnect.
 edl_credential_injector = EdlCredentialInjector(settings)
+# The same instance epa_aqs_tools resolves through, so invalidating it here
+# reaches the AQS client.
+aqs_credential_injector = get_aqs_credential_injector()
 earthdata_mcp_manager = EarthdataMCPConnectionManager(
     settings, current_user_id, on_ready=_on_earthdata_mcp_ready, edl_injector=edl_credential_injector,
 )
@@ -146,7 +168,7 @@ chat_stream_service = ChatStreamService(
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global agent
     validate_config()
     # T61: start the JWKS fetch before the slow half of boot (pool, tables,
@@ -178,6 +200,11 @@ async def lifespan(app: FastAPI):
     # drop it and its bytes would go on counting against the cap.
     frame_store.sweep_store(OPEN_PIPELINE_VERSION)
 
+    # Overlay writes are staged and renamed into place; this removes staging
+    # files a process killed mid-write left behind. Size is bounded at write
+    # time by eviction, so there is nothing else to reclaim here.
+    overlay_store.sweep_store()
+
     # The third on-disk store, and the one that used to be reclaimed only as a
     # side effect of new work. Its pruner's other trigger is the start of an
     # extraction, so a backend that stops receiving bundle retrievals -- a quiet
@@ -206,6 +233,14 @@ async def lifespan(app: FastAPI):
     # .run_satellite gates on earthdata_mcp_manager.state before ever
     # touching it, so it's never invoked before _on_earthdata_mcp_ready
     # (module scope) fills it in.
+    # T63: one pool behind both. The log writes a turn's frames and the
+    # registry holds the per-thread claim and the idempotency records — same
+    # Redis, and no reason for two sets of connections to it.
+    assert settings.redis_url is not None  # validate_config() refused to boot without it
+    app.state.redis = aioredis.from_url(settings.redis_url, decode_responses=True)
+    app.state.turn_event_log = TurnEventLog(client=app.state.redis)
+    app.state.turn_registry = TurnRegistry(app.state.turn_event_log, client=app.state.redis)
+
     app.state.earthdata_mcp_tools = {}
     app.state.earthdata_mcp_manager = earthdata_mcp_manager
     app.state.satellite_agent = LazySatelliteAgent()
@@ -238,6 +273,14 @@ async def lifespan(app: FastAPI):
         app.state.satellite_agent = None
         app.state.earthdata_mcp_tools = None
         app.state.earthdata_mcp_manager = None
+        # The registry cancels whatever turns are still running; the log
+        # flushes what they had buffered. Both before the pool they share.
+        await app.state.turn_registry.aclose()
+        await app.state.turn_event_log.aclose()
+        await app.state.redis.aclose()
+        app.state.turn_registry = None
+        app.state.turn_event_log = None
+        app.state.redis = None
         await close_db_pool()
         logger.info("shutdown_complete")
 
@@ -375,17 +418,9 @@ def _retry_after_seconds(request: Request) -> int | None:
     return max(1, math.ceil(reset_at - time.time()))
 
 
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_response)
-
-# The one live consumer of the public output dir. StaticFiles resolves and
-# checks the directory when it is mounted, so this genuinely has to exist at
-# import — which is why the makedirs stays here while the two dead copies of
-# this constant (plot_tools, stat_tools) were simply deleted. Resolved from
-# settings so the test suite lands in a tempdir instead of creating
-# `Backend/outputs/` inside the checkout.
-OUTPUT_DIR = settings.output_dir
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-app.mount("/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
+# Starlette types every handler as taking a bare Exception; this one is only
+# ever registered for, and called with, RateLimitExceeded.
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_response)  # type: ignore[arg-type]
 
 PUBLIC_ENDPOINTS = {
     ("GET", "/health"),
@@ -421,7 +456,7 @@ def _route_path(request: Request) -> str:
 
 
 @app.middleware("http")
-async def record_request_metrics(request: Request, call_next):
+async def record_request_metrics(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
     started = time.perf_counter()
     status_code = 500
     path = _route_path(request)
@@ -439,17 +474,26 @@ async def record_request_metrics(request: Request, call_next):
         # observing here would put every /chat turn at ~0ms. Defer to the
         # iterator's own close instead; non-streaming routes are unaffected.
         if response is not None and hasattr(response, "body_iterator"):
-            _observe_request_metrics_at_stream_close(response, request.method, path, status_code, started)
+            _observe_request_metrics_at_stream_close(
+                cast(_StreamedBody, response), request.method, path, status_code, started,
+            )
         else:
             observe_http_request(request.method, path, status_code, time.perf_counter() - started)
 
 
+class _StreamedBody(Protocol):
+    """Any response streaming its body: StreamingResponse, or the private
+    response type BaseHTTPMiddleware's call_next builds, which is not one."""
+
+    body_iterator: AsyncIterator[str | bytes | memoryview]
+
+
 def _observe_request_metrics_at_stream_close(
-    response, method: str, path: str, status_code: int, started: float,
+    response: _StreamedBody, method: str, path: str, status_code: int, started: float,
 ) -> None:
     original_iterator = response.body_iterator
 
-    async def _timed_iterator():
+    async def _timed_iterator() -> AsyncIterator[str | bytes | memoryview]:
         try:
             async for chunk in original_iterator:
                 yield chunk
@@ -475,7 +519,7 @@ def _auth_error(status_code: int, detail: str, headers: dict[str, str] | None = 
 
 
 @app.middleware("http")
-async def require_authentication(request: Request, call_next):
+async def require_authentication(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
     if request.method == "OPTIONS" or (request.method, request.url.path) in PUBLIC_ENDPOINTS:
         return await call_next(request)
     if not any(route.matches(request.scope)[0] != Match.NONE for route in app.routes):
@@ -540,7 +584,7 @@ class ChatRequest(BaseModel):
 
 class DiscoverySearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=500)
-    filters: Optional[dict] = None
+    filters: Optional[dict[str, Any]] = None
 
 
 class DiscoveryPreviewRequest(BaseModel):
@@ -562,23 +606,28 @@ class DiscoveryGranulesRequest(BaseModel):
 class SetConnectorTokenRequest(BaseModel):
     token: str = Field(min_length=1, max_length=8192)
 
+class SetConnectorCredentialsRequest(BaseModel):
+    email: Annotated[str, StringConstraints(strip_whitespace=True, max_length=320, pattern=r"^[^@\s]+@[^@\s]+$")]
+    key: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=256)]
+
 class ConnectorStatusView(BaseModel):
     connector_type: str
     display_name: str
     auth_method: str
     description: str
     token_docs_url: str
+    docs_link_label: str
     status: str
     connected_at: Optional[datetime] = None
     expires_at: Optional[datetime] = None
 
-# T30: per-user connector (e.g. Earthdata Login) token storage. Registry-
-# driven -- CONNECTOR_REGISTRY is the single source of what cards the
-# frontend can render and what connector_type values these endpoints accept.
-# No endpoint here ever selects or returns encrypted_secret (see
-# repositories/user_connector_repository.py); this phase only stores the
-# token, nothing consumes it yet.
-def _connector_status(row: dict | None) -> str:
+# T30: per-user connector (Earthdata Login token, EPA AQS email + key)
+# storage. Registry-driven -- CONNECTOR_REGISTRY is the single source of what
+# cards the frontend can render and what connector_type values these
+# endpoints accept. No endpoint here ever selects or returns
+# encrypted_secret (see repositories/user_connector_repository.py), and the
+# AQS email is stored only inside it, so no response carries it either.
+def _connector_status(row: dict[str, Any] | None) -> str:
     if row is None:
         return "not_connected"
     expires_at = row.get("expires_at")
@@ -589,20 +638,21 @@ def _connector_status(row: dict | None) -> str:
     return "connected"
 
 
-def _connector_view(entry: dict, row: dict | None) -> ConnectorStatusView:
+def _connector_view(entry: dict[str, Any], row: dict[str, Any] | None) -> ConnectorStatusView:
     return ConnectorStatusView(
         connector_type=entry["connector_type"],
         display_name=entry["display_name"],
         auth_method=entry["auth_method"],
         description=entry["description"],
         token_docs_url=entry["token_docs_url"],
+        docs_link_label=entry["docs_link_label"],
         status=_connector_status(row),
         connected_at=row.get("connected_at") if row else None,
         expires_at=row.get("expires_at") if row else None,
     )
 
 
-def _require_connector_cipher():
+def _require_connector_cipher() -> MultiFernet:
     cipher = get_connector_cipher(settings)
     if cipher is None:
         raise HTTPException(
@@ -612,16 +662,33 @@ def _require_connector_cipher():
     return cipher
 
 
-def _connector_registry_entry(connector_type: str) -> dict:
+def _connector_registry_entry(connector_type: str) -> dict[str, Any]:
     entry = CONNECTOR_REGISTRY_BY_TYPE.get(connector_type)
     if entry is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown connector type")
     return entry
 
 
+def _require_auth_method(entry: dict[str, Any], auth_method: str) -> None:
+    if entry["auth_method"] != auth_method:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"{entry['display_name']} is not connected this way.",
+        )
+
+
+def _invalidate_connector_cache(connector_type: str, user_id: str) -> None:
+    """T31: a re-paste or disconnect must never be shadowed by the
+    injector's short-TTL cache of the previous (possibly invalid) row."""
+    if connector_type == CONNECTOR_TYPE_EARTHDATA:
+        edl_credential_injector.invalidate(user_id)
+    elif connector_type == CONNECTOR_TYPE_EPA_AQS:
+        aqs_credential_injector.invalidate(user_id)
+
+
 @app.get("/connectors")
 @limiter.limit("60/minute")
-async def list_connectors_endpoint(request: Request):
+async def list_connectors_endpoint(request: Request) -> dict[str, Any]:
     _require_connector_cipher()
     rows = {row["connector_type"]: row for row in await list_connectors_for_user(request.state.current_user.id)}
     return {"connectors": [_connector_view(entry, rows.get(entry["connector_type"])) for entry in CONNECTOR_REGISTRY]}
@@ -629,39 +696,69 @@ async def list_connectors_endpoint(request: Request):
 
 @app.put("/connectors/{connector_type}/token")
 @limiter.limit("5/minute")
-async def set_connector_token_endpoint(connector_type: ConnectorType, req: SetConnectorTokenRequest, request: Request):
+async def set_connector_token_endpoint(connector_type: ConnectorType, req: SetConnectorTokenRequest, request: Request) -> ConnectorStatusView:
     cipher = _require_connector_cipher()
     entry = _connector_registry_entry(connector_type)
+    _require_auth_method(entry, "token")
     try:
         expires_at = decode_token_expiry(req.token)
     except TokenValidationError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
     encrypted_secret = encrypt_secret(cipher, req.token)
     row = await upsert_connector(
         request.state.current_user.id, connector_type, entry["auth_method"], encrypted_secret, expires_at,
     )
-    # T31: a re-paste must never be shadowed by the injector's short-TTL
-    # cache of the previous (possibly invalid/expired) row.
-    edl_credential_injector.invalidate(request.state.current_user.id)
+    _invalidate_connector_cache(connector_type, request.state.current_user.id)
+    return _connector_view(entry, row)
+
+
+@app.put("/connectors/{connector_type}/credentials")
+@limiter.limit("5/minute")
+async def set_connector_credentials_endpoint(
+    connector_type: ConnectorType, req: SetConnectorCredentialsRequest, request: Request,
+) -> ConnectorStatusView:
+    """Stores an email + key pair (EPA AQS) after one live check against
+    the service. AQS keys never expire, so the row has no expires_at."""
+    cipher = _require_connector_cipher()
+    entry = _connector_registry_entry(connector_type)
+    _require_auth_method(entry, "email_key")
+    try:
+        await validate_aqs_credentials(req.email, req.key)
+    except AqsCredentialsRejected as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="EPA didn't accept that email and key. Check both match the signup email EPA sent.",
+        ) from exc
+    except AqsUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Couldn't reach EPA AQS to check that key. Try again in a minute.",
+        ) from exc
+
+    encrypted_secret = encrypt_secret(cipher, json.dumps({"email": req.email, "key": req.key}))
+    row = await upsert_connector(
+        request.state.current_user.id, connector_type, entry["auth_method"], encrypted_secret, None,
+    )
+    _invalidate_connector_cache(connector_type, request.state.current_user.id)
     return _connector_view(entry, row)
 
 
 @app.delete("/connectors/{connector_type}")
 @limiter.limit("10/minute")
-async def disconnect_connector_endpoint(connector_type: ConnectorType, request: Request):
+async def disconnect_connector_endpoint(connector_type: ConnectorType, request: Request) -> ConnectorStatusView:
     _require_connector_cipher()
     entry = _connector_registry_entry(connector_type)
     await delete_connector(request.state.current_user.id, connector_type)
-    # T31: a disconnect must never leave a stale cached token injectable
-    # for the rest of the cache's TTL window.
-    edl_credential_injector.invalidate(request.state.current_user.id)
+    _invalidate_connector_cache(connector_type, request.state.current_user.id)
     return _connector_view(entry, None)
 
 
-@app.get("/health")
+# response_model=None: this returns a plain dict or a 503 JSONResponse, and
+# FastAPI cannot build a response model from that union.
+@app.get("/health", response_model=None)
 @limiter.limit("120/minute")
-async def health(request: Request):
+async def health(request: Request) -> dict[str, Any] | JSONResponse:
     db_ok, db_error = await check_db_pool(timeout_seconds=2.0)
     active_agent = getattr(app.state, "agent", None) or agent
     agent_ok = active_agent is not None
@@ -683,14 +780,14 @@ async def health(request: Request):
 
 @app.get("/metrics")
 @limiter.limit("60/minute")
-def metrics(request: Request):
+def metrics(request: Request) -> Response:
     refresh_process_gauges()
     return Response(content=render_prometheus_metrics(), media_type=prometheus_content_type())
 
 
 @app.get("/config/auth")
 @limiter.limit("120/minute")
-def config_auth(request: Request):
+def config_auth(request: Request) -> dict[str, Any]:
     """The identity provider's coordinates, served at runtime rather than
     baked into the frontend bundle, so one image runs against either the dev or
     the prod Supabase project. Baking VITE_* in would mean a dev-keyed bundle
@@ -714,7 +811,7 @@ def config_auth(request: Request):
 
 @app.get("/debug/heap-snapshot")
 @limiter.limit("1/minute")
-async def heap_snapshot(request: Request, limit: int = 25):
+async def heap_snapshot(request: Request, limit: int = 25) -> dict[str, Any]:
     """T45: tracemalloc top-allocations snapshot for chasing a specific
     memory incident (the 2026-07-17 QA jump-and-plateau) -- gated behind
     DEBUG_HEAP_PROFILING_ENABLED, off by default, since tracemalloc adds
@@ -742,7 +839,7 @@ async def heap_snapshot(request: Request, limit: int = 25):
 
 @app.get("/config/map-tiles")
 @limiter.limit("120/minute")
-def config_map_tiles(request: Request):
+def config_map_tiles(request: Request) -> dict[str, Any]:
     """T23: basemap/terrain tile sources as configuration, not code, so a
     keyed or self-hosted provider can be swapped in without a redeploy.
     Unauthenticated -- the map needs these before the chart underneath it can
@@ -760,7 +857,7 @@ def config_map_tiles(request: Request):
 
 @app.get("/capabilities/starters")
 @limiter.limit("120/minute")
-def capabilities_starters(request: Request):
+def capabilities_starters(request: Request) -> list[StarterPrompt]:
     """T22: the empty-chat's example questions — unauthenticated so a
     first-time visitor sees them before signing in. The single backend-owned
     constant (config.starter_prompts) is also what the eval harness's
@@ -826,13 +923,44 @@ async def _handle_admission_overloaded(request: Request, exc: Exception) -> JSON
 @app.exception_handler(MCPToolError)
 async def _handle_mcp_tool_error(request: Request, exc: MCPToolError) -> JSONResponse:
     status_code = _CATEGORY_STATUS_CODES.get(exc.category, status.HTTP_500_INTERNAL_SERVER_ERROR)
-    body: dict = {"category": exc.category, "message": exc.message}
+    body: dict[str, Any] = {"category": exc.category, "message": exc.message}
     if exc.suggestion:
         body["suggestion"] = exc.suggestion
     return JSONResponse(status_code=status_code, content={"error": body})
 
 
-def _earthdata_tools(request: Request) -> dict:
+@app.exception_handler(RedisError)
+async def _handle_event_log_unavailable(request: Request, exc: RedisError) -> JSONResponse:
+    """D15: chat is down, not degraded, while the event log is unreachable.
+
+    Every event, the per-thread claim and the stop signal all travel through
+    it. The rejected alternatives both hide the outage — a direct-streaming
+    fallback keeps a branch alive that only runs during an incident, and
+    running without narration is a silent five-minute spinner.
+    """
+    logger.warning("turn_event_log_unavailable", exc_info=True,
+                   extra={"_event": "turn_event_log_unavailable"})
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"detail": "Chat is temporarily unavailable. Try again in a moment."},
+    )
+
+
+@app.exception_handler(turn_registry.RegistryClosing)
+async def _handle_registry_closing(request: Request, exc: Exception) -> JSONResponse:
+    """T63 Phase 4: this replica is draining, so the send goes elsewhere.
+
+    A 503 rather than a queue or a wait: the turn would have to outlive a
+    process that is on its way out, and the load balancer already has
+    somewhere to send the retry.
+    """
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"detail": "The server is restarting. Try again in a moment."},
+    )
+
+
+def _earthdata_tools(request: Request) -> dict[str, Any]:
     """Discovery/jobs/provenance endpoints' MCP tools, read through
     earthdata_mcp_manager (T17) rather than app.state.earthdata_mcp_tools
     directly, so a not-ready connection answers with the shared structured
@@ -845,12 +973,13 @@ def _earthdata_tools(request: Request) -> dict:
             f"The satellite data layer is temporarily unavailable (earthdata_mcp: {state}).",
             suggestion="Ground/EPA endpoints are unaffected. Try again in a moment.",
         )
-    return manager.tools
+    tools: dict[str, Any] = manager.tools
+    return tools
 
 
 @app.get("/chart/{chart_id}/export.csv")
 @limiter.limit("3/minute")
-async def export_chart_csv(chart_id: str, request: Request):
+async def export_chart_csv(chart_id: str, request: Request) -> StreamingResponse:
     # T37: resolved through the T17 readiness gate (shared structured 503),
     # never app.state.earthdata_mcp_tools directly — a not-ready MCP must
     # fail here, before any 200 header is committed, not inside the
@@ -879,7 +1008,7 @@ async def export_chart_csv(chart_id: str, request: Request):
             )
         )
     except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=422, detail=str(e)) from e
 
     return StreamingResponse(
         stream,
@@ -893,7 +1022,7 @@ async def export_chart_csv(chart_id: str, request: Request):
 
 @app.get("/chart/{chart_id}/export.png")
 @limiter.limit("20/minute")
-async def export_chart_png(chart_id: str, request: Request):
+async def export_chart_png(chart_id: str, request: Request) -> Response:
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
     try:
         with user_id_context(request.state.current_user.id):
@@ -911,7 +1040,7 @@ async def export_chart_png(chart_id: str, request: Request):
         # globe-wide chart. The handler above turns this into a 503.
         raise
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=422, detail=str(e)) from e
     return Response(
         content=content,
         media_type="image/png",
@@ -919,32 +1048,84 @@ async def export_chart_png(chart_id: str, request: Request):
     )
 
 
-def _chart_overlay_path(payload: dict, panel: int | None) -> str | None:
-    """Resolve the stored overlay PNG path for a chart, or its Nth panel /
-    difference panel for a heatmap_multi comparison (T23)."""
+def _chart_overlay_source(payload: dict[str, Any], panel: int | None) -> dict[str, Any] | None:
+    """The part of a chart payload that owns the overlay: the chart itself, or
+    for a heatmap_multi comparison its Nth panel / difference panel (T23)."""
     if payload.get("type") == "heatmap_multi":
         if panel is not None:
             panels = payload.get("panels") or []
-            if 0 <= panel < len(panels):
-                return (panels[panel].get("overlay") or {}).get("_path")
-            return None
-        return (payload.get("difference") or {}).get("overlay", {}).get("_path")
-    return (payload.get("overlay") or {}).get("_path")
+            source = panels[panel] if 0 <= panel < len(panels) else None
+        else:
+            source = payload.get("difference")
+        return source if isinstance(source, dict) else None
+    return payload
 
 
-def _read_overlay_bytes(path: str) -> bytes:
-    with open(path, "rb") as f:
-        return f.read()
+def _chart_overlay_path(payload: dict[str, Any], panel: int | None) -> str | None:
+    """Resolve the stored overlay PNG path for a chart or one of its panels."""
+    source = _chart_overlay_source(payload, panel) or {}
+    path: str | None = (source.get("overlay") or {}).get("_path")
+    return path
+
+
+async def _rescaled_overlay_png(
+    payload: dict[str, Any], panel: int | None, vmin: float | None, vmax: float | None, cmap: str | None,
+) -> bytes:
+    """The overlay recolored at ``vmin``..``vmax`` from its stored value
+    raster, at full resolution. A 404 covers a chart drawn before rasters were
+    stored and a raster the store has evicted; the frontend then recolors the
+    payload's thinned grid instead, as it did before."""
+    from tta_backend.utils import colormaps
+    from tta_backend.utils.overlay_render import render_value_raster_png
+
+    if vmin is None or vmax is None or not (math.isfinite(vmin) and math.isfinite(vmax)) or vmin >= vmax:
+        raise HTTPException(status_code=422, detail="vmin and vmax must both be finite, with vmin below vmax.")
+    source = _chart_overlay_source(payload, panel)
+    if source is None:
+        raise HTTPException(status_code=404, detail="This chart has no such panel.")
+    name = cmap or (source.get("colormap") or {}).get("name")
+    colormap = colormaps.by_name(name) if name else None
+    if colormap is None:
+        raise HTTPException(status_code=422, detail="Unknown colormap.")
+    raster = (source.get("overlay") or {}).get("_values") or {}
+    content = None
+    if raster.get("_path"):
+        content = await asyncio.to_thread(overlay_store.read_overlay, raster["_path"])
+    if content is None:
+        raise HTTPException(status_code=404, detail="This chart has no stored values to recolor.")
+    return await asyncio.to_thread(
+        render_value_raster_png, content, float(raster["lo"]), float(raster["hi"]), colormap.lut, vmin, vmax,
+    )
 
 
 @app.get("/chart/{chart_id}/overlay.png")
 @limiter.limit("120/minute")
-async def chart_overlay_png(chart_id: str, request: Request, panel: int | None = None):
+async def chart_overlay_png(
+    chart_id: str,
+    request: Request,
+    panel: int | None = None,
+    thumb: int | None = Query(default=None, ge=16, le=256),
+    vmin: float | None = None,
+    vmax: float | None = None,
+    cmap: str | None = Query(default=None, max_length=64),
+) -> Response:
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
-    overlay_path = _chart_overlay_path(payload, panel)
-    if not overlay_path or not os.path.isfile(overlay_path):
-        raise HTTPException(status_code=404, detail="This chart has no rendered overlay.")
-    content = await asyncio.to_thread(_read_overlay_bytes, overlay_path)
+    if vmin is not None or vmax is not None or cmap is not None:
+        # A scale chosen after the chart was drawn: compare mode's shared scale.
+        content = await _rescaled_overlay_png(payload, panel, vmin, vmax, cmap)
+    else:
+        overlay_path = _chart_overlay_path(payload, panel)
+        # A 404 covers both a chart that never had an overlay and one whose
+        # overlay the store has evicted. The frontend falls back to drawing the
+        # payload's grid in either case.
+        stored = None
+        if overlay_path:
+            stored = await asyncio.to_thread(overlay_store.read_overlay, overlay_path)
+        if stored is None:
+            raise HTTPException(status_code=404, detail="This chart has no rendered overlay.")
+        content = stored
+    if thumb is not None:
+        content = await asyncio.to_thread(overlay_store.thumbnail_png, content, thumb)
     return Response(content=content, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
@@ -964,7 +1145,7 @@ def _if_none_match(request: Request) -> set[str]:
 
 @app.get("/chart/{chart_id}/frames.f32.gz")
 @limiter.limit("30/minute")
-async def chart_frames(chart_id: str, request: Request):
+async def chart_frames(chart_id: str, request: Request) -> Response:
     """The float32 frame stack behind a chart's scrubber (T59).
 
     Serves the stored bytes still gzipped, so the browser inflates them
@@ -997,7 +1178,7 @@ async def chart_frames(chart_id: str, request: Request):
 
 @app.get("/chart/{chart_id}/frames.{statistic}.f32.gz")
 @limiter.limit("30/minute")
-async def chart_frame_plane(chart_id: str, statistic: str, request: Request):
+async def chart_frame_plane(chart_id: str, statistic: str, request: Request) -> Response:
     """One additional statistic's frame stack (T59 D6a decision 5).
 
     A path per statistic rather than a query parameter on the mean's URL. A
@@ -1045,7 +1226,7 @@ async def chart_frame_plane(chart_id: str, statistic: str, request: Request):
     return _frame_blob_response(blob, request)
 
 
-def _frame_blob_response(blob, request: Request) -> Response:
+def _frame_blob_response(blob: frame_store.FrameBlob, request: Request) -> Response:
     """The stored bytes, still gzipped, under the ETag they were stored with.
 
     Shared by the mean's route and every plane's, so the two cannot drift into
@@ -1064,7 +1245,7 @@ def _frame_blob_response(blob, request: Request) -> Response:
 
 @app.get("/chart/{chart_id}/provenance")
 @limiter.limit("30/minute")
-async def chart_provenance_endpoint(chart_id: str, request: Request):
+async def chart_provenance_endpoint(chart_id: str, request: Request) -> dict[str, Any]:
     tools = _earthdata_tools(request)
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
     source_handles = _chart_source_handles(payload)
@@ -1074,7 +1255,7 @@ async def chart_provenance_endpoint(chart_id: str, request: Request):
 
 @app.get("/chart/{chart_id}/citations")
 @limiter.limit("30/minute")
-async def chart_citations_endpoint(chart_id: str, request: Request):
+async def chart_citations_endpoint(chart_id: str, request: Request) -> dict[str, Any]:
     tools = _earthdata_tools(request)
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
     source_handles = _chart_source_handles(payload)
@@ -1084,7 +1265,7 @@ async def chart_citations_endpoint(chart_id: str, request: Request):
 
 @app.get("/chart/{chart_id}/methods.md")
 @limiter.limit("20/minute")
-async def chart_methods_endpoint(chart_id: str, request: Request):
+async def chart_methods_endpoint(chart_id: str, request: Request) -> Response:
     tools = _earthdata_tools(request)
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
     source_handles = _chart_source_handles(payload)
@@ -1111,7 +1292,7 @@ async def chart_methods_endpoint(chart_id: str, request: Request):
         )
     except MCPToolError:
         raise
-    except Exception:
+    except Exception as exc:
         # Any surprise inside the methods assembly (e.g. a KeyError on a
         # shifted provenance shape) is a contract failure, not a stack trace
         # to leak: classify it through the shared taxonomy handler with a
@@ -1122,7 +1303,7 @@ async def chart_methods_endpoint(chart_id: str, request: Request):
         raise MCPToolError(
             CATEGORY_CONTRACT,
             "The methods document could not be assembled for this chart.",
-        )
+        ) from exc
     return Response(
         content=markdown,
         media_type="text/markdown; charset=utf-8",
@@ -1132,7 +1313,7 @@ async def chart_methods_endpoint(chart_id: str, request: Request):
 
 @app.get("/chart/{chart_id}/export.nc")
 @limiter.limit("3/minute")
-async def export_chart_netcdf(chart_id: str, request: Request):
+async def export_chart_netcdf(chart_id: str, request: Request) -> StreamingResponse:
     # T37: same readiness gate (shared structured 503) as every other
     # MCP-backed endpoint, instead of a bespoke bare-detail 503.
     tools = _earthdata_tools(request)
@@ -1145,16 +1326,16 @@ async def export_chart_netcdf(chart_id: str, request: Request):
         with user_id_context(request.state.current_user.id):
             export = await export_converted(source_handles[0], "netcdf", tools)
     except DataDownloadError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=422, detail=str(e)) from e
 
     # T37: materialize the first chunk before committing to a 200 — an
     # evicted/vanished converted file raises here instead of streaming a
     # truncated "successful" download.
     try:
         stream = await materialize_first_chunk(iter_file_chunks(export["storage_uri"]))
-    except OSError:
+    except OSError as exc:
         logger.exception("export_netcdf_file_unreadable", extra={"_chart_id": chart_id})
-        raise HTTPException(status_code=422, detail="The converted export is no longer available. Please retry the export.")
+        raise HTTPException(status_code=422, detail="The converted export is no longer available. Please retry the export.") from exc
 
     return StreamingResponse(
         stream,
@@ -1178,24 +1359,24 @@ async def get_artifact(
     request: Request,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=1000),
-):
+) -> dict[str, Any]:
     try:
         return await artifact_store.get_page(artifact_id, request.state.current_user.id, offset, limit)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Artifact not found")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Artifact not found") from exc
 
 
 @app.get("/artifacts/{artifact_id}/csv")
 @limiter.limit("10/minute")
-async def export_artifact_csv(artifact_id: str, request: Request):
+async def export_artifact_csv(artifact_id: str, request: Request) -> StreamingResponse:
     try:
         # reference() carries the ownership check itself, so this raises -- and
         # becomes a 404 -- before the StreamingResponse below is constructed.
         # iter_csv_chunks re-checks, but as an async generator it would not do
         # so until the first chunk, long after headers had gone out.
         artifact = await artifact_store.reference(artifact_id, request.state.current_user.id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Artifact not found")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Artifact not found") from exc
 
     filename = _safe_artifact_filename(artifact.title or artifact.id)
     return StreamingResponse(
@@ -1213,7 +1394,7 @@ async def export_artifact_csv(artifact_id: str, request: Request):
 
 @app.get("/jobs")
 @limiter.limit("60/minute")
-async def get_jobs(request: Request):
+async def get_jobs(request: Request) -> dict[str, Any]:
     tools = _earthdata_tools(request)
     with user_id_context(request.state.current_user.id):
         jobs = await list_jobs(tools)
@@ -1222,7 +1403,7 @@ async def get_jobs(request: Request):
 
 @app.post("/jobs/{job_handle}/cancel")
 @limiter.limit("20/minute")
-async def cancel_job_endpoint(job_handle: JobHandle, request: Request):
+async def cancel_job_endpoint(job_handle: JobHandle, request: Request) -> dict[str, Any]:
     tools = _earthdata_tools(request)
     with user_id_context(request.state.current_user.id):
         return await cancel_job(job_handle, tools)
@@ -1230,7 +1411,7 @@ async def cancel_job_endpoint(job_handle: JobHandle, request: Request):
 
 @app.post("/discovery/search")
 @limiter.limit("20/minute")
-async def discovery_search_endpoint(req: DiscoverySearchRequest, request: Request):
+async def discovery_search_endpoint(req: DiscoverySearchRequest, request: Request) -> dict[str, Any]:
     tools = _earthdata_tools(request)
     with user_id_context(request.state.current_user.id):
         return await search_datasets(req.query, req.filters, tools)
@@ -1238,7 +1419,7 @@ async def discovery_search_endpoint(req: DiscoverySearchRequest, request: Reques
 
 @app.get("/discovery/dataset/{dataset_handle}")
 @limiter.limit("40/minute")
-async def discovery_describe_endpoint(dataset_handle: DatasetHandle, request: Request):
+async def discovery_describe_endpoint(dataset_handle: DatasetHandle, request: Request) -> dict[str, Any]:
     tools = _earthdata_tools(request)
     with user_id_context(request.state.current_user.id):
         return await describe_dataset(dataset_handle, tools)
@@ -1246,7 +1427,7 @@ async def discovery_describe_endpoint(dataset_handle: DatasetHandle, request: Re
 
 @app.post("/discovery/dataset/{dataset_handle}/preview")
 @limiter.limit("20/minute")
-async def discovery_preview_endpoint(dataset_handle: DatasetHandle, req: DiscoveryPreviewRequest, request: Request):
+async def discovery_preview_endpoint(dataset_handle: DatasetHandle, req: DiscoveryPreviewRequest, request: Request) -> dict[str, Any]:
     tools = _earthdata_tools(request)
     with user_id_context(request.state.current_user.id):
         return await preview_dataset(dataset_handle, req.location, req.time_range, req.layer, tools)
@@ -1254,7 +1435,7 @@ async def discovery_preview_endpoint(dataset_handle: DatasetHandle, req: Discove
 
 @app.post("/discovery/dataset/{dataset_handle}/coverage")
 @limiter.limit("20/minute")
-async def discovery_coverage_endpoint(dataset_handle: DatasetHandle, req: DiscoveryCoverageRequest, request: Request):
+async def discovery_coverage_endpoint(dataset_handle: DatasetHandle, req: DiscoveryCoverageRequest, request: Request) -> dict[str, Any]:
     tools = _earthdata_tools(request)
     with user_id_context(request.state.current_user.id):
         return await check_coverage(dataset_handle, req.location, req.time_range, tools)
@@ -1262,7 +1443,7 @@ async def discovery_coverage_endpoint(dataset_handle: DatasetHandle, req: Discov
 
 @app.post("/discovery/dataset/{dataset_handle}/granules")
 @limiter.limit("20/minute")
-async def discovery_granules_endpoint(dataset_handle: DatasetHandle, req: DiscoveryGranulesRequest, request: Request):
+async def discovery_granules_endpoint(dataset_handle: DatasetHandle, req: DiscoveryGranulesRequest, request: Request) -> dict[str, Any]:
     tools = _earthdata_tools(request)
     with user_id_context(request.state.current_user.id):
         return await inspect_granules(dataset_handle, req.location, req.time_range, req.limit, tools)
@@ -1274,18 +1455,19 @@ def _safe_artifact_filename(value: str) -> str:
     return safe[:80] or "artifact"
 
 
-async def _get_owned_chart(chart_id: str, user_id: str):
+async def _get_owned_chart(chart_id: str, user_id: str) -> dict[str, Any]:
     payload = await chart_service.get_chart(chart_id)
     if not payload or payload.get("user_id") != user_id:
         raise HTTPException(status_code=404, detail="Chart not found")
     return payload
 
 
-def _chart_source_handles(payload: dict) -> list[str]:
-    return (payload.get("metadata") or {}).get("source_handles") or (payload.get("provenance") or {}).get("source_handles", [])
+def _chart_source_handles(payload: dict[str, Any]) -> list[str]:
+    handles: list[str] = (payload.get("metadata") or {}).get("source_handles") or (payload.get("provenance") or {}).get("source_handles", [])
+    return handles
 
 
-def _methods_time_window(provenance: dict) -> str:
+def _methods_time_window(provenance: dict[str, Any]) -> str:
     start, end = provenance.get("start_date"), provenance.get("end_date")
     if start and end:
         return f"{start}/{end}"
@@ -1294,7 +1476,7 @@ def _methods_time_window(provenance: dict) -> str:
 
 @app.post("/chat")
 @limiter.limit("10/minute")
-async def chat(req: ChatRequest, request: Request):
+async def chat(req: ChatRequest, request: Request) -> Response:
     user = request.state.current_user
     active_agent = getattr(app.state, "agent", None) or agent
     if active_agent is None:
@@ -1304,13 +1486,154 @@ async def chat(req: ChatRequest, request: Request):
     thread_id = await _resolve_thread(req, user.id)
     request_id = str(uuid.uuid4())
     await _save_session_metadata(thread_id, req.message, user.id, request_id)
-    return StreamingResponse(
+    frames = _stamp_activity_on_first_frame(
         chat_stream_service.stream_chat_events(
             active_agent, ground_agent, satellite_agent, req.message, thread_id, user.id, request_id,
         ),
+        thread_id,
+        request_id,
+    )
+    if get_settings().chat_detached_turns_enabled:
+        # T63 D6: the POST only accepts the message. Everything this turn
+        # narrates goes to the event log and leaves over the GET, so the
+        # reattach path is exercised by every turn and cannot rot.
+        registry = app.state.turn_registry
+        claim = await registry.begin(
+            thread_id,
+            frames,
+            idempotency_key=request.headers.get("Idempotency-Key"),
+            cancel_jobs=_job_canceller(user.id),
+        )
+        # D12: a refused send still names the turn, so the caller joins the one
+        # in flight rather than being told only that it cannot send.
+        accepted = 409 if claim.outcome == turn_registry.ALREADY_RUNNING else 202
+        return JSONResponse(
+            status_code=accepted,
+            content={"turn_id": claim.turn_id, "thread_id": thread_id},
+        )
+    return StreamingResponse(
+        frames,
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+def _job_canceller(user_id: str) -> turn_registry.CancelJobs:
+    """What a stopped turn uses to drop the retrievals it orphaned (T63 D10).
+
+    The MCP is resolved inside the closure rather than captured: the turn
+    outlives the request that started it, so whether the provider was reachable
+    at POST time says nothing about whether it is reachable when Stop is
+    pressed minutes later.
+    """
+
+    async def cancel(handles: list[str]) -> None:
+        manager = getattr(app.state, "earthdata_mcp_manager", None)
+        if manager is None or manager.state != STATE_READY:
+            logger.warning(
+                "turn_stop_jobs_unreachable",
+                extra={
+                    "_event": "turn_stop_jobs_unreachable",
+                    "_job_handles": handles,
+                },
+            )
+            return
+        with user_id_context(user_id):
+            for handle in handles:
+                # One at a time and each guarded: a provider that refuses one
+                # handle must not keep the rest running.
+                try:
+                    await cancel_job(handle, manager.tools)
+                except Exception:
+                    logger.warning(
+                        "turn_stop_job_cancel_failed",
+                        exc_info=True,
+                        extra={
+                            "_event": "turn_stop_job_cancel_failed",
+                            "_job_handle": handle,
+                        },
+                    )
+
+    return cancel
+
+
+@app.post("/chat/{thread_id}/stop")
+@limiter.limit("30/minute")
+async def chat_stop(thread_id: ThreadId, request: Request) -> dict[str, Any]:
+    """Stop the turn running on this thread, from any tab or any replica.
+
+    Named by thread rather than by turn: after a reattach the tab pressing
+    Stop may have joined the turn rather than started it (D12), and knows only
+    which conversation it is looking at.
+    """
+    user = request.state.current_user
+    if not await session_belongs_to_user(thread_id, user.id):
+        raise HTTPException(status_code=404, detail="Session not found")
+    registry = app.state.turn_registry
+    turn_id = await registry.turn_for(thread_id)
+    if turn_id is None:
+        # Nothing to stop. A 200 here would tell the caller its Stop landed.
+        raise HTTPException(status_code=404, detail="No turn is running on this thread")
+    await registry.stop(turn_id)
+    return {"turn_id": turn_id, "thread_id": thread_id}
+
+
+@app.get("/chat/{thread_id}/stream")
+@limiter.limit("60/minute")
+async def chat_stream(
+    thread_id: ThreadId,
+    request: Request,
+    cursor: Annotated[str | None, Query(alias="from")] = None,
+    known_turn: Annotated[str | None, Query(alias="turn")] = None,
+) -> StreamingResponse:
+    """The only place a chat turn's SSE comes from (T63 D6).
+
+    A reader hands back the cursor it last saw and gets only what it missed,
+    so switching sessions, sleeping a laptop or landing on a different replica
+    costs it nothing.
+    """
+    user = request.state.current_user
+    if not await session_belongs_to_user(thread_id, user.id):
+        raise HTTPException(status_code=404, detail="Session not found")
+    registry = app.state.turn_registry
+    # Naming a turn says "I am coming back to one I already know about" --
+    # the tab that sent the message, or a remount resuming from its stored
+    # cursor -- and such a reader wants the tail even of a turn that has
+    # just ended, because the answer is not in history until the write-back
+    # lands. Naming none is only asking whether anything is running, and
+    # must not be handed a finished turn to replay over the history it just
+    # loaded. The id is that statement of intent and nothing more: whatever
+    # this thread's turn actually is, is what gets streamed.
+    turn_id = await registry.turn_for(thread_id, include_ended=known_turn is not None)
+    if turn_id is None:
+        # No turn to attach to. History is the source of truth for anything
+        # that finished long enough ago to have been dropped (D8).
+        raise HTTPException(status_code=404, detail="No turn is running on this thread")
+    return StreamingResponse(
+        registry.follow(turn_id, cursor),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/chat/{thread_id}/status")
+@limiter.limit("60/minute")
+async def chat_status(thread_id: ThreadId, request: Request) -> dict[str, Any]:
+    """Whether this thread has a turn in flight, without opening its stream.
+
+    For the sidebar: a thread the user sent a message to and then navigated
+    away from keeps running under it (T63) — this is what lets a badge say so
+    for every thread that is not the one on screen, without paying for a
+    stream connection per row.
+    """
+    user = request.state.current_user
+    if not await session_belongs_to_user(thread_id, user.id):
+        raise HTTPException(status_code=404, detail="Session not found")
+    registry = app.state.turn_registry
+    turn_id, terminal = await registry.status(thread_id)
+    if turn_id is None:
+        raise HTTPException(status_code=404, detail="No turn is running on this thread")
+    return {"turn_id": turn_id, "thread_id": thread_id, "terminal": terminal}
 
 
 async def _resolve_thread(req: ChatRequest, user_id: str) -> str:
@@ -1328,25 +1651,85 @@ async def _save_session_metadata(thread_id: str, message: str, user_id: str, req
     except Exception:
         logger.exception("session_metadata_save_failed", extra={"_request_id": request_id, "_thread_id": thread_id})
 
+
+async def _stamp_activity_on_first_frame(
+    frames: AsyncIterator[str], thread_id: str, request_id: str
+) -> AsyncIterator[str]:
+    """Put the thread in "Recent analyses", at the top, when its turn starts
+    narrating.
+
+    Both facts are stamped from this one event: whether the thread is listed
+    at all, and where it sits. The first is stamped once per thread, the
+    second on every turn -- the repository does that part; this only says
+    when the event happened, which is the first frame of each turn and not
+    the message that asked for it. A thread reordered when the message is
+    posted jumps the list on the strength of a turn that may produce
+    nothing.
+
+    The metadata row above is written before anything runs because it is the
+    only record of who owns the thread, and both ``/chat/{thread}/stream`` and
+    ``/chat/{thread}/stop`` refuse without one. It therefore cannot double as
+    "this conversation has something in it": the fast path checkpoints the
+    transcript once, at the end, so a turn that is stopped or dies leaves a
+    titled row over an empty conversation.
+
+    Wrapped here rather than inside ChatStreamService, and deliberately: this
+    is the one point both protocols pass through, and it holds whatever the
+    route produced without knowing which route that was. The fast path never
+    enters ``stream_response`` -- the seam T63 Phase 5's heartbeat fell
+    through -- so a stamp written from inside a route is one new route away
+    from leaving threads unlisted.
+
+    Stamped before the frame is yielded: a reader that has seen the frame may
+    ask for the session list in the next breath.
+    """
+    listed = False
+    async for frame in frames:
+        if not listed:
+            listed = True
+            try:
+                await mark_session_activity(thread_id)
+            except Exception:
+                # The turn is answering; the sidebar is not worth failing it
+                # for. Same policy as the metadata save above.
+                logger.exception(
+                    "session_first_frame_mark_failed",
+                    extra={"_request_id": request_id, "_thread_id": thread_id},
+                )
+        yield frame
+
+
 # T37: session endpoint catch-alls answer with a fixed generic detail — the
 # real exception goes to the logs with request context, never to the client.
 _INTERNAL_ERROR_DETAIL = "Internal server error"
 
+# A client-chosen page size above this is refused, or ?limit= is the
+# unbounded listing again.
+MAX_SESSION_PAGE_SIZE = 100
+
 
 @app.get("/sessions")
 @limiter.limit("60/minute")
-async def get_sessions(request: Request):
+async def get_sessions(
+    request: Request,
+    limit: int = Query(default=SESSION_PAGE_SIZE, ge=1, le=MAX_SESSION_PAGE_SIZE),
+    cursor: str | None = None,
+) -> dict[str, Any]:
     try:
-        return {"sessions": await session_repository.list_sessions(request.state.current_user.id)}
+        return await session_repository.list_sessions(
+            request.state.current_user.id, limit=limit, cursor=cursor
+        )
     except HTTPException:
         raise
-    except Exception:
+    except InvalidSessionCursor as exc:
+        raise HTTPException(status_code=400, detail="Invalid session cursor") from exc
+    except Exception as exc:
         logger.exception("sessions_list_failed", extra={"_user_id": request.state.current_user.id})
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from exc
 
 @app.get("/session/{thread_id}/history")
 @limiter.limit("60/minute")
-async def get_history(thread_id: ThreadId, request: Request):
+async def get_history(thread_id: ThreadId, request: Request) -> dict[str, Any]:
     try:
         user_id = request.state.current_user.id
         if not await session_belongs_to_user(thread_id, user_id):
@@ -1357,14 +1740,14 @@ async def get_history(thread_id: ThreadId, request: Request):
         return {"messages": await history_service.build_history(active_agent, thread_id, user_id)}
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
         logger.exception("session_history_failed", extra={"_thread_id": thread_id})
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from exc
 
 
 @app.delete("/session/{thread_id}")
 @limiter.limit("20/minute")
-async def remove_session(thread_id: ThreadId, request: Request):
+async def remove_session(thread_id: ThreadId, request: Request) -> dict[str, Any]:
     try:
         deleted = await session_repository.delete_session(thread_id, request.state.current_user.id)
         if not deleted:
@@ -1372,6 +1755,6 @@ async def remove_session(thread_id: ThreadId, request: Request):
         return {"deleted": thread_id}
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
         logger.exception("session_delete_failed", extra={"_thread_id": thread_id})
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from exc

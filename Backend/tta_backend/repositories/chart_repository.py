@@ -52,7 +52,7 @@ async def ensure_chart_table() -> None:
 async def save_chart(thread_id: str, payload: dict[str, Any], user_id: str) -> dict[str, Any]:
     # Sanitise before the id hash below too, so a payload that differs only
     # by inf-vs-null dedupes to the same chart_id.
-    stored_payload = _sanitize_non_finite(dict(payload))
+    stored_payload: dict[str, Any] = _sanitize_non_finite(dict(payload))
     # Callers that already minted an id up front (T06 artifact-typed plot
     # payloads, so the id is stable and visible to the LLM before this ever
     # persists) win over the content-hash id generic chart payloads get.
@@ -102,10 +102,34 @@ async def get_chart(chart_id: str) -> dict[str, Any] | None:
     return payload
 
 
-async def delete_charts_for_session(thread_id: str, user_id: str) -> None:
+async def get_charts(chart_ids: list[str], user_id: str) -> dict[str, dict[str, Any]]:
+    """The charts among ``chart_ids`` that ``user_id`` owns, keyed by id."""
+    if not chart_ids:
+        return {}
     async with pg_connection() as conn:
-        await conn.execute(
-            "DELETE FROM agent_charts WHERE thread_id = %s AND user_id = %s",
+        cursor = await conn.execute(
+            "SELECT id, payload, thread_id, user_id FROM agent_charts WHERE id = ANY(%s) AND user_id = %s",
+            (list(chart_ids), user_id),
+        )
+        rows = await cursor.fetchall()
+    charts = {}
+    for chart_id, payload, thread_id, owner in rows:
+        chart = dict(payload)
+        chart.setdefault("chart_id", chart_id)
+        chart["thread_id"] = thread_id
+        chart["user_id"] = owner
+        charts[chart_id] = chart
+    return charts
+
+
+async def delete_charts_for_session(thread_id: str, user_id: str) -> list[dict[str, Any]]:
+    """Delete the session's charts and return their payloads, which are the
+    only record of the overlay files they named."""
+    async with pg_connection() as conn:
+        cursor = await conn.execute(
+            "DELETE FROM agent_charts WHERE thread_id = %s AND user_id = %s RETURNING payload",
             (thread_id, user_id),
         )
+        rows = await cursor.fetchall()
         await conn.commit()
+    return [row[0] for row in rows]

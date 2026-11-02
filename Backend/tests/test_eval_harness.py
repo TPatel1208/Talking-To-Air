@@ -180,13 +180,28 @@ class E2ETaskStructureTests(unittest.TestCase):
         volume = HandleVolume(tmpdir.name)
         return build_e2e_tasks(volume)
 
-    def test_builds_exactly_three_tasks(self):
-        self.assertEqual(len(self._tasks()), 3)
+    def test_builds_exactly_five_tasks(self):
+        self.assertEqual(len(self._tasks()), 5)
 
-    def test_covers_ground_satellite_and_cross_source(self):
+    def test_covers_ground_satellite_cross_source_and_routing(self):
         categories = {task.category for task in self._tasks()}
 
-        self.assertEqual(categories, {"e2e_ground", "e2e_satellite", "e2e_cross_source"})
+        self.assertEqual(categories, {"e2e_ground", "e2e_satellite", "e2e_cross_source", "e2e_routing"})
+
+    def test_the_routing_tasks_reach_the_supervisor_and_forbid_a_ground_request(self):
+        """T64 Phase 0 F5: two prompts on which a lite supervisor model added
+        a ground request nobody asked for. They must route past the regex fast
+        path, or they would never exercise the supervisor at all."""
+        from tta_backend.services.intent_router import route_intent
+
+        routing = [task for task in self._tasks() if task.category == "e2e_routing"]
+
+        self.assertEqual(len(routing), 2)
+        for task in routing:
+            with self.subTest(task=task.name):
+                self.assertEqual(route_intent(task.prompt), "LLM")
+                self.assertTrue(task.expects_satellite)
+                self.assertTrue(task.forbids_ground)
 
     def test_ground_and_cross_source_expect_the_ground_agent(self):
         by_category = {task.category: task for task in self._tasks()}
@@ -323,6 +338,37 @@ class AgentsConsultedParsingTests(unittest.TestCase):
         from eval_harness import _agents_consulted
 
         self.assertEqual(_agents_consulted("no header in this text"), set())
+
+
+@unittest.skipIf(
+    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
+    "eval harness test dependencies are not installed",
+)
+class AgentsOkScoringTests(unittest.TestCase):
+    """Since T64 D14 the header names what actually ran, so scoring it can
+    fail a turn for an agent it should not have consulted, not only for one
+    it missed."""
+
+    def _task(self, **flags):
+        from eval_harness import E2ETask
+
+        return E2ETask(name="t", category="e2e_routing", prompt="p", handlers={}, **flags)
+
+    def test_a_forbidden_ground_consult_fails_the_task(self):
+        from eval_harness import _agents_ok
+
+        task = self._task(expects_satellite=True, forbids_ground=True)
+
+        self.assertTrue(_agents_ok(task, {"SATELLITE"}))
+        self.assertFalse(_agents_ok(task, {"GROUND", "SATELLITE"}))
+
+    def test_an_expected_agent_missing_still_fails_the_task(self):
+        from eval_harness import _agents_ok
+
+        task = self._task(expects_ground=True, expects_satellite=True)
+
+        self.assertFalse(_agents_ok(task, {"SATELLITE"}))
+        self.assertTrue(_agents_ok(task, {"GROUND", "SATELLITE"}))
 
 
 @unittest.skipIf(
@@ -496,7 +542,7 @@ class RunEvalSuiteRateLimitTests(unittest.IsolatedAsyncioTestCase):
     "eval harness test dependencies are not installed",
 )
 class RunEvalSuiteIncludesE2ETests(unittest.IsolatedAsyncioTestCase):
-    async def test_run_eval_suite_runs_all_three_e2e_tasks_alongside_the_direct_agent_ones(self):
+    async def test_run_eval_suite_runs_every_e2e_task_alongside_the_direct_agent_ones(self):
         from eval_harness import DIRECT_AGENT_TASK_COUNT, EvalTaskResult, TOTAL_TASKS, run_eval_suite
         from fake_earthdata_mcp import HandleVolume
 
@@ -521,10 +567,10 @@ class RunEvalSuiteIncludesE2ETests(unittest.IsolatedAsyncioTestCase):
                  patch("eval_harness.run_e2e_task", side_effect=fake_run_e2e_task):
                 results = await run_eval_suite(volume)
 
-        self.assertEqual(TOTAL_TASKS, DIRECT_AGENT_TASK_COUNT + 3)
+        self.assertEqual(TOTAL_TASKS, DIRECT_AGENT_TASK_COUNT + 5)
         self.assertEqual(len(results), TOTAL_TASKS)
         self.assertEqual(len(direct_calls), DIRECT_AGENT_TASK_COUNT - 1)  # robustness skips run_eval_task
-        self.assertEqual(len(e2e_calls), 3)
+        self.assertEqual(len(e2e_calls), 5)
 
 
 def _real_groq_key_available() -> bool:

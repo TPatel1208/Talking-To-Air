@@ -1,14 +1,18 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { normalizeSearchResults } from '../utils/discoveryResults'
+import { cmrTemporal } from '../utils/dateWindow.js'
+import { createLatest } from '../utils/latestRequest.js'
 import { apiFetch } from '../utils/apiFetch.js'
-
-const API_BASE = '/api'
+import { API_BASE } from '../config.js'
 
 export function useDiscovery() {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  // Searches can overlap (each date change re-runs one); only the newest may
+  // write results, or a slow earlier reply shows the wrong window's datasets.
+  const searches = useRef(null)
   const [location, setLocation] = useState('')
   const [timeRange, setTimeRange] = useState('')
   // Per-dataset_handle quick-look/coverage results, so multiple cards can
@@ -33,29 +37,36 @@ export function useDiscovery() {
     return `HTTP ${res.status}`
   }
 
-  const search = useCallback(async () => {
+  // `windowValue` lets a date change re-run the search with the window it
+  // just picked, before that state update has reached this closure.
+  const search = useCallback(async (windowValue) => {
     const trimmed = query.trim()
     if (!trimmed) return
+    const temporal = cmrTemporal(typeof windowValue === 'string' ? windowValue : timeRange)
+    searches.current ??= createLatest()
+    const latest = searches.current
+    const token = latest.next()
     setLoading(true)
     setError(null)
     try {
       const res = await apiFetch(`${API_BASE}/discovery/search`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: trimmed }),
+        body: JSON.stringify({ query: trimmed, filters: temporal ? { temporal } : undefined }),
       })
       if (!res.ok) throw new Error(await readErrorMessage(res))
       const data = await res.json()
+      if (!latest.isLatest(token)) return
       // The MCP returns {datasets:[{handle, summary:{…}}]}; normalize to the
       // flat shape the pane renders (tolerating the older results/dataset_handle
       // fixture shape too). See utils/discoveryResults.js.
       setResults(normalizeSearchResults(data))
     } catch (err) {
-      setError(err.message || 'Search failed')
+      if (latest.isLatest(token)) setError(err.message || 'Search failed')
     } finally {
-      setLoading(false)
+      if (latest.isLatest(token)) setLoading(false)
     }
-  }, [query])
+  }, [query, timeRange])
 
   const preview = useCallback(async (datasetHandle, layer) => {
     setPreviews(prev => ({ ...prev, [datasetHandle]: { loading: true, error: null } }))

@@ -6,14 +6,20 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 
+# One satellite request, the shape the supervisor model sends dispatch.
+PLOT_NO2_OVER_NJ = {"requests": [
+    {"agent": "satellite", "intent": "visualize", "figure_type": "map", "variable": "NO2", "location": "NJ"},
+]}
+
+
 @unittest.skipIf(importlib.util.find_spec("langchain") is None, "langchain is not installed")
 class RunSatelliteChartHarvestingTests(unittest.IsolatedAsyncioTestCase):
-    """ask_earthdata_agent's _run_satellite now harvests charts from the
+    """run_satellite (behind the dispatch tool) harvests charts from the
     ("chart_payload", dict) events emit_chart produces (T13), not by parsing
     ChartPayload out of tool_result content — plot/comparison tool results
     are compact summaries now and no longer parse as a ChartPayload."""
 
-    async def _build_ask_earthdata_agent(self, fake_satellite_agent):
+    async def _build_dispatch(self, fake_satellite_agent):
         from tta_backend.agents import supervisor_agent
 
         captured = {}
@@ -27,10 +33,10 @@ class RunSatelliteChartHarvestingTests(unittest.IsolatedAsyncioTestCase):
              patch.object(supervisor_agent, "create_agent", side_effect=fake_create_agent):
             await supervisor_agent.build_agent(ground_agent="ground", satellite_agent=fake_satellite_agent)
 
-        return captured["tools"]["ask_earthdata_agent"]
+        return captured["tools"]["dispatch"]
 
     async def test_harvests_a_chart_from_a_chart_payload_event(self):
-        from tta_backend.models import AgentResult
+        from tta_backend.models import parse_tool_results
 
         envelope = json.dumps({"summary": "Plotted NO2 over NJ.", "artifact_ids": [], "handles": ["obs_1"]})
 
@@ -42,10 +48,10 @@ class RunSatelliteChartHarvestingTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0)
                 yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
 
-        ask_earthdata_agent = await self._build_ask_earthdata_agent(FakeSatelliteAgent())
+        dispatch = await self._build_dispatch(FakeSatelliteAgent())
 
-        raw = await ask_earthdata_agent.ainvoke({"task": "Plot NO2 over NJ"})
-        result = AgentResult.model_validate_json(raw)
+        raw = await dispatch.ainvoke(PLOT_NO2_OVER_NJ)
+        (result,) = parse_tool_results(raw)
 
         self.assertEqual(len(result.charts), 1)
         chart = result.charts[0].model_dump(exclude_none=True)
@@ -56,7 +62,7 @@ class RunSatelliteChartHarvestingTests(unittest.IsolatedAsyncioTestCase):
         """The compact tool_result content (render_type, not type) must not be
         mis-parsed as a ChartPayload — charts come exclusively from
         chart_payload events now."""
-        from tta_backend.models import AgentResult
+        from tta_backend.models import parse_tool_results
 
         compact_tool_result = json.dumps({
             "render_type": "heatmap",
@@ -77,10 +83,10 @@ class RunSatelliteChartHarvestingTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0)
                 yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
 
-        ask_earthdata_agent = await self._build_ask_earthdata_agent(FakeSatelliteAgent())
+        dispatch = await self._build_dispatch(FakeSatelliteAgent())
 
-        raw = await ask_earthdata_agent.ainvoke({"task": "Plot NO2 over NJ"})
-        result = AgentResult.model_validate_json(raw)
+        raw = await dispatch.ainvoke(PLOT_NO2_OVER_NJ)
+        (result,) = parse_tool_results(raw)
 
         self.assertEqual(result.charts, [])
         self.assertEqual([a.id for a in result.artifacts], ["map_2"])

@@ -1,5 +1,7 @@
 import unittest
 
+from pydantic import ValidationError
+
 
 class BuildArtifactReferenceMapTests(unittest.TestCase):
     def test_builds_a_map_artifact_from_a_heatmap_payload(self):
@@ -41,7 +43,7 @@ class BuildArtifactReferenceMapTests(unittest.TestCase):
             "metadata": {},
         }
 
-        with self.assertRaises(Exception):
+        with self.assertRaises(ValidationError):
             build_artifact_reference(payload)
 
     def test_returns_none_for_a_render_type_with_no_artifact_mapping(self):
@@ -108,7 +110,7 @@ class BuildArtifactReferenceComparisonTests(unittest.TestCase):
             "metadata": {"source_handles": ["obs_1"]},
         }
 
-        with self.assertRaises(Exception):
+        with self.assertRaises(ValidationError):
             build_artifact_reference(payload)
 
 

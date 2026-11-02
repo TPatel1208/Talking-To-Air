@@ -3,12 +3,11 @@ subagent_dispatch.py
 ---------------------
 Shared sub-agent invocation logic for the ground sensor and earthdata agents.
 
-Both the supervisor's ``ask_ground_sensor_agent``/``ask_earthdata_agent`` tool
-wrappers (agents/supervisor_agent.py) and the router fast path
+Both the supervisor's ``dispatch`` tool (agents/supervisor_agent.py, via
+services/dispatch_executor.py) and the router fast path
 (services/chat_stream_service.py, T14) call into ``run_ground``/
-``run_satellite`` here — context enrichment, envelope finalization, the
-per-request call budget, and metrics recording are identical regardless of
-who initiated the call.
+``run_satellite`` here — context enrichment, envelope finalization, and
+metrics recording are identical regardless of who initiated the call.
 """
 from __future__ import annotations
 
@@ -47,7 +46,7 @@ from tta_backend.tools import GROUND_TOOLS
 from tta_backend.tools.satellite_tools.factory import sanctioned_tool_names
 from tta_backend.utils.message_utils import extract_last_text, truncate_text
 from tta_backend.utils.metrics import record_agent_request, record_envelope_salvaged
-from tta_backend.utils.streaming import get_call_budget, stream_response
+from tta_backend.utils.streaming import stream_response
 
 logger = logging.getLogger(__name__)
 
@@ -58,35 +57,19 @@ async def run_ground(
     ground_agent: Any,
     task: str,
     conversation_thread_id: str | None = None,
+    *,
+    context_sink: dict[str, str] | None = None,
 ) -> AgentResult:
     """
-    Invoke the ground sensor agent once for ``task``, budget-checked,
-    context-enriched from the thread's persisted monitor context, and
-    envelope-finalized.
+    Invoke the ground sensor agent once for ``task``, context-enriched from
+    the thread's persisted monitor context, and envelope-finalized. How many
+    times a turn may call this is the dispatch executor's budget (T64).
 
     ``conversation_thread_id`` keys the cross-turn monitor context in
     per-thread persisted metadata (session_metadata_repository) — shared by
     every caller on that thread, whether it took the supervisor path or the
     fast path.
     """
-    budget = get_call_budget()
-    count = budget.get("ground", 0)
-    if count >= 1:
-        logger.warning(
-            "agent_budget_exceeded",
-            extra={
-                "_event": "agent_budget_exceeded",
-                "_agent_type": "ground_sensor",
-                "_call_count": count,
-            },
-        )
-        return AgentResult(text=(
-            "The worker has already returned a result. "
-            "Do not call the supervisor_agent again. "
-            "Synthesize your answer from the result already received."
-        ))
-    budget["ground"] = count + 1
-
     monitor_context = await get_ground_monitor_context(conversation_thread_id) if conversation_thread_id else {}
 
     async def _invoke(task_text: str) -> AgentResult:
@@ -115,8 +98,8 @@ async def run_ground(
         except Exception as exc:
             outcome = "failure"
             # T37: taxonomy answer, never a bare exception string (see
-            # _render_unexpected_exception).
-            text = _render_unexpected_exception(exc, "ground sensor agent")
+            # render_unexpected_exception).
+            text = render_unexpected_exception(exc, "ground sensor agent")
             artifact_refs = []
         finally:
             record_agent_request("ground_sensor", outcome)
@@ -138,7 +121,9 @@ async def run_ground(
     result = _finalize_sub_agent_result(result, "ground sensor")
 
     new_context = _extract_ground_monitor_context(result.text)
-    if new_context and conversation_thread_id:
+    if context_sink is not None:
+        context_sink.update(new_context)
+    elif new_context and conversation_thread_id:
         await save_ground_monitor_context(conversation_thread_id, {**monitor_context, **new_context})
 
     return result
@@ -150,9 +135,11 @@ async def run_satellite(
     conversation_thread_id: str | None = None,
     on_event: OnEvent | None = None,
     mcp_manager: Any = None,
+    *,
+    context_sink: dict[str, str] | None = None,
 ) -> AgentResult:
     """
-    Invoke the earthdata agent once for ``task``, budget-checked and
+    Invoke the earthdata agent once for ``task`` and
     envelope-finalized.
 
     ``on_event``, if given, is awaited with every ``(event_type, data)`` tuple
@@ -184,24 +171,6 @@ async def run_satellite(
             metadata={"data_layer": mcp_manager.state},
         )
 
-    budget = get_call_budget()
-    count = budget.get("satellite", 0)
-    if count >= 1:
-        logger.warning(
-            "agent_budget_exceeded",
-            extra={
-                "_event": "agent_budget_exceeded",
-                "_agent_type": "satellite",
-                "_call_count": count,
-            },
-        )
-        return AgentResult(text=(
-            "[STOP] Satellite agent has already been called for this request — "
-            "this call is blocked. Do NOT call ask_earthdata_agent again. "
-            "Synthesize your answer from the result already received."
-        ))
-    budget["satellite"] = count + 1
-
     # Cross-turn retrieval context (dataset/AOI/handles the last satellite turn
     # on this thread worked with). The fast path writes only the prose answer
     # back into the supervisor's thread, so a follow-up that drops to the
@@ -221,7 +190,7 @@ async def run_satellite(
     # (emit_variable_choice) when the T48 resolver couldn't confidently choose.
     # Kept last-wins; attached to the finalized answer below with each
     # candidate's auto-send prompt filled from the ORIGINAL request (task).
-    variable_choice_box: dict[str, dict] = {}
+    variable_choice_box: dict[str, dict[str, Any]] = {}
 
     async def _invoke(task_text: str) -> AgentResult:
         charts = []
@@ -287,7 +256,7 @@ async def run_satellite(
             # taxonomy's honest error answer instead (classified category
             # when it's an MCPToolError, contract otherwise); the real
             # exception goes to the logs.
-            text_parts = [_render_unexpected_exception(exc, "earthdata agent")]
+            text_parts = [render_unexpected_exception(exc, "earthdata agent")]
         finally:
             record_agent_request("satellite", outcome)
 
@@ -321,11 +290,88 @@ async def run_satellite(
     finalized = _finalize_sub_agent_result(result, "earthdata")
     finalized = _guard_aoi_substitution(finalized, aoi_watch)
     finalized = _attach_variable_choice(finalized, variable_choice_box.get("value"), task)
-    if captured_context and conversation_thread_id:
+    if context_sink is not None:
+        context_sink.update(captured_context)
+    elif captured_context and conversation_thread_id:
         await _persist_satellite_context(
-            conversation_thread_id, {**satellite_context, **captured_context}
+            conversation_thread_id, merge_satellite_context(satellite_context, [captured_context])
         )
     return finalized
+
+
+async def persist_dispatch_contexts(
+    conversation_thread_id: str,
+    *,
+    satellite: list[dict[str, str]],
+    ground: list[dict[str, str]],
+) -> None:
+    """Save the contexts one dispatch batch's runs handed back through
+    ``context_sink``, once per kind (T64 D13). Run concurrently, each run's
+    own read-merge-write would race and the last write would win.
+
+    Merged in request order over what the thread already holds: a later
+    request wins a key, except chart ids, which accumulate so every chart the
+    batch drew stays nameable to a follow-up, as for one run that draws two,
+    and the area, which merge_satellite_context keeps as one pair."""
+    if any(satellite):
+        prior = await _load_satellite_context(conversation_thread_id)
+        await _persist_satellite_context(conversation_thread_id, merge_satellite_context(prior, satellite))
+    ground_captured = _merge_captured_contexts(ground)
+    if ground_captured:
+        # Best-effort, like the satellite side: this runs after the batch, so
+        # a raise here would discard every result the batch already has.
+        try:
+            prior = await get_ground_monitor_context(conversation_thread_id)
+            await save_ground_monitor_context(conversation_thread_id, {**prior, **ground_captured})
+        except Exception:
+            logger.warning("ground_context_save_failed", exc_info=True)
+
+
+# The saved area: a place name and the handle drawn for it. They describe one
+# area, so they are only ever saved, replaced or dropped together.
+_AREA_KEYS = ("location", "aoi_handle")
+
+
+def _batch_area(prior: dict[str, str], contexts: list[dict[str, str]]) -> dict[str, str] | None:
+    """The area a batch leaves behind: None when no run touched an area (the
+    saved one stands), {} when runs used different areas (nothing to offer a
+    follow-up), else that one area. A run that reused the saved handle without
+    naming its place keeps the saved place."""
+    areas = set()
+    for context in contexts:
+        location, handle = context.get("location"), context.get("aoi_handle")
+        if location is None and handle is None:
+            continue
+        if location is None and handle == prior.get("aoi_handle"):
+            location = prior.get("location")
+        areas.add((location, handle))
+    if not areas:
+        return None
+    if len(areas) > 1:
+        return {}
+    location, handle = areas.pop()
+    return {key: value for key, value in (("location", location), ("aoi_handle", handle)) if value is not None}
+
+
+def merge_satellite_context(prior: dict[str, str], contexts: list[dict[str, str]]) -> dict[str, str]:
+    """The satellite context to save after ``contexts`` ran, over ``prior``."""
+    captured = {k: v for k, v in _merge_captured_contexts(contexts).items() if k not in _AREA_KEYS}
+    area = _batch_area(prior, contexts)
+    base = dict(prior) if area is None else {k: v for k, v in prior.items() if k not in _AREA_KEYS}
+    return {**base, **captured, **(area or {})}
+
+
+def _merge_captured_contexts(contexts: list[dict[str, str]]) -> dict[str, str]:
+    merged: dict[str, str] = {}
+    chart_ids = ""
+    for context in contexts:
+        merged.update(context)
+        for chart_id in context.get("last_chart_ids", "").split(","):
+            if chart_id:
+                chart_ids = _with_chart_id(chart_ids, chart_id)
+    if chart_ids:
+        merged["last_chart_ids"] = chart_ids
+    return merged
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -384,7 +430,7 @@ def _classify_escaped_exception(exc: Exception) -> str:
     return CATEGORY_CONTRACT
 
 
-def _render_unexpected_exception(exc: Exception, stage: str) -> str:
+def render_unexpected_exception(exc: Exception, stage: str) -> str:
     """T37: the honest taxonomy answer for an exception that escaped a
     sub-agent turn. A classified MCPToolError keeps its own category and
     message; a recursion-limit stop or a provider rate-limit gets its own
@@ -518,7 +564,7 @@ def _guard_aoi_substitution(result: AgentResult, watch: _AoiSubstitutionWatch) -
     )
 
 
-def _chart_provenance(chart: Any) -> dict:
+def _chart_provenance(chart: Any) -> dict[str, Any]:
     """The provenance dict off a finalized chart, whether it survived as a
     ChartPayload (extra='allow', provenance is an attribute) or a plain
     dict."""
@@ -530,7 +576,7 @@ def _chart_provenance(chart: Any) -> dict:
 
 
 def _attach_variable_choice(
-    result: AgentResult, payload: dict | None, original_request: str,
+    result: AgentResult, payload: dict[str, Any] | None, original_request: str,
 ) -> AgentResult:
     """T49: attach the deterministic variable-choice picker to the finalized
     answer, reconstructing each candidate's auto-send prompt from the ORIGINAL
@@ -563,7 +609,7 @@ def _attach_variable_choice(
     return result
 
 
-def _medium_variable_choice_from_charts(result: AgentResult) -> dict | None:
+def _medium_variable_choice_from_charts(result: AgentResult) -> dict[str, Any] | None:
     """The medium-confidence picker stashed in a delivered chart's provenance
     (variable_resolution.variable_choice), or None. This is how a medium
     auto-pick attaches its override picker without a separate out-of-band
@@ -806,11 +852,18 @@ def _capture_satellite_context(name: Any, args: Any, captured: dict[str, str]) -
     if name == "search_datasets" and args.get("query"):
         captured["dataset_query"] = str(args["query"])
     elif name == "define_area_of_interest" and args.get("location"):
+        # A new area: its handle arrives on the next call that carries one.
         captured["location"] = str(args["location"])
+        captured.pop("aoi_handle", None)
     if args.get("dataset_handle"):
         captured["dataset_handle"] = str(args["dataset_handle"])
     if args.get("aoi_handle"):
-        captured["aoi_handle"] = str(args["aoi_handle"])
+        handle = str(args["aoi_handle"])
+        defined_here = "location" in captured and "aoi_handle" not in captured
+        if not defined_here and captured.get("aoi_handle") != handle:
+            # A handle this run did not define: its place is not known here.
+            captured.pop("location", None)
+        captured["aoi_handle"] = handle
     if args.get("time_range"):
         captured["last_time_range"] = str(args["time_range"])
 
@@ -825,10 +878,15 @@ def _capture_chart_id(data: Any, captured: dict[str, str]) -> None:
     id moves to the most-recent slot rather than duplicating."""
     if not isinstance(data, dict) or not data.get("chart_id"):
         return
-    chart_id = str(data["chart_id"])
-    ids = [i for i in captured.get("last_chart_ids", "").split(",") if i and i != chart_id]
+    captured["last_chart_ids"] = _with_chart_id(captured.get("last_chart_ids", ""), str(data["chart_id"]))
+
+
+def _with_chart_id(chart_ids: str, chart_id: str) -> str:
+    """``chart_ids`` (comma-joined, most recent last) with ``chart_id`` as the
+    most recent; one already present moves there rather than duplicating."""
+    ids = [i for i in chart_ids.split(",") if i and i != chart_id]
     ids.append(chart_id)
-    captured["last_chart_ids"] = ",".join(ids)
+    return ",".join(ids)
 
 
 _EXPLICIT_AREA_PATTERN = re.compile(
@@ -907,7 +965,8 @@ def _inject_satellite_context(task: str, context: dict[str, str]) -> str:
         bits.append(f"dataset_handle={context['dataset_handle']}")
     if context.get("location") and not new_area:
         bits.append(f"location={context['location']}")
-    if context.get("aoi_handle") and not new_area:
+    # A handle is offered only with the place it was drawn for.
+    if context.get("aoi_handle") and context.get("location") and not new_area:
         bits.append(f"aoi_handle={context['aoi_handle']}")
     if context.get("last_time_range"):
         bits.append(f"previously_checked_range={context['last_time_range']}")
@@ -961,7 +1020,7 @@ def _artifact_refs_from_content(content: Any) -> list[ArtifactReference]:
     return refs
 
 
-def _extract_artifact_refs(messages: list) -> list[ArtifactReference]:
+def _extract_artifact_refs(messages: list[Any]) -> list[ArtifactReference]:
     """Collect _artifact_refs from ground agent ToolMessages after ainvoke."""
     refs = []
     for msg in messages:
@@ -971,7 +1030,7 @@ def _extract_artifact_refs(messages: list) -> list[ArtifactReference]:
     return refs
 
 
-def _parse_tool_content(content: Any) -> dict | None:
+def _parse_tool_content(content: Any) -> dict[str, Any] | None:
     """Normalize a ToolMessage content value to a dict, or return None."""
     if isinstance(content, dict):
         return content

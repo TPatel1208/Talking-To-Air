@@ -41,7 +41,7 @@ test('the cadence tier no longer claims the map above IS the frames\' average', 
 
   assert.match(delta.summary, /equally-weighted average at native resolution/)
   assert.match(delta.summary, /misses the aggregate by 1\.9%/)
-  assert.match(delta.summary, /2\.720e\+15 molecules\/cm\^2/)
+  assert.match(delta.summary, /2\.720 × 10¹⁵ molecules\/cm²/)
   assert.equal(delta.gridPct, '1.9%')
   assert.equal(delta.gridBasis, GRID_BASIS)
 })
@@ -135,7 +135,7 @@ test('the worst pixel is reported in the field\'s own units', () => {
     delta: { headline: 0.2227, max_abs: 9.58e16, basis: DELTA_BASIS },
   }))
 
-  assert.match(delta.maxAbs, /9\.580e\+16 molecules\/cm\^2/)
+  assert.match(delta.maxAbs, /9\.580 × 10¹⁶ molecules\/cm²/)
 })
 
 test('a delta that could not be computed says so instead of printing 0%', () => {

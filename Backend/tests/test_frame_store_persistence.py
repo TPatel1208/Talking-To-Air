@@ -8,10 +8,9 @@ in Postgres and goes on advertising a scrub that 404s. The overlay PNG store
 shipped exactly that way once ("chart quality lowered on refresh or restart"),
 and the cube store nearly did.
 
-The store is also bounded, which is the other half of why it is separate:
-``overlay_store`` has no eviction policy and grows forever (PRD finding 9).
-That is real and tracked elsewhere and deliberately **not** fixed here — but it
-is precisely why frames were not put in it.
+The store is also bounded by its own cap, which is the other half of why it is
+separate: each store's startup sweep and size accounting assume it owns its
+directory, and ``overlay_store`` is sized against a different cap.
 """
 from __future__ import annotations
 
@@ -24,10 +23,7 @@ TESTS_DIR = os.path.dirname(__file__)
 if TESTS_DIR not in sys.path:
     sys.path.insert(0, TESTS_DIR)
 
-from cache_isolation import (  # noqa: E402 -- needs the TESTS_DIR insert above
-    deployment_frame_store_dir,
-    deployment_output_dir,
-)
+from cache_isolation import deployment_frame_store_dir  # noqa: E402 -- needs the TESTS_DIR insert above
 
 # Bind-mounted into the backend-test container (see docker-compose.yml),
 # because docker-compose.yml lives at the repo root, outside the ./Backend
@@ -91,13 +87,12 @@ def test_the_frame_store_is_backed_by_a_persisted_named_volume():
 
 
 def test_the_frame_store_has_its_own_volume_rather_than_riding_the_overlay_store():
-    """Frames are bounded; overlays are not.
+    """Frames and overlays are bounded by separate caps.
 
-    ``overlay_store`` has no eviction policy and grows forever (PRD finding 9),
-    which is *why* frames get their own volume rather than joining it: an LRU
-    sweeper on a directory shared with an unbounded store would evict frames to
-    make room for PNGs that never leave. Sharing would also make one store's
-    growth the other's eviction pressure, with no disclosure surface anywhere.
+    Each store's startup sweep and size accounting assume it owns its
+    directory. A shared directory would make each store's correctness depend
+    on never misreading the other's files, and the two caps would no longer
+    describe the disk the volume actually uses.
     """
     compose = _load_compose()
     frame_dir = deployment_frame_store_dir()
@@ -106,7 +101,7 @@ def test_the_frame_store_has_its_own_volume_rather_than_riding_the_overlay_store
 
     sources = {source for source, target, _mode in mounts if _covers(target, frame_dir)}
 
-    assert sources and not sources.intersection({"overlay_store", "plot_outputs"}), (
+    assert sources and "overlay_store" not in sources, (
         f"the frame store rides {sorted(sources)}; it needs a bounded volume of its own"
     )
 
@@ -150,25 +145,18 @@ def test_the_frame_store_mount_point_is_owned_by_the_runtime_user():
 def test_the_frame_store_is_not_reachable_without_authentication():
     """Frames are served only through ``/chart/{id}/frames.f32.gz`` and
     ``/chart/{id}/frames.{statistic}.f32.gz``, both of which check chart
-    ownership first. ``/app/outputs`` is handed to nginx wholesale and served
-    unauthenticated, so a frame store resolving inside it would make every
-    researcher's field world-readable — an access-control regression neither
-    path's own tests would notice, because both would keep working.
+    ownership first. A volume shared with nginx would make every researcher's
+    field world-readable — an access-control regression neither path's own
+    tests would notice, because both would keep working.
 
     T59 Phase 13 turned that into a *set* of routes rather than one, which is
     the argument for guarding this at the volume rather than only at each
     route: the number of ways to reach these bytes grows with the number of
-    statistics, and a store outside the public tree is one fact that holds
-    however many of them there turn out to be.
+    statistics, and a store nginx cannot see is one fact that holds however
+    many of them there turn out to be.
     """
     compose = _load_compose()
-    output_path = deployment_output_dir().rstrip("/")
     frame_dir = deployment_frame_store_dir().rstrip("/")
-
-    assert not _covers(output_path, frame_dir), (
-        f"the frame store {frame_dir!r} is inside the public output dir {output_path!r}, "
-        "so nginx would serve every stored stack unauthenticated"
-    )
 
     top_level = compose.get("volumes", {}) or {}
     frontend_sources = {

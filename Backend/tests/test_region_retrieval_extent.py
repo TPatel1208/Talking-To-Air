@@ -362,6 +362,23 @@ class RetrievalExtentTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCa
         # Five spellings, one round trip to the MCP.
         self.assertEqual(len(self.seen), 1)
 
+    async def test_the_agents_live_otc_spellings_reach_the_mcp_as_the_otr_bbox(self):
+        """Each of these was sent by the agent on 2026-10-14, passed through
+        untranslated, and came back from the MCP's Nominatim as no result."""
+        from tta_backend.earthdata_mcp import tool_cache
+        from tta_backend.utils.plotting import load_preset_polygons
+
+        expected = [round(v, 6) for v in load_preset_polygons()["otc"].bounds]
+        for spelling in ("Ozone Transport Commission region",
+                         "Ozone Transport Commission Region",
+                         "Ozone Transport Commission (OTC) region",
+                         "OTC region"):
+            with self.subTest(spelling=spelling):
+                tool_cache.clear_tool_cache()
+                self.seen.clear()
+                await self.tools["define_area_of_interest"].ainvoke({"location": spelling})
+                self.assertEqual(_parse_bbox(self.seen[0]), expected)
+
 
 def _parse_bbox(location: str) -> list[float] | None:
     """The "W,S,E,N" channel the Phase 1.5 gate chose (V5c/V7), parsed back."""

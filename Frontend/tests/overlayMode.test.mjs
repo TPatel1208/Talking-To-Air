@@ -1,13 +1,33 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { resolveOverlayMode } from '../src/utils/overlayMode.js'
+import { rescaledOverlayUrl, resolveOverlayMode, resolveThumbnailMode } from '../src/utils/overlayMode.js'
 
 test('no override with a native overlay url resolves to native', () => {
   assert.equal(resolveOverlayMode(null, '/chart/abc.png'), 'native')
 })
 
-test('an active override always resolves to canvas, even with a native url available', () => {
+test('an override on an overlay with no stored value raster resolves to canvas', () => {
   assert.equal(resolveOverlayMode({ vmin: 0, vmax: 1 }, '/chart/abc.png'), 'canvas')
+})
+
+test('an override on a rescalable overlay asks the server to recolor it', () => {
+  assert.equal(resolveOverlayMode({ vmin: 0, vmax: 1 }, '/chart/abc.png', null, true), 'rescaled')
+  assert.equal(resolveOverlayMode(null, '/chart/abc.png', null, true), 'native')
+  assert.equal(resolveOverlayMode({ vmin: 0, vmax: 1 }, undefined, null, true), 'canvas')
+  const frame = { values: new Float32Array(4), lats: [0, 1], lons: [0, 1] }
+  assert.equal(resolveOverlayMode({ vmin: 0, vmax: 1 }, '/chart/abc.png', frame, true), 'canvas')
+})
+
+test('the rescaled url carries the scale, and joins a query the url already has', () => {
+  const override = { vmin: 0.47, vmax: 7.7e15, colormap: { name: 'no2_omi', lut: [] } }
+  assert.equal(
+    rescaledOverlayUrl('/chart/c1/overlay.png', override),
+    '/chart/c1/overlay.png?vmin=0.47&vmax=7700000000000000&cmap=no2_omi',
+  )
+  assert.equal(
+    rescaledOverlayUrl('/chart/c1/overlay.png?panel=1', { vmin: -2, vmax: 2 }),
+    '/chart/c1/overlay.png?panel=1&vmin=-2&vmax=2',
+  )
 })
 
 test('no override and no native url falls back to canvas', () => {
@@ -35,4 +55,29 @@ test('a selected frame forces canvas, whatever the scale and url say (T59)', () 
 
 test('leaving scrubber mode hands the native overlay back', () => {
   assert.equal(resolveOverlayMode(null, '/chart/abc.png', null), 'native')
+})
+
+const OVERLAY = '/chart/abc/overlay.png?panel=0'
+
+test('a thumbnail draws the canvas while its png is still loading', () => {
+  // The grid is already in the payload, so there is something to show at
+  // once; a blank tile while the authed fetch is in flight would be a step
+  // back from the canvas every thumbnail has drawn until now.
+  assert.equal(resolveThumbnailMode(OVERLAY, null), 'canvas')
+})
+
+test('a thumbnail shows the native png once its blob has loaded', () => {
+  assert.equal(resolveThumbnailMode(OVERLAY, { url: OVERLAY, objectUrl: 'blob:x' }), 'native')
+})
+
+test('a thumbnail with no overlay url draws the canvas', () => {
+  assert.equal(resolveThumbnailMode(undefined, null), 'canvas')
+})
+
+test('a blob loaded for a previous overlay url is not shown for the new one', () => {
+  // When the url changes, the old load's cleanup revokes its blob, but the
+  // component still holds it until the new one lands. Showing it would be a
+  // dead blob: url at best and the wrong region at worst.
+  const stale = { url: '/chart/old/overlay.png?panel=0', objectUrl: 'blob:old' }
+  assert.equal(resolveThumbnailMode('/chart/new/overlay.png?panel=0', stale), 'canvas')
 })

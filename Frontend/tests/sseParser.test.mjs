@@ -55,12 +55,12 @@ test('parses artifact metadata events without row payloads', () => {
 
 test('ignores comments and supports CRLF line endings', () => {
   const events = parseChunks([
-    ': keepalive\r\nevent: image\r\ndata: {"url":"/x.png"}\r\n\r\n',
+    ': keepalive\r\nevent: status\r\ndata: {"message":"working"}\r\n\r\n',
   ])
 
   assert.deepEqual(events, [{
-    event: 'image',
-    data: '{"url":"/x.png"}',
+    event: 'status',
+    data: '{"message":"working"}',
     id: '',
   }])
 })

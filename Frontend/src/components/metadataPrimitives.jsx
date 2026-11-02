@@ -12,6 +12,7 @@
  * breaks Vite's fast-refresh (react-refresh/only-export-components).
  */
 import { fmt } from '../utils/metadataDisplay'
+import SciText from './SciText.jsx'
 
 export function MetaField({ label, value }) {
   return (
@@ -20,7 +21,7 @@ export function MetaField({ label, value }) {
         {label}
       </div>
       <div style={{ fontSize: '12px', color: 'var(--text-secondary)', overflowWrap: 'anywhere', lineHeight: 1.45 }}>
-        {fmt(value)}
+        <SciText>{fmt(value)}</SciText>
       </div>
     </div>
   )

@@ -22,6 +22,8 @@ the query key is the concept_id, not the short_name.
 """
 from __future__ import annotations
 
+from typing import Any
+
 from tta_backend.datasets.registry import load_registry
 
 # (registry key, human-facing description). The concept_id and short_name are
@@ -68,7 +70,7 @@ def get_preset_collections() -> list[dict[str, str]]:
     ]
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> Any:
     """Resolve ``PRESET_COLLECTIONS`` lazily (PEP 562), so importing this
     module can never turn a collections.yaml data error into an import-time
     cascade — the named validation error above surfaces on first *access*

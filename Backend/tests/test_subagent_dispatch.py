@@ -611,7 +611,8 @@ class RunGroundTests(unittest.IsolatedAsyncioTestCase):
                 return {"messages": [SimpleNamespace(content=envelope, type="ai")]}
 
         ground_agent = FakeGroundAgent()
-        subagent_dispatch.get_call_budget().clear()
+        from tta_backend.utils.streaming import get_call_budget
+        get_call_budget().clear()
 
         with patch.object(
             subagent_dispatch, "get_ground_monitor_context", AsyncMock(return_value={"site_id": "34-023-0011"})
@@ -635,7 +636,8 @@ class RunGroundTests(unittest.IsolatedAsyncioTestCase):
             async def ainvoke(self, input_, config):
                 return {"messages": [SimpleNamespace(content=envelope, type="ai")]}
 
-        subagent_dispatch.get_call_budget().clear()
+        from tta_backend.utils.streaming import get_call_budget
+        get_call_budget().clear()
 
         with patch.object(subagent_dispatch, "get_ground_monitor_context", AsyncMock(return_value={})), \
              patch.object(subagent_dispatch, "save_ground_monitor_context", AsyncMock()) as save_mock:
@@ -656,7 +658,8 @@ class RunGroundTests(unittest.IsolatedAsyncioTestCase):
             async def ainvoke(self, input_, config):
                 raise RuntimeError("secret path leak /opt/creds")
 
-        subagent_dispatch.get_call_budget().clear()
+        from tta_backend.utils.streaming import get_call_budget
+        get_call_budget().clear()
 
         with patch.object(subagent_dispatch, "get_ground_monitor_context", AsyncMock(return_value={})), \
              patch.object(subagent_dispatch, "save_ground_monitor_context", AsyncMock()):
@@ -677,7 +680,7 @@ class RunGroundTests(unittest.IsolatedAsyncioTestCase):
             pass
 
         exc = GraphRecursionError("Recursion limit of 25 reached without hitting a stop condition.")
-        text = subagent_dispatch._render_unexpected_exception(exc, "earthdata agent")
+        text = subagent_dispatch.render_unexpected_exception(exc, "earthdata agent")
 
         self.assertEqual(text, render_error_answer(CATEGORY_RECURSION_EXHAUSTED, "earthdata agent"))
 
@@ -696,7 +699,7 @@ class RunGroundTests(unittest.IsolatedAsyncioTestCase):
             "Error calling model 'gemini-3-flash-preview' (Too Many Requests): 429 "
             "Too Many Requests. RESOURCE_EXHAUSTED: quota exceeded"
         )
-        text = subagent_dispatch._render_unexpected_exception(exc, "earthdata agent")
+        text = subagent_dispatch.render_unexpected_exception(exc, "earthdata agent")
 
         self.assertEqual(text, render_error_answer(CATEGORY_RATE_LIMITED, "earthdata agent"))
 
@@ -706,29 +709,38 @@ class RunGroundTests(unittest.IsolatedAsyncioTestCase):
         from tta_backend.services import subagent_dispatch
         from tta_backend.config.error_templates import render_error_answer
 
-        text = subagent_dispatch._render_unexpected_exception(
+        text = subagent_dispatch.render_unexpected_exception(
             RuntimeError("secret path leak /opt/creds"), "earthdata agent"
         )
 
         self.assertNotIn("secret path leak", text)
         self.assertEqual(text, render_error_answer("contract", "earthdata agent"))
 
-    async def test_run_ground_second_call_in_the_same_task_is_budget_blocked(self):
+    async def test_run_ground_runs_every_call_it_is_given(self):
+        """T64: the per-turn budget belongs to the dispatch executor, which
+        allows several ground requests a turn; run_ground no longer refuses a
+        second call."""
         from tta_backend.services import subagent_dispatch
 
         class FakeGroundAgent:
+            def __init__(self):
+                self.calls = 0
+
             async def ainvoke(self, input_, config):
+                self.calls += 1
                 return {"messages": [SimpleNamespace(
-                    content=json.dumps({"summary": "ok", "artifact_ids": [], "handles": []}), type="ai",
+                    content=json.dumps({"summary": f"ok {self.calls}", "artifact_ids": [], "handles": []}), type="ai",
                 )]}
 
-        subagent_dispatch.get_call_budget().clear()
+        agent = FakeGroundAgent()
+        from tta_backend.utils.streaming import get_call_budget
+        get_call_budget().clear()
         with patch.object(subagent_dispatch, "get_ground_monitor_context", AsyncMock(return_value={})), \
              patch.object(subagent_dispatch, "save_ground_monitor_context", AsyncMock()):
-            await subagent_dispatch.run_ground(FakeGroundAgent(), "task 1", "thread-1")
-            second = await subagent_dispatch.run_ground(FakeGroundAgent(), "task 2", "thread-1")
+            await subagent_dispatch.run_ground(agent, "task 1", "thread-1")
+            second = await subagent_dispatch.run_ground(agent, "task 2", "thread-1")
 
-        self.assertIn("already returned a result", second.text)
+        self.assertEqual((agent.calls, second.text), (2, "ok 2"))
 
     async def test_run_ground_refusal_triggers_one_reprompt_not_a_second_workflow_run(self):
         from tta_backend.services import subagent_dispatch
@@ -763,7 +775,8 @@ class RunGroundTests(unittest.IsolatedAsyncioTestCase):
                 )]}
 
         ground_agent = FakeGroundAgent()
-        subagent_dispatch.get_call_budget().clear()
+        from tta_backend.utils.streaming import get_call_budget
+        get_call_budget().clear()
         with patch.object(subagent_dispatch, "get_ground_monitor_context", AsyncMock(return_value={})), \
              patch.object(subagent_dispatch, "save_ground_monitor_context", AsyncMock()):
             result = await subagent_dispatch.run_ground(ground_agent, "task 1", "thread-1")
@@ -792,7 +805,8 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0)
                 yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
 
-        subagent_dispatch.get_call_budget().clear()
+        from tta_backend.utils.streaming import get_call_budget
+        get_call_budget().clear()
         forwarded = []
 
         async def on_event(event_type, data):
@@ -820,7 +834,8 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
                 yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
 
         satellite_agent = FakeSatelliteAgent()
-        subagent_dispatch.get_call_budget().clear()
+        from tta_backend.utils.streaming import get_call_budget
+        get_call_budget().clear()
 
         with patch.object(
             subagent_dispatch,
@@ -861,9 +876,11 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0)
                 yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
 
-        subagent_dispatch.get_call_budget().clear()
+        from tta_backend.utils.streaming import get_call_budget
+        get_call_budget().clear()
 
-        with patch.object(subagent_dispatch, "get_satellite_context", AsyncMock(return_value={"location": "New Jersey"})), \
+        prior = {"location": "New Jersey", "dataset_query": "TEMPO_NO2"}
+        with patch.object(subagent_dispatch, "get_satellite_context", AsyncMock(return_value=prior)), \
              patch.object(subagent_dispatch, "save_satellite_context", AsyncMock()) as save_mock:
             await subagent_dispatch.run_satellite(FakeSatelliteAgent(), "check June 5", "thread-1")
 
@@ -871,7 +888,11 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
         saved_thread_id, saved_context = save_mock.await_args.args
         self.assertEqual(saved_thread_id, "thread-1")
         # Merged over the prior context, not replacing it.
-        self.assertEqual(saved_context["location"], "New Jersey")
+        self.assertEqual(saved_context["dataset_query"], "TEMPO_NO2")
+        # The run used a handle it never defined, so the saved place cannot
+        # vouch for it: the area is the handle alone.
+        self.assertEqual(saved_context["aoi_handle"], "aoi_cd34")
+        self.assertNotIn("location", saved_context)
         self.assertEqual(saved_context["dataset_handle"], "dataset_ab12")
         self.assertEqual(saved_context["last_time_range"], "2024-06-05/2024-06-05")
 
@@ -907,7 +928,8 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0)
                 yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
 
-        subagent_dispatch.get_call_budget().clear()
+        from tta_backend.utils.streaming import get_call_budget
+        get_call_budget().clear()
         result = await subagent_dispatch.run_satellite(
             FakeSatelliteAgent(), "Plot NO2 for bbox north=10 south=40 east=-70 west=-60", "thread-1",
         )
@@ -967,7 +989,8 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0)
                 yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
 
-        subagent_dispatch.get_call_budget().clear()
+        from tta_backend.utils.streaming import get_call_budget
+        get_call_budget().clear()
         with patch.object(subagent_dispatch, "get_satellite_context", AsyncMock(return_value={})), \
              patch.object(subagent_dispatch, "save_satellite_context", AsyncMock()):
             result = await subagent_dispatch.run_satellite(
@@ -1005,7 +1028,8 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0)
                 yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
 
-        subagent_dispatch.get_call_budget().clear()
+        from tta_backend.utils.streaming import get_call_budget
+        get_call_budget().clear()
         with patch.object(subagent_dispatch, "get_satellite_context", AsyncMock(return_value={})), \
              patch.object(subagent_dispatch, "save_satellite_context", AsyncMock()):
             result = await subagent_dispatch.run_satellite(
@@ -1046,7 +1070,8 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0)
                 yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
 
-        subagent_dispatch.get_call_budget().clear()
+        from tta_backend.utils.streaming import get_call_budget
+        get_call_budget().clear()
         with patch.object(subagent_dispatch, "get_satellite_context", AsyncMock(return_value={})), \
              patch.object(subagent_dispatch, "save_satellite_context", AsyncMock()):
             result = await subagent_dispatch.run_satellite(
@@ -1082,7 +1107,8 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0)
                 yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
 
-        subagent_dispatch.get_call_budget().clear()
+        from tta_backend.utils.streaming import get_call_budget
+        get_call_budget().clear()
         with patch.object(subagent_dispatch, "get_satellite_context", AsyncMock(return_value={})), \
              patch.object(subagent_dispatch, "save_satellite_context", AsyncMock()):
             result = await subagent_dispatch.run_satellite(
@@ -1114,7 +1140,8 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0)
                 yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
 
-        subagent_dispatch.get_call_budget().clear()
+        from tta_backend.utils.streaming import get_call_budget
+        get_call_budget().clear()
         result = await subagent_dispatch.run_satellite(
             FakeSatelliteAgent(), "Plot NO2 for bbox north=10 south=40 east=-70 west=-60", "thread-1",
         )
@@ -1147,7 +1174,8 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0)
                 yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
 
-        subagent_dispatch.get_call_budget().clear()
+        from tta_backend.utils.streaming import get_call_budget
+        get_call_budget().clear()
         result = await subagent_dispatch.run_satellite(
             FakeSatelliteAgent(), "plot AOD over New Jersey last week", "thread-1",
         )
@@ -1190,7 +1218,8 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0)
                 yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
 
-        subagent_dispatch.get_call_budget().clear()
+        from tta_backend.utils.streaming import get_call_budget
+        get_call_budget().clear()
         result = await subagent_dispatch.run_satellite(
             MultiPartSatelliteAgent(), "plot NO2 and AOD over New Jersey", "thread-1",
         )
@@ -1233,7 +1262,8 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0)
                 yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
 
-        subagent_dispatch.get_call_budget().clear()
+        from tta_backend.utils.streaming import get_call_budget
+        get_call_budget().clear()
         result = await subagent_dispatch.run_satellite(
             FakeSatelliteAgent(), "plot AOD over New Jersey last week", "thread-1",
         )
@@ -1246,20 +1276,26 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
             "plot AOD over New Jersey last week using aerosol_optical_depth_average",
         )
 
-    async def test_run_satellite_second_call_in_the_same_task_is_budget_blocked(self):
+    async def test_run_satellite_runs_every_call_it_is_given(self):
+        """T64: see test_run_ground_runs_every_call_it_is_given -- a turn may
+        now dispatch several satellite requests."""
         from tta_backend.services import subagent_dispatch
 
         envelope = json.dumps({"summary": "ok", "artifact_ids": [], "handles": []})
 
         class FakeSatelliteAgent:
+            calls = 0
+
             async def astream(self, input_, config, stream_mode):
+                FakeSatelliteAgent.calls += 1
                 yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
 
-        subagent_dispatch.get_call_budget().clear()
-        await subagent_dispatch.run_satellite(FakeSatelliteAgent(), "task 1", "thread-1")
-        second = await subagent_dispatch.run_satellite(FakeSatelliteAgent(), "task 2", "thread-1")
+        from tta_backend.utils.streaming import get_call_budget
+        get_call_budget().clear()
+        await subagent_dispatch.run_satellite(FakeSatelliteAgent(), "task 1", None)
+        second = await subagent_dispatch.run_satellite(FakeSatelliteAgent(), "task 2", None)
 
-        self.assertIn("already been called", second.text)
+        self.assertEqual((FakeSatelliteAgent.calls, second.text), (2, "ok"))
 
     async def test_run_satellite_returns_the_deterministic_message_when_the_mcp_is_not_ready(self):
         # T17 story #13: gate on the connection manager's state before ever
@@ -1271,7 +1307,8 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
             def __getattr__(self, name):
                 raise AssertionError(f"unexpected access to untouched satellite agent: {name}")
 
-        subagent_dispatch.get_call_budget().clear()
+        from tta_backend.utils.streaming import get_call_budget
+        get_call_budget().clear()
         mcp_manager = SimpleNamespace(state=STATE_UNAVAILABLE)
 
         result = await subagent_dispatch.run_satellite(
@@ -1302,7 +1339,8 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
             async def astream(self, input_, config, stream_mode):
                 yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
 
-        subagent_dispatch.get_call_budget().clear()
+        from tta_backend.utils.streaming import get_call_budget
+        get_call_budget().clear()
         mcp_manager = SimpleNamespace(state=STATE_READY)
 
         result = await subagent_dispatch.run_satellite(
@@ -1323,7 +1361,8 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
                 raise RuntimeError("secret path leak /opt/creds")
                 yield  # pragma: no cover — makes this an async generator
 
-        subagent_dispatch.get_call_budget().clear()
+        from tta_backend.utils.streaming import get_call_budget
+        get_call_budget().clear()
         result = await subagent_dispatch.run_satellite(ExplodingSatelliteAgent(), "task", "thread-1")
 
         self.assertNotIn("secret path leak", result.text)
@@ -1341,7 +1380,8 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
                 )
                 yield  # pragma: no cover
 
-        subagent_dispatch.get_call_budget().clear()
+        from tta_backend.utils.streaming import get_call_budget
+        get_call_budget().clear()
         result = await subagent_dispatch.run_satellite(ExplodingSatelliteAgent(), "task", "thread-1")
 
         self.assertEqual(
@@ -1364,7 +1404,8 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
             async def astream(self, input_, config, stream_mode):
                 yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
 
-        subagent_dispatch.get_call_budget().clear()
+        from tta_backend.utils.streaming import get_call_budget
+        get_call_budget().clear()
         result = await subagent_dispatch.run_satellite(FakeSatelliteAgent(), "task", "thread-1")
 
         self.assertEqual(result.text, "ok")
@@ -1403,7 +1444,8 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         satellite_agent = FakeSatelliteAgent()
-        subagent_dispatch.get_call_budget().clear()
+        from tta_backend.utils.streaming import get_call_budget
+        get_call_budget().clear()
         result = await subagent_dispatch.run_satellite(satellite_agent, "Plot NO2 over NJ", "thread-1")
 
         # Exactly one further model interaction (the reprompt) — the tool
@@ -1413,85 +1455,194 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.text, "Recovered via reprompt.")
 
 
-@unittest.skipIf(importlib.util.find_spec("langchain") is None, "langchain is not installed")
-class CallBudgetTaskBoundaryTests(unittest.IsolatedAsyncioTestCase):
-    """T16: langgraph.prebuilt.tool_node.ToolNode._afunc wraps every tool
-    call in asyncio.gather() (tool_node.py:857), which spawns a fresh
-    asyncio.Task with a *copied* context for each call. A plain
-    ContextVar.set() inside run_ground/run_satellite only mutates that
-    child Task's own copy — it is never visible to a second such Task, so
-    the "call each agent once per request" budget could silently never
-    fire. This reproduces that Task boundary directly (rather than running
-    the full LangGraph loop) and proves the budget survives it."""
+def _envelope(summary):
+    return json.dumps({"summary": summary, "artifact_ids": [], "handles": []})
 
-    async def _build_tools(self, ground_agent, satellite_agent):
-        from tta_backend.agents import supervisor_agent
 
-        captured = {}
+class DispatchContextTests(unittest.IsolatedAsyncioTestCase):
+    """T64 D13: concurrent runs in one dispatch batch must not race on the
+    thread's read-merge-write context. With a sink they hand their context
+    back instead of saving; the batch is then merged and saved once."""
 
-        def fake_create_agent(*, tools, **kwargs):
-            captured["tools"] = {t.name: t for t in tools}
-            return object()
-
-        with patch.object(supervisor_agent, "build_chat_model", return_value="llm"), \
-             patch.object(supervisor_agent, "get_checkpointer", AsyncMock(return_value="checkpointer")), \
-             patch.object(supervisor_agent, "create_agent", side_effect=fake_create_agent):
-            await supervisor_agent.build_agent(ground_agent=ground_agent, satellite_agent=satellite_agent)
-
-        return captured["tools"]
-
-    async def test_ground_budget_survives_the_tool_node_task_boundary(self):
+    async def test_run_satellite_with_a_sink_hands_its_context_back_instead_of_saving(self):
         from tta_backend.services import subagent_dispatch
-        from tta_backend.utils.streaming import _call_budget
-
-        envelope = json.dumps({"summary": "ok", "artifact_ids": [], "handles": []})
-
-        class FakeGroundAgent:
-            async def ainvoke(self, input_, config):
-                return {"messages": [SimpleNamespace(content=envelope, type="ai")]}
-
-        tools = await self._build_tools(FakeGroundAgent(), object())
-        ask_ground = tools["ask_ground_sensor_agent"]
-
-        # Simulate what stream_response does: establish the per-request
-        # holder ONCE, in the context that becomes every ToolNode
-        # gather-Task's parent — before either tool-calling step happens.
-        token = _call_budget.set({})
-        try:
-            with patch.object(subagent_dispatch, "get_ground_monitor_context", AsyncMock(return_value={})), \
-                 patch.object(subagent_dispatch, "save_ground_monitor_context", AsyncMock()):
-                # Each call happens inside its own freshly created Task whose
-                # context is copied at creation time — exactly what
-                # ToolNode's asyncio.gather(*coros) does for every graph step.
-                first = await asyncio.create_task(ask_ground.ainvoke({"task": "task 1"}))
-                second = await asyncio.create_task(ask_ground.ainvoke({"task": "task 2"}))
-        finally:
-            _call_budget.reset(token)
-
-        self.assertNotIn("already returned a result", first)
-        self.assertIn("already returned a result", second)
-
-    async def test_satellite_budget_survives_the_tool_node_task_boundary(self):
-        from tta_backend.utils.streaming import _call_budget
-
-        envelope = json.dumps({"summary": "ok", "artifact_ids": [], "handles": []})
 
         class FakeSatelliteAgent:
             async def astream(self, input_, config, stream_mode):
-                yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
+                yield "updates", {"agent": {"messages": [SimpleNamespace(
+                    tool_calls=[{"id": "tc1", "name": "check_coverage",
+                                 "args": {"dataset_handle": "dataset_ab12", "aoi_handle": "aoi_cd34"}}],
+                    content="",
+                )]}}
+                await asyncio.sleep(0)
+                yield "messages", (SimpleNamespace(content=_envelope("ok"), type="ai", tool_calls=None), {})
 
-        tools = await self._build_tools(object(), FakeSatelliteAgent())
-        ask_satellite = tools["ask_earthdata_agent"]
+        sink = {}
+        with patch.object(subagent_dispatch, "get_satellite_context", AsyncMock(return_value={})), \
+             patch.object(subagent_dispatch, "save_satellite_context", AsyncMock()) as save_mock:
+            await subagent_dispatch.run_satellite(FakeSatelliteAgent(), "task", "thread-1", context_sink=sink)
 
-        token = _call_budget.set({})
-        try:
-            first = await asyncio.create_task(ask_satellite.ainvoke({"task": "task 1"}))
-            second = await asyncio.create_task(ask_satellite.ainvoke({"task": "task 2"}))
-        finally:
-            _call_budget.reset(token)
+        save_mock.assert_not_called()
+        self.assertEqual(sink, {"dataset_handle": "dataset_ab12", "aoi_handle": "aoi_cd34"})
 
-        self.assertNotIn("already been called", first)
-        self.assertIn("already been called", second)
+    async def test_run_ground_with_a_sink_hands_its_context_back_instead_of_saving(self):
+        from tta_backend.services import subagent_dispatch
+
+        class FakeGroundAgent:
+            async def ainvoke(self, input_, config):
+                return {"messages": [SimpleNamespace(
+                    content=_envelope("The monitor is Camden Spruce St with station_id 34-007-0002."), type="ai",
+                )]}
+
+        sink = {}
+        with patch.object(subagent_dispatch, "get_ground_monitor_context", AsyncMock(return_value={})), \
+             patch.object(subagent_dispatch, "save_ground_monitor_context", AsyncMock()) as save_mock:
+            await subagent_dispatch.run_ground(FakeGroundAgent(), "task", "thread-1", context_sink=sink)
+
+        save_mock.assert_not_called()
+        self.assertEqual(sink.get("site_id"), "34-007-0002")
+
+    async def test_a_batchs_contexts_merge_in_request_order_and_save_once(self):
+        """Later requests win a key; every chart the batch drew stays
+        nameable, in request order, as it does for one run that draws two.
+        Two different places leave no area to reuse."""
+        from tta_backend.services import subagent_dispatch
+
+        prior_satellite = {"dataset_query": "TEMPO_NO2", "last_chart_ids": "old_chart"}
+        with patch.object(subagent_dispatch, "get_satellite_context", AsyncMock(return_value=prior_satellite)), \
+             patch.object(subagent_dispatch, "save_satellite_context", AsyncMock()) as save_satellite, \
+             patch.object(subagent_dispatch, "get_ground_monitor_context", AsyncMock(return_value={"name": "Old"})), \
+             patch.object(subagent_dispatch, "save_ground_monitor_context", AsyncMock()) as save_ground:
+            await subagent_dispatch.persist_dispatch_contexts(
+                "thread-1",
+                satellite=[{"location": "New Jersey", "last_chart_ids": "nj_map"},
+                           {"location": "New York", "last_chart_ids": "ny_map"}],
+                ground=[{"site_id": "34-007-0002"}],
+            )
+
+        save_satellite.assert_awaited_once_with("thread-1", {
+            "dataset_query": "TEMPO_NO2", "last_chart_ids": "nj_map,ny_map",
+        })
+        save_ground.assert_awaited_once_with("thread-1", {"name": "Old", "site_id": "34-007-0002"})
+
+    async def test_a_ground_context_store_failure_never_fails_the_batch(self):
+        """Persistence runs after the batch, outside the executor's per-item
+        isolation; an exception here would discard every finished result."""
+        from tta_backend.services import subagent_dispatch
+
+        for failing in ("get_ground_monitor_context", "save_ground_monitor_context"):
+            with self.subTest(failing=failing), \
+                 patch.object(subagent_dispatch, "get_ground_monitor_context", AsyncMock(return_value={})), \
+                 patch.object(subagent_dispatch, "save_ground_monitor_context", AsyncMock()), \
+                 patch.object(subagent_dispatch, failing, AsyncMock(side_effect=RuntimeError("db down"))), \
+                 self.assertLogs("tta_backend.services.subagent_dispatch", level="WARNING"):
+                await subagent_dispatch.persist_dispatch_contexts(
+                    "thread-1", satellite=[], ground=[{"site_id": "34-007-0002"}],
+                )
+
+    async def test_a_batch_that_captured_nothing_saves_nothing(self):
+        from tta_backend.services import subagent_dispatch
+
+        with patch.object(subagent_dispatch, "save_satellite_context", AsyncMock()) as save_satellite, \
+             patch.object(subagent_dispatch, "save_ground_monitor_context", AsyncMock()) as save_ground:
+            await subagent_dispatch.persist_dispatch_contexts("thread-1", satellite=[{}], ground=[])
+
+        save_satellite.assert_not_called()
+        save_ground.assert_not_called()
+
+
+class SatelliteAreaContextTests(unittest.IsolatedAsyncioTestCase):
+    """A saved place name and area handle must describe the same area. They
+    were captured from different calls and merged key by key, so a thread
+    could hold location "New Jersey" with California's handle, and the next
+    New Jersey request reused California (live 2026-10-18)."""
+
+    def test_a_handle_used_without_defining_it_this_run_has_no_known_place(self):
+        from tta_backend.services.subagent_dispatch import _capture_satellite_context
+
+        captured: dict[str, str] = {}
+        _capture_satellite_context("define_area_of_interest", {"location": "New Jersey"}, captured)
+        _capture_satellite_context("check_coverage", {"aoi_handle": "aoi_nj"}, captured)
+        _capture_satellite_context("safe_retrieve", {"aoi_handle": "aoi_ca"}, captured)
+
+        self.assertEqual(captured.get("aoi_handle"), "aoi_ca")
+        self.assertNotIn("location", captured)
+
+    def test_one_run_replaces_the_saved_area_as_a_pair(self):
+        from tta_backend.services.subagent_dispatch import merge_satellite_context
+
+        saved = merge_satellite_context(
+            {"location": "Delaware", "aoi_handle": "aoi_de", "dataset_query": "TEMPO"},
+            [{"location": "New Jersey", "aoi_handle": "aoi_nj"}],
+        )
+        self.assertEqual((saved["location"], saved["aoi_handle"]), ("New Jersey", "aoi_nj"))
+        self.assertEqual(saved["dataset_query"], "TEMPO")
+
+    def test_requests_over_different_areas_save_no_area(self):
+        from tta_backend.services.subagent_dispatch import merge_satellite_context
+
+        saved = merge_satellite_context(
+            {"location": "Delaware", "aoi_handle": "aoi_de"},
+            [{"location": "New Jersey", "aoi_handle": "aoi_nj"}, {"location": "California", "aoi_handle": "aoi_ca"}],
+        )
+        self.assertNotIn("location", saved)
+        self.assertNotIn("aoi_handle", saved)
+
+    def test_the_live_mismatch_cannot_be_saved(self):
+        """The live pair: one run defined New Jersey, the other used
+        California's handle with no place recorded."""
+        from tta_backend.services.subagent_dispatch import merge_satellite_context
+
+        saved = merge_satellite_context(
+            {}, [{"location": "New Jersey", "aoi_handle": "aoi_nj"}, {"aoi_handle": "aoi_ca"}],
+        )
+        self.assertNotEqual((saved.get("location"), saved.get("aoi_handle")), ("New Jersey", "aoi_ca"))
+        self.assertNotIn("aoi_handle", saved)
+
+    def test_reusing_the_saved_handle_keeps_its_place(self):
+        from tta_backend.services.subagent_dispatch import merge_satellite_context
+
+        saved = merge_satellite_context(
+            {"location": "New Jersey", "aoi_handle": "aoi_nj"}, [{"aoi_handle": "aoi_nj", "last_time_range": "t"}],
+        )
+        self.assertEqual((saved["location"], saved["aoi_handle"]), ("New Jersey", "aoi_nj"))
+
+    def test_a_new_handle_of_unknown_place_drops_the_old_place(self):
+        from tta_backend.services.subagent_dispatch import merge_satellite_context
+
+        saved = merge_satellite_context({"location": "New Jersey", "aoi_handle": "aoi_nj"}, [{"aoi_handle": "aoi_ca"}])
+        self.assertEqual(saved.get("aoi_handle"), "aoi_ca")
+        self.assertNotIn("location", saved)
+
+    def test_a_turn_that_touched_no_area_keeps_the_saved_one(self):
+        from tta_backend.services.subagent_dispatch import merge_satellite_context
+
+        saved = merge_satellite_context(
+            {"location": "New Jersey", "aoi_handle": "aoi_nj"}, [{"last_chart_ids": "map_1"}, {"last_chart_ids": "map_2"}],
+        )
+        self.assertEqual((saved["location"], saved["aoi_handle"]), ("New Jersey", "aoi_nj"))
+        self.assertEqual(saved["last_chart_ids"], "map_1,map_2")
+
+    def test_a_handle_with_no_known_place_is_never_offered(self):
+        from tta_backend.services.subagent_dispatch import _inject_satellite_context
+
+        enriched = _inject_satellite_context("Plot NO2 over New Jersey.", {"aoi_handle": "aoi_ca"})
+        self.assertNotIn("aoi_ca", enriched)
+
+    async def test_a_batch_over_two_places_saves_no_area(self):
+        from tta_backend.services import subagent_dispatch
+
+        with patch.object(subagent_dispatch, "get_satellite_context", AsyncMock(return_value={})), \
+             patch.object(subagent_dispatch, "save_satellite_context", AsyncMock()) as save:
+            await subagent_dispatch.persist_dispatch_contexts(
+                "thread-1",
+                satellite=[{"location": "New Jersey", "aoi_handle": "aoi_nj"}, {"aoi_handle": "aoi_ca"}],
+                ground=[],
+            )
+
+        saved = save.call_args.args[1]
+        self.assertNotIn("aoi_handle", saved)
+        self.assertNotIn("location", saved)
 
 
 if __name__ == "__main__":

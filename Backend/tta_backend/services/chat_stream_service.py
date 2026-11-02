@@ -6,7 +6,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Literal
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
@@ -16,32 +16,65 @@ from tta_backend.config.error_templates import (
     render_turn_timeout_answer,
 )
 from tta_backend.config.settings import get_settings
+from tta_backend.config.workflow_stages import STAGE_WORKING
 from tta_backend.earthdata_mcp.results import CATEGORY_CONTRACT
-from tta_backend.models import AgentResult, agent_result_to_json, parse_agent_result, parse_chart_payload
+from tta_backend.models import (
+    AgentResult,
+    DispatchItemResult,
+    DispatchResult,
+    parse_agent_result,
+    parse_chart_payload,
+    parse_dispatch_result,
+    parse_tool_results,
+)
 from tta_backend.services import admission, cube_cache
 from tta_backend.services.artifact_store import artifact_store
 from tta_backend.services.chart_service import ChartService
 from tta_backend.services.intent_router import route_intent
 from tta_backend.services.retrieval_composites import TERMINAL_STATUSES
 from tta_backend.services.subagent_dispatch import run_ground, run_satellite
-from tta_backend.utils.message_utils import flatten_text_content, normalize_image_url
-from tta_backend.utils.streaming import stream_response, user_id_context
+from tta_backend.utils import streaming
+from tta_backend.utils.message_utils import flatten_text_content
+from tta_backend.services.consulted_header import (
+    consulted_sources,
+    merge_sources,
+    result_sources,
+    sources_header,
+    with_sources_header,
+)
+from tta_backend.utils.streaming import stream_response, user_id_context, user_message_context
 
 logger = logging.getLogger(__name__)
 
-_AGENT_CONSULTED_HEADERS = {
-    "GROUND": "Agent consulted: GROUND",
-    "SATELLITE": "Agent consulted: SATELLITE",
+# The router intents the fast path answers by itself, and the agent each one runs.
+_FAST_PATH_AGENTS: dict[str, Literal["ground", "satellite"]] = {
+    "GROUND": "ground",
+    "SATELLITE": "satellite",
 }
 
-# T14/history-fix: the supervisor tool a fast-pathed intent stands in for —
-# used so the write-back below reproduces the same tool_call/tool_result
-# shape create_agent's own loop would have produced (see supervisor_agent.py
-# ask_ground_sensor_agent / ask_earthdata_agent).
-_INTENT_TOOL_NAMES = {
-    "GROUND": "ask_ground_sensor_agent",
-    "SATELLITE": "ask_earthdata_agent",
-}
+# T64 D15: the intent a fast-pathed turn is written back under. The regex
+# router picks an agent but never classifies intent, so the write-back's
+# dispatch call says so rather than inventing one. History only: it is never
+# validated against the request schema.
+_FAST_PATH_INTENT = "fast_path"
+
+
+# The envelope's own cap on follow-ups (AgentResult.suggested_followups).
+_MAX_FOLLOWUPS = 2
+
+
+def _merged_followups(results: list[AgentResult]) -> list[str] | None:
+    """Follow-ups across a tool message's results, in request order, deduped
+    and capped (T64 D13). None when no result offered any -- an empty list
+    would claim the sub-agents offered none."""
+    offered = [r.suggested_followups for r in results if r.suggested_followups is not None]
+    if not offered:
+        return None
+    merged: list[str] = []
+    for suggestion in (s for group in offered for s in group):
+        if suggestion not in merged:
+            merged.append(suggestion)
+    return merged[:_MAX_FOLLOWUPS]
 
 
 @dataclass
@@ -65,6 +98,11 @@ class _LiveTurn:
     #: (Frontend/src/hooks/useChat.js), so this set is the single point that
     #: keeps each chart_id rendered exactly once.
     emitted_chart_ids: set[str] = field(default_factory=set)
+    #: T64 D14: the sources the turn's dispatch calls actually drew on, which
+    #: the answer's "Data sources" header names.
+    consulted: list[str] = field(default_factory=list)
+    #: Set by each dispatch result: the next answer text opens with the header.
+    header_due: bool = False
 
 
 class ChatStreamService:
@@ -103,7 +141,7 @@ class ChatStreamService:
 
         Returns ``None`` when ``event_type`` is not one of them, so each route
         goes on to handle what is unique to it: the supervisor forwards
-        tool_result/image/text, while the fast path deliberately forwards none
+        tool_result/text, while the fast path deliberately forwards none
         of those — its sub-agent's text is a raw AgentResult envelope, and the
         one synthesized answer arrives after the loop (T14). An empty list
         means "handled, nothing to send" — a chart already emitted this turn.
@@ -184,9 +222,14 @@ class ChatStreamService:
         # actually watching. Wrapping both routes here (the fast path is
         # dispatched from inside this block) is what makes "never start a cube
         # during a turn" true rather than aspirational.
-        with user_id_context(user_id), cube_cache.active_turn():
+        #
+        # T64 D6: the researcher's message is bound here, not taken from
+        # stream_response's input, because on the fast path the outermost
+        # stream_response is the sub-agent's own, whose input is the
+        # date-and-context-enriched task rather than what the researcher sent.
+        with user_id_context(user_id), user_message_context(message), cube_cache.active_turn():
             intent = route_intent(message)
-            route = "fast_path" if intent in _AGENT_CONSULTED_HEADERS else "supervisor"
+            route = "fast_path" if intent in _FAST_PATH_AGENTS else "supervisor"
             logger.info(
                 "chat_route_decision",
                 extra={"_request_id": request_id, "_thread_id": thread_id, "_intent": intent, "_route": route},
@@ -200,8 +243,7 @@ class ChatStreamService:
                 return
 
             response_text = ""
-            image_urls = []
-            artifacts = []
+            artifacts: list[dict[str, Any]] = []
             turn = _LiveTurn()
             # T22 story #8: the last non-None suggested_followups seen from a
             # sub-agent's own AgentResult envelope, whether it arrives batched in
@@ -213,7 +255,7 @@ class ChatStreamService:
             # AgentResult tool_result (run_satellite already filled its
             # prompts) — carried straight through, never synthesized here, the
             # same discipline as suggestions_box.
-            variable_choice_box: dict[str, dict] = {}
+            variable_choice_box: dict[str, dict[str, Any]] = {}
             started = time.monotonic()
             turn_timeout = asyncio.timeout(self.chat_turn_timeout_seconds)
             try:
@@ -228,37 +270,43 @@ class ChatStreamService:
                             for event in live:
                                 yield event
                         elif event_type == "tool_result":
+                            # Parsed once here; the parsers below pass a
+                            # DispatchResult instance straight through.
+                            content = data.get("content", "")
+                            batch = parse_dispatch_result(content)
+                            ran = consulted_sources(batch)
+                            turn.consulted = merge_sources(turn.consulted, ran)
+                            turn.header_due = turn.header_due or bool(ran)
                             async for event in self._tool_result_events(
-                                data.get("content", ""),
+                                batch if batch is not None else content,
                                 thread_id,
                                 user_id,
-                                image_urls,
                                 artifacts,
                                 turn.emitted_chart_ids,
                                 suggestions_box,
                                 variable_choice_box,
                             ):
                                 yield event
-                        elif event_type == "image":
-                            url = normalize_image_url(data.get("path", ""))
-                            if url:
-                                image_urls.append(url)
-                                yield self.sse("image", {"url": url})
                         elif event_type == "text":
                             text, events = await self._text_events(
                                 data, thread_id, user_id, turn.emitted_chart_ids, suggestions_box,
                                 variable_choice_box,
                             )
+                            if text and turn.header_due:
+                                # D14: the header streams ahead of the answer it opens.
+                                opening = f"{sources_header(turn.consulted)}\n\n"
+                                response_text += opening
+                                turn.header_due = False
+                                yield self.sse("text", {"content": opening})
                             response_text += text
                             if text:
                                 yield self.sse("text", {"content": text})
                             for event in events:
                                 yield event
 
-                    done_payload = {
+                    done_payload: dict[str, Any] = {
                         "thread_id": thread_id,
-                        "response": self._strip_supervisor_preamble(response_text),
-                        "image_urls": image_urls,
+                        "response": with_sources_header(response_text, turn.consulted),
                         "artifacts": artifacts,
                         "tool_calls": turn.tool_calls,
                     }
@@ -287,7 +335,7 @@ class ChatStreamService:
         """Dispatch directly to the ground or satellite sub-agent, bypassing
         the supervisor's two model calls (T14). Forwards tool_call/status/
         job_progress/chart events live as the sub-agent works, then emits the
-        finalized answer under the same "Agent consulted: ..." header the
+        finalized answer under the same "Data sources: ..." header the
         supervisor path produces, and writes the turn back into the
         supervisor's checkpointed thread so follow-ups keep their
         antecedents."""
@@ -295,7 +343,29 @@ class ChatStreamService:
         turn = _LiveTurn()
         started = time.monotonic()
 
-        queue: asyncio.Queue = asyncio.Queue()
+        queue: asyncio.Queue[Any] = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+        # Touched by every item the loop below consumes, including the
+        # sub-agent's own bubbled events, so the beat covers genuine silence
+        # only and never talks over a turn that is already narrating.
+        last_activity = {"t": loop.time()}
+
+        async def heartbeat() -> None:
+            # The fast path dispatches sub-agents directly and so never enters
+            # stream_response, where the supervisor route's watchdog lives.
+            # run_ground is one awaited ainvoke with no on_event, so without
+            # this a GROUND turn writes nothing at all until it answers -- and
+            # T63 D14 has readers infer "the replica that owned this turn
+            # died" from exactly that silence.
+            while True:
+                await asyncio.sleep(streaming.HEARTBEAT_CHECK_SECONDS)
+                idle = loop.time() - last_activity["t"]
+                if idle >= streaming.HEARTBEAT_INTERVAL_SECONDS:
+                    await queue.put(("status", {
+                        "message": f"Still working — {int(idle)}s elapsed",
+                        "stage": STAGE_WORKING,
+                        "detail": int(idle),
+                    }))
 
         async def on_event(event_type: str, data: Any) -> None:
             await queue.put((event_type, data))
@@ -315,12 +385,14 @@ class ChatStreamService:
                 await queue.put(("__task_done__", None))
 
         task = asyncio.create_task(run())
+        heartbeat_task = asyncio.create_task(heartbeat())
         result = None
         turn_timeout = asyncio.timeout(self.chat_turn_timeout_seconds)
         try:
             async with turn_timeout:
                 while True:
                     event_type, data = await queue.get()
+                    last_activity["t"] = loop.time()
                     if event_type == "__task_done__":
                         break
                     if event_type == "__error__":
@@ -346,15 +418,16 @@ class ChatStreamService:
         finally:
             if not task.done():
                 task.cancel()
+            heartbeat_task.cancel()
 
         # run() puts __result__ before __task_done__ on every non-exception
         # path, and the except block above returns before this point on
         # __error__ — so reaching here guarantees result was set.
         assert result is not None
         for chart in result.charts:
-            event = await self._emit_chart_once(thread_id, chart, user_id, turn.emitted_chart_ids)
-            if event is not None:
-                yield event
+            chart_event = await self._emit_chart_once(thread_id, chart, user_id, turn.emitted_chart_ids)
+            if chart_event is not None:
+                yield chart_event
         for artifact_ref in result.artifacts:
             payload = await self._resolve_artifact_payload(
                 artifact_ref.model_dump(exclude_none=True), user_id, thread_id,
@@ -365,15 +438,14 @@ class ChatStreamService:
                 artifacts.append(payload)
             yield self.sse("artifact", payload)
 
-        final_text = f"{_AGENT_CONSULTED_HEADERS[intent]}\n\n{result.text}"
+        final_text = with_sources_header(result.text, result_sources(_FAST_PATH_AGENTS[intent], result))
         yield self.sse("text", {"content": final_text})
 
-        await self._write_back_turn(supervisor_agent, thread_id, message, final_text, intent, result)
+        await self._write_back_turn(supervisor_agent, thread_id, user_id, message, final_text, intent, result)
 
         done_payload = {
             "thread_id": thread_id,
-            "response": self._strip_supervisor_preamble(final_text),
-            "image_urls": [],
+            "response": final_text,
             "artifacts": artifacts,
             "tool_calls": turn.tool_calls,
         }
@@ -394,6 +466,7 @@ class ChatStreamService:
         self,
         agent: Any,
         thread_id: str,
+        user_id: str,
         user_message: str,
         final_answer: str,
         intent: str,
@@ -406,10 +479,10 @@ class ChatStreamService:
         logged loudly, never silent.
 
         When the result carries a chart or artifact, writes the same
-        tool_call/ToolMessage/AIMessage shape the supervisor's own agent loop
-        produces for ask_ground_sensor_agent / ask_earthdata_agent
-        (supervisor_agent.py), carrying the full AgentResult JSON in the
-        ToolMessage. HistoryService only ever reconstructs a turn's chart/
+        tool_call/ToolMessage/AIMessage shape the supervisor's own dispatch
+        tool produces (T64 D15): a one-item DispatchResult in the
+        ToolMessage, each chart reduced to a reference to its agent_charts
+        row (ChartService.checkpoint_dispatch_envelope). HistoryService only ever reconstructs a turn's chart/
         artifact cards from a role=="tool" message (see _attach_tool_output)
         — a bare Human/AI pair here left fast-pathed charts undiscoverable
         after a reload, even though they were already durably persisted in
@@ -431,17 +504,25 @@ class ChatStreamService:
         just its chart card."""
         if result.charts or result.artifacts:
             tool_call_id = str(uuid.uuid4())
-            tool_name = _INTENT_TOOL_NAMES[intent]
+            agent_name = _FAST_PATH_AGENTS[intent]
+            batch = DispatchResult(results=[DispatchItemResult(
+                index=0, agent=agent_name, intent=_FAST_PATH_INTENT, status="ok", result=result,
+                sources=result_sources(agent_name, result),
+            )])
             messages = [
                 HumanMessage(content=user_message),
                 AIMessage(
                     content="",
-                    tool_calls=[{"name": tool_name, "args": {"task": user_message}, "id": tool_call_id}],
+                    tool_calls=[{
+                        "name": "dispatch",
+                        "args": {"requests": [{"agent": agent_name, "intent": _FAST_PATH_INTENT}]},
+                        "id": tool_call_id,
+                    }],
                 ),
                 ToolMessage(
-                    content=agent_result_to_json(result),
+                    content=await self.chart_service.checkpoint_dispatch_envelope(batch, thread_id, user_id),
                     tool_call_id=tool_call_id,
-                    name=tool_name,
+                    name="dispatch",
                 ),
                 AIMessage(content=final_answer),
             ]
@@ -489,7 +570,6 @@ class ChatStreamService:
             self.sse("done", {
                 "thread_id": thread_id,
                 "response": render_turn_timeout_answer(in_flight),
-                "image_urls": [],
                 "artifacts": [],
                 "tool_calls": [],
             }),
@@ -531,53 +611,52 @@ class ChatStreamService:
             self.sse("done", {
                 "thread_id": thread_id,
                 "response": answer,
-                "image_urls": [],
                 "artifacts": [],
                 "tool_calls": [],
             }),
         ]
 
-    def _strip_supervisor_preamble(self, text: str) -> str:
-        marker = "Agent consulted:"
-        idx = text.find(marker)
-        return text[idx:] if idx > 0 else text
-
     async def _tool_result_events(
         self,
-        content: str,
+        content: Any,
         thread_id: str,
         user_id: str,
-        image_urls: list[str],
         artifacts: list[dict[str, Any]] | None = None,
         emitted_chart_ids: set[str] | None = None,
         suggestions_box: dict[str, list[str]] | None = None,
-        variable_choice_box: dict[str, dict] | None = None,
+        variable_choice_box: dict[str, dict[str, Any]] | None = None,
     ) -> AsyncIterator[str]:
         if emitted_chart_ids is None:
             emitted_chart_ids = set()
-        agent_result = parse_agent_result(content)
-        if agent_result is not None:
-            for artifact_ref in agent_result.artifacts:
-                payload = await self._resolve_artifact_payload(
-                    artifact_ref.model_dump(exclude_none=True), user_id, thread_id,
-                )
-                if payload is None:
-                    continue
-                if artifacts is not None and payload not in artifacts:
-                    artifacts.append(payload)
-                yield self.sse("artifact", payload)
-            for chart in agent_result.charts:
-                event = await self._emit_chart_once(thread_id, chart, user_id, emitted_chart_ids)
-                if event is not None:
-                    yield event
+        # One result for a legacy ask_* message, one per item that ran for a
+        # T64 dispatch batch.
+        agent_results = parse_tool_results(content)
+        if agent_results:
+            for agent_result in agent_results:
+                for artifact_ref in agent_result.artifacts:
+                    payload = await self._resolve_artifact_payload(
+                        artifact_ref.model_dump(exclude_none=True), user_id, thread_id,
+                    )
+                    if payload is None:
+                        continue
+                    if artifacts is not None and payload not in artifacts:
+                        artifacts.append(payload)
+                    yield self.sse("artifact", payload)
+                for chart in agent_result.charts:
+                    event = await self._emit_chart_once(thread_id, chart, user_id, emitted_chart_ids)
+                    if event is not None:
+                        yield event
             # T22 story #8: a sub-agent's suggestions arrive batched inside
             # its final tool_result envelope on the supervisor path — carried
             # through untouched (never synthesized here, story #12).
-            if suggestions_box is not None and agent_result.suggested_followups is not None:
-                suggestions_box["value"] = agent_result.suggested_followups
-            # T49: same discipline for the deterministic variable picker.
-            if variable_choice_box is not None and agent_result.variable_choice is not None:
-                variable_choice_box["value"] = agent_result.variable_choice.model_dump(exclude_none=True)
+            followups = _merged_followups(agent_results)
+            if suggestions_box is not None and followups is not None:
+                suggestions_box["value"] = followups
+            # T49: same discipline for the deterministic variable picker. The
+            # UI shows one picker, so the first item's wins (T64 D13).
+            picker = next((r.variable_choice for r in agent_results if r.variable_choice is not None), None)
+            if variable_choice_box is not None and picker is not None:
+                variable_choice_box["value"] = picker.model_dump(exclude_none=True)
             return
 
         artifact_refs = self._artifact_refs(content)
@@ -649,7 +728,7 @@ class ChatStreamService:
         user_id: str,
         emitted_chart_ids: set[str] | None = None,
         suggestions_box: dict[str, list[str]] | None = None,
-        variable_choice_box: dict[str, dict] | None = None,
+        variable_choice_box: dict[str, dict[str, Any]] | None = None,
     ) -> tuple[str, list[str]]:
         if emitted_chart_ids is None:
             emitted_chart_ids = set()
@@ -692,12 +771,15 @@ class ChatStreamService:
     ) -> str | None:
         """Persist and build the "chart" SSE event for ``chart``, or return
         None if its chart_id was already emitted this turn (T13 dedup — see
-        the comment on stream_chat_events' emitted_chart_ids)."""
+        the comment on stream_chat_events' emitted_chart_ids) or it is a
+        reference to a chart this user does not own."""
         payload = chart.model_dump(exclude_none=True) if hasattr(chart, "model_dump") else dict(chart)
         chart_id = payload.get("chart_id")
         if chart_id is not None and chart_id in emitted_chart_ids:
             return None
         stored = await self.chart_service.persist_chart_payload(thread_id, chart, user_id)
+        if stored is None:
+            return None
         stored_id = stored.get("chart_id") if isinstance(stored, dict) else None
         emitted_id = stored_id or chart_id
         if emitted_id is not None:

@@ -110,7 +110,7 @@ class MCPToolError(Exception):
         self.suggestion = suggestion
         self.raw_preview = raw_preview
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """``{"category", "message", "suggestion"}`` — the nested shape
         every ``{"error": ...}`` envelope (tool JSON, pane 4xx/5xx bodies)
         builds from, dropping ``suggestion`` when there isn't one."""
@@ -192,7 +192,7 @@ _TRANSIENT_NETWORK_PATTERNS: tuple[str, ...] = (
 )
 
 
-def parse_tool_result(raw: Any) -> dict:
+def parse_tool_result(raw: Any) -> dict[str, Any]:
     if isinstance(raw, dict):
         return _classify_dict(raw)
     if isinstance(raw, str):
@@ -213,7 +213,7 @@ def parse_tool_result(raw: Any) -> dict:
     ))
 
 
-def _classify_dict(data: dict) -> dict:
+def _classify_dict(data: dict[str, Any]) -> dict[str, Any]:
     error = data.get("error")
     if isinstance(error, dict) and "category" in error and "message" in error:
         category = error["category"]
@@ -235,14 +235,21 @@ def _classify_dict(data: dict) -> dict:
     return data
 
 
-def _classify_text(text: str) -> dict:
+def _classify_text(text: str) -> dict[str, Any]:
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
         raise _log(_classify_prose(text)) from None
     if isinstance(parsed, dict):
         return _classify_dict(parsed)
-    return parsed
+    # Valid JSON that is not an object (a bare list or number) matches no tool's
+    # contract, and every caller would fail on it later with an unclassified
+    # AttributeError -- refuse it here like any other unrecognized shape.
+    raise _log(MCPToolError(
+        CATEGORY_CONTRACT,
+        "The data service returned an unrecognized result shape.",
+        raw_preview=text[:300],
+    ))
 
 
 def _classify_prose(text: str) -> MCPToolError:
@@ -298,7 +305,7 @@ def _log(exc: MCPToolError) -> MCPToolError:
     return exc
 
 
-async def call_tool(tool: Any, kwargs: dict, timeout: float | None = None) -> Any:
+async def call_tool(tool: Any, kwargs: dict[str, Any], timeout: float | None = None) -> Any:
     """Invoke ``tool.ainvoke(kwargs)`` and return its raw, unclassified
     result — or raise ``MCPToolError`` (category ``provider_unavailable``)
     for a transport/session-level failure or a call that exceeds its budget.
@@ -421,7 +428,7 @@ async def call_tool(tool: Any, kwargs: dict, timeout: float | None = None) -> An
         return result
 
 
-def _note_transport_failure(state: dict | None, ceiling: int) -> None:
+def _note_transport_failure(state: dict[str, Any] | None, ceiling: int) -> None:
     """Record one transport/timeout failure against the turn's circuit-breaker
     state and trip it once ``ceiling`` consecutive failures accrue. A no-op
     when there is no turn context bound (state is None).

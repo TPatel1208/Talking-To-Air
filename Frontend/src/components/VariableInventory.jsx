@@ -1,4 +1,6 @@
 import { groupInventoryByRole, confidenceHint } from '../utils/variableRoles'
+import { formatUnits } from '../utils/displayFormat.js'
+import SciText from './SciText.jsx'
 
 // Grouped, name-first variable inventory (PRD T35). Renders the backend's
 // classified `inventory` as role sections — science first, one clean
@@ -16,7 +18,7 @@ function VariableRow({ entry }) {
           {entry.leaf || entry.name}
         </span>
         {entry.units && (
-          <span style={{ fontSize: '10px', color: 'var(--text-hint)' }}>{entry.units}</span>
+          <span style={{ fontSize: '10px', color: 'var(--text-hint)' }}><SciText>{formatUnits(entry.units)}</SciText></span>
         )}
         {hint && (
           <span style={{

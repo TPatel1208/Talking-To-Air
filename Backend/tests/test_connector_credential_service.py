@@ -9,6 +9,7 @@ independent of any live MCP or Postgres (repository calls are patched, same
 seam test_user_connector_repository.py already proves against a fake conn).
 """
 import asyncio
+import json
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
@@ -171,6 +172,92 @@ class MarkInvalidTests(unittest.IsolatedAsyncioTestCase):
             await injector.mark_invalid("user-1")  # must not raise
 
         set_status.assert_awaited()
+
+
+class MarkUsedAcrossConnectorTypesTests(unittest.IsolatedAsyncioTestCase):
+    async def test_one_turn_using_both_connectors_records_last_use_for_each(self):
+        """Coalescing is per (user, connector): a turn that injects the
+        researcher's Earthdata token and their AQS key must bump both rows,
+        not let the first write suppress the second."""
+        from tta_backend.services.connector_credential_service import (
+            AqsCredentialInjector,
+            EdlCredentialInjector,
+        )
+
+        settings = _settings_with_key()
+        write = AsyncMock()
+        with patch("tta_backend.services.connector_credential_service.touch_last_used_at", write):
+            EdlCredentialInjector(settings).mark_used("user-1")
+            AqsCredentialInjector(settings).mark_used("user-1")
+            await asyncio.sleep(0)
+
+        self.assertCountEqual(
+            [call.args for call in write.await_args_list],
+            [("user-1", "earthdata"), ("user-1", "epa_aqs")],
+        )
+
+
+def _aqs_row(settings, *, secret, status="connected", expires_at=None):
+    from tta_backend.utils.connector_crypto import encrypt_secret, get_connector_cipher
+
+    return {
+        "encrypted_secret": encrypt_secret(get_connector_cipher(settings), secret),
+        "expires_at": expires_at,
+        "status": status,
+    }
+
+
+class AqsCredentialInjectorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_resolves_the_users_email_and_key_from_their_epa_aqs_row(self):
+        from tta_backend.services.connector_credential_service import AqsCredentialInjector
+
+        settings = _settings_with_key()
+        row = _aqs_row(settings, secret=json.dumps({"email": "me@lab.edu", "key": "my-key"}))
+        fetch = AsyncMock(return_value=row)
+        with patch("tta_backend.services.connector_credential_service.get_connector_secret_row", fetch):
+            credentials = await AqsCredentialInjector(settings).resolve_credentials("user-1")
+
+        self.assertIsNotNone(credentials)
+        assert credentials is not None
+        self.assertEqual((credentials.email, credentials.key), ("me@lab.edu", "my-key"))
+        fetch.assert_awaited_once_with("user-1", "epa_aqs")
+
+    async def test_an_aqs_row_needs_no_expiry_to_be_live(self):
+        """EPA AQS keys never expire, so the row is stored with expires_at
+        NULL -- which the Earthdata policy treats as unusable."""
+        from tta_backend.services.connector_credential_service import AqsCredentialInjector
+
+        settings = _settings_with_key()
+        row = _aqs_row(settings, secret=json.dumps({"email": "me@lab.edu", "key": "my-key"}), expires_at=None)
+        with patch("tta_backend.services.connector_credential_service.get_connector_secret_row", AsyncMock(return_value=row)):
+            self.assertIsNotNone(await AqsCredentialInjector(settings).resolve_credentials("user-1"))
+
+    async def test_an_errored_row_resolves_to_none(self):
+        from tta_backend.services.connector_credential_service import AqsCredentialInjector
+
+        settings = _settings_with_key()
+        row = _aqs_row(settings, secret=json.dumps({"email": "me@lab.edu", "key": "my-key"}), status="error")
+        with patch("tta_backend.services.connector_credential_service.get_connector_secret_row", AsyncMock(return_value=row)):
+            self.assertIsNone(await AqsCredentialInjector(settings).resolve_credentials("user-1"))
+
+    async def test_a_secret_that_is_not_an_email_key_pair_resolves_to_none(self):
+        from tta_backend.services.connector_credential_service import AqsCredentialInjector
+
+        settings = _settings_with_key()
+        for secret in ("not json", json.dumps({"email": "me@lab.edu"}), json.dumps(["a", "b"])):
+            row = _aqs_row(settings, secret=secret)
+            injector = AqsCredentialInjector(settings)
+            with patch("tta_backend.services.connector_credential_service.get_connector_secret_row", AsyncMock(return_value=row)):
+                self.assertIsNone(await injector.resolve_credentials("user-1"), secret)
+
+    async def test_mark_invalid_flips_the_epa_aqs_row_not_the_earthdata_one(self):
+        from tta_backend.services.connector_credential_service import AqsCredentialInjector
+
+        set_status = AsyncMock()
+        with patch("tta_backend.services.connector_credential_service.set_connector_status", set_status):
+            await AqsCredentialInjector(_settings_with_key()).mark_invalid("user-1")
+
+        set_status.assert_awaited_once_with("user-1", "epa_aqs", "error")
 
 
 if __name__ == "__main__":

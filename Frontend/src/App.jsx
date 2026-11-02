@@ -21,6 +21,8 @@ import {
   userIdOf,
 } from './utils/authSession'
 import { useCallback, useEffect, useMemo, useReducer, useState } from 'react'
+import { API_BASE } from './config.js'
+import { windowPhrase } from './utils/dateWindow.js'
 
 // Thin clickable rail standing in for a side column while it's manually
 // collapsed -- keeps a one-click way back rather than the column just
@@ -46,7 +48,6 @@ function CollapsedRail({ label, onExpand }) {
   )
 }
 
-const API_BASE = '/api'
 // There is deliberately no token key here. supabase-js owns session
 // persistence and refresh (decision 6); a second copy of the token in our own
 // storage would be a rival source of truth, and the stale one wins on reload.
@@ -230,7 +231,7 @@ function SessionExpiredModal({ onSignIn }) {
   )
 }
 
-function AuthenticatedApp({ onLogout }) {
+function AuthenticatedApp({ user, onLogout }) {
   const {
     jobs,
     error: jobsError,
@@ -246,13 +247,17 @@ function AuthenticatedApp({ onLogout }) {
     historyError,
     threadId,
     sessions,
+    hasMoreSessions,
+    loadMoreSessions,
+    turnStatus,
     sendMessage,
     newSession,
     switchSession,
     reloadSession,
     retryHistory,
     deleteSession,
-    abortActiveRequest,
+    stopTurn,
+    detach,
     clearError,
   } = useChat(applyJobProgress)
 
@@ -264,7 +269,8 @@ function AuthenticatedApp({ onLogout }) {
     const label = dataset.summary || dataset.dataset_handle
     const parts = [`Retrieve ${label} (${dataset.dataset_handle})`]
     if (location.trim()) parts.push(`over ${location.trim()}`)
-    if (timeRange.trim()) parts.push(`for ${timeRange.trim()}`)
+    const when = windowPhrase(timeRange)
+    if (when) parts.push(when)
     sendMessage(`${parts.join(' ')}.`)
   }, [sendMessage])
 
@@ -360,12 +366,10 @@ function AuthenticatedApp({ onLogout }) {
     return (active && typeof active === 'object' ? active.title : null) || (messages.length ? 'Chat' : 'New analysis')
   }, [sessions, threadId, messages.length])
 
-  const { images, artifacts } = useMemo(() => {
+  const artifacts = useMemo(() => {
     const seenArtifactIds = new Set()
     const dedupedArtifacts = []
-    const allImages = []
     for (const msg of messages) {
-      for (const url of msg.imageUrls || []) allImages.push(url)
       for (const artifact of msg.artifacts || []) {
         const key = artifact.id || JSON.stringify(artifact)
         if (seenArtifactIds.has(key)) continue
@@ -373,15 +377,18 @@ function AuthenticatedApp({ onLogout }) {
         dedupedArtifacts.push(artifact)
       }
     }
-    return { images: allImages, artifacts: dedupedArtifacts }
+    return dedupedArtifacts
   }, [messages])
 
-  // Stop the stream first, then hand off. Revoking the session upstream is the
-  // root component's job now -- there is no backend auth route left to call.
+  // Detach, don't stop. Logging out is going away, not "abandon this work":
+  // the turn keeps running, finishes, and its answer is in history at the
+  // next sign-in. Stopping would also race the session revocation below --
+  // the stop endpoint needs the credential we are about to throw away -- and
+  // would cancel provider retrievals the user has already paid for.
   const handleLogout = useCallback(() => {
-    abortActiveRequest(true)
+    detach()
     onLogout()
-  }, [abortActiveRequest, onLogout])
+  }, [detach, onLogout])
 
   return (
     // Horizontally scrollable, not clipped. The three side panels are all
@@ -410,12 +417,15 @@ function AuthenticatedApp({ onLogout }) {
       ) : (
         <SessionSidebar
           sessions={sessions}
+          hasMoreSessions={hasMoreSessions}
+          onLoadMoreSessions={loadMoreSessions}
           threadId={threadId}
+          turnStatus={turnStatus}
           onSwitch={handleSwitchSession}
           onNew={handleNewSession}
           onDelete={deleteSession}
           onLogout={handleLogout}
-          images={images}
+          user={user}
           artifacts={artifacts}
           onCollapse={toggleSessionsCollapsed}
         />
@@ -434,13 +444,7 @@ function AuthenticatedApp({ onLogout }) {
             onReloadSession={reloadSession}
             chatTitle={chatTitle}
             onSend={sendMessage}
-            onAbort={() => {
-              // Stop must mean stop: abort the stream AND cancel whatever
-              // retrieval jobs this turn reported as still in flight —
-              // locally and (best-effort) upstream at the provider.
-              const inFlightJobs = abortActiveRequest(true) || []
-              inFlightJobs.forEach(handle => cancelJob(handle))
-            }}
+            onAbort={stopTurn}
             onClearError={clearError}
             focusedOutput={focusedOutput}
             onFocusOutput={setFocusedOutput}
@@ -634,6 +638,7 @@ export default function App() {
         // change on every auto-refresh -- every 45 minutes, decision 10 -- and
         // React would discard this entire tree mid-analysis.
         key={userIdOf(state)}
+        user={state.session?.user}
         onLogout={handleLogout}
       />
       {showReauthModal(state) && <SessionExpiredModal onSignIn={handleReauth} />}

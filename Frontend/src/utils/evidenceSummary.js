@@ -16,13 +16,12 @@
  * without a DOM (this repo's frontend runner is plain `node --test`).
  */
 
-// Compact numeric formatting: exponential for very small / very large science
-// magnitudes (e.g. 2.8e15 molecules/cm^2), plain otherwise (0.04, 0.25, 300).
+import { formatScientific, formatUnits } from './displayFormat.js'
+
+// Compact numeric formatting: × 10ⁿ for very small / very large science
+// magnitudes (e.g. 2.80 × 10¹⁵ molecules/cm²), plain otherwise (0.04, 300).
 function formatNumber(n) {
-  if (!Number.isFinite(n)) return '—'
-  const abs = Math.abs(n)
-  if (abs !== 0 && (abs < 1e-3 || abs >= 1e4)) return n.toExponential(2)
-  return String(Number(n.toPrecision(4)))
+  return formatScientific(n, 2)
 }
 
 function humanize(name) {
@@ -42,7 +41,7 @@ export function evidenceLabel(fact) {
 // when the backend computed one.
 export function evidenceValueText(fact) {
   if (fact.stat === 'pass_rate') return `${(fact.value * 100).toFixed(1)}%`
-  const units = fact.units ? ` ${fact.units}` : ''
+  const units = fact.units ? ` ${formatUnits(fact.units)}` : ''
   let text = `${formatNumber(fact.value)}${units}`
   if (Number.isFinite(fact.pct_of_science)) {
     text += ` (~${(fact.pct_of_science * 100).toFixed(1)}% of value)`

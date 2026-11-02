@@ -26,7 +26,7 @@ class DeleteSessionCascadeTests(unittest.IsolatedAsyncioTestCase):
 
         with patch("tta_backend.repositories.session_repository.session_belongs_to_user", AsyncMock(return_value=True)), \
              patch("tta_backend.repositories.session_repository.delete_session_metadata", AsyncMock(return_value=True)), \
-             patch("tta_backend.repositories.session_repository.delete_charts_for_session", AsyncMock()) as delete_charts, \
+             patch("tta_backend.repositories.session_repository.delete_charts_for_session", AsyncMock(return_value=[])) as delete_charts, \
              patch("tta_backend.repositories.session_repository.delete_artifacts_for_session", AsyncMock()) as delete_artifacts, \
              patch("tta_backend.repositories.session_repository.pg_connection", _pg_connection_cm):
             deleted = await SessionRepository().delete_session("thread-1", "user-1")
@@ -105,14 +105,14 @@ class DeleteSessionOwnershipOrderingTests(unittest.IsolatedAsyncioTestCase):
         conn.execute = AsyncMock(side_effect=record_execute)
         conn.commit = AsyncMock()
 
-        def record(name):
+        def record(name, result=True):
             async def _inner(*args, **kwargs):
                 calls.append(name)
-                return True
+                return result
             return _inner
 
         with patch("tta_backend.repositories.session_repository.session_belongs_to_user", AsyncMock(return_value=True)), \
-             patch("tta_backend.repositories.session_repository.delete_charts_for_session", AsyncMock(side_effect=record("charts"))), \
+             patch("tta_backend.repositories.session_repository.delete_charts_for_session", AsyncMock(side_effect=record("charts", []))), \
              patch("tta_backend.repositories.session_repository.delete_artifacts_for_session", AsyncMock(side_effect=record("artifacts"))), \
              patch("tta_backend.repositories.session_repository.delete_session_metadata", AsyncMock(side_effect=record("metadata"))) as delete_metadata, \
              patch("tta_backend.repositories.session_repository.pg_connection", self._pg_connection_cm(conn)):
@@ -124,6 +124,127 @@ class DeleteSessionOwnershipOrderingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("charts", calls[:-1])
         self.assertIn("artifacts", calls[:-1])
         self.assertIn("checkpoints", calls[:-1])
+
+    async def test_checkpoints_are_deleted_before_charts(self):
+        """Checkpoints still name the thread's charts. If the cascade stops
+        after the charts are gone but before the checkpoints are, the thread
+        stays loadable and points at charts that no longer exist."""
+        from tta_backend.repositories.session_repository import SessionRepository
+
+        calls: list[str] = []
+
+        conn = MagicMock()
+
+        async def record_execute(sql, *args, **kwargs):
+            calls.append("checkpoints")
+
+        conn.execute = AsyncMock(side_effect=record_execute)
+        conn.commit = AsyncMock()
+
+        async def record_charts(*args, **kwargs):
+            calls.append("charts")
+            return []
+
+        with patch("tta_backend.repositories.session_repository.session_belongs_to_user", AsyncMock(return_value=True)), \
+             patch("tta_backend.repositories.session_repository.delete_charts_for_session", AsyncMock(side_effect=record_charts)), \
+             patch("tta_backend.repositories.session_repository.delete_artifacts_for_session", AsyncMock()), \
+             patch("tta_backend.repositories.session_repository.delete_session_metadata", AsyncMock(return_value=True)), \
+             patch("tta_backend.repositories.session_repository.pg_connection", self._pg_connection_cm(conn)):
+            await SessionRepository().delete_session("thread-1", "user-1")
+
+        self.assertLess(calls.index("checkpoints"), calls.index("charts"), f"order: {calls}")
+
+
+class DeleteSessionOverlayTests(unittest.IsolatedAsyncioTestCase):
+    """Deleting a session removed its chart rows but not the overlay PNGs
+    those rows named, so "delete my session" left the imagery on disk until
+    the store's LRU cap happened to reach it. Measured on the live volume:
+    62 of 70 PNGs referenced by no chart."""
+
+    def setUp(self):
+        import os
+        import tempfile
+
+        from tta_backend.config.settings import get_settings
+
+        store = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(store.cleanup)
+        env = patch.dict(os.environ, {"OVERLAY_STORE_DIR": os.path.join(store.name, "overlays")})
+        env.start()
+        self.addCleanup(env.stop)
+        get_settings.cache_clear()
+        self.addCleanup(get_settings.cache_clear)
+
+    @staticmethod
+    def _pg_connection_cm():
+        from contextlib import asynccontextmanager
+
+        conn = MagicMock()
+        conn.execute = AsyncMock()
+        conn.commit = AsyncMock()
+
+        @asynccontextmanager
+        async def _cm(*args, **kwargs):
+            yield conn
+
+        return _cm
+
+    async def _delete(self, delete_charts):
+        from tta_backend.repositories.session_repository import SessionRepository
+
+        with patch("tta_backend.repositories.session_repository.session_belongs_to_user", AsyncMock(return_value=True)), \
+             patch("tta_backend.repositories.session_repository.delete_charts_for_session", delete_charts), \
+             patch("tta_backend.repositories.session_repository.delete_artifacts_for_session", AsyncMock()), \
+             patch("tta_backend.repositories.session_repository.delete_session_metadata", AsyncMock(return_value=True)), \
+             patch("tta_backend.repositories.session_repository.pg_connection", self._pg_connection_cm()):
+            return await SessionRepository().delete_session("thread-1", "user-1")
+
+    async def test_deleting_a_session_deletes_the_overlays_its_charts_named(self):
+        from tta_backend.services.overlay_store import read_overlay, write_overlay
+
+        single = write_overlay(b"\x89PNG single")
+        panels = [write_overlay(b"\x89PNG p0"), write_overlay(b"\x89PNG p1")]
+        difference = write_overlay(b"\x89PNG diff")
+        other_session = write_overlay(b"\x89PNG other")
+        deleted_rows = [
+            {"type": "heatmap", "overlay": {"_path": single}},
+            {
+                "type": "heatmap_multi",
+                "panels": [{"overlay": {"_path": p}} for p in panels],
+                "difference": {"overlay": {"_path": difference}},
+            },
+            {"type": "timeseries"},
+        ]
+
+        self.assertTrue(await self._delete(AsyncMock(return_value=deleted_rows)))
+
+        for path in (single, *panels, difference):
+            self.assertIsNone(read_overlay(path), f"{path} survived its session")
+        self.assertEqual(read_overlay(other_session), b"\x89PNG other")
+
+    async def test_a_failed_chart_delete_leaves_the_overlays(self):
+        """The rows go first. If they survive, the charts are still served
+        and must still find their overlays."""
+        from tta_backend.services.overlay_store import read_overlay, write_overlay
+
+        path = write_overlay(b"\x89PNG single")
+
+        with self.assertRaises(RuntimeError):
+            await self._delete(AsyncMock(side_effect=RuntimeError("connection reset")))
+
+        self.assertEqual(read_overlay(path), b"\x89PNG single")
+
+    async def test_a_failed_overlay_delete_does_not_fail_the_session_delete(self):
+        """The rows are already gone, so a PNG left behind is an orphan the
+        LRU cap reclaims -- not a reason to report the delete as failed and
+        stop before the ownership row."""
+        deleted_rows = [{"type": "heatmap", "overlay": {"_path": "/x/" + "a" * 32 + ".png"}}]
+
+        with patch(
+            "tta_backend.repositories.session_repository.overlay_store.delete_overlays",
+            side_effect=PermissionError("read-only volume"),
+        ):
+            self.assertTrue(await self._delete(AsyncMock(return_value=deleted_rows)))
 
 
 if __name__ == "__main__":

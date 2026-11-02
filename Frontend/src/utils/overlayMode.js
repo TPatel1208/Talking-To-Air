@@ -11,7 +11,30 @@
 // period aggregate warped at native resolution and cannot show an hour, and a
 // stack whose pooled scale came back null -- nothing survived masking -- still
 // has frames to draw with no override to carry them.
-export function resolveOverlayMode(override, overlayUrl, frame = null) {
-  if (frame) return 'canvas'
-  return !override && overlayUrl ? 'native' : 'canvas'
+// An override on a chart whose overlay is `rescalable` (the server stored the
+// value raster it was drawn from) resolves to 'rescaled': the same overlay
+// route, recolored server-side at the override's scale, at full resolution.
+// Older charts have no raster and keep the canvas.
+export function resolveOverlayMode(override, overlayUrl, frame = null, rescalable = false) {
+  if (frame || !overlayUrl) return 'canvas'
+  if (!override) return 'native'
+  return rescalable ? 'rescaled' : 'canvas'
+}
+
+// The overlay route's url for an override's scale. The url may already carry
+// a query (a comparison panel's `?panel=N`).
+export function rescaledOverlayUrl(overlayUrl, override) {
+  const params = new URLSearchParams({ vmin: String(override.vmin), vmax: String(override.vmax) })
+  if (override.colormap?.name) params.set('cmap', override.colormap.name)
+  return `${overlayUrl}${overlayUrl.includes('?') ? '&' : '?'}${params}`
+}
+
+// The same decision for a comparison thumbnail, which is an <img> rather than
+// a map source. Its png is fetched with auth into a blob (loadThumbnail), so
+// `loaded` is `{ url, objectUrl }` for the overlay url that blob came from, or
+// null. Native only once a blob for THIS url is in hand; until then, and when
+// the load fails (an evicted overlay, a lapsed session), the canvas draws the
+// grid the chart payload already carries.
+export function resolveThumbnailMode(overlayUrl, loaded) {
+  return overlayUrl && loaded?.url === overlayUrl && loaded.objectUrl ? 'native' : 'canvas'
 }

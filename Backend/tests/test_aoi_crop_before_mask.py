@@ -178,7 +178,7 @@ class AoiCropEquivalenceTests(unittest.TestCase):
 
         def kept(masked):
             rows, cols = np.nonzero(np.isfinite(masked.values))
-            return sorted(zip(masked.lat.values[rows].tolist(), masked.lon.values[cols].tolist()))
+            return sorted(zip(masked.lat.values[rows].tolist(), masked.lon.values[cols].tolist(), strict=True))
 
         self.assertEqual(kept(cropped), kept(uncropped))
 

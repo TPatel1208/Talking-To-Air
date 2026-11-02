@@ -73,6 +73,38 @@ class RetrievalToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["status"], "submitted")
         self.assertEqual(payload["job_handle"], "job_1")
 
+    async def test_safe_retrieve_never_lets_the_model_pick_the_output_format(self):
+        """On 2026-10-14 the model passed output_format="netcdf" and Harmony
+        rejected TEMPO_NO2_L3 with a 422; left unset, the MCP's default
+        (application/netcdf4) succeeds for the same request. The model has no
+        basis for choosing a Harmony media type, so the parameter is not
+        offered and the MCP always receives None."""
+        seen = []
+
+        async def estimate_retrieval_size(dataset_handle, aoi_handle, time_range, workspace_id):
+            return {"estimated_bytes": 100}
+
+        async def retrieve_subset(dataset_handle, aoi_handle, time_range, variables, output_format, workspace_id):
+            seen.append(output_format)
+            return {"job_handle": "job_1", "obs_handle": "obs_1"}
+
+        mcp_tools, _ = await self._tools_for({
+            "estimate_retrieval_size": estimate_retrieval_size,
+            "retrieve_subset": retrieve_subset,
+        })
+
+        safe_retrieve = self._built_tool(mcp_tools, "safe_retrieve")
+        self.assertNotIn("output_format", safe_retrieve.args)
+
+        await safe_retrieve.ainvoke({
+            "dataset_handle": "dataset_1",
+            "aoi_handle": "aoi_1",
+            "time_range": "2024-01-01/2024-01-02",
+            "variables": ["no2"],
+            "output_format": "netcdf",
+        })
+        self.assertEqual(seen, [None])
+
     async def test_safe_retrieve_tool_asks_for_confirmation_between_caps(self):
         async def estimate_retrieval_size(dataset_handle, aoi_handle, time_range, workspace_id):
             return {"estimated_bytes": 5 * 1024 ** 3}

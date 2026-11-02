@@ -161,7 +161,14 @@ class CoalitionPresetTests(unittest.IsolatedAsyncioTestCase):
         canonical = resolver.resolve_location("otc")
 
         for alias in ("OTC", "the OTC", "  the   otc  ", "otr",
-                      "Ozone Transport Commission", "ozone transport region"):
+                      "Ozone Transport Commission", "ozone transport region",
+                      # Spellings the agent sent live on 2026-10-14; each one
+                      # missed and reached Nominatim.
+                      "Ozone Transport Commission region",
+                      "Ozone Transport Commission Region",
+                      "Ozone Transport Commission (OTC) region",
+                      "Ozone Transport Commission (OTC)",
+                      "OTC region", "the OTR region"):
             with self.subTest(alias=alias):
                 self.assertEqual(resolver.resolve_location(alias), canonical)
 

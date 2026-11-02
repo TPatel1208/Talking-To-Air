@@ -39,8 +39,10 @@ the admit-side assertions go through :func:`_admit_now` -- see its docstring.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import sys
+import threading
 import unittest
 import unittest.mock
 
@@ -241,6 +243,194 @@ class PermitsAreReturnedOnEveryPathTests(ProcessCacheIsolation, unittest.Isolate
             "a caller cancelled while holding a permit did not return it. "
             "Client disconnects cancel in-flight work, so this is the ordinary "
             "case, not the exotic one.",
+        )
+
+
+class ACancelledReductionKeepsItsPermitUntilItsThreadStopsTests(
+    ProcessCacheIsolation, unittest.IsolatedAsyncioTestCase,
+):
+    """The permit must measure resident memory, not an outstanding ``await``.
+
+    Every heavy reducer runs on a worker thread, and Python cannot interrupt
+    one. So cancelling ``run_heavy`` stops the caller and leaves the reduction
+    running with its intermediates resident. Measured 2026-09-19 before the
+    fix: the permit came back the instant the await unwound, and a second
+    caller was admitted in 0.00s while the first thread still held its grid. At
+    N=5 on an 8 GiB task that is up to 1.4 GB of unaccounted residency per
+    cancelled reduction -- the overshoot this module exists to prevent,
+    arriving through this module.
+
+    The triggers are ordinary. Today a client disconnect cancels the turn; once
+    turns detach from the connection it becomes the Stop button and
+    ``CHAT_TURN_TIMEOUT_SECONDS``, both deliberate.
+
+    Holding the permit is not a new hang risk. The pool is sized
+    ``max_workers=heavy_limit()``, so a wedged thread removes 1/N of capacity
+    whatever the permit does. Before, the next caller took a permit and then
+    blocked inside ``submit()`` -- no queued gauge, no shed, no timeout, which
+    is the unobservable wait the module docstring exists to remove. After, it
+    waits at the semaphore where occupancy is published.
+    """
+
+    async def asyncSetUp(self) -> None:
+        from tta_backend.services import admission
+
+        self.admission = admission
+        self.enterContext(unittest.mock.patch.dict(os.environ, {"HEAVY_ADMISSION_LIMIT": "1"}))
+        admission.reset_admission()
+        self.addCleanup(admission.reset_admission)
+        self.stop = threading.Event()
+        self.addCleanup(self.stop.set)
+        self.running = threading.Event()
+
+    def _blocking_reduction(self) -> str:
+        """A reduction that holds its memory until the test says otherwise."""
+        self.running.set()
+        self.stop.wait(timeout=10)
+        return "reduced"
+
+    async def _cancel_a_running_reduction(self) -> None:
+        task = asyncio.create_task(self.admission.run_heavy(self._blocking_reduction))
+        await asyncio.to_thread(self.running.wait, 5)
+        await _settle()
+        self.assertEqual(
+            self.admission.in_flight(), 1, "the reduction never entered the heavy section"
+        )
+
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        await _settle()
+
+    async def test_the_permit_is_still_held_while_the_thread_runs_on(self):
+        await self._cancel_a_running_reduction()
+
+        self.assertFalse(
+            self.stop.is_set(), "the test's own reduction stopped early; nothing was measured"
+        )
+        self.assertEqual(
+            self.admission.in_flight(), 1,
+            "the permit came back while the cancelled reduction's thread was "
+            "still running. The next caller is then admitted against memory "
+            "that is still held, which is how N concurrent reductions become "
+            "N+1 and the task goes over its ceiling.",
+        )
+
+    async def test_a_later_caller_waits_for_the_orphaned_thread(self):
+        await self._cancel_a_running_reduction()
+
+        waiter = _Occupant()
+        pending = asyncio.create_task(waiter.run())
+        self.addCleanup(pending.cancel)
+        await _settle()
+
+        self.assertFalse(
+            waiter.entered.is_set(),
+            "a second caller was admitted while an orphaned reduction still "
+            "held its grid -- two reductions resident at a limit of one.",
+        )
+
+        self.stop.set()
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            if waiter.entered.is_set():
+                break
+        self.assertTrue(
+            waiter.entered.is_set(),
+            "the orphaned thread finished but never returned its permit. A "
+            "permit handed to a thread and never taken back is a permanent "
+            "leak, which is worse than the early release it replaced.",
+        )
+
+    async def test_the_orphan_is_recorded(self):
+        """An orphan is capacity spent on work nobody is waiting for, so it has
+        to be countable -- otherwise a burst of them reads as unexplained
+        slowness with nothing to attribute it to."""
+        with self.assertLogs("tta_backend.services.admission", level="WARNING") as logs:
+            await self._cancel_a_running_reduction()
+
+        self.assertTrue(
+            any("admission_orphaned_heavy_work" in line for line in logs.output),
+            f"a cancelled reduction left its thread running and said nothing: {logs.output}",
+        )
+
+    async def test_an_uncancelled_reduction_returns_its_permit_before_it_returns(self):
+        """The ordinary path must not be deferred. A permit released a tick late
+        is a permit the next caller waits for, on every single call."""
+        self.stop.set()
+        result = await self.admission.run_heavy(self._blocking_reduction)
+
+        self.assertEqual(result, "reduced")
+        self.assertEqual(
+            self.admission.in_flight(), 0,
+            "run_heavy returned before its permit did. The deferred release is "
+            "only for the orphaned case; on the happy path the thread has "
+            "already finished and there is nothing to wait for.",
+        )
+        await _admit_now(self.admission)
+
+    async def test_a_reduction_that_raises_returns_its_permit_before_it_returns(self):
+        def failing() -> None:
+            raise ValueError("the reduction failed")
+
+        with self.assertRaises(ValueError):
+            await self.admission.run_heavy(failing)
+
+        self.assertEqual(
+            self.admission.in_flight(), 0,
+            "a raising reduction leaked its permit. Its thread is already done, "
+            "so there is nothing for the permit to wait on. Reductions raise "
+            "routinely -- a refused extent, an unreadable granule.",
+        )
+        await _admit_now(self.admission)
+
+    async def test_returning_a_permit_twice_does_not_over_credit_the_pool(self):
+        """``_release`` now has two owners -- ``admit``'s finally, and
+        ``run_heavy``'s done/orphan branches -- which is exactly the shape in
+        which a later refactor introduces a double release. Over-crediting is
+        the dangerous direction: it admits N+1 concurrent reductions, which is
+        the OOM this module exists to prevent. Reaching for the private halves
+        is deliberate; there is no public way to say "release this twice".
+        """
+        permit = await self.admission._acquire("chat")
+        self.assertEqual(self.admission.in_flight(), 1)
+
+        self.admission._release(permit)
+        self.admission._release(permit)
+
+        self.assertEqual(
+            self.admission.in_flight(), 0,
+            "a double release drove the in-flight count below what was held.",
+        )
+
+        first, second = _Occupant(), _Occupant()
+        tasks = [asyncio.create_task(o.run()) for o in (first, second)]
+        self.addCleanup(lambda: [t.cancel() for t in tasks])
+        await _settle()
+
+        self.assertTrue(first.entered.is_set(), "the pool lost a permit entirely")
+        self.assertFalse(
+            second.entered.is_set(),
+            "a double release credited the semaphore twice, so two reductions "
+            "entered a section sized for one. That is N+1 resident grids.",
+        )
+
+    async def test_the_context_still_reaches_the_worker_thread(self):
+        """run_in_executor starts a call with an empty context, and
+        current_user_id() is a ContextVar the workspace-bound MCP tools read to
+        decide whose data to open. Losing it does not raise -- the call reads
+        the wrong workspace, or none."""
+        from tta_backend.utils.streaming import current_user_id, user_id_context
+
+        self.stop.set()
+        with user_id_context("user-42"):
+            seen = await self.admission.run_heavy(current_user_id)
+
+        self.assertEqual(
+            seen, "user-42",
+            "the reduction ran without the caller's user binding. Keeping the "
+            "Future handle must not cost the context copy run_in_executor's "
+            "callers were relying on.",
         )
 
 

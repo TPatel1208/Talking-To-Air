@@ -14,7 +14,7 @@ import os
 PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # The deployment root -- Backend/ in a checkout, /app in the image. The runtime
-# volumes (outputs/, overlay_store/, cube_store/, data/) are mounted HERE, one
+# volumes (overlay_store/, cube_store/, data/) are mounted HERE, one
 # level above the package, so anything resolving them must anchor on this
 # rather than counting ".." segments up from its own __file__. Counting is what
 # broke when this package was introduced: paths written as "../.." from

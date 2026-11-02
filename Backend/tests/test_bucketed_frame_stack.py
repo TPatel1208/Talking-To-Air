@@ -1840,9 +1840,9 @@ class TheMaskingSeamSuppliesTheAreaCountersTests(unittest.TestCase):
         Two pixels checked at each timestep, worth 1.0 and 0.5 of area."""
         counts = self._counts()
 
-        for got, want in zip(counts["checked_area_by_time"], [1.5, 1.5]):
+        for got, want in zip(counts["checked_area_by_time"], [1.5, 1.5], strict=True):
             self.assertAlmostEqual(got, want, places=12)
-        for got, want in zip(counts["passing_area_by_time"], [1.0, 0.5]):
+        for got, want in zip(counts["passing_area_by_time"], [1.0, 0.5], strict=True):
             self.assertAlmostEqual(got, want, places=12)
 
     def test_the_value_extremes_ride_the_same_walk(self):
@@ -1869,7 +1869,7 @@ class TheMaskingSeamSuppliesTheAreaCountersTests(unittest.TestCase):
         for rate, passing, checked in zip(
             counts["pass_rate_by_time"],
             counts["passing_area_by_time"],
-            counts["checked_area_by_time"],
+            counts["checked_area_by_time"], strict=True,
         ):
             self.assertAlmostEqual(rate, passing / checked, places=6)
 

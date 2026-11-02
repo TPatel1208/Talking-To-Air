@@ -3,7 +3,22 @@ line-length = 200
 target-version = "py312"
 
 [lint]
-select = ["E", "F", "W"]
+# B and ASYNC are the bug-finding sets: silent zip() truncation, exceptions
+# re-raised without their cause, blocking I/O on the event loop. RUF006 is a
+# fire-and-forget task with no reference, which the loop may collect mid-run.
+select = ["E", "F", "W", "B", "ASYNC", "RUF006"]
+ignore = [
+    # A `timeout=` parameter is this codebase's API style (call_tool and the
+    # test pollers), not a missing asyncio.timeout.
+    "ASYNC109",
+]
 # tests/ is deliberately NOT excluded — it is ~40% of the codebase and was
 # unlinted for long enough to accumulate 106 copies of the same import
-# bootstrap. It passes E/F/W today; keep it that way.
+# bootstrap. It passes the rules above today; keep it that way.
+
+[lint.per-file-ignores]
+# Tests poll with sleep loops and do small blocking setup inside async test
+# bodies, and touch properties purely for their side effect (`manager.tools`
+# inside assertRaises, `.values` to force a lazy graph). Scripts likewise.
+"tests/**" = ["ASYNC110", "ASYNC230", "B018"]
+"scripts/**" = ["ASYNC230", "B018"]

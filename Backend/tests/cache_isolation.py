@@ -21,16 +21,14 @@ is the single definition of *what leaks*; ``conftest.py``'s fixture calls it, an
 ``setUp``, which every runner honours because it is the framework's own contract
 rather than one runner's extension point.
 
-The three store redirects are called from the same two places, but from
+The store redirects are called from the same two places, but from
 ``conftest.py``'s *import*, not its fixture: a store root has to be wrong-proof
-before the first module is imported, not merely before each test. For the
-output dir that is not belt-and-braces — ``api.py`` hands it to a
-``StaticFiles`` mount at import, so nothing later would be early enough. Tests
-that need a deployment's real path — rather than this process's sandbox — ask
+before the first module is imported, not merely before each test. Tests that
+need a deployment's real path — rather than this process's sandbox — ask
 :func:`deployment_cube_store_dir`, :func:`deployment_overlay_store_dir` or
-:func:`deployment_output_dir`.
+:func:`deployment_frame_store_dir`.
 
-The API's rate limiter (``api.limiter``) is a fourth piece of process-global
+The API's rate limiter (``api.limiter``) is another piece of process-global
 state and rides along on the same hook, though it is not a cache: it counts
 requests per user in process memory, so an un-neutralised limiter makes the
 suite fail on its own traffic rather than merely serve a stale answer. See
@@ -53,7 +51,6 @@ import tempfile
 
 CUBE_STORE_ENV = "CUBE_STORE_DIR"
 OVERLAY_STORE_ENV = "OVERLAY_STORE_DIR"
-OUTPUT_DIR_ENV = "OUTPUT_DIR"
 FRAME_STORE_ENV = "FRAME_STORE_DIR"
 
 _cube_store_root: str | None = None
@@ -151,23 +148,6 @@ def isolate_frame_store() -> str:
 def deployment_frame_store_dir() -> str:
     """The frame store path the deployment uses — see :func:`_deployment_dir`."""
     return _deployment_dir(FRAME_STORE_ENV, "frame_store_dir")
-
-
-def isolate_output_dir() -> str:
-    """Redirect the public chart-output directory (``/app/outputs``).
-
-    Unlike the overlay store this one is genuinely needed at import: ``api.py``
-    hands it to a ``StaticFiles`` mount, which resolves the directory when it is
-    mounted. So the ``os.makedirs`` there stays and only its *location* moves —
-    which is why this, like :func:`isolate_cube_store`, has to run from
-    ``conftest``'s import rather than a fixture.
-    """
-    return _isolate_store(OUTPUT_DIR_ENV, "tta-outputs-")
-
-
-def deployment_output_dir() -> str:
-    """The output dir the deployment uses — see :func:`_deployment_dir`."""
-    return _deployment_dir(OUTPUT_DIR_ENV, "output_dir")
 
 
 def isolate_cube_store() -> str:
@@ -366,7 +346,6 @@ class ProcessCacheIsolation:
     def setUp(self) -> None:  # noqa: D102 - contract documented on the class
         isolate_cube_store()
         isolate_overlay_store()
-        isolate_output_dir()
         isolate_frame_store()
         clear_process_caches()
         self.addCleanup(clear_process_caches)

@@ -3,11 +3,11 @@ eval_harness.py
 =================
 The scripted eval for the earthdata agent (PRD T04): 14 canned research
 tasks run against the real agent wired to the fake-MCP seam, scored on
-tool-call trace and terminal outcome, plus 3 end-to-end tasks (T16) that
+tool-call trace and terminal outcome, plus 5 end-to-end tasks (T16, T64) that
 enter through ChatStreamService.stream_chat_events with the real
 intent_router and real sub-agents — one ground, one satellite, one
-cross-source — exercising the router fast path and envelope handling under
-the same gate. Lives beside the test suite behind the opt-in "eval" pytest
+cross-source, two supervisor routing checks — exercising the router fast
+path, the supervisor's dispatch and envelope handling under the same gate. Lives beside the test suite behind the opt-in "eval" pytest
 marker (tests/test_eval_harness.py) because it spends real model tokens —
 this module is the harness itself, not a test file. The one "robustness"
 task (T15) is the exception — it is scored at the finalization seam
@@ -18,7 +18,7 @@ category's latency budget (CATEGORY_BUDGETS, decision record 2026-07-06
 §6); run_eval_suite fails the whole run if any provider retry/429 evidence
 was logged during a single-user run (capture_rate_limit_evidence).
 
-Pass threshold: >= 14/17, recorded here (test_eval_harness.py enforces it).
+Pass threshold: >= 16/19, recorded here (test_eval_harness.py enforces it).
 """
 from __future__ import annotations
 
@@ -84,7 +84,7 @@ def capture_rate_limit_evidence():
     try:
         yield handler
     finally:
-        for logger, previous_level in zip(watched_loggers, previous_levels):
+        for logger, previous_level in zip(watched_loggers, previous_levels, strict=True):
             logger.removeHandler(handler)
             logger.setLevel(previous_level)
 
@@ -172,6 +172,9 @@ class E2ETask:
     handlers: dict[str, Callable[..., Awaitable[dict]]]
     expects_ground: bool = False
     expects_satellite: bool = False
+    # T64: fail the task if the ground agent ran at all. The header names
+    # what actually ran (D14), so an unrequested ground check is visible.
+    forbids_ground: bool = False
     aqs_get: AqsGetHandler | None = None
     date_check: DateCheck | None = None
     stage_check: StageCheck | None = None
@@ -558,7 +561,7 @@ def _agents_consulted(text: str) -> set[str]:
     """Parse the "Agent consulted: ..." header both routing paths emit into
     the set of agent names named. The router fast path (T14) emits a
     single-source header ("Agent consulted: GROUND"); the supervisor path
-    (cross-source, config/supervisor_prompt.py) emits one combined header
+    (services/consulted_header.py, from what dispatch ran) emits one combined header
     ("Agent consulted: GROUND + SATELLITE") — this handles both shapes."""
     match = re.search(r"Agent consulted:\s*([A-Z ]+(?:\+ [A-Z]+)?)", text)
     if not match:
@@ -566,9 +569,20 @@ def _agents_consulted(text: str) -> set[str]:
     return {name.strip() for name in match.group(1).split("+") if name.strip()}
 
 
+def _agents_ok(task: E2ETask, consulted: set[str]) -> bool:
+    """Whether the agents the answer's header names are the ones the task
+    expects: every expected agent consulted, and no forbidden one."""
+    if task.expects_ground and "GROUND" not in consulted:
+        return False
+    if task.expects_satellite and "SATELLITE" not in consulted:
+        return False
+    return not (task.forbids_ground and "GROUND" in consulted)
+
+
 def build_e2e_tasks(volume) -> list[E2ETask]:
-    """Build the 3 end-to-end tasks: one ground (fast path), one satellite
-    (fast path), one cross-source (supervisor path, both agents)."""
+    """Build the 5 end-to-end tasks: one ground (fast path), one satellite
+    (fast path), one cross-source (supervisor path, both agents), and two
+    routing tasks (supervisor path, satellite only, ground forbidden)."""
     import xarray as xr
 
     def make_e2e_satellite_dataset():
@@ -639,6 +653,32 @@ def build_e2e_tasks(volume) -> list[E2ETask]:
             expects_ground=True,
             expects_satellite=True,
             aqs_get=_e2e_ground_aqs_get,
+        ),
+        # ── Routing (supervisor path, satellite only) ────────────────────
+        # T64 Phase 0 F5: prompts on which a lite supervisor model added a
+        # ground request nobody asked for. Worded to miss the router's
+        # satellite regex, so they reach the supervisor.
+        E2ETask(
+            name="e2e_routing_ozone_otc_satellite_only",
+            category="e2e_routing",
+            prompt="Show me what ozone looked like across the OTC on 2024-07-15.",
+            handlers={
+                **_standard_handlers(obs_handle="obs_e2e_satellite_1"),
+                **volume_lifecycle_handlers(),
+            },
+            expects_satellite=True,
+            forbids_ground=True,
+        ),
+        E2ETask(
+            name="e2e_routing_non_aq_no_ground",
+            category="e2e_routing",
+            prompt="Show soil moisture over Iowa for June 2024 and check it against ground monitors.",
+            handlers={
+                **_standard_handlers(obs_handle="obs_e2e_satellite_1"),
+                **volume_lifecycle_handlers(),
+            },
+            expects_satellite=True,
+            forbids_ground=True,
         ),
     ]
     return tasks
@@ -786,6 +826,7 @@ async def run_e2e_task(task: E2ETask, volume, *, model: str | None = None) -> Ev
     from tta_backend.agents.supervisor_agent import build_agent as build_supervisor_agent
     from tta_backend.services.chart_service import ChartService
     from tta_backend.services.chat_stream_service import ChatStreamService
+    from tta_backend.services.intent_router import route_intent
     from tta_backend.utils.streaming import get_call_budget
 
     # A shared top-level context runs every task in the suite sequentially
@@ -819,9 +860,9 @@ async def run_e2e_task(task: E2ETask, volume, *, model: str | None = None) -> Ev
         else:
             satellite_agent = _UnusedAgent()
 
-        if task.expects_ground and task.expects_satellite:
-            # Cross-source: the genuinely ambiguous route goes through the
-            # supervisor's own two model calls, so it needs the real,
+        if route_intent(task.prompt) not in ("GROUND", "SATELLITE"):
+            # Cross-source and routing: the genuinely ambiguous route goes
+            # through the supervisor's own model calls, so it needs the real,
             # checkpointed supervisor (real Postgres — this task must run
             # where the eval always runs, against a live database).
             supervisor_agent = await build_supervisor_agent(
@@ -848,12 +889,7 @@ async def run_e2e_task(task: E2ETask, volume, *, model: str | None = None) -> Ev
     tool_calls = re.findall(r'event: tool_call\ndata: \{"name": "([^"]+)"', joined)
     non_error_done = "event: done" in joined and "event: error" not in joined
 
-    consulted = _agents_consulted(joined)
-    agents_ok = True
-    if task.expects_ground:
-        agents_ok = agents_ok and "GROUND" in consulted
-    if task.expects_satellite:
-        agents_ok = agents_ok and "SATELLITE" in consulted
+    agents_ok = _agents_ok(task, _agents_consulted(joined))
 
     date_ok = task.date_check(aqs_calls) if task.date_check is not None else True
     stage_ok = task.stage_check(_stage_sequence(joined)) if task.stage_check is not None else True
@@ -894,8 +930,8 @@ async def run_eval_suite(volume, *, model: str | None = None) -> list[EvalTaskRe
 
 
 DIRECT_AGENT_TASK_COUNT = 14
-PASS_THRESHOLD = 14
-TOTAL_TASKS = DIRECT_AGENT_TASK_COUNT + 3
+PASS_THRESHOLD = 16
+TOTAL_TASKS = DIRECT_AGENT_TASK_COUNT + 5
 
 # Per-category wall-clock budgets (decision record 2026-07-06 §6). The
 # satellite budget applies against the fake MCP — this measures the
@@ -913,6 +949,7 @@ CATEGORY_BUDGETS: dict[str, float] = {
     "e2e_ground": 15.0,
     "e2e_satellite": 45.0,
     "e2e_cross_source": 45.0,
+    "e2e_routing": 45.0,
 }
 
 
