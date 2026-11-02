@@ -24,6 +24,7 @@ from tta_backend.services.subagent_dispatch import run_ground, run_satellite
 from tta_backend.utils.db import get_checkpointer
 from tta_backend.utils.message_utils import truncate_text
 from tta_backend.utils.streaming import current_thread_id
+from tta_backend.tools.hms_tools import query_hms_smoke
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +135,7 @@ async def build_agent(
     checkpointer = await get_checkpointer()
     supervisor = create_agent(
         model=llm,
-        tools=[ask_ground_sensor_agent, ask_earthdata_agent],
+        tools=[ask_ground_sensor_agent, ask_earthdata_agent, query_hms_smoke],
         system_prompt=SUPERVISOR_PROMPT,
         checkpointer=checkpointer,
         middleware=[trim_middleware],

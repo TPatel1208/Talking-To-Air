@@ -1,6 +1,7 @@
 import { useMemo, useState, useEffect, useRef } from 'react'
 import { TimeSeriesPanel, ProfilePanel, ChartToolbar } from './ChartMessage'
 import MapLibreHeatmapPanel from './MapLibreHeatmapPanel.jsx'
+import MapLibreSmokePanel from './MapLibreSmokePanel.jsx'
 import HeatmapMultiPanel from './HeatmapMultiPanel.jsx'
 import CompareGrid from './CompareGrid.jsx'
 import ArtifactMessage, { TableArtifactMessage } from './ArtifactMessage'
@@ -710,6 +711,7 @@ function MetadataTab({ chart, artifact, onViewStatistics }) {
 }
 
 const CHART_TABS = {
+  smoke_map: ['map'],
   heatmap: ['map', 'statistics', 'metadata'],
   heatmap_multi: ['map', 'metadata'],
   timeseries: ['chart', 'statistics', 'metadata'],
@@ -1083,10 +1085,11 @@ export default function OutputPanel({
             />
           </>
         )}
+        {activeTab === 'map' && chart.type === 'smoke_map' && <MapLibreSmokePanel payload={chart} />}
         {activeTab === 'map' && chart.type === 'heatmap_multi' && <HeatmapMultiPanel payload={chart} />}
         {activeTab === 'chart' && chart.type === 'timeseries' && <TimeSeriesPanel payload={chart} />}
         {activeTab === 'chart' && chart.type === 'profile' && <ProfilePanel payload={chart} />}
-        {(activeTab === 'map' || activeTab === 'chart') && (
+        {chart.type !== 'smoke_map' && (activeTab === 'map' || activeTab === 'chart') && (
           <RelatedVariablesPanel chart={chart} onSend={onSend} />
         )}
         {/* D11: the tab follows the slider. It also has to follow the TOGGLE,
@@ -1101,7 +1104,7 @@ export default function OutputPanel({
         )}
       </div>
 
-      {(activeTab === 'map' || activeTab === 'chart') && (
+      {chart.type !== 'smoke_map' && (activeTab === 'map' || activeTab === 'chart') && (
         <div style={{ padding: '0 22px 14px', flexShrink: 0 }}>
           <ChartToolbar chart={chart} plotRootRef={plotRootRef} />
         </div>

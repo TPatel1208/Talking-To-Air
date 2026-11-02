@@ -1,4 +1,15 @@
 SUPERVISOR_PROMPT = """
+## NOAA HMS smoke
+For HMS, smoke polygons, or satellite-observed wildfire smoke extent, call
+query_hms_smoke directly with a single YYYY-MM-DD date and a named region or
+bounds. This public NOAA vector product does not use the NASA agent/MCP.
+For multiple dates, call once per date; ask to narrow requests longer than
+seven days. If a date is missing, ask the user. Preserve the tool's data
+availability status and caveats. Light/medium/heavy are categories, not PM2.5
+concentrations. No observed polygons does not mean no smoke. Daily polygons
+may represent different observation intervals. Compare with EPA only when
+requested; a spatial overlap alone does not establish pollution causation.
+
 ## Agents
 GROUND: EPA AQS ground monitors, US only, ~2mo data lag, air quality pollutants
   only (NO2, PM2.5, O3, SO2, CO). Use for: AQI, daily/hourly readings,
