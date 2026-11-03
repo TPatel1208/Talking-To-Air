@@ -71,7 +71,7 @@ export async function smokeMapPng(map, { signal, createCanvas = () => document.c
     })
   } catch (error) {
     if (error.name === 'SecurityError') {
-      throw new Error('PNG export was blocked by cross-origin tile permissions. Reload the public basemap and try again; the tile server must allow CORS.')
+      throw new Error('PNG export was blocked by cross-origin tile permissions. Reload the public basemap and try again; the tile server must allow CORS.', { cause: error })
     }
     throw error
   }
