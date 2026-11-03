@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import maplibregl from 'maplibre-gl'
+import  * as maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import { fitSmokeMap, smokeMapBounds, smokeMapStyle } from '../utils/hmsMap.js'
 import { SMOKE_COLORS as COLORS, SMOKE_LEGEND, smokeMapPng } from '../utils/hmsMapExport.js'
