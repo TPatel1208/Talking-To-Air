@@ -284,5 +284,126 @@ class GeminiNativeToolSchemaTests(unittest.TestCase):
         self.assertEqual(sorted(fd.name for fd in tools[0].function_declarations), ["dispatch", "lookup"])
 
 
+class PortkeyProviderTests(unittest.TestCase):
+    """Dispatch must use the T64 native schema, where ``agent`` is required."""
+
+    def _settings(self, **overrides):
+        from tta_backend.config.settings import Settings
+
+        return Settings(portkey_api_key="pk-offline", **overrides)
+
+    def _dispatch_tool(self):
+        from langchain_core.tools import StructuredTool
+
+        from tta_backend.config.model_factory import NATIVE_JSON_SCHEMA
+        from tta_backend.models.agent_request import DispatchArgs, dispatch_json_schema
+
+        async def _noop(**_):
+            return ""
+
+        return StructuredTool.from_function(
+            coroutine=_noop, name="dispatch", description="Dispatch tasks.", args_schema=DispatchArgs,
+            metadata={NATIVE_JSON_SCHEMA: dispatch_json_schema()},
+        )
+
+    def test_a_native_schema_tool_is_declared_with_that_schema(self):
+        from langchain_core.tools import tool
+
+        from tta_backend.config.model_factory import build_chat_model
+        from tta_backend.models.agent_request import dispatch_json_schema
+
+        @tool
+        def lookup(code: str) -> str:
+            """Look a code up."""
+            return code
+
+        model = build_chat_model("portkey", "@slug/model", self._settings())
+        bound = model.bind_tools([self._dispatch_tool(), lookup], tool_choice="any")
+        functions = {t["function"]["name"]: t["function"] for t in bound.kwargs["tools"]}
+
+        self.assertEqual(functions["dispatch"]["parameters"], dispatch_json_schema())
+        self.assertEqual(functions["dispatch"]["description"], "Dispatch tasks.")
+        self.assertIn("agent", functions["dispatch"]["parameters"]["$defs"]["SatelliteRequest"]["required"])
+        self.assertEqual(list(functions["lookup"]["parameters"]["properties"]), ["code"])
+
+    def test_requests_go_to_the_configured_gateway_with_portkey_headers(self):
+        from tta_backend.config.model_factory import build_chat_model
+
+        model = build_chat_model(
+            "portkey", "@slug/model", self._settings(portkey_base_url="http://portkey-gateway:8787/v1"),
+            agent_type="satellite",
+        )
+
+        self.assertEqual(model.openai_api_base, "http://portkey-gateway:8787/v1")
+        self.assertEqual(model.default_headers["x-portkey-api-key"], "pk-offline")
+        self.assertEqual(model.default_headers["x-portkey-strict-open-ai-compliance"], "false")
+        self.assertIn('"agent_type": "satellite"', model.default_headers["x-portkey-metadata"])
+        self.assertNotIn("x-portkey-config", model.default_headers)
+
+    def test_the_gateway_defaults_to_portkeys_hosted_one(self):
+        import os
+        from unittest.mock import patch
+
+        from tta_backend.config.settings import Settings
+
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(Settings().portkey_base_url, "https://api.portkey.ai/v1")
+
+
+class CacheableSystemPromptTests(unittest.TestCase):
+    """Claude via Portkey caches only a marked system prompt."""
+
+    def test_claude_through_portkey_gets_a_cache_marker(self):
+        from langchain_core.messages import SystemMessage
+
+        from tta_backend.config.model_factory import cacheable_system_prompt
+
+        prompt = cacheable_system_prompt("SYSTEM", "portkey", "@gcp-x/anthropic.claude-sonnet-5")
+
+        self.assertIsInstance(prompt, SystemMessage)
+        self.assertEqual(prompt.content, [{"type": "text", "text": "SYSTEM", "cache_control": {"type": "ephemeral"}}])
+
+    def test_other_models_keep_the_plain_string(self):
+        from tta_backend.config.model_factory import cacheable_system_prompt
+
+        for provider, model in (("google", "gemini-3.5-flash-lite"), ("groq", "claude-lookalike"), ("portkey", "@azure-x/gpt-5.4")):
+            with self.subTest(provider=provider, model=model):
+                self.assertEqual(cacheable_system_prompt("SYSTEM", provider, model), "SYSTEM")
+
+    def test_the_marker_reaches_the_portkey_request(self):
+        """Catches a langchain-openai upgrade that drops unknown block keys."""
+        from langchain_core.messages import HumanMessage
+
+        from tta_backend.config.model_factory import build_chat_model, cacheable_system_prompt
+        from tta_backend.config.settings import Settings
+
+        model = build_chat_model("portkey", "@x/claude", Settings(portkey_api_key="offline"))
+        system = cacheable_system_prompt("SYSTEM", "portkey", "@x/claude")
+        payload = model._get_request_payload([system, HumanMessage("hi")])
+
+        self.assertEqual(payload["messages"][0]["content"][0]["cache_control"], {"type": "ephemeral"})
+
+    def test_both_sub_agents_send_the_marked_prompt(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+
+        from langchain_core.messages import SystemMessage
+
+        from tta_backend.agents import earthdata_agent, ground_sensor_agent
+
+        for module, build in (
+            (earthdata_agent, lambda: earthdata_agent.build_earthdata_agent("@x/claude", "portkey", mcp_tools={})),
+            (ground_sensor_agent, lambda: ground_sensor_agent.build_ground_agent("@x/claude", "portkey")),
+        ):
+            with self.subTest(module=module.__name__):
+                create_agent = Mock(return_value=SimpleNamespace())
+                with patch.object(module, "build_chat_model", Mock(return_value=object())), \
+                     patch.object(module, "create_agent", create_agent), \
+                     patch.object(earthdata_agent, "build_satellite_tools", Mock(return_value=[])):
+                    build()
+
+                self.assertIsInstance(create_agent.call_args.kwargs["system_prompt"], SystemMessage)
+
+
 if __name__ == "__main__":
     unittest.main()

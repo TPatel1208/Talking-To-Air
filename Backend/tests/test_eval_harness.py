@@ -38,6 +38,37 @@ class ContainsSubsequenceTests(unittest.TestCase):
         self.assertFalse(contains_subsequence(trace, ["search_datasets", "safe_retrieve"]))
 
 
+class ContainsStepSubsequenceTests(unittest.TestCase):
+    """Calls in one parallel step may come in any order; order across steps still holds."""
+
+    def test_calls_in_one_step_match_in_any_order(self):
+        from eval_harness import contains_step_subsequence
+
+        steps = [["define_area_of_interest", "search_datasets"], ["safe_retrieve"]]
+
+        self.assertTrue(contains_step_subsequence(steps, ["search_datasets", "define_area_of_interest", "safe_retrieve"]))
+
+    def test_rejects_out_of_order_steps(self):
+        from eval_harness import contains_step_subsequence
+
+        steps = [["safe_retrieve"], ["search_datasets"]]
+
+        self.assertFalse(contains_step_subsequence(steps, ["search_datasets", "safe_retrieve"]))
+
+    def test_rejects_a_missing_or_repeated_call(self):
+        from eval_harness import contains_step_subsequence
+
+        steps = [["search_datasets", "define_area_of_interest"]]
+
+        self.assertFalse(contains_step_subsequence(steps, ["search_datasets", "safe_retrieve"]))
+        self.assertFalse(contains_step_subsequence(steps, ["search_datasets", "search_datasets"]))
+
+    def test_no_expected_calls_always_match(self):
+        from eval_harness import contains_step_subsequence
+
+        self.assertTrue(contains_step_subsequence([], []))
+
+
 @unittest.skipIf(
     any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
     "eval harness test dependencies are not installed",
@@ -409,6 +440,7 @@ class ResultsTableTests(unittest.TestCase):
         self.assertIn("plotting_single_map", table)
         self.assertIn("1.23", table)
         self.assertIn("50.50", table)
+        self.assertIn("steps", table)
         # The passing task's full trace is present; the failing one's isn't.
         self.assertIn("PASS", table)
         self.assertIn("FAIL", table)

@@ -11,11 +11,10 @@ from typing import Any
 
 from tta_backend.config.settings import ConfigurationError, Settings
 
-_PROVIDERS = ("groq", "google")
+_PROVIDERS = ("groq", "google", "portkey")
 
 # Tool metadata key naming a JSON Schema the tool's declaration must use
-# verbatim (T64). The Gemini model below sends it as parameters_json_schema
-# instead of converting the tool's args_schema.
+# verbatim (T64), instead of one converted from its args_schema.
 NATIVE_JSON_SCHEMA = "native_json_schema"
 
 
@@ -57,6 +56,19 @@ def build_chat_model(
         return _gemini_chat_class()(
             model=model,
             google_api_key=settings.google_api_key,
+            max_retries=settings.llm_max_retries,
+            callbacks=timing_callbacks(agent_type),
+        )
+    if provider == "portkey":
+        from pydantic import SecretStr
+
+        return _portkey_chat_class()(
+            model=model,
+            # The real key goes in a header; the client just needs a value.
+            api_key=SecretStr("unused"),
+            base_url=settings.portkey_base_url,
+            default_headers=_portkey_headers(settings, agent_type),
+            extra_body=_auto_cache_body(model),
             max_retries=settings.llm_max_retries,
             callbacks=timing_callbacks(agent_type),
         )
@@ -117,9 +129,64 @@ def _gemini_chat_class() -> Any:
     return GeminiChat
 
 
+@cache
+def _portkey_chat_class() -> Any:
+    """ChatOpenAI whose bind_tools honours NATIVE_JSON_SCHEMA.
+
+    Without it, dispatch's schema comes from DispatchArgs, where ``agent`` is
+    optional, so a model can omit it and have the call rejected (T64)."""
+    from langchain_openai import ChatOpenAI
+
+    class PortkeyChat(ChatOpenAI):
+        def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
+            return super().bind_tools([_openai_function(t) for t in tools], **kwargs)
+
+    return PortkeyChat
+
+
+def _openai_function(tool: Any) -> Any:
+    native = _native_schema(tool)
+    if native is None:
+        return tool
+    return {
+        "type": "function",
+        "function": {"name": tool.name, "description": tool.description, "parameters": native},
+    }
+
+
+def _portkey_headers(settings: Settings, agent_type: str) -> dict[str, str]:
+    """The x-portkey-* headers. Strict compliance is off so provider-specific
+    fields (e.g. Gemini's thought_signature) come through."""
+    from portkey_ai import createHeaders
+
+    headers: dict[str, str] = createHeaders(  # type: ignore[no-untyped-call]
+        api_key=settings.portkey_api_key,
+        strict_open_ai_compliance=False,
+        config=settings.portkey_config or None,
+        metadata={"agent_type": agent_type},
+    )
+    return headers
+
+
+def _auto_cache_body(model: str) -> dict[str, Any] | None:
+    """Asks Claude to cache up to the latest message on every call."""
+    return {"cache_control": {"type": "ephemeral"}} if "claude" in model.lower() else None
+
+
 def _native_schema(tool: Any) -> Any:
     metadata = getattr(tool, "metadata", None)
     return metadata.get(NATIVE_JSON_SCHEMA) if isinstance(metadata, dict) else None
+
+
+def cacheable_system_prompt(prompt: str, provider: str, model: str) -> Any:
+    """Marks the prompt for Claude's cache (which also covers the tools); others cache on their own."""
+    if provider != "portkey" or "claude" not in model.lower():
+        return prompt
+    from langchain_core.messages import SystemMessage
+
+    return SystemMessage(content=[
+        {"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}},
+    ])
 
 
 def structured_output(model: Any, schema: Any) -> Any:

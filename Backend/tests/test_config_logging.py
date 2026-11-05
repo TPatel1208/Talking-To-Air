@@ -46,10 +46,12 @@ class ConfigLoggingTests(unittest.TestCase):
             loaded = get_settings()
 
         self.assertEqual(loaded.llm_model, "gemini-3.7-flash")
-        self.assertEqual(loaded.ground_agent_model, "gemini-3.1-flash-lite")
+        self.assertEqual(loaded.ground_agent_model, "gemini-3.5-flash-lite")
         self.assertEqual(loaded.data_fetch_mode, "auto")
         self.assertEqual(loaded.harmony_processing_timeout_seconds, 600)
-        loaded = Settings(db_password=None, google_api_key=None)
+        # Cleared env, so a .env loaded by an earlier test can't change providers.
+        with patch.dict(os.environ, {}, clear=True):
+            loaded = Settings(db_password=None, google_api_key=None)
         with self.assertRaisesRegex(RuntimeError, "DB_PASSWORD, GOOGLE_API_KEY"):
             loaded.validate_startup()
 
@@ -185,7 +187,7 @@ class ConfigLoggingTests(unittest.TestCase):
 
         with patch.dict(os.environ, {}, clear=True):
             loaded = Settings()
-        self.assertEqual(loaded.earthdata_agent_model, "gemini-3.1-flash-lite")
+        self.assertEqual(loaded.earthdata_agent_model, "gemini-3.5-flash-lite")
 
         with patch.dict(os.environ, {"EARTHDATA_AGENT_MODEL": "some/other-model"}, clear=True):
             loaded = Settings()
@@ -231,7 +233,9 @@ class ConfigLoggingTests(unittest.TestCase):
         from tta_backend.config.settings import Settings
 
         # Default posture: supervisor, earthdata, and ground agent all on google.
-        loaded = Settings(db_password="x", **REQUIRED_KWARGS, google_api_key=None, groq_api_key="x")
+        # Cleared env, so a .env loaded by an earlier test can't change providers.
+        with patch.dict(os.environ, {}, clear=True):
+            loaded = Settings(db_password="x", **REQUIRED_KWARGS, google_api_key=None, groq_api_key="x")
         with self.assertRaisesRegex(RuntimeError, "GOOGLE_API_KEY"):
             loaded.validate_startup()
 

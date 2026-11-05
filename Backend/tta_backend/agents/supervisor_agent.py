@@ -18,7 +18,7 @@ from langchain_core.tools import StructuredTool
 from langchain.agents.middleware import wrap_model_call, ModelRequest, ModelResponse
 from collections.abc import Awaitable, Callable
 
-from tta_backend.config.model_factory import NATIVE_JSON_SCHEMA, build_chat_model
+from tta_backend.config.model_factory import NATIVE_JSON_SCHEMA, build_chat_model, cacheable_system_prompt
 from tta_backend.config.settings import get_settings
 from tta_backend.config.supervisor_prompt import SUPERVISOR_PROMPT
 from tta_backend.models import (
@@ -177,7 +177,7 @@ async def build_agent(
     supervisor = create_agent(
         model=llm,
         tools=[dispatch_tool],
-        system_prompt=SUPERVISOR_PROMPT,
+        system_prompt=cacheable_system_prompt(SUPERVISOR_PROMPT, provider, model),
         checkpointer=checkpointer,
         middleware=[trim_middleware, dispatch_limit_middleware],
     )

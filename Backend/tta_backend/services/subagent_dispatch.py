@@ -34,7 +34,14 @@ from tta_backend.earthdata_mcp.results import (
     MCPToolError,
     parse_tool_result,
 )
-from tta_backend.models import AgentResult, SubAgentEnvelope, parse_agent_result, parse_chart_payload, parse_sub_agent_envelope
+from tta_backend.models import (
+    SUB_AGENT_ENVELOPE_TOOL,
+    AgentResult,
+    SubAgentEnvelope,
+    parse_agent_result,
+    parse_chart_payload,
+    parse_sub_agent_envelope,
+)
 from tta_backend.models.artifact import ArtifactReference
 from tta_backend.repositories.session_metadata_repository import (
     get_ground_monitor_context,
@@ -82,15 +89,19 @@ async def run_ground(
                 {"messages": [HumanMessage(content=task_text)]},
                 config={"configurable": {"thread_id": sub_thread_id}},
             )
-            # Untruncated — _finalize_sub_agent_result parses the
-            # {summary, artifact_ids, handles} envelope out of this
-            # before any length limit is applied (T11).
-            text = extract_last_text(
-                result,
-                "Ground sensor agent returned no response.",
-                agent_name="ground_sensor",
-                truncate=False,
-            )
+            structured = result.get("structured_response")
+            if isinstance(structured, SubAgentEnvelope):
+                text = structured.model_dump_json()
+            else:
+                # Untruncated — _finalize_sub_agent_result parses the
+                # {summary, artifact_ids, handles} envelope out of this
+                # before any length limit is applied (T11).
+                text = extract_last_text(
+                    result,
+                    "Ground sensor agent returned no response.",
+                    agent_name="ground_sensor",
+                    truncate=False,
+                )
             artifact_refs = _extract_artifact_refs(result.get("messages", []))
         except TimeoutError:
             outcome = "timeout"
@@ -127,6 +138,15 @@ async def run_ground(
         await save_ground_monitor_context(conversation_thread_id, {**monitor_context, **new_context})
 
     return result
+
+
+def _is_envelope_delivery(event_type: str, data: Any) -> bool:
+    """Whether a stream event is the SubAgentEnvelope call or its result."""
+    return (
+        event_type in ("tool_call", "tool_result")
+        and isinstance(data, dict)
+        and data.get("name") == SUB_AGENT_ENVELOPE_TOOL
+    )
 
 
 async def run_satellite(
@@ -196,6 +216,8 @@ async def run_satellite(
         charts = []
         artifacts = []
         text_parts = []
+        # The agent's answer; when set, the streamed text is only narration.
+        envelope: SubAgentEnvelope | None = None
         sub_thread_id = str(uuid.uuid4())
         outcome = "success"
 
@@ -203,6 +225,12 @@ async def run_satellite(
             async for event_type, data in stream_response(
                 satellite_agent, task_text, thread_id=sub_thread_id
             ):
+                if event_type == "structured_response":
+                    if isinstance(data, SubAgentEnvelope):
+                        envelope = data
+                    continue
+                if _is_envelope_delivery(event_type, data):
+                    continue  # not a work step: keep it off the workflow strip
                 if on_event is not None:
                     await on_event(event_type, data)
                 if event_type == "tool_call":
@@ -246,6 +274,7 @@ async def run_satellite(
                         text_parts.append(t)
         except TimeoutError as exc:
             outcome = "timeout"
+            envelope = None
             text_parts = [str(exc)]
         except Exception as exc:
             outcome = "failure"
@@ -256,16 +285,20 @@ async def run_satellite(
             # taxonomy's honest error answer instead (classified category
             # when it's an MCPToolError, contract otherwise); the real
             # exception goes to the logs.
+            envelope = None
             text_parts = [render_unexpected_exception(exc, "earthdata agent")]
         finally:
             record_agent_request("satellite", outcome)
 
-        # Joined with "" (not " ") — text_parts holds successive streamed
-        # deltas of one final message, and this string must round-trip
-        # through parse_sub_agent_envelope as valid JSON; a space
-        # injected between two delta chunks would corrupt it. Left
-        # untruncated here — _finalize_sub_agent_result parses the
-        # envelope before any length limit is applied (T11).
+        if envelope is not None:
+            return AgentResult(text=envelope.model_dump_json(), charts=charts, artifacts=artifacts)
+        # No structured answer: fall back to the streamed text. Joined with ""
+        # (not " ") — text_parts holds successive streamed deltas of one final
+        # message, and this string must round-trip through
+        # parse_sub_agent_envelope as valid JSON; a space injected between
+        # two delta chunks would corrupt it. Left untruncated here —
+        # _finalize_sub_agent_result parses the envelope before any length
+        # limit is applied (T11).
         text = "".join(text_parts) or "Earthdata agent returned no response."
         return AgentResult(text=text, charts=charts, artifacts=artifacts)
 

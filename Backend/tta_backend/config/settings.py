@@ -20,21 +20,20 @@ _VALID_FETCH_MODES = {"auto", "harmony", "opendap", "s3"}
 _TILE_KEY_PLACEHOLDER = "{key}"
 _VALID_LOG_FORMATS = {"text", "json"}
 
-# Model ids reach the provider SDK unvalidated (see config/model_factory.py),
-# so a wrong one is not discoverable until it 404s on the first call that uses
-# it -- and for the supervisor that is every turn, making it an outage rather
-# than a degraded path. Boot is the cheaper place to learn it.
-#
-# Adding an id here is the record that someone confirmed it exists on the
-# provider *and* on the billing tier being deployed. A provider absent from
-# this map is not gated at all, so bringing one under the gate stays a
-# deliberate act instead of silently starting to fail boots.
+# Model ids checked at boot, since a wrong one otherwise fails every turn.
+# Add an id only once a real call with it has worked. Providers missing here
+# are not checked.
 _VETTED_MODELS: dict[str, frozenset[str]] = {
     "google": frozenset({
         "gemini-3.8-flash",
         "gemini-3.7-flash",
         "gemini-3.1-flash-lite",
         "gemini-3.5-flash-lite",
+    }),
+    # Portkey "@provider-slug/model" ids.
+    "portkey": frozenset({
+        "@gcp-internal-dataset-integration/anthropic.claude-sonnet-5",
+        "@gcp-internal-dataset-integration/anthropic.claude-haiku-4-5@20251001",
     }),
 }
 
@@ -71,13 +70,13 @@ class Settings:
     ground_agent_model: str = field(
         default_factory=lambda: os.getenv(
             "GROUND_AGENT_MODEL",
-            "gemini-3.1-flash-lite",
+            "gemini-3.5-flash-lite",
         )
     )
     earthdata_agent_model: str = field(
         default_factory=lambda: os.getenv(
             "EARTHDATA_AGENT_MODEL",
-            os.getenv("SATELLITE_AGENT_MODEL", "gemini-3.1-flash-lite"),
+            os.getenv("SATELLITE_AGENT_MODEL", "gemini-3.5-flash-lite"),
         )
     )
     supervisor_model_provider: str = field(
@@ -91,12 +90,16 @@ class Settings:
     )
     google_api_key: str | None = field(default_factory=lambda: os.getenv("GOOGLE_API_KEY"))
     groq_api_key: str | None = field(default_factory=lambda: os.getenv("GROQ_API_KEY"))
+    portkey_api_key: str | None = field(default_factory=lambda: os.getenv("PORTKEY_API_KEY"))
+    # Hosted gateway by default; set it for a self-hosted one (keep the /v1).
+    portkey_base_url: str = field(
+        default_factory=lambda: os.getenv("PORTKEY_BASE_URL", "https://api.portkey.ai/v1")
+    )
+    # Optional Portkey config id. Its retries multiply with llm_max_retries.
+    portkey_config: str | None = field(default_factory=lambda: os.getenv("PORTKEY_CONFIG"))
 
-    # Retries per provider call. Both SDKs default to 6, and those retries
-    # happen inside a single LLM call: the backoff sleeps add to that call's
-    # latency without appearing as separate calls, and the input prompt is
-    # billed again on each attempt. 2 still absorbs a transient failure while
-    # bounding how long a rate-limited call can take.
+    # Retries per LLM call (SDKs default to 6). Each one adds latency and
+    # re-bills the prompt.
     llm_max_retries: int = field(default_factory=lambda: max(0, _int_env("LLM_MAX_RETRIES", 2)))
 
     db_host: str = field(default_factory=lambda: os.getenv("DB_HOST", "localhost"))
@@ -625,25 +628,15 @@ class Settings:
             missing.append("GOOGLE_API_KEY")
         if "groq" in configured_providers and not self.groq_api_key:
             missing.append("GROQ_API_KEY")
-        # T61: unconditional, unlike the provider keys above -- every route is
-        # authenticated, so there is no configuration in which the backend is
-        # useful without an identity provider. Fatal here rather than absent
-        # because api.py builds the verifier's issuer as an f-string at import:
-        # a None URL yields the literal "None/auth/v1", which constructs fine
-        # and then rejects every token with "Invalid issuer." on a backend that
-        # booted clean and reports healthy. One RuntimeError beats that.
+        if "portkey" in configured_providers and not self.portkey_api_key:
+            missing.append("PORTKEY_API_KEY")
+        # T61: without it the backend boots fine, then rejects every token.
         if not self.supabase_url:
             missing.append("SUPABASE_URL")
-        # Not read by the backend until T61 Phase 3 serves it from /config/auth.
-        # Required now regardless: the frontend cannot sign anyone in without
-        # it, so a deploy carrying one of the pair and not the other is broken
-        # either way, and boot is a cheaper place to learn that than the login
-        # screen. Drop this branch if Phase 3 ends up somewhere else.
+        # The frontend can't sign anyone in without it.
         if not self.supabase_publishable_key:
             missing.append("SUPABASE_PUBLISHABLE_KEY")
-        # Every chat event travels through the event log, so a backend that
-        # cannot reach one is not degraded, it is down. Saying so at boot
-        # beats every turn returning 503.
+        # Every chat event goes through Redis; without it every turn fails.
         if not self.redis_url:
             missing.append("REDIS_URL")
         if missing:

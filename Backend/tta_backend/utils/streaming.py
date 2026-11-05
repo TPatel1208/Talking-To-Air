@@ -9,6 +9,7 @@ Yields:
     ("job_progress", {"job_handle": str, "status": str, "progress": Any, "phase": Any, "message": str | None})
     ("chart_payload", dict)  # full render payload — see utils.streaming.emit_chart
     ("variable_choice", dict)  # deterministic picker — see utils.streaming.emit_variable_choice
+    ("structured_response", BaseModel)  # an agent's response_format answer
 """
 
 import asyncio
@@ -436,6 +437,11 @@ async def stream_response(
                 # messages stream handles it. Publishing from both paths is what
                 # produces duplicate responses.
                 for _node, data in chunk.items():
+                    if not isinstance(data, dict):
+                        continue
+                    structured = data.get("structured_response")
+                    if structured is not None:
+                        await publish("structured_response", structured)
                     for msg in data.get("messages", []):
                         if hasattr(msg, "tool_calls") and msg.tool_calls:
                             for tc in msg.tool_calls:

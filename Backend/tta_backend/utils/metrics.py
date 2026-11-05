@@ -170,7 +170,7 @@ CUBE_INDEX_INVALIDATIONS_TOTAL = Counter(
 # agent_requests_total.
 #
 # The label exists because ``model`` cannot substitute for it. Both sub-agents
-# default to the same model id (gemini-3.1-flash-lite), so without this the
+# default to the same model id (gemini-3.5-flash-lite), so without this the
 # earthdata agent's spend and the ground agent's spend are one indivisible
 # series -- and they have very different prefixes, which is exactly what
 # anyone reading this metric is trying to compare.
