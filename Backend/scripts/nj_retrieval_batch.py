@@ -1,6 +1,6 @@
 """
-test_nj_retrieval_batch.py
-==========================
+nj_retrieval_batch.py
+=====================
 Batch validation focused strictly on New Jersey (NJ) to test map and graph/chart
 generation across ground sensor and satellite retrievals.
 
@@ -40,7 +40,8 @@ from tta_backend.utils.db import close_db_pool, init_db_pool
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("nj_retrieval_test")
 
-USER_ID = "cc0d9466-cf96-45fd-8644-2534daf7fc87"
+# The account the test threads are saved under; set it to a dev user of your own.
+USER_ID = os.environ.get("BATCH_USER_ID", "")
 
 NJ_GROUND_QUERIES = [
     {
@@ -228,6 +229,8 @@ async def execute_query(
 
 
 async def main():
+    if not USER_ID:
+        raise SystemExit("Set BATCH_USER_ID to the user id the test threads should belong to.")
     settings = get_settings()
     await init_db_pool()
     await ensure_session_metadata_table()

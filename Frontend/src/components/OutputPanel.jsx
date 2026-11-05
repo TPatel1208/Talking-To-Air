@@ -41,6 +41,7 @@ import {
 } from '../utils/artifactMetadataDisplay'
 import { apiFetch } from '../utils/apiFetch.js'
 import { API_BASE } from '../config.js'
+import { isGroundMapArtifact } from '../utils/groundMap.js'
 
 // Every render branch of this panel is the same flex child of the app's one
 // row, so every one of them needs the same floor. It used to be `minWidth: 0`
@@ -563,7 +564,7 @@ const metaViewButtonStyle = (active) => ({
 function useTableColumnsPreview(artifact) {
   const [state, setState] = useState({ page: null, status: 'loading' })
   useEffect(() => {
-    if (!artifact?.id || (artifact.type !== 'table' && artifact.type !== 'map')) return undefined
+    if (!artifact?.id || artifact.type !== 'table') return undefined
     let cancelled = false
     apiFetch(`${API_BASE}/artifacts/${artifact.id}?offset=0&limit=1`)
       .then(response => (response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`))))
@@ -742,8 +743,8 @@ function MetadataTab({ chart, artifact, onViewStatistics }) {
       </div>
     )
   }
-  if (artifact?.type === 'table' || artifact?.type === 'map' || artifact?.type === 'timeseries') {
-    const isTable = artifact.type === 'table' || artifact.type === 'map'
+  if (artifact?.type === 'table' || artifact?.type === 'timeseries') {
+    const isTable = artifact.type === 'table'
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
         <div style={{ display: 'flex', gap: '6px' }}>
@@ -795,7 +796,7 @@ const CHART_TABS = {
 // ground-validation timeseries artifacts have no chartable series data of
 // their own (T33 -- see PRD), so Metadata is their only tab.
 const ARTIFACT_TABS = {
-  map: ['map', 'table', 'metadata'],
+  ground_map: ['map', 'table', 'metadata'],
   table: ['table', 'metadata'],
   timeseries: ['metadata'],
 }
@@ -928,7 +929,7 @@ function ArtifactTabsPanel({
   onSelectRightPanelTab,
   hasRunningJobs,
 }) {
-  const tabs = ARTIFACT_TABS[artifact.type] || ['metadata']
+  const tabs = ARTIFACT_TABS[isGroundMapArtifact(artifact) ? 'ground_map' : artifact.type] || ['metadata']
   const [activeTab, setActiveTab] = useState(tabs[0])
   const metaChips = useMemo(() => artifactMetaChips(artifact), [artifact])
 
@@ -984,7 +985,7 @@ export default function OutputPanel({
   const kind = focusedOutput?.kind
   const chart = kind === 'chart' ? focusedOutput.data : null
   const artifact = kind === 'artifact' ? focusedOutput.data : null
-  const isMetadataTabbedArtifact = artifact?.type === 'table' || artifact?.type === 'map' || artifact?.type === 'timeseries'
+  const isMetadataTabbedArtifact = artifact?.type === 'table' || artifact?.type === 'timeseries'
 
   const availableTabs = chart ? (CHART_TABS[chart.type] || ['metadata']) : []
   // Reset to the first tab when the focused output -- or its tab set -- changes,

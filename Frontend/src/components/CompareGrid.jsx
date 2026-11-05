@@ -21,6 +21,7 @@
 import { useMemo, useState } from 'react'
 import MapLibreHeatmapPanel, { MapColorbar } from './MapLibreHeatmapPanel.jsx'
 import TableMapPanel from './TableMapPanel.jsx'
+import { isGroundMapArtifact } from '../utils/groundMap.js'
 import { TimeSeriesPanel, TimeSeriesOverlayPanel } from './ChartMessage.jsx'
 import { MetadataOverview } from './MetadataOverview.jsx'
 import { colorbarGeometry, scaleClipNote } from '../utils/colorbarGeometry.js'
@@ -176,7 +177,7 @@ function HeatmapCompareBody({ compareCount, compareSelection, autoScaleEach, onT
         height={height}
         hint="Click a map in chat to add"
         renderChart={(chart) => (
-          chart.type === 'map' || chart.type === 'table' ? (
+          isGroundMapArtifact(chart) ? (
             <TableMapPanel
               artifact={chart}
               height={height}

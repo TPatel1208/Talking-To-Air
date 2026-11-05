@@ -14,6 +14,7 @@ import { toolStepsTitle } from '../utils/toolSteps'
 import VariableChoicePicker from './VariableChoicePicker'
 import { API_BASE } from '../config.js'
 import { PANEL_HEADER_HEIGHT } from '../utils/panelLayout.js'
+import { isGroundMapArtifact } from '../utils/groundMap.js'
 
 const TYPE_LABEL = { map: 'Map', comparison: 'Comparison', timeseries: 'Time series', table: 'Table' }
 
@@ -31,7 +32,7 @@ function outputLabel(item) {
   const rowCount = artifact.rows?.length || artifact.row_count
   let subtitle = TYPE_LABEL[artifact.type] || artifact.type
   if (rowCount) {
-    subtitle = artifact.type === 'map' ? `Map · ${rowCount} monitors` : `Table · ${rowCount} rows`
+    subtitle = isGroundMapArtifact(artifact) ? `Map · ${rowCount} monitors` : `Table · ${rowCount} rows`
   }
   return { title: artifact.title || 'Output', subtitle }
 }

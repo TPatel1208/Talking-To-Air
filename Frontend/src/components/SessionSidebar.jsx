@@ -21,7 +21,7 @@ function filenameFromDisposition(disposition, fallback) {
 }
 
 async function downloadArtifact(artifact) {
-  const url = (artifact.type === 'table' || artifact.id?.startsWith('tbl_'))
+  const url = artifact.type === 'table'
     ? `${API_BASE}/artifacts/${artifact.id}/csv`
     : `${API_BASE}/chart/${artifact.id}/export.csv`
   const res = await apiFetch(url)

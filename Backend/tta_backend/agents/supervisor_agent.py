@@ -86,13 +86,7 @@ async def build_agent(
         "supervisor_model",
         extra={"_event": "supervisor_model", "_model": model, "_provider": provider},
     )
-    llm = build_chat_model(
-        provider,
-        model,
-        settings,
-        agent_type="supervisor",
-        fallback_model=settings.llm_fallback_model,
-    )
+    llm = build_chat_model(provider, model, settings, agent_type="supervisor")
 
     # ── Trim middleware — keeps the supervisor's context window bounded ───────
 

@@ -881,7 +881,6 @@ def _artifact_table_response(
     title: str,
     metadata: dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    artifact_type = "map" if _has_coordinates(body) else "table"
     artifact_ref = artifact_store.put_table(
         title=title,
         columns=_table_columns(body),
@@ -891,8 +890,9 @@ def _artifact_table_response(
         # Metadata tab's "Source dataset" field (tableOverviewFields reads
         # metadata.dataset) has a fact to show instead of "Not available".
         # Callers' own metadata still wins if they ever name it themselves.
-        metadata={"dataset": "EPA AQS", **(metadata or {})},
-        artifact_type=artifact_type,
+        # has_coordinates tells the frontend the table can also be mapped; it
+        # stays a "table" artifact, since "map" is the heatmap artifact type.
+        metadata={"dataset": "EPA AQS", "has_coordinates": _has_coordinates(body), **(metadata or {})},
     )
     header[0]["artifact_count"] = 1
     header[0]["table_artifact_id"] = artifact_ref.id

@@ -9,6 +9,7 @@
  */
 import { useMemo, useState } from 'react'
 import { resolveMasking } from '../utils/maskingProvenance'
+import { isGroundMapArtifact } from '../utils/groundMap.js'
 import {
   NOT_AVAILABLE, fmt, dateRangeLabel, granuleSummary, maskingStatusColor,
   citationString, datasetLandingUrl, regionLabel, hasProvenance, maturityFields,
@@ -26,7 +27,7 @@ export function MetadataOverview({ chart, onViewStatistics, onViewFullMetadata, 
   const maturity = useMemo(() => maturityFields(chart), [chart])
   const level = useMemo(() => levelResolutionFields(chart), [chart])
 
-  if (chart?.type === 'table' || chart?.type === 'map') {
+  if (chart?.type === 'table') {
     const firstRow = chart.rows?.[0] || {}
     const pollutant = firstRow.pollutant_standard || chart.title || 'Ground AQI'
     const date = firstRow.date || firstRow.period || '—'
@@ -37,7 +38,7 @@ export function MetadataOverview({ chart, onViewStatistics, onViewFullMetadata, 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' }}>
           <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)' }}>
-            {chart.type === 'map' ? 'Ground monitor map' : 'Ground monitor table'}
+            {isGroundMapArtifact(chart) ? 'Ground monitor map' : 'Ground monitor table'}
           </div>
           {onViewFullMetadata && (
             <button type="button" onClick={onViewFullMetadata} style={{

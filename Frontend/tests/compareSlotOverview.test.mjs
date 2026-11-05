@@ -9,11 +9,11 @@ test('focusChartPayload wraps a chart into the same {kind, data} shape the singl
   assert.equal(result.data, chart) // identity, not a copy -- App.jsx matches active state by reference
 })
 
-test('focusChartPayload wraps a table or map artifact into {kind: "artifact", data: artifact}', () => {
+test('focusChartPayload wraps a table artifact, mappable or not, into {kind: "artifact", data: artifact}', () => {
   const table = { type: 'table', title: 'EPA Summary' }
-  const mapArtifact = { type: 'map', title: 'EPA Map' }
+  const groundMap = { type: 'table', title: 'EPA Map', metadata: { has_coordinates: true } }
   assert.deepEqual(focusChartPayload(table), { kind: 'artifact', data: table })
-  assert.deepEqual(focusChartPayload(mapArtifact), { kind: 'artifact', data: mapArtifact })
+  assert.deepEqual(focusChartPayload(groundMap), { kind: 'artifact', data: groundMap })
 })
 
 test('toggleExpanded opens a collapsed slot without affecting other already-open slots', () => {
