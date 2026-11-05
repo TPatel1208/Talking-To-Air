@@ -71,7 +71,7 @@ def is_cacheable(tool_name: str) -> bool:
     return tool_name in CACHEABLE_TOOL_NAMES
 
 
-def _cache_key(tool_name: str, workspace_id: str, args: dict) -> str:
+def _cache_key(tool_name: str, workspace_id: str, args: dict[str, Any]) -> str:
     """``(tool_name, workspace_id, canonical_json(args))``.
 
     ``workspace_id`` participates even though CMR metadata is public: it costs
@@ -85,7 +85,7 @@ def _cache_key(tool_name: str, workspace_id: str, args: dict) -> str:
     return json.dumps([tool_name, workspace_id, payload], sort_keys=True, default=str)
 
 
-def lookup(tool_name: str, workspace_id: str, args: dict) -> Any | None:
+def lookup(tool_name: str, workspace_id: str, args: dict[str, Any]) -> Any | None:
     """The cached raw result for this exact call, or None if there is none or
     it has aged past the TTL. Records the hit/miss."""
     key = _cache_key(tool_name, workspace_id, args)
@@ -109,7 +109,7 @@ def lookup(tool_name: str, workspace_id: str, args: dict) -> Any | None:
     return None
 
 
-def store(tool_name: str, workspace_id: str, args: dict, raw: Any) -> None:
+def store(tool_name: str, workspace_id: str, args: dict[str, Any], raw: Any) -> None:
     """Record a *successful* result. Callers must never store a failure: a
     provider_unavailable replayed for the rest of the TTL turns an MCP restart
     window into a sticky wall."""

@@ -1289,6 +1289,36 @@ class QaPassRateCounterTests(unittest.TestCase):
     def _pinned(self):
         return {"quality_flag_var": "main_data_quality_flag", "qa_good_values": [0]}
 
+    def test_an_empty_selection_is_a_no_data_refusal_not_a_crash(self):
+        """A place that does not overlap the retrieved grid selects zero
+        cells. The QA count's min() then raised dask's "zero-size array to
+        reduction operation" and the researcher saw an internal error (live
+        2026-10-18: a New Jersey outline over California's retrieval)."""
+        from tta_backend.earthdata_mcp.results import CATEGORY_NO_DATA, MCPToolError
+        from tta_backend.preprocessing.aggregation_service import AggregationService
+
+        ds = self._tempo_ds([[1.0, 2.0], [3.0, 4.0]], [[0, 0], [0, 0]])
+        empty = ds.isel(lat=slice(0, 0))
+
+        with self.assertRaises(MCPToolError) as raised:
+            AggregationService().aggregate(
+                empty["no2"], stat="mean", variable="no2", col_info=self._pinned, source_ds=empty,
+            )
+        self.assertEqual(raised.exception.category, CATEGORY_NO_DATA)
+        self.assertIn("does not overlap", raised.exception.message)
+
+    def test_the_map_status_names_a_no_data_refusal_for_what_it_is(self):
+        from tta_backend.earthdata_mcp.results import CATEGORY_NO_DATA
+        from tta_backend.tools.satellite_tools.plot_tools import _resolve_failure_status
+
+        self.assertEqual(
+            _resolve_failure_status({"category": CATEGORY_NO_DATA, "message": "x"}), "No data in the requested area.",
+        )
+        self.assertEqual(
+            _resolve_failure_status({"category": "dimension_choice_required", "message": "x"}),
+            "Visualization needs a variable or dimension choice.",
+        )
+
     def test_apply_quality_mask_counts_the_pixels_it_checked_and_the_pixels_that_passed(self):
         """The counters come back from the same ``.where()`` condition the mask
         uses: 3 of 4 pixels carry a good flag."""

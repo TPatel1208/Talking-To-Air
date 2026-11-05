@@ -121,7 +121,7 @@ def parse_flag_meanings(flag_values: Any, flag_meanings: Any) -> FlagMeaningsPar
         return FlagMeaningsParse(available=False)
 
     good, bad, ambiguous_tokens, ambiguous_values = [], [], [], []
-    for value, token in zip(values, tokens):
+    for value, token in zip(values, tokens, strict=True):
         norm = _normalize_token(token)
         if norm in GOOD_TOKENS:
             good.append(value)
@@ -173,7 +173,7 @@ def resolve_qa_info(
         qa_col_info: dict[str, Any] = {}
         if pinned_good is not None:
             qa_col_info["qa_good_values"] = list(pinned_good)
-        else:
+        elif pinned_bad is not None:
             qa_col_info["qa_bad_values"] = list(pinned_bad)
         return qa_col_info, {"qa_status": QA_VERIFIED, "qa_source": "collections_yaml"}
 
@@ -215,7 +215,7 @@ def resolve_qa_info(
         normalized_proposed = {_normalize_token(t) for t in proposed_good_tokens}
         inferred_tokens = [t for t in parsed.ambiguous_tokens if _normalize_token(t) in normalized_proposed]
         inferred_values = [
-            v for v, t in zip(parsed.ambiguous_values, parsed.ambiguous_tokens)
+            v for v, t in zip(parsed.ambiguous_values, parsed.ambiguous_tokens, strict=True)
             if _normalize_token(t) in normalized_proposed
         ]
         good_values = list(parsed.good_values) + inferred_values

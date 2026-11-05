@@ -22,15 +22,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python -m venv /opt/venv
+# Dependencies come from uv.lock, which pins every package, direct and
+# indirect, with hashes. `--locked` refuses to build if the lock no longer
+# matches pyproject.toml rather than quietly re-resolving. Pinned uv version;
+# keep it in step with the CI workflow's setup-uv.
+COPY --from=ghcr.io/astral-sh/uv:0.12.21 /uv /bin/uv
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_NO_CACHE=1
 ENV PATH="/opt/venv/bin:$PATH"
 
-COPY requirements.txt pyproject.toml ./
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+# Dependencies alone first, so a source-only change reuses this layer.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --locked --no-dev --no-install-project
 
 COPY . .
-RUN pip install --no-cache-dir -e .
+RUN uv sync --locked --no-dev
 
 
 # â”€â”€ Stage 2: Dev tooling (tests/lint only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -40,7 +49,7 @@ RUN pip install --no-cache-dir -e .
 # this stage; nothing else should.
 FROM builder AS devtools
 
-RUN pip install --no-cache-dir -r requirements-dev.txt
+RUN uv sync --locked
 
 
 # â”€â”€ Stage 3: Runtime â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -69,7 +78,7 @@ RUN rm -rf tests .pytest_cache
 # root-owned volume that uid 1001 cannot write to. For cube_store that failure
 # is silent â€” the background writer catches the PermissionError and the cache
 # appears to work while never storing a cube.
-RUN mkdir -p /app/data /app/outputs /app/overlay_store /app/cube_store /app/frame_store
+RUN mkdir -p /app/data /app/overlay_store /app/cube_store /app/frame_store
 
 RUN useradd -m -u 1001 appuser && chown -R appuser:appuser /app
 USER appuser
@@ -77,5 +86,18 @@ USER appuser
 ENV PORT=8000
 EXPOSE ${PORT}
 
-# Entry point is tta_backend/api.py, app object is named "app"
-CMD ["sh", "-c", "uvicorn tta_backend.api:app --host 0.0.0.0 --port ${PORT} --workers 1 --proxy-headers"]
+# Entry point is tta_backend/api.py, app object is named "app".
+#
+# `exec` is load-bearing, not tidiness. The shell is here only to expand
+# ${PORT}; without exec it stays alive as PID 1 with uvicorn as its child, and
+# Docker sends SIGTERM to PID 1 and to nothing else. `sh` does not forward it,
+# so uvicorn never runs its lifespan shutdown -- which is where T63's drain
+# lives, and with it the `interrupted` frame every reader of an in-flight turn
+# is owed on a deploy.
+#
+# --timeout-graceful-shutdown bounds the wait for in-flight requests. It has
+# to: the GET carrying a chat turn is in-flight for the whole turn, and it
+# ends when the turn writes its terminal entry -- which the drain writes,
+# in the lifespan shutdown that runs *after* this wait. Unbounded, the two
+# wait for each other and the drain never runs at all.
+CMD ["sh", "-c", "exec uvicorn tta_backend.api:app --host 0.0.0.0 --port ${PORT} --workers 1 --proxy-headers --timeout-graceful-shutdown 5"]

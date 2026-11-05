@@ -8,9 +8,11 @@
 // payload grid is therefore a sample, and must not be handed over as if it
 // were the field.
 
+import { API_BASE } from '../config.js'
+
 export function resolveCsvExport(chart) {
   if (chart?.chart_id && chart?.export) {
-    return { kind: 'server', url: `/api/chart/${chart.chart_id}/export.csv` }
+    return { kind: 'server', url: `${API_BASE}/chart/${chart.chart_id}/export.csv` }
   }
 
   // A timeseries payload ships every time and value it has -- nothing about
@@ -99,5 +101,5 @@ export function resolveNetcdfExport(chart) {
     }
   }
 
-  return { kind: 'server', url: `/api/chart/${chart.chart_id}/export.nc` }
+  return { kind: 'server', url: `${API_BASE}/chart/${chart.chart_id}/export.nc` }
 }

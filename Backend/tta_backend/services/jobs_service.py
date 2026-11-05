@@ -136,7 +136,7 @@ async def list_jobs(tools: dict[str, BaseTool]) -> list[dict[str, Any]]:
 
     jobs = [
         {**entry, **status}
-        for entry, status in zip(entries, statuses)
+        for entry, status in zip(entries, statuses, strict=True)
     ]
     jobs.sort(key=lambda job: job.get("created_at") or "", reverse=True)
     jobs.sort(key=lambda job: job.get("status") in FINISHED_ROW_STATUSES)

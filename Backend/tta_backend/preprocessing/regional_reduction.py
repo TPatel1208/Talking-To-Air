@@ -16,14 +16,14 @@ continental regions and agree everywhere a test looks.
 """
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Any, Callable, Sequence
 
 import numpy as np
 import xarray as xr
 
 from tta_backend.preprocessing.aggregation_service import AggregationService, cos_lat_weights
 
-_STATS = AggregationService._STAT_FUNCS
+_STATS: dict[str, Callable[..., Any]] = AggregationService._STAT_FUNCS
 
 
 def reduce_keeping_axes(

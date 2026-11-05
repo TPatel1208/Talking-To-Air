@@ -1,9 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import maplibregl from 'maplibre-gl'
+// maplibre-gl 6 is ESM-only with no default export.
+import * as maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
-import { fetchTileConfig, buildMapStyle } from './MapLibreHeatmapPanel.jsx'
+import { buildMapStyle, fetchTileConfig } from '../utils/mapTiles.js'
 import { fetchUsStatesGeoJSON, isConusBounds } from '../utils/regionBorders.js'
 import { apiFetch } from '../utils/apiFetch.js'
+import { API_BASE } from '../config.js'
+
+const NO_ROWS = []
 
 function getAQIColor(val, minVal, maxVal) {
   if (val == null || isNaN(val)) return '#94a3b8'
@@ -96,9 +100,8 @@ function MapColorbar({ minVal, maxVal, units, title = 'EPA Ground Monitors' }) {
 }
 
 export default function TableMapPanel({ artifact, height = 480, isCompare = false }) {
-  const [rows, setRows] = useState(artifact?.rows || [])
-  const [loading, setLoading] = useState(!artifact?.rows?.length)
-  const [error, setError] = useState(null)
+  const inlineRows = artifact?.rows?.length ? artifact.rows : null
+  const [fetched, setFetched] = useState({ id: null, rows: NO_ROWS, error: null })
   const [selectedSiteId, setSelectedSiteId] = useState(null)
 
   const containerRef = useRef(null)
@@ -107,37 +110,30 @@ export default function TableMapPanel({ artifact, height = 480, isCompare = fals
 
   // 1. Fetch artifact rows if not already populated on the artifact object
   useEffect(() => {
+    if (inlineRows || !artifact?.id) return undefined
     let cancelled = false
-    if (artifact?.rows && artifact.rows.length) {
-      setRows(artifact.rows)
-      setLoading(false)
-      return
-    }
-    if (!artifact?.id) return
-
-    setLoading(true)
-    apiFetch(`/api/artifacts/${artifact.id}?offset=0&limit=500`)
+    const id = artifact.id
+    apiFetch(`${API_BASE}/artifacts/${id}?offset=0&limit=500`)
       .then(res => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         return res.json()
       })
       .then(data => {
-        if (!cancelled) {
-          setRows(data.rows || [])
-          setLoading(false)
-        }
+        if (!cancelled) setFetched({ id, rows: data.rows || NO_ROWS, error: null })
       })
       .catch(err => {
-        if (!cancelled) {
-          setError(err.message || 'Failed to load table data')
-          setLoading(false)
-        }
+        if (!cancelled) setFetched({ id, rows: NO_ROWS, error: err.message || 'Failed to load table data' })
       })
 
     return () => {
       cancelled = true
     }
-  }, [artifact?.id, artifact?.rows])
+  }, [artifact?.id, inlineRows])
+
+  const fetchedThis = fetched.id === artifact?.id
+  const rows = inlineRows || (fetchedThis ? fetched.rows : NO_ROWS)
+  const error = !inlineRows && fetchedThis ? fetched.error : null
+  const loading = !inlineRows && Boolean(artifact?.id) && !fetchedThis
 
   // 2. Filter rows with valid coordinates
   const monitors = useMemo(() => {
@@ -168,7 +164,7 @@ export default function TableMapPanel({ artifact, height = 480, isCompare = fals
   }, [rows])
 
   // Summary statistics
-  const { minVal, maxVal, spatialMean, peakMonitor, lowestMonitor, units, pollutant } = useMemo(() => {
+  const { minVal, maxVal, spatialMean, peakMonitor, lowestMonitor, units } = useMemo(() => {
     const validVals = monitors.map(m => m.primaryVal).filter(v => v != null)
     const min = validVals.length ? Math.min(...validVals) : 0
     const max = validVals.length ? Math.max(...validVals) : 1

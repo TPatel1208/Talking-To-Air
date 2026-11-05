@@ -13,6 +13,7 @@ import uuid
 from typing import Any
 
 from langchain.agents import create_agent
+from langgraph.graph.state import CompiledStateGraph
 
 from tta_backend.agents.subagent_trim import build_subagent_trim_middleware
 from tta_backend.config.model_factory import build_chat_model
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 class LazySatelliteAgent:
     """Boot-time stand-in for the compiled earthdata agent (PRD T17).
 
-    The supervisor's ``ask_earthdata_agent`` tool and the router fast path
+    The supervisor's ``dispatch`` tool and the router fast path
     both close over one long-lived agent reference. Building the real agent
     requires real MCP tools (``build_satellite_tools`` indexes the tool dict
     directly), which aren't necessarily available at boot — so this object is
@@ -40,7 +41,7 @@ class LazySatelliteAgent:
     normal operation.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._real: Any = None
 
     def set_real(self, agent: Any) -> None:
@@ -81,7 +82,7 @@ def build_earthdata_agent(
     model: str | None = None,
     provider: str | None = None,
     mcp_tools: dict[str, Any] | None = None,
-):
+) -> CompiledStateGraph[Any, Any, Any, Any]:
     """
     Build and return a stateless earthdata agent.
 
@@ -125,30 +126,37 @@ def build_earthdata_agent(
     # This agent is stateless (no checkpointer), so subagent_dispatch's T15
     # retry demotion — one structured-output re-prompt instead of a full
     # tool-workflow re-run — has no other way to reach the raw chat model.
-    agent.subagent_model = llm
+    agent.subagent_model = llm  # type: ignore[attr-defined]  # an ad-hoc attribute; see above
     return agent
 
 
 if __name__ == "__main__":
-    # Standalone REPL — stateless, so each turn is a fresh invocation.
-    agent = build_earthdata_agent()
-    print("Earthdata agent started (stateless REPL)")
+    import asyncio
+    import uuid
 
-    while True:
-        try:
-            user_input = input("You: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\nGoodbye!")
-            break
+    async def _repl() -> None:
+        # stream_response is an async generator, so the REPL has to run on a loop.
+        agent = build_earthdata_agent()
+        print("Earthdata agent started (stateless REPL)")
 
-        if not user_input or user_input.lower() in {"quit", "exit", "q"}:
-            break
+        while True:
+            try:
+                user_input = (await asyncio.to_thread(input, "You: ")).strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\nGoodbye!")
+                break
 
-        for event_type, data in stream_response(agent, user_input, thread_id=str(uuid.uuid4())):
-            if event_type == "tool_call":
-                print(f"\n⚙ Calling: {data['name']} | args: {data['args']}")
-            elif event_type == "tool_result":
-                print(f"[{data['name']}]: {data['content']}")
-            elif event_type == "text":
-                print(f"\n{data}")
-        print()
+            if not user_input or user_input.lower() in {"quit", "exit", "q"}:
+                break
+
+            # Stateless: each REPL turn is a fresh invocation.
+            async for event_type, data in stream_response(agent, user_input, thread_id=str(uuid.uuid4())):
+                if event_type == "tool_call":
+                    print(f"\n⚙ Calling: {data['name']} | args: {data['args']}")
+                elif event_type == "tool_result":
+                    print(f"[{data['name']}]: {data['content']}")
+                elif event_type == "text":
+                    print(f"\n{data}")
+            print()
+
+    asyncio.run(_repl())

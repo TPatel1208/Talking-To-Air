@@ -4,26 +4,49 @@ Supervisor agent that orchestrates the Ground Sensor and Satellite agents.
 Memory model
 ------------
 - Supervisor : stateful — uses a Postgres checkpointer, one thread per session.
-- Subagents  : stateless — no checkpointer; each tool call is a fresh invocation.
-               The supervisor includes all necessary context in the task string
-               it passes to each subagent tool.
+- Subagents  : stateless — no checkpointer; each run is a fresh invocation.
+               The supervisor names their work as typed requests through its
+               one tool, dispatch (T64); each request is rendered into a task
+               string under the researcher's own message.
 """
 import logging
-from typing import Any
+from typing import Any, cast
 from langchain.agents import create_agent
-from langchain.tools import tool
-from langchain_core.messages import trim_messages
+from langgraph.graph.state import CompiledStateGraph
+from langchain_core.messages import AnyMessage, trim_messages
+from langchain_core.tools import StructuredTool
 from langchain.agents.middleware import wrap_model_call, ModelRequest, ModelResponse
 from collections.abc import Awaitable, Callable
 
-from tta_backend.config.model_factory import build_chat_model
+from tta_backend.config.model_factory import NATIVE_JSON_SCHEMA, build_chat_model
 from tta_backend.config.settings import get_settings
 from tta_backend.config.supervisor_prompt import SUPERVISOR_PROMPT
-from tta_backend.models import agent_result_to_json, parse_agent_result, parse_chart_payload
-from tta_backend.services.subagent_dispatch import run_ground, run_satellite
+from tta_backend.models import (
+    AgentRequest,
+    AgentResult,
+    DispatchArgs,
+    DispatchItemResult,
+    DispatchResult,
+    GroundRequest,
+    SatelliteIntent,
+    canonical_key,
+    dispatch_json_schema,
+    parse_agent_result,
+    parse_chart_payload,
+    parse_dispatch_result,
+    render_task,
+)
+from tta_backend.services.chart_service import ChartService
+from tta_backend.services.dispatch_executor import begin_model_step, dispatch_persist_lock, execute_dispatch
+from tta_backend.services.subagent_dispatch import persist_dispatch_contexts, run_ground, run_satellite
 from tta_backend.utils.db import get_checkpointer
 from tta_backend.utils.message_utils import truncate_text
-from tta_backend.utils.streaming import current_thread_id
+from tta_backend.utils.streaming import (
+    current_thread_id,
+    current_user_id,
+    current_user_message,
+    ground_validation_scope,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +60,7 @@ async def build_agent(
     ground_agent: Any,
     satellite_agent: Any,
     mcp_manager: Any = None,
-):
+) -> CompiledStateGraph[Any, Any, Any, Any]:
     """
     Build and return the supervisor agent.
 
@@ -52,7 +75,7 @@ async def build_agent(
     the identical instances via services/subagent_dispatch.py.
 
     ``mcp_manager`` (T17), if given, is passed through to
-    ``run_satellite`` so ``ask_earthdata_agent`` returns the deterministic
+    ``run_satellite`` so a satellite request returns the deterministic
     unavailable answer instead of burning a model call when the
     earthdata-retrieval MCP isn't ready.
     """
@@ -79,7 +102,7 @@ async def build_agent(
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
         messages = [_compact_model_input_message(msg) for msg in request.state["messages"]]
-        trimmed = trim_messages(
+        trimmed: list[AnyMessage] = cast(list[AnyMessage], trim_messages(
             messages,
             max_tokens=8000,
             strategy="last",
@@ -87,7 +110,7 @@ async def build_agent(
             include_system=True,
             allow_partial=False,
             start_on="human",
-        )
+        ))
         # Gemini rejects an empty contents list, so never let trimming remove
         # the only usable turn from a request. Fall back to the original
         # message list if trimming collapses everything.
@@ -95,55 +118,74 @@ async def build_agent(
             trimmed = messages
         return await handler(request.override(messages=trimmed))
 
-    # ── Wrap subagents as tools ───────────────────────────────────────────────
+    # ── Dispatch closes once it can do nothing more ───────────────────────────
 
-    @tool
-    async def ask_ground_sensor_agent(task: str) -> str:
-        """
-        Delegate a task to the ground sensor agent which has access to EPA AQS
-        air quality monitor data across the United States.
+    @wrap_model_call
+    async def dispatch_limit_middleware(
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
+        # Each model call is a dispatch step. Once both rounds or the run
+        # budget are used, or a step's calls started nothing new, the model is
+        # forbidden tool calls, so it answers instead of repeating a call
+        # until the recursion limit.
+        if not begin_model_step():
+            request = request.override(tool_choice="none")
+        return await handler(request)
 
-        Use for: finding the closest monitor to a location, retrieving NO2 /
-        PM2.5 / ozone / CO / SO2 daily or quarterly readings, identifying days
-        that exceeded regulatory thresholds, and fetching hourly concentration
-        profiles.
+    # ── The one sub-agent tool ────────────────────────────────────────────────
 
-        Input: a natural language task description that includes the location,
-               pollutant, and date range (e.g. 'Find the closest NO2 monitor
-               to Tampa FL and return exceedance days in Q1 2025').
-        Output: text summary including monitor name, site_id, coordinates,
-                exceedance dates, and peak concentration values.
-        """
-        result = await run_ground(ground_agent, task, current_thread_id())
-        return agent_result_to_json(result)
+    async def dispatch(requests: list[AgentRequest]) -> str:
+        user_message = current_user_message()
+        thread_id = current_thread_id()
+        # canonical_key -> (agent, the context that run handed back). Only the
+        # runs this call starts land here; a repeat of an earlier run was
+        # already saved by the call that started it.
+        captured: dict[str, tuple[str, dict[str, str]]] = {}
 
-    @tool
-    async def ask_earthdata_agent(task: str) -> str:
-        """
-        Delegate a task to the earthdata agent which has access to NASA
-        satellite data via the earthdata-retrieval MCP (TROPOMI NO2, aerosol
-        optical depth, ozone, HCHO, and other variables).
+        async def run_one(request: AgentRequest) -> AgentResult:
+            sink: dict[str, str] = {}
+            captured[canonical_key(request)] = (request.agent, sink)
+            task = render_task(request, user_message)
+            if isinstance(request, GroundRequest):
+                return await run_ground(ground_agent, task, thread_id, context_sink=sink)
+            # The satellite agent's own ground tools are for a comparison only;
+            # any other ground data is a ground request the supervisor makes.
+            with ground_validation_scope(request.intent == SatelliteIntent.COMPARE):
+                return await run_satellite(
+                    satellite_agent, task, thread_id, mcp_manager=mcp_manager, context_sink=sink,
+                )
 
-        Use for: fetching and plotting satellite-derived pollutant maps over a
-        region, computing spatial statistics, and visually confirming ground-
-        level pollution events from space.
+        batch = await execute_dispatch(requests, run_one)
+        if thread_id is not None and captured:
+            in_order = [captured.pop(key) for key in map(canonical_key, requests) if key in captured]
+            # Sibling dispatch calls from one model message finish together.
+            async with dispatch_persist_lock():
+                await persist_dispatch_contexts(
+                    thread_id,
+                    satellite=[sink for agent, sink in in_order if agent == "satellite"],
+                    ground=[sink for agent, sink in in_order if agent == "ground"],
+                )
+        return await _checkpoint_dispatch_envelope(batch)
 
-        Input: a natural language task description that includes the variable,
-               date or date range (YYYY-MM-DD), and location or bounding box
-               (e.g. 'Plot TROPOMI NO2 over New Jersey for 2024-01-15').
-        Output: text summary with plot path and spatial statistics.
-        """
-        result = await run_satellite(satellite_agent, task, current_thread_id(), mcp_manager=mcp_manager)
-        return agent_result_to_json(result)
+    dispatch_tool = StructuredTool.from_function(
+        coroutine=dispatch,
+        name="dispatch",
+        description=_DISPATCH_DESCRIPTION,
+        args_schema=DispatchArgs,
+        # Sent to the model verbatim: langchain's own converter reduces the
+        # request union to a bare type (T64 Phase 0 F1).
+        metadata={NATIVE_JSON_SCHEMA: dispatch_json_schema()},
+    )
 
     # ── Build supervisor ──────────────────────────────────────────────────────
     checkpointer = await get_checkpointer()
     supervisor = create_agent(
         model=llm,
-        tools=[ask_ground_sensor_agent, ask_earthdata_agent],
+        tools=[dispatch_tool],
         system_prompt=SUPERVISOR_PROMPT,
         checkpointer=checkpointer,
-        middleware=[trim_middleware],
+        middleware=[trim_middleware, dispatch_limit_middleware],
     )
     return supervisor
 
@@ -155,12 +197,44 @@ async def build_agent(
 # solely by this module's own trim_middleware) stays here.
 
 
+_DISPATCH_DESCRIPTION = """Run one or more tasks on the sub-agents and return each one's result.
+
+satellite: any regularly-gridded NASA Earthdata collection, global, any
+environmental domain -- maps, time series, vertical profiles, spatial
+statistics, comparisons, reliability of a plotted measurement, data availability.
+ground: EPA AQS monitors, US only, the five air-quality pollutants only --
+nearest monitor, site info, daily/hourly readings, summaries, exceedances.
+
+Put every independent task in one call; they run in parallel. A task that needs
+another's result (e.g. ground readings at a satellite peak) goes in a second
+call, with that result in prior_findings. A request repeated in one turn is
+answered from its first run."""
+
+
+async def _checkpoint_dispatch_envelope(batch: DispatchResult) -> str:
+    """The tool's return value, which LangGraph checkpoints as a ToolMessage.
+
+    Charts go in as references to their agent_charts rows. Without a bound
+    user and thread there is no row to point at, so the charts stay inline
+    rather than being lost."""
+    thread_id, user_id = current_thread_id(), current_user_id()
+    has_charts = any(item.result is not None and item.result.charts for item in batch.results)
+    if not has_charts or thread_id is None or user_id is None:
+        return batch.model_dump_json(exclude_none=True)
+    return await ChartService().checkpoint_dispatch_envelope(batch, thread_id, user_id)
+
+
 def _truncate_text(text: str, max_chars: int, agent_name: str, request_id: str | None = None) -> str:
     return truncate_text(text, max_chars, agent_name, request_id)
 
 
-def _compact_model_input_message(msg):
-    """Replace bulky chart payloads with concise summaries before LLM calls."""
+def _compact_model_input_message(msg: Any) -> Any:
+    """Replace bulky chart payloads with concise summaries before LLM calls.
+    Only a ToolMessage carries a sub-agent envelope; every other message is
+    returned untouched without parsing, since this runs over the whole
+    history before every model call."""
+    if getattr(msg, "type", None) != "tool":
+        return msg
     content = getattr(msg, "content", None)
     compacted = _compact_model_input_content(content)
     if compacted is content:
@@ -175,9 +249,13 @@ def _compact_model_input_message(msg):
         return msg
 
 
-def _compact_model_input_content(content):
+def _compact_model_input_content(content: Any) -> Any:
     if not isinstance(content, str):
         return content
+
+    batch = parse_dispatch_result(content)
+    if batch is not None:
+        return "\n\n".join(_compact_dispatch_item(item) for item in batch.results)
 
     result = parse_agent_result(content)
     if result is not None and result.charts:
@@ -196,9 +274,30 @@ def _compact_model_input_content(content):
     return content
 
 
-def _chart_summary(chart) -> str:
+def _compact_dispatch_item(item: DispatchItemResult) -> str:
+    """One dispatch item as the supervisor model sees it: its position,
+    agent/intent and status, then the sub-agent's text and a one-line chart
+    summary in place of any grid."""
+    header = f"[{item.index + 1}] {item.agent}/{item.intent}: {item.status}"
+    if item.reason:
+        header += f" ({item.reason})"
+    lines = [header]
+    if item.result is not None:
+        if item.result.text:
+            lines.append(item.result.text)
+        if item.result.charts:
+            summaries = [
+                _chart_summary(chart) or f"chart {index}"
+                for index, chart in enumerate(item.result.charts, start=1)
+            ]
+            lines.append(f"Charts generated: {'; '.join(summaries)}")
+    return "\n".join(lines)
+
+
+def _chart_summary(chart: Any) -> str:
     payload = chart.model_dump(exclude_none=True) if hasattr(chart, "model_dump") else dict(chart)
-    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    raw_metadata = payload.get("metadata")
+    metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
     chart_type = str(payload.get("type") or "").strip() or "chart"
     title = str(payload.get("title") or metadata.get("name") or "").strip()
     variable = payload.get("variable")

@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import ConnectorsPanel from './ConnectorsPanel'
+import AccountMenu from './AccountMenu.jsx'
 import { apiFetch } from '../utils/apiFetch.js'
-
-const API_BASE = '/api'
+import { API_BASE } from '../config.js'
 
 function downloadBlob(filename, blob) {
   const url = URL.createObjectURL(blob)
@@ -28,13 +28,6 @@ async function downloadArtifact(artifact) {
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   const blob = await res.blob()
   downloadBlob(filenameFromDisposition(res.headers.get('content-disposition'), `${artifact.title || artifact.id}.csv`), blob)
-}
-
-async function downloadImage(url) {
-  const res = await apiFetch(url)
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  const blob = await res.blob()
-  downloadBlob(url.split('/').pop() || 'image.png', blob)
 }
 
 const TYPE_TAG = { table: 'CSV', map: 'MAP', comparison: 'CMP', timeseries: 'TS' }
@@ -86,14 +79,43 @@ function FileRow({ tag, title, subtitle, onDownload }) {
   )
 }
 
+const STATUS_LABEL = { running: 'Still working', done: 'Finished', error: "Didn't finish" }
+
+/** The badge on a "Recent analyses" row: a thread this browser sent a
+ * message to, told apart from an ordinary row by what its turn is doing.
+ *
+ * Absent entirely once the user is looking at the thread it describes
+ * (`SessionSidebar` only passes a status for rows that are not `threadId`):
+ * the chat panel already shows that one's own progress, and a second
+ * indicator saying the same thing would just be noise next to it.
+ */
+function TurnStatusDot({ status }) {
+  if (!status) return null
+  const color = status === 'running' ? 'var(--teal)' : status === 'done' ? 'var(--success)' : 'var(--error)'
+  return (
+    <span
+      title={STATUS_LABEL[status]}
+      aria-label={STATUS_LABEL[status]}
+      style={{
+        width: '7px', height: '7px', borderRadius: '50%', flexShrink: 0,
+        background: color,
+        animation: status === 'running' ? 'tta-turn-pulse 1.1s ease-in-out infinite' : 'none',
+      }}
+    />
+  )
+}
+
 export default function SessionSidebar({
   sessions,
+  hasMoreSessions = false,
+  onLoadMoreSessions,
   threadId,
+  turnStatus = {},
   onSwitch,
   onNew,
   onDelete,
   onLogout,
-  images = [],
+  user,
   artifacts = [],
   collapsed = false,
   onCollapse,
@@ -385,6 +407,7 @@ export default function SessionSidebar({
               return (
                 <div
                   key={id}
+                  className="session-row"
                   onClick={() => onSwitch(id)}
                   style={{
                     display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px',
@@ -408,21 +431,40 @@ export default function SessionSidebar({
                       {title}
                     </span>
                   </div>
-                  <button
-                    onClick={e => handleDelete(e, id)}
-                    className="session-delete-btn"
-                    title="Delete session"
-                    style={{
-                      background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer',
-                      fontSize: '13px', padding: '2px 4px', borderRadius: '4px', flexShrink: 0, lineHeight: 1,
-                      opacity: 0, transition: 'opacity 0.15s, color 0.15s',
-                    }}
-                  >
-                    ✕
-                  </button>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                    {/* Not shown for the thread on screen: its own progress is
+                        already visible in the chat panel next to it. This is
+                        for the one the user just navigated away from. */}
+                    {!isActive && <TurnStatusDot status={turnStatus[id]} />}
+                    <button
+                      onClick={e => handleDelete(e, id)}
+                      className="session-delete-btn"
+                      title="Delete session"
+                      style={{
+                        background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer',
+                        fontSize: '13px', padding: '2px 4px', borderRadius: '4px', flexShrink: 0, lineHeight: 1,
+                        opacity: 0, transition: 'opacity 0.15s, color 0.15s',
+                      }}
+                    >
+                      ✕
+                    </button>
+                  </div>
                 </div>
               )
             })}
+            {hasMoreSessions && (
+              <button
+                type="button"
+                onClick={onLoadMoreSessions}
+                style={{
+                  background: 'transparent', border: 'none', cursor: 'pointer', textAlign: 'left',
+                  padding: '9px 10px', borderRadius: '8px', fontSize: '12px', fontWeight: 600,
+                  color: 'var(--text-muted)',
+                }}
+              >
+                Load older analyses
+              </button>
+            )}
           </div>
         </>
       )}
@@ -433,7 +475,7 @@ export default function SessionSidebar({
             Exported files
           </div>
           <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            {artifacts.length === 0 && images.length === 0 && (
+            {artifacts.length === 0 && (
               <div style={{ padding: '12px 10px', color: 'var(--text-muted)', fontSize: '12px', fontStyle: 'italic' }}>
                 No outputs yet
               </div>
@@ -445,15 +487,6 @@ export default function SessionSidebar({
                 title={artifact.title || 'Untitled output'}
                 subtitle={artifact.type}
                 onDownload={() => downloadArtifact(artifact)}
-              />
-            ))}
-            {images.map((url, i) => (
-              <FileRow
-                key={`img-${i}`}
-                tag="IMG"
-                title={url.split('/').pop() || `image-${i + 1}`}
-                subtitle="Image"
-                onDownload={() => downloadImage(url)}
               />
             ))}
           </div>
@@ -469,36 +502,17 @@ export default function SessionSidebar({
         </div>
       )}
 
-      <div style={{ borderTop: '1px solid var(--border)', paddingTop: '14px', marginTop: 'auto', display: 'flex', alignItems: 'center', gap: '10px' }}>
-        <div style={{
-          width: '32px', height: '32px', borderRadius: '50%', background: 'var(--teal)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700,
-          fontSize: '12px', flexShrink: 0, color: 'white',
-        }}>
-          T
-        </div>
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ fontSize: '12.5px', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-primary)' }}>
-            Talking to Air
-          </div>
-        </div>
-        <button
-          onClick={onLogout}
-          title="Sign out"
-          aria-label="Sign out"
-          style={{ background: 'transparent', border: 'none', padding: '4px', cursor: 'pointer', display: 'flex', flexShrink: 0 }}
-        >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" style={{ color: 'var(--text-muted)' }}>
-            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-            <path d="M16 17l5-5-5-5" />
-            <path d="M21 12H9" />
-          </svg>
-        </button>
+      <div style={{ marginTop: 'auto' }}>
+        <AccountMenu user={user} onLogout={onLogout} onManageConnectors={() => setNav('connectors')} />
       </div>
 
       <style>{`
-        div:hover > .session-delete-btn,
+        .session-row:hover .session-delete-btn,
         .session-delete-btn:focus { opacity: 1 !important; }
+        @keyframes tta-turn-pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.25; }
+        }
       `}</style>
     </div>
   )

@@ -112,10 +112,12 @@ class ConnectorsEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(res.status_code, 200)
         connectors = res.json()["connectors"]
-        self.assertEqual(len(connectors), 1)
-        self.assertEqual(connectors[0]["connector_type"], "earthdata")
-        self.assertEqual(connectors[0]["status"], "not_connected")
-        self.assertIn("token_docs_url", connectors[0])
+        self.assertEqual([c["connector_type"] for c in connectors], ["earthdata", "epa_aqs"])
+        self.assertEqual([c["auth_method"] for c in connectors], ["token", "email_key"])
+        for connector in connectors:
+            self.assertEqual(connector["status"], "not_connected")
+            self.assertIn("token_docs_url", connector)
+            self.assertTrue(connector["docs_link_label"])
 
     async def test_set_token_stores_the_expiry_and_the_response_never_contains_the_token(self):
         raw_token = _make_edl_token()
@@ -240,6 +242,117 @@ class ConnectorsEndpointTests(unittest.IsolatedAsyncioTestCase):
                 await client.delete("/connectors/earthdata", headers=self.auth_headers1)
 
         invalidate.assert_called_once_with("user-1")
+
+    # -- epa_aqs: an email + key pair, checked live against EPA ------------
+
+    def _validator_patch(self, side_effect=None):
+        from unittest.mock import AsyncMock
+
+        self.validator = AsyncMock(side_effect=side_effect)
+        return [patch("tta_backend.api.validate_aqs_credentials", self.validator)]
+
+    async def _put_aqs(self, client, email="  me@lab.edu ", key=" my-aqs-key  ", headers=None):
+        return await client.put(
+            "/connectors/epa_aqs/credentials",
+            json={"email": email, "key": key},
+            headers=headers or self.auth_headers1,
+        )
+
+    async def test_set_aqs_credentials_stores_the_pair_encrypted_with_no_expiry(self):
+        import json
+
+        from tta_backend.utils.connector_crypto import decrypt_secret
+
+        patches = self._auth_patches() + self._repo_patches() + self._validator_patch()
+        async with await self._client(patches) as client:
+            res = await self._put_aqs(client)
+
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertEqual(body["connector_type"], "epa_aqs")
+        self.assertEqual(body["status"], "connected")
+        self.assertIsNone(body["expires_at"])
+        self.validator.assert_awaited_once_with("me@lab.edu", "my-aqs-key")
+
+        stored = self.store.secrets[("user-1", "epa_aqs")]
+        self.assertEqual(json.loads(decrypt_secret(self.cipher, stored)), {"email": "me@lab.edu", "key": "my-aqs-key"})
+        self.assertEqual(self.store.rows[("user-1", "epa_aqs")]["auth_method"], "email_key")
+
+    async def test_the_aqs_response_never_contains_the_email_or_key(self):
+        patches = self._auth_patches() + self._repo_patches() + self._validator_patch()
+        async with await self._client(patches) as client:
+            put_res = await self._put_aqs(client)
+            list_res = await client.get("/connectors", headers=self.auth_headers1)
+
+        for res in (put_res, list_res):
+            self.assertNotIn("my-aqs-key", res.text)
+            self.assertNotIn("me@lab.edu", res.text)
+            self.assertNotIn(self.store.secrets[("user-1", "epa_aqs")], res.text)
+
+    async def test_a_pair_epa_rejects_is_a_422_and_nothing_is_stored(self):
+        from tta_backend.tools.ground_sensor_tools.epa_aqs_tools import AqsCredentialsRejected
+
+        patches = self._auth_patches() + self._repo_patches() + self._validator_patch(AqsCredentialsRejected("no"))
+        async with await self._client(patches) as client:
+            res = await self._put_aqs(client)
+
+        self.assertEqual(res.status_code, 422)
+        self.assertIn("EPA", res.json()["detail"])
+        self.assertNotIn(("user-1", "epa_aqs"), self.store.rows)
+
+    async def test_epa_being_unreachable_is_a_502_and_nothing_is_stored(self):
+        from tta_backend.tools.ground_sensor_tools.epa_aqs_tools import AqsUnavailable
+
+        patches = self._auth_patches() + self._repo_patches() + self._validator_patch(AqsUnavailable("down"))
+        async with await self._client(patches) as client:
+            res = await self._put_aqs(client)
+
+        self.assertEqual(res.status_code, 502)
+        self.assertNotIn(("user-1", "epa_aqs"), self.store.rows)
+
+    async def test_a_blank_or_malformed_email_is_rejected_before_calling_epa(self):
+        patches = self._auth_patches() + self._repo_patches() + self._validator_patch()
+        async with await self._client(patches) as client:
+            no_at = await self._put_aqs(client, email="not-an-email")
+            blank_key = await self._put_aqs(client, key="   ")
+
+        self.assertEqual(no_at.status_code, 422)
+        self.assertEqual(blank_key.status_code, 422)
+        self.validator.assert_not_awaited()
+
+    async def test_each_auth_method_is_only_accepted_on_its_own_endpoint(self):
+        patches = self._auth_patches() + self._repo_patches() + self._validator_patch()
+        async with await self._client(patches) as client:
+            token_to_aqs = await client.put(
+                "/connectors/epa_aqs/token", json={"token": _make_edl_token()}, headers=self.auth_headers1,
+            )
+            pair_to_earthdata = await client.put(
+                "/connectors/earthdata/credentials",
+                json={"email": "me@lab.edu", "key": "k"},
+                headers=self.auth_headers1,
+            )
+
+        self.assertEqual(token_to_aqs.status_code, 422)
+        self.assertEqual(pair_to_earthdata.status_code, 422)
+        self.assertEqual(self.store.rows, {})
+        self.validator.assert_not_awaited()
+
+    async def test_set_aqs_credentials_and_disconnect_invalidate_the_aqs_injector_cache(self):
+        patches = self._auth_patches() + self._repo_patches() + self._validator_patch()
+        with patch("tta_backend.api.aqs_credential_injector.invalidate") as invalidate:
+            async with await self._client(patches) as client:
+                await self._put_aqs(client)
+                await client.delete("/connectors/epa_aqs", headers=self.auth_headers1)
+
+        self.assertEqual([call.args for call in invalidate.call_args_list], [("user-1",), ("user-1",)])
+
+    async def test_aqs_credentials_answer_a_structured_503_when_unconfigured(self):
+        patches = self._auth_patches() + self._repo_patches() + self._validator_patch()
+        async with await self._client(patches, configured=False) as client:
+            res = await self._put_aqs(client)
+
+        self.assertEqual(res.status_code, 503)
+        self.validator.assert_not_awaited()
 
 
 if __name__ == "__main__":

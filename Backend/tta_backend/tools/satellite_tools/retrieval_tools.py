@@ -10,7 +10,7 @@ same closure pattern as the handle-based plot/statistics tools.
 from __future__ import annotations
 
 import json
-from typing import Optional
+from typing import Any
 
 from langchain.tools import tool
 from langchain_core.tools import BaseTool
@@ -26,14 +26,13 @@ from tta_backend.tools.satellite_tools.plot_tools import _save_chart
 from tta_backend.utils.streaming import current_user_id
 
 
-def make_safe_retrieve(mcp_tools: dict[str, BaseTool]):
+def make_safe_retrieve(mcp_tools: dict[str, BaseTool]) -> BaseTool:
     @tool
     async def safe_retrieve(
         dataset_handle: str,
         aoi_handle: str,
         time_range: str,
         variables: list[str],
-        output_format: Optional[str] = None,
         confirmed: bool = False,
     ) -> str:
         """
@@ -53,7 +52,6 @@ def make_safe_retrieve(mcp_tools: dict[str, BaseTool]):
             aoi_handle     : aoi_ handle from define_area_of_interest.
             time_range     : ISO 8601 interval, e.g. '2024-01-01/2024-01-31'.
             variables      : variable short names to retrieve.
-            output_format  : optional output format hint.
             confirmed      : set True only after the researcher has approved
                               a prior "needs_confirmation" response.
         """
@@ -64,7 +62,6 @@ def make_safe_retrieve(mcp_tools: dict[str, BaseTool]):
                 time_range,
                 variables,
                 mcp_tools,
-                output_format=output_format,
                 confirmed=confirmed,
             )
         except MCPToolError as exc:
@@ -74,7 +71,7 @@ def make_safe_retrieve(mcp_tools: dict[str, BaseTool]):
     return safe_retrieve
 
 
-def make_await_retrieval(mcp_tools: dict[str, BaseTool]):
+def make_await_retrieval(mcp_tools: dict[str, BaseTool]) -> BaseTool:
     @tool
     async def await_retrieval(job_handle: str) -> str:
         """
@@ -104,7 +101,7 @@ def make_await_retrieval(mcp_tools: dict[str, BaseTool]):
     return await_retrieval
 
 
-def _series_from_table(table, variable: str) -> tuple[list[str], list[float]]:
+def _series_from_table(table: Any, variable: str) -> tuple[list[str], list[float]]:
     """Extract a sorted (times, values) series from a point-sampled Parquet
     table: the time column (``time``/``date``, else the first column) paired
     with ``variable``'s column (else the first remaining column)."""
@@ -120,22 +117,22 @@ def _series_from_table(table, variable: str) -> tuple[list[str], list[float]]:
     values_raw = table.column(value_col).to_pylist()
     paired = sorted(
         (pd.Timestamp(t).isoformat(), round(float(v), 6))
-        for t, v in zip(times_raw, values_raw)
+        for t, v in zip(times_raw, values_raw, strict=True)
         if v is not None
     )
     if not paired:
         return [], []
-    times, values = zip(*paired)
+    times, values = zip(*paired, strict=True)
     return list(times), list(values)
 
 
-def _table_units(table) -> str:
+def _table_units(table: Any) -> str:
     metadata = table.schema.metadata or {}
     units = metadata.get(b"units")
     return units.decode() if units else ""
 
 
-def make_point_timeseries(mcp_tools: dict[str, BaseTool]):
+def make_point_timeseries(mcp_tools: dict[str, BaseTool]) -> BaseTool:
     @tool
     async def point_timeseries(
         dataset_handle: str,
@@ -170,10 +167,12 @@ def make_point_timeseries(mcp_tools: dict[str, BaseTool]):
         except MCPToolError as exc:
             return json.dumps({"error": exc.to_dict()})
 
-        if status.get("status") != "ready":
+        handle = status.get("obs_handle")
+        # A "ready" status with no handle is as unusable as a failed one, and
+        # is reported the same way rather than crashing inside open_handle.
+        if status.get("status") != "ready" or not handle:
             return json.dumps(status)
 
-        handle = status.get("obs_handle")
         try:
             table = await open_handle(handle, mcp_tools)
         except MCPToolError as exc:
@@ -226,7 +225,7 @@ def make_point_timeseries(mcp_tools: dict[str, BaseTool]):
     return point_timeseries
 
 
-def make_explain_measurement():
+def make_explain_measurement() -> BaseTool:
     @tool
     async def explain_measurement(chart_id: str) -> str:
         """

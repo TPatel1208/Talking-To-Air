@@ -6,24 +6,22 @@ import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import { starterMessage } from '../utils/starterPrompts'
+import CardPreview from './CardPreview.jsx'
+import { compactDateRange } from '../utils/displayFormat.js'
 import { compareBadgeLabel, isChartComparable, isSelectionFull, slotIndexOf } from '../utils/compareMode'
 import { reachableArtifacts } from '../utils/artifactReachability'
+import { toolStepsTitle } from '../utils/toolSteps'
 import VariableChoicePicker from './VariableChoicePicker'
-import { apiFetch } from '../utils/apiFetch.js'
+import { API_BASE } from '../config.js'
 import { PANEL_HEADER_HEIGHT } from '../utils/panelLayout.js'
 
 const TYPE_LABEL = { map: 'Map', comparison: 'Comparison', timeseries: 'Time series', table: 'Table' }
-
-function compactDate(value) {
-  if (!value) return ''
-  return String(value).replace('T00:00:00', '').replace('T23:59:59', '').replace(/Z$/, '')
-}
 
 function outputLabel(item) {
   if (item.kind === 'chart') {
     const chart = item.data
     const p = chart.provenance || {}
-    const dateRange = [compactDate(p.start_date), compactDate(p.end_date)].filter(Boolean).join(' – ')
+    const dateRange = compactDateRange(p.start_date, p.end_date)
     return {
       title: chart.title || p.variable || chart.variable || 'Output',
       subtitle: [p.region_name, dateRange].filter(Boolean).join(' · '),
@@ -36,15 +34,6 @@ function outputLabel(item) {
     subtitle = artifact.type === 'map' ? `Map · ${rowCount} monitors` : `Table · ${rowCount} rows`
   }
   return { title: artifact.title || 'Output', subtitle }
-}
-
-const API_BASE = '/api'
-
-function toImageUrl(path) {
-  if (!path) return null
-  if (path.startsWith('http')) return path
-  if (path.startsWith('/outputs/')) return `/api${path}`
-  return path
 }
 
 /* ── One step inside the collapsed tool-call card ── */
@@ -78,7 +67,7 @@ function ToolStep({ tc }) {
   )
 }
 
-/* ── Collapsible "ask_earthdata_agent() · N steps" card ── */
+/* ── Collapsible tool card: "dispatch · N requests" or "N steps" (toolStepsTitle) ── */
 function ToolStepsCard({ toolCalls, error }) {
   const [expanded, setExpanded] = useState(false)
   if (!toolCalls?.length) return null
@@ -96,7 +85,7 @@ function ToolStepsCard({ toolCalls, error }) {
           <path d="M14.5 3.5a4 4 0 0 0-5.4 4.7L3 14.3v3.2h3.2l6.1-6.1a4 4 0 0 0 4.7-5.4l-2.9 2.9-2-2z" strokeLinejoin="round" />
         </svg>
         <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-secondary)', flex: 1 }}>
-          ask_earthdata_agent() · {error ? 'error' : `${toolCalls.length} step${toolCalls.length === 1 ? '' : 's'}`}
+          {toolStepsTitle(toolCalls, error)}
         </span>
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
           style={{ color: 'var(--text-muted)', transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform .15s' }}>
@@ -130,10 +119,7 @@ function OutputCard({ item, active, inert, slotBadge, onClick }) {
         transition: 'border-color 0.15s, opacity 0.15s',
       }}
     >
-      <div style={{
-        width: '44px', height: '44px', borderRadius: '7px', flexShrink: 0,
-        background: 'linear-gradient(135deg, oklch(0.55 0.15 240), oklch(0.75 0.18 80), oklch(0.6 0.2 30))',
-      }} />
+      <CardPreview item={item} />
       <div style={{ minWidth: 0, flex: 1 }}>
         <div style={{
           fontSize: '12.5px', fontWeight: 700, color: 'var(--text-primary)',
@@ -239,80 +225,6 @@ function LoadingMessage({ toolCalls, statusMessage, workflowStage, startedAt }) 
         )}
       </div>
     </div>
-  )
-}
-
-/* ── Inline image with lightbox ── */
-function InlineImage({ url }) {
-  const [lightbox, setLightbox] = useState(false)
-  const [blobUrl, setBlobUrl] = useState(null)
-  const src = toImageUrl(url)
-  // Only authed /api/outputs/ images go through the blob fetch. Deriving this
-  // lets the effect bail without a setState (react-hooks/set-state-in-effect):
-  // the render below ignores blobUrl when it doesn't apply, which is what the
-  // old setBlobUrl(null) reset was for.
-  const needsAuthedFetch = Boolean(src && src.startsWith('/api/outputs/'))
-
-  useEffect(() => {
-    if (!needsAuthedFetch) return undefined
-
-    let cancelled = false
-    let objectUrl = null
-
-    apiFetch(src)
-      .then(response => response.ok ? response.blob() : null)
-      .then(blob => {
-        if (!blob || cancelled) return
-        objectUrl = URL.createObjectURL(blob)
-        setBlobUrl(objectUrl)
-      })
-      .catch(() => {
-        if (!cancelled) setBlobUrl(null)
-      })
-
-    return () => {
-      cancelled = true
-      if (objectUrl) URL.revokeObjectURL(objectUrl)
-    }
-  }, [src, needsAuthedFetch])
-
-  if (!src) return null
-  const displaySrc = (needsAuthedFetch && blobUrl) || src
-
-  return (
-    <>
-      <div style={{ margin: '8px 0' }}>
-        <img
-          src={displaySrc}
-          alt="output"
-          onClick={() => setLightbox(true)}
-          style={{
-            maxWidth: '100%', maxHeight: '400px',
-            borderRadius: '10px', border: '1px solid var(--border)',
-            display: 'block', cursor: 'zoom-in', objectFit: 'contain',
-          }}
-        />
-        <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '4px' }}>
-          Click to enlarge
-        </div>
-      </div>
-
-      {lightbox && (
-        <div
-          onClick={() => setLightbox(false)}
-          style={{
-            position: 'fixed', inset: 0, background: 'rgba(44,42,40,0.82)',
-            zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center',
-            cursor: 'zoom-out',
-          }}
-        >
-          <img
-            src={displaySrc} alt="fullscreen"
-            style={{ maxWidth: '92vw', maxHeight: '92vh', borderRadius: '10px', objectFit: 'contain' }}
-          />
-        </div>
-      )}
-    </>
   )
 }
 
@@ -437,7 +349,7 @@ function MessageBubble({
           <ToolStepsCard toolCalls={msg.toolCalls} error={msg.isError} />
         )}
 
-        {(msg.content || msg.imageUrls?.length > 0 || isUser) && (
+        {(msg.content || isUser) && (
           <div
             className="msg-bubble"
             style={{
@@ -533,9 +445,6 @@ function MessageBubble({
                     {msg.content}
                   </ReactMarkdown>
                 )}
-                {msg.imageUrls?.filter(Boolean).map((url, i) => (
-                  <InlineImage key={i} url={url} />
-                ))}
                 {msg.isConnectionLost && <ReloadSessionButton onReloadSession={onReloadSession} />}
               </>
             )}
@@ -700,14 +609,17 @@ export default function Chat({
     if (el) el.scrollTop = el.scrollHeight
   }, [messages, loading])
 
-  const handleSend = (text) => {
+  const handleSend = async (text) => {
     const msg = (text || input).trim()
     if (!msg) return
-    onSend(msg)
     setInput('')
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
     }
+    // A send can be refused: one turn per thread (T63 D12), and this tab may
+    // not have known another was running. Nothing reached the server, so the
+    // composer takes the text back rather than swallowing it.
+    if (await onSend(msg) === false) setInput(msg)
   }
 
   const handleKey = (e) => {

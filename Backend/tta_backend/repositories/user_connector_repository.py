@@ -69,7 +69,7 @@ async def upsert_connector(
     connector_type: str,
     auth_method: str,
     encrypted_secret: str,
-    expires_at: datetime,
+    expires_at: datetime | None,
     status: str = "connected",
 ) -> dict[str, Any]:
     """Insert or replace the caller's row for this connector type -- re-paste
@@ -92,7 +92,10 @@ async def upsert_connector(
                 """,
                 (str(uuid.uuid4()), user_id, connector_type, auth_method, encrypted_secret, expires_at, status),
             )
-            return await cur.fetchone()
+            row = await cur.fetchone()
+            if row is None:  # an upsert ... RETURNING always yields its row
+                raise RuntimeError("connector upsert returned no row")
+            return row
 
 
 async def list_connectors_for_user(user_id: str) -> list[dict[str, Any]]:

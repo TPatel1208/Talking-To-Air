@@ -124,8 +124,8 @@ def _resolve_aoi(aoi: str):
     if len(parts) == 4:
         try:
             minx, miny, maxx, maxy = (float(part) for part in parts)
-        except ValueError:
-            raise SystemExit(f"Could not parse --aoi '{aoi}' as minx,miny,maxx,maxy.")
+        except ValueError as exc:
+            raise SystemExit(f"Could not parse --aoi '{aoi}' as minx,miny,maxx,maxy.") from exc
         return box(minx, miny, maxx, maxy)
 
     resolver = RegionResolver()

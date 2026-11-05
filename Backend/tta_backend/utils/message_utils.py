@@ -45,7 +45,7 @@ def truncate_text(
 
 
 def extract_last_text(
-    result: dict,
+    result: dict[str, Any],
     fallback: str,
     max_chars: int = 2000,
     agent_name: str = "unknown",
@@ -67,13 +67,3 @@ def extract_last_text(
         if text:
             return truncate_text(text, max_chars, agent_name, request_id) if truncate else text
     return fallback
-
-
-def normalize_image_url(raw: str) -> str | None:
-    if not raw:
-        return None
-    raw = raw.strip()
-    if raw.startswith("/outputs/"):
-        return raw
-    filename = raw.replace("\\", "/").split("/")[-1]
-    return f"/outputs/{filename}"

@@ -5,10 +5,8 @@
 *.h5
 
 # Caches and generated stores (all mounted as docker volumes in deployment).
-# `*.zarr/` covers Backend/cache.zarr and cache_test.zarr; `outputs/` matches at
-# any depth, so Backend/outputs needs no separate line.
+# `*.zarr/` covers Backend/cache.zarr and cache_test.zarr.
 *.zarr/
-outputs/
 Backend/data/
 Backend/overlay_store/
 Backend/cube_store/

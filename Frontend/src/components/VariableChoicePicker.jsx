@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import { formatUnits } from '../utils/displayFormat.js'
+import SciText from './SciText.jsx'
 import {
   variableChoiceUsesModal,
   groupCandidatesByCategory,
@@ -20,7 +22,7 @@ import {
 // lives in utils/variableChoice.js; this is the thin rendering shell.
 
 function CandidateChip({ candidate, onSend }) {
-  const meta = [candidate.units, formatValidFraction(candidate.validFraction)].filter(Boolean).join(' · ')
+  const meta = [formatUnits(candidate.units), formatValidFraction(candidate.validFraction)].filter(Boolean).join(' · ')
   return (
     <button
       onClick={() => onSend(candidate.prompt)}
@@ -42,13 +44,13 @@ function CandidateChip({ candidate, onSend }) {
       }}
     >
       <span style={{ fontFamily: 'var(--font-mono)' }}>{candidate.name}</span>
-      {meta && <span style={{ color: 'var(--text-hint)', marginLeft: '6px' }}>{meta}</span>}
+      {meta && <span style={{ color: 'var(--text-hint)', marginLeft: '6px' }}><SciText>{meta}</SciText></span>}
     </button>
   )
 }
 
 function CandidateRow({ candidate, onSelect }) {
-  const meta = [candidate.units, formatValidFraction(candidate.validFraction)].filter(Boolean).join(' · ')
+  const meta = [formatUnits(candidate.units), formatValidFraction(candidate.validFraction)].filter(Boolean).join(' · ')
   return (
     <button
       onClick={() => onSelect(candidate.prompt)}
@@ -72,7 +74,7 @@ function CandidateRow({ candidate, onSelect }) {
         <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
           {candidate.name}
         </span>
-        {meta && <span style={{ fontSize: '11px', color: 'var(--text-hint)' }}>{meta}</span>}
+        {meta && <span style={{ fontSize: '11px', color: 'var(--text-hint)' }}><SciText>{meta}</SciText></span>}
       </span>
       {candidate.reasons?.length > 0 && (
         <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>{candidate.reasons[0]}</span>

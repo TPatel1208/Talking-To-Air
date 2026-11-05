@@ -4,9 +4,15 @@ import inspect
 import json
 from typing import Any
 
+from tta_backend.models import parse_dispatch_result
 from tta_backend.services.artifact_store import artifact_store
 from tta_backend.services.chart_service import ChartService
+from tta_backend.services.consulted_header import consulted_sources, merge_sources, with_sources_header
 from tta_backend.utils.message_utils import flatten_text_content
+
+# Working key on an assistant message while history is built: the sources its
+# dispatch results show were consulted. Removed before the message is returned.
+_CONSULTED = "_consulted"
 
 
 class HistoryService:
@@ -23,21 +29,48 @@ class HistoryService:
         if not state or not state.values:
             return []
 
+        messages = state.values.get("messages", [])
+        tool_outputs = {}
+        for index, msg in enumerate(messages):
+            if getattr(msg, "type", None) == "tool":
+                tool_text = flatten_text_content(msg.content)
+                _, charts = self.chart_service.parse_charts(tool_text)
+                tool_outputs[index] = (tool_text, charts)
+        # History is a read: charts are looked up in one query and never
+        # saved, so a GET cannot recreate a row a delete removed.
+        resolved = iter(await self.chart_service.resolve_charts(
+            [chart for _, charts in tool_outputs.values() for chart in charts], user_id,
+        ))
+
         result = []
-        for msg in state.values.get("messages", []):
+        for index, msg in enumerate(messages):
             role = getattr(msg, "type", None)
             if role == "human":
                 result.append({
                     "role": "user",
                     "content": msg.content if isinstance(msg.content, str) else "",
                     "toolCalls": [],
-                    "imageUrls": [],
                 })
             elif role == "ai":
                 result.append(self._assistant_message(msg))
             elif role == "tool":
-                await self._attach_tool_output(result, msg, thread_id, user_id)
-        return self._merge_adjacent_assistant_messages(result)
+                tool_text, charts = tool_outputs[index]
+                chart_payloads = [next(resolved) for _ in charts]
+                await self._attach_tool_output(result, tool_text, chart_payloads, thread_id, user_id)
+                assistant = self._last_assistant(result)
+                if assistant is not None:
+                    assistant[_CONSULTED] = merge_sources(assistant.get(_CONSULTED, []), consulted_sources(tool_text))
+        return [self._with_header(msg) for msg in self._merge_adjacent_assistant_messages(result)]
+
+    def _with_header(self, msg: dict[str, Any]) -> dict[str, Any]:
+        """T64 D14: an answer to a dispatch turn opens with the header naming
+        what ran, as it did when it streamed. The checkpoint holds only the
+        model's own text, so the header is derived again here. A turn with no
+        dispatch batch (pre-T64 ask_* turns) keeps the text it was saved with."""
+        consulted = msg.pop(_CONSULTED, None)
+        if consulted:
+            msg["content"] = with_sources_header(msg["content"], consulted)
+        return msg
 
     def _assistant_message(self, msg: Any) -> dict[str, Any]:
         tool_calls = []
@@ -71,7 +104,6 @@ class HistoryService:
             "role": "assistant",
             "content": content,
             "toolCalls": tool_calls,
-            "imageUrls": [],
             "charts": [],
             "artifacts": [],
         }
@@ -79,14 +111,14 @@ class HistoryService:
     async def _attach_tool_output(
         self,
         result: list[dict[str, Any]],
-        msg: Any,
+        tool_text: str,
+        chart_payloads: list[dict[str, Any] | None],
         thread_id: str,
         user_id: str,
     ) -> None:
-        tool_text = flatten_text_content(msg.content)
-        _, charts = self.chart_service.parse_charts(tool_text)
-        for chart in charts:
-            chart_payload = await self.chart_service.persist_chart_payload(thread_id, chart, user_id)
+        for chart_payload in chart_payloads:
+            if chart_payload is None:
+                continue
             assistant = self._last_assistant(result)
             if assistant is not None:
                 assistant.setdefault("charts", [])
@@ -125,16 +157,13 @@ class HistoryService:
         return None
 
     def _merge_adjacent_assistant_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        merged = []
+        merged: list[dict[str, Any]] = []
         for msg in messages:
             if msg["role"] == "assistant" and merged and merged[-1]["role"] == "assistant":
                 prev = merged[-1]
                 prev["toolCalls"].extend(msg["toolCalls"])
                 if msg["content"]:
                     prev["content"] += ("\n\n" if prev["content"] else "") + msg["content"]
-                for url in msg["imageUrls"]:
-                    if url not in prev["imageUrls"]:
-                        prev["imageUrls"].append(url)
                 for chart in msg.get("charts", []):
                     prev.setdefault("charts", [])
                     if chart not in prev["charts"]:
@@ -143,11 +172,20 @@ class HistoryService:
                     prev.setdefault("artifacts", [])
                     if artifact not in prev["artifacts"]:
                         prev["artifacts"].append(artifact)
+                if msg.get(_CONSULTED):
+                    prev[_CONSULTED] = merge_sources(prev.get(_CONSULTED, []), msg[_CONSULTED])
             else:
                 merged.append(msg)
         return merged
 
     def _artifact_refs(self, content: Any) -> list[dict[str, Any]]:
+        batch = parse_dispatch_result(content)
+        if batch is not None:
+            return [
+                ref.model_dump(exclude_none=True)
+                for item in batch.results if item.result is not None
+                for ref in item.result.artifacts
+            ]
         try:
             parsed = json.loads(content) if isinstance(content, str) else content
         except Exception:
@@ -155,7 +193,7 @@ class HistoryService:
         if not isinstance(parsed, dict):
             return []
         # Two formats land in supervisor ToolMessages:
-        #   AgentResult JSON  → key "artifacts"   (ask_ground_sensor_agent return value)
+        #   AgentResult JSON  → key "artifacts"   (pre-T64 ask_* tools, fast-path write-back)
         #   EPA tool results  → key "_artifact_refs" (never stored at supervisor level,
         #                        but kept for safety in case of future tool refactors)
         refs = parsed.get("artifacts") or parsed.get("_artifact_refs") or []

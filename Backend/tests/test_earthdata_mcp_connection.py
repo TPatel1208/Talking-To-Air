@@ -323,6 +323,7 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
         # (the exact "/health lies" bug this PRD's Problem Statement names).
         from tta_backend.earthdata_mcp.connection import (
             EarthdataMCPConnectionManager,
+            EarthdataMCPNotReadyError,
             STATE_READY,
             STATE_UNAVAILABLE,
         )
@@ -359,7 +360,7 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
 
         mcp_up["value"] = False
         await asyncio.wait_for(_wait_for_state(manager, STATE_UNAVAILABLE), timeout=1)
-        with self.assertRaises(Exception):
+        with self.assertRaises(EarthdataMCPNotReadyError):
             manager.tools  # gated consumers must stop seeing the stale tools
 
         mcp_up["value"] = True

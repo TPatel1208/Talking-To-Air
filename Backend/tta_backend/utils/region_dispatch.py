@@ -18,7 +18,11 @@ network-free lookup so both resolvers can share one copy of it (D11b's
 sync/async fork only becomes necessary when CUSTOM lands).
 """
 from dataclasses import dataclass
-from typing import Any
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from tta_backend.utils.plotting import RegionResolver
 
 from tta_backend.datasets.us_states import US_STATES
 
@@ -85,24 +89,18 @@ COALITIONS: dict[str, _Coalition] = {
     ),
 }
 
-# Alias -> canonical target, which is either a coalition id above or a
-# ``global_regions`` preset key. Hand-curated, never fuzzy-matched (D12):
-# token overlap on a closed vocabulary risks a confident wrong preset, which
-# is worse than a geocode miss.
-#
 # Normalization happens *before* lookup and is ``RegionResolver``'s own
 # (D11a), so "the OTC", "  OTC  " and "otc" all arrive here as "otc" and
 # neither resolver can normalize differently than the other.
 ALIASES: dict[str, str] = {
-    # The Commission is the body; the Region is the boundary. Both spellings
-    # land on the region, because the region is the only one of the two that
-    # has a footprint.
     "otr": "otc",
     "ozone transport commission": "otc",
     "ozone transport region": "otc",
-    # D12: pure phrasing variance. Today "northeastern us" misses the preset
-    # dict entirely and geocodes to a *railway platform* at Northeastern
-    # University in Boston, ~11 m across (Phase 0 gate, V2).
+    "ozone transport commission region": "otc",
+    "ozone transport commission (otc) region": "otc",
+    "ozone transport commission (otc)": "otc",
+    "otc region": "otc",
+    "otr region": "otc",
     "northeastern us": "northeast us",
 }
 
@@ -134,7 +132,7 @@ class ExtentDispatch:
 EXTENT_NOT_CLAIMED = ExtentDispatch(claimed=False)
 
 
-def _bbox_string(bounds) -> str:
+def _bbox_string(bounds: Sequence[float]) -> str:
     """``"W,S,E,N"`` decimal degrees -- the channel the Phase 1.5 gate chose.
 
     V5 measured both channels live: the MCP accepts the 12,951-byte OTR
@@ -153,7 +151,7 @@ def _bbox_string(bounds) -> str:
     return ",".join(f"{v:.6f}" for v in bounds)
 
 
-def dispatch_extent(normalized_name: str, global_regions: dict) -> ExtentDispatch:
+def dispatch_extent(normalized_name: str, global_regions: dict[str, Any]) -> ExtentDispatch:
     """Translate a T60 vocabulary word into an extent the MCP can consume.
 
     ``normalized_name`` must already have been through
@@ -211,7 +209,7 @@ class AliasCollisionError(RuntimeError):
     """An alias or coalition id shadows something that already resolves."""
 
 
-def assert_no_alias_collisions(global_regions: dict) -> None:
+def assert_no_alias_collisions(global_regions: dict[str, Any]) -> None:
     """Fail loudly if the hand-maintained tables shadow anything (D12a).
 
     A table that silently shadows ``"georgia"`` or ``"us"`` is the cheapest
@@ -241,7 +239,7 @@ def assert_no_alias_collisions(global_regions: dict) -> None:
             )
 
 
-def dispatch(normalized_name: str, resolver) -> DispatchResult:
+def dispatch(normalized_name: str, resolver: "RegionResolver") -> DispatchResult:
     """Resolve ``normalized_name`` if it is in this module's vocabulary.
 
     ``normalized_name`` must already have been through
@@ -274,7 +272,7 @@ def dispatch(normalized_name: str, resolver) -> DispatchResult:
 
     # An alias onto an existing preset: resolve *through* the canonical key so
     # the object is identical to the one that key produces.
-    preset = resolver.global_regions.get(target)
-    if preset is None:
+    canonical = resolver.global_regions.get(target)
+    if canonical is None:
         return DispatchResult(claimed=True, region=None)
-    return DispatchResult(claimed=True, region=resolver._finalize_preset(preset, target))
+    return DispatchResult(claimed=True, region=resolver._finalize_preset(canonical, target))

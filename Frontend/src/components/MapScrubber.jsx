@@ -20,6 +20,7 @@ import { formatFrameQaRate } from '../utils/frameStats.js'
 import { STATISTIC_LABELS } from '../utils/frameStatistic.js'
 import { buildDayBoundaries, buildTrackMarks, trackLegend } from '../utils/frameTrack.js'
 import { SCRUB_TRACK_MIN_WIDTH } from '../utils/panelLayout.js'
+import SciText from './SciText.jsx'
 
 // The floor exists so the layout CANNOT produce the 0 px case, rather than so
 // something can detect it afterwards. Measured live: the output panel carries
@@ -332,7 +333,7 @@ function DeltaDisclosure({ delta }) {
   // caveat should be; the largest measured disagreement can, and `severity`
   // is that, over both figures.
   if (delta.severity === 'none') {
-    return <div style={noteStyle}>{delta.summary}</div>
+    return <div style={noteStyle}><SciText>{delta.summary}</SciText></div>
   }
 
   const loud = delta.severity === 'high'
@@ -346,7 +347,7 @@ function DeltaDisclosure({ delta }) {
     }}>
       {/* Composed in frameDelta.js, whole. Assembling the tail here is what
           kept it out of reach of every test in this repo. */}
-      {delta.summary}
+      <SciText>{delta.summary}</SciText>
     </div>
   )
 }

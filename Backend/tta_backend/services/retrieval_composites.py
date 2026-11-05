@@ -112,7 +112,7 @@ def _supports_variable_subsetting(variables: list[str]) -> bool:
     return all(resolved) if resolved else True
 
 
-def _leaf(name: str) -> str:
+def _leaf(name: str | None) -> str:
     return str(name or "").rsplit("/", 1)[-1]
 
 
@@ -148,8 +148,7 @@ def _pinned_companion_variables(variables: list[str]) -> list[str]:
     by_leaf = {_leaf(v): v for v in variables}
     additions: list[str] = []
     for cfg in load_registry().values():
-        companions = [cfg.quality_flag_var, *cfg.vertical_axis_vars]
-        companions = [c for c in companions if c]
+        companions: list[str] = [c for c in (cfg.quality_flag_var, *cfg.vertical_axis_vars) if c]
         if not companions:
             continue
         collection_leaves = {_leaf(cfg.primary_var)} | {_leaf(v) for v in cfg.variables}

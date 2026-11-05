@@ -19,36 +19,28 @@
  *   independent TimeSeriesPanel per filled slot instead of MapLibreHeatmapPanel.
  */
 import { useMemo, useState } from 'react'
-import MapLibreHeatmapPanel from './MapLibreHeatmapPanel.jsx'
+import MapLibreHeatmapPanel, { MapColorbar } from './MapLibreHeatmapPanel.jsx'
 import TableMapPanel from './TableMapPanel.jsx'
 import { TimeSeriesPanel, TimeSeriesOverlayPanel } from './ChartMessage.jsx'
 import { MetadataOverview } from './MetadataOverview.jsx'
-import { colorbarGeometry } from '../utils/colorbarGeometry.js'
+import { colorbarGeometry, scaleClipNote } from '../utils/colorbarGeometry.js'
 import { computeSharedColorScale } from '../utils/sharedColorScale.js'
 import { filledCharts, activeCompareKind } from '../utils/compareMode.js'
 import { timeseriesOverlayCompatible, toOverlaySeries } from '../utils/timeseriesCompare.js'
 import { toggleExpanded, slotScaleNote } from '../utils/compareSlotOverview.js'
 
-function SharedLegend({ vmin, vmax, colormap, units }) {
+// The shared scale's legend, drawn once above the grid with the same colorbar
+// each map draws under itself, so ticks sit under the gradient at their values.
+// The clip note is shown only when every panel's own scale was clipped the same
+// way: the shared range is the widest of those clips, so the tails beyond them
+// are still saturated.
+function SharedLegend({ vmin, vmax, colormap, units, charts }) {
   const { gradientStops, ticks } = colorbarGeometry({ vmin, vmax, lut: colormap?.lut, tickCount: 5 })
-  if (!gradientStops.length) return null
-  const gradientId = 'tta-compare-shared-gradient'
+  const notes = charts.map(chart => scaleClipNote(chart.scale))
+  const clipNote = notes.every(note => note && note === notes[0]) ? notes[0] : null
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-      <svg width={200} height={14} style={{ display: 'block', flexShrink: 0 }}>
-        <defs>
-          <linearGradient id={gradientId} x1="0" y1="0" x2="1" y2="0">
-            {gradientStops.map((stop, i) => (
-              <stop key={i} offset={stop.offset} stopColor={stop.color} />
-            ))}
-          </linearGradient>
-        </defs>
-        <rect x={0} y={0} width={200} height={14} fill={`url(#${gradientId})`} rx={2} />
-      </svg>
-      <div style={{ display: 'flex', justifyContent: 'space-between', width: 200, fontSize: '10px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-        {ticks.map((tick, i) => <span key={i}>{tick.value.toExponential(1)}</span>)}
-      </div>
-      {units && <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{units}</span>}
+    <div style={{ flex: '1 1 280px', maxWidth: '440px' }}>
+      <MapColorbar gradientStops={gradientStops} ticks={ticks} units={units} clipNote={clipNote} marginTop={0} />
     </div>
   )
 }
@@ -174,7 +166,7 @@ function HeatmapCompareBody({ compareCount, compareSelection, autoScaleEach, onT
           <div style={{ fontSize: '12px', color: 'var(--text-muted)', fontStyle: 'italic' }}>{shared.reason}</div>
         )}
         {useShared && (
-          <SharedLegend vmin={shared.vmin} vmax={shared.vmax} colormap={shared.colormap} units={units} />
+          <SharedLegend vmin={shared.vmin} vmax={shared.vmax} colormap={shared.colormap} units={units} charts={filled} />
         )}
       </div>
 

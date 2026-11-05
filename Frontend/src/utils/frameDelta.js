@@ -34,6 +34,9 @@
 // The delta is shown, not offered (Risk 4 is that it becomes a badge nobody
 // reads), and `severity` exists so a double-digit disagreement cannot render
 // as the same quiet footnote a sub-1% one does.
+
+import { formatStatValue } from './displayFormat.js'
+
 export function resolveFrameDelta(chart, statistic = 'mean') {
   const block = chart?.frames
   if (!block || !block.tier) return null
@@ -254,7 +257,7 @@ function figureOf(delta, units) {
   return {
     headline,
     pct: formatPct(headline),
-    maxAbs: maxAbs == null ? null : `${maxAbs.toExponential(3)} ${units}`.trim(),
+    maxAbs: maxAbs == null ? null : formatStatValue(maxAbs, units),
     basis: delta.basis || null,
   }
 }

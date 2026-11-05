@@ -6,10 +6,15 @@ expects when it projects the four corner coordinates, then colorizes
 through the same LUT the payload ships (utils.colormaps) so the overlay,
 the client colorbar, and the export renderer can never disagree on what a
 value looks like.
+
+Beside the colored PNG, the same reprojected grid is kept as a 16-bit value
+raster, so the overlay can be recolored later at a scale chosen after the
+chart was drawn (compare mode's shared scale) without losing resolution.
 """
 from __future__ import annotations
 
 import io
+from dataclasses import dataclass
 
 import numpy as np
 from affine import Affine
@@ -20,6 +25,30 @@ _SRC_CRS = CRS.from_epsg(4326)
 _DST_CRS = CRS.from_epsg(3857)
 
 
+# Code 0 is no-data; valid values map linearly onto 1..65535 across the
+# grid's own finite min..max.
+_CODE_MAX = 65535
+
+
+@dataclass(frozen=True)
+class ValueRaster:
+    """The reprojected grid as a 16-bit grayscale PNG. A code ``c >= 1`` is
+    the value ``lo + (c - 1) * (hi - lo) / 65534``; code 0 is no-data. The
+    step is the grid's full range over 65534, far finer than the 256 colors
+    any rendering of it can show."""
+
+    png: bytes
+    lo: float
+    hi: float
+
+
+@dataclass(frozen=True)
+class RenderedOverlay:
+    png: bytes
+    # None when the grid has no finite value at all.
+    value_raster: ValueRaster | None
+
+
 def render_overlay_png(
     lats: np.ndarray,
     lons: np.ndarray,
@@ -28,6 +57,93 @@ def render_overlay_png(
     vmin: float,
     vmax: float,
 ) -> bytes:
+    destination = _reproject_to_mercator(lats, lons, values)
+    return _encode_rgba(_colorize(destination, lut, vmin, vmax))
+
+
+def render_overlay(
+    lats: np.ndarray,
+    lons: np.ndarray,
+    values: np.ndarray,
+    lut: list[list[int]],
+    vmin: float,
+    vmax: float,
+) -> RenderedOverlay:
+    """The colored overlay PNG plus the value raster it was drawn from, both
+    from one reprojection."""
+    destination = _reproject_to_mercator(lats, lons, values)
+    png = _encode_rgba(_colorize(destination, lut, vmin, vmax))
+    return RenderedOverlay(png=png, value_raster=encode_value_raster(destination))
+
+
+def encode_value_raster(arr: np.ndarray) -> ValueRaster | None:
+    valid = np.isfinite(arr)
+    if not valid.any():
+        return None
+    lo = float(np.nanmin(arr))
+    hi = float(np.nanmax(arr))
+    span = hi - lo
+
+    # One working buffer, as in _colorize; the grid can be millions of cells.
+    scaled = np.where(valid, arr, lo)
+    scaled -= lo
+    if span > 0:
+        scaled *= (_CODE_MAX - 1) / span
+    np.round(scaled, out=scaled)
+    np.clip(scaled, 0, _CODE_MAX - 1, out=scaled)
+    scaled += 1
+    codes = scaled.astype(np.uint16)
+    del scaled
+    np.logical_not(valid, out=valid)
+    codes[valid] = 0
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.fromarray(codes).save(buf, format="PNG")
+    return ValueRaster(png=buf.getvalue(), lo=lo, hi=hi)
+
+
+def render_value_raster_png(
+    raster_png: bytes,
+    lo: float,
+    hi: float,
+    lut: list[list[int]],
+    vmin: float,
+    vmax: float,
+) -> bytes:
+    """Color a stored value raster at ``vmin``..``vmax``, at the raster's full
+    resolution. Every pixel is a 16-bit code, so the colors are computed once
+    per code (a 65536-entry table) rather than once per pixel."""
+    from PIL import Image
+
+    with Image.open(io.BytesIO(raster_png)) as image:
+        codes = np.asarray(image)
+    if codes.dtype != np.uint16:
+        codes = codes.astype(np.uint16)
+
+    all_codes = np.arange(_CODE_MAX + 1, dtype=np.float64)
+    code_values = lo + (all_codes - 1) * ((hi - lo) / (_CODE_MAX - 1))
+    lut_arr = np.asarray(lut, dtype=np.uint8)
+    n = len(lut_arr)
+    span = (vmax - vmin) or 1.0
+    table = np.clip((code_values - vmin) / span, 0.0, 1.0) * (n - 1)
+    lut_index = np.round(table).astype(np.uint8 if n <= 256 else np.uint16)
+
+    rgba: np.ndarray = lut_arr[lut_index[codes]]
+    rgba[codes == 0] = 0
+    return _encode_rgba(rgba)
+
+
+def _encode_rgba(rgba: np.ndarray) -> bytes:
+    buf = io.BytesIO()
+    import matplotlib.image as mpimg
+
+    mpimg.imsave(buf, rgba, format="png")
+    return buf.getvalue()
+
+
+def _reproject_to_mercator(lats: np.ndarray, lons: np.ndarray, values: np.ndarray) -> np.ndarray:
     # The axes are 1-D and negligible; keep them in full precision, since the
     # affine transform below is built from differences between them.
     lats = np.asarray(lats, dtype=float)
@@ -77,14 +193,7 @@ def render_overlay_png(
         dst_nodata=nodata,
         resampling=Resampling.bilinear,
     )
-
-    rgba = _colorize(destination, lut, vmin, vmax)
-
-    buf = io.BytesIO()
-    import matplotlib.image as mpimg
-
-    mpimg.imsave(buf, rgba, format="png")
-    return buf.getvalue()
+    return destination
 
 
 def _colorize(arr: np.ndarray, lut: list[list[int]], vmin: float, vmax: float) -> np.ndarray:
@@ -119,7 +228,7 @@ def _colorize(arr: np.ndarray, lut: list[list[int]], vmin: float, vmax: float) -
     # Gather straight into the output rather than allocating zeros and filling
     # the valid pixels through a second fancy-index (which built two more
     # temporaries sized by the valid count).
-    rgba = lut_arr[idx]
+    rgba: np.ndarray = lut_arr[idx]
     np.logical_not(valid, out=valid)
     rgba[valid] = 0          # no-data stays fully transparent, as before
     return rgba

@@ -31,7 +31,9 @@ def _load_epa_module():
         "tta_backend.config.settings": MagicMock(get_settings=MagicMock(return_value=fake_settings)),
         "tta_backend.services": MagicMock(),
         "tta_backend.services.artifact_store": MagicMock(artifact_store=fake_artifact_store),
+        "tta_backend.services.connector_credential_service": MagicMock(),
         "tta_backend.utils": MagicMock(),
+        "tta_backend.utils.streaming": MagicMock(current_user_id=MagicMock(return_value=None)),
         "tta_backend.utils.plotting": MagicMock(get_geocoding_service=MagicMock()),
     }
 
@@ -357,10 +359,11 @@ class NoDataMessageTests(unittest.IsolatedAsyncioTestCase):
 
 
 class _FakeResponse:
-    def __init__(self, payload):
-        self.status_code = 200
+    def __init__(self, payload, status_code=200):
+        self.status_code = status_code
         self._payload = payload
         self.url = "https://aqs.epa.gov/data/api/fake"
+        self.text = str(payload)
 
     def json(self):
         return self._payload
@@ -624,6 +627,275 @@ class SummaryFailureClassificationTests(unittest.IsolatedAsyncioTestCase):
         either kind, so the new type must stay a subclass rather than becoming
         a sibling."""
         self.assertTrue(issubclass(_epa.AqsNoDataError, RuntimeError))
+
+
+class ExceedanceDaysOrderingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_record_without_a_date_is_reported_rather_than_crashing_the_sort(self):
+        # The rows are sorted by date. A record missing date_local used to put
+        # None beside strings and raise TypeError, losing every exceedance.
+        records = [
+            {"date_local": "2024-06-02", "first_max_value": 5.0},
+            {"first_max_value": 6.0},
+            {"date_local": "2024-06-01", "first_max_value": 7.0},
+        ]
+        captured = {}
+
+        def fake_table_response(header, body, **kwargs):
+            captured["body"] = body
+            return {"ok": True}
+
+        with unittest.mock.patch.object(
+            _epa, "_fetch_summary", unittest.mock.AsyncMock(return_value=(records, "dailyData/byState", {}))
+        ), unittest.mock.patch.object(_epa, "_artifact_table_response", side_effect=fake_table_response):
+            await _epa.find_exceedance_days(
+                param_code="99999", bdate="2024-06-01", edate="2024-06-03",
+                state_code="34", hard_threshold=1.0,
+            )
+
+        self.assertEqual([row["date"] for row in captured["body"]], [None, "2024-06-01", "2024-06-02"])
+
+
+# ---------------------------------------------------------------------------
+# Per-user AQS credentials (epa_aqs connector)
+# ---------------------------------------------------------------------------
+
+
+class _KeyAwareHttp(_RecordingHttp):
+    """Answers like EPA does for a bad pair: HTTP 400, a Failed header that
+    echoes the full request URL (credentials included), and this error text."""
+
+    def __init__(self, rejected_keys=(), raise_error=None, failed_with_200=False):
+        super().__init__()
+        self.rejected_keys = set(rejected_keys)
+        self.raise_error = raise_error
+        self.failed_with_200 = failed_with_200
+
+    async def get(self, url, params=None):
+        from urllib.parse import urlencode
+
+        params = dict(params or {})
+        self.calls.append((url, params))
+        if self.raise_error is not None:
+            raise self.raise_error
+        full_url = f"{url}?{urlencode(params)}"
+        if params.get("key") in self.rejected_keys:
+            response = _FakeResponse(
+                {"Header": [{"status": "Failed", "url": full_url, "error": ["Email and/or key are invalid."]}]},
+                status_code=400,
+            )
+        elif self.failed_with_200:
+            response = _FakeResponse(
+                {"Header": [{"status": "Failed", "url": full_url, "error": ["Something else went wrong."]}]},
+            )
+        else:
+            response = _FakeResponse(self.payload)
+        response.url = full_url
+        return response
+
+
+class _FakeAqsInjector:
+    def __init__(self, credentials=None, error=None):
+        self.credentials = credentials or {}
+        self.error = error
+        self.resolved = []
+        self.used = []
+        self.invalid = []
+
+    async def resolve_credentials(self, user_id):
+        self.resolved.append(user_id)
+        if self.error is not None:
+            raise self.error
+        return self.credentials.get(user_id)
+
+    def mark_used(self, user_id):
+        self.used.append(user_id)
+
+    async def mark_invalid(self, user_id):
+        self.invalid.append(user_id)
+
+
+def _personal(email="me@lab.edu", key="my-key"):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(email=email, key=key)
+
+
+_SETTLED_PARAMS = {"param": "88101", "bdate": "20200101", "edate": "20200107"}
+
+
+class AqsPerUserCredentialTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        _epa._reset_aqs_request_state()
+
+    def tearDown(self):
+        _epa._reset_aqs_request_state()
+
+    def _as_user(self, user_id, injector):
+        return [
+            unittest.mock.patch.object(_epa, "current_user_id", lambda: user_id),
+            unittest.mock.patch.object(_epa, "get_aqs_credential_injector", lambda: injector),
+        ]
+
+    async def _get(self, http, patches, endpoint="dailyData/bySite", params=None):
+        with unittest.mock.patch.object(_epa.httpx, "AsyncClient", http):
+            for p in patches:
+                p.start()
+            try:
+                return await _epa._aqs_get(endpoint, dict(params or _SETTLED_PARAMS))
+            finally:
+                for p in patches:
+                    p.stop()
+
+    async def test_a_connected_researchers_own_email_and_key_are_sent(self):
+        http = _KeyAwareHttp()
+        injector = _FakeAqsInjector({"user-1": _personal()})
+
+        await self._get(http, self._as_user("user-1", injector))
+
+        sent = http.calls[0][1]
+        self.assertEqual((sent["email"], sent["key"]), ("me@lab.edu", "my-key"))
+        self.assertEqual(injector.used, ["user-1"])
+
+    async def test_a_call_outside_any_user_context_uses_the_shared_credential(self):
+        http = _KeyAwareHttp()
+        injector = _FakeAqsInjector({"user-1": _personal()})
+
+        await self._get(http, self._as_user(None, injector))
+
+        sent = http.calls[0][1]
+        self.assertEqual((sent["email"], sent["key"]), ("test@test.com", "testkey"))
+        self.assertEqual(injector.resolved, [])
+
+    async def test_a_researcher_without_a_connector_uses_the_shared_credential(self):
+        http = _KeyAwareHttp()
+        injector = _FakeAqsInjector()
+
+        await self._get(http, self._as_user("user-1", injector))
+
+        self.assertEqual(http.calls[0][1]["key"], "testkey")
+        self.assertEqual(injector.used, [])
+
+    async def test_a_failing_credential_lookup_degrades_to_the_shared_credential(self):
+        """The connector store being down must not take ground data with it."""
+        http = _KeyAwareHttp()
+        injector = _FakeAqsInjector(error=RuntimeError("db down"))
+
+        data = await self._get(http, self._as_user("user-1", injector))
+
+        self.assertEqual(http.calls[0][1]["key"], "testkey")
+        self.assertEqual(data["Data"], [{"row": 1}])
+
+    async def test_a_rejected_personal_key_is_flagged_and_the_call_retried_on_the_shared_key(self):
+        http = _KeyAwareHttp(rejected_keys={"my-key"})
+        injector = _FakeAqsInjector({"user-1": _personal()})
+
+        data = await self._get(http, self._as_user("user-1", injector))
+
+        self.assertEqual([call[1]["key"] for call in http.calls], ["my-key", "testkey"])
+        self.assertEqual(injector.invalid, ["user-1"])
+        self.assertEqual(injector.used, [])
+        self.assertEqual(data["Data"], [{"row": 1}])
+
+    async def test_a_rejected_shared_key_raises_without_a_retry(self):
+        http = _KeyAwareHttp(rejected_keys={"testkey"})
+
+        with self.assertRaises(RuntimeError):
+            await self._get(http, self._as_user(None, _FakeAqsInjector()))
+
+        self.assertEqual(len(http.calls), 1)
+
+    async def test_a_researchers_calls_spend_their_own_rate_budget_not_the_shared_one(self):
+        http = _KeyAwareHttp()
+        injector = _FakeAqsInjector({"user-1": _personal()})
+
+        await self._get(http, self._as_user("user-1", injector))
+
+        self.assertEqual(set(_epa._rate_limiters), {"my-key"})
+
+    async def test_a_cache_hit_never_looks_up_credentials(self):
+        """Cached public data needs no credential, so a hit must not cost a
+        connector-store read."""
+        http = _KeyAwareHttp()
+        injector = _FakeAqsInjector({"user-1": _personal()})
+
+        await self._get(http, self._as_user(None, injector))
+        await self._get(http, self._as_user("user-1", injector))
+
+        self.assertEqual(len(http.calls), 1)
+        self.assertEqual(injector.resolved, [])
+
+    async def test_no_backend_log_record_carries_the_personal_email_or_key(self):
+        http = _KeyAwareHttp(rejected_keys={"my-key"})
+        injector = _FakeAqsInjector({"user-1": _personal()})
+
+        with self.assertLogs(_epa.logger, level="DEBUG") as logs:
+            await self._get(http, self._as_user("user-1", injector))
+            await self._get(http, self._as_user(None, injector), params={"param": "42602", "edate": "20200107"})
+
+        text = "\n".join(logs.output)
+        self.assertNotIn("my-key", text)
+        self.assertNotIn("me@lab.edu", text)
+        self.assertNotIn("testkey", text)
+        self.assertIn("endpoint=dailyData/bySite", text)
+        # The query values are left to httpx's request line, which
+        # configure_logging redacts; this module logs none of them.
+        self.assertNotIn("88101", text)
+
+    async def test_a_failed_header_warning_does_not_repeat_the_echoed_credentials(self):
+        """EPA's Header echoes the full request URL, email and key included."""
+        http = _KeyAwareHttp(failed_with_200=True)
+        injector = _FakeAqsInjector({"user-1": _personal()})
+
+        with self.assertLogs(_epa.logger, level="DEBUG") as logs:
+            with self.assertRaises(RuntimeError) as ctx:
+                await self._get(http, self._as_user("user-1", injector))
+
+        text = "\n".join(logs.output) + str(ctx.exception)
+        self.assertNotIn("my-key", text)
+        self.assertNotIn("me@lab.edu", text)
+        self.assertIn("Something else went wrong.", text)
+
+
+class ValidateAqsCredentialsTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        _epa._reset_aqs_request_state()
+
+    def tearDown(self):
+        _epa._reset_aqs_request_state()
+
+    async def test_a_pair_epa_accepts_validates_against_that_pair(self):
+        http = _KeyAwareHttp()
+
+        with unittest.mock.patch.object(_epa.httpx, "AsyncClient", http):
+            await _epa.validate_aqs_credentials("me@lab.edu", "my-key")
+
+        url, sent = http.calls[0]
+        self.assertTrue(url.endswith("/list/states"))
+        self.assertEqual((sent["email"], sent["key"]), ("me@lab.edu", "my-key"))
+
+    async def test_a_pair_epa_rejects_raises_credentials_rejected(self):
+        http = _KeyAwareHttp(rejected_keys={"my-key"})
+
+        with unittest.mock.patch.object(_epa.httpx, "AsyncClient", http):
+            with self.assertRaises(_epa.AqsCredentialsRejected):
+                await _epa.validate_aqs_credentials("me@lab.edu", "my-key")
+
+    async def test_epa_being_unreachable_is_not_reported_as_a_bad_key(self):
+        http = _KeyAwareHttp(raise_error=_epa.httpx.ConnectError("boom"))
+
+        with unittest.mock.patch.object(_epa.httpx, "AsyncClient", http):
+            with self.assertRaises(_epa.AqsUnavailable):
+                await _epa.validate_aqs_credentials("me@lab.edu", "my-key")
+
+    async def test_validation_is_never_answered_from_the_response_cache(self):
+        """The cache is keyed without credentials, so a cached list/states
+        from the shared key would otherwise vouch for any pasted key."""
+        http = _KeyAwareHttp(rejected_keys={"bad-key"})
+
+        with unittest.mock.patch.object(_epa.httpx, "AsyncClient", http):
+            await _epa._aqs_get("list/states", {})
+            with self.assertRaises(_epa.AqsCredentialsRejected):
+                await _epa.validate_aqs_credentials("me@lab.edu", "bad-key")
 
 
 if __name__ == "__main__":

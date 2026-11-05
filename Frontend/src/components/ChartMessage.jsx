@@ -14,6 +14,8 @@ import { resolveCsvExport, resolveNetcdfExport } from '../utils/chartExport.js'
 import { buildOverlayTraces } from '../utils/timeseriesCompare.js'
 import { availableAxes, profileLayout, profileTraces, spreadCaveat } from '../utils/verticalProfile.js'
 import { apiFetch } from '../utils/apiFetch.js'
+import { formatUnits, plotlySuperscript } from '../utils/displayFormat.js'
+import { API_BASE } from '../config.js'
 
 // react-plotly.js/factory is CommonJS, so the shape of its default import is
 // whatever the bundler's interop decides. Under the dev pre-bundler it is the
@@ -84,7 +86,7 @@ function filenameFromDisposition(disposition, fallback) {
 async function downloadFromUrl(url, fallbackFilename) {
   const response = await apiFetch(url)
   if (!response.ok) {
-    let detail = ''
+    let detail
     try {
       const body = await response.json()
       detail = body?.detail || ''
@@ -169,7 +171,7 @@ export function ChartToolbar({ chart, plotRootRef }) {
     if (chart.chart_id && chart.export) {
       try {
         setExportState({ status: 'progress', message: 'Export in progress' })
-        await downloadFromUrl(`/api/chart/${chart.chart_id}/export.png`, `${fileBase}.png`)
+        await downloadFromUrl(`${API_BASE}/chart/${chart.chart_id}/export.png`, `${fileBase}.png`)
         setExportState({ status: 'complete', message: 'Export complete' })
         window.setTimeout(() => setExportState({ status: '', message: '' }), 2200)
       } catch (error) {
@@ -279,7 +281,7 @@ export function TimeSeriesPanel({ payload }) {
     line:          { color: '#1D9E75', width: 2 },
     marker:        { color: '#1D9E75', size: 5 },
     fill:          'tozeroy', fillcolor: 'rgba(29,158,117,0.08)',
-    hovertemplate: `%{x|%Y-%m-%d %H:%M}<br>${stat}: %{y:.3e} ${units}<extra></extra>`,
+    hovertemplate: `%{x|%Y-%m-%d %H:%M}<br>${stat}: %{y:.3e} ${plotlySuperscript(formatUnits(units))}<extra></extra>`,
   }]
 
   const layout = {
@@ -288,8 +290,8 @@ export function TimeSeriesPanel({ payload }) {
     margin: { t: 40, r: 16, b: 40, l: 16 },
     title:  { text: title, font: { size: 13, weight: 500 }, x: 0.5, xanchor: 'center' },
     height: 300,
-    xaxis:  { title: 'Time', showgrid: true, gridcolor: 'rgba(0,0,0,0.06)', zeroline: false, tickfont: { size: 10 } },
-    yaxis:  { title: `${stat} (${units})`, showgrid: true, gridcolor: 'rgba(0,0,0,0.06)', zeroline: false, tickfont: { size: 10 }, exponentformat: 'e' },
+    xaxis:  { title: { text: 'Time' }, showgrid: true, gridcolor: 'rgba(0,0,0,0.06)', zeroline: false, tickfont: { size: 10 } },
+    yaxis:  { title: { text: `${stat} (${plotlySuperscript(formatUnits(units))})` }, showgrid: true, gridcolor: 'rgba(0,0,0,0.06)', zeroline: false, tickfont: { size: 10 }, exponentformat: 'power' },
     datarevision: revision,
   }
 
@@ -389,8 +391,8 @@ export function TimeSeriesOverlayPanel({ series, height = 320 }) {
     margin: { t: 40, r: 16, b: 60, l: 16 },
     title:  { text: 'Comparison', font: { size: 13, weight: 500 }, x: 0.5, xanchor: 'center' },
     height,
-    xaxis:  { title: 'Time', showgrid: true, gridcolor: 'rgba(0,0,0,0.06)', zeroline: false, tickfont: { size: 10 } },
-    yaxis:  { title: units, showgrid: true, gridcolor: 'rgba(0,0,0,0.06)', zeroline: false, tickfont: { size: 10 }, exponentformat: 'e' },
+    xaxis:  { title: { text: 'Time' }, showgrid: true, gridcolor: 'rgba(0,0,0,0.06)', zeroline: false, tickfont: { size: 10 } },
+    yaxis:  { title: { text: plotlySuperscript(formatUnits(units)) }, showgrid: true, gridcolor: 'rgba(0,0,0,0.06)', zeroline: false, tickfont: { size: 10 }, exponentformat: 'power' },
     showlegend: true,
     legend: { orientation: 'h', y: -0.25 },
     datarevision: revision,

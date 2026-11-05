@@ -17,7 +17,6 @@ import asyncio
 import json
 import logging
 import os
-import sys
 import time
 import uuid
 from typing import Any

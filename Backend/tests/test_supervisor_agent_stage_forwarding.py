@@ -6,11 +6,17 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 
+# One satellite request, the shape the supervisor model sends dispatch.
+PLOT_NO2_OVER_NJ = {"requests": [
+    {"agent": "satellite", "intent": "visualize", "figure_type": "map", "variable": "NO2", "location": "NJ"},
+]}
+
+
 @unittest.skipIf(importlib.util.find_spec("langchain") is None, "langchain is not installed")
-class AskEarthdataAgentStageForwardingTests(unittest.IsolatedAsyncioTestCase):
+class DispatchStageForwardingTests(unittest.IsolatedAsyncioTestCase):
     """T19: narration must not be a fast-path-only feature — a status/job_
     progress/chart_payload event the satellite sub-agent emits deep inside
-    ask_earthdata_agent's own nested stream_response call must still reach
+    the dispatch tool's own nested stream_response call must still reach
     the supervisor's own outer stream_response (and therefore the SSE
     stream), even when the tool call passes through a ToolNode-style Task
     boundary (asyncio.gather spawns a fresh Task with a copied context per
@@ -23,7 +29,7 @@ class AskEarthdataAgentStageForwardingTests(unittest.IsolatedAsyncioTestCase):
     emit_status carries a stage/detail payload (T19), and guards against a
     future change (e.g. an explicit on_event re-forward) double-emitting."""
 
-    async def _build_ask_earthdata_agent(self, fake_satellite_agent):
+    async def _build_dispatch(self, fake_satellite_agent):
         from tta_backend.agents import supervisor_agent
 
         captured = {}
@@ -37,7 +43,7 @@ class AskEarthdataAgentStageForwardingTests(unittest.IsolatedAsyncioTestCase):
              patch.object(supervisor_agent, "create_agent", side_effect=fake_create_agent):
             await supervisor_agent.build_agent(ground_agent="ground", satellite_agent=fake_satellite_agent)
 
-        return captured["tools"]["ask_earthdata_agent"]
+        return captured["tools"]["dispatch"]
 
     async def test_a_sub_agent_stage_status_reaches_the_outer_stream_response(self):
         from tta_backend.utils.streaming import emit_status, stream_response
@@ -50,22 +56,28 @@ class AskEarthdataAgentStageForwardingTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0)
                 yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
 
-        ask_earthdata_agent = await self._build_ask_earthdata_agent(FakeSatelliteAgent())
+        dispatch = await self._build_dispatch(FakeSatelliteAgent())
 
         class OuterAgent:
             async def astream(self, input_, config, stream_mode):
                 # asyncio.gather (not a plain await) — the real ToolNode
                 # dispatch shape: a fresh Task per tool call, context copied
                 # at Task-creation time (see get_call_budget()'s docstring).
-                await asyncio.gather(ask_earthdata_agent.ainvoke({"task": "Plot NO2 over NJ"}))
+                await asyncio.gather(dispatch.ainvoke(PLOT_NO2_OVER_NJ))
                 await asyncio.sleep(0)
                 yield "messages", (SimpleNamespace(content="outer done", type="ai", tool_calls=None), {})
 
         events = [event async for event in stream_response(OuterAgent(), "do it", "outer-thread")]
 
-        status_events = [data for event_type, data in events if event_type == "status"]
+        # The dispatch executor's own lane markers (T64 Phase 4) aside, the
+        # sub-agent's stage arrives exactly once, tagged with its lane.
+        status_events = [
+            data for event_type, data in events
+            if event_type == "status" and data.get("stage") not in ("queued", "running", "finished")
+        ]
         self.assertEqual([s.get("stage") for s in status_events], ["search"])
         self.assertEqual(status_events[0]["message"], "Searching datasets...")
+        self.assertEqual(status_events[0]["lane"], "1.0")
 
     async def test_a_sub_agent_chart_and_job_progress_also_reach_the_outer_stream(self):
         from tta_backend.utils.streaming import emit_chart, emit_job_progress, stream_response
@@ -79,14 +91,14 @@ class AskEarthdataAgentStageForwardingTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0)
                 yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
 
-        ask_earthdata_agent = await self._build_ask_earthdata_agent(FakeSatelliteAgent())
+        dispatch = await self._build_dispatch(FakeSatelliteAgent())
 
         class OuterAgent:
             async def astream(self, input_, config, stream_mode):
                 # asyncio.gather (not a plain await) — the real ToolNode
                 # dispatch shape: a fresh Task per tool call, context copied
                 # at Task-creation time (see get_call_budget()'s docstring).
-                await asyncio.gather(ask_earthdata_agent.ainvoke({"task": "Plot NO2 over NJ"}))
+                await asyncio.gather(dispatch.ainvoke(PLOT_NO2_OVER_NJ))
                 await asyncio.sleep(0)
                 yield "messages", (SimpleNamespace(content="outer done", type="ai", tool_calls=None), {})
 

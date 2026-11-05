@@ -1,6 +1,8 @@
 """Centralized runtime configuration for the backend."""
 from __future__ import annotations
 
+from typing import Any
+
 import os
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -205,6 +207,23 @@ class Settings:
     agent_recursion_limit: int = field(
         default_factory=lambda: max(1, _int_env("AGENT_RECURSION_LIMIT", 40))
     )
+    # T64: per-turn limits on the supervisor's dispatch fan-out. Concurrency
+    # caps how many sub-agents run at once; satellite gets its own lower cap
+    # because it is the memory-heavy path. The request budget counts sub-agent
+    # runs across every dispatch call in a turn, and rounds count the calls
+    # themselves (two allow satellite first, then ground with its findings).
+    supervisor_max_concurrency: int = field(
+        default_factory=lambda: max(1, _int_env("SUPERVISOR_MAX_CONCURRENCY", 4))
+    )
+    supervisor_max_satellite_concurrency: int = field(
+        default_factory=lambda: max(1, _int_env("SUPERVISOR_MAX_SATELLITE_CONCURRENCY", 2))
+    )
+    supervisor_max_requests_per_turn: int = field(
+        default_factory=lambda: max(1, _int_env("SUPERVISOR_MAX_REQUESTS_PER_TURN", 6))
+    )
+    supervisor_max_dispatch_rounds: int = field(
+        default_factory=lambda: max(1, _int_env("SUPERVISOR_MAX_DISPATCH_ROUNDS", 2))
+    )
     retrieval_max_timeseries_days: int = field(
         default_factory=lambda: max(1, _int_env("RETRIEVAL_MAX_TIMESERIES_DAYS", 366))
     )
@@ -340,21 +359,8 @@ class Settings:
     heavy_admission_limit: int = field(
         default_factory=lambda: max(0, _int_env("HEAVY_ADMISSION_LIMIT", 0))
     )
-    # The public chart-output directory. Mounted unauthenticated at /outputs
-    # (api.py) and shared with the frontend nginx container through the
-    # `plot_outputs` named volume, so anything written here is world-readable.
-    #
-    # A setting for the same reason cube_store_dir is one: it was three
-    # ``APP_ROOT``-relative module constants, each with an import-time
-    # os.makedirs, so importing the backend created `Backend/outputs/` in the
-    # checkout — the cube-store problem again, and invisible for longer because
-    # an *empty* directory is omitted from `git status` entirely, even under
-    # --ignored. Only api.py's copy is live; StaticFiles needs the directory to
-    # exist when it is mounted.
-    output_dir: str = field(default_factory=lambda: os.getenv("OUTPUT_DIR", "/app/outputs"))
     # T23: the server-rendered map overlay PNGs (tools/satellite_tools/
-    # plot_tools.py). Deliberately OUTSIDE output_dir, which is served
-    # unauthenticated — overlays are only reachable through the authenticated
+    # plot_tools.py). Only reachable through the authenticated
     # /chart/{id}/overlay.png route, which checks chart ownership first.
     #
     # Also a setting rather than an ``APP_ROOT``-relative constant, and for the
@@ -364,6 +370,15 @@ class Settings:
     # while never appearing in `git status`.
     overlay_store_dir: str = field(
         default_factory=lambda: os.getenv("OVERLAY_STORE_DIR", "/app/overlay_store/overlays")
+    )
+    # A fixed byte cap rather than a share of free space, which would expand to
+    # fill whatever disk the volume is on. Eviction is LRU by last read, run
+    # before each write (services/overlay_store.py). An evicted overlay
+    # degrades the chart to the frontend's canvas fallback, drawn from the grid
+    # in the chart payload, so this is a cache bound rather than a retention
+    # policy.
+    overlay_store_max_bytes: int = field(
+        default_factory=lambda: max(1, _int_env("OVERLAY_STORE_MAX_BYTES", 1024 ** 3))
     )
     # T52: the L4 Zarr cube cache (services/cube_cache.py). A backend-only
     # Docker named volume, NOT a tempdir — cubes cost minutes to build and
@@ -404,8 +419,8 @@ class Settings:
     )
     # T59 Phase 4: the frame blob store (services/frame_store.py). Its own
     # backend-only named volume, and deliberately NOT inside overlay_store:
-    # that store has no eviction policy and grows forever, which is precisely
-    # why frames get a separate *bounded* one instead of joining it.
+    # each store's startup sweep and size accounting assume it owns its
+    # directory, and each is sized against its own cap.
     frame_store_dir: str = field(
         default_factory=lambda: os.getenv("FRAME_STORE_DIR", "/app/frame_store")
     )
@@ -464,6 +479,18 @@ class Settings:
     debug_heap_profiling_enabled: bool = field(
         default_factory=lambda: os.getenv("DEBUG_HEAP_PROFILING_ENABLED", "").strip() == "1"
     )
+    # T63: the kill-switch between the streaming POST and detached turns.
+    # Wholesale, never a blend -- the two disagree about what POST /chat
+    # returns, so a per-request mix would leave the client guessing.
+    #
+    # On since Phase 5 taught the frontend the 202-then-GET protocol; this
+    # is now what a rollback turns *off*. A rollback needs nothing but this
+    # variable and a restart: the client branches on the response (200 +
+    # text/event-stream against 202 + JSON) rather than on a flag of its
+    # own, so one bundle serves both and no image is rebuilt.
+    chat_detached_turns_enabled: bool = field(
+        default_factory=lambda: os.getenv("CHAT_DETACHED_TURNS_ENABLED", "1").strip() != "0"
+    )
     long_request_seconds: float = field(default_factory=lambda: float(os.getenv("LONG_REQUEST_SECONDS", "30")))
     # T61: Supabase is the identity provider; our own Postgres stays. Both are
     # required at boot (validate_startup) now that the auth middleware verifies
@@ -475,6 +502,13 @@ class Settings:
     # built as f"{supabase_url}/auth/v1", and a stray slash rejects every token
     # with no hint as to why. No default is possible for either -- a placeholder
     # URL would verify tokens from the wrong project rather than failing.
+    # Where the chat turn event log lives. Optional on the dataclass and
+    # required in validate_startup, same as the Supabase pair below. No
+    # default -- a placeholder would surface as every turn failing rather than
+    # as a backend that refuses to boot.
+    redis_url: str | None = field(
+        default_factory=lambda: os.getenv("REDIS_URL", "").strip() or None
+    )
     supabase_url: str | None = field(
         default_factory=lambda: os.getenv("SUPABASE_URL", "").strip().rstrip("/") or None
     )
@@ -578,7 +612,7 @@ class Settings:
             object.__setattr__(self, "log_format", "text")
 
     @property
-    def db_kwargs(self) -> dict:
+    def db_kwargs(self) -> dict[str, Any]:
         return {
             "host": self.db_host,
             "port": self.db_port,
@@ -616,6 +650,11 @@ class Settings:
         # screen. Drop this branch if Phase 3 ends up somewhere else.
         if not self.supabase_publishable_key:
             missing.append("SUPABASE_PUBLISHABLE_KEY")
+        # Every chat event travels through the event log, so a backend that
+        # cannot reach one is not degraded, it is down. Saying so at boot
+        # beats every turn returning 503.
+        if not self.redis_url:
+            missing.append("REDIS_URL")
         if missing:
             raise RuntimeError(f"Missing required environment variable(s): {', '.join(missing)}")
         unvetted = []

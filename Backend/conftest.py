@@ -107,12 +107,9 @@ def _isolate_on_disk_stores() -> None:
     checkout — which the suite then reads back, making a run's outcome depend on
     what earlier runs left behind.
 
-    T23's overlay store and the public output dir were worse: ``APP_ROOT``-
-    relative constants with an ``os.makedirs`` beside them, so they landed
-    *inside the checkout* and a bare import was enough to create them. For the
-    output dir the import-time call is load-bearing rather than merely early —
-    ``api.py`` hands it to a ``StaticFiles`` mount, which resolves the directory
-    when it is mounted, so a fixture would already be too late.
+    T23's overlay store was worse: an ``APP_ROOT``-relative constant with an
+    ``os.makedirs`` beside it, so it landed *inside the checkout* and a bare
+    import was enough to create it.
 
     The policy lives in ``tests/cache_isolation.py`` with the rest of it; this
     is just the call site early enough to matter.
@@ -123,13 +120,11 @@ def _isolate_on_disk_stores() -> None:
     from cache_isolation import (
         isolate_cube_store,
         isolate_frame_store,
-        isolate_output_dir,
         isolate_overlay_store,
     )
 
     isolate_cube_store()
     isolate_overlay_store()
-    isolate_output_dir()
     isolate_frame_store()
 
 

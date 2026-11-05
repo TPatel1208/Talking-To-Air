@@ -46,6 +46,28 @@ def _fake_pg_connection(conn):
     return _factory
 
 
+class DeleteChartsForSessionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_returns_the_payloads_it_deleted(self):
+        """The caller needs the deleted payloads to find the overlay PNGs
+        they named. Once the rows are gone, nothing else records them."""
+        from tta_backend.repositories import chart_repository
+
+        rows = [({"type": "heatmap", "overlay": {"_path": "/s/a.png"}},), ({"type": "timeseries"},)]
+        cursor = MagicMock()
+        cursor.fetchall = AsyncMock(return_value=rows)
+        conn = MagicMock()
+        conn.execute = AsyncMock(return_value=cursor)
+        conn.commit = AsyncMock()
+
+        with patch("tta_backend.repositories.chart_repository.pg_connection", _fake_pg_connection(conn)):
+            deleted = await chart_repository.delete_charts_for_session("thread-1", "user-1")
+
+        self.assertEqual(deleted, [row[0] for row in rows])
+        sql = conn.execute.await_args.args[0]
+        self.assertRegex(sql, r"(?is)DELETE FROM agent_charts.*RETURNING\s+payload")
+        conn.commit.assert_awaited_once()
+
+
 class SaveChartIdSelectionTests(unittest.IsolatedAsyncioTestCase):
     async def test_computes_a_stable_hash_id_when_payload_has_no_chart_id(self):
         from tta_backend.repositories import chart_repository

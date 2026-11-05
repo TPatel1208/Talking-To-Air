@@ -20,7 +20,16 @@ surfaces against the live code.
 import math
 import re
 from dataclasses import dataclass
-from typing import Any
+from itertools import pairwise
+from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from shapely.geometry.base import BaseGeometry
+
+    from tta_backend.earthdata_mcp.results import MCPToolError
+    from tta_backend.utils.plotting import RegionResolver
+    from tta_backend.utils.region_dispatch import ExtentDispatch
 
 # D16, and V22 chose the spellings deliberately rather than accepting whatever
 # a regex happened to admit. Both systems, because for an atmospheric-science
@@ -106,7 +115,7 @@ class BufferRequest:
         return f"{self.amount:g} {self.unit}"
 
 
-def is_buffer(raw_name: str, normalize) -> bool:
+def is_buffer(raw_name: str, normalize: Callable[[str], str]) -> bool:
     """Is this string syntactically a buffer request?
 
     Answered on the normalized string, but **after** ``is_composite`` has had
@@ -120,7 +129,7 @@ def is_buffer(raw_name: str, normalize) -> bool:
     return isinstance(raw_name, str) and bool(_SHAPE.match(normalize(raw_name)))
 
 
-def parse_buffer(raw_name: str, normalize) -> BufferRequest:
+def parse_buffer(raw_name: str, normalize: Callable[[str], str]) -> BufferRequest:
     """Parse a string ``is_buffer`` has already claimed, or raise naming why."""
     match = _PARSE.match(normalize(raw_name))
     if match is None:
@@ -145,7 +154,7 @@ def parse_buffer(raw_name: str, normalize) -> BufferRequest:
     )
 
 
-def build_buffer(latitude: float, longitude: float, metres: float):
+def build_buffer(latitude: float, longitude: float, metres: float) -> "BaseGeometry":
     """D9's geometry: project to a local azimuthal-equidistant CRS centred on
     the point, buffer in metres, project back.
 
@@ -172,7 +181,7 @@ def build_buffer(latitude: float, longitude: float, metres: float):
     return transform(to_wgs84, disc)
 
 
-def _region(request: BufferRequest, geo_result: dict, geometry) -> dict:
+def _region(request: BufferRequest, geo_result: dict[str, Any], geometry: "BaseGeometry") -> dict[str, Any]:
     """The resolved region, in ``dispatch_composite``'s shape.
 
     ``display_name`` cites the **geocoder's own label** and says the shape is a
@@ -204,7 +213,7 @@ def _region(request: BufferRequest, geo_result: dict, geometry) -> dict:
     }
 
 
-def _check_pole(request: BufferRequest, geo_result: dict) -> None:
+def _check_pole(request: BufferRequest, geo_result: dict[str, Any]) -> None:
     """V22, decided separately from the antimeridian, and checked **first**.
 
     A buffer containing a pole is not a distorted polygon, it is an
@@ -251,7 +260,7 @@ def _check_pole(request: BufferRequest, geo_result: dict) -> None:
         )
 
 
-def _crosses_antimeridian(geometry) -> bool:
+def _crosses_antimeridian(geometry: "BaseGeometry") -> bool:
     """Does the ring wrap the long way round in a lat/lon frame?
 
     Measured against adjacent-vertex longitude jumps, and the two populations
@@ -265,17 +274,17 @@ def _crosses_antimeridian(geometry) -> bool:
     """
     for ring in _rings(geometry):
         lons = [x for x, _ in ring.coords]
-        if any(abs(a - b) > 180 for a, b in zip(lons, lons[1:])):
+        if any(abs(a - b) > 180 for a, b in pairwise(lons)):
             return True
     return False
 
 
-def _rings(geometry):
+def _rings(geometry: "BaseGeometry") -> list[Any]:
     parts = getattr(geometry, "geoms", [geometry])
     return [part.exterior for part in parts if part.exterior is not None]
 
 
-def _check_antimeridian(request: BufferRequest, geo_result: dict, geometry) -> None:
+def _check_antimeridian(request: BufferRequest, geo_result: dict[str, Any], geometry: "BaseGeometry") -> None:
     """V22, option (a): refuse, rather than split.
 
     The shape being refused is not merely distorted -- it is inverted. Measured
@@ -316,7 +325,7 @@ def _check_antimeridian(request: BufferRequest, geo_result: dict, geometry) -> N
     )
 
 
-def _resolved(request: BufferRequest, geo_result) -> dict:
+def _resolved(request: BufferRequest, geo_result: dict[str, Any] | None) -> dict[str, Any]:
     """Everything after the geocode -- shared, so the two twins differ in one
     line and cannot drift apart on the checks."""
     if geo_result is None:
@@ -330,7 +339,7 @@ def _resolved(request: BufferRequest, geo_result) -> dict:
     return _region(request, geo_result, geometry)
 
 
-def dispatch_buffer(raw_name: str, resolver) -> BufferResult:
+def dispatch_buffer(raw_name: str, resolver: "RegionResolver") -> BufferResult:
     """The sync twin (D11b).
 
     Gate V24 verified export_service as the caller that reached this, via
@@ -349,7 +358,7 @@ def dispatch_buffer(raw_name: str, resolver) -> BufferResult:
     )
 
 
-async def adispatch_buffer(raw_name: str, resolver) -> BufferResult:
+async def adispatch_buffer(raw_name: str, resolver: "RegionResolver") -> BufferResult:
     """The async twin (D11b). Reached by every analysis tool and by the
     retrieval-plane wrapper, both of which are ``async`` -- a single blocking
     twin would put ``requests.get(timeout=15)`` on the event loop, the hazard
@@ -361,7 +370,7 @@ async def adispatch_buffer(raw_name: str, resolver) -> BufferResult:
     return BufferResult(claimed=True, region=_resolved(request, geo_result))
 
 
-async def adispatch_buffer_extent(raw_name: str, resolver):
+async def adispatch_buffer_extent(raw_name: str, resolver: "RegionResolver") -> "ExtentDispatch":
     """The retrieval plane's answer for a buffer phrase (D13, gate V23).
 
     Not optional, and the argument is stronger than the composite's. A
@@ -405,7 +414,7 @@ async def adispatch_buffer_extent(raw_name: str, resolver):
     return ExtentDispatch(claimed=True, location=_outward_bbox(buffered.region["bounds"]))
 
 
-def _outward_bbox(bounds) -> str:
+def _outward_bbox(bounds: Sequence[float]) -> str:
     """``"W,S,E,N"`` at ``_bbox_string``'s six decimals, rounded **outward**.
 
     Found by the containment test rather than reasoned about in advance: a
@@ -436,7 +445,7 @@ def _outward_bbox(bounds) -> str:
     ])
 
 
-def _claim(raw_name: str, resolver) -> BufferRequest | None:
+def _claim(raw_name: str, resolver: "RegionResolver") -> BufferRequest | None:
     """Claim, parse and vet the target, or decline. Network-free, and the whole
     of what the twins share before they diverge."""
     if not is_buffer(raw_name, resolver._normalize_location_name):
@@ -446,7 +455,7 @@ def _claim(raw_name: str, resolver) -> BufferRequest | None:
     return request
 
 
-def _named_region_vocabulary(resolver) -> set[str]:
+def _named_region_vocabulary(resolver: "RegionResolver") -> set[str]:
     """Every token that already names a *region* rather than a point.
 
     Assembled from the live tables rather than written out, so a coalition or
@@ -463,7 +472,7 @@ def _named_region_vocabulary(resolver) -> set[str]:
     )
 
 
-def _check_not_a_named_region(request: BufferRequest, resolver) -> None:
+def _check_not_a_named_region(request: BufferRequest, resolver: "RegionResolver") -> None:
     """D9: ``X`` resolves **only** as a single geocoded point, never
     recursively through PRESET or COMPOSITE (a Non-Goal).
 
@@ -500,7 +509,7 @@ def _check_not_a_named_region(request: BufferRequest, resolver) -> None:
     )
 
 
-def _unresolved_target(request: BufferRequest):
+def _unresolved_target(request: BufferRequest) -> "MCPToolError":
     """D8's rule, carried to this grammar: once a string is syntactically a
     buffer, the geocoder never sees the *phrase*.
 
@@ -521,7 +530,7 @@ def _unresolved_target(request: BufferRequest):
     )
 
 
-def _check_extent(request: BufferRequest, geo_result: dict, geometry) -> None:
+def _check_extent(request: BufferRequest, geo_result: dict[str, Any], geometry: "BaseGeometry") -> None:
     """D16's gate, reusing ``MAX_COMPOSITE_ENVELOPE_DEG2`` rather than minting a
     third constant -- two numbers both meaning "too big" drift apart, and then
     a refusal names a limit that is not the one that fired.
@@ -555,7 +564,7 @@ def _check_extent(request: BufferRequest, geo_result: dict, geometry) -> None:
     )
 
 
-def _malformed(raw_name: str):
+def _malformed(raw_name: str) -> "MCPToolError":
     from tta_backend.earthdata_mcp.results import CATEGORY_USER_INPUT, MCPToolError
 
     return MCPToolError(
@@ -566,7 +575,7 @@ def _malformed(raw_name: str):
     )
 
 
-def _missing_units(raw_name: str, amount: str):
+def _missing_units(raw_name: str, amount: str) -> "MCPToolError":
     """D16, and the gate's tension-3 decision: a bare number **refuses**.
 
     Defaulting silently is a 50%-wrong answer for half of users -- 50 miles is
@@ -587,7 +596,7 @@ def _missing_units(raw_name: str, amount: str):
     )
 
 
-def _unknown_units(raw_name: str, unit: str):
+def _unknown_units(raw_name: str, unit: str) -> "MCPToolError":
     from tta_backend.earthdata_mcp.results import CATEGORY_USER_INPUT, MCPToolError
 
     return MCPToolError(

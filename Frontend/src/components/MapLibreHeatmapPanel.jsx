@@ -23,72 +23,38 @@
  * the arrays; basemap/terrain tiles failed -> flat fill, overlay still
  * shows.
  */
-import { useEffect, useRef } from 'react'
-import maplibregl from 'maplibre-gl'
+import { useEffect, useId, useRef } from 'react'
+// maplibre-gl 6 is ESM-only with no default export.
+import * as maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
+// maplibre 6 derives its worker's URL at runtime from import.meta.url, which
+// Vite can neither follow (dev serves the pre-bundled copy, so the URL 404s)
+// nor emit (the build ships no worker file). Without a worker no source ever
+// loads: the map draws its background and nothing else. `?worker&url` has Vite
+// bundle the worker with its shared chunk and hand back the emitted URL.
+import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 import { colorbarGeometry, scaleClipNote } from '../utils/colorbarGeometry.js'
+import { scaledTicks, scaledUnitsLabel } from '../utils/displayFormat.js'
+import SciText from './SciText.jsx'
 import { buildCanvasFallbackFrame } from '../utils/canvasFallback.js'
-import { fetchUsStatesGeoJSON, isConusBounds } from '../utils/regionBorders.js'
-import { resolveOverlayMode } from '../utils/overlayMode.js'
+import { BORDER_LINE, fetchUsStatesGeoJSON, isConusBounds, overlayBeforeId } from '../utils/regionBorders.js'
+import { rescaledOverlayUrl, resolveOverlayMode } from '../utils/overlayMode.js'
 import { currentAccessToken } from '../utils/apiFetch.js'
+import { API_BASE } from '../config.js'
+import { buildMapStyle, fetchTileConfig } from '../utils/mapTiles.js'
 
-const FALLBACK_TILE_CONFIG = {
-  basemap_light_url: 'https://basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png',
-  basemap_dark_url: 'https://basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png',
-  terrain_dem_url: 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png',
-  basemap_attribution: '© CARTO © OpenStreetMap contributors',
-  terrain_attribution: 'Terrain tiles: AWS Terrain Tiles',
-}
-
-let _tileConfigPromise = null
-export function fetchTileConfig() {
-  if (_tileConfigPromise) return _tileConfigPromise
-  _tileConfigPromise = fetch('/api/config/map-tiles')
-    .then(r => (r.ok ? r.json() : null))
-    .then(config => ({ ...FALLBACK_TILE_CONFIG, ...(config || {}) }))
-    .catch(() => FALLBACK_TILE_CONFIG)
-  return _tileConfigPromise
-}
-
-export function buildMapStyle(tileConfig) {
-  return {
-    version: 8,
-    sources: {
-      basemap: {
-        type: 'raster',
-        tiles: [tileConfig.basemap_light_url],
-        tileSize: 256,
-        attribution: tileConfig.basemap_attribution,
-      },
-      'terrain-dem': {
-        type: 'raster-dem',
-        tiles: [tileConfig.terrain_dem_url],
-        tileSize: 256,
-        encoding: 'terrarium',
-        attribution: tileConfig.terrain_attribution,
-      },
-    },
-    layers: [
-      // Flat fill underneath everything -- the degrade-don't-die fallback
-      // when basemap/terrain tiles fail to load (T17 posture).
-      { id: 'background', type: 'background', paint: { 'background-color': '#e4e1d8' } },
-      { id: 'basemap', type: 'raster', source: 'basemap', paint: { 'raster-fade-duration': 0 } },
-      {
-        id: 'hillshade',
-        type: 'hillshade',
-        source: 'terrain-dem',
-        paint: { 'hillshade-shadow-color': '#3b3b3b', 'hillshade-exaggeration': 0.35 },
-      },
-    ],
-  }
-}
+maplibregl.setWorkerUrl(maplibreWorkerUrl)
 
 // A request is "ours" (needs the bearer token) only when it targets our own
 // backend's chart overlay route -- never the third-party CARTO/terrarium
-// tile hosts, which must never see the user's access token.
+// tile hosts, which must never see the user's access token. The comparison is
+// on the full href, so the origin has to match as well as the path: API_BASE
+// may be another origin, and a tile host could serve a path that happens to
+// look like ours.
 function isOwnOverlayRequest(url) {
   try {
-    return new URL(url, window.location.origin).pathname.startsWith('/api/chart/')
+    const ownChartRoute = new URL(`${API_BASE}/chart/`, window.location.origin).href
+    return new URL(url, window.location.origin).href.startsWith(ownChartRoute)
   } catch {
     return false
   }
@@ -158,7 +124,7 @@ function addCanvasFallbackOverlay(map, payload, { animate = false } = {}) {
     type: 'raster',
     source: 'overlay-canvas',
     paint: { 'raster-resampling': 'nearest', 'raster-fade-duration': 0 },
-  })
+  }, overlayBeforeId(map))
 }
 
 function addBorderLayer(map, geojson) {
@@ -166,10 +132,16 @@ function addBorderLayer(map, geojson) {
   if (map.getSource('region-borders')) return
   map.addSource('region-borders', { type: 'geojson', data: geojson })
   map.addLayer({
+    id: 'region-borders-halo',
+    type: 'line',
+    source: 'region-borders',
+    paint: { 'line-color': BORDER_LINE.haloColor, 'line-width': BORDER_LINE.haloWidth },
+  })
+  map.addLayer({
     id: 'region-borders',
     type: 'line',
     source: 'region-borders',
-    paint: { 'line-color': 'rgba(30,30,30,0.85)', 'line-width': 1.1 },
+    paint: { 'line-color': BORDER_LINE.color, 'line-width': BORDER_LINE.width },
   })
 }
 
@@ -181,10 +153,11 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, colorScale
 
   // An externally supplied vmin/vmax/colormap wins over the payload's own --
   // this is the hook compare mode's shared-scale logic (T28) uses to recolor
-  // every panel onto one range. The server-rendered overlay PNG is baked
-  // with the payload's native scale and can't be recolored client-side, so
-  // an override always forces the canvas-fallback path (rendered from the
-  // payload's own lats/lons/values arrays).
+  // every panel onto one range. The overlay PNG is baked at the payload's
+  // native scale, so an override asks the overlay route to recolor the value
+  // raster it stored beside it, at full resolution. A chart drawn before those
+  // rasters existed, or whose raster was evicted, falls back to the canvas
+  // built from the payload's thinned lats/lons/values arrays.
   const effectiveVmin = colorScaleOverride?.vmin ?? vmin
   const effectiveVmax = colorScaleOverride?.vmax ?? vmax
   const effectiveColormap = colorScaleOverride?.colormap ?? colormap
@@ -199,6 +172,16 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, colorScale
   const frameRef = useRef(frame)
   useEffect(() => { frameRef.current = frame }, [frame])
 
+  // maplibre tracks window resizes only. The container also changes size when
+  // a side panel collapses or a fitted parent re-measures its height.
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return undefined
+    const observer = new ResizeObserver(() => mapRef.current?.resize())
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
+
   const [minx, miny, maxx, maxy] = bounds || [
     Math.min(...(lons || [])), Math.min(...(lats || [])),
     Math.max(...(lons || [])), Math.max(...(lats || [])),
@@ -210,22 +193,31 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, colorScale
     let basemapFailed = false
     let terrainFailed = false
 
+    // The url the 'overlay' image source was built with, so a scale change
+    // swaps the image and an unchanged one leaves it alone.
+    let imageUrl = null
+
     // Renders the data overlay using whatever scale is current at call
-    // time (overrideRef, not the closed-over prop) -- either the server PNG
-    // (native scale, no override active) or a canvas frame built from the
-    // payload's arrays at the effective vmin/vmax/colormap.
+    // time (overrideRef, not the closed-over prop) -- the server PNG at its
+    // native scale, the server PNG recolored at the override's scale, or a
+    // canvas frame built from the payload's arrays at the effective
+    // vmin/vmax/colormap.
     const drawOverlay = (map) => {
       const override = overrideRef.current
       const activeFrame = frameRef.current
-      if (resolveOverlayMode(override, overlay?.url, activeFrame) === 'native') {
+      const mode = resolveOverlayMode(override, overlay?.url, activeFrame, overlay?.rescalable)
+      if (mode !== 'canvas') {
+        const url = `${API_BASE}${mode === 'native' ? overlay.url : rescaledOverlayUrl(overlay.url, override)}`
         if (map.getLayer('overlay')) map.removeLayer('overlay')
         if (map.getSource('overlay-canvas')) map.removeSource('overlay-canvas')
+        if (map.getSource('overlay') && imageUrl !== url) map.removeSource('overlay')
         if (!map.getSource('overlay')) {
           map.addSource('overlay', {
             type: 'image',
-            url: `/api${overlay.url}`,
+            url,
             coordinates: overlayCornersFromBounds(overlay.bounds || bounds),
           })
+          imageUrl = url
         }
         if (!map.getLayer('overlay')) {
           map.addLayer({
@@ -233,7 +225,7 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, colorScale
             type: 'raster',
             source: 'overlay',
             paint: { 'raster-resampling': 'nearest', 'raster-fade-duration': 0 },
-          })
+          }, overlayBeforeId(map))
         }
         return
       }
@@ -348,32 +340,32 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, colorScale
           {title}
         </div>
       )}
-      <div style={{ position: 'relative', width: '100%', height, borderRadius: '8px', overflow: 'hidden' }}>
-        <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
-
+      {/* `height` covers the map AND its legend, so a caller that sized the
+          panel to an exact box (FittedMap, compare tiles) keeps it in that box:
+          the map takes whatever the legend leaves. */}
+      <div style={{ height, display: 'flex', flexDirection: 'column' }}>
+        <div style={{ position: 'relative', width: '100%', flex: 1, minHeight: 0, borderRadius: '8px', overflow: 'hidden' }}>
+          <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+        </div>
         {!hideLegend && <MapColorbar gradientStops={gradientStops} ticks={ticks} units={units} clipNote={clipNote} />}
       </div>
     </div>
   )
 }
 
-function MapColorbar({ gradientStops, ticks, units, clipNote }) {
+// The legend sits in its own strip under the map rather than over it, where
+// the basemap attribution covered it and the text had to stay tiny. Compare
+// mode also draws it once above the grid for a shared scale. The gradient id
+// is per instance: several colorbars share a page in compare mode, and a
+// fixed id made every one of them paint the first one's colormap.
+export function MapColorbar({ gradientStops, ticks, units, clipNote, marginTop = 10 }) {
+  const gradientId = `tta-colorbar-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`
   if (!gradientStops.length) return null
-  const gradientId = 'tta-colorbar-gradient'
+  const { labels, multiplier } = scaledTicks(ticks.map(tick => tick.value))
+  const unitsLabel = scaledUnitsLabel(multiplier, units)
   return (
-    <div
-      style={{
-        position: 'absolute',
-        left: 12,
-        bottom: 12,
-        background: 'rgba(255,255,255,0.92)',
-        borderRadius: '6px',
-        padding: '6px 10px 8px',
-        boxShadow: 'var(--shadow-sm)',
-        zIndex: 1,
-      }}
-    >
-      <svg width={180} height={14} style={{ display: 'block' }}>
+    <div style={{ marginTop, maxWidth: '440px', flexShrink: 0 }}>
+      <svg viewBox="0 0 100 10" preserveAspectRatio="none" style={{ display: 'block', width: '100%', height: 14 }}>
         <defs>
           <linearGradient id={gradientId} x1="0" y1="0" x2="1" y2="0">
             {gradientStops.map((stop, i) => (
@@ -381,20 +373,22 @@ function MapColorbar({ gradientStops, ticks, units, clipNote }) {
             ))}
           </linearGradient>
         </defs>
-        <rect x={0} y={0} width={180} height={14} fill={`url(#${gradientId})`} rx={2} />
+        <rect x={0} y={0} width={100} height={10} fill={`url(#${gradientId})`} rx={1} />
       </svg>
-      <div style={{ display: 'flex', justifyContent: 'space-between', width: 180, marginTop: 3 }}>
-        {ticks.map((tick, i) => (
-          <span key={i} style={{ fontSize: '9px', color: '#333', fontFamily: 'var(--font)' }}>
-            {tick.value.toExponential(1)}
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
+        {labels.map((label, i) => (
+          <span key={i} style={{ fontSize: '12px', color: 'var(--text-secondary)', fontFamily: 'var(--font)', fontVariantNumeric: 'tabular-nums' }}>
+            {label}
           </span>
         ))}
       </div>
-      {units && (
-        <div style={{ fontSize: '9px', color: '#555', textAlign: 'center', marginTop: 2 }}>{units}</div>
+      {unitsLabel && (
+        <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)', textAlign: 'center', marginTop: 4 }}>
+          <SciText>{unitsLabel}</SciText>
+        </div>
       )}
       {clipNote && (
-        <div style={{ fontSize: '8px', color: '#777', textAlign: 'center', marginTop: 2, fontStyle: 'italic' }}>
+        <div style={{ fontSize: '11px', color: 'var(--text-muted)', textAlign: 'center', marginTop: 2 }}>
           {clipNote}
         </div>
       )}

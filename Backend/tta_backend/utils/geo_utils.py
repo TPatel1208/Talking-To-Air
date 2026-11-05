@@ -4,6 +4,7 @@ Bounding boxes may be provided as a comma-separated string, a flat four-item
 list or tuple, or a single-item list/tuple wrapper around either form.
 """
 
+from collections.abc import Collection, Hashable
 from typing import Any, Tuple
 
 
@@ -17,7 +18,7 @@ LAT_UNITS = frozenset({"degrees_north", "degree_north", "degrees_N", "degree_N",
 LON_UNITS = frozenset({"degrees_east", "degree_east", "degrees_E", "degree_E", "degreesE", "degreeE"})
 
 
-def _candidate_vars(obj: Any) -> dict:
+def _candidate_vars(obj: Any) -> dict[str, Any]:
     """Map every variable name that could be a horizontal coordinate to its
     DataArray, scanning both coords and (for a Dataset) data_vars. A
     DataArray only carries coords."""
@@ -31,13 +32,13 @@ def _candidate_vars(obj: Any) -> dict:
 _BOUNDS_SUFFIXES = ("_bnds", "_bounds", "_vertices", "_edges")
 
 
-def _is_meta_match(var: Any, standard_name: str, units: frozenset) -> bool:
+def _is_meta_match(var: Any, standard_name: str, units: frozenset[str]) -> bool:
     if str(var.attrs.get("standard_name", "")).strip() == standard_name:
         return True
     return str(var.attrs.get("units", "")).strip() in units
 
 
-def _tiebreak(names: list, cands: dict, dims) -> str | None:
+def _tiebreak(names: list[str], cands: dict[str, Any], dims: Collection[Hashable]) -> str | None:
     """Pick the axis variable among several metadata matches. Metadata
     matching widens the net onto bounds/edge variables (which carry the same
     units as their axis); prefer the actual coordinate axis over them."""
@@ -51,7 +52,7 @@ def _tiebreak(names: list, cands: dict, dims) -> str | None:
     return min(pool, key=lambda n: (cands[n].ndim, 0 if n in dims else 1, list(cands).index(n)))
 
 
-def _coordinate_refs(obj: Any) -> set:
+def _coordinate_refs(obj: Any) -> set[str]:
     """Leaf names referenced by a science variable's CF `coordinates`
     attribute. Our group merge strips paths, so `geolocation/latitude` is
     matched as `latitude`."""
@@ -61,7 +62,7 @@ def _coordinate_refs(obj: Any) -> set:
     return {token.split("/")[-1] for token in str(raw).split()}
 
 
-def _pick(cands: dict, dims, standard_name: str, units: frozenset, names: tuple) -> str | None:
+def _pick(cands: dict[str, Any], dims: Collection[Hashable], standard_name: str, units: frozenset[str], names: tuple[str, ...]) -> str | None:
     # CF metadata is the primary, universal signal.
     meta = [n for n, v in cands.items() if _is_meta_match(v, standard_name, units)]
     picked = _tiebreak(meta, cands, dims)
@@ -71,7 +72,7 @@ def _pick(cands: dict, dims, standard_name: str, units: frozenset, names: tuple)
     return next((n for n in names if n in cands), None)
 
 
-def _identify(obj: Any, standard_name: str, units: frozenset, names: tuple) -> str | None:
+def _identify(obj: Any, standard_name: str, units: frozenset[str], names: tuple[str, ...]) -> str | None:
     cands = _candidate_vars(obj)
     dims = set(obj.dims)
     # 1. The science variable's own `coordinates` pointer is authoritative,
@@ -216,7 +217,7 @@ def vertical_axis_kind(var: Any) -> str | None:
     return None
 
 
-def vertical_axes_for_dim(obj: Any, dim: str) -> dict:
+def vertical_axes_for_dim(obj: Any, dim: str) -> dict[str, Any]:
     """``{kind: name}`` for every physical vertical axis spanning ``dim``.
 
     Scans coordinates before data variables: a granule that publishes its
@@ -227,7 +228,7 @@ def vertical_axes_for_dim(obj: Any, dim: str) -> dict:
     """
     if not dim:
         return {}
-    found: dict = {}
+    found: dict[str, Any] = {}
     names = list(getattr(obj, "coords", ()) or ())
     if hasattr(obj, "data_vars"):
         names += list(obj.data_vars)
@@ -253,7 +254,7 @@ def is_vertical_dim(obj: Any, dim: str) -> bool:
     return bool(vertical_axes_for_dim(obj, dim))
 
 
-def normalise_bbox(bbox) -> Tuple[float, float, float, float]:
+def normalise_bbox(bbox: Any) -> Tuple[float, float, float, float]:
     """Return bbox as (min_lon, min_lat, max_lon, max_lat)."""
     while isinstance(bbox, (list, tuple)) and len(bbox) == 1:
         bbox = bbox[0]

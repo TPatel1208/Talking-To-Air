@@ -3,6 +3,7 @@ import logging
 import threading
 import time
 from collections import deque
+from dataclasses import dataclass
 
 from langchain.tools import tool
 import httpx
@@ -12,7 +13,9 @@ from datetime import date, timedelta
 
 from tta_backend.config.settings import get_settings
 from tta_backend.services.artifact_store import artifact_store
+from tta_backend.services.connector_credential_service import get_aqs_credential_injector
 from tta_backend.utils.plotting import get_geocoding_service
+from tta_backend.utils.streaming import current_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +43,8 @@ DEFAULT_PARAM_CODE = "42602"  # NO2
 # A module-global dict is what actually spans the tool calls of a turn (and
 # of later turns, which is the point: see _cache_ttl_seconds).
 # Values are (expires_at, payload).
-_response_cache: dict = {}
+# cache key -> (expires_at, response payload)
+_response_cache: dict[tuple[Any, ...], tuple[float, Dict[str, Any]]] = {}
 
 # Settled measurements never change, so the only bound on reuse is process
 # lifetime; unsettled ones must lapse soon enough that a researcher asking
@@ -114,10 +118,9 @@ class _SlidingWindowLimiter:
             return max(0.0, send_at - now)
 
 
-# One limiter per credential. Today every call shares the app-level key, so
-# this behaves exactly like a single global limiter — but EPA's cap is
-# per-credential, so keying it this way is what lets per-user keys actually
-# buy independent budgets instead of queueing behind one another.
+# One limiter per credential. EPA's cap is per-credential, so keying it this
+# way is what lets researchers with their own epa_aqs connector key buy
+# independent budgets instead of queueing behind the shared app key.
 _rate_limiters: dict[str, _SlidingWindowLimiter] = {}
 _rate_limiter_registry_lock = threading.Lock()
 
@@ -192,7 +195,7 @@ def _cache_ttl_seconds(params: Dict[str, Any]) -> float:
     return _UNSETTLED_TTL_SECONDS
 
 
-def _cache_key(endpoint: str, params: Dict[str, Any]) -> tuple:
+def _cache_key(endpoint: str, params: Dict[str, Any]) -> tuple[Any, ...]:
     """Cache identity for a request, excluding credentials.
 
     AQS serves public measurements: the bytes EPA returns for a given
@@ -204,7 +207,7 @@ def _cache_key(endpoint: str, params: Dict[str, Any]) -> tuple:
     return (endpoint, tuple(sorted((k, str(v)) for k, v in params.items())))
 
 
-def _remember_response(cache_key: tuple, data: Dict[str, Any], ttl_seconds: float) -> None:
+def _remember_response(cache_key: tuple[Any, ...], data: Dict[str, Any], ttl_seconds: float) -> None:
     """Store a response, dropping whatever has expired and then the oldest
     entries if the cache is still over its ceiling."""
     now = _now()
@@ -228,23 +231,70 @@ def _reset_aqs_request_state() -> None:
         _rate_limiters.clear()
 
 
-async def _aqs_get(endpoint: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    """GET request to the AQS API; raises on HTTP errors or unexpected statuses.
+@dataclass(frozen=True)
+class _AqsCredential:
+    email: str
+    key: str
+    # The researcher whose epa_aqs connector supplied this pair; None for
+    # the shared app credential.
+    user_id: Optional[str] = None
 
-    Identical (endpoint, params) pairs are served from the response cache,
-    which spans the tool calls of a turn and — for measurements EPA has
-    already settled — later turns and other researchers too. A cache hit
-    neither waits nor consumes a rate-limit slot.
-    """
-    full_params = {**params, "email": AQS_EMAIL, "key": AQS_KEY}
-    cache_key = _cache_key(endpoint, params)
-    cached = _response_cache.get(cache_key)
-    if cached is not None:
-        expires_at, payload = cached
-        if _now() < expires_at:
-            return payload
-        del _response_cache[cache_key]
-    wait_seconds = _limiter_for(AQS_KEY).reserve()
+
+class AqsCredentialsRejected(RuntimeError):
+    """EPA answered that the email/key pair is not valid."""
+
+
+class AqsUnavailable(RuntimeError):
+    """EPA could not be reached or answered with something other than a
+    verdict on the credentials."""
+
+
+def _shared_credential() -> _AqsCredential:
+    return _AqsCredential(AQS_EMAIL, AQS_KEY)
+
+
+async def _resolve_credential() -> _AqsCredential:
+    """The caller's own epa_aqs connector pair when they have a live one,
+    otherwise the shared app credential. A failing lookup degrades to the
+    shared credential rather than taking ground data down with it."""
+    user_id = current_user_id()
+    if user_id is None:
+        return _shared_credential()
+    try:
+        personal = await get_aqs_credential_injector().resolve_credentials(user_id)
+    except Exception:
+        logger.warning("aqs_credential_lookup_failed", extra={"_event": "aqs_credential_lookup_failed"})
+        return _shared_credential()
+    if personal is None:
+        return _shared_credential()
+    return _AqsCredential(personal.email, personal.key, user_id)
+
+
+def _scrub(text: str, credential: _AqsCredential) -> str:
+    """EPA echoes the request URL, email and key included, in its Header."""
+    for secret in (credential.key, credential.email):
+        if secret:
+            text = text.replace(secret, "REDACTED")
+    return text
+
+
+def _header_error_text(header: Dict[str, Any]) -> str:
+    detail = header.get("error") or header.get("status") or ""
+    if isinstance(detail, (list, tuple)):
+        detail = "; ".join(str(item) for item in detail)
+    return str(detail)
+
+
+def _is_credential_rejection(detail: str) -> bool:
+    # EPA's wording for a bad pair, observed live: "Email and/or key are invalid."
+    return "email and/or key" in detail.lower()
+
+
+async def _aqs_request(endpoint: str, params: Dict[str, Any], credential: _AqsCredential) -> Dict[str, Any]:
+    """One uncached GET with ``credential``, paced by that credential's own
+    rate limiter. Raises AqsCredentialsRejected when EPA refuses the pair."""
+    full_params = {**params, "email": credential.email, "key": credential.key}
+    wait_seconds = _limiter_for(credential.key).reserve()
     if wait_seconds > 0:
         await asyncio.sleep(wait_seconds)
     async with httpx.AsyncClient(timeout=30) as client:
@@ -253,35 +303,88 @@ async def _aqs_get(endpoint: str, params: Dict[str, Any]) -> Dict[str, Any]:
         try:
             body = resp.json()
             aqs_header = body.get("Header", [{}])
-            aqs_msg = aqs_header[0].get("error") or aqs_header[0].get("status", "")
-            raise RuntimeError(
-                f"AQS HTTP {resp.status_code} on {endpoint}: {aqs_msg or resp.text[:300]}"
-            )
-        except (ValueError, KeyError):
+            aqs_msg = _header_error_text(aqs_header[0])
+        except (ValueError, KeyError, IndexError, AttributeError):
             resp.raise_for_status()
-    data = resp.json()
+            raise
+        if _is_credential_rejection(aqs_msg):
+            raise AqsCredentialsRejected(f"AQS HTTP {resp.status_code} on {endpoint}: {aqs_msg}")
+        raise RuntimeError(
+            f"AQS HTTP {resp.status_code} on {endpoint}: {_scrub(aqs_msg or resp.text[:300], credential)}"
+        )
+    data: Dict[str, Any] = resp.json()
     header = data.get("Header", [{}])
     status = header[0].get("status", "").lower()
     rows = len(data.get("Data", data.get("Body", [])))
+    # The query itself is in httpx's request line, which configure_logging
+    # redacts; this line carries only what httpx cannot see.
     logger.debug(
-        "EPA response endpoint=%s http=%s header_status=%r rows=%s url=%s",
+        "EPA response endpoint=%s http=%s header_status=%r rows=%s",
         endpoint,
         resp.status_code,
         header[0].get("status", ""),
         rows,
-        str(resp.url),
     )
     # "No data matched your selection" is a valid empty result, not an error
     if status not in ("success", "no data matched your selection", ""):
         # Surface only AQS's own human-readable error text — the full header
         # dict is an internal dump that a model would relay verbatim.
-        detail = header[0].get("error") or header[0].get("status") or "unexpected response"
-        if isinstance(detail, (list, tuple)):
-            detail = "; ".join(str(item) for item in detail)
-        logger.warning("aqs_error endpoint=%s header=%r", endpoint, header[0])
-        raise RuntimeError(f"EPA AQS request failed: {detail}")
+        detail = _header_error_text(header[0]) or "unexpected response"
+        logged_header = {k: v for k, v in header[0].items() if k != "url"}
+        logger.warning("aqs_error endpoint=%s header=%r", endpoint, logged_header)
+        if _is_credential_rejection(detail):
+            raise AqsCredentialsRejected(f"EPA AQS request failed: {detail}")
+        raise RuntimeError(f"EPA AQS request failed: {_scrub(detail, credential)}")
+    return data
+
+
+async def _aqs_get(endpoint: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """GET request to the AQS API; raises on HTTP errors or unexpected statuses.
+
+    Identical (endpoint, params) pairs are served from the response cache,
+    which spans the tool calls of a turn and — for measurements EPA has
+    already settled — later turns and other researchers too. A cache hit
+    neither waits nor consumes a rate-limit slot, and needs no credential.
+
+    A miss goes out on the caller's own epa_aqs connector pair when they
+    have one. If EPA rejects it, the connector is flagged so the Connectors
+    tab shows the error, and the call is retried once on the shared app
+    credential.
+    """
+    cache_key = _cache_key(endpoint, params)
+    cached = _response_cache.get(cache_key)
+    if cached is not None:
+        expires_at, payload = cached
+        if _now() < expires_at:
+            return payload
+        del _response_cache[cache_key]
+    credential = await _resolve_credential()
+    try:
+        data = await _aqs_request(endpoint, params, credential)
+    except AqsCredentialsRejected:
+        if credential.user_id is None:
+            raise
+        logger.warning("aqs_personal_key_rejected", extra={"_event": "aqs_personal_key_rejected"})
+        await get_aqs_credential_injector().mark_invalid(credential.user_id)
+        data = await _aqs_request(endpoint, params, _shared_credential())
+    else:
+        if credential.user_id is not None:
+            get_aqs_credential_injector().mark_used(credential.user_id)
     _remember_response(cache_key, data, _cache_ttl_seconds(params))
     return data
+
+
+async def validate_aqs_credentials(email: str, key: str) -> None:
+    """Prove EPA accepts ``email``/``key`` with one cheap live call, never
+    answered from the response cache (which is keyed without credentials).
+    Raises AqsCredentialsRejected for a bad pair, AqsUnavailable when EPA
+    gives no verdict."""
+    try:
+        await _aqs_request("list/states", {}, _AqsCredential(email, key))
+    except AqsCredentialsRejected:
+        raise
+    except (httpx.HTTPError, RuntimeError, ValueError) as exc:
+        raise AqsUnavailable("EPA AQS did not answer the credential check") from exc
 
 
 def _haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -323,14 +426,14 @@ def _bbox_from_point(lat: float, lon: float) -> List[float]:
 def _positive_int(value: Union[int, str], name: str) -> int:
     try:
         parsed = int(value)
-    except (TypeError, ValueError):
-        raise ValueError(f"Invalid {name}: '{value}' must be an integer or castable to integer.")
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid {name}: '{value}' must be an integer or castable to integer.") from exc
     if parsed < 1:
         raise ValueError(f"Invalid {name}: {parsed} must be >= 1.")
     return parsed
 
 
-def _resolve_dates(bdate: Optional[str], edate: Optional[str]):
+def _resolve_dates(bdate: Optional[str], edate: Optional[str]) -> tuple[date, date, str, str]:
     """
     Parse and validate bdate/edate strings (YYYY-MM-DD).
     Defaults: bdate = 1 year ago, edate = bdate.
@@ -433,8 +536,10 @@ def _upstream_error_response(message: str) -> Dict[str, Any]:
     return {"Header": [{"status": "upstream_error", "note": message}], "Body": []}
 
 
-async def _fetch_active_monitors(bbox, param_code, bdate_str, edate_str, k=1):
-    best = []
+async def _fetch_active_monitors(
+    bbox: List[float], param_code: str, bdate_str: str, edate_str: str, k: int = 1,
+) -> List[Dict[str, Any]]:
+    best: List[Dict[str, Any]] = []
     for expansion in _BBOX_EXPANSIONS:
         south, north, west, east = _expand_bbox(bbox, expansion)
         data = await _aqs_get(
@@ -458,7 +563,7 @@ async def _fetch_active_monitors(bbox, param_code, bdate_str, edate_str, k=1):
     return best
 
 
-def _nearest_k(monitors: List[Dict], lat_q: float, lon_q: float, k: int) -> List[Dict]:
+def _nearest_k(monitors: List[Dict[str, Any]], lat_q: float, lon_q: float, k: int) -> List[Dict[str, Any]]:
     """Linear haversine scan — correct and fast for the small byBox result sets."""
     for m in monitors:
         m["_dist"] = _haversine_miles(lat_q, lon_q, float(m["latitude"]), float(m["longitude"]))
@@ -466,7 +571,7 @@ def _nearest_k(monitors: List[Dict], lat_q: float, lon_q: float, k: int) -> List
     return monitors[: min(k, len(monitors))]
 
 
-def _build_body(nearest: List[Dict], param_code: str) -> List[Dict]:
+def _build_body(nearest: List[Dict[str, Any]], param_code: str) -> List[Dict[str, Any]]:
     """Format monitor dicts into the standard response Body shape."""
     body = []
     for m in nearest:
@@ -597,8 +702,8 @@ async def find_closest_monitor_by_coords(
     try:
         latitude = float(latitude)
         longitude = float(longitude)
-    except ValueError:
-        raise ValueError(f"Invalid latitude or longitude: '{latitude}', '{longitude}' must be float or castable to float.")
+    except ValueError as exc:
+        raise ValueError(f"Invalid latitude or longitude: '{latitude}', '{longitude}' must be float or castable to float.") from exc
     k = _positive_int(k, "k")
     bdate_obj, edate_obj, bdate_str, edate_str = _resolve_dates(bdate, edate)
 
@@ -632,9 +737,9 @@ async def find_closest_monitor_by_coords(
 
 def _resolve_filter(
     prefix: str,
-    state_code, county_code, site_number,
-    cbsa_code, minlat, maxlat, minlon, maxlon,
-) -> tuple:
+    state_code: Optional[str], county_code: Optional[str], site_number: Optional[str],
+    cbsa_code: Optional[str], minlat: Optional[Union[float, str]], maxlat: Optional[Union[float, str]], minlon: Optional[Union[float, str]], maxlon: Optional[Union[float, str]],
+) -> tuple[str, Dict[str, Any]]:
     """Return (endpoint, filter_params) for a given data prefix and filter inputs."""
     if site_number and ((county_code and state_code) or "-" in str(site_number)):
         state_code, county_code, site_number = _normalise_site_filter(
@@ -651,7 +756,7 @@ def _resolve_filter(
     elif cbsa_code:
         cbsa_code = _normalise_numeric_filter("cbsa_code", cbsa_code)
         return f"{prefix}/byCBSA", {"cbsa": cbsa_code}
-    elif all(v is not None for v in [minlat, maxlat, minlon, maxlon]):
+    elif minlat is not None and maxlat is not None and minlon is not None and maxlon is not None:
         minlat, maxlat = float(minlat), float(maxlat)
         minlon, maxlon = float(minlon), float(maxlon)
         return f"{prefix}/byBox", {"minlat": minlat, "maxlat": maxlat, "minlon": minlon, "maxlon": maxlon}
@@ -663,7 +768,7 @@ def _resolve_filter(
         )
 
 
-def _normalise_numeric_filter(name: str, value, *, min_width: int = 0) -> str:
+def _normalise_numeric_filter(name: str, value: Any, *, min_width: int = 0) -> str:
     text = str(value).strip()
     if text.lower() in _PLACEHOLDER_FILTER_VALUES:
         raise ValueError(
@@ -675,7 +780,7 @@ def _normalise_numeric_filter(name: str, value, *, min_width: int = 0) -> str:
     return text.zfill(min_width) if min_width else text
 
 
-def _normalise_site_filter(state_code, county_code, site_number) -> tuple[str, str, str]:
+def _normalise_site_filter(state_code: Optional[str], county_code: Optional[str], site_number: Optional[str]) -> tuple[str, str, str]:
     site_text = str(site_number).strip()
     if "-" in site_text:
         parts = site_text.split("-")
@@ -699,11 +804,11 @@ def _normalise_site_filter(state_code, county_code, site_number) -> tuple[str, s
 async def _fetch_summary(
     prefix: str,
     param_code: str,
-    bdate_obj, edate_obj, bdate_str, edate_str,
-    state_code, county_code, site_number,
-    cbsa_code, minlat, maxlat, minlon, maxlon,
-    cbdate, cedate, pollutant_standard,
-) -> tuple:
+    bdate_obj: date, edate_obj: date, bdate_str: str, edate_str: str,
+    state_code: Optional[str], county_code: Optional[str], site_number: Optional[str],
+    cbsa_code: Optional[str], minlat: Optional[Union[float, str]], maxlat: Optional[Union[float, str]], minlon: Optional[Union[float, str]], maxlon: Optional[Union[float, str]],
+    cbdate: Optional[str], cedate: Optional[str], pollutant_standard: Optional[str],
+) -> tuple[List[Dict[str, Any]], str, Dict[str, Any]]:
     """
     Shared fetch + filter logic for daily, quarterly, and annual summaries.
     Returns (records, endpoint, filter_params).
@@ -738,8 +843,9 @@ async def _fetch_summary(
 
 
 def _build_summary_header(
-    rows, endpoint, param_code, bdate_obj, edate_obj, pollutant_standard
-):
+    rows: int, endpoint: str, param_code: str, bdate_obj: date, edate_obj: date,
+    pollutant_standard: Optional[str],
+) -> List[Dict[str, Any]]:
     return [{
         "status": "success",
         "rows": rows,
@@ -797,11 +903,11 @@ def _artifact_table_response(
     }
 
 
-def _site_id(r):
+def _site_id(r: Dict[str, Any]) -> str:
     return "-".join([r.get("state_code", "??"), r.get("county_code", "??"), r.get("site_number", "??")])
 
 
-def _float_or_none(value):
+def _float_or_none(value: Any) -> Optional[float]:
     if value is None or value == "":
         return None
     try:
@@ -1200,7 +1306,7 @@ async def find_exceedance_days(
         return _upstream_error_response(str(exc))
 
     # Extract the measurement value for each day
-    def _val(r):
+    def _val(r: Dict[str, Any]) -> Optional[float]:
         v = r.get(measurement_field)
         return float(v) if v is not None else None
 
@@ -1217,8 +1323,8 @@ async def find_exceedance_days(
         percentile_cutoff = sorted_vals[idx]
 
     # Flag days
-    body = []
-    for r, v in zip(records, values):
+    body: List[Dict[str, Any]] = []
+    for r, v in zip(records, values, strict=True):
         if v is None:
             continue
         triggered = []
@@ -1237,7 +1343,8 @@ async def find_exceedance_days(
             "local_site_name": r.get("local_site_name"),
         })
 
-    body.sort(key=lambda x: x["date"])
+    # A record with no date_local sorts first rather than raising on None < str.
+    body.sort(key=lambda x: x["date"] or "")
 
     header = [{
             "status": "success",

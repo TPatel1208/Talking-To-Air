@@ -83,6 +83,8 @@ def route_intent(message: str) -> str:
     "BOTH"      — both agents required (explicit cross-source request)
     "LLM"       — ambiguous; let the supervisor LLM decide
     """
+    if re.search(r"\bHMS\b|\bsmoke\b|烟雾", message, re.I):
+        return "LLM"
     if _CROSS_RE.search(message):
         return "BOTH"
     is_ground = bool(_GROUND_RE.search(message))

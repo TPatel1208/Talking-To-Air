@@ -272,7 +272,9 @@ def _write_states_table(state_features: list[dict]) -> None:
         "source, so the two cannot drift; tests assert they still agree.",
         '"""',
         "",
-        "US_STATES: dict[str, dict] = {",
+        "from typing import Any",
+        "",
+        "US_STATES: dict[str, dict[str, Any]] = {",
     ]
     for feature in state_features:
         props = feature["properties"]

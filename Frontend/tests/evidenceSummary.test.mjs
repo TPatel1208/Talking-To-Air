@@ -35,12 +35,12 @@ test('formats an uncertainty fact with pct-of-science', () => {
     value: 0.08, units: 'molecules/cm^2', coverage: 1.0, pct_of_science: 0.08,
   }
   assert.equal(evidenceLabel(fact), 'Retrieval uncertainty')
-  assert.equal(evidenceValueText(fact), '0.08 molecules/cm^2 (~8.0% of value)')
+  assert.equal(evidenceValueText(fact), '0.08 molecules/cm² (~8.0% of value)')
 })
 
 // Large/small science magnitudes format as exponential; coverage rounds.
 test('formats large magnitudes as exponential', () => {
-  assert.equal(evidenceValueText({ stat: 'mean', value: 2.8e15, units: 'molecules/cm^2' }), '2.80e+15 molecules/cm^2')
+  assert.equal(evidenceValueText({ stat: 'mean', value: 2.8e15, units: 'molecules/cm^2' }), '2.80 × 10¹⁵ molecules/cm²')
   assert.equal(evidenceCoverageText(0.876), 'over 88% valid pixels')
 })
 

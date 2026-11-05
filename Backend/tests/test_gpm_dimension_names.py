@@ -17,6 +17,7 @@ CF-metadata-primary lat/lon identification. These tests write a real
 dimension-scale-less HDF5 with h5py (no xarray writer can produce one) and
 drive it through the public open/stat seams.
 """
+import gc
 import importlib.util
 import json
 import os
@@ -106,6 +107,17 @@ class GpmDimensionNamesTests(unittest.IsolatedAsyncioTestCase):
 
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
+        # Runs *before* that cleanup (addCleanup is LIFO), and it has to.
+        # The refusal test raises MCPToolError out through the frames holding
+        # the opened Dataset, and an exception keeps its traceback, which keeps
+        # those frames -- a cycle refcounting cannot break, so the HDF5 file
+        # stays open until the cyclic collector runs. POSIX lets the tempdir be
+        # unlinked anyway; Windows answers WinError 32 and fails a test whose
+        # assertions all passed. Collecting is the fix rather than
+        # ignore_cleanup_errors: it actually closes the file, and a future
+        # change that holds a *strong* reference still fails here, which is a
+        # real leak and should.
+        self.addCleanup(gc.collect)
         self.volume = HandleVolume(self._tmpdir.name)
 
         server = FakeEarthdataMCPServer(build_fake_mcp({

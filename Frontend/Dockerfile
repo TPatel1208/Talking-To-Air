@@ -11,8 +11,10 @@ RUN \
 
 COPY . .
 
-# In production the frontend calls /api/* which nginx proxies to the backend.
-# Override at build time if deploying frontend separately.
+# Base URL for every API request (read by src/config.js, inlined by Vite at
+# build time). The default /api is same-origin: nginx proxies it to the
+# backend. Pass an absolute URL to serve the SPA from a different origin; the
+# backend then has to allow that origin via CORS.
 ARG VITE_API_URL=/api
 ENV VITE_API_URL=${VITE_API_URL}
 

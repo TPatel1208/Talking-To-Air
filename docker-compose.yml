@@ -34,7 +34,45 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 15s       
+      start_period: 15s
+
+  # ── Redis (chat turn event log) ──────────────────────────────────────────────
+  #  Carries a turn's SSE frames, so a reader that went away resumes from a
+  #  cursor instead of losing the turn. Separate from the harmony-retrieval-mcp
+  #  stack's `earthdata-redis`: that stack deploys independently, and sharing
+  #  would make an unrelated retrieval deploy a chat outage.
+  redis:
+    image: redis:7-alpine
+    container_name: tta-redis
+    restart: unless-stopped
+    # No persistence: the log carries narration only, so once a turn ends
+    # HistoryService is the source of truth and a restart costs in-flight
+    # narration and nothing else -- the state a reader already handles when it
+    # falls off the back of a stream. Also means no volume and no fsync.
+    #
+    # noeviction, not allkeys-lru: this instance also holds the per-thread
+    # active-turn lock and the stop flag, where eviction is a silent
+    # correctness failure (two concurrent turns on one thread) rather than a
+    # visible one. Streams are bounded by MAXLEN and EXPIRE, so reaching this
+    # ceiling means something is wrong, not busy.
+    command: >
+      redis-server
+      --save ""
+      --appendonly no
+      --maxmemory 384mb
+      --maxmemory-policy noeviction
+    # Headroom over --maxmemory, which bounds the dataset and not the process.
+    # Same reasoning as the backend's ceiling: an unbounded container leaves
+    # the kernel to choose the victim.
+    mem_limit: ${REDIS_MEM_LIMIT:-512m}
+    # No `ports:`, same posture as the backend -- reachable only as redis:6379
+    # on the compose network.
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
 
   # ── FastAPI + LangChain backend ──────────────────────────────────────────────
   backend:
@@ -51,6 +89,14 @@ services:
     # .github/workflows/release.yml and IMAGE_REGISTRY/IMAGE_TAG in .env.example.
     image: ${IMAGE_REGISTRY:-ghcr.io/tpatel1208}/tta-backend:${IMAGE_TAG:-dev}
     container_name: tta-backend
+    # Docker's default is 10s, and the shutdown is a sum: up to 5s waiting
+    # for connections, then the MCP client stop, the Supabase warm stop, up
+    # to 5s draining the turns still running, the log flush and the pool
+    # close. Under budget the sequence is SIGKILLed partway through, which
+    # costs exactly what it exists to save -- every in-flight turn ends
+    # with no `interrupted` entry and its thread stays claimed until the
+    # claim TTL lapses.
+    stop_grace_period: 30s
     restart: unless-stopped
     # The container's memory ceiling, and half of a two-part contract.
     #
@@ -90,6 +136,9 @@ services:
       DB_PORT: "5432"
       DB_NAME: talking_to_air_memory
       DB_USER: postgres
+      # Where the chat turn event log lives. Required at boot: every turn's
+      # frames travel through it.
+      REDIS_URL: "redis://redis:6379/0"
       # Which peers uvicorn's --proxy-headers will believe about the client's
       # real address. Scoped to Docker's private bridge range, which is the
       # only hop in front of this service (nginx, in the frontend container).
@@ -131,12 +180,12 @@ services:
     # it on loopback when you want a browser pointed at /docs:
     #   docker compose -f docker-compose.yml -f docker-compose.debug.yml up
     volumes:
-      - plot_outputs:/app/outputs
-      # Server-rendered map overlay PNGs (T23). Kept OUT of /app/outputs on
-      # purpose (that dir is served unauthenticated at /outputs), so it needs
-      # its own named volume — without one, a container recreate wipes every
+      # Server-rendered map overlay PNGs (T23). Needs its own named volume —
+      # without one, a container recreate wipes every
       # overlay while its chart payload persists in Postgres, and the map
       # silently degrades to the canvas fallback ("quality lowered on restart").
+      # Bounded by OVERLAY_STORE_MAX_BYTES (1 GiB), LRU by last read; an
+      # evicted overlay degrades the same way.
       - overlay_store:/app/overlay_store
       # T52 Zarr cube cache — the open pipeline's output, keyed so it self-
       # invalidates. Backend-only and read-write, same posture as
@@ -147,10 +196,9 @@ services:
       # not by free space.
       - cube_store:/app/cube_store
       # T59 frame blob store — the float32 stack behind a chart's time
-      # scrubber. Its own volume rather than a corner of overlay_store, which
-      # has no eviction policy and grows forever: an LRU sweeper sharing a
-      # directory with an unbounded store would evict frames to make room for
-      # PNGs that never leave. Bounded by FRAME_STORE_MAX_BYTES (1 GiB), not by
+      # scrubber. Its own volume rather than a corner of overlay_store: each
+      # store's startup sweep and size accounting assume it owns its
+      # directory. Bounded by FRAME_STORE_MAX_BYTES (1 GiB), not by
       # free space. Without a volume, a container recreate strips the scrubber
       # off every chart ever plotted while the frame axis persists in Postgres
       # and goes on advertising it — and D8 forbids rebuilding the blob.
@@ -161,6 +209,8 @@ services:
       - earthdata_data:/data:ro
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     networks:
       - default
@@ -194,6 +244,20 @@ services:
       DB_NAME: "talking_to_air_memory"
       DB_USER: "postgres"
       DB_PASSWORD: "test"
+      # The turn-event-log tests run against a real Redis -- they pin
+      # XREAD/MAXLEN/EXPIRE behaviour, which a fake would not. They skip when
+      # this is unreachable so a host-side `pytest` still runs, and
+      # test_deployment_contract.py asserts this service declares the
+      # dependency so the container run cannot skip them silently.
+      #
+      # Database 15, not 0: a suite sharing a keyspace with live data is how
+      # this project lost ~196 job rows once already.
+      REDIS_URL: "redis://redis:6379/15"
+      # A Redis is provisioned here, so its absence must fail the run, not skip.
+      TTA_REQUIRE_REDIS: "1"
+    depends_on:
+      redis:
+        condition: service_healthy
     volumes:
       # test_chart_repository.py's / test_artifact_repository.py's schema-contract
       # tests read these files straight off disk; they live at the repo root so
@@ -229,6 +293,12 @@ services:
       # than as a whole-repo mount to keep the surface explicit; the tests
       # assert these mounts exist, so deleting one fails rather than silently
       # turning the contracts into no-ops.
+      #
+      # The backend Dockerfile is mounted for the same reason even though the
+      # image already contains it: the image has it at /app/Dockerfile, and the
+      # `../..` expression above lands at /Backend/Dockerfile. Read by the
+      # guards that keep uvicorn PID 1 and bound its shutdown.
+      - ./Backend/Dockerfile:/Backend/Dockerfile:ro
       - ./Frontend/Dockerfile:/Frontend/Dockerfile:ro
       - ./Frontend/nginx.conf:/Frontend/nginx.conf:ro
       - ./Frontend/.dockerignore:/Frontend/.dockerignore:ro
@@ -236,6 +306,7 @@ services:
       - ./docker-compose.debug.yml:/docker-compose.debug.yml:ro
       - ./scripts/provision.sh:/scripts/provision.sh:ro
       - ./.github/workflows/release.yml:/.github/workflows/release.yml:ro
+      - ./.github/workflows/backend-ci.yml:/.github/workflows/backend-ci.yml:ro
       # Pins LF for the scripts a container executes; a CRLF shebang makes
       # the kernel report the script itself as 'not found'.
       - ./.gitattributes:/.gitattributes:ro
@@ -272,7 +343,6 @@ services:
       - "5173:80"
       - "443:443"
     volumes:
-      - plot_outputs:/usr/share/nginx/html/outputs  # serves images directly from volume
       # TLS keypair, mounted rather than baked into the image. nginx.conf reads
       # /etc/nginx/certs/tls.crt + tls.key; scripts/setup-tls.sh writes them.
       # This is what makes the frontend image buildable from a clean checkout:
@@ -308,8 +378,6 @@ networks:
 # ── Named volumes ─────────────────────────────────────────────────────────────
 volumes:
   pg_data:
-    driver: local
-  plot_outputs:
     driver: local
   overlay_store:
     driver: local

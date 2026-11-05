@@ -20,6 +20,7 @@ Network-free, like ``region_dispatch``: every member is a checked-in Natural
 Earth boundary and the geocoder is never consulted (D8).
 """
 from dataclasses import dataclass
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from tta_backend.datasets.us_states import US_STATES
@@ -27,6 +28,8 @@ from tta_backend.datasets.us_states import US_STATES
 if TYPE_CHECKING:  # the runtime imports stay function-local (circularity);
     # this one only feeds the annotations on the refusal factories below.
     from tta_backend.earthdata_mcp.results import MCPToolError
+    from tta_backend.utils.plotting import RegionResolver
+    from tta_backend.utils.region_dispatch import ExtentDispatch
 
 # D5: symbol-only. No natural-language "and"/"or" -- no legitimate place name
 # contains a literal "+", so the split can never collide with a real place,
@@ -181,7 +184,7 @@ def is_composite(raw_name: str) -> bool:
     return isinstance(raw_name, str) and SEPARATOR in raw_name
 
 
-def split_tokens(raw_name: str, normalize) -> list[str]:
+def split_tokens(raw_name: str, normalize: Callable[[str], str]) -> list[str]:
     """D11a's order, and it is the whole trap: **split first, normalize each**.
 
     ``normalize`` is ``RegionResolver._normalize_location_name`` passed in, not
@@ -192,7 +195,7 @@ def split_tokens(raw_name: str, normalize) -> list[str]:
     return [normalize(token) for token in raw_name.split(SEPARATOR)]
 
 
-def _member_geometry(token: str, resolver) -> Any:
+def _member_geometry(token: str, resolver: "RegionResolver") -> Any:
     """Resolve one token to a member boundary, or ``None`` if it is not one.
 
     D15's order, now complete: **U.S. state by postal code or full name, then
@@ -221,7 +224,7 @@ def _member_geometry(token: str, resolver) -> Any:
     return _country_geometry(token)
 
 
-def assert_no_country_collisions(global_regions: dict) -> None:
+def assert_no_country_collisions(global_regions: dict[str, Any]) -> None:
     """D12a's guard, extended to ``COUNTRY_ALIASES`` (Phase 4).
 
     Deliberately checks only what is knowable **without opening the asset**.
@@ -360,7 +363,7 @@ def _composition_label(kinds: list[str]) -> str:
     return f"composite of {len(kinds)} {noun}"
 
 
-def _malformed(raw_name: str):
+def _malformed(raw_name: str) -> "MCPToolError":
     """D15: an empty member is a *syntax* mistake, not a vocabulary one.
 
     ``"NY +"``, ``"+ NJ"`` and ``"NY + + NJ"`` all produce an empty token, and
@@ -378,7 +381,7 @@ def _malformed(raw_name: str):
     )
 
 
-def _unresolved_token(token: str, raw_name: str):
+def _unresolved_token(token: str, raw_name: str) -> "MCPToolError":
     """D8's refusal, and D14's channel for it.
 
     Naming the token is the entire point. Over the old ``dict | None`` contract
@@ -406,7 +409,7 @@ def _unresolved_token(token: str, raw_name: str):
     )
 
 
-def _too_large(raw_name: str, bounds) -> "MCPToolError":
+def _too_large(raw_name: str, bounds: tuple[float, float, float, float]) -> "MCPToolError":
     """D16's refusal. Names the envelope, the estimate, **and** the limit that
     fired -- a message quoting a number nothing compared against is how a
     refusal ends up misleading the person reading it."""
@@ -427,7 +430,7 @@ def _too_large(raw_name: str, bounds) -> "MCPToolError":
     )
 
 
-def _member_too_large(token: str, name: str, bounds) -> "MCPToolError":
+def _member_too_large(token: str, name: str, bounds: tuple[float, float, float, float]) -> "MCPToolError":
     """D16's refusal for a *single* member that cannot fit on its own (V21).
 
     Two mistakes deserve two answers, the same way ``_malformed`` and
@@ -469,7 +472,7 @@ def _member_too_large(token: str, name: str, bounds) -> "MCPToolError":
     )
 
 
-def _check_member_extent(token: str, member: dict) -> None:
+def _check_member_extent(token: str, member: dict[str, Any]) -> None:
     """Refuse a member whose *own* envelope cannot fit, before the union.
 
     Ordering is deliberate: checked per member as each resolves, so the refusal
@@ -482,12 +485,12 @@ def _check_member_extent(token: str, member: dict) -> None:
         raise _member_too_large(token, member["name"], bounds)
 
 
-def _check_extent(raw_name: str, bounds) -> None:
+def _check_extent(raw_name: str, bounds: tuple[float, float, float, float]) -> None:
     if (bounds[2] - bounds[0]) * (bounds[3] - bounds[1]) > MAX_COMPOSITE_ENVELOPE_DEG2:
         raise _too_large(raw_name, bounds)
 
 
-def dispatch_composite_extent(raw_name: str, resolver):
+def dispatch_composite_extent(raw_name: str, resolver: "RegionResolver") -> "ExtentDispatch":
     """The retrieval plane's answer for a ``+`` string (tension 3, D13).
 
     Not optional, and for a stronger reason than the coalitions had. A
@@ -524,7 +527,7 @@ def dispatch_composite_extent(raw_name: str, resolver):
     return ExtentDispatch(claimed=True, location=_bbox_string(composed.region["bounds"]))
 
 
-def dispatch_composite(raw_name: str, resolver) -> CompositeResult:
+def dispatch_composite(raw_name: str, resolver: "RegionResolver") -> CompositeResult:
     """Build the union for a ``+`` string, or decline to claim it."""
     from shapely.ops import unary_union
 

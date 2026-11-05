@@ -13,7 +13,7 @@ Yields:
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Callable, Optional
@@ -35,27 +35,33 @@ _status_emitter: ContextVar[Optional[Callable[..., None]]] = ContextVar(
     default=None,
 )
 _turn_started_at: ContextVar[Optional[float]] = ContextVar("turn_started_at", default=None)
-_job_progress_emitter: ContextVar[Optional[Callable[[dict], None]]] = ContextVar(
+_job_progress_emitter: ContextVar[Optional[Callable[[dict[str, Any]], None]]] = ContextVar(
     "job_progress_emitter",
     default=None,
 )
-_chart_emitter: ContextVar[Optional[Callable[[dict], None]]] = ContextVar(
+_chart_emitter: ContextVar[Optional[Callable[[dict[str, Any]], None]]] = ContextVar(
     "chart_emitter",
     default=None,
 )
-_variable_choice_emitter: ContextVar[Optional[Callable[[dict], None]]] = ContextVar(
+_variable_choice_emitter: ContextVar[Optional[Callable[[dict[str, Any]], None]]] = ContextVar(
     "variable_choice_emitter",
     default=None,
 )
 _current_thread_id: ContextVar[Optional[str]] = ContextVar("current_thread_id", default=None)
 _current_user_id: ContextVar[Optional[str]] = ContextVar("current_user_id", default=None)
-_call_budget: ContextVar[Optional[dict]] = ContextVar("call_budget", default=None)
+_current_user_message: ContextVar[Optional[str]] = ContextVar("current_user_message", default=None)
+_ground_validation_allowed: ContextVar[bool] = ContextVar("ground_validation_allowed", default=True)
+# T64 Phase 4: (lane id, lane label) of the dispatch item whose run is in
+# progress. Narration emitted inside it is tagged with the lane, so parallel
+# sub-agents' statuses can be shown apart. None outside a dispatch.
+_dispatch_lane: ContextVar[Optional[tuple[str, str]]] = ContextVar("dispatch_lane", default=None)
+_call_budget: ContextVar[Optional[dict[str, Any]]] = ContextVar("call_budget", default=None)
 # Per-turn MCP transport-failure circuit breaker state (storm containment,
 # 2026-07-20). A mutable dict {"consecutive": int, "tripped": bool} bound once
 # per turn — mutated in place, never re-``set()``, so it survives the ToolNode
 # gather-Task context copy exactly like _call_budget does (see
 # get_mcp_failure_state / get_call_budget).
-_mcp_failure_state: ContextVar[Optional[dict]] = ContextVar("mcp_failure_state", default=None)
+_mcp_failure_state: ContextVar[Optional[dict[str, Any]]] = ContextVar("mcp_failure_state", default=None)
 
 
 def emit_status(message: str, *, stage: str | None = None, detail: Any = None) -> None:
@@ -89,7 +95,7 @@ def emit_status(message: str, *, stage: str | None = None, detail: Any = None) -
 def emit_job_progress(
     job_handle: str,
     status: str,
-    progress=None,
+    progress: float | None = None,
     phase: str | None = None,
     message: str | None = None,
     note: str | None = None,
@@ -113,7 +119,7 @@ def emit_job_progress(
         })
 
 
-def emit_chart(payload: dict) -> None:
+def emit_chart(payload: dict[str, Any]) -> None:
     """Emit a full chart render payload for the active SSE stream, out-of-band
     from the tool's model-facing return value (T13 two-audience split: the
     model gets a compact summary, the frontend gets this full payload via the
@@ -123,7 +129,7 @@ def emit_chart(payload: dict) -> None:
         emitter(payload)
 
 
-def emit_variable_choice(payload: dict) -> None:
+def emit_variable_choice(payload: dict[str, Any]) -> None:
     """T49: emit the deterministic variable-choice picker for the active SSE
     stream, out-of-band from the tool's model-facing return value -- the same
     two-audience split as emit_chart. The model gets a compact, P1-bounded 'a
@@ -136,7 +142,7 @@ def emit_variable_choice(payload: dict) -> None:
         emitter(payload)
 
 
-def get_call_budget() -> dict:
+def get_call_budget() -> dict[str, Any]:
     """Return the current request's mutable per-agent call-budget counters.
 
     langgraph.prebuilt.tool_node.ToolNode wraps every tool call in
@@ -156,7 +162,7 @@ def get_call_budget() -> dict:
     return budget
 
 
-def get_mcp_failure_state() -> dict | None:
+def get_mcp_failure_state() -> dict[str, Any] | None:
     """The active turn's MCP transport-failure circuit-breaker state, or None
     when called outside a chat turn.
 
@@ -184,8 +190,64 @@ def current_user_id() -> str | None:
     return _current_user_id.get()
 
 
+def current_user_message() -> str | None:
+    """The researcher's message for the active chat turn, exactly as sent.
+    T64 D6: the dispatch layer puts this in front of every sub-agent task, so
+    the researcher's own words reach the sub-agent without the supervisor
+    model writing them."""
+    return _current_user_message.get()
+
+
 @contextmanager
-def user_id_context(user_id: str):
+def user_message_context(message: str) -> Iterator[None]:
+    """Bind ``current_user_message()`` for one chat turn (see
+    ChatStreamService.stream_chat_events)."""
+    token = _current_user_message.set(message)
+    try:
+        yield
+    finally:
+        _current_user_message.reset(token)
+
+
+def ground_validation_allowed() -> bool:
+    """Whether the satellite agent's own ground tools (validate_against_ground,
+    exceedance_overlay) may run for the task in progress. T64: under the
+    supervisor's dispatch, only a satellite request whose intent is compare
+    may; ground data is otherwise the supervisor's to request. True outside a
+    dispatch, so the router fast path keeps every tool."""
+    return _ground_validation_allowed.get()
+
+
+@contextmanager
+def ground_validation_scope(allowed: bool) -> Iterator[None]:
+    """Bind ``ground_validation_allowed()`` for one sub-agent run. Set before
+    the run starts, so every ToolNode gather-Task the run spawns copies it."""
+    token = _ground_validation_allowed.set(allowed)
+    try:
+        yield
+    finally:
+        _ground_validation_allowed.reset(token)
+
+
+@contextmanager
+def dispatch_lane_scope(lane_id: str, label: str) -> Iterator[None]:
+    """Tag every status/job_progress event emitted inside with this lane."""
+    token = _dispatch_lane.set((lane_id, label))
+    try:
+        yield
+    finally:
+        _dispatch_lane.reset(token)
+
+
+def _with_lane(payload: dict[str, Any]) -> dict[str, Any]:
+    lane = _dispatch_lane.get()
+    if lane is None:
+        return payload
+    return {**payload, "lane": lane[0], "lane_label": lane[1]}
+
+
+@contextmanager
+def user_id_context(user_id: str) -> Iterator[None]:
     """Bind ``current_user_id()`` for non-chat endpoints (e.g. the jobs
     endpoint) that call workspace-bound MCP tools outside of stream_response,
     which normally sets this for the duration of a chat turn."""
@@ -196,7 +258,7 @@ def user_id_context(user_id: str):
         _current_user_id.reset(token)
 
 
-async def iter_with_user_id(user_id: str, chunks: AsyncGenerator) -> AsyncGenerator:
+async def iter_with_user_id(user_id: str, chunks: AsyncIterator[Any]) -> AsyncGenerator[Any, None]:
     """Re-bind ``current_user_id()`` around every pull of ``chunks``.
 
     A StreamingResponse body iterates *after* the endpoint handler has
@@ -214,7 +276,7 @@ async def iter_with_user_id(user_id: str, chunks: AsyncGenerator) -> AsyncGenera
         yield chunk
 
 
-def _message_text_chunk(message) -> str:
+def _message_text_chunk(message: Any) -> str:
     tool_calls = getattr(message, "tool_calls", None)
     if tool_calls:
         return ""
@@ -228,12 +290,12 @@ def _message_text_chunk(message) -> str:
 
 
 async def stream_response(
-    agent,
+    agent: Any,
     user_input: str,
     thread_id: str,
-    thread_ref: Optional[dict] = None,
+    thread_ref: Optional[dict[str, Any]] = None,
     user_id: Optional[str] = None,
-) -> AsyncGenerator[tuple, None]:
+) -> AsyncGenerator[tuple[str, Any], None]:
     """
     Stream one conversation turn, yielding (event_type, data) tuples.
 
@@ -252,7 +314,7 @@ async def stream_response(
         "configurable": {"thread_id": thread_id},
         "recursion_limit": get_settings().agent_recursion_limit,
     }
-    queue: asyncio.Queue = asyncio.Queue()
+    queue: asyncio.Queue[Any] = asyncio.Queue()
     done = object()
     loop = asyncio.get_running_loop()
     parent_emitter = _status_emitter.get()
@@ -277,27 +339,28 @@ async def stream_response(
             payload["stage"] = stage
         if detail is not None:
             payload["detail"] = detail
-        loop.call_soon_threadsafe(queue.put_nowait, ("status", payload))
+        loop.call_soon_threadsafe(queue.put_nowait, ("status", _with_lane(payload)))
 
-    def publish_job_progress(data: dict) -> None:
+    def publish_job_progress(data: dict[str, Any]) -> None:
         _touch()
+        data = _with_lane(data)
         if parent_job_progress_emitter:
             parent_job_progress_emitter(data)
         loop.call_soon_threadsafe(queue.put_nowait, ("job_progress", data))
 
-    def publish_chart_payload(data: dict) -> None:
+    def publish_chart_payload(data: dict[str, Any]) -> None:
         _touch()
         if parent_chart_emitter:
             parent_chart_emitter(data)
         loop.call_soon_threadsafe(queue.put_nowait, ("chart_payload", data))
 
-    def publish_variable_choice(data: dict) -> None:
+    def publish_variable_choice(data: dict[str, Any]) -> None:
         _touch()
         if parent_variable_choice_emitter:
             parent_variable_choice_emitter(data)
         loop.call_soon_threadsafe(queue.put_nowait, ("variable_choice", data))
 
-    async def publish(event_type: str, data) -> None:
+    async def publish(event_type: str, data: Any) -> None:
         _touch()
         await queue.put((event_type, data))
 
@@ -368,7 +431,7 @@ async def stream_response(
                 step_started = loop.time()
                 streamed_chunks = 0
 
-                # updates stream owns tool calls, tool results, and images only.
+                # updates stream owns tool calls and tool results only.
                 # AIMessage content is intentionally not published here — the
                 # messages stream handles it. Publishing from both paths is what
                 # produces duplicate responses.
