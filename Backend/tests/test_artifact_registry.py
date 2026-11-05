@@ -54,7 +54,7 @@ class BuildArtifactReferenceMapTests(unittest.TestCase):
 
         self.assertIsNone(ref)
 
-    
+
     def test_builds_smoke_map_artifact(self):
         from tta_backend.services.artifact_registry import build_artifact_reference
 
@@ -76,7 +76,7 @@ class BuildArtifactReferenceMapTests(unittest.TestCase):
         self.assertEqual(ref.metadata["variable"], "smoke_density")
         self.assertEqual(ref.metadata["units"], "category")
 
-    
+
     def test_builds_smoke_map_without_bounds(self):
         from tta_backend.services.artifact_registry import build_artifact_reference
 
@@ -93,9 +93,9 @@ class BuildArtifactReferenceMapTests(unittest.TestCase):
         self.assertEqual(ref.type, "map")
         self.assertEqual(ref.metadata["bbox"], [-180.0, -90.0, 180.0, 90.0])
         self.assertEqual(ref.metadata["units"], "category")
-    
 
-    
+
+
 
 class BuildArtifactReferenceComparisonTests(unittest.TestCase):
     def test_builds_a_comparison_artifact_from_a_heatmap_multi_payload(self):
