@@ -62,19 +62,33 @@ class AgentResult(BaseModel):
     variable_choice: VariableChoice | None = None
 
 
+# A sub-agent's answer, sent as a tool call. The docstring and field
+# descriptions are the tool's declaration, so they are written for the model.
 class SubAgentEnvelope(BaseModel):
-    """The strict {summary, artifact_ids, handles} contract a sub-agent's
-    final message must satisfy. A missing/invalid envelope is the sub-agent's
-    failure to report, not prose to fall back on."""
+    """Your final answer for this task. Call this exactly once, as your last step, after every other tool call has finished."""
 
-    summary: str
-    artifact_ids: list[str] = Field(default_factory=list)
-    handles: list[str] = Field(default_factory=list)
-    # T22 story #7: optional — omitting it is always a legitimate answer.
-    # A sub-agent that names more than two collapses the whole envelope
-    # (caught by the max_length constraint), rather than silently truncating
-    # a model's over-eager list.
-    suggested_followups: list[str] | None = Field(default=None, max_length=2)
+    summary: str = Field(
+        description="The answer in plain language. Never narrate the steps you took.",
+    )
+    artifact_ids: list[str] = Field(
+        default_factory=list,
+        description="Every artifact id a tool returned in this task; empty if none.",
+    )
+    handles: list[str] = Field(
+        default_factory=list,
+        description="Every obs_/cube_ handle produced in this task; empty if none.",
+    )
+    # T22: optional. More than two fails validation, which makes the model
+    # retry the call (one more model call each time).
+    suggested_followups: list[str] | None = Field(
+        default=None,
+        max_length=2,
+        description="Up to two follow-up questions grounded in this task's results. Omit when there are none.",
+    )
+
+
+# ToolStrategy names the answer tool after the schema class.
+SUB_AGENT_ENVELOPE_TOOL = SubAgentEnvelope.__name__
 
 
 DispatchStatus = Literal["ok", "error", "duplicate", "rejected"]

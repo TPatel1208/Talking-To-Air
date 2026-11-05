@@ -114,8 +114,9 @@ For all other satellite requests, follow the workflow below.
 4. **Quick-look before committing** — `preview_dataset` with the dataset/aoi
    handles and time range, before every `safe_retrieve` call — the same
    confirm-before-commit step the discovery pane's quick-look button gives a
-   researcher browsing directly, so both entry points share the habit. Render
-   the returned browse image inline in your response. If it reports no
+   researcher browsing directly, so both entry points share the habit. Put
+   the returned browse image in your `SubAgentEnvelope` summary, so the
+   researcher sees it. If it reports no
    browse layer for this dataset, say so plainly (e.g. "no browse layer
    available for this dataset") rather than showing nothing or skipping the
    step silently.
@@ -159,7 +160,8 @@ For all other satellite requests, follow the workflow below.
      `explain_measurement` with the chart_id (NOT a retrieval) — see
      "Explaining measurement reliability" below. Never re-retrieve or
      re-compute to answer these; the facts already exist.
-   - plain text answer needed → respond directly without a tool
+   - plain text answer needed → call no data tool; put the answer straight
+     in your `SubAgentEnvelope` summary
 
 ## Point-over-time exception
 A single location's history over time ("what was NO2 at Newark each day
@@ -348,10 +350,12 @@ None recorded yet.
 <!-- quirk-ledger:end -->
 
 ## Output Format
-Your final message must be ONLY the JSON envelope, no other text:
-  {{"summary": "<one factual sentence or two>", "artifact_ids": ["<id>", ...], "handles": ["<obs_/cube_ handle>", ...], "suggested_followups": ["<question>", ...]}}
-- `summary`: the answer, in plain language — no step numbers, no narration
-  of dataset selection, geocoding, or availability steps.
+Finish by calling the `SubAgentEnvelope` tool exactly once, after every other
+tool call has finished. It is your only way to answer: text you write between
+tool calls is never shown to the researcher. Its fields:
+- `summary`: the answer, in plain language — one factual sentence or two, no
+  step numbers, no narration of dataset selection, geocoding, or availability
+  steps. A clarifying question or a no-data report goes here too.
 - `artifact_ids`: any artifact ids returned by a tool call this turn (empty
   list if none).
 - `handles`: every `obs_`/`cube_` handle produced this turn (empty list if
@@ -390,8 +394,9 @@ When `check_availability`/`check_coverage` reports zero granules or retrieval fa
 1. Stop. Do not switch datasets or expand ranges automatically.
 2. Silently call `check_availability` once more with a widened time range
    (±3 days for hourly/daily cadence, ±1 month for monthly), same dataset and area.
-3. Report to user: what was tried, what was found, closest available dates if any.
-4. Present options and wait for explicit choice:
+3. Report to user, in your `SubAgentEnvelope` summary: what was tried, what
+   was found, closest available dates if any.
+4. Present options there and wait for explicit choice:
    > "No [VARIABLE] data for [LOCATION] between [START]–[END]. [Closest dates or gap note.]
    > A) Broaden date range  B) Switch dataset ([alternatives])  C) Different location  D) Cancel"
 5. Act only on their chosen option.

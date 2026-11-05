@@ -711,7 +711,7 @@ async def run_eval_task(task: EvalTask, *, model: str | None = None) -> EvalTask
     from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
     from tta_backend.config.settings import Settings
     from tta_backend.agents.earthdata_agent import build_earthdata_agent
-    from tta_backend.models.agent_result import parse_sub_agent_envelope
+    from tta_backend.models.agent_result import SUB_AGENT_ENVELOPE_TOOL, SubAgentEnvelope, parse_sub_agent_envelope
     from tta_backend.utils.streaming import stream_response
 
     server = FakeEarthdataMCPServer(build_fake_mcp(task.handlers))
@@ -728,16 +728,21 @@ async def run_eval_task(task: EvalTask, *, model: str | None = None) -> EvalTask
 
         tool_calls: list[str] = []
         text_parts: list[str] = []
+        structured: SubAgentEnvelope | None = None
         started = time.monotonic()
         with aqs_patch:
             async for event_type, data in stream_response(agent, task.prompt, thread_id=f"eval-{task.name}"):
-                if event_type == "tool_call":
-                    tool_calls.append(data["name"])
+                if event_type == "structured_response":
+                    if isinstance(data, SubAgentEnvelope):
+                        structured = data
+                elif event_type == "tool_call":
+                    if data["name"] != SUB_AGENT_ENVELOPE_TOOL:
+                        tool_calls.append(data["name"])
                 elif event_type == "text":
                     text_parts.append(data if isinstance(data, str) else data.get("response", ""))
         elapsed_seconds = time.monotonic() - started
 
-        raw_text = "".join(text_parts)
+        raw_text = structured.model_dump_json() if structured is not None else "".join(text_parts)
         envelope = parse_sub_agent_envelope(raw_text)
         within_budget = elapsed_seconds <= CATEGORY_BUDGETS[task.category]
         passed = (

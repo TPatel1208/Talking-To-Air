@@ -14,6 +14,7 @@ from typing import Any
 from langchain.agents import create_agent
 from langgraph.graph.state import CompiledStateGraph
 
+from tta_backend.agents.subagent_output import subagent_response_format
 from tta_backend.agents.subagent_trim import build_subagent_trim_middleware
 from tta_backend.config.model_factory import build_chat_model
 from tta_backend.config.settings import get_settings
@@ -54,6 +55,7 @@ def build_ground_agent(model: str | None = None, provider: str | None = None) ->
         system_prompt=GROUND_SYSTEM_PROMPT,
         checkpointer=None,
         middleware=[build_subagent_trim_middleware("ground_sensor", settings.subagent_trim_token_ceiling)],
+        response_format=subagent_response_format(),
     )
     # This agent is stateless (no checkpointer), so subagent_dispatch's T15
     # retry demotion — one structured-output re-prompt instead of a full
