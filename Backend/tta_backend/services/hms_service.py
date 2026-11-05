@@ -21,6 +21,11 @@ from shapely import make_valid
 from shapely.geometry import mapping, shape
 from shapely.ops import transform
 
+# HMS analysts often draw smoke outlines counter-clockwise, which pyshp reads
+# as holes; it re-encodes them as outlines correctly but logs a warning per
+# polygon, flooding the logs on every request.
+shapefile.VERBOSE = False
+
 BASE_URL = "https://satepsanone.nesdis.noaa.gov/pub/FIRE/web/HMS/Smoke_Polygons/Shapefile"
 MAX_ZIP_BYTES = 16 * 1024 * 1024
 MAX_EXPANDED_BYTES = 64 * 1024 * 1024
@@ -172,7 +177,7 @@ def _parse_archive(content: bytes, value: str, region: Any) -> dict[str, Any]:
                 if end < start:
                     raise HMSError("invalid_data", "HMS observation ends before it starts.")
                 raw = attrs["density"]
-                density = {"5": "light", "16": "medium", "21": "heavy"}.get(raw, raw.lower())
+                density = raw.lower()  # NOAA writes Light / Medium / Heavy
                 if density not in counts:
                     density = "unknown"
                 counts[density] += 1

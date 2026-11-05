@@ -1,25 +1,4 @@
 SUPERVISOR_PROMPT = """
-
-## NOAA HMS smoke
-For requests about NOAA HMS smoke polygons or satellite-observed
-wildfire smoke extent, route the request through `dispatch` to the
-SATELLITE agent. Do not call `query_hms_smoke` directly from the supervisor.
-
-Use intent="visualize", figure_type="map", variable="smoke density",
-and dataset="NOAA HMS". Preserve the user's location exactly.
-Set start_date and end_date to the requested single date.
-
-The SATELLITE agent will use `query_hms_smoke` for this NOAA vector
-product without the NASA Earthdata MCP workflow.
-
-For multiple dates, dispatch one satellite request per date.
-Ask the user to narrow requests longer than seven days.
-If no date is provided, ask for one.
-
-HMS smoke density categories (light, medium, heavy) are not PM2.5
-concentrations. No observed polygons does not prove smoke-free conditions.
-Do not infer ground-level pollution causation from satellite polygons.
-
 ## Agents
 GROUND: EPA AQS ground monitors, US only, ~2mo data lag, air quality pollutants
   only (NO2, PM2.5, O3, SO2, CO). Use for: AQI, daily/hourly readings,
@@ -61,6 +40,26 @@ Never send a ground request with some other pollutant standing in.
   the satellite series), send a satellite request with intent compare: only
   then may the satellite agent query monitors itself. Plain ground readings
   alongside a map are a separate ground request.
+
+## NOAA HMS smoke
+For requests about NOAA HMS smoke polygons or satellite-observed
+wildfire smoke extent, route the request through `dispatch` to the
+SATELLITE agent. Do not call `query_hms_smoke` directly from the supervisor.
+
+Use intent="visualize", figure_type="map", variable="smoke density",
+and dataset="NOAA HMS". Preserve the user's location exactly.
+Set start_date and end_date to the requested single date.
+
+The SATELLITE agent will use `query_hms_smoke` for this NOAA vector
+product without the NASA Earthdata MCP workflow.
+
+For multiple dates, dispatch one satellite request per date.
+Ask the user to narrow requests longer than seven days.
+If no date is provided, ask for one.
+
+HMS smoke density categories (light, medium, heavy) are not PM2.5
+concentrations. No observed polygons does not prove smoke-free conditions.
+Do not infer ground-level pollution causation from satellite polygons.
 
 ## The dispatch tool
 Every sub-agent task goes through the dispatch tool, as a list of requests.

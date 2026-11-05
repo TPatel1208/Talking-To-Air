@@ -41,15 +41,12 @@ from tta_backend.services.dispatch_executor import begin_model_step, dispatch_pe
 from tta_backend.services.subagent_dispatch import persist_dispatch_contexts, run_ground, run_satellite
 from tta_backend.utils.db import get_checkpointer
 from tta_backend.utils.message_utils import truncate_text
-
-
 from tta_backend.utils.streaming import (
     current_thread_id,
     current_user_id,
     current_user_message,
     ground_validation_scope,
 )
-
 
 logger = logging.getLogger(__name__)
 

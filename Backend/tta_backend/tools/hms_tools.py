@@ -1,6 +1,6 @@
 """HMS tool returning the existing AgentResult/chart envelope."""
-import uuid
 import asyncio
+import uuid
 from datetime import datetime, timezone
 
 from langchain.tools import tool
@@ -53,7 +53,7 @@ async def query_hms_smoke(date: str, region: str = "", bounds: list[float] | Non
             "bounds": bounds,
             "date": date,
             **result,
-    })
+        })
         payload = chart.model_dump(exclude_none=True)
         payload["chart_id"] = f"map_{uuid.uuid4().hex[:12]}"
         emit_chart(payload)

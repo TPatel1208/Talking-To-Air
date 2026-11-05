@@ -7,15 +7,13 @@ retrieval) plus the handle-based plot/statistics tools, which close over
 ``mcp_tools`` so ``open_handle`` can reach export_result/rematerialize —
 without the model ever seeing or supplying that dict itself.
 """
-
 from __future__ import annotations
 
 from langchain_core.tools import BaseTool
 
-from tta_backend.tools.hms_tools import query_hms_smoke
-
 from tta_backend.earthdata_mcp.client import CURATED_TOOL_NAMES
 from tta_backend.earthdata_mcp.toolset import curated_model_tools
+from tta_backend.tools.hms_tools import query_hms_smoke
 from tta_backend.tools.satellite_tools.comparison_tools import make_compare
 from tta_backend.tools.satellite_tools.plot_tools import (
     make_conduct_temporal_statistic,
