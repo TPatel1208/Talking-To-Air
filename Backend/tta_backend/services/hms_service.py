@@ -21,9 +21,7 @@ from shapely import make_valid
 from shapely.geometry import mapping, shape
 from shapely.ops import transform
 
-# HMS analysts often draw smoke outlines counter-clockwise, which pyshp reads
-# as holes; it re-encodes them as outlines correctly but logs a warning per
-# polygon, flooding the logs on every request.
+# Silence pyshp's per-polygon warnings for counter-clockwise HMS outlines.
 shapefile.VERBOSE = False
 
 BASE_URL = "https://satepsanone.nesdis.noaa.gov/pub/FIRE/web/HMS/Smoke_Polygons/Shapefile"
