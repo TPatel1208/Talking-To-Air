@@ -13,7 +13,7 @@ export function useDiscovery() {
   // Searches can overlap (each date change re-runs one); only the newest may
   // write results, or a slow earlier reply shows the wrong window's datasets.
   const searches = useRef(null)
-  const [location, setLocation] = useState('')
+  const [location, setLocation] = useState('New Jersey')
   const [timeRange, setTimeRange] = useState('')
   // Per-dataset_handle quick-look/coverage results, so multiple cards can
   // hold their own state at once without clobbering each other.

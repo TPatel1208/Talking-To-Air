@@ -239,6 +239,7 @@ function AuthenticatedApp({ user, onLogout }) {
     applyJobProgress,
     cancelJob,
   } = useJobs()
+  const hasRunningJobs = jobs.some(job => !['ready', 'failed', 'expired', 'cancelled'].includes(job.status))
 
   const {
     messages,
@@ -262,6 +263,8 @@ function AuthenticatedApp({ user, onLogout }) {
   } = useChat(applyJobProgress)
 
   const discovery = useDiscovery()
+  // Declared before handleRetrieve, which opens the Jobs tab.
+  const [rightPanelTab, setRightPanelTab] = useState(null)
 
   // The card's retrieve action hands off to the standard agent flow (safe_retrieve
   // gates included) rather than bypassing it — one retrieval pipeline, two entry points.
@@ -272,6 +275,7 @@ function AuthenticatedApp({ user, onLogout }) {
     const when = windowPhrase(timeRange)
     if (when) parts.push(when)
     sendMessage(`${parts.join(' ')}.`)
+    setRightPanelTab('jobs')
   }, [sendMessage])
 
   // A job card's "View result" action hands off to the agent rather than
@@ -323,10 +327,10 @@ function AuthenticatedApp({ user, onLogout }) {
   // mode changes.
   const [sessionsCollapsed, setSessionsCollapsed] = useState(false)
   const [chatCollapsed, setChatCollapsed] = useState(false)
-  const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false)
+  const rightPanelCollapsed = rightPanelTab === null
   const toggleSessionsCollapsed = useCallback(() => setSessionsCollapsed(v => !v), [])
   const toggleChatCollapsed = useCallback(() => setChatCollapsed(v => !v), [])
-  const toggleRightPanelCollapsed = useCallback(() => setRightPanelCollapsed(v => !v), [])
+  const toggleRightPanelCollapsed = useCallback(() => setRightPanelTab(tab => tab ? null : 'discover'), [])
 
   const resetCompare = useCallback(() => {
     setCompareMode('off')
@@ -412,24 +416,22 @@ function AuthenticatedApp({ user, onLogout }) {
       overflowY:  'hidden',
       background: 'var(--bg-primary)',
     }}>
-      {sessionsCollapsed ? (
-        <CollapsedRail label="sessions" onExpand={toggleSessionsCollapsed} />
-      ) : (
-        <SessionSidebar
-          sessions={sessions}
-          hasMoreSessions={hasMoreSessions}
-          onLoadMoreSessions={loadMoreSessions}
-          threadId={threadId}
-          turnStatus={turnStatus}
-          onSwitch={handleSwitchSession}
-          onNew={handleNewSession}
-          onDelete={deleteSession}
-          onLogout={handleLogout}
-          user={user}
-          artifacts={artifacts}
-          onCollapse={toggleSessionsCollapsed}
-        />
-      )}
+      <SessionSidebar
+        sessions={sessions}
+        hasMoreSessions={hasMoreSessions}
+        onLoadMoreSessions={loadMoreSessions}
+        threadId={threadId}
+        turnStatus={turnStatus}
+        onSwitch={handleSwitchSession}
+        onNew={handleNewSession}
+        onDelete={deleteSession}
+        onLogout={handleLogout}
+        user={user}
+        artifacts={artifacts}
+        collapsed={sessionsCollapsed}
+        onCollapse={toggleSessionsCollapsed}
+        onExpand={toggleSessionsCollapsed}
+      />
 
       {chatCollapsed ? (
         <CollapsedRail label="chat" onExpand={toggleChatCollapsed} />
@@ -473,12 +475,15 @@ function AuthenticatedApp({ user, onLogout }) {
         rightPanelCollapsed={rightPanelCollapsed}
         onCollapseSessions={toggleSessionsCollapsed}
         onCollapseRightPanel={toggleRightPanelCollapsed}
+        rightPanelTab={rightPanelTab}
+        onSelectRightPanelTab={setRightPanelTab}
+        hasRunningJobs={hasRunningJobs}
       />
 
-      {rightPanelCollapsed ? (
-        <CollapsedRail label="jobs and discover" onExpand={toggleRightPanelCollapsed} />
-      ) : (
+      {rightPanelTab !== null && (
         <RightPanel
+          tab={rightPanelTab}
+          onSelectTab={setRightPanelTab}
           discovery={discovery}
           jobs={jobs}
           jobsError={jobsError}
@@ -486,7 +491,6 @@ function AuthenticatedApp({ user, onLogout }) {
           onRefreshJobs={fetchJobs}
           onRetrieve={handleRetrieve}
           onViewResult={handleViewResult}
-          onCollapse={toggleRightPanelCollapsed}
         />
       )}
     </div>

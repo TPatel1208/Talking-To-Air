@@ -177,7 +177,7 @@ export default function ConnectorsPanel() {
 
   if (notConfigured) {
     return (
-      <div style={{ padding: '12px 10px', fontSize: '12px', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+      <div style={{ flex: 1, padding: '12px 10px', fontSize: '12px', color: 'var(--text-muted)', fontStyle: 'italic' }}>
         Connectors aren't configured on this deployment. That's a server-side choice, not a bug.
       </div>
     )

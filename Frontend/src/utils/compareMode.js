@@ -1,3 +1,5 @@
+import { isGroundMapArtifact } from './groundMap.js'
+
 // Pure state helpers for compare mode (T28). No React here -- AuthenticatedApp
 // (App.jsx) owns the actual compareMode/compareCount/compareSelection state;
 // these functions just compute the next value so the state machine is
@@ -8,17 +10,24 @@
 // slot establishes is the only kind selectable for the rest of that session.
 export const COMPARABLE_CHART_TYPES = ['heatmap', 'timeseries']
 
+// A ground-monitor map compares alongside heatmaps: both are maps.
+function compareKind(chart) {
+  if (isGroundMapArtifact(chart)) return 'heatmap'
+  return COMPARABLE_CHART_TYPES.includes(chart?.type) ? chart.type : null
+}
+
 // The kind (heatmap|timeseries) the current selection has committed to, or
 // null when every slot is still empty and either kind may start it.
 export function activeCompareKind(selection) {
   const first = (selection || []).find(Boolean)
-  return first ? first.type : null
+  return first ? compareKind(first) : null
 }
 
 export function isChartComparable(chart, selection = []) {
-  if (!chart || !COMPARABLE_CHART_TYPES.includes(chart.type)) return false
+  const kind = chart ? compareKind(chart) : null
+  if (!kind) return false
   const activeKind = activeCompareKind(selection)
-  return activeKind === null || chart.type === activeKind
+  return activeKind === null || kind === activeKind
 }
 
 export function createEmptySelection(count) {

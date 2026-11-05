@@ -328,7 +328,7 @@ export default function DiscoveryPane({
             style={{
               height: '32px', padding: '0 14px', fontSize: '12px', fontWeight: 700,
               border: 'none', borderRadius: '9px', background: 'var(--teal)',
-              color: 'white', cursor: 'pointer',
+              color: 'white', cursor: 'pointer', flexShrink: 0,
             }}
           >
             Search
@@ -338,7 +338,7 @@ export default function DiscoveryPane({
         <input
           value={location}
           onChange={event => setLocation(event.target.value)}
-          placeholder="Area (e.g. Raritan basin)"
+          placeholder="New Jersey"
           aria-label="Area"
           style={{ ...fieldStyle, width: '100%', marginTop: '8px' }}
         />

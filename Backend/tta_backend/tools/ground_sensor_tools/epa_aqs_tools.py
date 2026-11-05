@@ -868,6 +868,13 @@ def _table_columns(rows: List[Dict[str, Any]]) -> list[str]:
     return columns
 
 
+def _has_coordinates(rows: List[Dict[str, Any]]) -> bool:
+    return any(
+        isinstance(r, dict) and r.get("latitude") is not None and r.get("longitude") is not None
+        for r in rows
+    )
+
+
 def _artifact_table_response(
     header: list[dict[str, Any]],
     body: list[dict[str, Any]],
@@ -883,7 +890,9 @@ def _artifact_table_response(
         # Metadata tab's "Source dataset" field (tableOverviewFields reads
         # metadata.dataset) has a fact to show instead of "Not available".
         # Callers' own metadata still wins if they ever name it themselves.
-        metadata={"dataset": "EPA AQS", **(metadata or {})},
+        # has_coordinates tells the frontend the table can also be mapped; it
+        # stays a "table" artifact, since "map" is the heatmap artifact type.
+        metadata={"dataset": "EPA AQS", "has_coordinates": _has_coordinates(body), **(metadata or {})},
     )
     header[0]["artifact_count"] = 1
     header[0]["table_artifact_id"] = artifact_ref.id
@@ -1008,7 +1017,9 @@ def _aggregate_summary_records(
             "site_id": site_id,
             **_period_fields(first, period),
             "local_site_name": first.get("local_site_name"),
-            "monitor_name": first.get("local_site_name"),
+            "longitude": _float_or_none(first.get("longitude")),
+            "latitude": _float_or_none(first.get("latitude")),
+            "monitor_name": first.get("monitor_name") or first.get("local_site_name"),
             "units": first.get("units_of_measure"),
             "pollutant_standard": first.get("pollutant_standard"),
             "sample_duration": first.get("sample_duration"),

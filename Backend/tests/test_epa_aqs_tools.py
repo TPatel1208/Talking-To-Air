@@ -274,6 +274,42 @@ class AggregateSummaryMinMaxTests(unittest.TestCase):
         self.assertIsNone(row["min"])
         self.assertIsNone(row["max"])
 
+    def test_summary_rows_carry_the_monitor_coordinates_for_the_map(self):
+        record = self._daily_record(latitude="40.7361", longitude="-74.1724", monitor_name="Newark Firehouse")
+        body, _, _ = _aggregate_summary_records([record], "daily")
+        row = body[0]
+        self.assertEqual(row["latitude"], 40.7361)
+        self.assertEqual(row["longitude"], -74.1724)
+        self.assertEqual(row["monitor_name"], "Newark Firehouse")
+
+    def test_monitor_name_falls_back_to_the_site_name(self):
+        body, _, _ = _aggregate_summary_records([self._daily_record()], "daily")
+        row = body[0]
+        self.assertEqual(row["monitor_name"], "Downtown")
+        self.assertIsNone(row["latitude"])
+        self.assertIsNone(row["longitude"])
+
+
+class ArtifactTableResponseTests(unittest.TestCase):
+    """Ground results stay "table" artifacts; whether they can also be mapped
+    travels as metadata, because "map" is the heatmap artifact type."""
+
+    def _put_table_kwargs(self, body):
+        store = _epa.artifact_store
+        store.put_table.reset_mock()
+        _epa._artifact_table_response([{}], body, "EPA Summary")
+        return store.put_table.call_args.kwargs
+
+    def test_rows_with_coordinates_are_flagged_mappable(self):
+        kwargs = self._put_table_kwargs([{"site_id": "1", "latitude": 40.7, "longitude": -74.1}])
+        self.assertTrue(kwargs["metadata"]["has_coordinates"])
+        self.assertNotIn("artifact_type", kwargs)
+
+    def test_rows_without_coordinates_are_not(self):
+        kwargs = self._put_table_kwargs([{"site_id": "1", "latitude": None, "longitude": None}])
+        self.assertFalse(kwargs["metadata"]["has_coordinates"])
+        self.assertEqual(kwargs["metadata"]["dataset"], "EPA AQS")
+
 
 class NoDataMessageTests(unittest.IsolatedAsyncioTestCase):
     """Empty-result errors must read as plain language for a researcher.
