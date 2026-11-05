@@ -68,6 +68,7 @@ def build_chat_model(
             api_key=SecretStr("unused"),
             base_url=settings.portkey_base_url,
             default_headers=_portkey_headers(settings, agent_type),
+            extra_body=_auto_cache_body(model),
             max_retries=settings.llm_max_retries,
             callbacks=timing_callbacks(agent_type),
         )
@@ -165,6 +166,11 @@ def _portkey_headers(settings: Settings, agent_type: str) -> dict[str, str]:
         metadata={"agent_type": agent_type},
     )
     return headers
+
+
+def _auto_cache_body(model: str) -> dict[str, Any] | None:
+    """Asks Claude to cache up to the latest message on every call."""
+    return {"cache_control": {"type": "ephemeral"}} if "claude" in model.lower() else None
 
 
 def _native_schema(tool: Any) -> Any:
