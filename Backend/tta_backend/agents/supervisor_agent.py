@@ -49,7 +49,7 @@ from tta_backend.utils.streaming import (
     current_user_message,
     ground_validation_scope,
 )
-from tta_backend.tools.hms_tools import query_hms_smoke
+
 
 logger = logging.getLogger(__name__)
 
@@ -179,7 +179,7 @@ async def build_agent(
     checkpointer = await get_checkpointer()
     supervisor = create_agent(
         model=llm,
-        tools=[dispatch_tool, query_hms_smoke],
+        tools=[dispatch_tool],
         system_prompt=SUPERVISOR_PROMPT,
         checkpointer=checkpointer,
         middleware=[trim_middleware, dispatch_limit_middleware],

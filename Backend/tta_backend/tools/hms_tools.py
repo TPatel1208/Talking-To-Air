@@ -1,4 +1,5 @@
 """HMS tool returning the existing AgentResult/chart envelope."""
+import uuid
 import asyncio
 from datetime import datetime, timezone
 
@@ -7,7 +8,7 @@ from shapely.geometry import box
 
 from tta_backend.models import AgentResult, ChartPayload, agent_result_to_json
 from tta_backend.services.hms_service import CAVEAT, HMSError, download_archive, parse_archive, product_date
-from tta_backend.utils.streaming import emit_status
+from tta_backend.utils.streaming import emit_chart, emit_status
 
 
 @tool
@@ -32,6 +33,8 @@ async def query_hms_smoke(date: str, region: str = "", bounds: list[float] | Non
         elif region:
             from tta_backend.utils.plotting import RegionResolver
             resolved = await RegionResolver().aresolve_location(region)
+            if resolved is None:
+                raise HMSError("invalid_region", f"Unknown region: {region}")
             geometry = resolved["geometry"]
             bounds = list(geometry.bounds)
         emit_status(f"Downloading NOAA HMS smoke for {date}")
@@ -44,8 +47,16 @@ async def query_hms_smoke(date: str, region: str = "", bounds: list[float] | Non
                 "Polygon counts are not counts of fires. " + CAVEAT)
         if not result["feature_count"]:
             text = f"NOAA HMS {date}: no usable smoke polygons intersect this region; this does not establish smoke-free conditions. " + CAVEAT
-        chart = ChartPayload(type="smoke_map", title=f"NOAA HMS smoke — {date} — {label}",
-                             bounds=bounds, date=date, **result)
-        return agent_result_to_json(AgentResult(text=text, charts=[chart]))
+        chart = ChartPayload.model_validate({
+            "type": "smoke_map",
+            "title": f"NOAA HMS smoke – {date} – {label}",
+            "bounds": bounds,
+            "date": date,
+            **result,
+    })
+        payload = chart.model_dump(exclude_none=True)
+        payload["chart_id"] = f"map_{uuid.uuid4().hex[:12]}"
+        emit_chart(payload)
+        return agent_result_to_json(AgentResult(text=text))
     except (HMSError, ValueError) as exc:
         return agent_result_to_json(AgentResult(text=str(exc), metadata={"source": "NOAA HMS", "status": getattr(exc, "status", "invalid_region")}))

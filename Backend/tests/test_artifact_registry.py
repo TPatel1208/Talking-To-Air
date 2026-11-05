@@ -29,6 +29,7 @@ class BuildArtifactReferenceMapTests(unittest.TestCase):
         self.assertEqual(ref.metadata["colorbar"], {"vmin": 0.0, "vmax": 1.0})
         self.assertEqual(ref.metadata["source_handles"], ["obs_1"])
 
+
     def test_rejects_a_heatmap_payload_missing_bounds(self):
         from tta_backend.services.artifact_registry import build_artifact_reference
 
@@ -53,6 +54,48 @@ class BuildArtifactReferenceMapTests(unittest.TestCase):
 
         self.assertIsNone(ref)
 
+    
+    def test_builds_smoke_map_artifact(self):
+        from tta_backend.services.artifact_registry import build_artifact_reference
+
+        payload = {
+            "chart_id": "map_hms123",
+            "type": "smoke_map",
+            "title": "NOAA HMS smoke",
+            "bounds": [-75.0, 39.0, -73.0, 41.0],
+            "date": "2026-01-01",
+            "metadata": {},
+        }
+
+        ref = build_artifact_reference(payload)
+
+        self.assertIsNotNone(ref)
+        self.assertEqual(ref.type, "map")
+        self.assertEqual(ref.id, "map_hms123")
+        self.assertEqual(ref.metadata["bbox"], [-75.0, 39.0, -73.0, 41.0])
+        self.assertEqual(ref.metadata["variable"], "smoke_density")
+        self.assertEqual(ref.metadata["units"], "category")
+
+    
+    def test_builds_smoke_map_without_bounds(self):
+        from tta_backend.services.artifact_registry import build_artifact_reference
+
+        payload = {
+            "chart_id": "map_hms_global",
+            "type": "smoke_map",
+            "title": "Global NOAA HMS smoke",
+            "bounds": None,
+        }
+
+        ref = build_artifact_reference(payload)
+
+        self.assertIsNotNone(ref)
+        self.assertEqual(ref.type, "map")
+        self.assertEqual(ref.metadata["bbox"], [-180.0, -90.0, 180.0, 90.0])
+        self.assertEqual(ref.metadata["units"], "category")
+    
+
+    
 
 class BuildArtifactReferenceComparisonTests(unittest.TestCase):
     def test_builds_a_comparison_artifact_from_a_heatmap_multi_payload(self):

@@ -6,13 +6,30 @@ const geojson = { type: 'FeatureCollection', features: [{ type: 'Feature', geome
   type: 'MultiPolygon', coordinates: [[[[-80, 30], [-70, 30], [-70, 40], [-80, 30]]]],
 } }] }
 
-test('HMS basemap is keyless XYZ with correct attribution and tile size', () => {
-  const source = smokeMapStyle().sources.basemap
-  assert.deepEqual(source.tiles, ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'])
+
+test('HMS basemap uses project tile configuration', () => {
+  const config = {
+    basemap_light_url: 'https://tiles.example.com/{z}/{x}/{y}.png',
+    basemap_attribution: 'Example map provider',
+  }
+
+  const source = smokeMapStyle(config).sources.basemap
+
+  assert.deepEqual(source.tiles, [config.basemap_light_url])
+  assert.equal(source.attribution, config.basemap_attribution)
   assert.equal(source.scheme, 'xyz')
   assert.equal(source.tileSize, 256)
-  assert.match(source.attribution, /openstreetmap.org\/copyright/)
 })
+
+test('HMS basemap has a fallback configuration', () => {
+  const source = smokeMapStyle().sources.basemap
+
+  assert.deepEqual(source.tiles, [
+    'https://basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png',
+  ])
+  assert.match(source.attribution, /CARTO/)
+})
+
 
 test('requested CONUS takes priority over plume extent, with lon/lat order preserved', () => {
   assert.deepEqual(smokeMapBounds({ bounds: [-125, 24, -66, 50], geojson }), [[-125, 24], [-66, 50]])

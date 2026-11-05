@@ -11,6 +11,7 @@ import json
 import math
 from datetime import date, datetime, timezone
 from pathlib import PurePosixPath
+from typing import Any
 from zipfile import BadZipFile, ZipFile
 
 import httpx
@@ -53,7 +54,7 @@ def download_url(value: str) -> str:
     return f"{BASE_URL}/{day:%Y}/{day:%m}/hms_smoke{day:%Y%m%d}.zip"
 
 
-async def download_archive(value: str, *, transport=None) -> bytes:
+async def download_archive(value: str, *, transport: httpx.AsyncBaseTransport | None = None) -> bytes:
     """Retry transient failures only; missing archives are never called no-smoke."""
     url = download_url(value)
     async with httpx.AsyncClient(timeout=45, transport=transport, follow_redirects=False) as client:
@@ -88,7 +89,7 @@ def _time(value: str) -> str:
         raise HMSError("invalid_data", f"Invalid HMS observation time: {value!r}.") from None
 
 
-def parse_archive(content: bytes, value: str, region=None) -> dict:
+def parse_archive(content: bytes, value: str, region: Any = None) -> dict[str, Any]:
     """Return EPSG:4326 GeoJSON, retaining each observation's interval and category."""
     product_date(value)
     if len(content) > MAX_ZIP_BYTES:
@@ -101,7 +102,7 @@ def parse_archive(content: bytes, value: str, region=None) -> dict:
         raise HMSError("invalid_data", "HMS archive or Shapefile could not be read.") from exc
 
 
-def _parse_archive(content: bytes, value: str, region) -> dict:
+def _parse_archive(content: bytes, value: str, region: Any) -> dict[str, Any]:
     try:
         archive = ZipFile(io.BytesIO(content))
     except BadZipFile:
@@ -125,7 +126,7 @@ def _parse_archive(content: bytes, value: str, region) -> dict:
         stem = candidates[0][:-4]
         if any(stem + ext not in names for ext in (".shx", ".dbf", ".prj")):
             raise HMSError("invalid_data", "Shapefile requires matching SHP, SHX, DBF and PRJ members.")
-        def member(ext):
+        def member(ext: str) -> bytes:
             return archive.read(names[stem + ext])
 
         crs = CRS.from_wkt(member(".prj").decode("utf-8-sig"))

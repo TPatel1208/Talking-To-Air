@@ -1,16 +1,16 @@
 // HMS is a WGS84 vector layer over standard Web Mercator XYZ tiles.
 // Keep this keyless source local to HMS; other maps retain their provider config.
-export function smokeMapStyle() {
+export function smokeMapStyle(tileConfig = {}) {
   return {
     version: 8,
     sources: {
       basemap: {
         type: 'raster',
-        tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+       tiles: [tileConfig.basemap_light_url || 'https://basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png'],
         tileSize: 256,
         scheme: 'xyz',
         maxzoom: 19,
-        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+        attribution: tileConfig.basemap_attribution || '© CARTO © OpenStreetMap contributors',
       },
     },
     layers: [

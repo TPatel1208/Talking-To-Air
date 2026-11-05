@@ -18,6 +18,7 @@ from tta_backend.models.artifact import (
 # in the gallery — the render type itself is left untouched.
 _RENDER_TYPE_TO_ARTIFACT_TYPE = {
     "heatmap": "map",
+    "smoke_map": "map",
     "heatmap_multi": "comparison",
     "timeseries": "timeseries",
     "profile": "profile",
@@ -51,6 +52,14 @@ def build_artifact_reference(payload: dict[str, Any]) -> ArtifactReference | Non
 def _build_metadata(artifact_type: str, payload: dict[str, Any]) -> BaseModel:
     source_handles = (payload.get("metadata") or {}).get("source_handles", [])
     if artifact_type == "map":
+        if payload.get("type") == "smoke_map":
+            return MapArtifactMetadata.model_validate({
+                "bbox": payload.get("bounds") or [-180.0, -90.0, 180.0, 90.0],
+                "variable": "smoke_density",
+                "units": "category",
+                "colorbar": {"vmin": None, "vmax": None},
+                "source_handles": source_handles,
+            })
         return MapArtifactMetadata.model_validate({
             "bbox": payload.get("bounds"),
             "variable": payload.get("variable"),

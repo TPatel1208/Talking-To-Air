@@ -79,6 +79,23 @@ curvilinear/swath products (e.g. VNP09/VJ1 swath variants), projected grids
 message to the researcher as-is; do not retry with a different dataset unless
 they ask you to.
 
+
+## NOAA HMS smoke-map exception
+For requests explicitly asking for NOAA HMS smoke polygons or an
+HMS smoke-density map, use `query_hms_smoke` directly.
+
+- HMS is a NOAA vector product, not a NASA Earthdata grid.
+- Do not run the NASA Earthdata discovery/retrieval workflow for HMS.
+- Use the requested single UTC date in YYYY-MM-DD format.
+- Pass the user's named location as the `region` argument.
+- If no region is requested, use the full daily HMS product.
+- HMS smoke density is categorical (light, medium, heavy),
+  not ground-level PM2.5 concentration.
+- Report tool errors without inventing data.
+
+For all other satellite requests, follow the workflow below.
+
+
 ## Workflow (sequential — never skip or reorder)
 1. **Find the dataset** — `search_datasets` to mint a `dataset_` handle. For a
    dataset in the preset table above, pass its **concept_id** verbatim as the

@@ -3,6 +3,7 @@ import  * as maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import { fitSmokeMap, smokeMapBounds, smokeMapStyle } from '../utils/hmsMap.js'
 import { SMOKE_COLORS as COLORS, SMOKE_LEGEND, smokeMapPng } from '../utils/hmsMapExport.js'
+import { API_BASE } from '../config.js'
 
 export default function MapLibreSmokePanel({ payload }) {
   const container = useRef(null)
@@ -15,15 +16,16 @@ export default function MapLibreSmokePanel({ payload }) {
     let map
     let observer
     let loaded = false
+    let disposed = false
     const bounds = smokeMapBounds(payload)
-    function initialize() {
+    function initialize(tileConfig) {
       try {
         map = new maplibregl.Map({
           container: container.current, center: [-100, 40], zoom: 2,
           renderWorldCopies: false,
           preserveDrawingBuffer: true,
           pixelRatio: Math.max(2, window.devicePixelRatio || 1),
-          style: smokeMapStyle(),
+          style: smokeMapStyle(tileConfig),
         })
         mapRef.current = map
         tileFailure.current = false
@@ -60,8 +62,21 @@ export default function MapLibreSmokePanel({ payload }) {
         })
       } catch (error) { setFailure({ source: payload, message: `Map unavailable: ${error.message}` }) }
     }
-    initialize()
+    
+    async function loadAndInitialize() {
+      try {
+        const response = await fetch(`${API_BASE}/config/map-tiles`)
+        const tileConfig = response.ok ? await response.json() : {}
+        if (!disposed) initialize(tileConfig)
+      } catch {
+        if (!disposed) initialize({})
+      }
+    }
+
+    loadAndInitialize()
+
     return () => {
+      disposed = true
       exportRef.current?.abort()
       exportRef.current = null
       mapRef.current = null
