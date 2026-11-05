@@ -350,5 +350,60 @@ class PortkeyProviderTests(unittest.TestCase):
             self.assertEqual(Settings().portkey_base_url, "https://api.portkey.ai/v1")
 
 
+class CacheableSystemPromptTests(unittest.TestCase):
+    """Claude via Portkey caches only a marked system prompt."""
+
+    def test_claude_through_portkey_gets_a_cache_marker(self):
+        from langchain_core.messages import SystemMessage
+
+        from tta_backend.config.model_factory import cacheable_system_prompt
+
+        prompt = cacheable_system_prompt("SYSTEM", "portkey", "@gcp-x/anthropic.claude-sonnet-5")
+
+        self.assertIsInstance(prompt, SystemMessage)
+        self.assertEqual(prompt.content, [{"type": "text", "text": "SYSTEM", "cache_control": {"type": "ephemeral"}}])
+
+    def test_other_models_keep_the_plain_string(self):
+        from tta_backend.config.model_factory import cacheable_system_prompt
+
+        for provider, model in (("google", "gemini-3.5-flash-lite"), ("groq", "claude-lookalike"), ("portkey", "@azure-x/gpt-5.4")):
+            with self.subTest(provider=provider, model=model):
+                self.assertEqual(cacheable_system_prompt("SYSTEM", provider, model), "SYSTEM")
+
+    def test_the_marker_reaches_the_portkey_request(self):
+        """Catches a langchain-openai upgrade that drops unknown block keys."""
+        from langchain_core.messages import HumanMessage
+
+        from tta_backend.config.model_factory import build_chat_model, cacheable_system_prompt
+        from tta_backend.config.settings import Settings
+
+        model = build_chat_model("portkey", "@x/claude", Settings(portkey_api_key="offline"))
+        system = cacheable_system_prompt("SYSTEM", "portkey", "@x/claude")
+        payload = model._get_request_payload([system, HumanMessage("hi")])
+
+        self.assertEqual(payload["messages"][0]["content"][0]["cache_control"], {"type": "ephemeral"})
+
+    def test_both_sub_agents_send_the_marked_prompt(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+
+        from langchain_core.messages import SystemMessage
+
+        from tta_backend.agents import earthdata_agent, ground_sensor_agent
+
+        for module, build in (
+            (earthdata_agent, lambda: earthdata_agent.build_earthdata_agent("@x/claude", "portkey", mcp_tools={})),
+            (ground_sensor_agent, lambda: ground_sensor_agent.build_ground_agent("@x/claude", "portkey")),
+        ):
+            with self.subTest(module=module.__name__):
+                create_agent = Mock(return_value=SimpleNamespace())
+                with patch.object(module, "build_chat_model", Mock(return_value=object())), \
+                     patch.object(module, "create_agent", create_agent), \
+                     patch.object(earthdata_agent, "build_satellite_tools", Mock(return_value=[])):
+                    build()
+
+                self.assertIsInstance(create_agent.call_args.kwargs["system_prompt"], SystemMessage)
+
+
 if __name__ == "__main__":
     unittest.main()

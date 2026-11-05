@@ -172,6 +172,17 @@ def _native_schema(tool: Any) -> Any:
     return metadata.get(NATIVE_JSON_SCHEMA) if isinstance(metadata, dict) else None
 
 
+def cacheable_system_prompt(prompt: str, provider: str, model: str) -> Any:
+    """Marks the prompt for Claude's cache (which also covers the tools); others cache on their own."""
+    if provider != "portkey" or "claude" not in model.lower():
+        return prompt
+    from langchain_core.messages import SystemMessage
+
+    return SystemMessage(content=[
+        {"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}},
+    ])
+
+
 def structured_output(model: Any, schema: Any) -> Any:
     """Bind ``model`` to ``schema`` for structured output.
 
