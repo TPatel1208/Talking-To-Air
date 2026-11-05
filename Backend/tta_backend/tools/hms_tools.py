@@ -1,5 +1,6 @@
 """HMS tool returning the existing AgentResult/chart envelope."""
 import asyncio
+import logging
 import uuid
 from datetime import datetime, timezone
 
@@ -7,8 +8,11 @@ from langchain.tools import tool
 from shapely.geometry import box
 
 from tta_backend.models import AgentResult, ChartPayload, agent_result_to_json
+from tta_backend.services.artifact_registry import build_artifact_reference
 from tta_backend.services.hms_service import CAVEAT, HMSError, download_archive, parse_archive, product_date
 from tta_backend.utils.streaming import emit_chart, emit_status
+
+logger = logging.getLogger(__name__)
 
 
 @tool
@@ -56,7 +60,18 @@ async def query_hms_smoke(date: str, region: str = "", bounds: list[float] | Non
         })
         payload = chart.model_dump(exclude_none=True)
         payload["chart_id"] = f"map_{uuid.uuid4().hex[:12]}"
+        # Same as plot_tools._save_chart: the artifact reference is what puts
+        # the map in the gallery and lets the agent cite it by id. A bad
+        # reference must not cost the user the map itself.
+        try:
+            ref = build_artifact_reference(payload)
+        except Exception:
+            logger.warning("artifact_reference_build_failed", extra={"_render_type": "smoke_map"})
+            ref = None
+        artifacts = [ref] if ref is not None else []
+        if artifacts:
+            payload["_artifact_refs"] = [ref.model_dump(exclude_none=True) for ref in artifacts]
         emit_chart(payload)
-        return agent_result_to_json(AgentResult(text=text))
+        return agent_result_to_json(AgentResult(text=text, artifacts=artifacts))
     except (HMSError, ValueError) as exc:
         return agent_result_to_json(AgentResult(text=str(exc), metadata={"source": "NOAA HMS", "status": getattr(exc, "status", "invalid_region")}))
