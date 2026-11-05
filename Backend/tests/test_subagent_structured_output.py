@@ -266,12 +266,18 @@ class EvalHarnessStructuredAnswerTests(unittest.IsolatedAsyncioTestCase):
             async def astream(self, input_, config, stream_mode):
                 await asyncio.sleep(0)
                 yield "messages", (SimpleNamespace(content="Let me search.", type="ai", tool_calls=None), {})
-                yield "updates", {"model": {"messages": [
-                    SimpleNamespace(tool_calls=[{"id": "t1", "name": "search_datasets", "args": {}}], content=""),
+                # One parallel step, listed in the reverse of the expected order.
+                yield "updates", {"model": {"messages": [SimpleNamespace(tool_calls=[
+                    {"id": "t1", "name": "define_area_of_interest", "args": {}},
+                    {"id": "t2", "name": "search_datasets", "args": {}},
+                ], content="")]}}
+                yield "updates", {"tools": {"messages": [
+                    SimpleNamespace(name="define_area_of_interest", content="aoi_1", tool_calls=None),
+                    SimpleNamespace(name="search_datasets", content="dataset_1", tool_calls=None),
                 ]}}
                 yield "updates", {"model": {
                     "messages": [SimpleNamespace(
-                        tool_calls=[{"id": "t2", "name": SUB_AGENT_ENVELOPE_TOOL, "args": envelope.model_dump()}],
+                        tool_calls=[{"id": "t3", "name": SUB_AGENT_ENVELOPE_TOOL, "args": envelope.model_dump()}],
                         content="",
                     )],
                     "structured_response": envelope,
@@ -279,7 +285,7 @@ class EvalHarnessStructuredAnswerTests(unittest.IsolatedAsyncioTestCase):
 
         task = eval_harness.EvalTask(
             name="structured_answer_offline", category="discovery", prompt="find TEMPO NO2",
-            handlers={}, expected_tool_calls=["search_datasets"],
+            handlers={}, expected_tool_calls=["search_datasets", "define_area_of_interest"],
             outcome_check=lambda env, calls: env is not None and env.handles == ["obs_1"],
         )
         with patch("tta_backend.earthdata_mcp.client.load_raw_mcp_tools", AsyncMock(return_value={})), \
@@ -287,7 +293,8 @@ class EvalHarnessStructuredAnswerTests(unittest.IsolatedAsyncioTestCase):
             result = await eval_harness.run_eval_task(task)
 
         self.assertEqual(result.envelope, envelope)
-        self.assertEqual(result.tool_calls, ["search_datasets"])
+        self.assertEqual(result.tool_steps, [["define_area_of_interest", "search_datasets"]])
+        self.assertEqual(result.model_steps, 2)  # the parallel step, then the envelope call
         self.assertTrue(result.passed)
 
 

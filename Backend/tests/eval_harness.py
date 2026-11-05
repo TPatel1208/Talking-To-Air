@@ -126,6 +126,19 @@ def contains_subsequence(trace: list[str], expected: list[str]) -> bool:
     return all(name in it for name in expected)
 
 
+def contains_step_subsequence(steps: list[list[str]], expected: list[str]) -> bool:
+    """contains_subsequence over model steps: calls in one (parallel) step match in any order."""
+    position, pending = 0, list(steps[0]) if steps else []
+    for name in expected:
+        while name not in pending:
+            position += 1
+            if position >= len(steps):
+                return False
+            pending = list(steps[position])
+        pending.remove(name)
+    return True
+
+
 @dataclass
 class EvalTask:
     name: str
@@ -149,6 +162,17 @@ class EvalTaskResult:
     envelope: Any
     passed: bool
     elapsed_seconds: float = 0.0
+    # The tool calls grouped by the model step that made them (empty when not recorded).
+    tool_steps: list[list[str]] = field(default_factory=list)
+    # Model calls that made a tool call, including the final SubAgentEnvelope one.
+    model_steps: int = 0
+
+
+def trace_ok(result: EvalTaskResult) -> bool:
+    """Whether a result's tool calls follow its task's expected order."""
+    if result.tool_steps:
+        return contains_step_subsequence(result.tool_steps, result.task.expected_tool_calls)
+    return contains_subsequence(result.tool_calls, result.task.expected_tool_calls)
 
 
 DateCheck = Callable[[list[tuple[str, dict]]], bool]
@@ -726,9 +750,10 @@ async def run_eval_task(task: EvalTask, *, model: str | None = None) -> EvalTask
         mcp_tools = await load_raw_mcp_tools(settings)
         agent = build_earthdata_agent(model=model, mcp_tools=mcp_tools)
 
-        tool_calls: list[str] = []
+        steps: list[list[str]] = []
         text_parts: list[str] = []
         structured: SubAgentEnvelope | None = None
+        last_event: str | None = None
         started = time.monotonic()
         with aqs_patch:
             async for event_type, data in stream_response(agent, task.prompt, thread_id=f"eval-{task.name}"):
@@ -736,23 +761,30 @@ async def run_eval_task(task: EvalTask, *, model: str | None = None) -> EvalTask
                     if isinstance(data, SubAgentEnvelope):
                         structured = data
                 elif event_type == "tool_call":
+                    if last_event != "tool_call":  # a step's calls arrive back to back
+                        steps.append([])
                     if data["name"] != SUB_AGENT_ENVELOPE_TOOL:
-                        tool_calls.append(data["name"])
+                        steps[-1].append(data["name"])
                 elif event_type == "text":
                     text_parts.append(data if isinstance(data, str) else data.get("response", ""))
+                if event_type in ("tool_call", "tool_result", "text"):
+                    last_event = event_type
         elapsed_seconds = time.monotonic() - started
 
+        tool_steps = [step for step in steps if step]
+        tool_calls = [name for step in tool_steps for name in step]
         raw_text = structured.model_dump_json() if structured is not None else "".join(text_parts)
         envelope = parse_sub_agent_envelope(raw_text)
         within_budget = elapsed_seconds <= CATEGORY_BUDGETS[task.category]
         passed = (
-            contains_subsequence(tool_calls, task.expected_tool_calls)
+            contains_step_subsequence(tool_steps, task.expected_tool_calls)
             and task.outcome_check(envelope, tool_calls)
             and within_budget
         )
         return EvalTaskResult(
             task=task, tool_calls=tool_calls, raw_text=raw_text, envelope=envelope,
             passed=passed, elapsed_seconds=elapsed_seconds,
+            tool_steps=tool_steps, model_steps=len(steps),
         )
     finally:
         server.stop()
@@ -962,12 +994,12 @@ def format_results_table(results: list[EvalTaskResult]) -> str:
     """Render the compact per-task table the eval prints after a run: name,
     category, pass/fail, trace verdict, seconds — so a regression's
     location is obvious from the output alone (user story 9)."""
-    header = f"{'task':<42} {'category':<18} {'result':<6} {'trace':<6} {'seconds':>8}"
+    header = f"{'task':<42} {'category':<18} {'result':<6} {'trace':<6} {'steps':>5} {'seconds':>8}"
     lines = [header, "-" * len(header)]
     for r in results:
-        trace_ok = contains_subsequence(r.tool_calls, r.task.expected_tool_calls)
+        steps = str(r.model_steps) if r.model_steps else "-"
         lines.append(
             f"{r.task.name:<42} {r.task.category:<18} {'PASS' if r.passed else 'FAIL':<6} "
-            f"{'ok' if trace_ok else 'bad':<6} {r.elapsed_seconds:>8.2f}"
+            f"{'ok' if trace_ok(r) else 'bad':<6} {steps:>5} {r.elapsed_seconds:>8.2f}"
         )
     return "\n".join(lines)

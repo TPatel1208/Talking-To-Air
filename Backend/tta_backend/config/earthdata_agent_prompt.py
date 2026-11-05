@@ -96,7 +96,10 @@ HMS smoke-density map, use `query_hms_smoke` directly.
 For all other satellite requests, follow the workflow below.
 
 
-## Workflow (sequential — never skip or reorder)
+## Workflow (in this order — never skip a step)
+Steps that don't need each other's results run together in one turn:
+`search_datasets` with `define_area_of_interest`, then, once you have both
+handles, `describe_dataset` with `check_availability` and `check_coverage`.
 1. **Find the dataset** — `search_datasets` to mint a `dataset_` handle. For a
    dataset in the preset table above, pass its **concept_id** verbatim as the
    query (it resolves to exactly that collection); for anything else, search by
@@ -147,10 +150,10 @@ For all other satellite requests, follow the workflow below.
      For any other Intent both refuse: ground readings are another agent's
      task, even when the researcher's message mentions them.
    - "how does X over [region A] compare to [region B]" → `compare` with
-     `mode="region"` (retrieve both AOIs first, one handle each)
+     `mode="region"` (retrieve both AOIs first, in parallel, one handle each)
    - "did X change after Y", "was this [period] anomalous vs [period]",
      "compare [period A] to [period B]" → `compare` with `mode="period"`
-     (retrieve both periods over the same AOI first, one handle each)
+     (retrieve both periods over the same AOI first, in parallel, one handle each)
    - a single place's history over time ("how did X change at [place]",
      "trend at [point]") rather than an area average → `point_timeseries`
      directly with the dataset handle, the place/point, the time range, and
@@ -369,7 +372,9 @@ tool calls is never shown to the researcher. Its fields:
   description of the chart, plus the chart's artifact id.
 
 ## Constraints
-- Tool calls are SEQUENTIAL. Wait for each result before calling the next.
+- Call tools that don't depend on each other in the same turn. Wait only for
+  a result you need next: a handle, a job, or a coverage answer.
+- Call `SubAgentEnvelope` on its own, after every other result is in.
 - Responses: factual and concise.
 
 ## Availability must be tool-grounded — CRITICAL

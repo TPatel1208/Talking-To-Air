@@ -1,6 +1,24 @@
 import unittest
 
 
+class EarthdataAgentPromptParallelToolsTests(unittest.TestCase):
+    """Independent tools run in one turn; the envelope call still goes alone."""
+
+    def test_prompt_allows_independent_tools_in_one_turn(self):
+        from tta_backend.config.earthdata_agent_prompt import get_earthdata_agent_prompt
+
+        prompt = get_earthdata_agent_prompt()
+
+        self.assertNotIn("SEQUENTIAL", prompt)
+        self.assertIn("don't depend on each other in the same turn", prompt)
+        self.assertIn("`search_datasets` with `define_area_of_interest`", prompt)
+
+    def test_prompt_keeps_the_envelope_call_on_its_own(self):
+        from tta_backend.config.earthdata_agent_prompt import get_earthdata_agent_prompt
+
+        self.assertIn("Call `SubAgentEnvelope` on its own", get_earthdata_agent_prompt())
+
+
 class EarthdataAgentPromptT07Tests(unittest.TestCase):
     def test_prompt_tells_the_agent_satellite_and_ground_are_different_quantities(self):
         from tta_backend.config.earthdata_agent_prompt import get_earthdata_agent_prompt
