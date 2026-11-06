@@ -1,10 +1,9 @@
 """
 tests/test_earthdata_mcp_edl_injection.py
 ===========================================
-T31: bind_workspace's per-user Earthdata credential injection. The
+bind_workspace's per-user Earthdata credential injection. The
 workspace-binding wrapper (earthdata_mcp/workspace.py) is the single seam
-every model-facing and composite MCP call already passes through (T19/T26
-prior art) -- this extends it to feature-detect an advertised edl_token
+every model-facing and composite MCP call passes through -- this extends it to feature-detect an advertised edl_token
 parameter and inject the calling user's decrypted, unexpired token, never
 require the parameter, and degrade cleanly against tools/MCPs that don't
 advertise it.
@@ -54,8 +53,8 @@ class _FakeInjector:
 def _build_mcp_with_edl_advertising_search(handler):
     """Every REQUIRED_TOOL_NAMES tool build_fake_mcp already provides, with
     search_datasets swapped for a variant whose schema additionally
-    advertises edl_token -- models an MCP that has adopted PRD-022's
-    per-call contract for at least one tool. describe_dataset is left
+    advertises edl_token -- models an MCP that has adopted the per-call
+    token contract for at least one tool. describe_dataset is left
     untouched (no edl_token) as the non-advertising control."""
     from fake_earthdata_mcp import build_fake_mcp
 
@@ -170,7 +169,7 @@ class EdlTokenInjectionMatrixTests(ProcessCacheIsolation, unittest.IsolatedAsync
         self.assertNotIn("edl_token", self.received)
 
     async def test_contract_check_still_reaches_ready_with_no_edl_token_in_the_required_param_contract(self):
-        """T31: edl_token is feature-detected, never required -- an
+        """edl_token is feature-detected, never required -- an
         un-upgraded MCP (every tool here except search_datasets) must still
         pass the connect-time schema check."""
         from tta_backend.earthdata_mcp.connection import check_tool_schemas
@@ -185,7 +184,7 @@ class EdlTokenInjectionMatrixTests(ProcessCacheIsolation, unittest.IsolatedAsync
     "MCP client test dependencies are not installed",
 )
 class EdlTokenErrorClassificationTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCase):
-    """PRD-022 (soft dependency): the three per-user credential error
+    """The three per-user credential error
     classes route through the existing structured-error pipeline
     (earthdata_mcp/results.py's category-generic _classify_dict) with fixed,
     actionable message templates -- and, since those templates never echo

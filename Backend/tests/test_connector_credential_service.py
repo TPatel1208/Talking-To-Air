@@ -1,7 +1,7 @@
 """
 tests/test_connector_credential_service.py
 ============================================
-T31: EdlCredentialInjector -- the injection-policy resolver bound into
+EdlCredentialInjector -- the injection-policy resolver bound into
 bind_workspace (earthdata_mcp/workspace.py) as edl_injector. Exercises the
 policy (connected ∧ unexpired), the short-TTL encrypted-row cache and its
 invalidation, and the fire-and-forget/coalesced last_used_at bookkeeping --

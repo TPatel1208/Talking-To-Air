@@ -225,7 +225,7 @@ class ConnectorsEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res.status_code, 401)
 
     async def test_set_token_invalidates_the_edl_credential_injector_cache(self):
-        """T31: a re-paste must never be shadowed by the injector's
+        """A re-paste must never be shadowed by the injector's
         short-TTL cache of the previous row within the TTL window."""
         raw_token = _make_edl_token()
         invalidate_patch = patch("tta_backend.api.edl_credential_injector.invalidate")

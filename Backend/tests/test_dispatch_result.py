@@ -1,4 +1,4 @@
-"""T64 D11/D12: the dispatch tool's batch envelope, and the one parser every
+"""The dispatch tool's batch envelope, and the one parser every
 reader of a supervisor ToolMessage goes through -- so a batch and a legacy
 single-AgentResult checkpoint read the same way."""
 import unittest
@@ -111,7 +111,7 @@ class SupervisorStreamBatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sum(1 for c in parse.call_args_list if c.args[0] == batch), 1)
 
     async def test_the_done_event_merges_suggestions_and_keeps_the_first_picker(self):
-        """D13: suggestions concatenate in request order, deduped, capped at
+        """Suggestions concatenate in request order, deduped, capped at
         the envelope's own limit of two; one picker can be shown, so the
         first item's wins."""
         import json

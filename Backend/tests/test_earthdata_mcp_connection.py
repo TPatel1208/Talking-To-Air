@@ -5,8 +5,7 @@ The connection manager owns the earthdata-retrieval MCP relationship
 as an attached service, not a boot dependency. These tests fake the manager's
 own seam (a loader callable standing in for load_raw_mcp_tools) rather than
 spinning up a real MCP server — the manager's job is state/retry/schema-diff
-bookkeeping, which the fake-client pattern documented in the PRD's Testing
-Decisions is enough to prove.
+bookkeeping, which a fake loader is enough to prove.
 """
 from __future__ import annotations
 
@@ -73,7 +72,7 @@ class CheckToolSchemasTests(unittest.TestCase):
         from tta_backend.earthdata_mcp.client import REQUIRED_TOOL_PARAMS
 
         tools = {name: _fake_tool(name, params) for name, params in REQUIRED_TOOL_PARAMS.items()}
-        # Real-world shape of the bug this check exists for (T11's
+        # Real-world shape of the bug this check exists for (an
         # aoi_handle-vs-handle mismatch): the MCP's advertised schema drops a
         # parameter this backend actually sends.
         tools["define_area_of_interest"] = _fake_tool("define_area_of_interest", ("workspace_id",))
@@ -202,7 +201,7 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
 
         async def on_ready(ready_tools):
             # The callback must see the tools before external observers can
-            # see state == ready (T17: rebuilding the satellite agent must
+            # see state == ready (rebuilding the satellite agent must
             # never race a caller that just checked manager.state).
             observed_state_at_callback.append(manager.state)
             self.assertEqual(set(ready_tools.keys()), {"search_datasets"})
@@ -319,8 +318,7 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
         # The manager must keep watching after boot — a
         # mid-session MCP outage (not just a down-at-boot one) has to flip
         # /health away from "ready", or every consumer gated on manager.state
-        # would let a bare connection failure through during that window
-        # (the exact "/health lies" bug this PRD's Problem Statement names).
+        # would let a bare connection failure through during that window.
         from tta_backend.earthdata_mcp.connection import (
             EarthdataMCPConnectionManager,
             EarthdataMCPNotReadyError,
@@ -346,7 +344,7 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
         async def on_ready(ready_tools):
             on_ready_calls.append(ready_tools)
 
-        # T40: threshold=1 pins the pre-dampening behavior this test is
+        # threshold=1 pins the undampened behavior this test is
         # about — a single probe miss is still enough to detect a genuine,
         # sustained outage (dampening only changes what happens with 2+).
         manager = EarthdataMCPConnectionManager(
@@ -437,7 +435,7 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(on_ready_calls), 2)
 
     async def test_edl_injector_is_threaded_through_to_bind_workspace(self):
-        """T31: the manager's own job is connect/retry/schema-diff
+        """The manager's own job is connect/retry/schema-diff
         bookkeeping (this file's docstring) — the actual injection behavior
         is exercised end-to-end against a real advertising MCP schema in
         test_earthdata_mcp_edl_injection.py. This just proves the manager
@@ -475,7 +473,7 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class HeartbeatDampeningTests(unittest.IsolatedAsyncioTestCase):
-    """PRD T40: demotion from ready requires N consecutive heartbeat
+    """Demotion from ready requires N consecutive heartbeat
     failures (default 2) -- a single blip logs and re-probes on a short
     interval instead of transitioning."""
 

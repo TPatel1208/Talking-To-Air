@@ -93,7 +93,7 @@ class EvidenceComputationTests(unittest.TestCase):
         self.assertAlmostEqual(cloud["coverage"], 1.0)
 
     def test_context_band_mean_is_cos_latitude_area_weighted(self):
-        """Finding #13: the companion band mean must be cos(latitude)
+        """The companion band mean must be cos(latitude)
         area-weighted, the SAME regional-mean definition as the headline
         science mean -- an unweighted grid-cell mean over-weights poleward
         pixels. Over a band with 10.0 at the equator and 0.0 at 80N, the
@@ -462,13 +462,13 @@ class EvidenceComputationTests(unittest.TestCase):
         # know. The claim under test is that the two keep the same cells.
         uncropped = mask_data_by_geometry(band, geometry, crop=False)
         xr.testing.assert_equal(band.where(mask), uncropped)
-        # With T50's crop the seam returns that same array narrowed to the
+        # With crop-before-mask the seam returns that same array narrowed to the
         # mask's footprint -- the same rasterization, fewer cells carried.
         cropped = mask_data_by_geometry(band, geometry)
         xr.testing.assert_equal(band.where(mask).sel(cropped.coords), cropped)
         # The footprint count is readable straight off the mask -- and the seam
         # reports the same number, so a caller needing the region's own cell
-        # count (per-layer coverage, T56) never re-rasterizes on cropped axes,
+        # count (per-layer profile coverage) never re-rasterizes on cropped axes,
         # whose float32 step differs in the 8th digit and flips boundary cells.
         self.assertEqual(int(mask.sum()), 1)
         self.assertEqual(uncropped.attrs["region_cells"], 1)

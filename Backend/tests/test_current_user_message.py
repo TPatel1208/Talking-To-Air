@@ -1,4 +1,4 @@
-"""T64 D6: the researcher's verbatim message is bound server-side for the
+"""The researcher's verbatim message is bound server-side for the
 whole chat turn, so the dispatch layer can hand it to sub-agents without the
 supervisor model ever writing (or paraphrasing) it."""
 import unittest

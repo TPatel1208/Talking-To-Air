@@ -202,7 +202,7 @@ class DiscoveryEndpointTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTest
         self.assertEqual(body["total_size_mb"], 20.0)
         self.assertEqual(body["limit_applied"], 10)
         self.assertEqual(self.aoi_calls, [("Raritan basin", "user-user-1")])
-        # The regression T11 repaired: the tool must be called with a
+        # The tool must be called with a
         # resolved (non-None) aoi_handle, never the raw location string.
         dataset_handle, aoi_handle, time_range, workspace_id, limit = self.granules_calls[0]
         self.assertEqual(dataset_handle, "dataset_smap_l3")
@@ -315,9 +315,8 @@ class DiscoveryEndpointTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTest
         )
 
     async def test_coverage_reports_an_unresolvable_location_structurally_not_as_a_bare_500(self):
-        # T18 story #1/#2, live failure F6 (docs/live-test-2026-07-07.md):
-        # an unresolvable place name used to reach the researcher as a bare
-        # 500. It now answers 422 with a human message and a suggestion.
+        # An unresolvable place name must answer 422 with a human message and
+        # a suggestion, not a bare 500.
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
         with auth_patches:

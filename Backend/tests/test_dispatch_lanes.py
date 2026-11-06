@@ -1,4 +1,4 @@
-"""T64 Phase 4: narration lanes. Sub-agents a dispatch call runs in parallel
+"""Narration lanes. Sub-agents a dispatch call runs in parallel
 narrate into one stream; each status/job_progress event they emit carries the
 lane it belongs to, so the workflow strip can show one row per request
 instead of interleaving them."""

@@ -1,11 +1,9 @@
 """
 tests/test_export_service.py
 ==============================
-PRD T20 gap fix: export_service.py's timeseries CSV/PNG export unconditionally
-routed every "timeseries" chart's export through AggregationService.to_dataarray,
-which assumes an xarray Dataset/DataArray. point_timeseries's export.source_handles
-points at a Parquet handle (an Arrow Table via services.open_handle), so exporting
-one of its charts raised AttributeError instead of producing a CSV/PNG.
+Timeseries CSV/PNG export must handle point_timeseries charts, whose
+export.source_handles point at a Parquet handle (an Arrow Table via
+services.open_handle), not an xarray Dataset/DataArray.
 
 Prior art: test_open_handle.py (Parquet fixtures via HandleVolume),
 test_point_timeseries.py (the point-sample export payload shape).
@@ -135,14 +133,11 @@ class PointSampleTimeseriesExportTests(unittest.IsolatedAsyncioTestCase):
     "export_service multi-variable NetCDF test dependencies are not installed",
 )
 class MultiVariableExportResolutionTests(unittest.IsolatedAsyncioTestCase):
-    """T25 review #3: the export path calls to_dataarray with the payload's
-    stored ``variable`` and no handle. With the silent-first-variable fallback
-    deleted, a stored payload whose ``variable`` is None/empty over a multi-
-    variable file used to raise a structured MCPToolError -- uncaught on the
-    CSV export path, where the streaming response has already started. The
-    export path now threads the source handle (so a recorded choice or a
-    lone science-vs-flag pair resolves) and, failing that, surfaces a clean
-    ValueError instead of letting the MCPToolError escape mid-stream."""
+    """A stored payload whose ``variable`` is None/empty over a
+    multi-variable file must not raise MCPToolError mid-stream on the CSV
+    path. The export threads the source handle (so a recorded choice or a
+    lone science-vs-flag pair resolves) and, failing that, raises a clean
+    ValueError."""
 
     async def asyncSetUp(self):
         from fake_earthdata_mcp import HandleVolume, build_fake_mcp, FakeEarthdataMCPServer

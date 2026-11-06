@@ -1,6 +1,6 @@
 """The bundle extract cache must be bounded by size, and swept when idle.
 
-Phase 4 of the admission work. Admission control bounds what the heavy paths
+Admission control bounds what the heavy paths
 hold in *memory*; this bounds what the open path leaves on *disk*, which is the
 other exhaustible resource a burst of large retrievals can run the container
 out of -- and the one this project has already been bitten by (docker_data.vhdx

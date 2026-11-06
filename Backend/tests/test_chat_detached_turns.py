@@ -225,7 +225,7 @@ class DetachedChatTurnTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"response": "hello"', replay.text)
 
     async def test_a_second_send_while_a_turn_runs_is_refused_with_the_running_turn(self):
-        """D12. The second tab is told which turn to join, not forked onto its own.
+        """The second tab is told which turn to join, not forked onto its own.
 
         Two concurrent turns on one thread interleave checkpoint writes, and
         the only thing preventing that today is the client aborting its own
@@ -250,7 +250,7 @@ class DetachedChatTurnTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(refused.json()["turn_id"], running)
 
     async def test_a_retried_send_is_answered_with_the_turn_it_already_bought(self):
-        """D13. The 202 handshake makes the retry window real.
+        """The 202 handshake makes the retry window real.
 
         A client that retries a send whose response it never saw must not buy
         a second LLM answer and a second retrieval for one message.
@@ -292,7 +292,7 @@ class DetachedChatTurnTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 404)
 
     async def test_a_send_fails_with_503_when_the_event_log_is_unreachable(self):
-        """D15. Redis is the transport for every event, the claim and the stop
+        """Redis is the transport for every event, the claim and the stop
         signal, so a backend that cannot reach it is not degraded, it is down.
 
         The rejected alternatives both hide it: falling back to direct
@@ -363,13 +363,7 @@ class DetachedChatTurnTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"response": "hello"', response.text)
 
     def test_detached_turns_are_on_unless_something_turns_them_off(self):
-        """Phase 5 flips the default, and the switch reverses with it.
-
-        While the frontend could not speak the 202-then-GET protocol, an
-        unset variable had to mean "off" — reading a 202's JSON body into an
-        SSE parser finds no events and spins forever. It speaks it now, so
-        the default is the shipped path and the variable is what a rollback
-        sets.
+        """Detached turns are the default; the variable is the rollback.
 
         The rollback has to work from the environment alone: the frontend
         branches on the response rather than on a flag of its own, so turning
@@ -391,13 +385,11 @@ class DetachedChatTurnTests(unittest.IsolatedAsyncioTestCase):
         get_settings.cache_clear()
 
     async def test_the_streams_duration_is_measured_over_the_whole_turn(self):
-        """T45's property, on the route that now holds a turn's minutes.
+        """Request timing measures the full stream on this route.
 
-        The POST used to stream for 100–370s and was the slowest thing in the
-        app; it now returns in milliseconds, and every second of the turn is
-        spent on this GET instead. Measuring it at header time here would
-        reproduce exactly the blind spot T45 closed — a p95 dashboard that
-        cannot see the slowest thing in the app — just one route over.
+        The POST returns in milliseconds and every second of the turn (often
+        100–370s) is spent on this GET. Measuring at header time would give a
+        p95 dashboard that can't see the slowest thing in the app.
         """
         import tta_backend.api as api
 
@@ -499,12 +491,11 @@ class DetachedChatTurnTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(self.registry.wait(turn_id), timeout=5.0)
 
     async def test_stop_cancels_the_retrievals_the_turn_left_at_the_provider(self):
-        """D10: the whole point of moving Stop's job cancellation server-side.
+        """Stop cancels jobs server-side.
 
-        The client used to do this from the ``job_progress`` events it had
-        seen. A reader that reattached mid-turn never saw them, so its Stop
-        left every retrieval running — the cost falling on exactly the users
-        detached turns were built for.
+        A client-side cancel would only know the ``job_progress`` events it
+        had seen, so a reader that reattached mid-turn would leave every
+        retrieval running.
         """
         cancelled: list[str] = []
 

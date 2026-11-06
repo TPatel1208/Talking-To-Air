@@ -95,7 +95,7 @@ class RenderTurnTimeoutAnswerTests(unittest.TestCase):
 
 class RenderScopeNoteTests(unittest.TestCase):
     def test_a_single_day_request_answered_by_a_monthly_mean_gets_a_disclosure_note(self):
-        """T46 story #2: the substitution the researcher reads must say so —
+        """The substitution the researcher reads must say so —
         a one-day request answered with the monthly mean names both scopes."""
         from tta_backend.config.error_templates import render_scope_note
 
@@ -130,7 +130,7 @@ class RenderScopeNoteTests(unittest.TestCase):
         self.assertIsNone(note)
 
     def test_canonicalization_suffix_is_not_a_false_substitution(self):
-        """Finding #10: the geocoder canonicalizes "California" to
+        """The geocoder canonicalizes "California" to
         "California, United States". Same place, extra detail — the delivered
         region only appends a canonicalization suffix, so it must NOT read as a
         substitution ("you asked about California, but ... California, United
@@ -150,7 +150,7 @@ class RenderScopeNoteTests(unittest.TestCase):
         self.assertIsNone(note)
 
     def test_an_abbreviated_component_is_not_a_false_substitution(self):
-        """Finding #10: "Los Angeles, CA" and the canonical "Los Angeles,
+        """"Los Angeles, CA" and the canonical "Los Angeles,
         California, United States" name the same place — the leading locality
         matches, so the mid-string CA→California expansion is not a
         substitution."""
@@ -169,7 +169,7 @@ class RenderScopeNoteTests(unittest.TestCase):
         self.assertIsNone(note)
 
     def test_a_genuine_region_substitution_still_warns(self):
-        """Finding #10 must not silence real substitutions: a request for one
+        """Canonicalization matching must not silence real substitutions: a request for one
         place answered with a different place still names both."""
         from tta_backend.config.error_templates import render_scope_note
 
@@ -188,7 +188,7 @@ class RenderScopeNoteTests(unittest.TestCase):
         self.assertIn("Nevada", note)
 
     def test_variable_note_names_the_chosen_field_and_alternatives_when_ambiguous(self):
-        """T48: a high-ambiguity auto-pick discloses the chosen product AND the
+        """A high-ambiguity auto-pick discloses the chosen product AND the
         ranked alternatives, deterministically (no model prose), so a sensor
         fork is transparent and redirectable."""
         from tta_backend.config.error_templates import render_variable_note

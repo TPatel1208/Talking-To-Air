@@ -1,5 +1,5 @@
 """
-Tests for tools/satellite_tools/comparison_tools.py (PRD T08 — region/period
+Tests for tools/satellite_tools/comparison_tools.py (region/period
 comparison workflow).
 
 Hermetic at the analysis-tool seam: synthetic aligned/misaligned cube
@@ -353,7 +353,7 @@ class RegionStatsTests(unittest.TestCase):
         self.assertIsNone(_region_stats(da))
 
     def test_extremes_disclose_the_field_they_summarize(self):
-        """Finding #12: compare region max/min are order statistics of the
+        """Compare region max/min are order statistics of the
         *period-mean* field (compare always time-means each side), so they sit
         below the instantaneous peak. A bare "Max"/"Min" label invites reading
         them as the true peak/trough. When the caller names the field basis, the
@@ -513,10 +513,9 @@ class ComparisonScaleDisclosureTests(unittest.TestCase):
     "comparison disclosure test dependencies are not installed",
 )
 class ComparisonDisclosureTests(unittest.TestCase):
-    """Finding #4: compare silently applied QA-flag masking (via
-    _prepare_2d -> aggregate) yet attached neither masking provenance nor the
-    T46 scope echo the heatmap/timeseries paths always attach. Both disclosure
-    doctrines must reach the compare payload — masking so the frontend's
+    """Compare applies QA-flag masking (via _prepare_2d -> aggregate), so it
+    must attach masking provenance and the scope echo like the
+    heatmap/timeseries paths. Both disclosures must reach the compare payload — masking so the frontend's
     resolveMasking finds it, scope so subagent_dispatch's scope note can fire."""
 
     def _2d(self, values, name="no2"):
@@ -592,7 +591,7 @@ class ComparisonDisclosureTests(unittest.TestCase):
         )
 
     def test_each_compare_side_carries_its_own_labelled_pass_rate(self):
-        """T55 on compare: each side gets its own realized pass rate, attached
+        """On compare, each side gets its own realized pass rate, attached
         to the panel that names it. Two pass rates with no way to tell which
         period or region each belongs to would be worse than showing none."""
         from tta_backend.tools.satellite_tools.comparison_tools import _build_region_comparison
@@ -623,7 +622,7 @@ class ComparisonDisclosureTests(unittest.TestCase):
         from tta_backend.tools.satellite_tools.comparison_tools import _build_region_comparison
 
         # Delivered data spans all of June; the recorded request was a single day
-        # — the T46 substitution the compare surface previously hid entirely.
+        # — a scope substitution that must be disclosed.
         da = xr.DataArray(
             np.ones((3, 2, 2)),
             dims=("time", "lat", "lon"),
@@ -815,7 +814,7 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
         self.volume.add_zarr("obs_a", make_ds)
         self.volume.add_zarr("obs_b", make_ds)
         # The researcher asked about a single day for side A; the retrieval
-        # delivered the whole month — a T46 substitution compare used to hide.
+        # delivered the whole month — a scope substitution to disclose.
         scope_registry.record_pending("obs_a", {"location": "Newark", "time_range": ["2026-06-15", "2026-06-15"]})
         scope_registry.finalize("obs_a", "obs_a")
         self.addCleanup(lambda: scope_registry._scopes.pop("obs_a", None))
