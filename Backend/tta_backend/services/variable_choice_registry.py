@@ -1,8 +1,8 @@
 """
 services/variable_choice_registry.py
 ======================================
-Backend memory of "which science variable did the model actually choose"
-(PRD T25), keyed by the obs_/cube_ handle a retrieval eventually mints --
+Backend memory of "which science variable did the model actually choose",
+keyed by the obs_/cube_ handle a retrieval eventually mints --
 so a later plot/stat/compare call on that handle inherits the choice
 instead of AggregationService.to_dataarray having to guess, or refuse, on
 a multi-variable file all over again.
@@ -13,16 +13,10 @@ await_retrieval reaches a terminal "ready" status -- so recording is a two-
 step handoff: ``record_pending`` at submission time (keyed by job_handle),
 ``finalize`` once the job's handle is known.
 
-In-memory, per-process, TTL-bounded -- mirrors GeocodingService's cache
-(utils/plotting.py). ArtifactStore (services/artifact_store.py) used to be
-the same shape but became write-through to Postgres in T39; this registry
-stays intentionally simpler because losing it is harmless (see below), so
-it hasn't needed that upgrade.
-Nothing here is a system of record: the same handle is round-trippable
-through the MCP's own export/rematerialize cycle at any time, so losing a
-recorded choice on a process restart only means a later call falls through
-to to_dataarray's next resolution tier (single-data-var file, or a
-candidate-listing error) -- never a wrong answer.
+In-memory, per-process, TTL-bounded, and deliberately not persisted: losing
+a choice on restart only means a later call falls back to to_dataarray's
+next resolution step (single-variable file, or a candidate-listing error),
+never a wrong answer.
 """
 from __future__ import annotations
 

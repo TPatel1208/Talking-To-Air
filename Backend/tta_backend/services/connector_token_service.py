@@ -1,9 +1,9 @@
-"""T30: paste-time validation for a connector token.
+"""Paste-time validation for a connector token.
 
 The pasted EDL user token is a JWT, but we are not its audience -- decoding
 verifies shape and a future `exp` only, never a signature, and never round-
 trips to EDL. Liveness (does EDL actually still honor it) is proven at first
-real use in PRD-022/T31, not here.
+real use, not here.
 """
 from __future__ import annotations
 

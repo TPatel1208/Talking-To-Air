@@ -1,4 +1,4 @@
-"""T31: resolves a connected user's decrypted connector secret for per-call
+"""Resolves a connected user's decrypted connector secret for per-call
 injection -- the Earthdata token into the workspace-binding wrapper
 (earthdata_mcp/workspace.py), the EPA AQS email + key into the AQS client
 (tools/ground_sensor_tools/epa_aqs_tools.py).

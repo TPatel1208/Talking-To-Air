@@ -299,21 +299,13 @@ async def await_retrieval(
         emit_status(f"Retrieving {subject} — {label}...", stage=STAGE_PROGRESS, detail=progress)
         if status in TERMINAL_STATUSES:
             if status == "ready":
-                # T51: the one place that knows a retrieval's full span. Only
-                # on ``ready``: the histogram describes a job that actually
-                # downloaded something, and folding failures/cancellations in
-                # would make its percentiles describe a different population
-                # than they claim.
+                # Only successful fetches, so the histogram means "download time".
                 observe_harmony_fetch(loop.time() - started)
-                # T25: promote this job's recorded variable choice (if any)
-                # onto the handle it resolved to, so a later plot/stat/
-                # compare call inherits it instead of AggregationService.
-                # to_dataarray refusing a multi-variable file all over again.
+                # Carry the job's variable choice and requested scope onto the
+                # resolved handle, so later plot/stat calls inherit the choice
+                # and can disclose any scope substitution.
                 handle = data.get("obs_handle") or data.get("cube_handle")
                 variable_choice_registry.finalize(job_handle, handle)
-                # T46: promote the requested scope (recorded at submission) onto
-                # the resolved handle, so a later plot/stat can disclose any
-                # silent substitution between requested and delivered scope.
                 scope_registry.finalize(job_handle, handle)
             # A narration describes the wait, and the wait is over. No
             # finalize onto the result handle: unlike the two registries
@@ -422,25 +414,18 @@ async def safe_retrieve(
     })
     subset = parse_tool_result(subset_raw)
 
-    # T25: record the model's chosen science variable, keyed by the job this
-    # retrieval submits as. A quality flag variable riding along is not a
-    # science choice -- ``_pinned_companion_variables`` above adds one to
-    # every registered subset request, so counting raw ``variables`` would see
-    # 2 and record nothing, leaving the opened 2-var file to refuse downstream.
-    # Exclude known flag vars (matched by bare leaf name, since ``variables``
-    # is group-qualified) first: a single remaining science variable is still
-    # an unambiguous choice worth recording; 0 or >1 leave the file's own
-    # choice to be made downstream. Note this reads the caller's ``variables``,
-    # not ``subset_variables`` -- the injected flag must not shift the count.
+    # Record the model's chosen science variable, keyed by this job. Quality
+    # flags don't count as a choice (matched by leaf name), so one science
+    # variable plus its flag is still recorded. Reads the caller's
+    # ``variables``, not ``subset_variables``, so the injected flag doesn't
+    # shift the count.
     flag_vars = known_quality_flag_vars()
     science_variables = [v for v in variables if v.rsplit("/", 1)[-1] not in flag_vars]
     if len(science_variables) == 1:
         variable_choice_registry.record_pending(subset.get("job_handle"), science_variables[0])
 
-    # T46: safe_retrieve only sees an opaque aoi_handle (not a place name), so
-    # it records just the requested time_range — enough to disclose a single-
-    # day request served by a monthly mean. Region substitution on this path
-    # is caught by the dispatch-layer AOI guard instead.
+    # Only the time_range is recorded: this path sees an aoi_handle, not a
+    # place name. Region substitution is caught by the dispatch AOI guard.
     scope_registry.record_pending(subset.get("job_handle"), {"time_range": time_range})
 
     # What the researcher will be waiting on, for the status line. Everything
@@ -480,7 +465,7 @@ async def point_timeseries(
     settings: Settings | None = None,
 ) -> dict[str, Any]:
     """Resolve AOI, gate the requested time span, submit a point-sampled
-    timeseries retrieval, and await it to a terminal state (T20) — the
+    timeseries retrieval, and await it to a terminal state — the
     point-timeseries analogue of safe_retrieve's gate-then-submit shape,
     chained straight into await_retrieval so the model spends one tool call
     instead of three.
@@ -540,9 +525,7 @@ async def point_timeseries(
             suggestion="Retry the retrieval; if it persists, the product may not support point sampling.",
         )
 
-    # T46: point_timeseries knows both the place name and the time range, so it
-    # records the full requested scope for the job — promoted onto the cube
-    # handle by await_retrieval's finalize.
+    # Record the full requested scope; await_retrieval moves it onto the handle.
     scope_registry.record_pending(job_handle, {"location": location, "time_range": time_range})
 
     # This composite awaits inline, so its own status line is the one the

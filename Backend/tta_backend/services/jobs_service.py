@@ -1,7 +1,7 @@
 """
 services/jobs_service.py
 ==========================
-Backend composite behind the jobs panel (PRD T05): the panel's list model is
+Backend composite behind the jobs panel: the panel's list model is
 built here, not in the endpoint, so the endpoint stays a thin HTTP wrapper.
 Composes the earthdata-retrieval MCP's ``list_workspace`` (job handles plus
 their static metadata) with a ``get_retrieval_status`` fan-out per handle
@@ -57,14 +57,10 @@ STATUS_READ_FAILED = "error"
 # contract test — they had already drifted by exactly this status.
 FINISHED_ROW_STATUSES = TERMINAL_STATUSES | {STATUS_READ_FAILED}
 
-# The panel refetches the whole workspace on the frontend's live poll
-# (hooks/useJobs.js). Without this cache, list_jobs re-issued
-# get_retrieval_status for every finished-or-dead handle on every poll, for
-# data that cannot have changed. Cache immutable rows process-side and serve
-# them with no MCP call; only genuinely non-terminal jobs stay on the per-poll
-# fan-out. Keyed by job_handle (workspace-unique, and only ever read back for a
-# handle the caller's own list_workspace returned, so no cross-workspace
-# leakage). Process-lifetime state, like the T31 credential injector.
+# Finished jobs can't change, so cache their status and skip the MCP call on
+# every poll; only running jobs are re-fetched. Keyed by job_handle, and only
+# read for handles the caller's own list_workspace returned, so nothing leaks
+# across workspaces. Lives for the process lifetime.
 _TERMINAL_STATUS_CACHE: dict[str, dict[str, Any]] = {}
 
 
@@ -147,7 +143,7 @@ async def cancel_job(job_handle: str, tools: dict[str, BaseTool]) -> dict[str, A
     """Proxy the MCP's cancel tool — hidden from the agent, exposed to the UI.
 
     A cancel targeting a handle the workspace never had is a valid answer, not
-    an error (T47 finding #3): the MCP models a missing job as data. Whichever
+    an error: the MCP models a missing job as data. Whichever
     way it signals the miss — a ``not_found`` error envelope (which
     ``parse_tool_result`` re-raises) or a structured ``{status: "not_found"}``
     passthrough — the endpoint answers 200 with an explicit ``not_found``

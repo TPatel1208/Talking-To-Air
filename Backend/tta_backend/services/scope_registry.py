@@ -1,7 +1,7 @@
 """
 services/scope_registry.py
 ============================
-Backend memory of "what scope did the researcher actually request" (PRD T46),
+Backend memory of "what scope did the researcher actually request",
 keyed by the obs_/cube_ handle a retrieval eventually mints — so a later
 plot/stat call on that handle can stamp the *requested* scope alongside the
 *delivered* one and disclose any silent substitution (a single-day request

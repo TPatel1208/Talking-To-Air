@@ -115,8 +115,8 @@ class SupabaseJwtVerifier:
     def start_warm(self) -> None:
         """Kick the warm off in the background. Deliberately not a coroutine.
 
-        Boot calls this and moves on -- the T17 doctrine: the backend serves
-        while a remote dependency is still coming up. Awaiting here would let a
+        Boot calls this and moves on: the backend serves while a remote
+        dependency is still coming up. Awaiting here would let a
         Supabase blip during a deploy stop the container starting at all.
         """
         if self._warm_task is not None:
