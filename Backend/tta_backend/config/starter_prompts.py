@@ -1,16 +1,16 @@
 """
 starter_prompts.py
 -------------------
-The empty-chat's example questions (PRD T22) — one backend-owned constant so
-the `/capabilities/starters` endpoint, the eval harness's task-coverage
-assertion, and the frontend's empty state can never drift apart (story #11).
+The empty-chat's example questions — one backend-owned constant so the
+`/capabilities/starters` endpoint, the eval harness's task-coverage assertion,
+and the frontend's empty state can never drift apart.
 
 Each entry's ``id`` must name a real eval task (direct-agent or e2e, see
-``tests/eval_harness.py``) — the load-bearing rule (story #4): a starter
+``tests/eval_harness.py``) — the load-bearing rule: a starter
 prompt with no matching eval task is a marketing claim the test suite cannot
 back up, so ``tests.eval_harness.starter_prompts_missing_eval_tasks`` fails
 the suite if one ever drifts. ``category`` spans the workflow types (map,
-trend, validation, comparison, ground lookup, discovery — story #2) so the
+trend, validation, comparison, ground lookup, discovery) so the
 breadth of the app is visible at a glance.
 """
 from __future__ import annotations
