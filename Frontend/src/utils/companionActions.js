@@ -2,9 +2,9 @@
  * utils/companionActions.js
  * --------------------------
  * Prompt builders behind the chart-page related-variables panel's one-click
- * actions (PRD T36 Phase 1). Turns a companion sibling name plus the current
+ * actions. Turns a companion sibling name plus the current
  * chart into a prefilled natural-language string dispatched through the same
- * `sendMessage` path as T22's FollowupChips and App.jsx's other prefilled
+ * `sendMessage` path as FollowupChips and App.jsx's other prefilled
  * prompts -- no new execution engine, no new failure surface.
  *
  * Kept pure and outside the component tree so the capability/QA-redundancy
@@ -14,8 +14,7 @@
 import { reproducibilityFields, regionLabel, qaMethodologyFields, resolveMaskingRaw } from './metadataDisplay.js'
 import { relatedVariableSections } from './variableRoles.js'
 
-// Region+time phrase templated from the plotted chart's query (T36: "context
-// comes from the plotted chart's query"). Omits a field that's absent rather
+// Region+time phrase templated from the plotted chart's query. Omits a field that's absent rather
 // than fabricating one -- an under-specified prompt lets the agent resolve
 // it, a fabricated bbox would silently narrow the companion's request.
 function regionTimePhrase(chart) {
@@ -52,13 +51,13 @@ export function buildQaFilterPrompt(chart) {
 }
 
 // Per-companion actions, gated by which related-variables section it came
-// from (T36 capability gate). Every context/uncertainty sibling can be
+// from (the capability gate). Every context/uncertainty sibling can be
 // plotted; only context siblings (the atmosphere/surface/geometry bands) get
-// a map-compare action, since that's what T28's compare grid is built for.
+// a map-compare action, since that's what the compare grid is built for.
 // The QA sibling itself never gets a button here -- it backs the separate
 // chart-level "Apply QA filtering" action instead (qaFilterAction below), not
-// a plot of its own. Overlay is never offered: T29 (chart-overlay) is
-// unbuilt, so there is deliberately no code path that can emit one.
+// a plot of its own. Overlay is never offered: there is deliberately no code
+// path that can emit one.
 export function sectionActions(sectionKey, companion, chart) {
   if (sectionKey === 'uncertainty') {
     return [
@@ -76,7 +75,7 @@ export function sectionActions(sectionKey, companion, chart) {
 
 // The chart-level QA-filter action (not per-companion). Suppressed when a
 // deterministic/pinned mask already ran (masking.applied -- e.g. TEMPO's
-// pinned qa_good_values, T25): offering it there would be a redundant
+// pinned qa_good_values): offering it there would be a redundant
 // recommendation. Offered only when a quality_flag_var sibling exists to
 // filter on (e.g. OMI's ambiguous cases) -- with no flag var there's nothing
 // actionable, so the capability gate suppresses it rather than showing a

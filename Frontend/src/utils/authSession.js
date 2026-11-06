@@ -34,7 +34,7 @@ export const initialAuthState = {
   // holding a session: it is what keeps the view on 'app' when a session is
   // lost involuntarily.
   hadSession: false,
-  // Owned by T47's sessionExpiryReducer, which this machine composes rather
+  // Owned by sessionExpiryReducer, which this machine composes rather
   // than reimplements -- one definition of "a lapsed session raises the modal
   // and never reads as a logout".
   sessionExpired: false,
@@ -77,7 +77,7 @@ export function authReducer(state, action) {
     case 'logout-requested':
       return { ...state, session: null, hadSession: false, sessionExpired: false }
     // A 401 from any request, and the modal's own sign-in resolving. Both are
-    // T47's, and both are delegated so the rule has one definition. Note that
+    // the re-auth modal's, and both are delegated so the rule has one definition. Note that
     // nothing supabase-js emits closes the modal: SIGNED_IN is re-emitted when
     // a backgrounded tab regains focus, so it does not mean the user signed
     // in, and acting on it would wipe a half-typed password off the screen.
@@ -101,7 +101,7 @@ function applyAuthEvent(state, { event, session }) {
   if (event === 'SIGNED_OUT') {
     // A deliberate logout has already cleared hadSession, so reaching here
     // still holding one means the session went away on its own -- the refresh
-    // token lapsed, or the account was banned. That is a T47 unauthorized, and
+    // token lapsed, or the account was banned. That is an unauthorized, and
     // the session is deliberately left in place so the view survives it.
     return state.hadSession ? withExpiry(heard, { type: 'unauthorized' }) : heard
   }
@@ -111,7 +111,7 @@ function applyAuthEvent(state, { event, session }) {
   // _emitInitialSession catches AuthRetryableFetchError and reports null).
   // Reading that as "signed out" turns a wifi blip on reload into a sign-out,
   // and the login that follows clears tta.activeThreadId, costing the
-  // researcher the thread they were in -- T47's rug-pull by another route. So
+  // researcher the thread they were in. So
   // stay in 'restoring' and let App.jsx ask again, where the reason is visible.
   if (event === 'INITIAL_SESSION' && !session) {
     return { ...state, restoreUnresolved: true }
@@ -131,7 +131,7 @@ export function authView(state) {
   return state.hadSession ? 'app' : 'login'
 }
 
-/** Whether T47's in-place "sign in to continue" modal is up. */
+/** Whether the in-place "sign in to continue" modal is up. */
 export function showReauthModal(state) {
   return state.sessionExpired
 }

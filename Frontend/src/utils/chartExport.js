@@ -65,8 +65,7 @@ export function resolveCsvExport(chart) {
 // NetCDF, not CSV, is the right artifact for a gridded field: it keeps the
 // grid structure, CF metadata, units and attributes that a flat
 // lat/lon/value table throws away, and it is what a researcher opens in
-// xarray or Panoply. The endpoint (GET /chart/{id}/export.nc) has existed
-// since T10 with conversion and chunk-streaming already in place.
+// xarray or Panoply. The endpoint is GET /chart/{id}/export.nc.
 export function resolveNetcdfExport(chart) {
   // Resolved the way the backend resolves it (_chart_source_handles in
   // api.py): metadata.source_handles, falling back to provenance's.

@@ -2,7 +2,7 @@
  * utils/evidenceSummary.js
  * -------------------------
  * The deterministic "Supporting information" facts that ride along on chart
- * payloads as `provenance.evidence` (PRD T36 Phase 2 --
+ * payloads as `provenance.evidence` (see
  * Backend/tools/satellite_tools/plot_tools.py::_evidence). Each fact is a
  * co-located summary of a companion band already present in the opened file --
  * QA pass rate, retrieval uncertainty, cloud fraction, aerosol index -- with an

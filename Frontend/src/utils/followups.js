@@ -1,4 +1,4 @@
-// T22: pulls the additive suggested_followups key off a chat 'done' event
+// Pulls the additive suggested_followups key off a chat 'done' event
 // payload. Missing/malformed input normalizes to [] so callers can render
 // with a plain length check instead of null-guarding everywhere.
 export function extractSuggestedFollowups(doneData) {

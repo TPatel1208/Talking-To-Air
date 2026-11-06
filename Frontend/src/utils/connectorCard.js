@@ -1,4 +1,4 @@
-// T30: pure status->badge mapping for the Connectors tab card, kept out of
+// Pure status->badge mapping for the Connectors tab card, kept out of
 // the component so it's testable the same way jobCard.js's statusBadge is.
 
 export function formatExpiry(isoString) {

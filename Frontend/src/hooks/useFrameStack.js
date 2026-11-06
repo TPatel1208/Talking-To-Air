@@ -4,7 +4,7 @@ import { decodeFrameStack } from '../utils/frameStack.js'
 import { API_BASE } from '../config.js'
 
 /**
- * Fetches and decodes a chart's frame blob (T59 D13).
+ * Fetches and decodes a chart's frame blob.
  *
  * The blob is served `Content-Encoding: gzip` with an ETag and
  * `private, immutable, max-age`, so the browser inflates it on the wire and
@@ -17,7 +17,7 @@ import { API_BASE } from '../config.js'
  * screen before this resolves.
  *
  * 404 is `expired`, not `failed`: the entry was evicted or its pipeline
- * version superseded, and D8 forbids regenerating it. That is a terminal state
+ * version superseded, and it's never regenerated. That is a terminal state
  * the UI names, not an error it retries. A transport failure is not terminal
  * and is retried when the user reopens the scrubber.
  *
@@ -53,7 +53,7 @@ export function useFrameStack(block, enabled) {
       .then((next) => {
         if (request !== requestRef.current) return
         // 'failed' is a transport blip and stays retryable; 'loaded' and
-        // 'expired' are both answers, and D8 means neither changes.
+        // 'expired' are both answers, and neither changes.
         if (next.loadState !== 'failed') settledRef.current = url
         setResult({ url, ...next })
       })

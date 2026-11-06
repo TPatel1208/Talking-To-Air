@@ -1,11 +1,11 @@
 import { isGroundMapArtifact } from './groundMap.js'
 
-// Pure state helpers for compare mode (T28). No React here -- AuthenticatedApp
+// Pure state helpers for compare mode. No React here -- AuthenticatedApp
 // (App.jsx) owns the actual compareMode/compareCount/compareSelection state;
 // these functions just compute the next value so the state machine is
 // testable without rendering anything.
 
-// Map and timeseries charts are both comparable (T28 + T29), but never
+// Map and timeseries charts are both comparable, but never
 // mixed within one comparison session -- whichever kind the first-added
 // slot establishes is the only kind selectable for the rest of that session.
 export const COMPARABLE_CHART_TYPES = ['heatmap', 'timeseries']

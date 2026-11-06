@@ -83,7 +83,7 @@ export async function apiFetch(path, options = {}) {
 
   // Told no, or unable to ask? supabase-js reports both as session: null, and
   // they mean opposite things. The browser talks to supabase.co directly while
-  // these requests go to our own origin (decision 6), so the auth host can be
+  // these requests go to our own origin, so the auth host can be
   // briefly unreachable while the backend is fine -- and the session is then
   // still perfectly alive. Retrying it without a credential could only 401
   // again, the retry would wipe the snapshot maplibre reads on its way past,
@@ -95,7 +95,7 @@ export async function apiFetch(path, options = {}) {
   const retried = await send(path, options, refreshed?.session)
 
   // A second 401 is the refresh token itself being gone, which is the only
-  // thing T47's modal is for. Every caller reaches it from here, so a lapsed
+  // thing the re-auth modal is for. Every caller reaches it from here, so a lapsed
   // session during a jobs poll or a CSV download is no longer a silent failure.
   if (shouldPromptReauth(retried.status)) unauthorized?.()
   return retried

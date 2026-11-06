@@ -1,4 +1,4 @@
-// Turns a heatmap payload's `frames` block (T59 D13 -- the axis lives in the
+// Turns a heatmap payload's `frames` block (the axis lives in the
 // chart's jsonb row, the values live in a separate blob) into the scrub axis
 // the Map tab's slider is drawn from.
 //
@@ -8,7 +8,7 @@
 
 // One stop per plane in the [1+N, ny, nx] blob: the period aggregate plus one
 // per cadence bucket. The aggregate leads because parking there reproduces the
-// Map tab exactly (D5/D11), not because it is plane 0 -- `period_index` says
+// Map tab exactly, not because it is plane 0 -- `period_index` says
 // which plane it is, and the buckets take the planes it does not.
 export function buildScrubAxis(chart) {
   const block = chart?.frames
@@ -61,7 +61,7 @@ export function buildScrubAxis(chart) {
   }
 }
 
-// D10's three-way read of a bucket. `{count: 0}` alone is what a frame carries
+// The three-way read of a bucket. `{count: 0}` alone is what a frame carries
 // when nothing survived -- absent statistics, not a maximum of zero -- so
 // emptiness is read off the surviving count, and the two empty kinds split on
 // whether QA ever ran.
@@ -74,7 +74,7 @@ function bucketState(frame) {
 
 // The scrubber's whole render state in one read: whether it is offered at all,
 // whether the slider can move, and what to say when it cannot. Five modes,
-// because the three ways this degrades (deliverable 8) plus the two ways a
+// because the three ways this degrades plus the two ways a
 // stack that WILL work looks before it does are all different sentences.
 //
 // `loadState` is the blob fetch: 'idle' | 'loading' | 'loaded' | 'expired'

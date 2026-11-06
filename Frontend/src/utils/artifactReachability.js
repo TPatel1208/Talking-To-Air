@@ -1,4 +1,4 @@
-// Which artifacts get their own clickable card (T33).
+// Which artifacts get their own clickable card.
 //
 // `table` artifacts have no other rendering, so they're always reachable.
 // Chart-backed artifact types (map, comparison, and a chart-backed
