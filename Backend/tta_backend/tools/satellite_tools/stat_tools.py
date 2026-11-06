@@ -93,9 +93,8 @@ def make_compute_statistic_tool(mcp_tools: dict[str, BaseTool]) -> BaseTool:
         # aresolve_location, never the sync resolve_location: the sync path
         # does a blocking HTTP geocode (plus a rate-limit sleep) directly on
         # the event loop, freezing every concurrent stream for its duration.
-        # T60 D14: a composite that cannot be built raises the taxonomy's
-        # error naming the offending token -- a ``None`` return could never
-        # carry which token failed. Same shape as the open_handle catch.
+        # A composite region that can't be built raises an error naming the
+        # bad token (a None return couldn't say which one).
         try:
             region = await _resolver.aresolve_location(location)
         except MCPToolError as e:
@@ -106,11 +105,11 @@ def make_compute_statistic_tool(mcp_tools: dict[str, BaseTool]) -> BaseTool:
         emit_status("Computing statistics...", stage=STAGE_RENDER)
 
         def _mask_aggregate_stats() -> tuple[str | None, Any]:
-            # CPU-bound mask -> aggregate -> stats chain (T16), run off the
+            # CPU-bound mask -> aggregate -> stats chain, run off the
             # event loop via admission.run_heavy below, which also bounds how
             # many such reductions may hold memory at once.
             masked = mask_data_by_geometry(da, region['geometry'])
-            # T42: an empty mask that self-healed to boundary cells downgrades
+            # An empty mask that self-healed to boundary cells downgrades
             # the disclosed region_type -- read it off the masked array so the
             # result names what was actually computed.
             apply_mask_region_type(masked, region)
@@ -136,7 +135,7 @@ def make_compute_statistic_tool(mcp_tools: dict[str, BaseTool]) -> BaseTool:
 
             try:
                 aggregation, mean_field = _reduced_field("mean")
-                # T48: masking stripped the resolver's stash off ``masked``
+                # Masking stripped the resolver's stash off ``masked``
                 # before aggregate saw it -- carry it from the pre-mask ``da``
                 # into meta so the chosen-variable disclosure isn't lost on the
                 # stat path (one resolver, disclosed identically everywhere).
@@ -155,11 +154,11 @@ def make_compute_statistic_tool(mcp_tools: dict[str, BaseTool]) -> BaseTool:
                     "n_pixels": int(len(valid)),
                     "aggregation_meta": aggregation.meta,
                     "source_handles": [handle],
-                    # T42 region fidelity: the region we actually masked.
+                    # Region fidelity: the region we actually masked.
                     "region_name": region.get("display_name") or region.get("name"),
                     "display_name": region.get("display_name") or region.get("name"),
                     "region_type": region.get("region_type"),
-                    "region_origin": region.get("region_origin"),  # T60 D10a
+                    "region_origin": region.get("region_origin"),
                 }
                 # Each statistic is computed on the basis that makes it true
                 # to its name, and that basis is disclosed:
@@ -195,9 +194,8 @@ def make_compute_statistic_tool(mcp_tools: dict[str, BaseTool]) -> BaseTool:
             return None, result
 
         # The geometry mask itself can refuse (unsupported/unidentifiable
-        # grid, T24/T44) — that classified answer must reach the agent as a
-        # structured error, never escape the tool off-taxonomy (QA
-        # 2026-07-17: GPM stats surfaced as a generic internal error).
+        # grid) — that classified answer must reach the agent as a
+        # structured error, not a generic internal error.
         try:
             status, result = await admission.run_heavy(_mask_aggregate_stats)
         except MCPToolError as e:
@@ -259,9 +257,8 @@ def make_find_daily_peak(mcp_tools: dict[str, BaseTool]) -> BaseTool:
         # aresolve_location, never the sync resolve_location — see
         # compute_statistic_tool: the sync path blocks the event loop on a
         # geocoding HTTP call plus a rate-limit sleep.
-        # T60 D14: a composite that cannot be built raises the taxonomy's
-        # error naming the offending token -- a ``None`` return could never
-        # carry which token failed. Same shape as the open_handle catch.
+        # A composite region that can't be built raises an error naming the
+        # bad token (a None return couldn't say which one).
         try:
             region = await _resolver.aresolve_location(location)
         except MCPToolError as e:
@@ -272,11 +269,11 @@ def make_find_daily_peak(mcp_tools: dict[str, BaseTool]) -> BaseTool:
         emit_status("Finding peak value...", stage=STAGE_RENDER)
 
         def _mask_aggregate_peak() -> tuple[str | None, Any]:
-            # CPU-bound mask -> aggregate -> peak search chain (T16), run
+            # CPU-bound mask -> aggregate -> peak search chain, run
             # off the event loop via admission.run_heavy below, which also bounds
                 # how many such reductions may hold memory at once.
             masked = mask_data_by_geometry(da, region['geometry'])
-            apply_mask_region_type(masked, region)  # T42: disclose boundary_cells self-heal
+            apply_mask_region_type(masked, region)  # discloses a boundary_cells self-heal
 
             col_info = col_info_for_variable(masked, ds)
             try:
@@ -300,13 +297,12 @@ def make_find_daily_peak(mcp_tools: dict[str, BaseTool]) -> BaseTool:
             except MCPToolError as e:
                 return "error", e.to_dict()
 
-            # T48: carry the resolver's chosen-variable disclosure across the
+            # Carry the resolver's chosen-variable disclosure across the
             # attr-stripping mask (see compute_statistic_tool).
             if da.attrs.get(VARIABLE_RESOLUTION_ATTR):
                 aggregation.meta["variable_resolution"] = da.attrs[VARIABLE_RESOLUTION_ATTR]
 
-            # Resolve dim names via the canonical CF-metadata identifier
-            # (T24), so an axis named 'row'/'y' is found by its metadata, not
+            # Resolve dim names via the canonical CF-metadata identifier, so an axis named 'row'/'y' is found by its metadata, not
             # a hardcoded name list. On a rectilinear grid the lat/lon coord
             # names are also dimension names.
             lat_name = find_lat_coord(reduced)
@@ -357,11 +353,11 @@ def make_find_daily_peak(mcp_tools: dict[str, BaseTool]) -> BaseTool:
                 "peak_lon":   peak_lon,
                 "aggregation_meta": aggregation.meta,
                 "source_handles": [handle],
-                # T42 region fidelity: the region we actually masked.
+                # Region fidelity: the region we actually masked.
                 "region_name": region.get("display_name") or region.get("name"),
                 "display_name": region.get("display_name") or region.get("name"),
                 "region_type": region.get("region_type"),
-                "region_origin": region.get("region_origin"),  # T60 D10a
+                "region_origin": region.get("region_origin"),
             }
 
         # See compute_statistic_tool: a mask refusal is a classified answer,

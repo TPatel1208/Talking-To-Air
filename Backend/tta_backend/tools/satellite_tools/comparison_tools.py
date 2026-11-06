@@ -1,11 +1,11 @@
 """
 comparison_tools.py
 --------------------
-Region/period comparison tools (PRD T08).
+Region/period comparison tools.
 
 Compares two already-retrieved handles of the same variable — two AOIs over
 one period (mode="region") or one AOI over two periods (mode="period") — and
-renders the result as a `comparison` artifact (T06). Region mode never
+renders the result as a `comparison` artifact. Region mode never
 differences (the two domains aren't spatially comparable cell-by-cell): it
 renders side-by-side panels on a shared color scale plus per-region stats.
 Period mode grid-aligns both retrievals via the MCP's `align` transform,
@@ -154,7 +154,7 @@ def _split_aligned(aligned: _XrT, handle_a: str | None = None, handle_b: str | N
     ``align(source_handles=[a, b])`` grid-aligns >=2 gridded inputs into one
     cube_ handle with a leading ``source`` dimension of length 2. Which slice
     is A vs B is resolved by *label* when the aligned cube stamps the source
-    handles on the ``source`` coordinate (harmony-retrieval-mcp PRD-023) —
+    handles on the ``source`` coordinate —
     passing ``handle_a``/``handle_b`` then selects by name, so an MCP-side
     reorder of the ``source`` dim cannot silently flip every difference sign
     (the worst wrong answer: the map still looks right).
@@ -164,7 +164,7 @@ def _split_aligned(aligned: _XrT, handle_a: str | None = None, handle_b: str | N
     the MCP preserving input order in ``source``. That assumption is pinned by
     a contract test in the harmony-retrieval-mcp repo
     (``test_align_preserves_source_order``); this docstring is its TTA-side
-    anchor. Until PRD-023 stamps labels, positional order is the live path.
+    anchor. Until the MCP stamps labels, positional order is the live path.
     """
     if "source" not in aligned.dims:
         raise ValueError(f"Aligned result has no 'source' dimension: dims={list(aligned.dims)}")
@@ -254,7 +254,7 @@ def _region_stats(da: xr.DataArray, *, basis: str | None = None) -> dict[str, An
     median/max/min are order statistics, which weighting doesn't move enough
     to justify a weighted-quantile dependency.
 
-    ``basis`` names the field these stats summarize (Finding #12). Compare
+    ``basis`` names the field these stats summarize. Compare
     always time-means each side, so max/min are the extremes of the
     *period-mean* map — below the instantaneous peak/trough. Disclosing the
     basis lets the label read "Max (period-mean)" instead of a bare "Max" that
@@ -367,8 +367,8 @@ def _prepare_2d(da: xr.DataArray, variable_name: str, source_ds: xr.Dataset | No
     Returns ``(reduced_2d, agg_meta)``. The aggregation meta carries the
     masking provenance ``aggregate()`` produced — including any QA-flag mask it
     applied — so the comparison builders can *disclose* that masking instead of
-    silently swallowing it (T25/T46: compare must honor the same masking and
-    scope-echo doctrines the heatmap/timeseries paths do)."""
+    silently swallowing it (compare must disclose masking and scope the same
+    way the heatmap/timeseries paths do)."""
     col_info = col_info_for_variable(da, source_ds)
     aggregation = _aggregation_service.aggregate(
         da, variable=variable_name, stat="mean", col_info=col_info, source_ds=source_ds,
@@ -378,7 +378,7 @@ def _prepare_2d(da: xr.DataArray, variable_name: str, source_ds: xr.Dataset | No
 
 
 def _compare_side_provenance(handle: str, da_2d: xr.DataArray, agg_meta: dict[str, Any], variable_name: str, units: str) -> dict[str, Any]:
-    """Masking + T46 scope-echo provenance for one side of a comparison,
+    """Masking + scope-echo provenance for one side of a comparison,
     mirroring plot_tools._provenance's disclosure facts.
 
     Carries the QA-flag ``masking`` ``aggregate()`` produced, the ``delivered_scope``
@@ -399,7 +399,7 @@ def _compare_side_provenance(handle: str, da_2d: xr.DataArray, agg_meta: dict[st
         "requested_scope": requested,
     }
     if agg_meta.get("variable_resolution"):
-        # T48: if the resolver auto-picked this side's variable, disclose it --
+        # If the resolver auto-picked this side's variable, disclose it --
         # same channel and note as the heatmap path (one resolver, one
         # disclosure, no drift between tools).
         provenance["variable_resolution"] = agg_meta["variable_resolution"]
@@ -415,7 +415,7 @@ def _bbox_from_da(da: xr.DataArray) -> list[float]:
 
 
 # How each comparison scale was derived, disclosed to the frontend legend so
-# its saturation warning (T43) fires for compare maps exactly as it does for
+# its saturation warning fires for compare maps exactly as it does for
 # single maps. A shared scale is a plain 2/98 percentile clip of the combined
 # panels; a diverging scale clips at the diff's 98th-percentile magnitude.
 _SHARED_SCALE_DISCLOSURE = {"method": "percentile", "p": [2, 98]}
@@ -466,15 +466,15 @@ async def _open_and_prepare_side(
         ds = await _retry_transient(lambda: open_handle(handle, mcp_tools), label=f"open {label}")
         # Normalize longitude on the whole opened Dataset before extraction,
         # so the science DataArray and its sibling QA-flag variable (still
-        # reachable through ds) share one coordinate convention (T25
-        # masking-execution fix; see plot_tools).
+        # reachable through ds) share one coordinate convention (see
+        # plot_tools).
         lon_coord = find_lon_coord(ds)
         if lon_coord:
             ds = _normalize_longitudes(ds, lon_coord)
         da = _aggregation_service.to_dataarray(ds, handle=handle, variable=variable)
         return ds, da, None, None
     except VariableChoiceRequired as e:
-        # T49: this side of the compare is ambiguous — deliver a
+        # This side of the compare is ambiguous — deliver a
         # deterministic picker (multi-part partial delivery is per-side: this
         # side yields a picker instead of a panel; a resolvable side still
         # renders) — but only if this side's error is the one actually
@@ -597,8 +597,8 @@ def make_compare(mcp_tools: dict[str, BaseTool]) -> BaseTool:
             disjoint = _disjoint_periods_error(da_a, da_b)
             if disjoint:
                 return json.dumps({"error": disjoint})
-            # CPU-bound mask -> aggregate -> payload chain (T16), run off
-            # the event loop.
+            # CPU-bound mask -> aggregate -> payload chain, run off the event
+            # loop.
             return await admission.run_heavy(
                 _build_region_comparison, handle_a, handle_b, da_a, da_b, label_a, label_b, variable_name, units,
                 ds_a, ds_b,
@@ -644,8 +644,7 @@ def make_compare(mcp_tools: dict[str, BaseTool]) -> BaseTool:
         # _split_aligned's own isel), so each side's QA-flag sibling -- if
         # `align` preserved one -- stays reachable through the matching
         # source_ds instead of one carrying an extra 'source' dim the
-        # already-sliced science DataArray doesn't have (T25 masking-
-        # execution fix).
+        # already-sliced science DataArray doesn't have.
         if "source" in aligned_ds.dims:
             sel_a, sel_b = _aligned_source_order(aligned_da, handle_a, handle_b)
             aligned_ds_a = _apply_source_selector(aligned_ds, sel_a)
@@ -653,8 +652,8 @@ def make_compare(mcp_tools: dict[str, BaseTool]) -> BaseTool:
         else:
             aligned_ds_a = aligned_ds_b = aligned_ds
 
-        # CPU-bound mask -> aggregate -> payload chain (T16), run off the
-        # event loop.
+        # CPU-bound mask -> aggregate -> payload chain, run off the event
+        # loop.
         return await admission.run_heavy(
             _build_period_comparison, handle_a, handle_b, aligned_handle, aligned_a, aligned_b,
             label_a, label_b, variable_name, units, threshold, aligned_ds_a, aligned_ds_b,
@@ -673,7 +672,7 @@ def _build_region_comparison(
 
     panel_a = _region_panel(da_a_2d, handle_a, label_a, variable_name, units, vmin, vmax)
     panel_b = _region_panel(da_b_2d, handle_b, label_b, variable_name, units, vmin, vmax)
-    # Disclose each side's own masking + scope echo (T25/T46) on its panel, so a
+    # Disclose each side's own masking + scope echo on its panel, so a
     # per-panel view stays honest; the top-level provenance mirrors side A for
     # the dispatch-layer scope note (which reads a single chart.provenance).
     prov_a = _compare_side_provenance(handle_a, da_a_2d, meta_a, variable_name, units)
@@ -681,7 +680,7 @@ def _build_region_comparison(
     panel_a["provenance"] = prov_a
     panel_b["provenance"] = prov_b
     # Both sides are period-mean maps (``_prepare_2d`` time-means), so disclose
-    # that basis on the extremes (Finding #12): a compare "Max" is the max of
+    # that basis on the extremes: a compare "Max" is the max of
     # the averaged field, not the instantaneous peak.
     stats_a = _region_stats(da_a_2d, basis="period-mean")
     stats_b = _region_stats(da_b_2d, basis="period-mean")
@@ -717,9 +716,8 @@ def _build_period_comparison(
     )
     diff_payload["bounds"] = _bbox_from_da(diff)
 
-    # Disclose the masking aggregate() applied to each side, and the T46 scope
-    # echo, on the compare payload — the difference silently masked QA-flagged
-    # cells on both sides with zero provenance before. Both sides go through the
+    # Disclose the masking aggregate() applied to each side, and the scope
+    # echo, on the compare payload. Both sides go through the
     # same aligned product, so side A's masking is representative at top level;
     # each period keeps its own on its panel.
     prov_a = _compare_side_provenance(handle_a, da_a_2d, meta_a, variable_name, units)

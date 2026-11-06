@@ -1,14 +1,14 @@
 """
 validation_tools.py
 --------------------
-Satellite<->ground validation tools (PRD T07).
+Satellite<->ground validation tools.
 
 Co-locates a retrieved satellite cube with EPA AQS ground monitors: one cube
 retrieval over the AOI, satellite values extracted at every monitor location
 by nearest-cell selection (TTA-side, never per-monitor AppEEARS jobs), paired
 with the AQS daily series in time, and summarized with correlation and
 coverage statistics. Renders as overlay `timeseries` artifacts, one per
-monitor, per T06's TimeseriesArtifactMetadata.
+monitor, per TimeseriesArtifactMetadata.
 """
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ _resolver = RegionResolver()
 
 def _out_of_scope_error() -> str | None:
     """The refusal these satellite<->ground tools return when the task in
-    progress is not a comparison (T64). Under the supervisor's dispatch,
+    progress is not a comparison. Under the supervisor's dispatch,
     ground data is the supervisor's to request as a ground request, where
     the dispatch log records it; checked before any data is opened."""
     if ground_validation_allowed():
@@ -92,16 +92,14 @@ def _extract_monitor_series(
     the returned series and counted toward coverage stats — never silently
     included as valid readings. Routed through AggregationService.
     resolve_and_mask, the same masking-resolution path plot_tools' aggregate/
-    conduct_temporal_statistic use (T25 masking-execution fix), instead of a
-    hand-rolled apply_quality_mask(ds=None) call that could never actually
-    apply QA-flag masking or disclose its provenance.
+    conduct_temporal_statistic use, so QA-flag masking is actually applied
+    and disclosed.
 
     Narrowed to the monitor cell BEFORE masking, never after. The provenance
     riding out beside this series reports a QA pass rate whose documented
     basis (``QA_PASS_RATE_BASIS``) is "pixels in the analyzed region", and for
     a monitor comparison that region is one cell -- masking the full grid
-    first counted every other cell's QA outcome into a number presented next
-    to a single-point series. This is the same crop-before-mask ordering both
+    first would count every other cell's QA outcome. This is the same crop-before-mask ordering both
     plot paths already follow, so the counters mean the same thing on a
     heatmap, a timeseries, and here.
 
@@ -286,9 +284,8 @@ def make_validate_against_ground(mcp_tools: dict[str, BaseTool]) -> BaseTool:
         except OpenHandleError as e:
             return json.dumps({"error": f"Failed to open handle '{handle}': {e}"})
 
-        # T60 D14: a composite that cannot be built raises the taxonomy's
-        # error naming the offending token -- a ``None`` return could never
-        # carry which token failed. Same shape as the open_handle catch.
+        # A composite region that can't be built raises an error naming the
+        # bad token (a None return couldn't say which one).
         try:
             region = await _resolver.aresolve_location(location)
         except MCPToolError as e:
@@ -333,7 +330,7 @@ def make_validate_against_ground(mcp_tools: dict[str, BaseTool]) -> BaseTool:
         variable_name = da.name or ""
 
         def _extract_and_pair_monitors() -> tuple[list[Any], list[Any], list[Any], list[Any]]:
-            # CPU-bound per-monitor mask/extraction/pairing loop (T16), run
+            # CPU-bound per-monitor mask/extraction/pairing loop, run
             # off the event loop via admission.run_heavy below, which also bounds
                 # how many such reductions may hold memory at once.
             monitor_results = []
@@ -478,9 +475,8 @@ def make_exceedance_overlay(mcp_tools: dict[str, BaseTool]) -> BaseTool:
         except OpenHandleError as e:
             return json.dumps({"error": f"Failed to open handle '{handle}': {e}"})
 
-        # T60 D14: a composite that cannot be built raises the taxonomy's
-        # error naming the offending token -- a ``None`` return could never
-        # carry which token failed. Same shape as the open_handle catch.
+        # A composite region that can't be built raises an error naming the
+        # bad token (a None return couldn't say which one).
         try:
             region = await _resolver.aresolve_location(location)
         except MCPToolError as e:
@@ -531,7 +527,7 @@ def make_exceedance_overlay(mcp_tools: dict[str, BaseTool]) -> BaseTool:
         variable_name = da.name or ""
 
         def _extract_exceedance_monitors() -> tuple[list[Any], list[Any]]:
-            # CPU-bound per-monitor mask/extraction loop (T16), run off the
+            # CPU-bound per-monitor mask/extraction loop, run off the
             # event loop via admission.run_heavy below, which also bounds how
             # many such reductions may hold memory at once.
             monitor_results = []
