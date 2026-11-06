@@ -124,6 +124,9 @@ def canonical_key(request: AgentRequest) -> str:
     return json.dumps(request.model_dump(mode="json", exclude={"prior_findings"}), sort_keys=True)
 
 
+LOCATION_LINE_PREFIX = "Location (use exactly as written): "
+
+
 def render_task(request: AgentRequest, user_message: str | None) -> str:
     """The task string a sub-agent receives: the typed fields as labeled
     lines, which are its task, then the researcher's own message (bound
@@ -140,7 +143,7 @@ def render_task(request: AgentRequest, user_message: str | None) -> str:
             lines.append(f"Dataset: {request.dataset}")
     else:
         lines.append(f"Pollutant: {request.pollutant}")
-    lines.append(f"Location (use exactly as written): {request.location}")
+    lines.append(f"{LOCATION_LINE_PREFIX}{request.location}")
     dates = _render_dates(request.start_date, request.end_date)
     if dates:
         lines.append(dates)

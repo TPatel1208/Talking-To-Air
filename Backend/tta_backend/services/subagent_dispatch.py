@@ -42,6 +42,7 @@ from tta_backend.models import (
     parse_chart_payload,
     parse_sub_agent_envelope,
 )
+from tta_backend.models.agent_request import LOCATION_LINE_PREFIX
 from tta_backend.models.artifact import ArtifactReference
 from tta_backend.repositories.session_metadata_repository import (
     get_ground_monitor_context,
@@ -77,7 +78,9 @@ async def run_ground(
     every caller on that thread, whether it took the supervisor path or the
     fast path.
     """
-    monitor_context = await get_ground_monitor_context(conversation_thread_id) if conversation_thread_id else {}
+    monitor_context = await _load_ground_monitor_context(conversation_thread_id)
+    # Monitors the lookup tools returned this run, by station_id.
+    monitors: dict[str, dict[str, str]] = {}
 
     async def _invoke(task_text: str) -> AgentResult:
         sub_thread_id = str(uuid.uuid4())
@@ -103,6 +106,7 @@ async def run_ground(
                     truncate=False,
                 )
             artifact_refs = _extract_artifact_refs(result.get("messages", []))
+            monitors.update(_monitors_from_messages(result.get("messages", [])))
         except TimeoutError:
             outcome = "timeout"
             raise
@@ -129,13 +133,18 @@ async def run_ground(
         retry_task = _ground_retry_task(enriched_task)
         result = await _reprompt_final_envelope(ground_agent, retry_task, "ground_sensor")
 
+    envelope = parse_sub_agent_envelope(result.text)
+    new_context = _reported_monitor(monitors, envelope.site_id if envelope else None)
     result = _finalize_sub_agent_result(result, "ground sensor")
 
-    new_context = _extract_ground_monitor_context(result.text)
     if context_sink is not None:
         context_sink.update(new_context)
     elif new_context and conversation_thread_id:
-        await save_ground_monitor_context(conversation_thread_id, {**monitor_context, **new_context})
+        # A monitor is one unit: replace, never merge key by key.
+        try:
+            await save_ground_monitor_context(conversation_thread_id, new_context)
+        except Exception:
+            logger.warning("ground_context_save_failed", exc_info=True)
 
     return result
 
@@ -342,20 +351,21 @@ async def persist_dispatch_contexts(
     ``context_sink``, once per kind (T64 D13). Run concurrently, each run's
     own read-merge-write would race and the last write would win.
 
-    Merged in request order over what the thread already holds: a later
-    request wins a key, except chart ids, which accumulate so every chart the
-    batch drew stays nameable to a follow-up, as for one run that draws two,
-    and the area, which merge_satellite_context keeps as one pair."""
+    Satellite contexts merge in request order over what the thread already
+    holds: a later request wins a key, except chart ids, which accumulate so
+    every chart the batch drew stays nameable to a follow-up, as for one run
+    that draws two, and the area, which merge_satellite_context keeps as one
+    pair. The ground monitor is replaced whole by the last run that found one."""
     if any(satellite):
         prior = await _load_satellite_context(conversation_thread_id)
         await _persist_satellite_context(conversation_thread_id, merge_satellite_context(prior, satellite))
-    ground_captured = _merge_captured_contexts(ground)
+    # The last run that reported a monitor wins, whole.
+    ground_captured = next((context for context in reversed(ground) if context), None)
     if ground_captured:
         # Best-effort, like the satellite side: this runs after the batch, so
         # a raise here would discard every result the batch already has.
         try:
-            prior = await get_ground_monitor_context(conversation_thread_id)
-            await save_ground_monitor_context(conversation_thread_id, {**prior, **ground_captured})
+            await save_ground_monitor_context(conversation_thread_id, ground_captured)
         except Exception:
             logger.warning("ground_context_save_failed", exc_info=True)
 
@@ -801,48 +811,91 @@ def _satellite_retry_task(task: str) -> str:
 
 
 def _inject_ground_context(task: str, context: dict[str, str]) -> str:
-    if not context:
+    # Only tool-sourced contexts carry both keys; older scraped ones are dropped.
+    if not (context.get("site_id") and context.get("location")):
+        return task
+    task_location = _task_location(task)
+    saved_location = "".join(context["location"].split()).casefold()
+    if task_location is not None and "".join(task_location.split()).casefold() != saved_location:
         return task
 
     bits = []
     if context.get("name"):
         bits.append(f"monitor_name={context['name']}")
-    if context.get("site_id"):
-        bits.append(f"station_id={context['site_id']}")
+    bits.append(f"station_id={context['site_id']}")
     if context.get("latitude") and context.get("longitude"):
         bits.append(f"coordinates=({context['latitude']}, {context['longitude']})")
-
-    if not bits:
-        return task
-    return "Prior ground monitor context: " + "; ".join(bits) + ".\n\n" + task
-
-
-def _extract_ground_monitor_context(text: str) -> dict[str, str]:
-    text = str(text or "")
-    station_match = re.search(r"\b(?:station_id|site_id)\s*[:=]?\s*([0-9]{2}-[0-9]{3}-[0-9]{4})\b", text, re.I)
-    coord_match = re.search(
-        r"(?:coordinates|located at coordinates)?\s*\(?\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)?",
-        text,
-        re.I,
-    )
-    name_match = re.search(
-        r"(?:monitor(?:\s+name)?|station(?:\s+name)?)\s*(?:is|:)\s*"
-        r"(.+?)(?=\s+with\s+(?:station_id|site_id)|\s+located\s+at\s+coordinates|[.\n]|$)",
-        text,
-        re.I,
+    bits.append(f"found_near={context['location']}")
+    return (
+        "Prior ground monitor context from an earlier turn (reuse only if this task "
+        "is about the same place): " + "; ".join(bits) + ".\n\n" + task
     )
 
-    context: dict[str, str] = {}
-    if name_match:
-        name = name_match.group(1).strip(" '\"")
-        if name and not re.search(r"\b(not available|unknown|n/a)\b", name, re.I):
-            context["name"] = name
-    if station_match:
-        context["site_id"] = station_match.group(1)
-    if coord_match:
-        context["latitude"] = coord_match.group(1)
-        context["longitude"] = coord_match.group(2)
-    return context
+
+def _task_location(task: str) -> str | None:
+    """The task's labeled Location line, or None for a plain-message task."""
+    for line in str(task or "").splitlines():
+        if line.startswith(LOCATION_LINE_PREFIX):
+            return line[len(LOCATION_LINE_PREFIX):]
+    return None
+
+
+_MONITOR_LOOKUP_TOOLS = ("find_closest_monitor", "find_closest_monitor_by_coords")
+
+
+def _monitors_from_messages(messages: list[Any]) -> dict[str, dict[str, str]]:
+    """Monitor rows the lookup tools returned, by station_id."""
+    monitors: dict[str, dict[str, str]] = {}
+    for msg in messages:
+        if getattr(msg, "name", None) not in _MONITOR_LOOKUP_TOOLS:
+            continue
+        parsed = _parse_tool_content(getattr(msg, "content", ""))
+        if parsed is None:
+            continue
+        headers = parsed.get("Header")
+        header = headers[0] if isinstance(headers, list) and headers else {}
+        if not isinstance(header, dict):
+            header = {}
+        # The place the lookup searched near, as the tool echoed it.
+        location = header.get("query_location")
+        if not location and header.get("query_lat") is not None and header.get("query_lon") is not None:
+            location = f"{header['query_lat']},{header['query_lon']}"
+        for row in parsed.get("Body") or []:
+            if not isinstance(row, dict) or not row.get("station_id"):
+                continue
+            if row.get("latitude") is None or row.get("longitude") is None or not location:
+                continue
+            monitor = {
+                "site_id": str(row["station_id"]),
+                "latitude": str(row["latitude"]),
+                "longitude": str(row["longitude"]),
+                "location": str(location),
+            }
+            name = row.get("station_name")
+            if name and name != "N/A":
+                monitor["name"] = str(name)
+            monitors[monitor["site_id"]] = monitor
+    return monitors
+
+
+def _reported_monitor(monitors: dict[str, dict[str, str]], site_id: str | None) -> dict[str, str]:
+    """The monitor the answer names, or the only one looked up; else nothing."""
+    if site_id:
+        return monitors.get(site_id.strip(), {})
+    if len(monitors) == 1:
+        return next(iter(monitors.values()))
+    return {}
+
+
+async def _load_ground_monitor_context(conversation_thread_id: str | None) -> dict[str, str]:
+    """Best-effort, like _load_satellite_context: a failed read means no reuse, not a failed turn."""
+    if not conversation_thread_id:
+        return {}
+    try:
+        return await get_ground_monitor_context(conversation_thread_id)
+    except Exception:
+        logger.warning("ground_context_load_failed", exc_info=True)
+        return {}
 
 
 async def _load_satellite_context(conversation_thread_id: str | None) -> dict[str, str]:

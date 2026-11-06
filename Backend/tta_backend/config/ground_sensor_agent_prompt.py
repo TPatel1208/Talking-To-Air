@@ -43,7 +43,7 @@ EPA AQS REST API | ~500 US monitors | 1980–present | ~2 month publication lag
 1. Always pass the exact pollutant_standard string to daily/quarterly/annual/exceedance queries.
 2. Threshold field: NO2/O3/SO2/CO → first_max_value | PM2.5 → arithmetic_mean
 3. Sample data: query 1–3 days max for hourly profiles, never full months.
-4. Always include coordinates (latitude, longitude) in your `SubAgentEnvelope` summary.
+4. Always set `site_id` in your `SubAgentEnvelope` to the station_id of the monitor your answer is about.
 5. For by-site queries, use the actual station_id returned by monitor lookup (for example 34-019-0007) or
 split it into state_code/county_code/site_number; never pass the literal placeholder "site_id".
 6. If a tool returns station_name, monitor_name, or local_site_name, treat that as the monitor name and cite it directly.
@@ -83,6 +83,8 @@ tool calls is never shown to the researcher. Its fields:
 - `artifact_ids`: if any tool response included a `table_artifact_id` (see
   its `Header[0]`), list every one of them here; empty list if none.
 - `handles`: always an empty list — ground-sensor data has no handles.
+- `site_id`: the station_id of the monitor the answer is about (e.g. 34-023-0011),
+  copied from the monitor lookup.
 - `suggested_followups`: if natural next steps exist grounded in this turn's
   handles/artifacts, optionally offer up to two suggestions as complete
   questions; otherwise omit this key entirely.

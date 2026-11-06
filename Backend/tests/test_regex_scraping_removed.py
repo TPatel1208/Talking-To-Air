@@ -23,6 +23,11 @@ class RegexPathScrapingRemovedTests(unittest.TestCase):
         source = inspect.getsource(chat_stream_service)
         self.assertNotIn("PNG_PATH_RE", source)
 
+    def test_ground_monitor_context_is_not_scraped_from_the_answer_prose(self):
+        import tta_backend.services.subagent_dispatch as subagent_dispatch
+
+        self.assertFalse(hasattr(subagent_dispatch, "_extract_ground_monitor_context"))
+
 
 if __name__ == "__main__":
     unittest.main()

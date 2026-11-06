@@ -85,6 +85,13 @@ class SubAgentEnvelope(BaseModel):
         max_length=2,
         description="Up to two follow-up questions grounded in this task's results. Omit when there are none.",
     )
+    site_id: str | None = Field(
+        default=None,
+        description=(
+            "Ground sensor answers only: the station_id of the monitor this answer is about, "
+            "exactly as a monitor lookup returned it. Omit otherwise."
+        ),
+    )
 
 
 # ToolStrategy names the answer tool after the schema class.

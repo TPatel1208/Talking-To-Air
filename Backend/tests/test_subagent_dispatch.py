@@ -5,6 +5,20 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+RUTGERS = {"station_id": "34-023-0011", "station_name": "Rutgers University",
+           "latitude": 40.462182, "longitude": -74.429439}
+CAMDEN = {"station_id": "34-007-0002", "station_name": "Camden Spruce St",
+          "latitude": 39.934446, "longitude": -75.125291}
+RUTGERS_CONTEXT = {"site_id": "34-023-0011", "name": "Rutgers University", "latitude": "40.462182",
+                   "longitude": "-74.429439", "location": "New Brunswick, NJ"}
+
+
+def _monitor_lookup(location, rows):
+    """A find_closest_monitor ToolMessage as the ground agent's ainvoke returns it."""
+    return SimpleNamespace(name="find_closest_monitor", type="tool", content=json.dumps({
+        "Header": [{"status": "success", "query_location": location}], "Body": rows,
+    }))
+
 
 @unittest.skipIf(importlib.util.find_spec("langchain") is None, "langchain is not installed")
 class HelperTests(unittest.TestCase):
@@ -15,40 +29,67 @@ class HelperTests(unittest.TestCase):
         self.assertTrue(_is_ground_tool_failure("tool call validation failed: parameters for tool did not match schema"))
         self.assertFalse(_is_ground_tool_failure("The monitor is Rutgers University."))
 
-    def test_ground_context_extracts_and_injects_monitor_facts(self):
-        from tta_backend.services.subagent_dispatch import _extract_ground_monitor_context, _inject_ground_context
+    def test_monitors_come_from_lookup_tool_rows(self):
+        from tta_backend.services.subagent_dispatch import _monitors_from_messages
 
-        context = _extract_ground_monitor_context(
-            "The closest NO2 monitor is Rutgers University with station_id 34-023-0011 "
-            "located at coordinates (40.462182, -74.429439)."
-        )
+        monitors = _monitors_from_messages([
+            _monitor_lookup("New Brunswick, NJ", [RUTGERS]),
+            SimpleNamespace(name="get_daily_summary", content=json.dumps({"Body": [CAMDEN]}), type="tool"),
+            SimpleNamespace(content="On January 15, 2024 the daily mean NO2 was 21.3 ppb.", type="ai"),
+        ])
 
-        self.assertEqual(context["name"], "Rutgers University")
-        self.assertEqual(context["site_id"], "34-023-0011")
-        self.assertEqual(context["latitude"], "40.462182")
-        self.assertEqual(context["longitude"], "-74.429439")
-        # Pollutant is intentionally NOT extracted — the user's request is always
-        # authoritative and injecting a stale pollutant caused param_code confusion.
-        self.assertNotIn("pollutant", context)
-        enriched = _inject_ground_context("Give quarterly summary for Q1 2024.", context)
+        self.assertEqual(monitors, {"34-023-0011": {
+            "site_id": "34-023-0011", "name": "Rutgers University",
+            "latitude": "40.462182", "longitude": "-74.429439", "location": "New Brunswick, NJ",
+        }})
+
+    def test_a_coordinate_lookup_records_the_point_it_searched_near(self):
+        from tta_backend.services.subagent_dispatch import _monitors_from_messages
+
+        lookup = SimpleNamespace(name="find_closest_monitor_by_coords", type="tool", content=json.dumps({
+            "Header": [{"status": "success", "query_lat": 40.46, "query_lon": -74.43}], "Body": [RUTGERS],
+        }))
+
+        self.assertEqual(_monitors_from_messages([lookup])["34-023-0011"]["location"], "40.46,-74.43")
+
+    def test_the_reported_monitor_is_the_one_the_answer_names_or_the_only_one(self):
+        from tta_backend.services.subagent_dispatch import _monitors_from_messages, _reported_monitor
+
+        one = _monitors_from_messages([_monitor_lookup("NJ", [RUTGERS])])
+        three = _monitors_from_messages([_monitor_lookup("NJ", [RUTGERS, CAMDEN])])
+
+        self.assertEqual(_reported_monitor(one, None)["site_id"], "34-023-0011")
+        self.assertEqual(_reported_monitor(three, "34-007-0002")["site_id"], "34-007-0002")
+        self.assertEqual(_reported_monitor(three, None), {})  # ambiguous
+        self.assertEqual(_reported_monitor(three, "99-999-9999"), {})  # not a looked-up monitor
+        self.assertEqual(_reported_monitor({}, None), {})
+
+    def test_ground_context_is_injected_as_unverified_with_where_it_was_found(self):
+        from tta_backend.services.subagent_dispatch import _inject_ground_context
+
+        enriched = _inject_ground_context("Give quarterly summary for Q1 2024.", RUTGERS_CONTEXT)
+
+        self.assertIn("reuse only if this task is about the same place", enriched)
         self.assertIn("station_id=34-023-0011", enriched)
         self.assertIn("coordinates=(40.462182, -74.429439)", enriched)
+        self.assertIn("found_near=New Brunswick, NJ", enriched)
         self.assertNotIn("pollutant=", enriched)
 
-    def test_ground_context_does_not_bleed_pollutant_across_requests(self):
-        from tta_backend.services.subagent_dispatch import _extract_ground_monitor_context, _inject_ground_context
+    def test_ground_context_is_withheld_when_the_task_names_another_place(self):
+        from tta_backend.services.subagent_dispatch import _inject_ground_context
 
-        # Simulate a failure response that mentions multiple pollutants — the first
-        # match used to be SO2, which then poisoned a subsequent NO2 request.
-        failure_text = (
-            "The Chester, NJ monitor has no daily SO2 records for the requested period. "
-            "No NO2 or PM2.5 data was found either."
-        )
-        context = _extract_ground_monitor_context(failure_text)
-        self.assertNotIn("pollutant", context)
+        def task(location):
+            return f"Intent: readings\nPollutant: NO2\nLocation (use exactly as written): {location}"
 
-        enriched = _inject_ground_context("Give daily NO2 summary for NJ in Jan 2024.", context)
-        self.assertNotIn("pollutant=", enriched)
+        self.assertIn("station_id=", _inject_ground_context(task("new brunswick,  NJ"), RUTGERS_CONTEXT))
+        self.assertEqual(_inject_ground_context(task("Newark, NJ"), RUTGERS_CONTEXT), task("Newark, NJ"))
+
+    def test_a_scraped_context_without_a_lookup_location_is_never_injected(self):
+        from tta_backend.services.subagent_dispatch import _inject_ground_context
+
+        for legacy in ({"latitude": "15", "longitude": "2024"},
+                       {"site_id": "34-023-0011", "latitude": "15", "longitude": "2024"}):
+            self.assertEqual(_inject_ground_context("task", legacy), "task")
 
     def test_satellite_context_captures_dataset_aoi_and_handles_from_tool_calls(self):
         from tta_backend.services.subagent_dispatch import _capture_satellite_context
@@ -597,7 +638,7 @@ class RepromptFinalEnvelopeTests(unittest.IsolatedAsyncioTestCase):
 
 @unittest.skipIf(importlib.util.find_spec("langchain") is None, "langchain is not installed")
 class RunGroundTests(unittest.IsolatedAsyncioTestCase):
-    async def test_run_ground_reads_and_merges_persisted_monitor_context(self):
+    async def test_run_ground_injects_persisted_monitor_context(self):
         from tta_backend.services import subagent_dispatch
 
         envelope = json.dumps({"summary": "Ground summary.", "artifact_ids": [], "handles": []})
@@ -615,21 +656,49 @@ class RunGroundTests(unittest.IsolatedAsyncioTestCase):
         get_call_budget().clear()
 
         with patch.object(
-            subagent_dispatch, "get_ground_monitor_context", AsyncMock(return_value={"site_id": "34-023-0011"})
+            subagent_dispatch, "get_ground_monitor_context", AsyncMock(return_value=RUTGERS_CONTEXT)
         ), patch.object(subagent_dispatch, "save_ground_monitor_context", AsyncMock()) as save_mock:
             result = await subagent_dispatch.run_ground(ground_agent, "quarterly summary", "thread-1")
 
         self.assertIn("station_id=34-023-0011", ground_agent.invoked_with)
         self.assertEqual(result.text, "Ground summary.")
-        save_mock.assert_not_called()  # the reply didn't mention a new monitor
+        save_mock.assert_not_called()  # no monitor lookup ran
 
-    async def test_run_ground_persists_newly_discovered_monitor_context(self):
+    async def test_run_ground_saves_the_monitor_the_answer_names_from_the_tool_rows(self):
         from tta_backend.services import subagent_dispatch
 
         envelope = json.dumps({
-            "summary": "The closest monitor is Rutgers University with station_id 34-023-0011.",
+            "summary": "On January 15, 2024 the daily mean NO2 at Camden was 21.3 ppb (readings 12.5, 14.1).",
             "artifact_ids": [],
             "handles": [],
+            "site_id": "34-007-0002",
+        })
+
+        class FakeGroundAgent:
+            async def ainvoke(self, input_, config):
+                return {"messages": [
+                    _monitor_lookup("Camden, NJ", [RUTGERS, CAMDEN]),
+                    SimpleNamespace(content=envelope, type="ai"),
+                ]}
+
+        from tta_backend.utils.streaming import get_call_budget
+        get_call_budget().clear()
+
+        with patch.object(subagent_dispatch, "get_ground_monitor_context", AsyncMock(return_value=RUTGERS_CONTEXT)), \
+             patch.object(subagent_dispatch, "save_ground_monitor_context", AsyncMock()) as save_mock:
+            await subagent_dispatch.run_ground(FakeGroundAgent(), "nearest monitor", "thread-1")
+
+        save_mock.assert_awaited_once_with("thread-1", {
+            "site_id": "34-007-0002", "name": "Camden Spruce St",
+            "latitude": "39.934446", "longitude": "-75.125291", "location": "Camden, NJ",
+        })
+
+    async def test_run_ground_saves_nothing_when_no_lookup_backs_the_answer(self):
+        from tta_backend.services import subagent_dispatch
+
+        envelope = json.dumps({
+            "summary": "The monitor is Rutgers University at (40.462182, -74.429439).",
+            "artifact_ids": [], "handles": [], "site_id": "34-023-0011",
         })
 
         class FakeGroundAgent:
@@ -643,10 +712,30 @@ class RunGroundTests(unittest.IsolatedAsyncioTestCase):
              patch.object(subagent_dispatch, "save_ground_monitor_context", AsyncMock()) as save_mock:
             await subagent_dispatch.run_ground(FakeGroundAgent(), "nearest monitor", "thread-1")
 
-        save_mock.assert_awaited_once()
-        saved_thread_id, saved_context = save_mock.await_args.args
-        self.assertEqual(saved_thread_id, "thread-1")
-        self.assertEqual(saved_context["site_id"], "34-023-0011")
+        save_mock.assert_not_called()
+
+    async def test_a_ground_context_store_failure_never_fails_the_turn(self):
+        from tta_backend.services import subagent_dispatch
+
+        class FakeGroundAgent:
+            async def ainvoke(self, input_, config):
+                return {"messages": [
+                    _monitor_lookup("Camden, NJ", [CAMDEN]),
+                    SimpleNamespace(content=json.dumps({"summary": "ok", "artifact_ids": [], "handles": []}),
+                                    type="ai"),
+                ]}
+
+        from tta_backend.utils.streaming import get_call_budget
+        get_call_budget().clear()
+
+        for failing in ("get_ground_monitor_context", "save_ground_monitor_context"):
+            with self.subTest(failing=failing), \
+                 patch.object(subagent_dispatch, "get_ground_monitor_context", AsyncMock(return_value={})), \
+                 patch.object(subagent_dispatch, "save_ground_monitor_context", AsyncMock()), \
+                 patch.object(subagent_dispatch, failing, AsyncMock(side_effect=RuntimeError("db down"))), \
+                 self.assertLogs("tta_backend.services.subagent_dispatch", level="WARNING"):
+                result = await subagent_dispatch.run_ground(FakeGroundAgent(), "task", "thread-1")
+            self.assertEqual(result.text, "ok")
 
     async def test_run_ground_renders_an_unexpected_exception_through_the_taxonomy(self):
         # T37: a bare exception string (possibly empty: KeyError('x') →
@@ -1490,9 +1579,10 @@ class DispatchContextTests(unittest.IsolatedAsyncioTestCase):
 
         class FakeGroundAgent:
             async def ainvoke(self, input_, config):
-                return {"messages": [SimpleNamespace(
-                    content=_envelope("The monitor is Camden Spruce St with station_id 34-007-0002."), type="ai",
-                )]}
+                return {"messages": [
+                    _monitor_lookup("Camden, NJ", [CAMDEN]),
+                    SimpleNamespace(content=_envelope("The monitor is Camden Spruce St."), type="ai"),
+                ]}
 
         sink = {}
         with patch.object(subagent_dispatch, "get_ground_monitor_context", AsyncMock(return_value={})), \
@@ -1517,28 +1607,26 @@ class DispatchContextTests(unittest.IsolatedAsyncioTestCase):
                 "thread-1",
                 satellite=[{"location": "New Jersey", "last_chart_ids": "nj_map"},
                            {"location": "New York", "last_chart_ids": "ny_map"}],
-                ground=[{"site_id": "34-007-0002"}],
+                ground=[RUTGERS_CONTEXT, {"site_id": "34-007-0002", "location": "Camden"}, {}],
             )
 
         save_satellite.assert_awaited_once_with("thread-1", {
             "dataset_query": "TEMPO_NO2", "last_chart_ids": "nj_map,ny_map",
         })
-        save_ground.assert_awaited_once_with("thread-1", {"name": "Old", "site_id": "34-007-0002"})
+        # The last run that found a monitor replaces the saved one whole.
+        save_ground.assert_awaited_once_with("thread-1", {"site_id": "34-007-0002", "location": "Camden"})
 
     async def test_a_ground_context_store_failure_never_fails_the_batch(self):
         """Persistence runs after the batch, outside the executor's per-item
         isolation; an exception here would discard every finished result."""
         from tta_backend.services import subagent_dispatch
 
-        for failing in ("get_ground_monitor_context", "save_ground_monitor_context"):
-            with self.subTest(failing=failing), \
-                 patch.object(subagent_dispatch, "get_ground_monitor_context", AsyncMock(return_value={})), \
-                 patch.object(subagent_dispatch, "save_ground_monitor_context", AsyncMock()), \
-                 patch.object(subagent_dispatch, failing, AsyncMock(side_effect=RuntimeError("db down"))), \
-                 self.assertLogs("tta_backend.services.subagent_dispatch", level="WARNING"):
-                await subagent_dispatch.persist_dispatch_contexts(
-                    "thread-1", satellite=[], ground=[{"site_id": "34-007-0002"}],
-                )
+        with patch.object(subagent_dispatch, "save_ground_monitor_context",
+                          AsyncMock(side_effect=RuntimeError("db down"))), \
+             self.assertLogs("tta_backend.services.subagent_dispatch", level="WARNING"):
+            await subagent_dispatch.persist_dispatch_contexts(
+                "thread-1", satellite=[], ground=[{"site_id": "34-007-0002"}],
+            )
 
     async def test_a_batch_that_captured_nothing_saves_nothing(self):
         from tta_backend.services import subagent_dispatch
