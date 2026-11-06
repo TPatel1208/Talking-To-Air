@@ -1,11 +1,11 @@
-"""PRD T58 — asking for a level in the units the atmosphere has.
+"""Asking for a level in the units the atmosphere has.
 
 The failure this feature exists to prevent does not crash. It hands back an
 ordinary-looking map of the wrong altitude. So the assertions here are weighted
 toward what gets *refused* and what gets *disclosed*, not toward the happy path.
 
-Numbers pinned from the Phase 1 spike (2026-08-08, live granules and live
-UMM-Var) are named where they appear.
+Numbers measured on live granules and live UMM-Var are named where they
+appear.
 """
 import importlib.util
 import json
@@ -23,7 +23,7 @@ REQUIRED_MODULES = ["langchain_mcp_adapters", "fastmcp", "uvicorn", "xarray", "z
 
 
 class ParsingALevelRequestTests(unittest.TestCase):
-    """D1/D11: the unit in the request is the only thing that says which axis
+    """The unit in the request is the only thing that says which axis
     was meant, on a product publishing more than one. A bare number is
     therefore not an under-specified request, it is a different question."""
 
@@ -40,15 +40,14 @@ class ParsingALevelRequestTests(unittest.TestCase):
         self.assertEqual(request.units, "hPa")
 
     def test_an_altitude_request_names_the_altitude_axis(self):
-        """The live failure that started T58: "the ozone at 26 km" had no
-        spelling the tool accepted."""
+        """"the ozone at 26 km" must have a spelling the tool accepts."""
         request = self._parse("26 km")
 
         self.assertEqual(request.kind, "altitude")
         self.assertEqual(request.value, 26.0)
 
     def test_a_bare_number_is_refused_rather_than_given_a_default_unit(self):
-        """D11. On a product publishing both pressure and altitude -- which
+        """On a product publishing both pressure and altitude -- which
         TEMPO_O3PROF does -- the unit is the ONLY thing saying which axis was
         meant. Defaulting would silently answer a different question, which is
         the same class of error as overloading ``dimension_value``."""
@@ -89,7 +88,7 @@ class ParsingALevelRequestTests(unittest.TestCase):
         return parse_level(text, available=available)
 
 
-# The regional-mean vertical axes MEASURED by the Phase 1 spike on a real
+# The regional-mean vertical axes MEASURED on a real
 # 11-timestep TEMPO_O3PROF_L3 retrieval over New Jersey, 2025-10-01/02. Layer 0
 # is the TOP of the atmosphere (~0.175 hPa / 60 km), which is what makes a bare
 # index meaningless on this product.
@@ -194,7 +193,7 @@ def _shifted(profile, layers):
 
 
 class ResolvingAPhysicalLevelToALayerTests(unittest.TestCase):
-    """D4: a requested level becomes a single layer INDEX, resolved against the
+    """A requested level becomes a single layer INDEX, resolved against the
     regional-mean axis, so it can go through the existing selection path
     unchanged."""
 
@@ -210,14 +209,14 @@ class ResolvingAPhysicalLevelToALayerTests(unittest.TestCase):
         self.assertEqual(resolution.index, 21)
 
     def test_an_altitude_request_resolves_against_the_altitude_axis(self):
-        """Spike: 26 km resolves to layer 12 (26.97 km) -- the request that
-        started T58, now answerable in the units it was asked in."""
+        """26 km resolves to layer 12 (26.97 km), answerable in the units it
+        was asked in."""
         resolution = self._resolve("26 km")
 
         self.assertEqual(resolution.index, 12)
 
     def test_the_resolution_discloses_the_level_it_actually_landed_on(self):
-        """D5/finding 4: level error is an axis of wrongness INDEPENDENT of
+        """Level error is an axis of wrongness INDEPENDENT of
         agreement. 850 hPa lands on a layer whose regional mean is 896.06 hPa
         -- a 46 hPa discrepancy at 100% agreement. A result that reports only
         agreement would call that perfect."""
@@ -231,7 +230,7 @@ class ResolvingAPhysicalLevelToALayerTests(unittest.TestCase):
         self.assertEqual(resolution.requested, 850.0)
 
     def test_the_resolution_discloses_how_many_pixels_agree_with_the_chosen_layer(self):
-        """D5: the honest artifact for a regional-mean resolution is a number,
+        """The honest artifact for a regional-mean resolution is a number,
         not a refusal -- "layer 21; 100% of analyzed pixels resolve to this
         same layer". Without a per-pixel spread every pixel agrees, which is
         the fact this pins."""
@@ -310,7 +309,7 @@ class ResolvingAPhysicalLevelToALayerTests(unittest.TestCase):
         self.assertAlmostEqual(resolution.selector_value, MEASURED_PRESSURE_HPA[21])
 
     def test_asking_for_an_axis_the_product_does_not_publish_is_refused(self):
-        """D12: pressure-only products exist. A km request against one has not
+        """Pressure-only products exist. A km request against one has not
         been under-specified, it has been asked of the wrong file."""
         from tta_backend.earthdata_mcp.results import MCPToolError
 
@@ -326,7 +325,7 @@ class ResolvingAPhysicalLevelToALayerTests(unittest.TestCase):
 def _merra_shaped(lev_attrs, lev_values, edge_heights=None):
     """A MERRA-2-shaped field: the vertical dimension IS a coordinate, unlike
     TEMPO_O3PROF's bare index. Attributes reproduce what the live UMM-Var
-    actually publishes for each product (Phase 1 gate, 2026-08-08)."""
+    actually publishes for each product."""
     import numpy as np
     import xarray as xr
 
@@ -394,7 +393,7 @@ class WorkingOnProductsBeyondTheOneItWasBuiltAgainstTests(unittest.TestCase):
         self.assertEqual(by_altitude.units, "m")
 
     def test_a_hybrid_model_level_product_is_refused_not_resolved(self):
-        """M2I3NVASM is the case the PRD names as scientifically dangerous: its
+        """M2I3NVASM is the scientifically dangerous case: its
         ``lev`` is a hybrid-eta level number 1..72, not a pressure. CF metadata
         refuses it for free -- ``standard_name: model_layers`` is not a vertical
         standard name, and it wins over the units outright."""
@@ -508,17 +507,17 @@ class RefusingAnAxisWhoseScaleIsUnknownTests(unittest.TestCase):
 
 
 class RefusingALevelThatCannotHonestlyBeCalledOneTests(unittest.TestCase):
-    """D6: the refusal rule is DERIVED from the Phase 1 spike, not invented.
+    """The refusal rule is DERIVED from real measurements, not invented.
 
     Two criteria, both falsifiable, neither a percentage somebody liked:
 
     1. A plurality that is not a MAJORITY means most of the analyzed region is
        on some other layer, so calling the answer "300 hPa" is affirmatively
-       misleading. This sits below every dominance the spike measured (minimum
-       83.1%), so it refuses nothing observed to be sound.
+       misleading. This sits below every dominance measured on real data
+       (minimum 83.1%), so it refuses nothing observed to be sound.
     2. If the regional-mean layer is not the layer most pixels would pick, that
        single index misrepresents the region. Needs no threshold at all. All 13
-       spike measurements agreed.
+       real measurements agreed.
     """
 
     def _resolve(self, level, columns):
@@ -603,7 +602,7 @@ class RefusingALevelThatCannotHonestlyBeCalledOneTests(unittest.TestCase):
     "satellite tools factory test dependencies are not installed",
 )
 class AskingPlotSingularForAPhysicalLevelTests(unittest.IsolatedAsyncioTestCase):
-    """Phase 4, and the Architectural Constraint's own test.
+    """Level resolution must match direct layer selection.
 
     Physical-level resolution must be *semantically equivalent* to direct layer
     selection: the resolver computes an index, and that index goes through the
@@ -710,7 +709,7 @@ class AskingPlotSingularForAPhysicalLevelTests(unittest.IsolatedAsyncioTestCase)
         self.assertTrue(all(v == 210.0 for v in flat), sorted(set(flat)))
 
     async def test_the_level_disclosure_reaches_provenance(self):
-        """D5: dominance, runner-up, margin and level error are what let a
+        """Dominance, runner-up, margin and level error are what let a
         reader judge whether this map would have looked different done
         properly. They belong with the result, not in a log line."""
         _, payload = await self._plot(level="850 hPa")
@@ -751,7 +750,7 @@ class AskingPlotSingularForAPhysicalLevelTests(unittest.IsolatedAsyncioTestCase)
     async def test_giving_both_a_level_and_a_dimension_value_is_refused(self):
         """They are different requests -- 'level' names a physical level,
         'dimension_value' names a coordinate value or an index. Silently
-        preferring one is exactly the overloading D1 exists to prevent."""
+        preferring one would overload the two parameters."""
         result, _ = await self._plot(level="500 hPa", dimension="layer", dimension_value=21)
 
         error = result["error"]
@@ -774,19 +773,15 @@ class AskingPlotSingularForAPhysicalLevelTests(unittest.IsolatedAsyncioTestCase)
 
 
 class MeasuringTheAnalyzedRegionAndNotItsBoundingBoxTests(unittest.TestCase):
-    """Review finding A1, found by both reviewers independently.
+    """Level statistics must use the analyzed region, not its bounding box.
 
     ``mask_data_by_geometry`` ends in ``data_array.where(mask)``, and xarray's
     ``.where`` masks the DATA while leaving auxiliary coordinates untouched. The
-    vertical axis rides along as an auxiliary coordinate, so every number the
-    disclosure reported -- the regional-mean level, the level error, the
-    dominance vote, and the majority refusal that is this feature's safety
-    mechanism -- was computed over the cropped BOUNDING BOX, including cells the
-    map renders as no-data.
-
-    T56's "valid_fraction denominator was the bbox" defect landing again in a
-    new place, and a contradiction of CONTEXT.md's own definition of dominance
-    as a fraction *of the analyzed region*.
+    vertical axis rides along as an auxiliary coordinate, so without care every
+    number the disclosure reports -- the regional-mean level, the level error,
+    the dominance vote, and the majority refusal -- would be computed over the
+    cropped BOUNDING BOX, including cells the map renders as no-data.
+    Dominance is defined as a fraction *of the analyzed region*.
     """
 
     def _split_region(self):
@@ -951,10 +946,10 @@ class ARequestThatTheProductCannotActuallyResolveTests(unittest.TestCase):
         """Layers 17 and 18 sit at 107.4 and 167.2 hPa, so 138 hPa is nearly
         halfway between them and neither layer is much of an answer.
 
-        DISCLOSED, not refused. The PRD's own worked example -- 300 hPa
-        resolving to layer 19 with 40 hPa of error -- has to keep resolving, and
-        it scores 0.86 against this request's 0.98. Any refusal threshold lives
-        in that narrow band, which is precisely the invented number D6 rejects.
+        DISCLOSED, not refused. 300 hPa resolving to layer 19 with 40 hPa of
+        error has to keep resolving, and it scores 0.86 against this request's
+        0.98. Any refusal threshold would be an invented number in that narrow
+        band.
         The honest artifact here is the number."""
         from tta_backend.preprocessing.level_resolver import resolve_level
 
@@ -964,9 +959,8 @@ class ARequestThatTheProductCannotActuallyResolveTests(unittest.TestCase):
         self.assertGreater(resolution.level_error_fraction_of_gap, 0.9)
 
     def test_the_prds_worked_example_still_resolves(self):
-        """300 hPa -> layer 19, 40 hPa away. D5 names this as the case where the
-        honest artifact is a number rather than a refusal, so a level-error gate
-        that broke it would be a regression against the spec."""
+        """300 hPa -> layer 19, 40 hPa away: the honest artifact is a number
+        rather than a refusal, so a level-error gate must not break it."""
         from tta_backend.preprocessing.level_resolver import resolve_level
 
         resolution = resolve_level(_narrowed_profile(), "layer", "300 hPa")
@@ -994,9 +988,9 @@ class ARequestThatTheProductCannotActuallyResolveTests(unittest.TestCase):
 
 
 class DisclosingHowFarApartThePixelsActuallyAreTests(unittest.TestCase):
-    """Review findings A3 and B1/B8.
+    """Multi-modal regions.
 
-    D6's majority floor is necessary but not sufficient: the escape is the
+    The majority floor is necessary but not sufficient: the escape is the
     MULTI-modal region, not the bimodal one the derivation examined. A 51/25/24
     split across three vertical grids passes both criteria while 49% of the area
     sits ~150 hPa from what was asked, because the two minority groups pull the
