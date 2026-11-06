@@ -1,6 +1,6 @@
-"""Deployment-contract guard for the T59 frame blob store.
+"""Deployment-contract guard for the frame blob store.
 
-D8 says a frame stack is **never regenerated in place**: once a chart's blob is
+A frame stack is **never regenerated in place**: once a chart's blob is
 gone, the slider is disabled and the axis is all that survives. So a store with
 no named volume does not degrade slowly — every container recreate silently
 strips the scrubber off every chart ever plotted, while the frame axis persists
@@ -78,7 +78,7 @@ def test_the_frame_store_is_backed_by_a_persisted_named_volume():
         f"backend service (named-volume targets: {[m[1] for m in mounts]}). A container "
         "recreate would wipe every stored frame stack while the frame axis persists in "
         "Postgres, so every chart would keep advertising a scrubber whose blob 404s — and "
-        "D8 forbids rebuilding it."
+        "frames are never rebuilt."
     )
     assert all(m[2] != "ro" for m in covering), (
         f"frame store {frame_dir!r} is mounted read-only; every write would fail into "
@@ -149,9 +149,8 @@ def test_the_frame_store_is_not_reachable_without_authentication():
     field world-readable — an access-control regression neither path's own
     tests would notice, because both would keep working.
 
-    T59 Phase 13 turned that into a *set* of routes rather than one, which is
-    the argument for guarding this at the volume rather than only at each
-    route: the number of ways to reach these bytes grows with the number of
+    There's a *set* of routes (one per statistic), which is the argument for
+    guarding this at the volume rather than only at each route: the number of ways to reach these bytes grows with the number of
     statistics, and a store nginx cannot see is one fact that holds however
     many of them there turn out to be.
     """

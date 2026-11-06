@@ -1,12 +1,11 @@
-"""T59 Phase 3: the bucketed reduction that produces a frame stack.
+"""The bucketed reduction that produces a frame stack.
 
-Scope: the reduction and its disclosure only. Nothing here touches the blob
-store (Phase 4), ``plot_singular`` (Phase 5) or the frontend (Phase 6).
+Scope: the reduction and its disclosure only, not the blob store,
+``plot_singular`` or the frontend.
 
-The spine of this phase is D5a: **every scientific quantity is computed at
-NATIVE resolution, before the block mean.** The float32 frame array exists to
-be rendered and stored, and nothing is ever derived from it. Phase 2 measured
-what happens if you forget -- at k=8 a frame has already lost 16% of its own
+The core rule: **every scientific quantity is computed at NATIVE resolution,
+before the block mean.** The float32 frame array exists to be rendered and
+stored, and nothing is ever derived from it. If you forget -- at k=8 a frame has already lost 16% of its own
 p98 and 70% of its max, and a block is finite if ANY cell in it is finite, so a
 sparse hour block-means to 99.6% apparent coverage where the truth is 94.7%.
 """
@@ -161,7 +160,7 @@ class CadenceIsAPreconditionTests(unittest.TestCase):
 
 @unittest.skipIf(importlib.util.find_spec("xarray") is None, "xarray is not installed")
 class BlockMeanToTheCellCeilingTests(unittest.TestCase):
-    """D5: frames downsample by BLOCK MEAN to a cell ceiling, and the payload
+    """Frames downsample by BLOCK MEAN to a cell ceiling, and the payload
     records the realized count rather than the ceiling.
 
     ``k = ceil(sqrt(total / target))`` is an integer, so a real grid lands at
@@ -191,12 +190,10 @@ class BlockMeanToTheCellCeilingTests(unittest.TestCase):
         )
 
     def test_each_frame_cell_is_the_mean_of_its_block(self):
-        """A block mean, not a stride. Phase 2 measured that the stride is
-        actually the better peak-preserver (50.6% vs 29.8% of a single-cell
-        max retained); the block mean is chosen anyway because it degrades
-        deterministically and preserves the field's mass, and D5a's rule --
-        every scientific quantity comes from the native field -- is what pays
-        for that choice."""
+        """A block mean, not a stride. A stride preserves peaks better, but
+        the block mean degrades deterministically and preserves the field's
+        mass; computing every quantity from the native field covers the
+        peaks."""
         np = self.np
         stack = self._stack()
 
@@ -243,7 +240,7 @@ class BlockMeanToTheCellCeilingTests(unittest.TestCase):
         self.assertAlmostEqual(float(stack.lats[0]), 31.0, places=5)
 
     def test_an_all_nan_block_stays_absent_rather_than_becoming_zero(self):
-        """Verified against xarray in Phase 2, and asserted here because it is
+        """Asserted because it is
         the difference between "nothing was retrieved in this block" and "this
         block measured zero pollution"."""
         np = self.np
@@ -271,10 +268,10 @@ class BlockMeanToTheCellCeilingTests(unittest.TestCase):
 
 @unittest.skipIf(importlib.util.find_spec("xarray") is None, "xarray is not installed")
 class NativeResolutionStatisticsTests(unittest.TestCase):
-    """D5a, the phase's spine: a frame's statistics are reduced from the
+    """A frame's statistics are reduced from the
     NATIVE bucket field, never from the array the user downloads.
 
-    Phase 2 measured the cost of getting this wrong: at k=8 a block-meaned
+    At k=8 a block-meaned
     frame retains 29.8% of its own single-cell max and 84.2% of its p98. A
     scrubber exists to find the hour a plume peaked, so a per-frame max read
     off the rendering grid would understate exactly the thing being looked for
@@ -355,13 +352,12 @@ class NativeResolutionStatisticsTests(unittest.TestCase):
 
 @unittest.skipIf(importlib.util.find_spec("xarray") is None, "xarray is not installed")
 class ValidFractionTests(unittest.TestCase):
-    """D10: ``valid_fraction`` is a correctness requirement, not decoration.
+    """``valid_fraction`` is a correctness requirement, not decoration.
 
     A 90%-masked bucket renders as a clean low uniform field, and to someone
     scrubbing for an event that is indistinguishable from a calm hour. The
-    number is what makes them different, so it has to be right in the two ways
-    Phase 2 and T56 each found it can be wrong: derived from the frame grid, or
-    denominated on the bounding box.
+    number is what makes them different, so it must avoid the two ways it can
+    be wrong: derived from the frame grid, or denominated on the bounding box.
     """
 
     def setUp(self):
@@ -383,8 +379,7 @@ class ValidFractionTests(unittest.TestCase):
         )
 
     def test_coverage_is_measured_natively_not_off_the_frame_grid(self):
-        """The hazard the PRD did not anticipate and Phase 2 measured: a block
-        is finite if ANY cell in it is finite, so block-meaning a sparse hour
+        """A block is finite if ANY cell in it is finite, so block-meaning a sparse hour
         reports 99.6% coverage where the truth is 94.7%, and it gets worse as
         the budget shrinks. Here the two answers are 33% and 100% -- the frame
         grid would tell a scrubbing user that the emptiest hour of the week was
@@ -423,8 +418,7 @@ class ValidFractionTests(unittest.TestCase):
         self.assertAlmostEqual(stack.frames[0].valid_fraction, 2.0 / 3.0, places=9)
 
     def test_the_denominator_is_the_region_not_the_bounding_box(self):
-        """T56 got this denominator wrong once, and it is worth restating why
-        it matters: a region shaped like anything but a rectangle has a bounding
+        """Why the denominator matters: a region shaped like anything but a rectangle has a bounding
         box full of cells the geometry masked out. Counting those as missing
         observations reports a complete retrieval over the continental US as
         60% covered, and the reader sees a data problem that does not exist.
@@ -578,17 +572,17 @@ class QaRollUpByAreaSumsTests(unittest.TestCase):
 
 @unittest.skipIf(importlib.util.find_spec("xarray") is None, "xarray is not installed")
 class CadenceTierIsExactTests(unittest.TestCase):
-    """D14, tier one: where the native cadence fits the frame budget, the frames
+    """Tier one: where the native cadence fits the frame budget, the frames
     ARE the cadence buckets and the period map is derived from them.
 
-    D4's guarantee, made structural rather than hoped for -- the map is the
+    The guarantee, made structural rather than hoped for: the map is the
     average of what the user scrubs.
 
     **This grid does not coarsen**, and that is a scope limit rather than an
     incidental fixture choice. Everything below holds where the block mean is
     the identity function; above the cell ceiling it does not, because the
     block mean and the across-frame mean do not commute under partial coverage
-    (Phase 8 §1, measured at 1.876% on a real regional TEMPO chart). The
+    (~1.9% on a real regional TEMPO chart). The
     property IS real in this regime and these tests pin it -- but the regime
     real charts are in is ``ShippedArrayAgreementTests``', and that is where
     the claim a reader is shown gets checked.
@@ -600,7 +594,7 @@ class CadenceTierIsExactTests(unittest.TestCase):
 
         self.np, self.xr = np, xr
         nan = np.nan
-        # The partial-coverage mechanism the D4 characterization pinned down:
+        # The partial-coverage mechanism:
         # day one holds four granules and only the first reaches the left-hand
         # pixel. A period map that is NOT derived from the buckets gives that
         # surviving granule a quarter vote and answers 2.0 where the bucket
@@ -684,10 +678,10 @@ class CadenceTierIsExactTests(unittest.TestCase):
 
 @unittest.skipIf(importlib.util.find_spec("xarray") is None, "xarray is not installed")
 class CoarsenedTierAndItsDeltaTests(unittest.TestCase):
-    """D14, tier two: above the frame budget the scrubber is a DIFFERENT
-    temporal aggregation, and D16's delta is what makes that honest.
+    """Tier two: above the frame budget the scrubber is a DIFFERENT
+    temporal aggregation, and the delta is what makes that honest.
 
-    D3 and D4 are in tension here. The map's weighting is at the product
+    The map's weighting is at the product
     cadence, so grouping cadence buckets to fit 60 stops means the mean of the
     coarse means is not the period mean. Refusing frames above 60 would cap a
     TEMPO scrubber at ~5 days; coarsening silently would be the exact failure
@@ -743,7 +737,7 @@ class CoarsenedTierAndItsDeltaTests(unittest.TestCase):
         )
 
     def test_a_frame_is_the_mean_of_its_cadence_buckets_not_of_its_granules(self):
-        """The coarse frame keeps D4's rule one level up: each cadence bucket
+        """The coarse frame keeps equal bucket weighting one level up: each cadence bucket
         inside it counts once. Otherwise the tier that exists to fit long spans
         would reintroduce granule weighting exactly where sampling is most
         uneven."""
@@ -755,7 +749,7 @@ class CoarsenedTierAndItsDeltaTests(unittest.TestCase):
         self.assertEqual([f.n_granules for f in stack.frames], [3, 2])
 
     def test_the_delta_is_a_ratio_of_weighted_sums_not_a_mean_of_ratios(self):
-        """D16, and its own diagnostic vindicated it: a real bundle reported a
+        """A ratio of sums, not of per-pixel ratios: a real bundle reported a
         max per-pixel relative difference of 1017% at a pixel where the period
         map sits near zero. A headline built from per-pixel ratios would have
         been that pixel and nothing else.
@@ -841,7 +835,7 @@ class CoarsenedTierAndItsDeltaTests(unittest.TestCase):
         self.assertAlmostEqual(stack.frames[1].qa_pass_rate, 0.5, places=9)
 
     def test_the_delta_is_measured_natively_not_off_the_frame_grid(self):
-        """D5a binds here too. Measuring F against M on the 20,000-cell frame
+        """Measured natively. Measuring F against M on the 20,000-cell frame
         grid would compare two block means and report a smaller disagreement
         than the one the frames were built from."""
         field = self._daily([[
@@ -879,17 +873,13 @@ class ShippedArrayAgreementTests(unittest.TestCase):
     arrays in the payload satisfy the identity the payload claims for them --
     and the only honest place to ask that is on the arrays themselves.
 
-    Phase 8 measured the gap this exists to close: on a real regional TEMPO
-    retrieval (352,181 native cells, k=(5,5)) averaging the shipped planes
-    misses the shipped period plane by **1.876%**, worst pixel 2.72e15 against
-    a map ramp of 5.7e14-3.3e15, where the same bundle at native resolution
-    reproduces Phase 3's 0.000002%. The block mean and the across-frame mean do
+    On a real regional TEMPO retrieval (k=(5,5)) averaging the shipped planes
+    misses the shipped period plane by ~1.9%, while at native resolution the
+    two agree to float32 noise. The block mean and the across-frame mean do
     not commute under partial coverage: ``period_values`` is
     ``block_mean(mean over buckets)`` and the frames are
     ``mean over buckets of block_mean(...)``, so inside a block whose native
     cells were seen in different intervals the two weight different things.
-    Phase 1b's mechanism one level down, reintroduced by the rendering
-    downsample.
     """
 
     def setUp(self):
@@ -929,7 +919,7 @@ class ShippedArrayAgreementTests(unittest.TestCase):
         )
 
     def test_the_shipped_arrays_disagree_where_a_block_was_seen_unevenly(self):
-        """The tracer bullet, and the smallest reproduction of Phase 8 §1.
+        """The smallest reproduction of the shipped-array disagreement.
 
         One 2x2 block. Both cells of the top row are seen on day one; only the
         left one is seen again on day two. Averaging the two shipped frames
@@ -973,9 +963,8 @@ class ShippedArrayAgreementTests(unittest.TestCase):
         self.assertEqual(stack.frame_grid_delta["max_abs"], 0.0)
 
     def test_tier_two_publishes_two_numbers_and_neither_is_the_other(self):
-        """Phase 8 §2's gap: the coarsened tier discloses a delta measured at
-        native resolution while the arrays on screen disagree by a different
-        amount, and the smaller one was the one printed.
+        """In the coarsened tier the native delta and the on-screen arrays'
+        disagreement differ, so both are published.
 
         Four days, two buckets per frame, one 2x2 block. Worked by hand: cell A
         is seen on days 1-3 and cell B on days 1, 3 and 4, so the frames come
@@ -1029,13 +1018,11 @@ class ShippedArrayAgreementTests(unittest.TestCase):
 
 @unittest.skipIf(importlib.util.find_spec("xarray") is None, "xarray is not installed")
 class PlaneAgreementIdentityTests(unittest.TestCase):
-    """D6a decision 8: the selection planes' two associativity identities hold
-    EXACTLY, and the test says so with ``assertEqual`` rather than a tolerance.
+    """The selection planes' two associativity identities hold EXACTLY, so
+    the test uses ``assertEqual`` rather than a tolerance.
 
-    Phase 11's G5 measured both on real float64 planes from two live bundles
-    and got ``0.0`` max abs difference on every one, including at partially
-    covered and all-NaN cells. There was no floating-point reason to expect
-    otherwise: ``max`` and ``min`` SELECT a value rather than accumulating one,
+    On real bundles both measure ``0.0`` max abs difference, including at
+    partially covered and all-NaN cells, as expected: ``max`` and ``min`` SELECT a value rather than accumulating one,
     so there is no summation order for rounding to depend on, and the float32
     narrowing rounds the same number the mean plane's cells were rounded from.
     A tolerance here would be hiding a bug rather than accommodating noise that
@@ -1078,7 +1065,7 @@ class PlaneAgreementIdentityTests(unittest.TestCase):
         )
 
     def _unevenly_seen_block(self):
-        """Phase 9's own fixture: both top-row cells seen on day one, only the
+        """Both top-row cells seen on day one, only the
         left one seen again on day two. One 2x2 block, seen unevenly."""
         nan = self.np.nan
         return self._days(
@@ -1110,7 +1097,7 @@ class PlaneAgreementIdentityTests(unittest.TestCase):
 
     def test_the_period_plane_is_the_period_extreme_not_the_period_mean(self):
         """What the identity above is an identity BETWEEN. Stop 0 in max mode
-        is the period max (D6a decision 3) -- 20 here, the largest value any
+        is the period max -- 20 here, the largest value any
         native cell in the block ever held -- and emphatically not the Map
         tab's 12.5, which is what a stack that reused the mean's period plane
         would render at the same stop."""
@@ -1200,16 +1187,14 @@ class PlaneAgreementIdentityTests(unittest.TestCase):
 
 @unittest.skipIf(importlib.util.find_spec("xarray") is None, "xarray is not installed")
 class BlockMaxAndMinPlaneTests(unittest.TestCase):
-    """D6a decision 4: a max plane's SPATIAL reducer is the block max, not the
+    """A max plane's SPATIAL reducer is the block max, not the
     block mean.
 
     The distinction is invisible on a smooth field and is the whole product on
     a sharp one, so every fixture here is a single hot cell against a cold or
-    empty block -- Phase 11's own trap, restated. It is also all at k=(2,2) or
-    larger, never k=(1,1), where every block reduction is the identity function
-    and a passing test proves only that ``coarsen`` was not called (Phase 9's
-    lesson: both of its original identity tests pinned ``coarsen_k == [1, 1]``,
-    which is the regime no real regional retrieval is in).
+    empty block. It is also all at k=(2,2) or larger, never k=(1,1), where
+    every block reduction is the identity function and a passing test proves
+    only that ``coarsen`` was not called.
     """
 
     def setUp(self):
@@ -1263,7 +1248,7 @@ class BlockMaxAndMinPlaneTests(unittest.TestCase):
         One native cell held 100 in a block whose other three held 1. The mean
         plane renders 25.75 -- a value no cell ever had, and a quarter of the
         peak. The max plane renders 100.0 exactly, which is the entire reason
-        D6a asks for a second plane rather than a second colour ramp.
+        there's a second plane rather than a second colour ramp.
         """
         stack = self._stack(self._field(self._sharp_day(), [[5.0] * 4] * 4))
 
@@ -1272,10 +1257,9 @@ class BlockMaxAndMinPlaneTests(unittest.TestCase):
         self.assertAlmostEqual(float(stack.values[0][0, 0]), 25.75, places=4)
 
     def test_the_min_plane_renders_the_trough_the_mean_plane_averages_away(self):
-        """Min is not an afterthought (D6a decision 2): the same block whose
-        peak is 100 has a floor of 1, and the mean plane's 25.75 is 25 times
-        it. A layout that generalizes to three statistics has to be exercised
-        by three statistics, or decision 2 is a claim nothing checks."""
+        """Min is not an afterthought: the same block whose peak is 100 has a
+        floor of 1, and the mean plane's 25.75 is 25 times it. A layout that
+        generalizes to three statistics has to be exercised by three."""
         stack = self._stack(self._field(self._sharp_day(), [[5.0] * 4] * 4))
 
         self.assertEqual(float(stack.planes["min"].values[0][0, 0]), 1.0)
@@ -1320,7 +1304,7 @@ class BlockMaxAndMinPlaneTests(unittest.TestCase):
 
     def test_the_pad_is_skipped_rather_than_reduced_with_the_block(self):
         """``boundary="pad"`` on a grid k does not divide. The synthetic control
-        Phase 11 ran (``[1,2,3,4,5]`` at k=3 -> ``[3.0, 5.0]`` for max and
+        (``[1,2,3,4,5]`` at k=3 -> ``[3.0, 5.0]`` for max and
         ``[1.0, 4.0]`` for min) reproduced through the public interface: a 5-row
         grid at k=(3,3) keeps its short trailing block instead of trimming the
         region edge away, and the NaN pad neither wins the max nor loses the
@@ -1350,12 +1334,10 @@ class BlockMaxAndMinPlaneTests(unittest.TestCase):
 
 @unittest.skipIf(importlib.util.find_spec("xarray") is None, "xarray is not installed")
 class PlanesAreOptionalTests(unittest.TestCase):
-    """D6a decision 5, read at the Python level: "the mean entry keeps its
-    exact current shape, URL and cost."
+    """Asking only for the mean gives exactly the same stack as before planes
+    existed.
 
-    Everything in this repository until Phase 13 asks for the mean and nothing
-    else, so the shape of the win is that those callers cannot tell this phase
-    happened. Not "stayed compatible" -- unchanged, field for field and byte
+    Not "stayed compatible" -- unchanged, field for field and byte
     for byte, including the numbers that would be the easiest to perturb by
     accident (a delta reduced over a dataset that now carries more variables,
     a pooled scale pooled over more histograms).
@@ -1430,7 +1412,7 @@ class PlanesAreOptionalTests(unittest.TestCase):
         )
 
     def test_each_plane_gets_its_own_pooled_scale(self):
-        """D9, per plane. One colour has to mean one value at every stop of a
+        """Pooled scale, per plane. One colour has to mean one value at every stop of a
         scrub, and a max plane scrubbed against the MEAN's clip would saturate
         at every stop that has a peak in it -- which is every stop anyone
         switched to the max plane to look at. Pooled at native resolution
@@ -1458,9 +1440,9 @@ class PlanesAreOptionalTests(unittest.TestCase):
         self.assertIn("median", str(raised.exception))
 
     def test_the_plane_statistics_are_not_the_per_frame_scalars(self):
-        """The name collision this phase had to walk around. ``_FRAME_STATS``
-        is the per-frame REGIONAL SCALAR -- one number for the whole region,
-        which every frame has carried since Phase 3 -- and ``PLANE_STATISTICS``
+        """A name collision to keep apart. ``_FRAME_STATS`` is the per-frame
+        REGIONAL SCALAR -- one number for the whole region -- and
+        ``PLANE_STATISTICS``
         is a field, one value per pixel. They are still, deliberately, two
         objects: a chart can carry a max plane while every frame's scalar max
         is exactly what it always was, and this asserts both live at once
@@ -1480,7 +1462,7 @@ class PlanesAreOptionalTests(unittest.TestCase):
 
         self.assertIsNot(module.PLANE_STATISTICS, module._FRAME_STATS)
         # The regional scalar max of frame 0: one number, off the native MEAN
-        # field, exactly as every frame has carried since Phase 3.
+        # field.
         self.assertEqual(stack.frames[0].statistics["max"], 50.5)
         # The max PLANE's frame 0: a grid, and its own top-left block.
         self.assertEqual(stack.planes["max"].values[0].shape, (2, 2))
@@ -1489,27 +1471,19 @@ class PlanesAreOptionalTests(unittest.TestCase):
 
 @unittest.skipIf(importlib.util.find_spec("xarray") is None, "xarray is not installed")
 class ExtentOverstatementTests(unittest.TestCase):
-    """D6a decision 9, and the max tier's one real cost.
+    """The extent overstatement, the max tier's one real cost.
 
     Block max paints a block's peak across every cell the block covers, so a
-    peak one native cell held is rendered at k^2 cells' worth of area. Phase 11
-    measured it at **24.7x** pooled on both live bundles at k=(5,5) -- 99% of
-    the k^2=25 ceiling, with the per-frame spread under half a percentage
-    point. Not a tail risk on a few hot frames: what block max costs on
-    essentially every finite block.
+    peak one native cell held is rendered at k^2 cells' worth of area (~24.7x
+    at k=(5,5) on real bundles, on essentially every block).
 
-    D16's rules apply to it whole: a ratio of weighted SUMS, never a mean of
-    per-block ratios, never signed. It gates nothing -- disclosure is the
-    posture the mean tier already took with its own deltas, and D5a's rule
-    ("nothing is derived from the reduced array without the reader being told")
-    is what makes it mandatory rather than optional.
+    A ratio of weighted SUMS, never a mean of per-block ratios, never signed.
+    It gates nothing; it's disclosed.
 
     Max only. The mean plane's equivalent question is a different one entirely
     -- a block mean does not paint any cell's value anywhere -- and a minimum
     has no analogous overstatement story, since nobody reads a trough as an
-    extent. Measuring it for them would be inventing a number to be symmetric
-    with, which is exactly what D6a decision 8 refuses for the agreement
-    figure in the other direction.
+    extent. Measuring it for them would be inventing a number for symmetry.
     """
 
     def setUp(self):
@@ -1586,8 +1560,7 @@ class ExtentOverstatementTests(unittest.TestCase):
         the rendered value, so the overstatement is **1.5x**. The metric counts
         the area at the block's own max, not "one cell" -- which matters
         because at native TEMPO resolution with continuous float64 values a tie
-        is rare, and that rarity is precisely WHY Phase 11 measured ~99% of the
-        k^2 ceiling rather than something comfortably below it."""
+        is rare, which is why real figures land at ~99% of k^2."""
         stack = self._stack(self._days(
             [[9.0, 9.0], [1.0, 1.0]],
             [[9.0, 9.0], [1.0, 1.0]],
@@ -1616,7 +1589,7 @@ class ExtentOverstatementTests(unittest.TestCase):
         )
 
     def test_the_pooled_figure_is_a_ratio_of_sums_not_a_mean_of_ratios(self):
-        """D16's rule, and the fixture is built so the two answers differ.
+        """Pooled, not averaged, and the fixture is built so the two answers differ.
 
         Day one's peak is the equatorial cell (3.0x); day two's is the poleward
         one (6.0x). Pooled over both frames the answer is
@@ -1686,7 +1659,7 @@ class ExtentOverstatementTests(unittest.TestCase):
 
 @unittest.skipIf(importlib.util.find_spec("xarray") is None, "xarray is not installed")
 class PooledColourScaleTests(unittest.TestCase):
-    """D9: one 2-98 clip pooled across every frame including frame 0, for the
+    """One 2-98 clip pooled across every frame including frame 0, for the
     scrubber only.
 
     Per-frame clipping would make a colour mean a different value at every
@@ -1738,7 +1711,7 @@ class PooledColourScaleTests(unittest.TestCase):
         self.assertAlmostEqual(float(np.percentile(loud, 98)), 5000.0, places=3)
 
     def test_the_scale_is_pooled_at_native_resolution(self):
-        """D5a again. 5% of cells carry the peak, so natively the 98th
+        """Pooled natively. 5% of cells carry the peak, so natively the 98th
         percentile IS the peak; block-meaned each of those cells is averaged
         against its eight neighbours and the same percentile reads 12. A
         scrubber scaled that way saturates every plume it was built to show."""
@@ -1886,8 +1859,7 @@ class OneGraphWalkTests(unittest.TestCase):
 
     Separate ``compute`` calls share no graph, so each is a fresh I/O pass over
     a lazily-opened bundle. A pass appearing here means someone added a compute
-    that could have ridden the existing walk -- the regression T55 spent its
-    counter fusion removing.
+    that could have ridden the existing walk.
     """
 
     def _lazy_days(self, granules, loads):
@@ -1947,7 +1919,7 @@ class OneGraphWalkTests(unittest.TestCase):
         )
 
     def test_the_shipped_array_delta_costs_no_extra_pass(self):
-        """Phase 9's quantity is free, and this is what "free" has to mean.
+        """``frame_grid_delta`` is free, and this is what "free" has to mean.
 
         Both arrays it compares are materialized side by side by the walk that
         was happening anyway, so it is arithmetic on bytes already in hand --
@@ -1977,13 +1949,10 @@ class OneGraphWalkTests(unittest.TestCase):
         )
 
     def test_a_second_and_third_plane_cost_no_extra_pass(self):
-        """Phase 11's G1, ported from the probe into a permanent test.
+        """Three statistics ride one graph walk, and must keep doing so.
 
-        The gate already answered this on real data (an exact 6-read parity on
-        synthetic loads, 1.5-1.9x wall-clock on two live bundles, never 3x);
-        what a test adds is that it STAYS answered. The whole plane design
-        rests on it: D6a decision 6 keeps the build eager precisely because
-        three statistics ride one graph walk, and the tempting refactor --
+        Measured at 1.5-1.9x wall-clock on real bundles, never 3x. The tempting
+        refactor --
         computing each plane in its own ``.compute()``, which reads far more
         naturally -- would be a fresh I/O pass per statistic over a lazily
         opened bundle, and nothing else here would notice.
@@ -2035,9 +2004,7 @@ class OneGraphWalkTests(unittest.TestCase):
     def test_the_masking_counters_are_enough_on_their_own(self):
         """The real plot path hands over ``MaskedField.counts`` and nothing
         else. If the range had to be passed separately, forgetting it would
-        double the I/O of every scrubbed plot and nothing would say so --
-        exactly the kind of silent regression T55's counter fusion existed to
-        remove."""
+        double the I/O of every scrubbed plot and nothing would say so."""
         import numpy as np
 
         from tta_backend.preprocessing.frame_stack import build_frame_stack
@@ -2086,8 +2053,7 @@ class RegionAreaIsRecordedAtTheMaskTests(unittest.TestCase):
     rasterized mask exists nowhere else and a caller re-rasterizing on cropped
     axes gets a float32 step that differs in the 8th digit and flips boundary
     cells. But a cell COUNT cannot denominate an area-weighted numerator: the
-    two would describe different fields, which is the mismatch Finding #13
-    already caught once. So the seam records the region's cos(latitude)-weighted
+    two would describe different fields. So the seam records the region's cos(latitude)-weighted
     area alongside its cell count.
     """
 

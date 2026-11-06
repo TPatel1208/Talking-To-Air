@@ -1,6 +1,6 @@
-"""T59 Phase 4 — the frame blob store.
+"""The frame blob store.
 
-The design under test is D13's split: the frame *axis* and every per-frame
+The design under test is the split: the frame *axis* and every per-frame
 disclosure live in the chart's jsonb row, and only the float32 values live in
 a bounded LRU blob store. That split is not an implementation detail. It is
 what makes the slider labeled and functional before the blob lands, what makes
@@ -101,11 +101,9 @@ def make_frame_stack(n_frames: int = 24, ny: int = 60, nx: int = 80):
         buckets_per_frame=1,
         tier=CADENCE_TIER,
         delta=None,
-        # Phase 8's own measurement on `map_2ea3dd7b34cf`, a real regional
-        # TEMPO chart at k=(5,5): the cadence tier discloses no `delta` because
-        # the temporal relationship there IS identity, and still disagrees by
-        # 1.876% on the arrays it ships. That is the pair this block has to
-        # carry without collapsing into one.
+        # As on a real regional TEMPO chart at k=(5,5): the cadence tier has no
+        # `delta` (the temporal relationship IS identity) yet still disagrees
+        # by ~1.9% on the arrays it ships. The block must carry both.
         frame_grid_delta={
             "headline": 0.018760,
             "max_abs": 2.72e15,
@@ -138,16 +136,15 @@ def with_planes(stack, statistics=("max", "min")):
         planes[name] = StatisticPlane(
             values=(stack.values + offset).astype("float32"),
             period_values=(stack.period_values + offset).astype("float32"),
-            # D6a decision 8's exact zero: a selection plane's frames and its
-            # period plane agree bit for bit, and Phase 12 measured exactly
-            # that on two live bundles.
+            # Exactly zero: a selection plane's frames and its period plane
+            # agree bit for bit.
             frame_grid_delta={
                 "headline": 0.0, "max_abs": 0.0,
                 "basis": PLANE_AGREEMENT_BASIS[name],
             },
             # This plane's own pooled 2-98, never the mean's.
             value_range=(-3.14e14 + offset, 6.21e15 + offset),
-            # D6a decision 9, on the max plane alone. Phase 12's live figure.
+            # The extent overstatement, on the max plane alone (a real figure).
             extent_overstatement=None if name != "max" else {
                 "headline": 24.6985, "worst_frame": 24.8599, "ceiling": 25,
                 "basis": EXTENT_OVERSTATEMENT_BASIS,
@@ -158,14 +155,10 @@ def with_planes(stack, statistics=("max", "min")):
 
 @requires_numpy
 class TheMeanEntryIsUntouchedTests(FrameStoreTestCase):
-    """D6a decision 5, read as a test rather than as an intention.
+    """The mean entry keeps its exact shape, URL and cost when planes exist.
 
-    *"The mean entry keeps its exact shape, URL and cost"* is what lets D15's
-    additive-and-optional rule hold **literally** — an unupgraded consumer is
-    not merely compatible with a three-plane chart, it is reading the identical
-    bytes at the identical URL for the identical price. That is a claim about
-    the mean entry, so it is checkable on the mean entry, and it is the
-    regression this phase is most likely to cause and least likely to notice.
+    So an unupgraded consumer reads the identical bytes at the identical URL
+    for the identical price -- the easiest regression to cause and miss.
     """
 
     def test_attaching_planes_moves_nothing_about_the_mean_entry(self):
@@ -185,7 +178,7 @@ class TheMeanEntryIsUntouchedTests(FrameStoreTestCase):
 
         # And the block: every key the mean chart already had, equal, with the
         # new one the only difference. `_key` is exempt because it is minted
-        # per write and was never derived from the content (Phase 4 note 2).
+        # per write and was never derived from the content.
         self.assertEqual(set(planed) - set(plain), {"planes"})
         for key in plain:
             if key == "_key":
@@ -202,16 +195,16 @@ class TheMeanEntryIsUntouchedTests(FrameStoreTestCase):
 
 @requires_numpy
 class ChartRowCarriesTheAxisTests(FrameStoreTestCase):
-    """D13, first half: what goes in Postgres."""
+    """What goes in Postgres."""
 
     def test_the_chart_row_carries_the_whole_axis_and_none_of_the_values(self):
         """Every label and disclosure the scrubber shows is in the jsonb row.
 
         The slider has to be fully labeled and functional *before* the blob
         arrives — the frontend draws the axis from this block alone, and a stop
-        it cannot label is a stop it cannot honestly render (D10: an empty
-        bucket is a first-class state, and a 90%-masked one must not read as a
-        calm one). So the whole per-frame disclosure set travels here, in
+        it cannot label is a stop it cannot honestly render (an empty bucket
+        is a first-class state, and a 90%-masked one must not read as a calm
+        one). So the whole per-frame disclosure set travels here, in
         Postgres, where nothing evicts it.
 
         And *only* that: the float32 field is the one thing that must not be in
@@ -261,12 +254,9 @@ class ChartRowCarriesTheAxisTests(FrameStoreTestCase):
             block["frame_grid_delta"]["basis"], stack.frame_grid_delta["basis"],
         )
 
-        # The scale explains itself wherever the payload goes, the same reason
-        # QA_PASS_RATE_BASIS exists and the same way Phase 3's delta already
-        # carries its own basis line. A 2-98 pooled across every frame *and*
-        # the period mean, at native resolution before the block mean, is not
-        # something a reader can infer from two numbers — and D9's whole point
-        # is that this scale is not the Map tab's.
+        # The scale explains itself wherever the payload goes (like
+        # QA_PASS_RATE_BASIS): how it was pooled can't be inferred from two
+        # numbers, and it is not the Map tab's scale.
         from tta_backend.preprocessing.frame_stack import POOLED_SCALE_BASIS
 
         self.assertEqual(block["scale_basis"], POOLED_SCALE_BASIS)
@@ -289,7 +279,7 @@ class ChartRowCarriesTheAxisTests(FrameStoreTestCase):
 
 @requires_numpy
 class BlobRoundTripTests(FrameStoreTestCase):
-    """D13, second half: what goes in the store."""
+    """What goes in the store."""
 
     def test_the_values_round_trip_exactly_and_nan_needs_no_sentinel(self):
         """The blob is the float32 array, bit for bit, NaN included.
@@ -301,10 +291,10 @@ class BlobRoundTripTests(FrameStoreTestCase):
         absent through storage and transport with nothing to agree about and
         nothing to collide with a real measurement.
 
-        The period mean rides the same blob as plane 0 — D5's "frame 0" — so a
+        The period mean rides the same blob as plane 0 ("frame 0"), so a
         reader parked at the start of the scrub is looking at the Map tab's own
-        field, on the frame grid, and in the cadence tier can check D4's
-        identity by averaging the planes after it.
+        field, on the frame grid, and in the cadence tier can check it equals
+        the average of the planes after it.
         """
         import gzip
 
@@ -343,8 +333,8 @@ class BlobRoundTripTests(FrameStoreTestCase):
     def test_the_axis_survives_when_the_values_cannot_be_stored(self):
         """A failed write costs the slider, never the chart.
 
-        The store is a rendering convenience D8 already refuses to regenerate,
-        so nothing about it may cost a caller their chart — the same posture
+        The store is a rendering convenience that's never regenerated, so
+        nothing about it may cost a caller their chart — the same posture
         ``_render_and_store_overlay`` takes toward a failed PNG render. The
         block comes back whole and simply carries no key, which is exactly the
         state an evicted chart reaches later: an axis with no values behind it,
@@ -369,9 +359,9 @@ class BlobRoundTripTests(FrameStoreTestCase):
 
 @requires_numpy
 class PlaneBlobRoundTripTests(FrameStoreTestCase):
-    """D6a decision 5, second half: *one store entry per statistic*.
+    """*One store entry per statistic*, not per chart.
 
-    Per statistic, not per chart — that is the whole of the decision. Each
+    Each
     plane is independently addressable so it can be fetched lazily (nobody pays
     for a max they never toggle to), and independently evictable so losing one
     degrades that statistic through the existing ``expired``/self-heal path
@@ -443,8 +433,7 @@ class PlaneBlobRoundTripTests(FrameStoreTestCase):
 
         self.assertEqual(sorted(block["planes"]), ["max", "min"])
         # The mean is not a plane. It stays in the top-level fields where it
-        # has always been, which is what makes decision 5's "keeps its exact
-        # shape, URL and cost" true at the Python level and not only on a wire.
+        # has always been, so its shape, URL and cost are unchanged.
         self.assertNotIn("mean", block["planes"])
 
         maximum = block["planes"]["max"]
@@ -455,13 +444,13 @@ class PlaneBlobRoundTripTests(FrameStoreTestCase):
         # Its own clip, not the mean's — the two are disjoint in this fixture.
         self.assertEqual(maximum["value_range"], [-3.14e14 + 5.0e15, 6.21e15 + 5.0e15])
         self.assertNotEqual(maximum["value_range"], block["value_range"])
-        # Its own agreement figure, under its own basis. D6a decision 8's
-        # exact zero, and a basis string that says which reduction produced it.
+        # Its own agreement figure, under its own basis: exactly zero, and a
+        # basis string that says which reduction produced it.
         self.assertEqual(maximum["frame_grid_delta"]["headline"], 0.0)
         self.assertNotEqual(
             maximum["frame_grid_delta"]["basis"], block["frame_grid_delta"]["basis"],
         )
-        # D6a decision 9, on the max plane alone. A minimum has no analogous
+        # The extent overstatement, on the max plane alone. A minimum has no analogous
         # overstatement story, and measuring one to be symmetric would be
         # inventing a number.
         self.assertAlmostEqual(maximum["extent_overstatement"]["headline"], 24.6985)
@@ -484,8 +473,8 @@ class PlaneBlobRoundTripTests(FrameStoreTestCase):
 class StatisticGuardTests(FrameStoreTestCase):
     """An entry is only served to a request for the statistic it holds.
 
-    This is T54's "content_digest ALONE is an unsafe cube key" lesson arriving
-    at a third axis, and it is the *only* guard that catches this failure.
+    Like the cube cache's handle+digest key, this is the *only* guard that
+    catches this failure.
     Every plane of one chart has the same shape, the same dtype, the same grid
     and the same pipeline version, so serving the max blob where the mean was
     asked for passes every other check the store makes and renders a believable
@@ -613,7 +602,7 @@ class EvictionTests(FrameStoreTestCase):
     No per-entry cap, deliberately — a difference from ``cube_store`` worth
     stating. ``cube_write_max_store_fraction`` exists to stop one entry big
     enough to evict the store to fit itself and then be evicted by the next
-    write. D7 caps frames at 60 and D5 caps cells at 20,000, so an entry is at
+    write. Frames are capped at 60 and cells at 20,000, so an entry is at
     most 4.58 MiB against 1 GiB and that thrash cannot occur. Adding a cap
     anyway would be cargo-culting.
     """
@@ -626,7 +615,7 @@ class EvictionTests(FrameStoreTestCase):
 
     def sparse_stack(self):
         """The full-domain regime: 66% absent, which is what makes a real
-        frame stack gzip at x3.25 (Phase 2 §2)."""
+        frame stack gzip at x3.25."""
         import numpy as np
 
         stack = self.make_stack(n_frames=8, ny=40, nx=40)
@@ -659,7 +648,7 @@ class EvictionTests(FrameStoreTestCase):
         lands on, which is how ``docker_data.vhdx`` reached 296 GB against
         ~12 GB live. ``settings.py`` already carries that lesson for
         ``cube_store``; this is a quarter of that cap, which is the right
-        proportion for something D8 refuses to regenerate.
+        proportion for something that's never regenerated.
 
         Asserted through eviction rather than by reading the setting back: a
         cap nothing enforces is a comment.
@@ -736,7 +725,7 @@ class EvictionTests(FrameStoreTestCase):
 class PlaneEvictionTests(FrameStoreTestCase):
     """One entry per statistic means one *eviction* per statistic.
 
-    That is the half of D6a decision 5 that costs something: three entries per
+    That costs something: three entries per
     chart reach the cap three times as fast, and the LRU will pull them apart.
     A partially-resident chart is therefore a normal state rather than a
     corrupt one, and it has to degrade the way an evicted mean already does —
@@ -746,8 +735,8 @@ class PlaneEvictionTests(FrameStoreTestCase):
     def test_an_evicted_plane_costs_that_statistic_and_nothing_else(self):
         """The chart keeps scrubbing in every statistic that is still there.
 
-        This is the state Phase 15's toggle will actually meet, and the reason
-        the block keeps naming a key the store no longer holds: the axis lives
+        This is the state the statistic toggle will actually meet, and the
+        reason the block keeps naming a key the store no longer holds: the axis lives
         in Postgres where nothing evicts it, so the frontend can still label
         the max as a statistic this chart *has* and report it unavailable —
         which is a different and more honest thing to draw than a chart that
@@ -857,8 +846,7 @@ class SelfHealTests(FrameStoreTestCase):
     entry and returns a MISS rather than serving something subtly wrong.
 
     A store that can refuse is strictly better than one that can be quietly
-    incorrect — and here a miss costs a slider, which D8 already says is
-    disposable, while a wrong answer is a field a researcher would read."""
+    incorrect — and here a miss costs a slider, which is disposable, while a wrong answer is a field a researcher would read."""
 
     def test_a_truncated_blob_is_dropped_and_read_as_a_miss(self):
         """Truncation is the failure a metadata-only check cannot see.
@@ -902,13 +890,13 @@ class SelfHealTests(FrameStoreTestCase):
 
 @requires_numpy
 class PipelineVersionGuardTests(FrameStoreTestCase):
-    """D8: frames are never served or rebuilt across a version change.
+    """Frames are never served or rebuilt across a version change.
 
-    This is the only thing standing between D4's guarantee and a quiet lapse.
+    This is the only thing standing between the frames and a quiet lapse.
     ``_open_netcdf`` does not merely read files, it *interprets* them, and each
     interpretation has been wrong and then fixed. A stack computed under the
     old one keeps rendering forever with nothing in the picture to reveal it —
-    and D8 forbids regenerating in place, so the honest outcome is a miss and
+    and stacks are never regenerated in place, so the honest outcome is a miss and
     a disabled slider, not a silently stale field."""
 
     def test_frames_written_under_another_pipeline_version_are_never_served(self):
@@ -960,7 +948,7 @@ class PipelineVersionGuardTests(FrameStoreTestCase):
         self.assertTrue(os.path.exists(os.path.join(self.store_root, current)))
 
     def test_a_plane_entry_is_never_served_across_a_version_change_either(self):
-        """D8 is about an *interpretation of the source files*, so it binds
+        """The version guard is about an *interpretation of the source files*, so it binds
         every plane reduced from them, not just the one that shipped first."""
         from tta_backend.services.frame_store import read_frames, store_frame_stack
 

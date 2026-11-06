@@ -1,21 +1,18 @@
-"""T59 D4 Phase 1b: the cadence-bucket temporal mean, characterized.
+"""The cadence-bucket temporal mean, characterized.
 
 What this locks down
 --------------------
-``AggregationService._cadence_weighted_mean`` gives each timestep the weight
-``1 / (granules in its cadence bucket)`` and then hands the whole thing to
-``.weighted(w).mean(skipna=True)``. Finding #11's stated intent is that **each
+The intent of ``AggregationService._cadence_weighted_mean`` is that **each
 cadence bucket counts once**, however many granules happened to land in it.
 
-Those two are the same number only while every bucket is either wholly finite
-or wholly NaN at a pixel. ``.weighted().mean(skipna=True)`` renormalizes PER
-PIXEL over the timesteps that survived masking, so at a pixel where a 4-granule
-bucket kept one granule, that bucket contributes ``1/4`` of a vote instead of
-one. The mean of the per-bucket means gives it a whole vote -- which is what
-Finding #11 says the answer is supposed to be.
+Weighting by ``1 / (granules in its cadence bucket)`` only achieves that
+while every bucket is wholly finite or wholly NaN at a pixel.
+``.weighted().mean(skipna=True)`` renormalizes PER PIXEL, so at a pixel where a
+4-granule bucket kept one granule, that bucket gets ``1/4`` of a vote instead
+of one. The mean of the per-bucket means gives it a whole vote.
 
 The real-data measurement this encodes (two materialized TEMPO NO2 bundles,
-``scripts/characterize_d4_bucket_mean.py``):
+``scripts/characterize_d4_bucket_mean.py``) with the granule-count weighting:
 
 * pixels with no partial cadence bucket: the two formulations agreed to
   floating-point noise (``max |F-M|`` of 2 and 16 against values near 1e15);
@@ -39,21 +36,16 @@ That is what the real bundles do; the swath tiling is the whole story.
 Scope: the reduction math only. Nothing here touches frame storage, the
 scrubber, or any payload shape.
 
-Status
-------
-The fix landed: ``_cadence_weighted_mean`` now weights each timestep by
-``1 / (granules in its bucket that have a value AT THIS PIXEL)``. No existing
-test in ``test_aggregation_service.py`` or ``test_vertical_profile.py``
-changed colour, because Finding #11's own guards all describe FULLY covered
-buckets, where the old and new denominators are the same number.
+Current behavior
+----------------
+``_cadence_weighted_mean`` weights each timestep by
+``1 / (granules in its bucket that have a value AT THIS PIXEL)``. On fully
+covered buckets that's the same denominator as the granule count.
 
-The pre-D4 arithmetic is preserved verbatim as
-``legacy_granule_count_weighted_mean``, and the tests below compare production
-against BOTH it and an independent bucket-mean reference. That is deliberate:
-comparing the fix only against the reference would assert that two correct
-things agree and would keep passing if the fix were reverted. Comparing
-against the legacy form keeps the defect itself measured -- the 3.56% is still
-a live number, not a historical note.
+The granule-count arithmetic is kept as ``legacy_granule_count_weighted_mean``,
+and the tests compare production against BOTH it and an independent
+bucket-mean reference: comparing only against the reference would keep
+passing if production regressed to the legacy form.
 """
 from __future__ import annotations
 
@@ -62,7 +54,7 @@ import unittest
 
 # The measured characteristic delta on the partial-coverage population of THIS
 # fixture, pinned so the test fails if the mechanism changes rather than merely
-# if some number moves. Same D16 metric the real-data script reports:
+# if some number moves. Same metric the real-data script reports:
 # sum(w|F-M|) / sum(w|M|) with w = cos(latitude), never a mean of per-pixel
 # ratios (a geophysical field goes near zero) and never signed (a field off by
 # +-10% would cancel to ~0).
@@ -104,7 +96,7 @@ def _grouper(da, time_dim, cadence):
 
 
 def mean_of_bucket_means(da, time_dim, cadence):
-    """The formulation Finding #11 describes: reduce within each cadence
+    """The intended formulation: reduce within each cadence
     bucket, then average the buckets. A bucket contributes weight 1 at every
     pixel where it holds ANY finite value -- that is the whole difference from
     the weighted form. Mirrors ``scripts/characterize_d4_bucket_mean.py`` so
@@ -116,14 +108,13 @@ def mean_of_bucket_means(da, time_dim, cadence):
 
 
 def legacy_granule_count_weighted_mean(da, time_dim, cadence):
-    """The pre-D4 reduction, preserved verbatim as a reference.
+    """The granule-count reduction, preserved verbatim as a reference.
 
     Weight ``1 / (granules in the bucket)`` -- counting granules the bucket
     HOLDS rather than granules that reach this pixel -- then the same
     ``.weighted().mean(skipna=True)``. Keeping it here is what lets the tests
-    below still measure the defect after the fix landed: without it they could
-    only assert that two correct things agree, and would go on passing if the
-    fix were reverted.
+    below still measure the defect: without it they could only assert that two
+    correct things agree, and would keep passing after a regression.
     """
     import numpy as np
     import pandas as pd
@@ -283,7 +274,7 @@ class CadenceBucketPopulationSplitTests(unittest.TestCase):
         self.field = _tiled_swath_field()
         self.cadence = "hourly"
         # Three fields over the same fixture: what production answers now, the
-        # independent bucket-mean reference it should equal, and the pre-D4
+        # independent bucket-mean reference it should equal, and the legacy
         # arithmetic it should differ from exactly where coverage is partial.
         self.production = self.svc._cadence_weighted_mean(self.field, "time", self.cadence)
         self.bucketed = mean_of_bucket_means(self.field, "time", self.cadence)
@@ -306,10 +297,10 @@ class CadenceBucketPopulationSplitTests(unittest.TestCase):
         self.assertEqual(int(self.partial.max()), 2)
 
     def test_pixels_with_no_partial_bucket_were_left_exactly_where_they_were(self):
-        """The population D4 must NOT move. Where every bucket is wholly
+        """The population the fix must NOT move. Where every bucket is wholly
         covered, counting contributors and counting granules give the same
         denominator, so production must still answer bit-for-bit what the
-        pre-D4 arithmetic answered -- not "close enough". A loose tolerance
+        legacy arithmetic answers -- not "close enough". A loose tolerance
         here would hide a real change to the complete-coverage answer, which is
         most of every real scene."""
         np = self.np
@@ -340,8 +331,8 @@ class CadenceBucketPopulationSplitTests(unittest.TestCase):
 
     def test_pixels_with_a_partial_bucket_now_answer_the_bucket_mean(self):
         """The defect, fixed. On the partial-coverage population production now
-        tracks the bucket-mean reference to floating-point noise, where before
-        D4 it diverged by the pinned 3.56%."""
+        tracks the bucket-mean reference to floating-point noise, where the
+        legacy form diverges by the pinned 3.56%."""
         np = self.np
 
         sel = self.partial > 0
@@ -352,8 +343,8 @@ class CadenceBucketPopulationSplitTests(unittest.TestCase):
         self.assertLess(delta_pct(self.production, self.bucketed, sel), 1e-10)
 
     def test_the_fix_moved_the_partial_population_by_the_measured_amount(self):
-        """The characterization proper, still measuring the defect after the
-        fix by comparing production against the pre-D4 arithmetic. 3.56% here
+        """The characterization proper: production against the legacy
+        arithmetic. 3.56% here
         against the 2.736% and 2.339% on the two real TEMPO NO2 bundles -- same
         order, same mechanism. Pinned tightly, so reverting the fix, or
         changing how much it moves, fails rather than passing quietly."""
@@ -374,7 +365,7 @@ class CadenceBucketPopulationSplitTests(unittest.TestCase):
 
     def test_the_fix_moved_only_where_a_bucket_is_partly_covered(self):
         """The mechanism claim, stated as an assertion rather than inferred:
-        D4 moved the partial-coverage population and left the rest untouched,
+        the fix moves the partial-coverage population and leaves the rest untouched,
         so partial coverage is not merely correlated with the change -- it is
         the whole of it."""
         complete = delta_pct(self.production, self.legacy, self.partial == 0)
@@ -489,7 +480,7 @@ class BucketFormulationInvariantTests(unittest.TestCase):
 
 @unittest.skipIf(importlib.util.find_spec("xarray") is None, "xarray is not installed")
 class TemporalMeanProductionPathTests(unittest.TestCase):
-    """Finding #11's intent, asserted through every production entry point that
+    """Equal bucket weighting, asserted through every production entry point that
     reduces time: the private reduction, ``temporal_mean`` (the vertical
     profile's) and ``aggregate`` (the map's). All three must agree, or a
     profile and a period map drawn from one bundle would disagree."""
@@ -505,11 +496,10 @@ class TemporalMeanProductionPathTests(unittest.TestCase):
         self.col_info = {"primary_var": "no2", "cadence": "daily", "fill_value": -999.0}
 
     def test_a_thinned_bucket_still_counts_as_one_whole_bucket(self):
-        """The defect D4 fixed, kept as a regression test with the pre-D4
-        answer named. Day one's four granules were cut to one at this pixel;
+        """A regression test with the legacy answer named. Day one's four granules were cut to one at this pixel;
         day one still measured 10, so the two-day period averages (10 + 0) / 2.
-        The old arithmetic gave that surviving granule a quarter vote and
-        answered 2.0 -- asserted here so a revert cannot pass."""
+        The legacy arithmetic gives that surviving granule a quarter vote and
+        answers 2.0 -- asserted here so a regression cannot pass."""
         ds = _thinned_bucket_dataset(self.xr, self.np)
 
         got = self.svc._cadence_weighted_mean(ds["no2"], "time", "daily")
@@ -521,7 +511,7 @@ class TemporalMeanProductionPathTests(unittest.TestCase):
     def test_the_whole_bucket_next_door_was_not_disturbed(self):
         """The complete-coverage answer the fix had to leave alone. Same grid,
         same buckets -- the neighbouring pixel every granule covered averages
-        (20 + 0) / 2 = 10.0 before D4, after D4, and under the reference."""
+        (20 + 0) / 2 = 10.0 under every formulation."""
         ds = _thinned_bucket_dataset(self.xr, self.np)
 
         got = self.svc._cadence_weighted_mean(ds["no2"], "time", "daily")
@@ -533,8 +523,7 @@ class TemporalMeanProductionPathTests(unittest.TestCase):
 
     def test_temporal_mean_counts_a_thinned_bucket_as_a_whole_bucket(self):
         """``temporal_mean`` is the reduction the vertical profile calls; it
-        must deliver Finding #11's intent at a pixel whose bucket was
-        thinned."""
+        must weight buckets equally at a pixel whose bucket was thinned."""
         ds = _thinned_bucket_dataset(self.xr, self.np)
 
         got = self.svc.temporal_mean(ds["no2"], "time", "daily")
