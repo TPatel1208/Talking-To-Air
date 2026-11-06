@@ -1332,4 +1332,4 @@ _PIPELINE_SOURCE_FUNCTIONS = (
 #
 # Cache wiring lives outside these functions (in _open_by_media_type) so
 # plumbing changes don't move this hash.
-OPEN_PIPELINE_SOURCE_FINGERPRINT = "72cfb132fd82f112d10898903e72923424204392c55486e1fb7a2445c21e5cd8"
+OPEN_PIPELINE_SOURCE_FINGERPRINT = "2f9c99359e6db402366e0923d5e33389da58b03a59c0a86ccb7f51cc02b38ecc"
