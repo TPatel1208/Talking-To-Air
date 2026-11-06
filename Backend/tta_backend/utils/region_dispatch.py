@@ -197,7 +197,7 @@ def assert_no_alias_collisions(global_regions: dict[str, Any]) -> None:
         if coalition_id in global_regions:
             raise AliasCollisionError(
                 f"coalition id {coalition_id!r} shadows a global_regions preset; "
-                "D3 requires coalitions to have no bounding-box fallback"
+                "coalitions must have no bounding-box fallback"
             )
     for alias, target in ALIASES.items():
         if alias in global_regions:

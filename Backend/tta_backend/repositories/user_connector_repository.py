@@ -15,12 +15,9 @@ async def ensure_user_connector_table() -> None:
     async with pg_connection() as conn:
         await conn.execute(
             """
-            -- T61: user_id is the Supabase `sub` UUID off a verified JWT, not
-            -- a local row -- the `users` table is gone, so the FK it referenced
-            -- goes too. It guarded against nothing: the value never came from
-            -- user input, only from a signature we checked ourselves. Cost of
-            -- losing it, accepted deliberately: no cascade, so a deleted user's
-            -- encrypted token outlives them here until a reaper exists.
+            -- user_id is the Supabase `sub` UUID from a verified JWT, so there
+            -- is no local users table to reference. Accepted cost: no cascade,
+            -- so a deleted user's encrypted token stays until a reaper exists.
             CREATE TABLE IF NOT EXISTS user_connectors (
                 id TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL,

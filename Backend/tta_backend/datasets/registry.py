@@ -175,7 +175,7 @@ COLLECTIONS_WITHOUT_QUALITY_FLAG: dict[str, str] = {
         "fit_RMS, avg_residual and retrieval_exit_status BEFORE gridding. It recommends "
         "further screening on eff_cloud_fraction and the zenith angles, which are "
         "continuous thresholds rather than an enumerated flag, so they are a declarative "
-        "threshold mask (T56 D6) and not something the good/bad-values doctrine can "
+        "threshold mask and not something the good/bad-values doctrine can "
         "express"
     ),
     "MODIS_AOD_AQUA": (

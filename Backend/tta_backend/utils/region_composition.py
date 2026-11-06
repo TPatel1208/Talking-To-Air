@@ -233,7 +233,7 @@ def assert_no_country_collisions(global_regions: dict[str, Any]) -> None:
     for alias, target in COUNTRY_ALIASES.items():
         for table, what in (
             (global_regions, "global_regions preset"),
-            (ALIASES, "T60 alias"),
+            (ALIASES, "region alias"),
             (COALITIONS, "coalition"),
             (POSTAL_TO_STATE, "U.S. postal code"),
             (US_STATES, "U.S. state"),

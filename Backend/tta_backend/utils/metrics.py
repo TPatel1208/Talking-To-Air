@@ -117,7 +117,7 @@ BUNDLE_EXTRACT_CACHE_BYTES = Gauge(
 )
 CUBE_STORE_BYTES = Gauge(
     "cube_store_bytes",
-    "Total on-disk size of the T52 Zarr cube cache in bytes.",
+    "Total on-disk size of the Zarr cube cache in bytes.",
 )
 CUBE_EVICTIONS_TOTAL = Counter(
     "cube_evictions_total",
