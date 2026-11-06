@@ -1,4 +1,4 @@
-"""T45: GeocodingService.last_request is read-modify-write from both the
+"""GeocodingService.last_request is read-modify-write from both the
 sync (geocode) and async (ageocode) paths with no coordination. Two parallel
 calls can both read the same stale last_request, both compute "no throttle
 needed", and both fire within Nominatim's 1 rps window at once — violating

@@ -3,14 +3,13 @@ tests/test_provenance_service.py
 ==================================
 The provenance panel's backend seam. Exercises provenance_service
 against the fake earthdata-retrieval MCP (real wire protocol, fake tool
-handlers) exactly like the T05/T09 service tests.
+handlers) exactly like the jobs/discovery service tests.
 
 Fixtures mirror the REAL MCP contract (harmony-retrieval-mcp
 ``tools/provenance.py``): ``get_provenance`` answers ``{handle, ancestors:
 [{handle, depth}], events: [{event_type, detail, created_at}]}`` with events
-newest-first, and ``cite_dataset`` answers CMR's own record. The previous
-imagined ``inputs``/``kind``/``stage`` shape made citations silently empty
-and methods.md crash against the live server (QA 2026-07-17).
+newest-first, and ``cite_dataset`` answers CMR's own record. A wrong fixture
+shape would let citations go silently empty against the live server.
 """
 import importlib.util
 import os
@@ -117,7 +116,7 @@ class GetLineageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(handles, {"obs_1", "dataset_tempo_no2"})
 
     async def test_a_shared_ancestor_across_two_source_handles_is_deduplicated(self):
-        # A T08 comparison artifact's two panels share the same AOI — the
+        # A comparison artifact's two panels share the same AOI — the
         # merged lineage should list each shared ancestor once, not once per
         # panel that references it.
         from tta_backend.services.provenance_service import get_lineage

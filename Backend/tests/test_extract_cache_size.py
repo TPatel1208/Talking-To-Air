@@ -1,4 +1,4 @@
-"""T45: bundle_extract_cache_bytes gauge -- extract_cache_size_bytes() sums
+"""bundle_extract_cache_bytes gauge -- extract_cache_size_bytes() sums
 the on-disk size of the TTL-pruned bundle-extract cache
 (services/open_handle.py's _extract_bundle_cached), so an unexpectedly large
 cache is visible and distinguishable from Python heap growth when chasing a

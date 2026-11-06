@@ -1,9 +1,8 @@
-"""T64: the satellite agent's own ground tools (validate_against_ground,
+"""The satellite agent's own ground tools (validate_against_ground,
 exceedance_overlay) run only when its task is a comparison.
 
-Live 2026-10-16: asked for a TEMPO NO2 map of the OTC (intent visualize),
-the satellite agent also called validate_against_ground, querying AQS NO2
-across the whole OTC -- ground work the supervisor had not dispatched and
+Otherwise a map request (intent visualize) could also call
+validate_against_ground -- ground work the supervisor had not dispatched and
 the dispatch log could not show."""
 import json
 import unittest

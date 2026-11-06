@@ -190,8 +190,8 @@ class PointTimeseriesToolTests(unittest.IsolatedAsyncioTestCase):
         return {t.name: t for t in build_satellite_tools(mcp_tools)}["point_timeseries"]
 
     async def test_missing_aoi_handle_is_a_classified_contract_error_not_a_silent_none(self):
-        """T44 story #4: an AOI response with no handle used to flow on as
-        None into the submit call. Off-taxonomy that's a contract violation the
+        """An AOI response with no handle must not flow on as None into the
+        submit call. Off-taxonomy that's a contract violation the
         agent should be able to explain — classify it, name the tool, and don't
         submit a retrieval against a null AOI."""
         submitted = []

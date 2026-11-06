@@ -1,4 +1,4 @@
-"""T45: plot_diff_maps' "symmetric" diverging scale hardcodes vmin=0, which
+"""plot_diff_maps' "symmetric" diverging scale hardcodes vmin=0, which
 would clip every negative difference to the bottom color — a live landmine.
 It's unreachable from the tool surface today (the compare tool renders via
 _da_to_heatmap_payload, not this), and grep confirms its only caller is

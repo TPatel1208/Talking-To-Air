@@ -1,15 +1,11 @@
-"""T45: backend memory was invisible during the 2026-07-17 QA session's
-jump-and-plateau (steady ~400MB -> ~811MB -> plateaued 780-813MB) -- nothing
-in metrics tracked process RSS or open-dataset-adjacent state, so "plateau
-vs leak" was unfalsifiable from dashboards. refresh_process_gauges() reads
+"""Process memory metrics, so a memory plateau can be told apart from a
+leak on dashboards. refresh_process_gauges() reads
 process RSS, the bundle extract-cache size, and the cube-store size into
 Prometheus gauges on each /metrics scrape.
 
-T45 also added a matplotlib open-figure gauge, dropped once the PNG export
-moved off pyplot onto the object-oriented API: with no process-global
-figure registry left to read, it could only ever report 0. What replaced it
-is a source-level check in test_export_event_loop_offload, which fails at
-merge time rather than on a dashboard nobody was alerting on.
+There is no matplotlib open-figure gauge: the PNG export uses the
+object-oriented API, so it would always read 0. A source-level check in
+test_export_event_loop_offload covers that instead.
 """
 import ctypes
 import importlib.util
@@ -56,15 +52,11 @@ class ProcessMetricsTests(unittest.TestCase):
 
 
 class ProcessRssReaderTests(unittest.TestCase):
-    """The RSS read itself, which is where this gauge silently died.
+    """The RSS read itself, on every supported platform.
 
-    ``_current_process_rss_bytes`` originally read only /proc/self/status. That
-    is correct on the deployment target and absent on the Windows development
-    host, where the open raised FileNotFoundError, the helper returned None, and
-    ``refresh_process_gauges`` skipped the ``.set()`` — leaving the gauge at its
-    default 0.0. The failure surfaced as a test assertion, but the real cost was
-    that the metric T45 added to make "plateau vs leak" falsifiable was dead for
-    anyone not running in Docker, and nothing said so.
+    /proc/self/status exists on the deployment target but not on Windows, so
+    reading only that would leave the gauge at 0.0 for anyone not running in
+    Docker, with nothing saying so.
     """
 
     def test_this_platforms_reader_returns_a_positive_rss(self):
@@ -105,8 +97,8 @@ class ProcessRssReaderTests(unittest.TestCase):
     def test_rss_reflects_current_footprint_not_the_high_water_mark(self):
         """The property that makes this metric worth having.
 
-        T45 added it because a jump-and-plateau (~400MB -> ~811MB, then flat)
-        could not be told apart from a leak. A peak-only reading —
+        A jump-and-plateau (~400MB -> ~811MB, then flat) must be tellable
+        apart from a leak. A peak-only reading —
         ``ru_maxrss`` on Linux, ``PeakWorkingSetSize`` on Windows — never comes
         back down, so it cannot express "plateaued" at all. This asserts the
         reading actually falls when the memory is released, which is what rules

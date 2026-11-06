@@ -10,8 +10,7 @@ REQUIRED_MODULES = ["affine", "cartopy", "rasterio", "shapely", "xarray"]
     "plotting dependencies are not installed",
 )
 class NormalizeTo2dTests(unittest.TestCase):
-    """T25: the silent `.mean(dim=extra_dims)` fallback is deleted -- a
-    surviving non-spatial, non-time dimension with no selection must refuse
+    """No silent `.mean(dim=extra_dims)` fallback -- a surviving non-spatial, non-time dimension with no selection must refuse
     with a structured, candidate-listing error naming the dimension and its
     coordinate values (e.g. a MERRA-2 72-level vertical dim), never a
     confident-looking whole-atmosphere average."""

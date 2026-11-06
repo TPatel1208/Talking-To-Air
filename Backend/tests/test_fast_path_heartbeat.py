@@ -114,10 +114,9 @@ def _working_statuses(frames):
 class FastPathHeartbeatTests(unittest.IsolatedAsyncioTestCase):
     """The fast path must write during a silence, not just after it.
 
-    T63 D14 makes a reader infer "the replica that owned this turn died" from
-    a stream that has gone quiet past the heartbeat. That inference is only
-    as good as the guarantee that a live turn keeps writing -- and the fast
-    path never had one: it dispatches sub-agents directly and so never enters
+    Readers infer "the replica that owned this turn died" from a stream that
+    has gone quiet past the heartbeat, so a live turn must keep writing. The
+    fast path dispatches sub-agents directly and never enters
     ``stream_response``, where the supervisor route's watchdog lives.
     """
 
@@ -177,8 +176,7 @@ class FastPathHeartbeatTests(unittest.IsolatedAsyncioTestCase):
     async def test_the_heartbeat_does_not_outlive_the_turn(self):
         """One leaked task per turn, for the life of the process.
 
-        The same shape as the ``_tasks`` leak T63 Phase 2 closed: the loop
-        never ends on its own, so a beat left running after the turn answers
+        The loop never ends on its own, so a beat left running after the turn answers
         keeps its frame -- and everything that frame captured -- resident.
         """
         import tta_backend.utils.streaming as streaming

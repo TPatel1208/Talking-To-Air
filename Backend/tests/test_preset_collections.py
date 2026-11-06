@@ -60,10 +60,9 @@ class PresetCollectionsTests(unittest.TestCase):
 
 
     def test_a_missing_registry_key_raises_an_error_naming_it(self):
-        """T44 story #5: collections.yaml is the file whose header promises
-        'no code changes needed'. A typo there used to take the backend down
-        with a bare KeyError at import, naming nothing useful. It must instead
-        raise a clear error that names the missing preset key(s) so onboarding
+        """collections.yaml is the file whose header promises 'no code
+        changes needed'. A typo there must not take the backend down with a
+        bare KeyError at import; it must raise a clear error that names the missing preset key(s) so onboarding
         is as safe as the header claims."""
         from tta_backend.datasets import preset_collections
         from tta_backend.datasets.registry import load_registry

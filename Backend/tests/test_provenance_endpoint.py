@@ -84,7 +84,7 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
             fixture.write(b"fake-netcdf-bytes")
         self.addCleanup(os.unlink, self.fixture_path)
 
-        # Real contract (T17 live-verified): convert_format takes
+        # Real contract (live-verified): convert_format takes
         # source_handle/output_format (not handle/target_format) and mints a
         # new cube_ handle — it never returns storage_uri itself. Resolving
         # bytes requires a follow-up export_result on that new handle, same
@@ -315,7 +315,7 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        # T37: export.nc reads tools through the readiness gate (manager.tools).
+        # export.nc reads tools through the readiness gate (manager.tools).
         original_manager = self.api.app.state.earthdata_mcp_manager
         self.api.app.state.earthdata_mcp_manager = SimpleNamespace(state="ready", tools=broken_tools)
         try:

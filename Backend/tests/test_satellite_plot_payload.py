@@ -32,8 +32,8 @@ class SatellitePlotPayloadTests(unittest.TestCase):
 
         self.assertEqual(masked.dims, ("time", "Longitude", "Latitude"))
         self.assertTrue(np.isfinite(masked.values).any())
-        # Cells outside the geometry are gone -- dropped by the T50 crop where
-        # they used to survive as NaN. Same kept values either way.
+        # Cells outside the geometry are gone -- dropped by the crop rather
+        # than kept as NaN. Same kept values either way.
         self.assertLess(masked.size, da.size)
         np.testing.assert_array_equal(
             np.sort(masked.values[np.isfinite(masked.values)]),
@@ -373,7 +373,7 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         self.assertEqual(payload["metadata"]["source_handles"], ["obs_1"])
 
     def test_provenance_attaches_dataset_and_source_distinct_from_variable(self):
-        """T32: `dataset`/`source` are real registry facts about the
+        """`dataset`/`source` are real registry facts about the
         collection, not a fallback that reuses the plotted variable name."""
         import xarray as xr
         from tta_backend.tools.satellite_tools.plot_tools import _attach_reproducibility

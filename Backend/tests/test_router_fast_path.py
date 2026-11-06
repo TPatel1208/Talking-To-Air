@@ -145,8 +145,8 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         The sub-agent's "text" is its raw AgentResult envelope -- here the JSON
         {"summary": ...} FakeSatelliteAgent yields. Forwarding it would stream
         that JSON to the researcher and then repeat the same answer again as
-        the synthesized final message (T14 Out of Scope: no sub-agent token
-        streaming through this path). Exactly one text event may reach the
+        the synthesized final message (no sub-agent token streaming through
+        this path). Exactly one text event may reach the
         wire: the finalized answer under its "Data sources" header.
         """
         from tta_backend.services.chat_stream_service import ChatStreamService
@@ -171,7 +171,7 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('\\"summary\\"', joined)
 
     async def test_satellite_fast_path_forwards_the_stage_and_detail_fields_over_sse(self):
-        """T19: chat_stream_service must not rebuild the status SSE payload
+        """chat_stream_service must not rebuild the status SSE payload
         as message-only — a stage-tagged emit_status call deep in the
         sub-agent's own stream has to survive all the way to the wire, or
         the frontend's workflow strip never lights up."""
@@ -230,7 +230,7 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Here is the synthesis.", joined)
 
     async def test_fast_path_done_event_carries_suggestions_from_a_well_formed_envelope(self):
-        """T22 story #9: the done event is the additive surface for the
+        """The done event is the additive surface for the
         finalized envelope's suggestions on the router fast path."""
         from tta_backend.services.chat_stream_service import ChatStreamService
         from tta_backend.services.chart_service import ChartService
@@ -284,7 +284,7 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("suggested_followups", payload)
 
     async def test_fast_path_done_event_omits_suggestions_for_a_salvaged_result(self):
-        """T22 story #7/#12: a malformed final message is salvaged from raw
+        """A malformed final message is salvaged from raw
         prose — it must never carry suggestions, even when the
         salvaged prose happens to contain question marks."""
         from tta_backend.services.chat_stream_service import ChatStreamService
@@ -309,7 +309,7 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("suggested_followups", payload)
 
     async def test_supervisor_path_done_event_carries_suggestions_from_a_sub_agent_tool_result(self):
-        """T22 story #8: the supervisor's synthesis must not strip a
+        """The supervisor's synthesis must not strip a
         sub-agent's suggestions — chat_stream_service reads them straight
         off the tool_result envelope, not from the supervisor's own prose."""
         from tta_backend.services.chat_stream_service import ChatStreamService
@@ -341,7 +341,7 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["suggested_followups"], ["How does that compare to satellite data?"])
 
     async def test_fast_path_done_event_carries_the_variable_choice_picker(self):
-        """T49: a satellite turn whose tool emitted a variable_choice picker
+        """A satellite turn whose tool emitted a variable_choice picker
         (the deterministic short-circuit) surfaces it on the done event, with
         each candidate's auto-send prompt filled from the original request."""
         from tta_backend.services.chat_stream_service import ChatStreamService
@@ -384,7 +384,7 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(prompts["DT_AOD_550_AVG"], f"{message} using DT_AOD_550_AVG")
 
     async def test_supervisor_path_done_event_carries_the_variable_choice_picker(self):
-        """T49: on the supervisor path the picker rides in the sub-agent's
+        """On the supervisor path the picker rides in the sub-agent's
         AgentResult tool_result, and must survive the supervisor's synthesis
         onto the done event exactly like suggested_followups does."""
         from tta_backend.services.chat_stream_service import ChatStreamService
@@ -446,7 +446,7 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
         supervisor_agent.aupdate_state.assert_not_called()
 
     async def test_fast_path_turn_deadline_ends_with_timeout_error_then_done_and_cancels_the_sub_agent(self):
-        """T38: the fast path owns its own cancellable task (run() via
+        """The fast path owns its own cancellable task (run() via
         asyncio.create_task) — a wedged satellite tool call must not hang
         the turn forever, and the sub-agent's own stream must actually be
         cancelled once the deadline fires."""

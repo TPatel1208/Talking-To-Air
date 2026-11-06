@@ -1,11 +1,7 @@
 """Model-latency and graph-superstep timing.
 
-A 2026-08-07 trace of a 372s plot turn accounted for the Harmony retrieval
-wait (171s) and the data pipeline (61s) and left 107s -- 29% of the turn --
-attributable to nothing: T51's phase vocabulary is all data work, so time
-spent waiting on the model had no series to land in.
-
-These cover the two phases that close that hole: ``llm_call`` (one provider
+The data-pipeline phases can't see time spent waiting on the model (in one
+372s plot turn that was 107s, 29% of it). These cover the two phases for it: ``llm_call`` (one provider
 request, from the LangChain callback pair) and ``agent_step`` (one LangGraph
 superstep, from the gap between ``updates`` chunks).
 
@@ -288,7 +284,7 @@ class LlmTimingCallbackTests(unittest.TestCase):
         self.assertEqual(_phase_samples("llm_call")[0] - before[0], 1)
 
     def test_abandoned_runs_do_not_accumulate_without_bound(self):
-        """A turn cancelled by the T38 whole-turn deadline never delivers its
+        """A turn cancelled by the whole-turn deadline never delivers its
         end callback; the in-flight map must not be a leak."""
         from tta_backend.utils.llm_timing import _MAX_TRACKED_RUNS
 

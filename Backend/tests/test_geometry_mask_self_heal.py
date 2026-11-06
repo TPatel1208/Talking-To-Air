@@ -1,5 +1,5 @@
 """
-T42 empty-mask self-heal: a region smaller than a grid cell (a neighborhood
+Empty-mask self-heal: a region smaller than a grid cell (a neighborhood
 on a coarse satellite grid, or the 0.1° point-buffer minted when the geocoder
 returns no polygon) can cover zero cell *centers*, so center-containment
 rasterization returns an all-False mask and the tool answers "no valid data"

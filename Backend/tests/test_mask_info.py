@@ -23,7 +23,7 @@ class OverrideForTests(unittest.TestCase):
 
 
 class ColInfoForShortNameTests(unittest.TestCase):
-    """T25 masking-execution fix: col_info_for_short_name is the seam that
+    """col_info_for_short_name is the seam that
     lets a tool's identity marker (an opened file's short_name attribute)
     actually reach collections.yaml's pinned qa_good_values/quality_flag_var
     -- the tool layer never has a collection_id, and the science variable
@@ -160,7 +160,7 @@ class ShortNameFromAttrsTests(unittest.TestCase):
 
 
 class ResolveMaskInfoPrecedenceTests(unittest.TestCase):
-    """T25 Phase 1: collections.yaml override -> UMM-Var facts -> CF file
+    """collections.yaml override -> UMM-Var facts -> CF file
     attrs -> mask nothing, with every tier's win recorded in provenance."""
 
     def test_cf_attrs_used_and_recorded_when_no_yaml_or_umm_var_info(self):
