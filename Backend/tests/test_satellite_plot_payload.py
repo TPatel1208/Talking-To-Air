@@ -449,7 +449,7 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         self.assertEqual(qa_methodology["qa_good_values"], [0])
 
     def test_provenance_stamps_delivered_scope_from_the_plotted_data(self):
-        """T46: the scope actually delivered — region, the data's own date
+        """The scope actually delivered — region, the data's own date
         span, and cadence — travels in provenance so the disclosure layer (and
         the Metadata tab) can compare it against what was requested."""
         import xarray as xr
@@ -481,7 +481,7 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         self.assertTrue(delivered["start_date"].startswith("2024-07-01"))
 
     def test_provenance_stamps_requested_scope_recorded_for_the_handle(self):
-        """T46: the requested scope the composite recorded against this handle
+        """The requested scope the composite recorded against this handle
         is echoed back into provenance, so a single-day request answered by a
         monthly mean is disclosable end-to-end."""
         import xarray as xr

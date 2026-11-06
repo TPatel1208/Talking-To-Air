@@ -3,7 +3,7 @@ import unittest
 
 class ScopeRegistryTests(unittest.TestCase):
     def test_records_requested_scope_by_job_then_finalizes_to_the_resolved_handle(self):
-        """T46: safe_retrieve knows the requested scope synchronously, but the
+        """safe_retrieve knows the requested scope synchronously, but the
         obs_/cube_ handle a plot will read it back by is only known once the
         job reaches 'ready' — the same two-step handoff variable_choice_registry
         uses."""

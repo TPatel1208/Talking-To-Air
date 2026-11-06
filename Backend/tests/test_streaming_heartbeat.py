@@ -17,8 +17,7 @@ class HeartbeatTests(unittest.IsolatedAsyncioTestCase):
         class FakeAgent:
             async def astream(self, input_, config, stream_mode):
                 # Stalls well past the patched heartbeat threshold before
-                # ever yielding anything — the honest silence the PRD's
-                # Problem Statement describes (a minutes-long provider gap).
+                # ever yielding anything — like a minutes-long provider gap.
                 await asyncio.sleep(0.25)
                 yield "messages", (SimpleNamespace(content="done", type="ai", tool_calls=None), {})
 

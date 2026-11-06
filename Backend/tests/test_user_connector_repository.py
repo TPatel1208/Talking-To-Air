@@ -56,11 +56,10 @@ class EnsureTableSchemaContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("last_used_at", ddl)
 
     async def test_table_ddl_carries_no_foreign_key(self):
-        # T61 dropped `REFERENCES users(id)` along with the users table. With no
-        # migration framework this DDL is the only schema definition there is,
-        # so re-adding the FK would break ensure_user_connector_table() at boot
-        # against a database where `users` no longer exists. user_id now holds a
-        # Supabase `sub` off a verified token, which no local row can vouch for.
+        # No `REFERENCES users(id)`: there is no users table. With no migration
+        # framework this DDL is the only schema definition, so an FK would break
+        # ensure_user_connector_table() at boot. user_id holds a Supabase `sub`
+        # off a verified token, which no local row can vouch for.
         ddl = await self._ensure()
         self.assertIn("user_id TEXT NOT NULL,", ddl)
         self.assertNotIn("REFERENCES", ddl)
@@ -149,7 +148,7 @@ class DeleteConnectorTests(unittest.IsolatedAsyncioTestCase):
 
 
 class GetConnectorSecretRowTests(unittest.IsolatedAsyncioTestCase):
-    """T31: the one repository read that includes encrypted_secret -- used
+    """The one repository read that includes encrypted_secret -- used
     only by services/connector_credential_service.py for per-call injection
     resolution, never by an API response."""
 

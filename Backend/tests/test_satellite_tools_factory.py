@@ -88,13 +88,11 @@ class SatelliteToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ref["metadata"]["source_handles"], ["obs_1"])
 
     async def test_plot_singular_resolves_a_multi_variable_file_to_the_science_var_over_plumbing(self):
-        """T48: the VariableResolver replaces the old blanket refusal. A
-        multi-variable file that pairs plumbing with a science field
+        """A multi-variable file that pairs plumbing with a science field
         (Cloud_Fraction is category-1 implementation) resolves end to end to
         the populated geophysical variable instead of refusing and dumping both
-        -- so the researcher gets a real map on the first try. The old
-        next(iter(...)) silent-first-var fallback stays deleted; this is a
-        scored, deterministic pick, not the arbitrary first key."""
+        -- so the researcher gets a real map on the first try. This is a
+        scored, deterministic pick, never the arbitrary first key."""
         import xarray as xr
 
         def make_dataset():
@@ -141,7 +139,7 @@ class SatelliteToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["variable"], "Aerosol_Optical_Depth")
 
     async def test_plot_singular_inherits_a_retrieval_recorded_variable_choice(self):
-        """T25: safe_retrieve/await_retrieval record the model's chosen
+        """safe_retrieve/await_retrieval record the model's chosen
         variable keyed by handle -- a later plot_singular call on that same
         handle must inherit it without a variable param."""
         import xarray as xr
@@ -366,7 +364,7 @@ class SatelliteToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["source_handles"], ["obs_peak"])
 
     async def test_find_daily_peak_resolves_cf_identified_axes_with_unusual_names(self):
-        """T24: the peak search identifies lat/lon by CF metadata, so a grid
+        """The peak search identifies lat/lon by CF metadata, so a grid
         whose axes are named 'row'/'col' (unknown to any name allowlist) but
         carry standard_name latitude/longitude still yields a peak."""
         import xarray as xr

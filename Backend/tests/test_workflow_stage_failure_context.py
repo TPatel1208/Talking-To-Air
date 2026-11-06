@@ -1,6 +1,5 @@
 """
-T19 Testing Decisions / story #9: a scripted failure at the coverage stage
-yields a T18-classified error answer, and the stream's last narrated stage
+A scripted failure at the coverage stage yields a classified error answer, and the stream's last narrated stage
 is coverage — no later stage narrates over a workflow that never got past
 checking coverage.
 """

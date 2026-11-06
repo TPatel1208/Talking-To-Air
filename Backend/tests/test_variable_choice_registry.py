@@ -2,7 +2,7 @@ import unittest
 
 
 class VariableChoiceRegistryTests(unittest.TestCase):
-    """T25: the retrieval composite records the model's chosen science
+    """The retrieval composite records the model's chosen science
     variable keyed by the eventual obs_/cube_ handle, so a later plot/stat/
     compare call on that same handle inherits the choice instead of hitting
     AggregationService.to_dataarray's candidate-listing error. In-memory,

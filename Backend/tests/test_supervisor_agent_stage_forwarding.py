@@ -14,14 +14,14 @@ PLOT_NO2_OVER_NJ = {"requests": [
 
 @unittest.skipIf(importlib.util.find_spec("langchain") is None, "langchain is not installed")
 class DispatchStageForwardingTests(unittest.IsolatedAsyncioTestCase):
-    """T19: narration must not be a fast-path-only feature — a status/job_
+    """Narration must not be a fast-path-only feature — a status/job_
     progress/chart_payload event the satellite sub-agent emits deep inside
     the dispatch tool's own nested stream_response call must still reach
     the supervisor's own outer stream_response (and therefore the SSE
     stream), even when the tool call passes through a ToolNode-style Task
     boundary (asyncio.gather spawns a fresh Task with a copied context per
-    call). This already holds via the same ContextVar-bubbling mechanism
-    T13/T14 established for chart_payload/job_progress — see utils/
+    call). This holds via the same ContextVar-bubbling mechanism used for
+    chart_payload/job_progress — see utils/
     streaming.py's publish_status/publish_job_progress/publish_chart_
     payload, each of which forwards to a `parent_emitter` captured once at
     the nested stream_response's own construction, not re-read per call —

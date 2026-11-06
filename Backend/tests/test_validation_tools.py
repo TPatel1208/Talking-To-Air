@@ -1,5 +1,5 @@
 """
-Tests for tools/satellite_tools/validation_tools.py (PRD T07 — satellite<->ground
+Tests for tools/satellite_tools/validation_tools.py (satellite<->ground
 validation workflow).
 
 Hermetic at the analysis-tool seam: synthetic cube fixtures with known values
@@ -122,8 +122,8 @@ class MonitorSeriesExtractionTests(unittest.TestCase):
         ``QA_PASS_RATE_BASIS`` promises "pixels in the analyzed region", and for
         a monitor comparison the analyzed region is one cell. Masking the full
         grid and narrowing afterwards counts every other cell's QA outcome into
-        a number presented next to a single-point series -- the same
-        scope-substitution class as T46, and the inverse of the crop-before-mask
+        a number presented next to a single-point series -- a scope
+        substitution, and the inverse of the crop-before-mask
         ordering both plot paths already follow.
 
         Here the monitor cell passes QA on both days while all three
@@ -480,9 +480,9 @@ class ValidateAgainstGroundToolTests(unittest.IsolatedAsyncioTestCase):
         the collection short_name from ``da.attrs`` alone finds nothing, falls
         back to the variable name, matches no registry entry, and hands
         ``resolve_and_mask`` an empty col_info -- no quality_flag_var, so the
-        quality mask silently never runs. This is the same dataset-level
-        identity fact the T25 masking-execution fix pinned for the plot/stat/
-        compare paths; validation must not be the one path that skips it.
+        quality mask silently never runs. The plot/stat/compare paths handle
+        this dataset-level identity; validation must not be the one that skips
+        it.
 
         Day 2 carries a bad quality flag at the monitor cell, so it is not a
         trustworthy observation and must not be paired against ground data.

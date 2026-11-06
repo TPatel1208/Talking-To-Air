@@ -1,11 +1,9 @@
 """
 tests/test_stat_tools_longitude_normalization.py
 ==================================================
-The stats tools skipped the 0..360 -> -180..180 longitude normalization
-every other masking path performs. plot_singular, plot_multiple, and
-compare all call _normalize_longitudes on the opened Dataset before
-geometry masking; compute_statistic_tool and find_daily_peak masked the
-raw array directly. On a 0..360 dataset a western-hemisphere region
+The stats tools must do the 0..360 -> -180..180 longitude normalization
+every other masking path performs (_normalize_longitudes on the opened
+Dataset before geometry masking). Otherwise, on a 0..360 dataset a western-hemisphere region
 (negative longitudes) rasterizes entirely outside the grid, the geometry
 mask is all-False, and the tools report "No valid data found ... region
 may be outside the data bbox" for data that is fully present — the same
@@ -15,7 +13,7 @@ These tests mirror test_satellite_tools_masking_execution.py's production
 shape: a TEMPO_NO2 Dataset (science var + sibling QA-flag var) opened
 through the HandleVolume/open_handle seam, on a 0..360 longitude grid over
 the continental US, masked with the offline 'usa' region (a real
-Natural-Earth US polygon since T42). The fixture cells sit squarely in the
+Natural-Earth US polygon). The fixture cells sit squarely in the
 CONUS interior so both survive the polygon mask; they keep bad QA flags so
 they also pin the reason normalization must happen on the whole Dataset
 before the DataArray is extracted (the plot_singular convention):
@@ -70,7 +68,7 @@ class StatToolsLongitudeNormalizationTests(unittest.IsolatedAsyncioTestCase):
         longitudes use the 0..360 convention: 258/262 are -102/-98 once
         normalized, and lat 38/42 puts every cell squarely in the CONUS
         interior (the Great Plains) — inside the real Natural-Earth 'usa'
-        polygon the resolver returns since T42, not just a bounding box."""
+        polygon the resolver returns, not just a bounding box."""
         from test_satellite_tools_masking_execution import _tempo_no2_dataset
         import xarray as xr
 

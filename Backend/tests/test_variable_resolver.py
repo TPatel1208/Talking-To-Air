@@ -49,8 +49,8 @@ class VariableResolverTests(unittest.TestCase):
         self.assertNotIn("aod_550/quality", [c.name for c in res.candidates])
 
     def test_geometry_reflectance_mask_ndvi_cloud_are_implementation_by_name(self):
-        """When metadata is absent, name heuristics catch the plumbing the PRD
-        taxonomy enumerates -- geometry angles, reflectances, land/ocean masks,
+        """When metadata is absent, name heuristics catch the plumbing
+        categories -- geometry angles, reflectances, land/ocean masks,
         NDVI, cloud fraction -- so none is ever the science pick."""
         from tta_backend.preprocessing.variable_resolver import resolve
 
@@ -159,7 +159,7 @@ class VariableResolverTests(unittest.TestCase):
         })
 
     def test_swapped_within_band_coverage_is_reproducible_but_a_cross_band_gap_reorders(self):
-        """Reproducibility (PRD): ranking on the quantized coverage BAND, not
+        """Reproducibility: ranking on the quantized coverage BAND, not
         raw valid_fraction, means day-to-day valid-pixel jitter within a band
         can't flip the chosen sensor -- two datasets identical but for
         swapped-within-band coverage resolve to the SAME name. A materially
@@ -226,7 +226,7 @@ class VariableResolverTests(unittest.TestCase):
         """Genuinely low confidence: several populated but signal-less fields
         (no units, no CF metadata, no geophysical name, not a Mean) -- the
         resolver has nothing to resolve on, so it returns name=None rather than
-        guessing. (The to_dataarray tail turns that into the P1-bounded refusal
+        guessing. (The to_dataarray tail turns that into the size-bounded refusal
         that asks the researcher to choose.)"""
         from tta_backend.preprocessing.variable_resolver import resolve
 
@@ -261,7 +261,7 @@ class VariableResolverTests(unittest.TestCase):
         self.assertIsNone(res.disclosure)
 
     def test_multiple_weak_name_only_contenders_refuse_rather_than_guess(self):
-        """Conservative doctrine (keeps T25 where it is load-bearing): when two+
+        """Conservative: when two+
         candidates are distinguished ONLY by a weak 'name looks geophysical'
         heuristic -- no units, no aggregated Mean leaf, no CF standard_name --
         the resolver has no strong signal to choose on, so it refuses (name=None)

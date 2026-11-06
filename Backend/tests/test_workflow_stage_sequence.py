@@ -1,5 +1,5 @@
 """
-T19 Testing Decisions: a scripted workflow driven through the real
+A scripted workflow driven through the real
 composites/handle tools (fake MCP, no live model — the eval harness is
 where model tokens get spent) at the streaming seam, asserting the
 *sequence* of stage keys observed in the SSE stream — presence and order,
@@ -119,7 +119,7 @@ class WorkflowStageSequenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(text_events, "expected a text event to end the turn")
 
     async def test_narration_stage_status_precedes_the_final_text_event(self):
-        """User story #6: narration stops cleanly when the answer starts
+        """Narration stops cleanly when the answer starts
         streaming — every stage status this turn observed arrives before
         the text event, never interleaved after it."""
         from tta_backend.services.retrieval_composites import await_retrieval, safe_retrieve

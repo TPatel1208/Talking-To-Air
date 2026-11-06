@@ -22,7 +22,7 @@ class ChartPayloadStreamingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chart_events[0]["values"], [[1.0]])
 
     async def test_stream_response_forwards_the_overlay_and_colormap_fields(self):
-        """T23: the overlay (url/bounds) and colormap (name/lut) fields added
+        """The overlay (url/bounds) and colormap (name/lut) fields added
         to the heatmap payload must survive the emit_chart -> chart_payload
         SSE round trip unchanged, same as any other payload key."""
         from tta_backend.utils.streaming import emit_chart, stream_response

@@ -116,7 +116,7 @@ class BuildVariableChoiceTests(unittest.TestCase):
         self.assertIsNone(by_name["COMBINE_AOD_550_AVG"].units)
 
     def test_a_pathologically_wide_file_shows_every_candidate_uncapped(self):
-        """The AERDA shape (432 collided leaves) is why T49 exists: the picker
+        """The AERDA shape (432 collided leaves): the picker
         shows every real candidate, grouped/searchable, never a 20-item prose
         excerpt. All 400 non-empty distinct fields must be present."""
         from tta_backend.preprocessing.variable_choice_builder import build_variable_choice

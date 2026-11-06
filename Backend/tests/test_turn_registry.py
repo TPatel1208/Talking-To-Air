@@ -346,7 +346,7 @@ class TurnRegistryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.registry.turn_for(self.thread_id), claim.turn_id)
 
     async def test_a_retried_send_gets_the_first_turn_back_and_starts_no_second(self):
-        """D13. A 202 handshake makes the retry window real.
+        """A 202 handshake makes the retry window real.
 
         The per-thread claim covers a retry that arrives while the turn is
         still running. It does not cover one that arrives after the turn
@@ -382,8 +382,8 @@ class TurnRegistryTests(unittest.IsolatedAsyncioTestCase):
         retries — answer 409 naming a turn that is dead, for the rest of that
         window.
 
-        So the bound is the same silence a reader is willing to believe in
-        (D14): a turn nobody would still call alive is a turn whose thread is
+        So the bound is the same silence a reader is willing to believe in: a
+        turn nobody would still call alive is a turn whose thread is
         free. The owner keeps its own claim fresh (below), so a *live* turn
         is never bounded by this at all.
         """
@@ -641,7 +641,7 @@ class TurnRegistryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(item.startswith("event: done") for item in resumed))
 
     async def test_a_cursor_left_over_from_an_earlier_turn_skips_nothing(self):
-        """Phase 5 persists one cursor per thread, and reuses it blind.
+        """The frontend persists one cursor per thread, and reuses it blind.
 
         A remount learns which turn is running only from the frames it is
         already being handed, so the cursor it resumes with may belong to the
@@ -749,7 +749,7 @@ class TurnRegistryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.log.terminal_of(claim.turn_id), "stopped")
 
     async def test_a_stopped_turn_keeps_what_it_produced_before_the_stop(self):
-        """D11: a stopped turn shows the work done, not a blank cancelled turn.
+        """A stopped turn shows the work done, not a blank cancelled turn.
 
         Including the answer tokens still sitting in the text batcher when the
         cancel lands. Text is held ~50ms to spare the log an XADD per token,
@@ -898,11 +898,11 @@ class TurnRegistryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.log.terminal_of(claim.turn_id), "stopped")
 
     async def test_stopping_cancels_the_provider_jobs_the_turn_left_running(self):
-        """D10: a hard cancel abandons provider work unless someone says so.
+        """A hard cancel abandons provider work unless someone says so.
 
         Cancelling the turn's task does nothing to a retrieval already running
         at the provider -- it outlives the connection that asked for it. The
-        server tracks the same last-seen statuses the client used to, because
+        server tracks the last-seen statuses itself, because
         a user who reattached mid-turn never saw those ``job_progress`` events
         and their Stop would leak every one of them.
         """
@@ -1195,7 +1195,7 @@ class TurnRegistryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.ttl(f"thread:{self.thread_id}:active_turn"), -2)
 
     async def test_a_reader_is_told_when_the_turn_it_watches_has_gone_quiet(self):
-        """D14: the tracer bullet for a replica that died without saying so.
+        """The tracer bullet for a replica that died without saying so.
 
         Nothing writes a terminal entry when a process is killed rather than
         drained -- an OOM, a SIGKILL after the stop timeout, a lost node --
