@@ -25,7 +25,7 @@ from tta_backend.utils.phase_timing import record_phase
 
 logger = logging.getLogger(__name__)
 
-# The heartbeat threshold is "order of ten seconds" per the PRD — a watchdog
+# The heartbeat threshold is on the order of ten seconds — a watchdog
 # alongside stream_response's queue consumer checks idle time on this cadence
 # and emits a "still working" status once idle crosses the threshold.
 HEARTBEAT_INTERVAL_SECONDS = 10.0
@@ -52,7 +52,7 @@ _current_thread_id: ContextVar[Optional[str]] = ContextVar("current_thread_id", 
 _current_user_id: ContextVar[Optional[str]] = ContextVar("current_user_id", default=None)
 _current_user_message: ContextVar[Optional[str]] = ContextVar("current_user_message", default=None)
 _ground_validation_allowed: ContextVar[bool] = ContextVar("ground_validation_allowed", default=True)
-# T64 Phase 4: (lane id, lane label) of the dispatch item whose run is in
+# (lane id, lane label) of the dispatch item whose run is in
 # progress. Narration emitted inside it is tagged with the lane, so parallel
 # sub-agents' statuses can be shown apart. None outside a dispatch.
 _dispatch_lane: ContextVar[Optional[tuple[str, str]]] = ContextVar("dispatch_lane", default=None)
@@ -68,7 +68,7 @@ _mcp_failure_state: ContextVar[Optional[dict[str, Any]]] = ContextVar("mcp_failu
 def emit_status(message: str, *, stage: str | None = None, detail: Any = None) -> None:
     """Emit a user-visible progress message for the active SSE stream.
 
-    ``stage``/``detail`` (T19) are additive structured fields — a small
+    ``stage``/``detail`` are additive structured fields — a small
     closed vocabulary (config.workflow_stages) driving the frontend's
     workflow strip and the eval's stage-sequence assertions. Omitting them
     keeps producing the bare ``{"message": ...}`` shape earlier callers and
@@ -122,7 +122,7 @@ def emit_job_progress(
 
 def emit_chart(payload: dict[str, Any]) -> None:
     """Emit a full chart render payload for the active SSE stream, out-of-band
-    from the tool's model-facing return value (T13 two-audience split: the
+    from the tool's model-facing return value (two-audience split: the
     model gets a compact summary, the frontend gets this full payload via the
     existing chart/artifact pipeline)."""
     emitter = _chart_emitter.get()
@@ -131,11 +131,11 @@ def emit_chart(payload: dict[str, Any]) -> None:
 
 
 def emit_variable_choice(payload: dict[str, Any]) -> None:
-    """T49: emit the deterministic variable-choice picker for the active SSE
+    """Emit the deterministic variable-choice picker for the active SSE
     stream, out-of-band from the tool's model-facing return value -- the same
-    two-audience split as emit_chart. The model gets a compact, P1-bounded 'a
-    picker was shown' tool result; the frontend gets THIS full, uncapped
-    candidate list, guaranteed to be exactly what the T48 resolver computed
+    two-audience split as emit_chart. The model gets a compact, size-bounded
+    'a picker was shown' tool result; the frontend gets THIS full, uncapped
+    candidate list, guaranteed to be exactly what the variable resolver computed
     (never narrated or truncated by the model). run_satellite captures it and
     fills each candidate's auto-send prompt from the original request."""
     emitter = _variable_choice_emitter.get()
@@ -193,7 +193,7 @@ def current_user_id() -> str | None:
 
 def current_user_message() -> str | None:
     """The researcher's message for the active chat turn, exactly as sent.
-    T64 D6: the dispatch layer puts this in front of every sub-agent task, so
+    The dispatch layer puts this in front of every sub-agent task, so
     the researcher's own words reach the sub-agent without the supervisor
     model writing them."""
     return _current_user_message.get()
@@ -212,7 +212,7 @@ def user_message_context(message: str) -> Iterator[None]:
 
 def ground_validation_allowed() -> bool:
     """Whether the satellite agent's own ground tools (validate_against_ground,
-    exceedance_overlay) may run for the task in progress. T64: under the
+    exceedance_overlay) may run for the task in progress. Under the
     supervisor's dispatch, only a satellite request whose intent is compare
     may; ground data is otherwise the supervisor's to request. True outside a
     dispatch, so the router fast path keeps every tool."""
@@ -481,7 +481,7 @@ async def stream_response(
     # below: a nested stream_response call (run_ground/run_satellite's own
     # inner stream) never passes user_id, so this must not clobber an
     # outer-bound value back to None — the caller that already bound it via
-    # user_id_context (T26) stays in effect for the nested call.
+    # user_id_context stays in effect for the nested call.
     user_token = None
     if user_id is not None and _current_user_id.get() is None:
         user_token = _current_user_id.set(user_id)

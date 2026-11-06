@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 from tta_backend.utils.phase_timing import record_phase
 
-# A run whose end callback never arrives (a turn cancelled by the T38
+# A run whose end callback never arrives (a turn cancelled by the
 # whole-turn deadline is the realistic case) would otherwise pin its entry
 # forever. Insertion order is preserved, so the oldest entries are the ones
 # evicted -- and an entry old enough to be evicted under this bound belongs

@@ -9,7 +9,7 @@ known-wrong UMM-Var/CF record, keyed by short_name, taking precedence over
 whatever the file itself says. Populated from the live-matrix quirk ledger
 as entries arrive.
 
-resolve_mask_info (T25 Phase 1) layers a third tier — describe_dataset's
+resolve_mask_info layers a third tier — describe_dataset's
 per-variable UMM-Var facts — between the override/collections.yaml tier
 above and the CF-attrs fallback, and records which tier won so a caller
 never has to guess whether masking ran silently.
@@ -55,14 +55,9 @@ def col_info_for_short_name(short_name: str | None) -> dict[str, Any]:
     """The pinned collections.yaml registry entry for ``short_name`` -- the
     identity marker a real opened NASA granule carries as a dataset-level
     global attribute, not a registry dict key -- merged with MASK_OVERRIDES
-    on top (T25 masking-execution fix).
-
-    Before this, a tool's col_info was built from MASK_OVERRIDES alone
-    (always {} today, since it only holds hand-verified quirk corrections),
-    so collections.yaml's pinned qa_good_values/quality_flag_var for
-    TEMPO_NO2 etc. never reached apply_quality_mask: the tool layer had no
-    collection_id, and the science variable name (e.g.
-    ``vertical_column_troposphere``) is not a registry key. Matching is
+    on top, so pinned rules (qa_good_values/quality_flag_var) reach
+    apply_quality_mask even though the tool layer has no collection_id and
+    the science variable name isn't a registry key. Matching is
     case-insensitive against ``CollectionConfig.short_name``.
     """
     if not short_name:
@@ -85,11 +80,9 @@ def col_info_for_variable(da: Any, ds: Any = None) -> dict[str, Any]:
     Collection identity is a *dataset-level* fact, so the opened Dataset's
     attrs are checked before the per-variable ``da.attrs``: xarray does not
     propagate a Dataset's global attrs onto a DataArray pulled out of it, and
-    real NASA products carry the marker only on the Dataset (live-verified
-    2026-07-12: MODIS AER_DBDT AOD). A caller holding both must therefore pass
-    both -- resolving from ``da`` alone finds no collection for those
-    products, so no quality_flag_var reaches the mask and quality masking
-    silently never runs (T25 masking-execution fix).
+    real NASA products (e.g. MODIS AER_DBDT AOD) carry the marker only on the
+    Dataset. A caller holding both must pass both, or quality masking
+    silently never runs.
 
     Falls back to the variable's own name when neither carries an identity
     marker, so a MASK_OVERRIDES quirk keyed on it still applies.
@@ -108,7 +101,7 @@ def resolve_mask_info(
     umm_var_variable: dict[str, Any] | None = None,
     cf_attrs: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Layer fill_value/valid_min/valid_max/units per the PRD T25 precedence:
+    """Layer fill_value/valid_min/valid_max/units by precedence:
     collections.yaml/MASK_OVERRIDES (``yaml_info``) -> describe_dataset's
     per-variable UMM-Var facts (``umm_var_variable``) -> the file's own CF
     attrs (``cf_attrs``) -> mask nothing. The first tier that supplies a

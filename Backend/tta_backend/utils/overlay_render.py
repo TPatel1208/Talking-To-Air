@@ -1,4 +1,4 @@
-"""Server-rendered data overlay PNGs for the MapLibre map engine (T23).
+"""Server-rendered data overlay PNGs for the MapLibre map engine.
 
 Reprojects a lat/lon (EPSG:4326) grid to Web Mercator (EPSG:3857) so the
 raster's internal pixel spacing matches what MapLibre's `image` source

@@ -51,7 +51,7 @@ def get_preset_collections() -> list[dict[str, str]]:
     needed", so a typo in a preset's key must not fail as a bare ``KeyError``
     that names nothing useful. Validate every key up front and raise one clear
     error naming *all* the missing keys, so dataset onboarding is as safe as
-    the header claims (T44)."""
+    the header claims."""
     reg = load_registry()
     missing = [key for key, _ in _PRESETS if key not in reg]
     if missing:

@@ -1,8 +1,7 @@
 """
 datasets/qa_flags.py
 ======================
-T25 Phase 3: the three-tier QA-flag masking doctrine (decision 2026-07-09/10),
-kept beside mask_info.py (which owns fill_value/valid_min/valid_max) because
+The three-tier QA-flag masking rules, kept beside mask_info.py (which owns fill_value/valid_min/valid_max) because
 QA is a distinct fact but the same doctrine applies -- this is the one module
 where the good-token vocabulary and the ambiguity boundary live, so neither
 is scattered across call sites.
@@ -20,8 +19,8 @@ Tiers:
   3. Neither a pinned rule nor CF flag_values/flag_meanings -> no mask,
      recorded QA_NOT_APPLIED.
 
-Promotion (inferred -> pinned) is a manual collections.yaml edit (PRD:
-"do not build the promotion tooling") -- this module only makes inferred
+Promotion (inferred -> pinned) is a manual collections.yaml edit (there's
+deliberately no tooling for it) -- this module only makes inferred
 records greppable via the ``qa_flags_inferred_mask`` log event.
 """
 from __future__ import annotations

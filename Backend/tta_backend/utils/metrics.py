@@ -123,10 +123,8 @@ CUBE_EVICTIONS_TOTAL = Counter(
     "cube_evictions_total",
     "Cubes evicted from the cube store to stay under CUBE_STORE_MAX_BYTES.",
 )
-# T54, counted separately from cube_hits/cube_misses on purpose: a cube hit
-# says the cache saved the open pipeline, an *index* hit says it also saved the
-# MCP round-trip that used to gate the lookup. Those are different wins, and
-# collapsing them would make the reorder's own contribution unmeasurable.
+# Counted separately from cube_hits/cube_misses: a cube hit saved the open
+# pipeline, an *index* hit also saved the MCP round-trip. Different wins.
 CUBE_INDEX_HITS_TOTAL = Counter(
     "cube_index_hits_total",
     "Cubes served straight from the handle index, with no export_result round-trip.",
@@ -195,7 +193,7 @@ PIPELINE_PHASE_DURATION_SECONDS = Histogram(
 # *cumulative* elapsed since turn start rather than a phase's own span.
 PIPELINE_PHASES = (
     "export", "extract", "open", "crop", "mask", "aggregate", "render",
-    # T55: the QA pass-rate counting inside the masking path. Its own phase,
+    # The QA pass-rate counting inside the masking path. Its own phase,
     # not folded into "mask", because it adds an eager reduction to a
     # lazily-opened bundle and what it costs is exactly what must stay visible.
     "qa_pass_rate",
@@ -230,11 +228,9 @@ PIPELINE_PHASES = (
     "provenance",
     "evidence",
     "related_variables",
-    # "frames" is T59's bucketed reduction, the one behind a map's scrubber.
-    # Its own phase for the same reason "qa_pass_rate" is: it is a whole extra
-    # graph walk over a lazily-opened bundle -- Phase 3 measured 9.2 s against
-    # a 12-15 s open+mask on a real regional TEMPO bundle -- so a plot that
-    # gains a scrubber gains that time, and a feature's cost has to be visible
+    # "frames" is the bucketed reduction behind a map's scrubber. Its own
+    # phase because it's a whole extra graph walk (~9 s against a 12-15 s
+    # open+mask on a regional TEMPO bundle), and that cost should be visible
     # rather than smeared across "aggregate".
     "frames",
     # "agent_step" is one LangGraph superstep: the wall-clock gap between
@@ -495,7 +491,7 @@ def _current_process_rss_bytes() -> int | None:
 
     Peak is deliberately avoided in every reader below: ``ru_maxrss`` and
     ``PeakWorkingSetSize`` only ever climb, which would hide the
-    plateau-then-shrink shape (T45) this gauge was added to make falsifiable.
+    plateau-then-shrink shape this gauge was added to make falsifiable.
 
     Returns None only on a platform none of the readers cover, in which case
     ``refresh_process_gauges`` leaves the gauge alone rather than raising or
@@ -516,16 +512,10 @@ def refresh_process_gauges() -> None:
     Each source is best-effort: a missing/uninstalled dependency skips that
     one gauge rather than failing the whole scrape.
 
-    There is deliberately no open-figure gauge here. T45 added one, reading
-    ``plt.get_fignums()``, back when the PNG export built figures through
-    ``pyplot`` and could leak them. ``export_service`` and ``plotting`` --
-    the only modules in this process that build figures -- now use the
-    object-oriented API (``Figure`` + ``FigureCanvasAgg``), which files
-    nothing in pyplot's process-global registry, so that gauge could only
-    ever report 0. Reading it also meant importing ``pyplot`` here, which
-    was the one thing left in the whole process still pulling in the very
-    registry the render path was moved off. The regression it watched for
-    is pinned in CI instead, by
+    There is deliberately no open-figure gauge: figures are built with the
+    object-oriented API (``Figure`` + ``FigureCanvasAgg``), never pyplot, so
+    it would always read 0, and reading it would import pyplot here. That's
+    enforced in CI by
     ``test_export_event_loop_offload.NoProductionModuleImportsPyplotTests``.
     """
     rss = _current_process_rss_bytes()

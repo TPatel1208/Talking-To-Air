@@ -285,7 +285,7 @@ async def list_session_metadata(
 async def get_ground_monitor_context(thread_id: str) -> dict[str, str]:
     """The ground path's cross-turn monitor context (last monitor discussed
     on this thread) — per-thread, not process-wide, so concurrent
-    conversations never bleed into each other (T14)."""
+    conversations never bleed into each other."""
     async with pg_connection() as conn:
         cursor = await conn.execute(
             "SELECT ground_monitor_context FROM session_metadata WHERE thread_id = %s",

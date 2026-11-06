@@ -23,8 +23,7 @@ _DIVERGING_COLORMAP = "RdBu_r"
 _NO2_OMI_NAME = "no2_omi"
 # Placeholder NASA/OMI-style tropospheric-NO2 stops (dark purple -> blue ->
 # green -> yellow -> red). TODO: replace with the exact NASA/OMI NO2 LUT
-# stops once a reference source is confirmed (flagged as an open build-time
-# unknown in the T23 PRD).
+# stops once a reference source is confirmed.
 _NO2_OMI_STOPS = [
     (0.0, (28, 28, 92)),
     (0.2, (30, 100, 180)),

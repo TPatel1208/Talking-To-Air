@@ -57,7 +57,7 @@ def extract_last_text(
     ``truncate=False`` returns the untruncated text — callers that still
     need to parse a structured envelope out of it must do so before any
     length limit is applied, so a compliant answer is never destroyed by
-    truncation (T11). Truncate the envelope's extracted summary afterwards
+    truncation. Truncate the envelope's extracted summary afterwards
     instead.
     """
     for msg in reversed(result.get("messages", [])):

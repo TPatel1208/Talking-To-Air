@@ -1,4 +1,4 @@
-"""T30: encryption for per-user connector secrets (e.g. pasted EDL tokens).
+"""Encryption for per-user connector secrets (e.g. pasted EDL tokens).
 
 MultiFernet from day one -- CONNECTOR_ENCRYPTION_KEY is a comma-separated key
 list (first key encrypts, all keys are tried on decrypt), so rotating the key
