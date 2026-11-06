@@ -60,7 +60,7 @@ class ChartService:
         return agent_result_to_json(await self._with_chart_references(result, thread_id, user_id))
 
     async def checkpoint_dispatch_envelope(self, batch: DispatchResult, thread_id: str, user_id: str) -> str:
-        """``batch`` (the T64 dispatch tool's result) as checkpointed JSON,
+        """``batch`` (the dispatch tool's result) as checkpointed JSON,
         each item's charts swapped for references exactly as in
         checkpoint_envelope."""
         items = [

@@ -63,10 +63,9 @@ class HistoryService:
         return [self._with_header(msg) for msg in self._merge_adjacent_assistant_messages(result)]
 
     def _with_header(self, msg: dict[str, Any]) -> dict[str, Any]:
-        """T64 D14: an answer to a dispatch turn opens with the header naming
-        what ran, as it did when it streamed. The checkpoint holds only the
-        model's own text, so the header is derived again here. A turn with no
-        dispatch batch (pre-T64 ask_* turns) keeps the text it was saved with."""
+        """Re-add the "Data sources" header to a dispatch turn's answer, since
+        the checkpoint holds only the model's text. Legacy ask_* turns keep
+        their saved text."""
         consulted = msg.pop(_CONSULTED, None)
         if consulted:
             msg["content"] = with_sources_header(msg["content"], consulted)
@@ -131,11 +130,9 @@ class HistoryService:
                     claimed = await artifact_store.claim(ref["id"], user_id, thread_id)
                     artifact = claimed.model_dump(exclude_none=True)
                 except KeyError:
-                    # T39: claim() rehydrates a previously-claimed artifact from
-                    # Postgres, so this now only fires for one that was minted but
-                    # never claimed before its TTL — fall back to the ref data
-                    # carried in the message so the frontend can show a 404 error
-                    # rather than silently hiding the table.
+                    # Only an artifact never claimed before its TTL lands here.
+                    # Fall back to the ref so the frontend shows a 404 instead
+                    # of hiding the table.
                     artifact = {k: v for k, v in ref.items() if k in ("id", "type", "title", "row_count", "metadata")}
                     if not artifact.get("id") or not artifact.get("type"):
                         continue
@@ -193,7 +190,7 @@ class HistoryService:
         if not isinstance(parsed, dict):
             return []
         # Two formats land in supervisor ToolMessages:
-        #   AgentResult JSON  → key "artifacts"   (pre-T64 ask_* tools, fast-path write-back)
+        #   AgentResult JSON  → key "artifacts"   (legacy ask_* tools, fast-path write-back)
         #   EPA tool results  → key "_artifact_refs" (never stored at supervisor level,
         #                        but kept for safety in case of future tool refactors)
         refs = parsed.get("artifacts") or parsed.get("_artifact_refs") or []

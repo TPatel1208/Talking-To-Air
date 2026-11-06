@@ -1,7 +1,7 @@
 """
 consulted_header.py
 -------------------
-T64 D14: the "Data sources: ..." line that opens a sub-agent answer. It is
+The "Data sources: ..." line that opens a sub-agent answer. It is
 derived from what the turn's dispatch calls actually ran, so it can never
 claim a dataset or ground check that did not happen; any header the model
 writes itself is dropped.

@@ -45,8 +45,8 @@ DEFAULT_POLL_INTERVAL_SECONDS = 0.1
 #: One MGET per replica per interval, skipped entirely while it is idle.
 DEFAULT_STOP_POLL_SECONDS = 2.0
 
-#: How long a turn's stream may stay silent before a reader gives up on it
-#: (D14). A multiple of the heartbeat rather than a number of its own: the
+#: How long a turn's stream may stay silent before a reader gives up on it.
+#: A multiple of the heartbeat rather than a number of its own: the
 #: watchdog in ``utils.streaming`` is what guarantees a live turn writes at
 #: all during a slow retrieval, so the threshold is only meaningful relative
 #: to it. Three intervals leaves room for two missed heartbeats before a turn
@@ -79,13 +79,13 @@ DEFAULT_RESUBSCRIBE_DELAY_SECONDS = 0.5
 STOP_CHANNEL = "chat:turn:stop"
 
 #: The terminal kind a stopped turn is marked with. Not ``done``: the user
-#: got the work that finished, not the answer they asked for (D11).
+#: got the work that finished, not the answer they asked for.
 STOPPED = "stopped"
 
 #: The terminal kind a turn gets when nobody asked it to end: its replica went
 #: down under it, or a reader found its stream abandoned. Distinct from
 #: ``stopped`` because the user did not choose it and the retry is theirs to
-#: make (D16).
+#: make.
 INTERRUPTED = "interrupted"
 
 #: The follower's frame telling a reader that what comes next does not join
@@ -315,7 +315,7 @@ class TurnRegistry:
     async def stop(self, turn_id: str) -> None:
         """Cancel this turn now, wherever it is running.
 
-        Hard, not cooperative (D9): waiting for a superstep boundary makes
+        Hard, not cooperative: waiting for a superstep boundary makes
         Stop's latency the slowest step's, and a button that takes 40s to
         visibly stop reads as broken.
         """
@@ -546,7 +546,7 @@ class TurnRegistry:
                     return
                 quiet_since = attached_ms if tail.written_ms is None else tail.written_ms
                 if _now_ms() - quiet_since > self._stale_after * 1000:
-                    # D14: nobody is writing and nobody marked it finished, so
+                    # Nobody is writing and nobody marked it finished, so
                     # the replica that owned it went down without draining —
                     # killed, OOMed, or taken with its node. Reported rather
                     # than written: a turn merely paused longer than the
@@ -588,7 +588,7 @@ class TurnRegistry:
                 # which cancels the consumer and leaves this task alive to
                 # write; a cancel landing here instead leaves the turn
                 # unmarked, and a reader learns it is dead from the stale
-                # stream (D14).
+                # stream.
                 raise
             if kind == STOPPED:
                 # Only a user's Stop drops the retrievals. An interrupted turn
@@ -712,9 +712,9 @@ def _render(event: str, data: dict[str, Any]) -> str:
 def _event_name(frame: str) -> str:
     """The event a rendered SSE frame carries.
 
-    Read back off the frame rather than passed alongside it, because D5 puts
-    the rendered bytes in the log verbatim — the name is already in them, and
-    a parallel channel could disagree with what was stored.
+    Read back off the frame rather than passed alongside it: the log stores
+    the rendered bytes verbatim, so the name is already in them, and a
+    parallel channel could disagree with what was stored.
     """
     first_line, _, _ = frame.partition("\n")
     prefix = "event: "
