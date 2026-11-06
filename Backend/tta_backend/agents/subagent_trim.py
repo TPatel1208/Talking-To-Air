@@ -1,7 +1,7 @@
 """
 agents/subagent_trim.py
 =========================
-High-ceiling trim safety net for the stateless sub-agents (T13). Reuses the
+High-ceiling trim safety net for the stateless sub-agents. Reuses the
 supervisor's trim_middleware pattern (wrap_model_call + trim_messages) with a
 ceiling sized so it never fires in a healthy workflow — compact tool results
 (tools/satellite_tools/plot_tools.py::_save_chart,

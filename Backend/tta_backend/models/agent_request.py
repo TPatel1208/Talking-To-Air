@@ -1,7 +1,7 @@
 """
 agent_request.py
 ----------------
-T64: the typed requests the supervisor hands its sub-agents through the
+The typed requests the supervisor hands its sub-agents through the
 ``dispatch`` tool, in place of a free-text task string.
 """
 from __future__ import annotations
@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 # The intent enums' docstrings are the descriptions the model reads in the
 # dispatch schema ($defs), one line per value: keep them model-facing. They
 # sit on the enum, not the field, so each intent field stays a bare $ref --
-# the shape the T64 Phase 0 gate verified.
+# the shape verified against the supported Gemini models.
 class SatelliteIntent(StrEnum):
     """What the satellite request is for.
     visualize: a map, time series or vertical profile of the variable, also when ground readings are wanted alongside; those are a separate ground request.
@@ -164,11 +164,11 @@ def _render_dates(start: date | None, end: date | None) -> str | None:
 def dispatch_json_schema() -> dict[str, Any]:
     """DispatchArgs as the JSON Schema the model is given.
 
-    This is the shape the T64 Phase 0 gate verified on every vetted Gemini
-    model: the union as a plain ``anyOf``, with the list caps. The
-    discriminator (``oneOf`` + ``discriminator``) and ``extra="forbid"``
-    (``additionalProperties``) were not part of that gate, so they are
-    removed here and enforced by validating against DispatchArgs instead.
+    This is the shape verified on every supported Gemini model: the union as
+    a plain ``anyOf``, with the list caps. The discriminator (``oneOf`` +
+    ``discriminator``) and ``extra="forbid"`` (``additionalProperties``)
+    weren't verified, so they're removed here and enforced by validating
+    against DispatchArgs instead.
 
     Each branch's ``agent`` tag is marked required. Validation picks the
     branch by it, but the field has a default, so the schema called it

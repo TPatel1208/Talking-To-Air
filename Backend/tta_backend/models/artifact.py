@@ -71,7 +71,7 @@ class ProfileArtifactMetadata(BaseModel):
     """A vertical profile: one value per atmospheric layer, with the physical
     axis those layers sit on.
 
-    Deliberately not a ``timeseries`` (T56 D2). The two look alike -- a label
+    Deliberately not a ``timeseries``. The two look alike -- a label
     and a list of numbers -- but reusing that vocabulary would let the export
     and compare paths treat pressures as timestamps: a CSV with a ``time``
     column full of hPa, and an overlay putting a profile on the same axis as a
