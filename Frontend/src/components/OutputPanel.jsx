@@ -187,7 +187,7 @@ function MetaChip({ children }) {
 }
 
 // `subtitle` states what a number was computed over. Two percentages in one
-// grid that answer different questions (T55) are only safe when each says so.
+// grid that answer different questions are only safe when each says so.
 function StatCard({ label, value, subtitle }) {
   return (
     <div style={{
@@ -209,11 +209,8 @@ function StatCard({ label, value, subtitle }) {
 // actually ran on the plotted data (and by which tier) rather than inferring
 // it from the valid-pixel count above. Renders nothing when the payload
 // carries no masking record.
-// The one-line, plain-language caveat for a region_type that isn't faithful
-// (T42) now lives in utils/maskingProvenance so it can be tested -- this repo
-// has no jsdom, and the `|| region.regionType` fallback it replaced is how a
-// new backend value (T60's composite_union) ends up rendered as a raw enum
-// under a heading that implies a defect.
+// The plain-language caveat for a region_type that isn't faithful lives in
+// utils/maskingProvenance so it can be tested (no jsdom here).
 
 // `masking` is optional: StatisticsTab hoists one resolveMasking(chart) and
 // shares it with the pass-rate card so both read the identical object. Falls
@@ -235,7 +232,7 @@ function MaskingDisclosure({ chart, masking: hoistedMasking }) {
           <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '5px' }}>
             QA-flag masking
           </div>
-          {/* T55: the status and the rate it produced read as one fact --
+          {/* The status and the rate it produced read as one fact --
               "verified" alone never said how much data the mask discarded. */}
           <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>
             {masking.qaStatus}{passRate !== null && ` — ${passRate} of checked pixels passed`}
@@ -260,7 +257,7 @@ function MaskingDisclosure({ chart, masking: hoistedMasking }) {
           <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', lineHeight: 1.45 }}>
             {region.displayName ? <strong>{region.displayName}</strong> : 'Region'}{' '}
             {regionTypeNote(region.regionType)}
-            {/* T60 D10a: rasterization fidelity and shape provenance are two
+            {/* Rasterization fidelity and shape provenance are two
                 facts, and a self-healed composite must still say it was a
                 construction. Rendered only when the origin adds something the
                 note above doesn't already say. */}
@@ -272,7 +269,7 @@ function MaskingDisclosure({ chart, masking: hoistedMasking }) {
   )
 }
 
-// Deterministic "Supporting information" (PRD T36 Phase 2): factual companion
+// Deterministic "Supporting information": factual companion
 // evidence -- QA pass rate, retrieval uncertainty, cloud fraction, aerosol
 // index -- co-located with the plotted science variable and carrying honest
 // coverage, computed backend-side (provenance.evidence). No narrative: a
@@ -331,9 +328,9 @@ function qaPassRateCard(masking) {
   return { value: rate, subtitle: parts.join(' · ') }
 }
 
-// The same card for one T59 interval. `qa_pass_rate` is null when QA never ran
-// on that interval and 0.0 when it ran and rejected everything -- two states a
-// blank map cannot tell apart on its own (D10), so the card names which.
+// The same card for one scrubber interval. `qa_pass_rate` is null when QA never
+// ran on that interval and 0.0 when it ran and rejected everything -- two states
+// a blank map cannot tell apart on its own, so the card names which.
 function framePassRateCard(stop) {
   const rate = formatFrameQaRate(stop?.qaPassRate)
   if (rate === null) return { value: 'Not applied', subtitle: 'QA never ran on this interval' }
@@ -352,15 +349,14 @@ const COUNT_BASIS = {
   series: 'time steps',
 }
 
-// `stop` is the scrubber's current position (T59 D11): statistics and QA
+// `stop` is the scrubber's current position: statistics and QA
 // disclosure follow the slider, while masking provenance and evidence below
 // describe the ARTIFACT and stay put -- provenance flickering per frame would
 // imply the source changed. `stop` is null, or the aggregate, whenever the
 // scrubber is closed or parked, and then this renders exactly what it always did.
-// `statistic` is D6a's toggle (Phase 15). It changes no number here -- these
-// are the per-frame REGIONAL scalars off the mean field, and Phase 13 decision
-// 2 kept them out of the per-plane block on purpose -- so it only scopes the
-// three cards those numbers belong to. `count`, `validPct` and the pass rate
+// `statistic` is the mean/max/min toggle. It changes no number here -- these
+// are the per-frame REGIONAL scalars off the mean field -- so it only scopes
+// the three cards those numbers belong to. `count`, `validPct` and the pass rate
 // are facts about the interval and stay uncaveated.
 function StatisticsTab({ chart, stop, statistic = 'mean' }) {
   const stats = useMemo(() => statsForStop(chart, stop, statistic), [chart, stop, statistic])
@@ -389,8 +385,7 @@ function StatisticsTab({ chart, stop, statistic = 'mean' }) {
         {/* `fieldNote` is absent entirely in mean mode, so these three render
             exactly as they always have. In a plane mode it names the field
             they are of -- the regional max of the MEAN field is a different
-            number from the max plane's peak (50.5 against 100.0 on Phase 12's
-            fixture), and they wear the same word. */}
+            number from the max plane's peak, though both are called "max". */}
         <StatCard label="Mean" value={formatStatValue(stats.mean, stats.units)} subtitle={stats.fieldNote} />
         <StatCard label="Max" value={formatStatValue(stats.max, stats.units)} subtitle={stats.fieldNote} />
         <StatCard label="Min" value={formatStatValue(stats.min, stats.units)} subtitle={stats.fieldNote} />
@@ -410,13 +405,13 @@ function StatisticsTab({ chart, stop, statistic = 'mean' }) {
   )
 }
 
-// ── Metadata tab (T32): Overview (fully expanded) / Details (accordion) ────
+// ── Metadata tab: Overview (fully expanded) / Details (accordion) ──────────
 // Field derivation (which fact goes in which section, "Not available"
 // fallbacks, citation/query string-building) lives in utils/metadataDisplay
 // -- pure and unit-tested there; this file is just the JSX shell around it.
 // MetaField/smallButtonStyle/copyToClipboard live in metadataPrimitives.jsx
 // and MetadataOverview in its own module (imported above) so CompareGrid.jsx
-// can use MetadataOverview without importing this file (T34 review fix).
+// can use MetadataOverview without importing this file.
 
 function DetailsSection({ title, children }) {
   return (
@@ -473,7 +468,7 @@ function ProvenanceSection({ chart }) {
       <MetaField label="Quality flag variable" value={qualityFlagVar} />
       <MetaField label="QA good values" value={qaGoodValues ? JSON.stringify(qaGoodValues) : null} />
       <MetaField label="QA bad values" value={qaBadValues ? JSON.stringify(qaBadValues) : null} />
-      {/* T55: what the rule above actually did to this data. */}
+      {/* What the rule above actually did to this data. */}
       <MetaField label="QA pass rate" value={qaPassRate} />
       <MetaField label="QA pass rate basis" value={qaPassRateBasis} />
       <MetaField label="Fill-value source" value={fillValueSource} />
@@ -550,7 +545,7 @@ const metaViewButtonStyle = (active) => ({
   padding: '5px 11px', cursor: 'pointer',
 })
 
-// ── Artifact-shaped Metadata tab (T33): table and ground-validation
+// ── Artifact-shaped Metadata tab: table and ground-validation
 // timeseries artifacts (map/comparison/chart-backed timeseries are
 // deliberately excluded -- see utils/artifactReachability.js). A sibling to
 // MetadataOverview/MetadataDetails above, reading ArtifactReference.metadata
@@ -725,7 +720,7 @@ function GroundValidationDetails({ artifact }) {
 
 function MetadataTab({ chart, artifact, onViewStatistics }) {
   const [view, setView] = useState('overview')
-  // Lifted above the Overview/Details toggle (T33 review fix) so switching
+  // Lifted above the Overview/Details toggle so switching
   // between the two sub-tabs on a table artifact reuses the same fetched
   // page instead of each mounting its own useTableColumnsPreview and
   // refetching /api/artifacts/{id} every time the user toggles.
@@ -766,16 +761,9 @@ function MetadataTab({ chart, artifact, onViewStatistics }) {
     // map, comparison, timeseries and profile artifacts, which render through
     // CardShell and so carry ExportButtons.
     //
-    // This used to be handed an explicitly undefined token prop, two lines
-    // below the same function handing the real one to TableMetadataDetails, so
-    // the asymmetry was deliberate rather than overlooked. (Spelling that prop
-    // out here would trip the authWiring guard that bans it -- it reads raw
-    // source, comments included, which is the bluntness that makes it hold.) Its effect was that those export buttons sent no credential
-    // and every download here failed with a 401. Since Phase 5 there is no
-    // token to withhold: apiFetch reads the session at call time, so this path
-    // authenticates like every other and the exports work. Kept that way on
-    // purpose -- a download offered by the UI should either work or not be
-    // offered, and nothing here wants an inert button.
+    // No credential is passed here: apiFetch reads the session at call time,
+    // so these exports authenticate like every other request. (Don't name the
+    // old token prop in this comment -- the authWiring guard reads raw source.)
     return <ArtifactMessage artifact={artifact} />
   }
   return null
@@ -794,7 +782,7 @@ const CHART_TABS = {
 }
 // Table artifacts keep their existing grid alongside the new Metadata tab;
 // ground-validation timeseries artifacts have no chartable series data of
-// their own (T33 -- see PRD), so Metadata is their only tab.
+// their own, so Metadata is their only tab.
 const ARTIFACT_TABS = {
   ground_map: ['map', 'table', 'metadata'],
   table: ['table', 'metadata'],
@@ -854,7 +842,7 @@ function CollapseHint({ onCollapseSessions, onCollapseRightPanel, onDismiss }) {
   )
 }
 
-// Compare control (T28): idle "Compare" button -> inline 2/3/4 chooser ->
+// Compare control: idle "Compare" button -> inline 2/3/4 chooser ->
 // active status + exit. Lives in the output panel header regardless of
 // which body is currently rendered (empty state, single output, or grid).
 function CompareControl({ compareMode, compareCount, filledCount, onStart, onCancelChoosing, onPickCount, onExit }) {
@@ -916,7 +904,7 @@ function HeaderRightControls({
   )
 }
 
-// Table and ground-validation timeseries artifacts (T33) get an outer tab
+// Table and ground-validation timeseries artifacts get an outer tab
 // bar of their own -- table keeps its existing grid alongside a new
 // Metadata tab; ground-validation timeseries has no chartable series data
 // of its own, so Metadata is its only tab (see ARTIFACT_TABS). The caller
@@ -1006,12 +994,12 @@ export default function OutputPanel({
   const [hintDismissedForSession, setHintDismissedForSession] = useState(null)
   const plotRootRef = useRef(null)
 
-  // ── T59 scrubber state ────────────────────────────────────────────────────
+  // ── Scrubber state ────────────────────────────────────────────────────────
   // Keyed by the focused output the same way tabChoice is, so focusing a
   // different chart drops back to the period aggregate without an effect
   // resyncing it. Lifted to this level (not into MapLibreHeatmapPanel) because
-  // D11 makes the Statistics tab follow the slider, and that tab is a sibling.
-  // `statistic` is D6a's toggle (Phase 15) and rides the same key: focusing a
+  // the Statistics tab follows the slider, and that tab is a sibling.
+  // `statistic` (the mean/max/min toggle) rides the same key: focusing a
   // different chart drops back to the mean as well as to the aggregate, since
   // the plane a reader chose on one chart says nothing about the next.
   const [scrubChoice, setScrubChoice] = useState({ source: null, on: false, index: 0, statistic: 'mean' })
@@ -1225,8 +1213,8 @@ export default function OutputPanel({
               colorScaleOverride={scrubScale}
               frame={activeFrame}
             />
-            {/* T59: the scrubber lives INSIDE the Map tab. CHART_TABS.heatmap
-                is unchanged and payload.type stays "heatmap" (D15). */}
+            {/* The scrubber lives INSIDE the Map tab. CHART_TABS.heatmap
+                is unchanged and payload.type stays "heatmap". */}
             <MapScrubber
               state={frameState}
               delta={frameDelta}
@@ -1248,7 +1236,7 @@ export default function OutputPanel({
         {chart.type !== 'smoke_map' && (activeTab === 'map' || activeTab === 'chart') && (
           <RelatedVariablesPanel chart={chart} onSend={onSend} />
         )}
-        {/* D11: the tab follows the slider. It also has to follow the TOGGLE,
+        {/* The tab follows the slider. It also has to follow the TOGGLE,
             because `stop.statistics` are the regional scalars of the MEAN
             field whichever plane the map is drawing. */}
         {activeTab === 'statistics' && <StatisticsTab chart={chart} stop={currentStop} statistic={statistic.rendered} />}

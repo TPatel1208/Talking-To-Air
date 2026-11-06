@@ -6,7 +6,7 @@ Deterministic pre-classifier for user messages.
 Classifies messages into GROUND, SATELLITE, BOTH, or LLM routing categories
 without making any LLM calls. GROUND/SATELLITE messages are dispatched
 directly to the corresponding sub-agent by the chat streaming service,
-bypassing the supervisor entirely (T14 router fast path); BOTH/LLM messages
+bypassing the supervisor entirely (the fast path); BOTH/LLM messages
 go to the supervisor unchanged.
 
 Intent classes

@@ -1,7 +1,7 @@
 """
 services/data_download_service.py
 ====================================
-T10: backend seam behind the artifact data-download endpoints. Calls the
+Backend seam behind the artifact data-download endpoints. Calls the
 MCP's ``convert_format`` tool to materialize a handle in a downloadable
 format (e.g. NetCDF), then streams the converted file straight off disk —
 extends the existing export/download machinery (open_handle's file://

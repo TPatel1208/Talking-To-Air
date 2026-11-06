@@ -14,7 +14,7 @@ from tta_backend.config.settings import ConfigurationError, Settings
 _PROVIDERS = ("groq", "google", "portkey")
 
 # Tool metadata key naming a JSON Schema the tool's declaration must use
-# verbatim (T64), instead of one converted from its args_schema.
+# verbatim, instead of one converted from its args_schema.
 NATIVE_JSON_SCHEMA = "native_json_schema"
 
 
@@ -83,7 +83,7 @@ def _gemini_chat_class() -> Any:
 
     langchain_google_genai's converter reduces a list of ``anyOf`` items to a
     bare STRING/OBJECT, and its own bind_tools round-trips every tool through
-    a dict that cannot carry ``parameters_json_schema`` (T64 Phase 0 F1/F3).
+    a dict that cannot carry ``parameters_json_schema``.
     So tools naming a native schema are sent as one ready-made types.Tool,
     which the request builder passes through unconverted; every other tool is
     converted exactly as the parent does. Built lazily so importing this
@@ -134,7 +134,7 @@ def _portkey_chat_class() -> Any:
     """ChatOpenAI whose bind_tools honours NATIVE_JSON_SCHEMA.
 
     Without it, dispatch's schema comes from DispatchArgs, where ``agent`` is
-    optional, so a model can omit it and have the call rejected (T64)."""
+    optional, so a model can omit it and have the call rejected."""
     from langchain_openai import ChatOpenAI
 
     class PortkeyChat(ChatOpenAI):

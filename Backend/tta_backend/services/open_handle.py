@@ -120,10 +120,8 @@ async def open_handle(handle: str, tools: dict[str, BaseTool]) -> Any:
 async def _open_export(export: dict[str, Any]) -> Any:
     """Open a ready export off the event loop, carrying the whole response.
 
-    The delivered-content fields (``content_digest``/``partial``, upstream PRD
-    023) are what the cube key is derived from (T54), so the reader needs the
-    response rather than just the two fields the URI-and-media-type call used
-    to pass down.
+    The cube key is derived from ``content_digest``/``partial``, so the reader
+    needs the whole response, not just the URI and media type.
     """
     return await asyncio.to_thread(
         _open, export["storage_uri"], export["media_type"], export=export
@@ -131,27 +129,18 @@ async def _open_export(export: dict[str, Any]) -> Any:
 
 
 def _serve_from_index(handle: str) -> Any | None:
-    """T54: the cube for ``handle``, before the MCP is asked anything.
+    """The cached cube for ``handle``, found before asking the MCP anything.
 
-    T52 put the cache *behind* ``export_result``, so the key could not be
-    computed until the round-trip it was meant to shield you from had already
-    completed. The round-trip is cheap; its failure modes are not — an evicted
-    source sends ``open_handle`` into ``rematerialize`` -> ``await_retrieval``,
-    *minutes* of rebuilding the input to an answer already sitting on local
-    disk, and a crash-restarting MCP makes that cube unreachable outright.
+    Skipping ``export_result`` matters when the source was evicted (a
+    rematerialize can take minutes) or the MCP is down.
 
-    Never raises: this is a shortcut, and a shortcut that can fail a turn is
-    worse than no shortcut. Any trouble falls through to the ordinary
-    verify-first path below.
+    Never raises: any trouble falls through to the normal verify-first path.
     """
     from tta_backend.services import cube_cache
 
-    # Deliberately *not* wrapped in a ``phase_timer`` (T51). A miss here is
-    # followed by the real open, and emitting an ``open`` sample for both would
-    # put a near-zero duration into that histogram on every single miss —
-    # corrupting the distribution T51 exists to make trustworthy, and breaking
-    # its one-open-phase-per-open_handle contract. The dedicated
-    # ``cube_index_hits/misses`` counters are what make this path measurable.
+    # Not phase-timed: a miss is followed by the real open, and a second
+    # near-zero ``open`` sample would skew that histogram. The
+    # ``cube_index_hits/misses`` counters cover this path.
     try:
         return cube_cache.lookup_by_handle(handle)
     except Exception:  # noqa: BLE001 — best-effort, see docstring
@@ -168,10 +157,9 @@ def _cube_identity(export: dict[str, Any]) -> tuple[str, str, str] | None:
     both the read and the write call site rather than threading it through
     ``asyncio.to_thread``.
 
-    T54: the identity now prefers what the export says it *delivered*
-    (``content_digest``, upstream PRD 023) over the file's mtime and size, so a
-    replay that re-fetched the same granules keeps its cube instead of
-    rebuilding it — and one that genuinely drifted moves the key and misses.
+    Prefers the export's ``content_digest`` over file mtime/size, so a replay
+    that re-fetched identical granules keeps its cube, while changed data
+    misses.
     """
     from tta_backend.services.cube_cache import cache_key, netcdf_engine_signature, source_identity
 
@@ -196,7 +184,7 @@ def _cube_identity(export: dict[str, Any]) -> tuple[str, str, str] | None:
 
 
 def _consider_cube(export: dict[str, Any], ds: Any) -> None:
-    """Let the cube cache earn a write off this open (T52).
+    """Offer this open to the cube cache as a possible write.
 
     Scheduled here, in the async caller, rather than inside ``_open``: that
     runs on a worker thread via ``asyncio.to_thread``, where there is no
@@ -216,9 +204,7 @@ def _consider_cube(export: dict[str, Any], ds: Any) -> None:
             source=source,
             pipeline_version=OPEN_PIPELINE_VERSION,
             engine=cube_cache.netcdf_engine_signature(),
-            # T54: recorded in the manifest and indexed once the cube lands, so
-            # the next question about this handle can find it without asking
-            # the MCP where its bytes are.
+            # Indexed once the cube lands, so the next lookup can skip the MCP.
             handle=export.get("handle") or "",
             # The cube is written from a *lazy* Dataset still reading out of
             # the bundle-extract cache, whose pruner sweeps by mtime on a
@@ -230,15 +216,12 @@ def _consider_cube(export: dict[str, Any], ds: Any) -> None:
 
 
 async def _export(handle: str, tools: dict[str, BaseTool]) -> dict[str, Any]:
-    # T51: the MCP round-trip is its own phase — a turn that felt slow "opening
-    # data" may have spent all of it here, waiting on the MCP, and never
-    # touched a byte of the file.
+    # Timed separately so MCP wait time isn't mistaken for file-open time.
     async with phase_timer("export", handle=handle) as timing:
         raw = await tools["export_result"].ainvoke({"handle": handle})
         export = parse_tool_result(raw)
-        # The MCP echoes the handle, but the cube key and the index are both
-        # derived from it (T54), so pin it to the handle we actually asked
-        # about rather than trusting the echo to be the same string.
+        # The cube key derives from the handle, so use the one we asked for,
+        # not the MCP's echo.
         export["handle"] = handle
         timing["status"] = export.get("status")
         timing["size_bytes"] = export.get("size_bytes")
@@ -267,17 +250,16 @@ async def _recover(handle: str, tools: dict[str, BaseTool]) -> dict[str, Any]:
 
 
 def _open(storage_uri: str, media_type: str, *, export: dict[str, Any] | None = None) -> Any:
-    """Time the read as the ``open`` phase and dispatch by media type (T51).
+    """Time the read as the ``open`` phase and dispatch by media type.
 
     Timed here rather than inside each per-format branch so a Zarr, a bare
     NetCDF and a bundle all land in one comparable distribution. A bundle's
     ``extract`` phase nests *inside* this one: ``open`` is the whole
     file-to-Dataset span, and ``open - extract`` is the per-member open cost.
 
-    ``export`` is the full ready response, carrying the delivered-content
-    fields the cube key is derived from (T54). Optional so the direct callers
-    that only ever hold a URI and a media type (the live-smoke contract checks)
-    keep working — they simply key on filesystem identity, exactly as T52 did.
+    ``export`` is the full ready response (the cube key uses its
+    content_digest). Optional: callers with only a URI and media type key on
+    filesystem identity instead.
     """
     # ``members`` defaults to the single-file answer; the bundle path below
     # overwrites it with its own member count, which it already knows -- far
@@ -349,7 +331,7 @@ def _export_or_synthetic(export: dict[str, Any] | None, storage_uri: str, media_
 
 def _serve_from_cube_or_open(export: dict[str, Any], timing: dict[str, Any] | None, opener: Any) -> Any:
     """Return the cached cube for this export if there is a good one, else run
-    the open pipeline (T52).
+    the open pipeline.
 
     Deliberately *outside* the interpreting functions themselves, so
     :func:`pipeline_source_fingerprint` tracks interpretation only and cache
@@ -363,20 +345,15 @@ def _serve_from_cube_or_open(export: dict[str, Any], timing: dict[str, Any] | No
         return opener()
     key, _source, _path = identity
     handle = export.get("handle") or ""
-    # We are on the verified path: an ``export_result`` for this handle has
-    # just told us what it currently delivers. If the index still points at a
-    # cube built from *different* delivered content, that cube is stale — and
-    # because the key is derived from content rather than from a file's mtime,
-    # "different" here means the data genuinely changed. Drop it (T54).
+    # export_result just told us what this handle delivers now. If the index
+    # points at a cube with a different content key, the data changed: drop it.
     reconcile_handle(handle, key)
     cached = lookup(key)
     if cached is not None:
         record_cache_hit("zarr")
         if timing is not None:
             timing["cube"] = "hit"
-        # A cube written before the index existed earns its entry here, on an
-        # ordinary verified hit — no migration to run, and the *next* question
-        # about it skips the round-trip.
+        # Index on hit, so older unindexed cubes get picked up without a migration.
         note_handle(handle, key)
         return cached
     record_cache_miss()
@@ -424,8 +401,8 @@ def _open_netcdf(path: str, chunks: dict[str, Any] | None = None, *, timing: dic
     # GPM-style products (IMERG) carry no netCDF dimension scales, so both
     # engines invent placeholder dims (phony_dim_N) and the science variable
     # opens with no lat/lon identity at all. The files DO declare the real
-    # dims per variable (GPM's DimensionNames attr) — honor that before any
-    # merging/promotion, same coordinate-discovery doctrine as T24.
+    # dims per variable (GPM's DimensionNames attr), so apply them before any
+    # merging or coordinate promotion.
     groups = {key: _apply_declared_dimension_names(gds) for key, gds in groups.items()}
     root = groups.pop("/", None)
     if root is not None and root.data_vars and not any(gds.data_vars for gds in groups.values()):
@@ -441,18 +418,9 @@ def _open_netcdf(path: str, chunks: dict[str, Any] | None = None, *, timing: dic
     # post-open classification sees the same group a describe_dataset
     # inventory's slash-qualified name carries.
     #
-    # A group with no data_vars of its own is kept, not skipped. It can still
-    # be carrying the coordinates that make a science variable interpretable:
-    # TEMPO_O3PROF_L3 declares its per-pixel vertical axes
-    # (ozone_profile_pressure in hPa, ozone_profile_altitude in km, both
-    # (time, lat, lon, layer)) as CF AUXILIARY COORDINATES in /support_data,
-    # so that whole group opens with data_vars empty. Skipping it dropped both
-    # axes silently -- the retrieval asked for three variables, Harmony
-    # delivered three, and the opened Dataset had one. Nothing raises in that
-    # state: ``ozone_profile`` still opens 4-D with ``layer`` intact, there is
-    # simply nothing left to say what altitude a layer is at. The root group
-    # was already exempted from this skip for the same reason (see the merge
-    # below); the root is just the case that happened to be found first.
+    # Keep groups with no data_vars: they can hold coordinates a variable
+    # needs. E.g. TEMPO_O3PROF_L3 keeps its vertical axes as auxiliary
+    # coordinates in /support_data; dropping that group loses them silently.
     named_groups: list[tuple[str, Any]] = []
     for group_key, gds in groups.items():
         group_path = group_key.strip("/")
@@ -463,15 +431,10 @@ def _open_netcdf(path: str, chunks: dict[str, Any] | None = None, *, timing: dic
     if not any(gds.data_vars for _, gds in named_groups):
         return root if root is not None else xr.Dataset()
 
-    # A leaf name that appears in MORE than one group must not be merged by
-    # bare name: xr.merge(compat="override") silently keeps whichever group
-    # iterates first — plausible numbers from possibly the wrong variable, on
-    # exactly the unregistered products this dynamic path exists to support.
-    # Colliding variables keep their group-qualified name ("product/foo",
-    # "support_data/foo") instead: an explicit qualified request still
-    # resolves exactly, and a bare ambiguous one falls through to
-    # AggregationService.to_dataarray's refuse-with-candidates error rather
-    # than a silent pick (the T25 doctrine).
+    # A leaf name in more than one group keeps its qualified name
+    # ("product/foo"). Merging by bare name would silently keep whichever
+    # group came first; this way an ambiguous bare request errors with
+    # candidates instead of picking one.
     leaf_counts: dict[str, int] = {}
     for _, gds in named_groups:
         for name in gds.data_vars:
@@ -572,9 +535,8 @@ def _open_netcdf_bundle(path: str, timing: dict[str, Any] | None = None) -> Any:
             # The caller's ``open`` phase context defaults to the single-file
             # answer; this is the one place that knows the real member count.
             timing["members"] = len(names)
-        # T51: the unzip is its own phase nested inside ``open``, with a
-        # hit/miss flag -- the extract cache makes a repeat open skip it
-        # entirely, which one merged distribution would hide.
+        # Timed as its own phase with a hit/miss flag, since cached repeat
+        # opens skip the unzip entirely.
         with phase_timer("extract", members=len(names)) as extract_timing:
             extract_dir, extract_timing["cached"] = _extract_bundle_cached(zf, path, names)
 
@@ -677,9 +639,9 @@ def _gate_bundle_size(zf: Any, path: str) -> None:
     provider could not estimate, which ``retrieval_composites`` waves through
     on confirmation while naming this gate as the backstop.
 
-    Raising the same structured too_large error the retrieval gates use keeps
-    the failure on the T18 deterministic-error surface (the agent relays
-    "narrow the request") rather than surfacing as a disk-full OSError."""
+    Raises the same structured too_large error as the retrieval gates, so the
+    agent tells the user to narrow the request instead of hitting a disk-full
+    OSError."""
     granules = [info for info in zf.infolist() if not info.is_dir()]
     total = sum(info.file_size for info in granules)
     limit = get_settings().bundle_open_max_uncompressed_bytes
@@ -851,10 +813,7 @@ def _extract_bundle_cached(zf: Any, path: str, names: list[str]) -> tuple[str, b
     """Extract ``zf``'s members into a cache entry that outlives this call
     and return ``(directory, was_already_cached)``.
 
-    The hit/miss flag is reported by this function rather than probed by the
-    caller because only this function knows which branch it actually took --
-    a caller-side check would have to re-derive the cache key and could still
-    race the pruner between the check and the extraction (T51).
+    Reports hit/miss itself because a caller-side check could race the pruner.
 
     Lazily-opened members read these files long after the bundle open
     returns — any compute up to the end of the tool call — and derived
@@ -907,8 +866,8 @@ def extract_cache_dir_for(path: str) -> str:
     """Where :func:`_extract_bundle_cached` would put this bundle's members.
 
     Derived from the same bundle identity, without opening the archive, so a
-    caller that only needs the *location* (T52's cube writer, which pins the
-    directory it is lazily reading from) doesn't have to re-derive the key."""
+    caller that only needs the location (e.g. the cube writer, which pins it)
+    doesn't have to re-derive the key."""
     import tempfile
 
     return os.path.join(tempfile.gettempdir(), _EXTRACT_CACHE_DIR_NAME, _extract_cache_key(path))
@@ -959,24 +918,14 @@ def _prune_extract_cache(
     tool call keeps lazy readers on them.
 
     **Size.** Whatever the TTL leaves is then trimmed to ``max_bytes``, least
-    recently used first. Age alone never bounded this cache: a single bundle may
-    extract up to ``bundle_open_max_uncompressed_bytes`` (8 GiB), and every
-    bundle opened inside one TTL window is retained, so N busy retrievals hold
-    N x 8 GiB with nothing counting the total. It was the only one of the three
-    on-disk stores without a cap, and unbounded disk growth is not hypothetical
-    in this project's history.
+    recently used first. Age alone isn't enough: one bundle can extract up to
+    8 GiB, and every bundle opened within the TTL is kept.
 
-    Deliberately in that order. Evicting by size first would discard entries the
-    TTL was about to reclaim for free, and could evict a *hot* entry to make
-    room for a stale one that has simply not aged out yet.
+    Age runs first so the size pass never evicts a hot entry while stale ones
+    are still waiting to age out.
 
-    T52: an entry a cube write is currently reading from is pinned and skipped —
-    by **both** passes. That writer holds a *lazy* Dataset pointing into this
-    directory, and its reads don't touch mtime, so without the pin a long enough
-    write can have its own source files deleted underneath it. The size pass
-    needs the pin for exactly the same reason the age pass does: a torn write is
-    a worse outcome than a full disk, so disk pressure is not a licence to break
-    one.
+    Both passes skip entries pinned by an in-progress cube write: its lazy
+    reads don't touch mtime, and a torn write is worse than a full disk.
     """
     import shutil
     import time
@@ -1148,7 +1097,7 @@ def _synthesize_member_time_coord(ds: Any) -> Any:
     if candidates:
         ds = ds.rename({candidates[0]: "time"})
         # Preserve a real per-granule time coordinate the differently-cased dim
-        # already carried (Finding #15): only OMI_MINDS_NO2d's case -- a Time
+        # already carried: only OMI_MINDS_NO2d's case -- a Time
         # dim with no coordinate variable -- needs the attr timestamp. When the
         # dim already indexes a real datetime (a genuine overpass time),
         # overwriting it with the attr date's (midnight) stamp would collapse
@@ -1165,7 +1114,7 @@ def _has_real_time_coord(ds: Any) -> bool:
     """Whether ``ds`` already carries a genuine datetime ``time`` coordinate
     (an indexed datetime64 with at least one non-NaT value) -- as opposed to a
     bare dimension or an integer index that only *names* time. Synthesis fills
-    the latter but must never clobber the former (Finding #15)."""
+    the latter but must never clobber the former."""
     import numpy as np
 
     if "time" not in ds.coords:
@@ -1341,9 +1290,8 @@ def _promote_lat_lon_coords(ds: Any) -> Any:
     mistaken for the science variable -- when a grouped product splits its
     lon/lat into a sibling subgroup from its science data.
 
-    Identification is the canonical CF-metadata-primary one (T24), so a
-    product whose lat/lon carry standard_name/units under a spelling no
-    name allowlist would guess is still promoted."""
+    Identifies lat/lon by CF metadata (standard_name/units) first, so
+    unusual variable names are still promoted."""
     from tta_backend.utils.geo_utils import identify_lat, identify_lon
 
     identified = [identify_lat(ds), identify_lon(ds)]
@@ -1352,45 +1300,21 @@ def _promote_lat_lon_coords(ds: Any) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# T52: the open pipeline's interpretation version
+# Open pipeline interpretation version
 # ---------------------------------------------------------------------------
-# Participates in every cube cache key (services/cube_cache.py). BUMP THIS
-# whenever any function in _PIPELINE_SOURCE_FUNCTIONS below changes the
-# *interpretation* of a file -- which, in practice, means any time you touch
-# one at all. Every cube built by the old logic is then unreachable by
-# construction, including the negative-cache entries that recorded which
-# sources the old logic could not cube. The pinned fingerprint below makes
-# that enforcement rather than convention: test_cube_cache.py fails if the
-# source moves and this doesn't.
+# Part of every cube cache key. BUMP THIS whenever a function in
+# _PIPELINE_SOURCE_FUNCTIONS changes what a file opens *as* (values, dtypes,
+# coords, attrs), so cubes built by the old logic become unreachable.
+# test_cube_cache.py fails if those functions change and this doesn't.
 #
-# Bumped to "2" for _narrow_packed_dtypes. The open-time chunk ceiling landing
-# in the same change is NOT why: chunking decides how a read is divided, never
-# what it returns, and a cube written before it is bit-identical to one written
-# after. The narrowing is the part that qualifies -- a packed int16 variable
-# now decodes float32 where it used to decode float64, so a warm cube would
-# keep serving the wider dtype for the same source indefinitely. The values
-# agree to float32 precision and the old cube is if anything the more precise
-# of the two, but "same source, different dtype depending on cache warmth" is
-# exactly the silent divergence this version exists to prevent.
-#
-# Bumped to "3" for keeping coordinate-only groups, and again to "4" for
-# stripping units from time coordinates only. Both qualify for the same reason:
-# a cube written by the old logic is missing something a reader needs and
-# carries no sign of it. "3" lost every auxiliary coordinate that lived in a
-# coordinate-only group (for TEMPO_O3PROF, both vertical axes); "4" kept the
-# coordinates but stripped the units that identify them as vertical axes at
-# all. Either way a warm cube would keep serving an unplottable profile
-# forever, with values that look entirely correct.
+# Changes that only affect how a read is chunked don't need a bump.
 OPEN_PIPELINE_VERSION = "4"
 
 _PIPELINE_SOURCE_FUNCTIONS = (
     _open_netcdf,
     _open_netcdf_bundle,
-    # Decides the dtype a packed variable lands in, so it is interpretation and
-    # belongs under the guard. Its siblings from the same change deliberately
-    # do NOT: _open_groups_bounded and _chunk_ceiling_spec only decide how a
-    # read is divided into tasks, and listing them would evict every cube in
-    # the store for a chunk-budget tweak that cannot change a single value.
+    # Decides the dtype a packed variable lands in, so it counts. Chunking
+    # helpers (_open_groups_bounded, _chunk_ceiling_spec) deliberately don't.
     _narrow_packed_dtypes,
     _apply_declared_dimension_names,
     _promote_lat_lon_coords,
@@ -1402,19 +1326,10 @@ _PIPELINE_SOURCE_FUNCTIONS = (
 # Regenerate with:
 #   docker compose --profile test run --build --rm backend-test \
 #     python -c "from tta_backend.services.open_handle import pipeline_source_fingerprint; print(pipeline_source_fingerprint())"
-# and bump OPEN_PIPELINE_VERSION in the same edit -- EXCEPT when the source
-# moved without its meaning moving. The tta_backend.* namespace refactor
-# rewrote two function-local import lines inside _open_netcdf_bundle and
-# _promote_lat_lon_coords; that shifts the hash while every cube written by the
-# old logic stays a correct interpretation, so the fingerprint was re-pinned
-# and the version deliberately left at "1". Bumping it would have evicted the
-# whole cube cache for a rename. Re-pinned the same way for the ruff B904/B905
-# pass: `raise ... from exc` in _open_netcdf_bundle only adds a traceback cause,
-# and zip(..., strict=True) in _apply_declared_dimension_names sits behind a
-# length check that already skips every mismatched pair. And again for the mypy
-# pass: generic arguments on bare dict/list annotations, and a rename in
-# _open_netcdf separating its (path, dataset) list from its dataset list. The cube-cache *wiring*
-# deliberately lives outside these functions (in _open_by_media_type) so this
-# fingerprint tracks interpretation only, and cache plumbing changes don't
-# spuriously invalidate every cube.
-OPEN_PIPELINE_SOURCE_FINGERPRINT = "198ce24e52c1ff7cdd4b71569a890ffc1973d66716bb1f4f93c2ef1cd3a8c1fd"
+# and bump OPEN_PIPELINE_VERSION in the same edit, unless the change can't
+# alter what a file opens as (comments, renames, type hints, refactors). Then
+# re-pin only: bumping would evict the whole cube cache for nothing.
+#
+# Cache wiring lives outside these functions (in _open_by_media_type) so
+# plumbing changes don't move this hash.
+OPEN_PIPELINE_SOURCE_FINGERPRINT = "2f9c99359e6db402366e0923d5e33389da58b03a59c0a86ccb7f51cc02b38ecc"

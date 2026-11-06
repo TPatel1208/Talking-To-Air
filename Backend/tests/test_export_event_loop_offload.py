@@ -38,7 +38,7 @@ if TESTS_DIR not in sys.path:
 
 
 def _profile_payload():
-    """A vertical-profile export (T56). Hermetic on purpose: a profile renders
+    """A vertical-profile export. Hermetic on purpose: a profile renders
     from its own payload and never re-reads a granule, so this exercises
     ``build_chart_png``'s render-and-save half with no MCP server, no handle
     volume, and no network in the picture."""
@@ -182,8 +182,8 @@ class ChartCsvOffloadTests(unittest.IsolatedAsyncioTestCase):
     async def test_csv_chunks_do_not_freeze_a_concurrent_coroutine(self):
         """Slowed at the aggregation seam -- the dask reduction named in the
         report, and the one call every heatmap CSV passes through. The handle
-        open is stubbed rather than slowed because it is already offloaded
-        (T16); what is under test is everything *after* it."""
+        open is stubbed rather than slowed because it is already offloaded;
+        what is under test is everything *after* it."""
         from unittest.mock import AsyncMock
 
         from tta_backend.preprocessing.aggregation_service import AggregationService
@@ -712,15 +712,10 @@ class NoProductionModuleImportsPyplotTests(unittest.TestCase):
     ``RenderUsesNoGlobalFigureRegistryTests`` proves the *current* export path
     registers no figure. It cannot prove the next one won't: a future
     ``plt.subplots`` in a module those tests do not drive would reintroduce the
-    shared registry unnoticed. T45 covered that gap with a
-    ``matplotlib_open_figures`` gauge reading ``plt.get_fignums()`` on every
-    /metrics scrape, but once the render moved to ``Figure`` +
-    ``FigureCanvasAgg`` the gauge was pinned at 0 forever, and importing
-    ``pyplot`` to read it left ``utils/metrics.py`` as the only thing in the
-    process still loading the registry the render path had just been moved off.
+    shared registry unnoticed. A runtime gauge on ``plt.get_fignums()`` would
+    always read 0 now, and reading it would import ``pyplot``.
 
-    A source scan gets the canary that gauge was worth keeping for without any
-    of that: it fails at merge time rather than on a dashboard, it covers every
+    A source scan is a better canary: it fails at merge time rather than on a dashboard, it covers every
     module in the package rather than only the ones some test happens to
     exercise, and it costs the running backend nothing.
 

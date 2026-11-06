@@ -2,7 +2,7 @@
 
 The ``session_metadata`` row is written the moment the message is posted,
 because it is the only record of who owns the thread and three endpoints --
-history, stop and the T63 reattach stream -- refuse without it. It is not
+history, stop and the reattach stream -- refuse without it. It is not
 evidence that the conversation has anything in it: on the fast path the
 transcript is checkpointed once, at the end of the turn, so a turn that is
 stopped, times out, errors or dies with its replica leaves a titled row over

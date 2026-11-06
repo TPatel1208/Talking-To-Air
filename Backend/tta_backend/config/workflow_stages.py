@@ -1,7 +1,7 @@
 """
 config/workflow_stages.py
 ===========================
-PRD T19: the closed vocabulary of workflow stage keys a satellite request
+The closed vocabulary of workflow stage keys a satellite request
 passes through. Composites and handle tools tag their ``emit_status`` calls
 with one of these via the ``stage`` kwarg (utils/streaming.py) — the
 frontend's workflow strip and the eval's stage-sequence assertions both key
@@ -22,7 +22,7 @@ STAGE_PROGRESS = "progress"
 STAGE_OPEN = "open"
 STAGE_RENDER = "render"
 STAGE_WORKING = "working"
-# T64: a dispatch item's own lifecycle, emitted by the dispatch executor in
+# A dispatch item's own lifecycle, emitted by the dispatch executor in
 # the item's narration lane -- the ground agent narrates no stages of its own.
 STAGE_QUEUED = "queued"
 STAGE_RUNNING = "running"

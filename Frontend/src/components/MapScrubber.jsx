@@ -1,11 +1,10 @@
 /**
  * MapScrubber.jsx
  * ---------------
- * T59 Phase 6: the time axis of a multi-granule map, made browsable, inside
- * the Map tab. `payload.type` stays "heatmap" and CHART_TABS is unchanged
- * (D15) -- this is an additive control below the map, not a new artifact type.
+ * The time axis of a multi-granule map, made browsable, inside the Map tab.
+ * `payload.type` stays "heatmap" and CHART_TABS is unchanged -- this is an additive control below the map, not a new artifact type.
  *
- * The scrubber is a MODE, not a slider position (D9). Entering it recolours
+ * The scrubber is a MODE, not a slider position. Entering it recolours
  * the map once onto the stack's pooled 2-98 and redraws the legend to say so;
  * every stop including the aggregate is drawn on that one scale, so colours
  * never jump mid-scrub. Leaving it hands the Map tab back exactly as it was.
@@ -55,7 +54,7 @@ const toggleStyle = (active) => ({
 
 const noteStyle = { fontSize: '11px', color: 'var(--text-muted)', lineHeight: 1.45 }
 
-// The statistic toggle (T59 D6a decision 7 / Phase 15). Smaller than the mode
+// The statistic toggle (mean/max/min). Smaller than the mode
 // button beside it, because entering scrubber mode is the decision and this is
 // a choice made inside it.
 const statisticStyle = (active, enabled) => ({
@@ -68,7 +67,7 @@ const statisticStyle = (active, enabled) => ({
   opacity: enabled ? 1 : 0.6,
 })
 
-// D10: an empty bucket is a first-class rendered state, and the two kinds of
+// An empty bucket is a first-class rendered state, and the two kinds of
 // empty are different measurements. A blank map reads as zero, and zero is a
 // measurement -- so the readout says which blank this is.
 const EMPTY_STATE_TEXT = {
@@ -118,8 +117,8 @@ export default function MapScrubber({
 
       {/* Every string here is composed in a util. The toggle changes four
           sentences at once (the anchor, the delta, the legend caption and the
-          Statistics tab's scoping) and Phase 8 §1 is what happens when one of
-          them is assembled where no test can read it. */}
+          Statistics tab's scoping), and composing them in a util keeps every
+          one testable. */}
       <StatisticChoice choice={choice} onSelect={onSelectStatistic} />
 
       <ScrubTrack
@@ -145,23 +144,19 @@ export default function MapScrubber({
           argument over by hand. */}
       <StopReadout stop={stop} stats={stats} delta={delta} />
       <DeltaDisclosure delta={delta} />
-      {/* D6a decision 9 / Phase 11 G4, beside the max-mode scrubber as G4 asked
-          (`methods.md` is Phase 16's). Resolved from the chart's own measured
-          `headline` upstream, so this renders whatever there is and nothing
-          when there is none. */}
+      {/* The max plane's extent-overstatement note, beside the scrubber.
+          Resolved from the chart's own measured `headline` upstream, so this
+          renders nothing when there is none. */}
       {overstatement && <div style={noteStyle}>{overstatement}</div>}
     </div>
   )
 }
 
-// D6a decision 7's toggle, and Phase 5 decision 2's rule one level in: a chart
-// above `MAX_PLANE_NATIVE_CELLS` gets the control DISABLED with the backend's
-// own sentence beside it, never a silently missing one. A reader who finds no
-// toggle and no reason is exactly the person the disclosure exists to keep out
-// of that position.
+// The statistic toggle. A chart above `MAX_PLANE_NATIVE_CELLS` gets it
+// DISABLED with the backend's own reason beside it, never silently missing.
 //
 // A chart that never had planes gets neither -- `offered` is false and this
-// renders nothing, so its scrubber is what shipped before this phase.
+// renders nothing.
 function StatisticChoice({ choice, onSelect }) {
   if (!choice || !choice.offered) return null
   const enabled = choice.options.length > 1
@@ -190,18 +185,12 @@ function StatisticChoice({ choice, onSelect }) {
   )
 }
 
-// The control a reader actually touches. Phase 8 §8 measured it at 284 px over
-// 49 stops -- 5.9 px each, two printed labels, and nothing on the track saying
-// which stops hold anything. A reader dragging across twelve consecutive empty
-// hours got twelve blank maps with no indication that the blankness was the
-// axis rather than the air.
+// The control a reader actually touches. Stops can be ~6 px wide, so the track
+// marks which ones hold data; otherwise dragging across empty hours just shows
+// blank maps with no explanation.
 //
-// Measured on the design target's own blob: both empty kinds are all-NaN, and
-// `buildCanvasFallbackFrame` leaves every non-finite cell at alpha 0 in a fresh
-// buffer, so a QA-rejected hour and a nothing-retrieved hour draw as the SAME
-// fully transparent overlay. The picture cannot carry this distinction at all.
-// That is why it goes on the track and in the readout rather than being left to
-// the map.
+// A QA-rejected hour and a nothing-retrieved hour draw as the SAME transparent
+// overlay, so the distinction goes on the track and in the readout.
 //
 // The marks sit BEHIND the input (which `.frame-scrub` makes transparent)
 // rather than being drawn into the track's own pseudo-elements, so the element
@@ -291,10 +280,8 @@ function dayLabelShift(fraction) {
 }
 
 function StopReadout({ stop, stats, delta }) {
-  // The anchor sentence lives in frameDelta.js, not here. With no jsdom, a
-  // sentence written in a component is a sentence no test can read -- which is
-  // how "the same field the Map tab shows" went two phases carrying an
-  // unstated block mean and an unstated 2x colour ramp (Phase 8 §1, §9).
+  // The anchor sentence lives in frameDelta.js, not here: with no jsdom, a
+  // sentence written in a component is a sentence no test can read.
   if (!stop || stop.kind === 'aggregate') {
     return <div style={noteStyle}>{aggregateAnchor(delta)}</div>
   }
@@ -306,7 +293,7 @@ function StopReadout({ stop, stats, delta }) {
       <span>{stop.nGranules} granule{stop.nGranules === 1 ? '' : 's'}</span>
       {/* A 90%-masked interval renders as a clean low uniform field, which is
           indistinguishable from a calm one. Coverage travels with the frame
-          rather than being inferable from the picture (D10). */}
+          rather than being inferable from the picture. */}
       <span>{(stats?.validPct ?? 0).toFixed(1)}% of the region covered</span>
       <span>QA pass rate {qa ?? 'not applied'}</span>
       {stats?.empty && (
@@ -318,20 +305,15 @@ function StopReadout({ stop, stats, delta }) {
   )
 }
 
-// D16/D14, shown rather than offered. Phase 3 measured the coarsened tier's
-// disagreement at 5.4% and 22.3% on two real TEMPO bundles -- not the sub-1%
-// D16's own illustration implies -- and the coarsened tier is the COMMON case,
-// reached at roughly 2.5 days. Risk 4 is this becoming a badge nobody reads,
-// so a double-digit delta gets the warning treatment rather than a footnote.
+// The frame/map disagreement, shown rather than offered. On real TEMPO bundles
+// the coarsened tier (the common case, from ~2.5 days) disagrees by 5-22%, so
+// a double-digit delta gets the warning treatment rather than a footnote.
 function DeltaDisclosure({ delta }) {
   if (!delta) return null
 
-  // Presentation follows SEVERITY, not tier. Phase 8 found the cadence tier --
-  // the one this used to render as a plain unbordered note, because its
-  // temporal relationship is an exact identity -- disagreeing by 1.876% on the
-  // arrays it ships. A tier cannot be trusted to imply how loud its own
-  // caveat should be; the largest measured disagreement can, and `severity`
-  // is that, over both figures.
+  // Presentation follows SEVERITY, not tier: even the cadence tier (an exact
+  // temporal identity) can disagree on the arrays it ships. `severity` is the
+  // largest measured disagreement over both figures.
   if (delta.severity === 'none') {
     return <div style={noteStyle}><SciText>{delta.summary}</SciText></div>
   }

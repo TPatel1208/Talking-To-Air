@@ -58,7 +58,7 @@ class WorkspaceBindingTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestC
         self.assertIn("query", properties)
 
     async def test_search_datasets_emits_a_search_stage_status(self):
-        """T19: one wrapper covers all curated discovery tools without
+        """One wrapper covers all curated discovery tools without
         touching the MCP — search_datasets narrates the "search" stage."""
         from tta_backend.earthdata_mcp.workspace import bind_workspace
         import tta_backend.utils.streaming as streaming
@@ -121,7 +121,7 @@ class WorkspaceBindingStageStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([s["stage"] for s in seen], ["aoi"])
 
     async def test_check_coverage_surfaces_the_granule_count_as_detail(self):
-        """T19 story #3: granule count surfaced when coverage is checked, so
+        """Granule count surfaced when coverage is checked, so
         a researcher understands why their request is small or large before
         the wait — a second stage="coverage" status carrying the count once
         the MCP's own response is known, alongside the pre-call one."""
@@ -150,7 +150,7 @@ class WorkspaceBindingStageStatusTests(unittest.IsolatedAsyncioTestCase):
     "MCP client test dependencies are not installed",
 )
 class WorkspaceBindingClassifiedErrorTests(unittest.IsolatedAsyncioTestCase):
-    """T18: bind_workspace is the single place every model-facing MCP tool
+    """bind_workspace is the single place every model-facing MCP tool
     passes through — a classified MCPToolError (raised by a tool through the
     MCP, or by a transport failure) never leaks out as a raw exception; the
     model (and any direct backend caller) always gets back a string, either
@@ -199,8 +199,8 @@ class WorkspaceBindingClassifiedErrorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.category, "user_input")
 
     async def test_a_rejected_aoi_input_leaves_a_greppable_log_event(self):
-        """T46 story #4: the live silent-substitution incident (2026-07-17)
-        left NOTHING to grep for. A user_input rejection from
+        """A silent region substitution must leave something to grep for. A
+        user_input rejection from
         define_area_of_interest must fire a named log event carrying the
         offending input, so the regression is discoverable from logs."""
         from tta_backend.earthdata_mcp.workspace import bind_workspace
@@ -220,9 +220,9 @@ class WorkspaceBindingClassifiedErrorTests(unittest.IsolatedAsyncioTestCase):
     "MCP client test dependencies are not installed",
 )
 class WorkspaceMissingUserContextTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCase):
-    """T26: a None user id must never mint a shared "user-None" workspace —
-    that pooled every caller's retrievals together (113 orphaned rows found
-    live). bind_workspace refuses instead, raising a typed error the model
+    """A None user id must never mint a shared "user-None" workspace —
+    that would pool every caller's retrievals together. bind_workspace
+    refuses instead, raising a typed error the model
     never silently swallows into a default."""
 
     async def asyncSetUp(self):
@@ -245,9 +245,8 @@ class WorkspaceMissingUserContextTests(ProcessCacheIsolation, unittest.IsolatedA
         self.tools = await load_raw_mcp_tools(Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None))
 
     async def test_a_none_user_id_returns_a_contract_error_instead_of_minting_user_none(self):
-        # T37: the refusal is still loud, but it now classifies as a T18
-        # contract error envelope — legible like every other failure —
-        # instead of surfacing as an unclassified traceback string.
+        # The refusal is loud, but classifies as a contract error envelope —
+        # legible like every other failure — not an unclassified traceback.
         import json
 
         from tta_backend.earthdata_mcp.workspace import bind_workspace

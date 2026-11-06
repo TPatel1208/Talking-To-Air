@@ -1,14 +1,11 @@
-"""T54 — the handle→cube index: stop gating cache lookups behind an MCP round-trip.
+"""The handle→cube index: cache lookups that don't wait on an MCP round-trip.
 
-T52 shipped a cube cache that lives *behind* the expensive upstream operation it
-exists to shield you from: ``open_handle`` calls ``export_result``
-unconditionally first, and the cache key is derived from the exported file. So
-in the two situations a cache should be strongest — the source was evicted
-upstream, or the MCP is mid-crash-restart — a perfectly good cube sits on local
-disk unreachable, and the evicted case spends *minutes* rematerializing the
+If the lookup had to follow ``export_result``, a good cube on local disk would be
+unreachable exactly when a cache matters most (source evicted upstream, or the
+MCP restarting), and the evicted case would spend *minutes* rematerializing the
 input to an answer it already holds.
 
-The behaviours pinned here are the two halves of making the reorder safe. The
+The behaviours pinned here are the two halves of making that safe. The
 re-key (``source_identity`` derived from what the MCP says it *delivered*) is
 what makes a drifted rematerialization produce a different key rather than a
 silent false hit; the index is what lets the lookup happen before the round-trip
@@ -80,8 +77,8 @@ class HandleIndexTests(unittest.TestCase):
 
     def test_a_lost_index_costs_speed_and_nothing_else(self):
         """The index is derived state, never the system of record. Deleting it
-        must degrade to T52's ordering — lookup after ``export_result``, correct
-        and merely slower — and never to an error."""
+        must degrade to lookup after ``export_result`` — correct and merely
+        slower — and never to an error."""
         self._write("obs_1", "key1")
         os.remove(os.path.join(self.store_root, "handle_index.json"))
 
@@ -104,11 +101,11 @@ class HandleIndexTests(unittest.TestCase):
         self.assertEqual(self.cube_cache.key_for_handle("obs_2"), "key2")
 
     def test_a_legacy_handle_is_never_served_without_a_round_trip(self):
-        """A handle materialized before upstream PRD 023 carries no digest, so
+        """A legacy handle carries no digest, so
         its cube is keyed on filesystem metadata — which records only that a
         file with these bytes sat at this path, knowledge obtainable only by
         asking upstream. Serving it unverified would assume what the key cannot
-        state. The cube stays perfectly usable, the T52 way."""
+        state. The cube stays usable via the verify-first path."""
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "bundle.zip")
             with open(path, "wb") as f:
@@ -143,8 +140,7 @@ class HandleIndexReorderTests(unittest.IsolatedAsyncioTestCase):
     """End to end through ``open_handle``, against a real (fake) MCP server.
 
     Every assertion here is about the *round-trip*, not the data: whether
-    ``export_result`` was called at all. That is the one thing T52 could not
-    influence and the only thing T54 changes."""
+    ``export_result`` was called at all."""
 
     async def asyncSetUp(self):
         from tta_backend.config.settings import Settings
@@ -219,7 +215,7 @@ class HandleIndexReorderTests(unittest.IsolatedAsyncioTestCase):
         return self.volume.export_calls.get("obs_cubed", 0)
 
     async def test_an_indexed_cube_answers_with_no_export_round_trip_at_all(self):
-        """User story #2, and the mechanism behind #1: once the cube exists, the
+        """Once the cube exists, the
         MCP is not on the path to the answer."""
         import numpy as np
 
@@ -234,7 +230,7 @@ class HandleIndexReorderTests(unittest.IsolatedAsyncioTestCase):
         np.testing.assert_array_equal(served["no2"].values, first["no2"].values)
 
     async def test_an_export_delivering_different_content_drops_the_stale_cube(self):
-        """User story #4, and the reason the re-key had to come first.
+        """Drift drops the cube; this is why the key is content-based.
 
         A late-arriving NRT granule, an unpinned Harmony submit that picked a
         different service chain, an OPeNDAP fallback on replay: the handle and
@@ -265,10 +261,10 @@ class HandleIndexReorderTests(unittest.IsolatedAsyncioTestCase):
         return sorted(os.listdir(self.store_root)) if os.path.isdir(self.store_root) else []
 
     async def test_an_evicted_source_answers_from_the_cube_without_rematerializing(self):
-        """User story #1 — the headline, and the largest single latency win in
-        the cache design.
+        """The largest single latency win in the cache design.
 
-        T52's worst case: the MCP has evicted the materialized file, so
+        Worst case without the index: the MCP has evicted the materialized
+        file, so
         ``export_result`` answers non-ready, ``open_handle`` enters
         ``rematerialize`` -> ``await_retrieval`` — *minutes* of waiting — and
         only afterwards discovers a perfectly good cube was on local disk the
@@ -290,7 +286,7 @@ class HandleIndexReorderTests(unittest.IsolatedAsyncioTestCase):
         np.testing.assert_array_equal(served["no2"].values, first["no2"].values)
 
     async def test_a_cubed_question_answers_while_the_mcp_is_unreachable(self):
-        """User story #2. The ``earthdata-mcp`` container has been observed
+        """The ``earthdata-mcp`` container has been observed
         crash-restarting silently (RestartCount 11, exit 0); during a restart
         window a cube sitting on local disk was unreachable purely because the
         lookup was gated behind a call to the thing that was down."""
@@ -313,7 +309,7 @@ class HandleIndexReorderTests(unittest.IsolatedAsyncioTestCase):
     async def test_the_override_flag_restores_unconditional_verify_first_ordering(self):
         """The switch that lets an operator disable the skip in production
         without a redeploy, if it is ever implicated in a bad answer. The cube
-        is still served — it is the *ordering* that reverts to T52's."""
+        is still served — only the *ordering* reverts to verify-first."""
         import numpy as np
 
         first = await self._cube_it()
@@ -328,9 +324,8 @@ class HandleIndexReorderTests(unittest.IsolatedAsyncioTestCase):
         np.testing.assert_array_equal(served["no2"].values, first["no2"].values)
 
     async def test_the_reorders_own_contribution_is_measurable_on_its_own(self):
-        """User story #7. An index hit is *also* a cube hit — the open pipeline
-        was skipped either way, and letting ``cache_hits_total`` quietly stop
-        counting those would make T52's hit rate collapse the day T54 shipped.
+        """An index hit is *also* a cube hit — the open pipeline was skipped
+        either way, so ``cache_hits_total`` must count it.
         What the index counter adds is the second, separate win: the round-trip
         was skipped too."""
         from prometheus_client import REGISTRY
@@ -370,7 +365,7 @@ class HandleIndexReorderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_cube_with_a_missing_chunk_is_not_served_on_an_index_hit(self):
         """Skipping *upstream* verification is not licence to skip *local*
-        verification. The same per-hit integrity sweep T52 runs — manifest
+        verification. The same per-hit integrity sweep — manifest
         chunk-count and total bytes against an ``os.scandir`` walk — still
         decides, and it catches exactly what a metadata-only ``open_zarr``
         cannot: a chunk file deleted underneath the store."""

@@ -1,8 +1,8 @@
 """
 tests/test_measurement_explanation.py
 ========================================
-PRD T36 Phase 3 -- the read-only ``explain_measurement`` accessor. It bridges
-P2's persisted ``provenance.evidence`` to a grounded explanation by returning a
+The read-only ``explain_measurement`` accessor. It bridges a chart's
+persisted ``provenance.evidence`` to a grounded explanation by returning a
 compact reliability subset, with NO recomputation and NO error path:
 
 - a payload carrying evidence yields ``has_evidence: true`` with the evidence
@@ -21,7 +21,7 @@ from unittest import mock
 
 
 def _evidence_payload():
-    """A TEMPO-O3-shaped persisted chart payload as P2 would store it."""
+    """A TEMPO-O3-shaped persisted chart payload as plot_tools would store it."""
     return {
         "chart_id": "map_abc123",
         "variable": "column_amount_o3",
@@ -59,7 +59,7 @@ class SummarizeMeasurementEvidenceTests(unittest.TestCase):
 
     def test_returned_evidence_is_the_stored_provenance_evidence_verbatim(self):
         """No recomputation: the returned facts equal the stored list exactly,
-        so a confidence explanation is auditable back to P2's single source."""
+        so a confidence explanation is auditable back to the stored evidence."""
         from tta_backend.services.measurement_explanation import summarize_measurement_evidence
 
         payload = _evidence_payload()

@@ -1,4 +1,4 @@
-"""T30: the connector registry driving the Connectors tab and its endpoints.
+"""The connector registry driving the Connectors tab and its endpoints.
 
 One entry per external service a user can link their own credential to.
 Adding a connector type is a registry entry, not a schema redesign -- the

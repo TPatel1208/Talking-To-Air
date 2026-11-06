@@ -466,14 +466,14 @@ class TestSupabaseJWT(unittest.TestCase):
 
     def test_identity_provider_unavailable_is_not_an_authentication_error(self):
         # Pins the class relationship itself: if IdentityProviderUnavailable
-        # ever subclasses AuthenticationError, Phase 2's middleware silently
+        # ever subclasses AuthenticationError, the auth middleware silently
         # turns every provider outage back into a 401.
         self.assertFalse(issubclass(IdentityProviderUnavailable, AuthenticationError))
 
     def test_throttled_and_unthrottled_kid_rejections_are_indistinguishable(self):
         """The rejection text must not say whether the cooldown was open.
 
-        Phase 2 returns this message as the 401 body. If the throttled and
+        The auth middleware returns this message as the 401 body. If the throttled and
         unthrottled paths word it differently, an unauthenticated caller can
         watch for the change to learn exactly when the window resets and time
         bogus kids to land one outbound fetch per window.
@@ -567,9 +567,9 @@ class TestSupabaseJWT(unittest.TestCase):
 
     # ------------------------------------------------------------------
     # Malformed / hostile tokens. None of these carry a usable key id, so
-    # they never reach jwt.decode -- they are rejected on the way in. Each
-    # one used to escape verify() as a KeyError or DecodeError, which the
-    # Phase 2 middleware would surface as a 500 instead of a 401.
+    # they never reach jwt.decode -- they are rejected on the way in. None may
+    # escape verify() as a KeyError or DecodeError, which the middleware would
+    # surface as a 500 instead of a 401.
     # ------------------------------------------------------------------
 
     def test_token_without_kid_header_is_rejected(self):
@@ -691,9 +691,9 @@ class TestSupabaseJWT(unittest.TestCase):
 
 
 class TestSupabaseJwtWarm(unittest.IsolatedAsyncioTestCase):
-    """T61 Phase 1: the boot-time warm.
+    """The boot-time warm.
 
-    Boot must not block on Supabase (T17 degrade-don't-die), but the first real
+    Boot must not block on Supabase, but the first real
     request should not be paying for a blocking fetch either.
     """
 

@@ -1,5 +1,5 @@
 """
-Tests for tools/satellite_tools/validation_tools.py (PRD T07 — satellite<->ground
+Tests for tools/satellite_tools/validation_tools.py (satellite<->ground
 validation workflow).
 
 Hermetic at the analysis-tool seam: synthetic cube fixtures with known values
@@ -122,8 +122,8 @@ class MonitorSeriesExtractionTests(unittest.TestCase):
         ``QA_PASS_RATE_BASIS`` promises "pixels in the analyzed region", and for
         a monitor comparison the analyzed region is one cell. Masking the full
         grid and narrowing afterwards counts every other cell's QA outcome into
-        a number presented next to a single-point series -- the same
-        scope-substitution class as T46, and the inverse of the crop-before-mask
+        a number presented next to a single-point series -- a scope
+        substitution, and the inverse of the crop-before-mask
         ordering both plot paths already follow.
 
         Here the monitor cell passes QA on both days while all three
@@ -455,7 +455,7 @@ class ValidateAgainstGroundToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ground_series["station_id"], "34-017-0006")
         self.assertEqual(ref["metadata"]["source_handles"], ["cube_1"])
 
-        # T33: the artifact stub now carries the stats/coverage the tool
+        # The artifact stub now carries the stats/coverage the tool
         # already computed, not just series labels.
         self.assertAlmostEqual(ref["metadata"]["stats"]["r"], 1.0)
         self.assertEqual(ref["metadata"]["stats"]["n"], 3)
@@ -480,9 +480,9 @@ class ValidateAgainstGroundToolTests(unittest.IsolatedAsyncioTestCase):
         the collection short_name from ``da.attrs`` alone finds nothing, falls
         back to the variable name, matches no registry entry, and hands
         ``resolve_and_mask`` an empty col_info -- no quality_flag_var, so the
-        quality mask silently never runs. This is the same dataset-level
-        identity fact the T25 masking-execution fix pinned for the plot/stat/
-        compare paths; validation must not be the one path that skips it.
+        quality mask silently never runs. The plot/stat/compare paths handle
+        this dataset-level identity; validation must not be the one that skips
+        it.
 
         Day 2 carries a bad quality flag at the monitor cell, so it is not a
         trustworthy observation and must not be paired against ground data.
@@ -722,7 +722,7 @@ class ValidateAgainstGroundToolTests(unittest.IsolatedAsyncioTestCase):
         ground_series = next(s for s in series if s["source_kind"] == "ground")
         self.assertEqual(ground_series["station_id"], "34-017-0006")
 
-        # T33: exceedance dates and coverage the tool already computed now
+        # Exceedance dates and coverage the tool already computed now
         # ride along on the artifact stub.
         self.assertEqual(ref["metadata"]["exceedance_dates"], ["2024-01-02"])
         self.assertEqual(ref["metadata"]["coverage"]["n_total"], 3)

@@ -42,19 +42,11 @@ class AggregatedResult:
     ds: xr.Dataset
     meta: dict[str, Any]
     #: The masked, still-time-resolved field this reduction was computed FROM,
-    #: and the QA counters the mask recorded on its way through (T59 Phase 5).
+    #: and the QA counters the mask recorded on its way through.
     #:
-    #: Handed out because a caller that wants a second reduction over the same
-    #: time axis -- the frame stack is the one that exists -- would otherwise
-    #: have to re-resolve and re-apply the mask to get it, which is a second
-    #: masking resolution AND a second counter compute over a lazily-opened
-    #: bundle. It is a reference to a lazy array and a dict already in hand, so
-    #: carrying it costs nothing; every consumer that ignores it is unaffected.
-    #:
-    #: D5a is why the counters ride along rather than being re-derived: every
-    #: scientific quantity a frame discloses comes off the NATIVE field, and a
-    #: number the caller forgets to pass is a second full I/O pass with nothing
-    #: saying so.
+    #: Exposed so a second reduction over the same time axis (the frame stack)
+    #: doesn't have to re-mask and re-count, which would be a second full read
+    #: of a lazily-opened bundle. Costs nothing to carry.
     masked: "MaskedField | None" = None
 
 
@@ -70,10 +62,9 @@ class MaskedField(NamedTuple):
 
     They ARE reachable, on ``AggregatedResult.masked``, by a caller that
     reduces the same masked field a second way -- ``aggregate`` reusing the
-    per-timestep reduction for its valid-timestep scan (T55), and
+    per-timestep reduction for its valid-timestep scan, and
     ``plot_singular`` handing the counters to the frame stack rather than
-    buying ``checked_area_by_time``/``passing_area_by_time``/``value_min``/
-    ``value_max`` again with a second full I/O pass (T59 D5a). The seam is the
+    paying for them again with a second full read. The seam is the
     aggregation the counters were computed during, not a public masking call.
     """
 
@@ -209,7 +200,7 @@ def cos_lat_weights(da: xr.DataArray) -> xr.DataArray | None:
     """Cos(latitude) cell weights broadcastable over ``da``, or ``None`` when
     no latitude dimension is identifiable (point data, an already-flattened
     array). The ONE weight definition — the area-weighted regional mean and
-    the area-weighted QA pass rate (T55) sit in the same stat grid, so they
+    the area-weighted QA pass rate sit in the same stat grid, so they
     must be weighted by the same thing or they quietly describe different
     fields.
 
@@ -257,12 +248,9 @@ def area_weighted_mean(da: xr.DataArray) -> float:
 
 def flag_pass_condition(qf: xr.DataArray, good_values: Any = None, bad_values: Any = None) -> xr.DataArray:
     """Boolean condition of flag cells passing QA — the ONE good/bad flag
-    doctrine (T25). ``apply_quality_mask`` both masks with this condition and
-    counts the reported pass rate from it (``_count_qa_pixels``, T55), so the
-    number on screen is derived from the same boolean that gutted the data and
-    is structurally incapable of disagreeing with it. There is no sibling
-    implementation left to keep in step: the evidence path's second copy was
-    retired when this became the single source.
+    rule. ``apply_quality_mask`` both masks with this condition and counts the
+    reported pass rate from it (``_count_qa_pixels``), so the number on screen
+    can't disagree with the mask. Keep it the only implementation.
 
     With ``good_values``, membership passes (``isin`` already excludes an
     absent/NaN flag). With only ``bad_values``, a pixel passes only when its
@@ -276,7 +264,7 @@ def flag_pass_condition(qf: xr.DataArray, good_values: Any = None, bad_values: A
 
 def _count_qa_pixels(da: xr.DataArray, qf: xr.DataArray, condition: xr.DataArray) -> dict[str, Any]:
     """Count the QA outcome of the pixels ``apply_quality_mask`` is about to
-    mask, from the SAME boolean ``condition`` it masks with (T55).
+    mask, from the SAME boolean ``condition`` it masks with.
 
     ``checked`` is ``da.notnull()`` measured *after* fill/valid-range masking
     and, on both real tool paths, after the geometry crop -- so the
@@ -309,7 +297,7 @@ def _count_qa_pixels(da: xr.DataArray, qf: xr.DataArray, condition: xr.DataArray
         flag_missing = checked & qf.isnull()
         # Cos(latitude) area-weighted, the SAME weights ``area_weighted_mean``
         # uses: an unweighted pixel ratio sitting in the same stat grid as an
-        # area-weighted mean over-counts shrunken poleward cells (Finding #13).
+        # area-weighted mean over-counts shrunken poleward cells.
         # The raw integer counts are kept alongside -- they are the honest "how
         # many observations" fact the disclosure text needs.
         weights: xr.DataArray | float | None = cos_lat_weights(checked)
@@ -321,29 +309,20 @@ def _count_qa_pixels(da: xr.DataArray, qf: xr.DataArray, condition: xr.DataArray
         # fill/valid-masked graph, and a compute per counter would re-read the
         # bundle per counter.
         #
-        # MEASURED, not assumed (T51's discipline), and re-measured after the
-        # first estimate proved optimistic. Counting a lazily-opened 3-granule
-        # bundle through a full ``aggregate()`` with a dask.delayed load
-        # counter showed the source read THREE times, not twice:
-        #   1. this compute,
-        #   2. ``_valid_time_indices``' per-timestep ``.values`` scan, and
-        #   3. the temporal reduction, forced downstream at ``.values``.
-        # Pass 2 is now folded into pass 1 -- the ``valid_by_time`` reduction
-        # below is the same boolean that scan was computing, so it rides this
-        # graph walk for free and ``_valid_time_indices`` consumes the answer
-        # instead of re-deriving it. Verified at 2 reads per granule, down
-        # from 3, by ``test_the_bundle_is_read_once_per_pass_...``.
+        # The ``valid_by_time`` reduction below rides this walk too, so
+        # ``_valid_time_indices`` doesn't re-scan. That's 2 reads per granule
+        # (this compute + the temporal reduction), enforced by
+        # ``test_the_bundle_is_read_once_per_pass_...``.
         #
-        # Two passes is the FLOOR here, not a compromise pending more work: the
+        # Two passes is the FLOOR here: the
         # reduction graph cannot be built until the valid timesteps are known
         # (``_cadence_weighted_mean`` weights each cadence bucket by how many
         # VALID granules landed in it, and ``_build_meta`` reports their dates),
         # so scan-then-reduce is a genuine data dependency. Fusing this compute
         # into the reduction instead would hit the same floor from the other
         # side while also forcing ``aggregate`` to return an eager result.
-        # Persisting the masked array would collapse the passes but trades I/O
-        # for RAM on exactly the multi-granule bundles that have OOM'd this
-        # backend before, so it is deliberately not done here.
+        # Persisting the masked array would collapse the passes but risks OOM
+        # on large multi-granule bundles, so it's deliberately not done.
         reductions = {
             "checked": checked.sum(),
             "passing": passing.sum(),
@@ -352,7 +331,7 @@ def _count_qa_pixels(da: xr.DataArray, qf: xr.DataArray, condition: xr.DataArray
             "passing_area": passing_area.sum(),
             # The field's extremes, measured here because this walk is already
             # happening. A quantile is not a streaming reduction, so the frame
-            # stack's pooled colour scale (T59 D9) cannot choose its histogram
+            # stack's pooled colour scale cannot choose its histogram
             # bins until the range is known -- a real data dependency, and
             # without this it would buy the answer with a second full I/O pass
             # over a lazily-opened bundle. Taken on the fill/valid-masked field
@@ -396,7 +375,7 @@ def _count_qa_pixels(da: xr.DataArray, qf: xr.DataArray, condition: xr.DataArray
             reduced["passing_area_by_time"], reduced["checked_area_by_time"],
         )
         # The undivided areas, alongside the rates they produced. A per-bucket
-        # roll-up (T59 finding 12) has to SUM these and divide once -- averaging
+        # roll-up has to SUM these and divide once -- averaging
         # the quotients above would weight a scan that clipped the region's
         # corner exactly as heavily as one that covered all of it -- and a
         # quotient cannot be unmixed back into its terms. Re-deriving them
@@ -442,7 +421,7 @@ QA_PASS_RATE_BASIS = (
 
 def _qa_pass_rate_provenance(counts: dict[str, Any]) -> dict[str, Any]:
     """The realized-QA disclosure keys for ``masking_provenance``, from the
-    counters ``apply_quality_mask`` recorded (T55).
+    counters ``apply_quality_mask`` recorded.
 
     Empty when QA masking never ran: the keys are *absent*, not ``null``,
     matching the existing downgrade-to-not-applied honesty guard, so
@@ -469,16 +448,16 @@ def _qa_pass_rate_provenance(counts: dict[str, Any]) -> dict[str, Any]:
     return provenance
 
 
-# P1: cap on how many candidate variable names an ambiguous-variable refusal
+# Cap on how many candidate variable names an ambiguous-variable refusal
 # renders. Keeps the error (and its re-feed cost to the model) bounded no matter
 # how wide the file; see _ambiguous_variable_error.
 _MAX_LISTED_CANDIDATES = 20
 
 
 class VariableChoiceRequired(Exception):
-    """T49 deterministic short-circuit. When ``to_dataarray`` reaches its
-    low-confidence tail -- a genuinely ambiguous file the T48 resolver won't
-    guess -- it raises THIS instead of a bare ``MCPToolError``, so the choice
+    """Deterministic short-circuit. When ``to_dataarray`` reaches its
+    low-confidence tail -- a genuinely ambiguous file the variable resolver
+    won't guess -- it raises THIS instead of a bare ``MCPToolError``, so the choice
     reaches the researcher as a clickable picker built deterministically from
     the resolver's own candidates, never narrated (and possibly truncated) by
     the LLM.
@@ -487,8 +466,7 @@ class VariableChoiceRequired(Exception):
     - ``resolution``: the resolver's full ``Resolution`` (every ranked
       candidate), from which the tool layer builds the uncapped
       ``VariableChoice`` picker and emits it out-of-band (emit_variable_choice).
-    - ``mcp_error``: the SAME P1-bounded ``MCPToolError`` the low tier used to
-      raise -- the tool returns this compact, capped payload to the model as the
+    - ``mcp_error``: a size-bounded ``MCPToolError`` -- the tool returns this compact, capped payload to the model as the
       sub-task's terminal tool result, so the model can write a one-line "I've
       shown you a picker" without ever seeing (or re-feeding) the full list.
     """
@@ -500,7 +478,7 @@ class VariableChoiceRequired(Exception):
 
 
 def _cell_count(data: xr.Dataset | xr.DataArray) -> int:
-    """Cells entering an aggregation, for the phase-timing size context (T51):
+    """Cells entering an aggregation, for the phase-timing size context:
     duration alone can't tell an I/O-bound phase from a CPU-bound one. Nothing
     to report for an unexpected shape -- this is telemetry, never a failure."""
     try:
@@ -549,7 +527,7 @@ class AggregationService:
                 suggestion="Retrieve data for this area, or check that the area matches the request.",
             )
 
-        # T51: one phase for the whole variable-resolve -> QA-mask -> temporal-
+        # One phase for the whole variable-resolve -> QA-mask -> temporal-
         # reduce chain. It's the compute that a lazily-opened bundle actually
         # pays for -- the reduction is what forces the dask graph, so this
         # phase's duration is where a slow multi-granule open shows up.
@@ -583,7 +561,7 @@ class AggregationService:
     ) -> AggregatedResult:
         da = self.to_dataarray(data, variable=variable, handle=handle)
 
-        # T48: when to_dataarray resolved the variable itself (a wide,
+        # When to_dataarray resolved the variable itself (a wide,
         # unregistered, multi-product file), it stashed the chosen name + a
         # disclosure on the array attrs. Capture it now, before masking's
         # ``.where`` strips attrs, so the disclosure can ride out in meta to the
@@ -593,8 +571,8 @@ class AggregationService:
         # ``data`` itself carries the sibling QA-flag variable when a caller
         # still passes a full Dataset (every existing unit test); otherwise
         # ``source_ds`` is the tool layer's separately-threaded opened
-        # Dataset for an already-extracted/cropped ``data`` DataArray (T25
-        # masking-execution fix -- every real tool path takes this branch).
+        # Dataset for an already-extracted/cropped ``data`` DataArray (every
+        # real tool path takes this branch).
         qf_source = data if isinstance(data, xr.Dataset) else source_ds
         # The private form, for its third field: the counters come back
         # alongside the provenance so the valid-timestep scan below can reuse
@@ -613,7 +591,7 @@ class AggregationService:
         )
         da, masking_provenance = masked.data, masked.provenance
 
-        # T25: identified by CF metadata (standard_name/axis/datetime dtype),
+        # Identified by CF metadata (standard_name/axis/datetime dtype),
         # not the literal name "time" -- so a MERRA-2-style `valid_time` dim
         # is still the one transparent auto-reduction, instead of surviving
         # into _normalize_to_2d as an unrecognized extra dimension.
@@ -633,7 +611,7 @@ class AggregationService:
                 elif stat == "mean":
                     # A temporal mean is "the average over the period", so each
                     # cadence bucket must count equally -- not each granule
-                    # (Finding #11). Clustered sampling (20 granules on two days
+                    # Clustered sampling (20 granules on two days
                     # plus one on a third) otherwise over-weights the dense days.
                     # Evenly-cadenced series have one granule per bucket, so the
                     # weights are uniform and the result is unchanged.
@@ -675,9 +653,8 @@ class AggregationService:
     ) -> dict[str, Any]:
         """The same aggregation_label/granule_dates/n_granules/cadence summary
         ``aggregate()`` builds, for a caller that keeps every timestep instead
-        of reducing over time (T32: conduct_temporal_statistic masks each
-        step via ``resolve_and_mask`` directly, never calling ``aggregate()``,
-        so its timeseries charts got no Granules/cadence block). ``valid_indices``
+        of reducing over time (conduct_temporal_statistic masks each step via
+        ``resolve_and_mask`` directly, never calling ``aggregate()``). ``valid_indices``
         is the caller's own record of which timesteps survived masking --
         the same shape ``aggregate()`` derives internally via
         ``_valid_time_indices``.
@@ -731,9 +708,9 @@ class AggregationService:
         qa_good_tokens: list[str] | None = None,
         source_ds: xr.Dataset | None = None,
     ) -> MaskedField:
-        """Resolve fill/valid-range/QA masking facts (T25's collections.yaml
-        -> UMM-Var -> CF-attrs precedence, plus the three-tier QA-flag
-        doctrine) and apply them to ``da``, honestly. Shared by aggregate()
+        """Resolve fill/valid-range/QA masking facts (collections.yaml ->
+        UMM-Var -> CF-attrs precedence, plus the three-tier QA-flag rules) and
+        apply them to ``da``, honestly. Shared by aggregate()
         (which reduces the result over time afterwards) and
         conduct_temporal_statistic (which masks every time step the same way
         but keeps them all, never reducing) -- one masking-resolution path,
@@ -742,8 +719,7 @@ class AggregationService:
         ``source_ds`` is the Dataset carrying ``da``'s sibling QA-flag
         variable -- either the full Dataset a caller passed as ``data``
         (existing unit tests), or the tool layer's separately opened Dataset
-        when ``da`` is already an extracted/cropped DataArray (T25 masking-
-        execution fix). ``da`` and ``source_ds``'s coordinates only need to
+        when ``da`` is already an extracted/cropped DataArray. ``da`` and ``source_ds``'s coordinates only need to
         share the same labeling convention (e.g. both longitude-normalized
         the same way) -- xarray aligns a cropped ``da`` against a
         full-grid ``source_ds`` via its default inner join, no explicit
@@ -777,7 +753,7 @@ class AggregationService:
             if scaled_max is not None:
                 resolved_col_info["valid_max"] = scaled_max
 
-        # T25 Phase 3: three-tier QA masking (datasets/qa_flags.py) -- a
+        # Three-tier QA masking (datasets/qa_flags.py) -- a
         # pinned collections.yaml rule, else the sibling flag variable's own
         # CF flag_values/flag_meanings parsed deterministically (falling
         # back to the agent's proposal for ambiguous tokens), else no mask.
@@ -830,7 +806,7 @@ class AggregationService:
 
         masking_provenance.update(qa_provenance)
 
-        # T55: count the QA outcome where the mask is actually applied and fold
+        # Count the QA outcome where the mask is actually applied and fold
         # it into the same provenance the disclosure already travels in. Every
         # caller narrows to its analyzed region -- an AOI crop on the plot/stat
         # paths, the monitor cell on the validation path -- *before* masking, so
@@ -858,17 +834,16 @@ class AggregationService:
         (services.variable_choice_registry) -> the file's only data
         variable -> the collection's pinned ``primary_var`` (collections.yaml,
         matched via the file's ``short_name`` attr -- a curated choice, not a
-        guess). The previous ``next(iter(data.data_vars))`` silent-first-variable
-        fallback stays deleted.
+        guess). Never silently picks the first variable.
 
         When all of those miss on a multi-variable file, the VariableResolver
-        (T48) takes over: it classifies each variable (implementation plumbing
+        takes over: it classifies each variable (implementation plumbing
         vs distinct product), scores the weak signals, drops empties, ranks, and
         either auto-picks a populated science field -- stashing its facts and a
         disclosure on the returned array's ``_variable_resolution`` attrs -- or,
-        for a genuinely low-confidence file, returns no name and this raises the
-        P1-bounded, ranked candidate error so the researcher chooses. It never
-        invents a scientific choice (T25): a genuine sensor/algorithm fork is
+        for a genuinely low-confidence file, returns no name and this raises a
+        size-bounded, ranked candidate error so the researcher chooses. It never
+        invents a scientific choice: a genuine sensor/algorithm fork is
         disclosed, not silently guessed.
 
         ``variable`` and the recorded choice are matched by exact name or by
@@ -905,21 +880,16 @@ class AggregationService:
                 # intended variable instead of a spurious refusal.
                 name = self._registry_primary_var(data, data_vars)
             if name is None:
-                # T48: the VariableResolver replaces the old
-                # _science_vars->refuse tail. It classifies (implementation vs
-                # distinct product), scores, drops empties, ranks, and decides
-                # -- auto-picking a populated science field (with a disclosure
-                # when the choice is a genuine sensor/algorithm fork) instead of
-                # dumping 432 opaque candidates. A genuinely low-confidence file
-                # still refuses, now with the resolver's RANKED, bounded list.
+                # The VariableResolver classifies, scores, drops empties, ranks
+                # and decides: auto-pick a populated science field (disclosed
+                # when it's a genuine sensor/algorithm fork), or refuse with a
+                # ranked, bounded list.
                 resolution = resolve(data, requested=variable)
                 self._log_resolution(resolution)
                 if resolution.name is None:
-                    # T49: hand the low-confidence refusal to the researcher as
-                    # a deterministic picker, not LLM prose. The signal carries
-                    # the full Resolution (for the uncapped out-of-band picker)
-                    # plus the P1-bounded MCPToolError (the compact terminal
-                    # tool result the model still needs).
+                    # Hand the refusal to the researcher as a deterministic
+                    # picker, not LLM prose. Carries the full Resolution (for the
+                    # picker) plus a bounded MCPToolError (for the model).
                     ranked = [c.name for c in resolution.candidates] or data_vars
                     raise VariableChoiceRequired(
                         resolution, self._ambiguous_variable_error(data, ranked),
@@ -939,10 +909,10 @@ class AggregationService:
     def _resolution_facts(resolution: Resolution, ds: xr.Dataset) -> dict[str, Any]:
         """The VariableResolver's decision, flattened for provenance/logging:
         the chosen variable, both decision axes, the ranked alternatives, the
-        reasons behind the pick, and the deterministic disclosure line (T48).
+        reasons behind the pick, and the deterministic disclosure line.
         Carried out of to_dataarray on the returned array's attrs.
 
-        For a MEDIUM-confidence auto-pick (T49), the full deterministic picker
+        For a MEDIUM-confidence auto-pick, the full deterministic picker
         is stashed too -- the answer is delivered with its chart, but the
         dispatch layer lifts this into ``AgentResult.variable_choice`` so the
         researcher can override the guess in one click. Built here (where the
@@ -1014,18 +984,11 @@ class AggregationService:
         return self._match_var(primary, data_vars) if primary else None
 
     def _ambiguous_variable_error(self, data: xr.Dataset, data_vars: list[str]) -> MCPToolError:
-        # P1: the candidate list MUST be bounded in size. A Yori-aggregated L3
-        # whose groups all share Mean/Standard_Deviation/Pixel_Counts/
-        # Histogram_Counts leaves (AERDA_D3_VIIRS_MODIS,
-        # dataset_a88593edb7246c9b) merges to 432 data_vars -- listing every
-        # one produced a ~20 KB error that, re-fed to the model on every
-        # stat/plot call, drove a context explosion and whole-turn timeout
-        # (blank plot, no statistics; live 2026-07-19). Naming a capped sample
-        # plus the true total turns that O(N) blowup into O(1) while staying
-        # honest about how many candidates exist. WHICH candidates surface is
-        # now the VariableResolver's job (T48): ``data_vars`` arrives already
-        # ranked (distinct products first, empties dropped), so the capped
-        # sample is the most relevant few. This tier only bounds the size.
+        # The candidate list MUST be bounded: some products (e.g.
+        # AERDA_D3_VIIRS_MODIS) have 432 data_vars, and listing them all
+        # floods the model's context and times the turn out. Name a capped
+        # sample plus the true total. ``data_vars`` arrives already ranked by
+        # the VariableResolver, so the sample is the most relevant few.
         total = len(data_vars)
         shown = data_vars[:_MAX_LISTED_CANDIDATES]
         candidates = []
@@ -1139,8 +1102,8 @@ class AggregationService:
 
         The identification half of the masking doctrine, for callers who need
         to know *which* variable carries quality without masking anything --
-        plot_tools excludes it from the evidence band loop, because T55 already
-        reports its pass rate once, from the mask itself, and a second
+        plot_tools excludes it from the evidence band loop, because its pass
+        rate is already reported once, from the mask itself, and a second
         computation there could only disagree.
 
         Answers only with a name the caller can use: a flag pinned in
@@ -1161,7 +1124,7 @@ class AggregationService:
         self, ds: xr.Dataset | None, da: xr.DataArray, yaml_info: dict[str, Any],
     ) -> tuple[str | None, dict[str, Any]]:
         """Locate the sibling QA-flag variable and its CF attrs, never
-        guessing between ambiguous candidates (T25 doctrine): a pinned
+        guessing between ambiguous candidates: a pinned
         collections.yaml name -> the CF ``ancillary_variables`` attribute on
         the science variable (the real CF convention for exactly this) ->
         the single sibling data var carrying both ``flag_values`` and
@@ -1254,11 +1217,10 @@ class AggregationService:
 
         The public form of the cadence-bucket weighting below, for a caller
         that has already reduced space itself and only needs time collapsed --
-        the vertical profile, whose reduction runs space-then-time (T56 D4) and
-        so arrives here holding a (timestep x layer) matrix rather than a field.
-        Without this the profile would have to reach into a private method or,
-        worse, spell its own ``mean(dim=time)`` and quietly reintroduce the
-        clustered-sampling bias Finding #11 removed.
+        the vertical profile, whose reduction runs space-then-time and so
+        arrives here holding a (timestep x layer) matrix rather than a field.
+        Use this rather than a plain ``mean(dim=time)``, which would bring back
+        the clustered-sampling bias.
         """
         return self._cadence_weighted_mean(da, time_dim, cadence)
 
@@ -1281,7 +1243,7 @@ class AggregationService:
 
     def _cadence_weighted_mean(self, da: xr.DataArray, time_dim: str, cadence: str) -> xr.DataArray:
         """Per-pixel temporal mean that weights each cadence bucket equally,
-        not each granule (Finding #11) -- so 'average over the period' is not
+        not each granule -- so 'average over the period' is not
         biased toward days sampled more densely than the cadence.
 
         Each timestep's weight is ``1 / (granules in its bucket that have a
@@ -1293,21 +1255,12 @@ class AggregationService:
         where every bucket holds exactly one granule and the weights are
         already uniform.
 
-        The denominator counts CONTRIBUTING granules, not granules, and that
-        distinction is the whole of T59 D4. ``.weighted(w).mean(skipna=True)``
-        renormalizes per pixel over the timesteps that survived masking, so a
-        fixed ``1 / (granules in bucket)`` weight let a bucket whose granules
-        mostly missed this pixel vote with a fraction of a bucket: where a
-        4-granule hour kept one granule, that hour counted a quarter. Measured
-        on two materialized TEMPO NO2 bundles, that put 2.7% and 2.3% on the
-        partial-coverage population -- and disabling QA made it LARGER, because
-        the NaNs come from swath tiles covering different slices of the domain,
-        not from quality masking.
-
-        Counting contributors instead makes the renormalization divide by
-        exactly the number of buckets that contributed, which is the mean of
-        the per-bucket means -- Finding #11's stated intent, and identical to
-        the old arithmetic wherever a bucket is wholly covered. Expressed as a
+        The denominator counts CONTRIBUTING granules, not all granules.
+        ``.weighted(w).mean(skipna=True)`` renormalizes per pixel, so a fixed
+        ``1 / (granules in bucket)`` weight would let a partly-missing bucket
+        count as a fraction (a 4-granule hour with one valid granule would
+        count a quarter). Counting contributors gives exactly the mean of the
+        per-bucket means. Expressed as a
         weight rather than a ``groupby(...).mean().mean("bucket")`` so the
         reduction keeps its shape: same laziness, same dim order, same attrs.
         """
@@ -1403,7 +1356,7 @@ class AggregationService:
         # A frequency period word ("Annual"/"Daily") is inferred from the
         # granule *count*, but the count only implies a span under the assumed
         # cadence -- reprocessed/overlapping granules break that assumption
-        # (Finding #14). Require the actual date span to match before applying
+        # Require the actual date span to match before applying
         # the word, so 12 monthly granules clustered inside one month don't
         # read "Annual", nor 10 hourly granules across a week read "Daily".
         span_days = self._span_days(start, end)

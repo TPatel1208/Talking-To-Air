@@ -52,10 +52,8 @@ _FAST_PATH_AGENTS: dict[str, Literal["ground", "satellite"]] = {
     "SATELLITE": "satellite",
 }
 
-# T64 D15: the intent a fast-pathed turn is written back under. The regex
-# router picks an agent but never classifies intent, so the write-back's
-# dispatch call says so rather than inventing one. History only: it is never
-# validated against the request schema.
+# Intent recorded for fast-pathed turns in history. The regex router picks an
+# agent but doesn't classify intent, so we don't invent one. Never validated.
 _FAST_PATH_INTENT = "fast_path"
 
 
@@ -65,8 +63,8 @@ _MAX_FOLLOWUPS = 2
 
 def _merged_followups(results: list[AgentResult]) -> list[str] | None:
     """Follow-ups across a tool message's results, in request order, deduped
-    and capped (T64 D13). None when no result offered any -- an empty list
-    would claim the sub-agents offered none."""
+    and capped. None when no result offered any (an empty list would claim
+    the sub-agents explicitly offered none)."""
     offered = [r.suggested_followups for r in results if r.suggested_followups is not None]
     if not offered:
         return None
@@ -79,27 +77,17 @@ def _merged_followups(results: list[AgentResult]) -> list[str] | None:
 
 @dataclass
 class _LiveTurn:
-    """What a turn accumulates while its live events stream past.
-
-    Both routes build exactly this and nothing else from the live stream, so
-    it travels as one value rather than as three positional collectors —
-    keeping ``_live_event_sse``'s interface small enough that the two loops
-    can share it.
-    """
+    """What a turn accumulates from its live event stream (shared by both routes)."""
 
     #: Every tool the turn invoked, replayed in the terminal ``done`` payload.
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
-    #: T38: last-seen status per job_handle, read only if the turn deadline
-    #: fires, to name anything still running server-side in the timeout answer.
+    #: Last-seen status per job_handle, so a timeout answer can name jobs
+    #: still running server-side.
     job_statuses: dict[str, str] = field(default_factory=dict)
-    #: T13: a chart can reach the wire twice — once bubbled live as a
-    #: chart_payload, again batched inside a sub-agent's final envelope. The
-    #: frontend appends every "chart" event with no dedup of its own
-    #: (Frontend/src/hooks/useChat.js), so this set is the single point that
-    #: keeps each chart_id rendered exactly once.
+    #: A chart can arrive twice (live, then in the final envelope) and the
+    #: frontend doesn't dedup, so this is the one place that does.
     emitted_chart_ids: set[str] = field(default_factory=set)
-    #: T64 D14: the sources the turn's dispatch calls actually drew on, which
-    #: the answer's "Data sources" header names.
+    #: Sources the turn's dispatch calls drew on, for the "Data sources" header.
     consulted: list[str] = field(default_factory=list)
     #: Set by each dispatch result: the next answer text opens with the header.
     header_due: bool = False
@@ -115,15 +103,10 @@ class ChatStreamService:
     ):
         self.chart_service = chart_service
         self.long_request_seconds = long_request_seconds
-        # T17: passed through to run_satellite so the fast path returns the
-        # deterministic unavailable answer instead of dispatching when the
-        # earthdata-retrieval MCP isn't ready. None (the default) preserves
-        # prior behavior for every existing caller that doesn't pass one.
+        # Lets the fast path answer "unavailable" instead of dispatching when
+        # the earthdata MCP isn't ready.
         self.mcp_manager = mcp_manager
-        # T38: whole-turn deadline around stream_chat_events/_fast_path_events'
-        # event loop. None (the default) reads settings at construction time
-        # rather than baking in a literal, so every existing caller that
-        # doesn't pass one gets the configured production default.
+        # Whole-turn deadline; defaults to the configured setting.
         self.chat_turn_timeout_seconds = (
             chat_turn_timeout_seconds if chat_turn_timeout_seconds is not None
             else get_settings().chat_turn_timeout_seconds
@@ -139,25 +122,17 @@ class ChatStreamService:
     ) -> list[str] | None:
         """SSE for the live events both routes forward identically.
 
-        Returns ``None`` when ``event_type`` is not one of them, so each route
-        goes on to handle what is unique to it: the supervisor forwards
-        tool_result/text, while the fast path deliberately forwards none
-        of those — its sub-agent's text is a raw AgentResult envelope, and the
-        one synthesized answer arrives after the loop (T14). An empty list
-        means "handled, nothing to send" — a chart already emitted this turn.
+        Returns ``None`` when ``event_type`` isn't one of them, so the caller
+        handles it. An empty list means "handled, nothing to send" (e.g. a
+        chart already emitted this turn).
 
-        Returning the events rather than yielding them keeps this a plain
-        coroutine: an async generator would force both call sites into an
-        ``async for`` just to re-yield, and could not signal "not mine".
+        Returns a list rather than yielding so it can signal "not mine".
         """
         if event_type == "tool_call":
             turn.tool_calls.append({"name": data["name"], "args": data["args"]})
             return [self.sse("tool_call", {"name": data["name"], "args": data["args"]})]
         if event_type == "status":
-            # T19: forward the whole payload, not just message — stage/detail
-            # are additive fields emit_status may set; rebuilding a
-            # message-only dict here silently dropped them before they ever
-            # reached the SSE wire.
+            # Forward the whole payload: stage/detail ride alongside message.
             return [self.sse("status", data)]
         if event_type == "job_progress":
             if data.get("job_handle"):
@@ -181,13 +156,9 @@ class ChatStreamService:
     ) -> list[str]:
         """How either route ends a turn that raised.
 
-        T38: asyncio.TimeoutError and the built-in TimeoutError are the same
-        class since 3.11, so a sub-agent that legitimately raises TimeoutError
-        (an AQS/provider timeout, unrelated to this turn's own deadline) must
-        still classify as a generic failure rather than our timeout answer.
-        ``turn_timeout.expired()`` is the only reliable way to tell "this
-        deadline actually fired" from "something downstream happened to raise
-        TimeoutError".
+        A downstream TimeoutError (e.g. a provider timeout) is a generic
+        failure, not our turn timeout; ``turn_timeout.expired()`` tells the
+        two apart.
 
         Call only from inside an ``except`` block — ``logger.exception`` reads
         the active exception for its traceback.
@@ -209,24 +180,13 @@ class ChatStreamService:
         user_id: str,
         request_id: str,
     ) -> AsyncIterator[str]:
-        # T26: bound before the fast path's asyncio.create_task(run()) spawns
-        # (below) so that task copies a context that already carries the
-        # real user id — the fast path calls run_satellite/run_ground
-        # directly, bypassing stream_response's own binding entirely, which
-        # is what left every fast-pathed retrieval scoped to "user-None".
+        # Bind context here, before the fast path spawns its task, so the task
+        # inherits the real user id and the researcher's original message
+        # (the fast path skips stream_response's own binding).
         #
-        # T52: also the turn-activity boundary the cube writer holds off
-        # against. The process runs --workers 1, so a background cube write
-        # competes directly with this turn for dask's two workers, the HDF5
-        # open lock and RSS — and the turn is the one the researcher is
-        # actually watching. Wrapping both routes here (the fast path is
-        # dispatched from inside this block) is what makes "never start a cube
-        # during a turn" true rather than aspirational.
-        #
-        # T64 D6: the researcher's message is bound here, not taken from
-        # stream_response's input, because on the fast path the outermost
-        # stream_response is the sub-agent's own, whose input is the
-        # date-and-context-enriched task rather than what the researcher sent.
+        # Invariant: no cube write starts during a turn (active_turn). With
+        # one worker, a background write would compete with this turn for
+        # dask, the HDF5 lock and memory.
         with user_id_context(user_id), user_message_context(message), cube_cache.active_turn():
             intent = route_intent(message)
             route = "fast_path" if intent in _FAST_PATH_AGENTS else "supervisor"
@@ -245,16 +205,9 @@ class ChatStreamService:
             response_text = ""
             artifacts: list[dict[str, Any]] = []
             turn = _LiveTurn()
-            # T22 story #8: the last non-None suggested_followups seen from a
-            # sub-agent's own AgentResult envelope, whether it arrives batched in
-            # a tool_result (the supervisor path) or inline in a structured text
-            # event — a plain dict (not a bare variable) so the nested helper
-            # methods below can update it by reference.
+            # Latest sub-agent follow-ups and variable picker, passed through
+            # untouched. Dicts so the helpers below can update them in place.
             suggestions_box: dict[str, list[str]] = {}
-            # T49: the deterministic variable picker off a sub-agent's
-            # AgentResult tool_result (run_satellite already filled its
-            # prompts) — carried straight through, never synthesized here, the
-            # same discipline as suggestions_box.
             variable_choice_box: dict[str, dict[str, Any]] = {}
             started = time.monotonic()
             turn_timeout = asyncio.timeout(self.chat_turn_timeout_seconds)
@@ -293,7 +246,7 @@ class ChatStreamService:
                                 variable_choice_box,
                             )
                             if text and turn.header_due:
-                                # D14: the header streams ahead of the answer it opens.
+                                # The sources header streams ahead of the answer.
                                 opening = f"{sources_header(turn.consulted)}\n\n"
                                 response_text += opening
                                 turn.header_due = False
@@ -333,7 +286,7 @@ class ChatStreamService:
         request_id: str,
     ) -> AsyncIterator[str]:
         """Dispatch directly to the ground or satellite sub-agent, bypassing
-        the supervisor's two model calls (T14). Forwards tool_call/status/
+        the supervisor's two model calls. Forwards tool_call/status/
         job_progress/chart events live as the sub-agent works, then emits the
         finalized answer under the same "Data sources: ..." header the
         supervisor path produces, and writes the turn back into the
@@ -351,12 +304,9 @@ class ChatStreamService:
         last_activity = {"t": loop.time()}
 
         async def heartbeat() -> None:
-            # The fast path dispatches sub-agents directly and so never enters
-            # stream_response, where the supervisor route's watchdog lives.
-            # run_ground is one awaited ainvoke with no on_event, so without
-            # this a GROUND turn writes nothing at all until it answers -- and
-            # T63 D14 has readers infer "the replica that owned this turn
-            # died" from exactly that silence.
+            # The fast path bypasses stream_response's watchdog, and a GROUND
+            # turn emits nothing until it answers. Readers treat long silence
+            # as "the replica owning this turn died", so keep beating.
             while True:
                 await asyncio.sleep(streaming.HEARTBEAT_CHECK_SECONDS)
                 idle = loop.time() - last_activity["t"]
@@ -400,12 +350,8 @@ class ChatStreamService:
                     if event_type == "__result__":
                         result = data
                         continue
-                    # Anything _live_event_sse does not claim is dropped:
-                    # on_event receives the sub-agent's whole stream, and its
-                    # tool_result/text/done must not reach the wire — the
-                    # finalized envelope below becomes the one synthesized
-                    # answer (T14 Out of Scope: no sub-agent token streaming
-                    # through this path either).
+                    # Drop the sub-agent's tool_result/text/done: the final
+                    # envelope below becomes the one answer.
                     live = await self._live_event_sse(event_type, data, thread_id, user_id, turn)
                     for event in live or ():
                         yield event
@@ -449,14 +395,8 @@ class ChatStreamService:
             "artifacts": artifacts,
             "tool_calls": turn.tool_calls,
         }
-        # T22 story #9: emitted straight from the finalized envelope — the
-        # fast path never goes through _text_events/_tool_result_events, so
-        # it reads result.suggested_followups directly rather than sharing
-        # the supervisor path's suggestions_box.
         if result.suggested_followups is not None:
             done_payload["suggested_followups"] = result.suggested_followups
-        # T49: the deterministic variable picker, likewise read straight off
-        # the finalized result (run_satellite already filled its prompts).
         if result.variable_choice is not None:
             done_payload["variable_choice"] = result.variable_choice.model_dump(exclude_none=True)
         yield self.sse("done", done_payload)
@@ -472,36 +412,17 @@ class ChatStreamService:
         intent: str,
         result: AgentResult,
     ) -> None:
-        """Append the fast-pathed turn to the supervisor's checkpointed
-        thread state, so the conversation the supervisor sees on its next
-        genuinely ambiguous turn is complete. Memory degradation (a failed
-        write-back) is acceptable; the turn already answered — but it is
-        logged loudly, never silent.
+        """Append the fast-pathed turn to the supervisor's thread so later
+        turns see the full conversation. A failed write-back is logged, not
+        raised: the turn already answered.
 
-        When the result carries a chart or artifact, writes the same
-        tool_call/ToolMessage/AIMessage shape the supervisor's own dispatch
-        tool produces (T64 D15): a one-item DispatchResult in the
-        ToolMessage, each chart reduced to a reference to its agent_charts
-        row (ChartService.checkpoint_dispatch_envelope). HistoryService only ever reconstructs a turn's chart/
-        artifact cards from a role=="tool" message (see _attach_tool_output)
-        — a bare Human/AI pair here left fast-pathed charts undiscoverable
-        after a reload, even though they were already durably persisted in
-        agent_charts.
+        With charts or artifacts, writes the same tool_call/ToolMessage shape
+        the supervisor's dispatch tool produces, because HistoryService only
+        rebuilds chart/artifact cards from tool messages. Text-only results
+        write a plain Human/AI pair to keep the checkpoint small.
 
-        A text-only result (no charts, no artifacts) has nothing for
-        _attach_tool_output to reconstruct, so it writes back just the plain
-        Human/AI pair instead — no synthetic tool call, no full AgentResult
-        JSON permanently bloating the checkpoint for every turn.
-
-        ``as_node="model"`` is required, not cosmetic: LangGraph's
-        aupdate_state only auto-infers which node an external update came
-        from when the thread's checkpoint has never been touched by a manual
-        update before (empty versions_seen). The supervisor graph is the
-        only writer of this thread's checkpoint on the fast path, so every
-        write-back after the first one on a given thread hits genuinely
-        ambiguous versions_seen and raises InvalidUpdateError without this —
-        silently dropping that turn (and every later one) from history, not
-        just its chart card."""
+        ``as_node="model"`` is required: without it, LangGraph can't infer the
+        node after the first manual update and raises InvalidUpdateError."""
         if result.charts or result.artifacts:
             tool_call_id = str(uuid.uuid4())
             agent_name = _FAST_PATH_AGENTS[intent]
@@ -550,11 +471,8 @@ class ChatStreamService:
     def _turn_timeout_events(
         self, request_id: str, thread_id: str, job_statuses: dict[str, str],
     ) -> list[str]:
-        """T38: the whole-turn deadline expired. Logs the structured
-        ``chat_turn_timeout`` event (the metric that tells us whether the
-        budget is right) and returns the ``error`` + ``done`` SSE pair naming
-        any job_handle whose last-seen status this turn wasn't terminal, so
-        the Jobs panel story stays coherent with the honest answer."""
+        """The whole-turn deadline expired. Logs ``chat_turn_timeout`` and
+        returns the ``error`` + ``done`` pair, naming any jobs still running."""
         in_flight = [handle for handle, status in job_statuses.items() if status not in TERMINAL_STATUSES]
         logger.warning(
             "chat_turn_timeout",
@@ -578,22 +496,9 @@ class ChatStreamService:
     def _overloaded_events(self, request_id: str, thread_id: str) -> list[str]:
         """Admission control refused this turn, so the turn ends here.
 
-        The chat path cannot answer overload the way the export endpoints do.
-        By the time a reduction is attempted the SSE response is long since
-        committed, so there is no status line left to set -- a 503 is not
-        available and the only honest ending is a terminal ``error``/``done``
-        pair, exactly as T38's deadline does above.
-
-        Logged at warning with its own ``_event`` so shedding is countable in
-        the same place turn timeouts are. That number is the one that says
-        whether the admission limit is set correctly: sheds that never happen
-        mean N is generous, and sheds during ordinary traffic mean the
-        container needs more memory rather than the queue needing more depth.
-
-        No ``job_statuses`` parameter, unlike the timeout case. Nothing was
-        started -- that is the entire point -- so there is no in-flight work to
-        name, and pointing a researcher at the Jobs panel would send them
-        somewhere empty.
+        The SSE response is already committed, so a 503 isn't possible; end
+        with an ``error``/``done`` pair like the timeout case. Logged as
+        ``chat_turn_shed`` so shedding can be counted to tune the limit.
         """
         answer = render_overloaded_answer()
         logger.warning(
@@ -628,8 +533,7 @@ class ChatStreamService:
     ) -> AsyncIterator[str]:
         if emitted_chart_ids is None:
             emitted_chart_ids = set()
-        # One result for a legacy ask_* message, one per item that ran for a
-        # T64 dispatch batch.
+        # One result for a legacy ask_* message, one per item for a dispatch batch.
         agent_results = parse_tool_results(content)
         if agent_results:
             for agent_result in agent_results:
@@ -646,14 +550,10 @@ class ChatStreamService:
                     event = await self._emit_chart_once(thread_id, chart, user_id, emitted_chart_ids)
                     if event is not None:
                         yield event
-            # T22 story #8: a sub-agent's suggestions arrive batched inside
-            # its final tool_result envelope on the supervisor path — carried
-            # through untouched (never synthesized here, story #12).
             followups = _merged_followups(agent_results)
             if suggestions_box is not None and followups is not None:
                 suggestions_box["value"] = followups
-            # T49: same discipline for the deterministic variable picker. The
-            # UI shows one picker, so the first item's wins (T64 D13).
+            # The UI shows one picker, so the first item's wins.
             picker = next((r.variable_choice for r in agent_results if r.variable_choice is not None), None)
             if variable_choice_box is not None and picker is not None:
                 variable_choice_box["value"] = picker.model_dump(exclude_none=True)
@@ -704,11 +604,9 @@ class ChatStreamService:
         user_id: str,
         thread_id: str,
     ) -> dict[str, Any] | None:
-        """Table artifacts are claimed (and, per T39, durably persisted to
-        Postgres) on first sight here. Chart-backed artifact types
-        (map/comparison/timeseries) are already fully formed by
-        artifact_registry and persisted durably alongside the chart payload
-        that carries them — pass them through as-is."""
+        """Table artifacts are claimed (persisted to Postgres) on first sight.
+        Chart-backed types are already persisted with their chart, so they
+        pass through as-is."""
         if ref.get("type") != "table":
             return ref
         try:
@@ -770,9 +668,8 @@ class ChatStreamService:
         self, thread_id: str, chart: Any, user_id: str, emitted_chart_ids: set[str],
     ) -> str | None:
         """Persist and build the "chart" SSE event for ``chart``, or return
-        None if its chart_id was already emitted this turn (T13 dedup — see
-        the comment on stream_chat_events' emitted_chart_ids) or it is a
-        reference to a chart this user does not own."""
+        None if its chart_id was already emitted this turn or the user
+        doesn't own it."""
         payload = chart.model_dump(exclude_none=True) if hasattr(chart, "model_dump") else dict(chart)
         chart_id = payload.get("chart_id")
         if chart_id is not None and chart_id in emitted_chart_ids:

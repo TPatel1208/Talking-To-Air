@@ -1,4 +1,4 @@
-// Turns a heatmap payload's `frames` block (T59 D13 -- the axis lives in the
+// Turns a heatmap payload's `frames` block (the axis lives in the
 // chart's jsonb row, the values live in a separate blob) into the scrub axis
 // the Map tab's slider is drawn from.
 //
@@ -8,7 +8,7 @@
 
 // One stop per plane in the [1+N, ny, nx] blob: the period aggregate plus one
 // per cadence bucket. The aggregate leads because parking there reproduces the
-// Map tab exactly (D5/D11), not because it is plane 0 -- `period_index` says
+// Map tab exactly, not because it is plane 0 -- `period_index` says
 // which plane it is, and the buckets take the planes it does not.
 export function buildScrubAxis(chart) {
   const block = chart?.frames
@@ -61,7 +61,7 @@ export function buildScrubAxis(chart) {
   }
 }
 
-// D10's three-way read of a bucket. `{count: 0}` alone is what a frame carries
+// The three-way read of a bucket. `{count: 0}` alone is what a frame carries
 // when nothing survived -- absent statistics, not a maximum of zero -- so
 // emptiness is read off the surviving count, and the two empty kinds split on
 // whether QA ever ran.
@@ -74,13 +74,13 @@ function bucketState(frame) {
 
 // The scrubber's whole render state in one read: whether it is offered at all,
 // whether the slider can move, and what to say when it cannot. Five modes,
-// because the three ways this degrades (deliverable 8) plus the two ways a
+// because the three ways this degrades plus the two ways a
 // stack that WILL work looks before it does are all different sentences.
 //
 // `loadState` is the blob fetch: 'idle' | 'loading' | 'loaded' | 'expired'
 // (a 404 -- evicted, or superseded pipeline version) | 'failed'.
 //
-// `statistic` (T59 Phase 15) changes only the WORDING of the three degraded
+// `statistic` changes only the WORDING of the three degraded
 // details, and only away from the mean. `store_frame_stack` degrades one
 // statistic at a time and protects the mean from its own planes' evictions, so
 // "the frame values for this map have expired" is false of a chart whose mean
@@ -108,7 +108,7 @@ export function resolveFrameState(chart, loadState = 'idle', statistic = 'mean')
 
   const base = { offered: true, axis, reason: null }
 
-  // D8: no regeneration, ever. Both of these are terminal, and they are
+  // Stacks are never regenerated. Both of these are terminal, and they are
   // different facts -- one stack was never stored, the other was and aged out.
   if (!chart.frames.url) {
     return {
@@ -159,11 +159,8 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 // saying so. Parsed as UTC and labelled as UTC, both explicitly.
 // In tier one a frame IS one cadence bucket, so its start names it exactly and
 // the weighting disclosure already states the width. In tier two a frame
-// averages several, and `_frame_intervals` ships `t_end` for a stated reason:
-// "a stop labeled with one day's timestamp while showing three days averaged
-// is a lie the picture itself cannot correct". This is the axis honouring
-// that -- before Phase 9 it read `t_start` and dropped the end, leaving the
-// delta sentence as the only thing on screen carrying a frame's width.
+// averages several, so the label uses both `t_start` and `t_end`: a stop
+// labeled with one day while showing three days averaged would mislead.
 function intervalLabel(start, end, cadence, coarsened) {
   const at = parseUtc(start)
   if (!at) return String(start ?? '')

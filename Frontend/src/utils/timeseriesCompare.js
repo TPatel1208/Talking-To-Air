@@ -1,8 +1,8 @@
-// Compatibility/fallback decision for compare mode's chart-overlay path (T29).
+// Compatibility/fallback decision for compare mode's chart-overlay path.
 // Given the filled timeseries payloads in a comparison session, decides
 // whether they can be overlaid onto one shared Plotly figure (matching units,
 // and every pair of time ranges overlapping by at least one point -- no
-// partial-overlap heuristics, the rule is binary) or must fall back to T28's
+// partial-overlap heuristics, the rule is binary) or must fall back to the
 // small-multiple grid. No dual-axis mode: any mismatch means "fall back".
 
 function unitsOf(chart) {

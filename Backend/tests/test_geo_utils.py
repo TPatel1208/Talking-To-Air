@@ -8,7 +8,7 @@ from tta_backend.utils.geo_utils import identify_lat, identify_lon, identify_tim
 
 
 class IdentifyLatLonTests(unittest.TestCase):
-    """T24: coordinate identification keys on CF metadata (the signal every
+    """Coordinate identification keys on CF metadata (the signal every
     NASA Earthdata product is published against), not on a hardcoded list of
     variable-name spellings, so datasets we have never opened still work."""
 
@@ -109,8 +109,8 @@ class IdentifyLatLonTests(unittest.TestCase):
 
 
 class IdentifyTimeTests(unittest.TestCase):
-    """T25: time identification gets the same CF-metadata-primary treatment
-    as lat/lon (T24), so a MERRA-2-style `valid_time` dim is recognized as
+    """Time identification gets the same CF-metadata-primary treatment
+    as lat/lon, so a MERRA-2-style `valid_time` dim is recognized as
     time instead of falling into the dimension-choice-required error path."""
 
     def test_cf_standard_name_identifies_time_regardless_of_dim_name(self):
@@ -186,7 +186,7 @@ class FindLatLonCoordTests(unittest.TestCase):
         self.assertIsNone(find_lon_coord(da))
 
     def test_finds_cf_metadata_coords_with_unusual_names(self):
-        """T24: find_lat_coord/find_lon_coord delegate to the canonical
+        """find_lat_coord/find_lon_coord delegate to the canonical
         identifier, so a coordinate the name allowlist would miss is found
         via its CF standard_name."""
         da = xr.DataArray(

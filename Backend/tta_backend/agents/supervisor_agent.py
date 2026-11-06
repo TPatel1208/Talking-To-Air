@@ -6,7 +6,7 @@ Memory model
 - Supervisor : stateful — uses a Postgres checkpointer, one thread per session.
 - Subagents  : stateless — no checkpointer; each run is a fresh invocation.
                The supervisor names their work as typed requests through its
-               one tool, dispatch (T64); each request is rendered into a task
+               one tool, dispatch; each request is rendered into a task
                string under the researcher's own message.
 """
 import logging
@@ -71,10 +71,10 @@ async def build_agent(
     ``ground_agent``/``satellite_agent`` are the already-built stateless
     sub-agents (see agents/ground_sensor_agent.py, agents/earthdata_agent.py)
     — built once at startup (api.py's lifespan) and shared with the router
-    fast path (services/chat_stream_service.py, T14) so both callers invoke
+    fast path (services/chat_stream_service.py) so both callers invoke
     the identical instances via services/subagent_dispatch.py.
 
-    ``mcp_manager`` (T17), if given, is passed through to
+    ``mcp_manager``, if given, is passed through to
     ``run_satellite`` so a satellite request returns the deterministic
     unavailable answer instead of burning a model call when the
     earthdata-retrieval MCP isn't ready.
@@ -168,7 +168,7 @@ async def build_agent(
         description=_DISPATCH_DESCRIPTION,
         args_schema=DispatchArgs,
         # Sent to the model verbatim: langchain's own converter reduces the
-        # request union to a bare type (T64 Phase 0 F1).
+        # request union to a bare type.
         metadata={NATIVE_JSON_SCHEMA: dispatch_json_schema()},
     )
 
@@ -187,7 +187,7 @@ async def build_agent(
 # ── Helpers ───────────────────────────────────────────────────────────────────
 # Sub-agent invocation, envelope finalization, and monitor-context helpers
 # live in services/subagent_dispatch.py — shared by these tool wrappers and
-# the router fast path (T14). Only supervisor-model-input compaction (used
+# the router fast path. Only supervisor-model-input compaction (used
 # solely by this module's own trim_middleware) stays here.
 
 

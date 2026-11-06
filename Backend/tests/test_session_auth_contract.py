@@ -1,7 +1,7 @@
 """
 tests/test_session_auth_contract.py
 =====================================
-T47 findings #1/#2: an auth failure mid-session must read as 401 ("sign in
+An auth failure mid-session must read as 401 ("sign in
 again"), never as 404 ("this thing is gone"). The frontend routes one to
 in-place re-auth and the other to an honest empty state, so the two must never
 be confused. These pin the invariant so a future refactor can't quietly turn
@@ -12,16 +12,12 @@ that genuinely belongs to someone else still answers 404 (don't leak
 existence) -- is pinned here for the session-history route and, for charts,
 already by test_provenance_endpoint's foreign-chart test.
 
-T61 note: the revoked-token case this file used to carry is **gone, not
-forgotten**. There is no denylist any more -- an access token stays
-cryptographically valid until its own `exp`, which is the accepted consequence
-of verifying locally against a JWKS (logout revokes the *refresh* token, so
-sign-out latency is bounded by the 45-minute access-token TTL, not by us).
-Testing revocation would mean asserting behaviour the system no longer has.
-It is replaced below by the wrong-signing-key case: a well-formed token
-carrying every correct claim, signed by a key we never published. That is the
-forgery the old shared-secret scheme could not have caught at all, and it must
-read as 401 for exactly the same reason the expired one does.
+There is no revoked-token case: there's no denylist, and an access token
+stays valid until its own `exp` (the accepted consequence of verifying locally
+against a JWKS; logout revokes the *refresh* token, so sign-out latency is
+bounded by the 45-minute access-token TTL). Instead there's a wrong-signing-key
+case: a well-formed token with every correct claim, signed by a key we never
+published, which must read as 401 like an expired one.
 """
 import importlib.util
 import os
@@ -101,8 +97,8 @@ class SessionAuthContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res.status_code, 401)
 
     async def test_identity_provider_outage_answers_503_not_401(self):
-        # The other half of the contract, new in T61. A 401 sends the frontend
-        # into T47's re-auth modal; signing in again cannot reach an identity
+        # The other half of the contract. A 401 sends the frontend into its
+        # re-auth modal; signing in again cannot reach an identity
         # provider that is down, so it would hand the user a login form that
         # also fails. A verifier that has never fetched a key set raises
         # IdentityProviderUnavailable, and that must surface as 503.

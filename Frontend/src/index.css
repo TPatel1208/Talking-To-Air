@@ -60,7 +60,7 @@ html, body, #root {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 
-/* T59 Phase 10 -- the scrub track carries what the axis already knows.
+/* The scrub track carries what the axis already knows.
  *
  * The empty runs are painted by a layer BEHIND this input, so the input's own
  * track has to get out of the way. Webkit only honours ::-webkit-slider-

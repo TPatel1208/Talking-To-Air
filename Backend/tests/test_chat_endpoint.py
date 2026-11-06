@@ -43,11 +43,11 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         return auth_helpers.patch_verifier()
 
     async def test_chat_streams_done_event(self):
-        """The streaming POST, which is now the rollback path (T63).
+        """The streaming POST, which is now the rollback path.
 
         Pinned with the kill switch explicitly off. Detached turns are the
-        default since Phase 5 — ``POST /chat`` answers 202 and the stream
-        comes from the GET — but this contract is what
+        default — ``POST /chat`` answers 202 and the stream comes from the
+        GET — but this contract is what
         ``CHAT_DETACHED_TURNS_ENABLED=0`` restores, and a rollback that
         restores something untested is not a rollback.
         """
@@ -78,7 +78,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("event: status", response.text)
         self.assertIn('"message": "Downloading satellite granules..."', response.text)
-        # T19: the supervisor path's own status forwarding must not rebuild
+        # The supervisor path's own status forwarding must not rebuild
         # a message-only payload — stage/detail have to survive to the wire.
         self.assertIn('"stage": "progress"', response.text)
         self.assertIn('"detail": 40', response.text)
@@ -206,7 +206,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("forged", response.text)
 
     async def test_session_endpoint_500s_never_leak_the_exception_text(self):
-        # T37: internal error text (driver messages, paths) must go to the
+        # Internal error text (driver messages, paths) must go to the
         # logs, not the client — every 500 body carries the generic detail.
         class FakeAgent:
             async def aget_state(self, config):
@@ -250,7 +250,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
             "user_id": self.user.id,
         }
 
-        # T37: export endpoints read tools through the readiness gate.
+        # Export endpoints read tools through the readiness gate.
         self.api.app.state.earthdata_mcp_manager = SimpleNamespace(state="ready", tools={})
         self.addCleanup(setattr, self.api.app.state, "earthdata_mcp_manager", None)
 
@@ -350,7 +350,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bound_at_each_chunk, [self.user.id] * 3)
 
     async def test_chart_csv_export_503s_with_the_taxonomy_body_when_the_mcp_is_not_ready(self):
-        # T37: export.csv must go through the same T17 readiness gate as
+        # export.csv must go through the same readiness gate as
         # every other MCP-backed endpoint — never fail inside the
         # StreamingResponse generator after a 200 has been committed.
         # No earthdata_mcp_manager on app.state (lifespan never ran here),
@@ -370,7 +370,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("temporarily unavailable", body["message"])
 
     async def test_chart_csv_export_fails_clean_when_the_stream_dies_before_the_first_chunk(self):
-        # T37: the common failures (missing handle, evicted export) surface
+        # The common failures (missing handle, evicted export) surface
         # inside the CSV generator. The endpoint must materialize the first
         # chunk before committing to a 200, so these become a clean 422 —
         # never a 0-byte file that looks like a successful download.
@@ -405,7 +405,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("source handle", response.json()["detail"])
 
     async def test_chart_csv_export_marks_a_mid_stream_failure_with_an_incomplete_trailer(self):
-        # T37: once streaming has begun the 200 is committed — a failure
+        # Once streaming has begun the 200 is committed — a failure
         # after the first chunk must append a clearly marked trailer so a
         # truncated file is never mistaken for the full dataset.
         payload = {
@@ -475,8 +475,8 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("# EXPORT INCOMPLETE — provider_unavailable", response.content.decode("utf-8"))
 
     async def test_chart_netcdf_export_503s_with_the_taxonomy_body_when_the_mcp_is_not_ready(self):
-        # T37: export.nc answered a bespoke bare-detail 503; it must speak
-        # the shared T18 taxonomy like every other MCP-backed endpoint.
+        # export.nc must speak the shared error taxonomy like every other
+        # MCP-backed endpoint, not a bespoke 503.
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
         with auth_patches:
@@ -492,7 +492,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("temporarily unavailable", body["message"])
 
     async def test_chart_netcdf_export_fails_clean_when_the_converted_file_is_gone(self):
-        # T37: an evicted/vanished converted file must fail before the 200
+        # An evicted/vanished converted file must fail before the 200
         # commits — never stream a 0-byte "successful" NetCDF download.
         payload = {
             "chart_id": "chart-1",
@@ -780,15 +780,15 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 404)
 
     def _frame_chart(self, planes: bool = False):
-        """A chart whose frame stack has been stored (T59 Phase 4).
+        """A chart whose frame stack has been stored.
 
         Returns ``(payload, stack)``. The store is redirected at a tempdir for
         the test, so this writes a real entry through the real write path
         rather than faking one — the endpoint's whole job is to serve what the
         store actually holds.
 
-        ``planes`` attaches D6a's max and min planes, each of which stores an
-        entry of its own with a URL of its own (T59 Phase 13).
+        ``planes`` attaches the max and min planes, each of which stores an
+        entry of its own with a URL of its own.
         """
         import tempfile
 
@@ -841,7 +841,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         ``private, immutable, max-age`` is a deliberate divergence from
         ``/chart/{id}/overlay.png``'s ``no-store``, and it is only safe because
-        D8 says a blob is never regenerated in place: this URL's bytes cannot
+        a blob is never regenerated in place: this URL's bytes cannot
         change, so a cache that keeps them forever can never serve a stale
         field. ``private`` because charts are ownership-scoped — there is no
         shared cache to warm and no cross-user entry to leak into.
@@ -879,7 +879,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(again.content, b"")
 
     async def test_chart_frames_endpoint_404s_when_the_values_have_been_evicted(self):
-        """D8's degradation, at the seam it actually happens.
+        """Eviction's degradation, at the seam it actually happens.
 
         The axis is in Postgres and survives; only the values are gone. A 404
         here is the frontend's signal to draw the labeled axis with the
@@ -946,8 +946,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
                 )
 
     async def test_chart_plane_endpoint_serves_each_statistic_at_its_own_url(self):
-        """D6a decision 5's *"one store entry per statistic, fetched lazily"*,
-        at the transport.
+        """*One store entry per statistic, fetched lazily*, at the transport.
 
         A path per statistic rather than a query parameter, deliberately. A
         parameter would make one URL serve several bodies, which every cache
@@ -1111,10 +1110,9 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tick_count, 15)
 
     async def test_chart_overlay_endpoint_does_not_block_the_event_loop(self):
-        """T45: chart_overlay_png used to read the overlay PNG with a
-        synchronous open()/read() straight on the event loop — a slow disk
-        (or a large overlay) would stall every other concurrent stream for
-        the read's duration. Hermetic per the OpenHandleEventLoopOffloadTests
+        """chart_overlay_png must not read the overlay PNG synchronously on
+        the event loop — a slow disk (or a large overlay) would stall every
+        other concurrent stream for the read's duration. Hermetic per the OpenHandleEventLoopOffloadTests
         pattern: only that a concurrent coroutine keeps making progress while
         a (patched-slow) read is in flight."""
         import asyncio
@@ -1231,7 +1229,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         body = response.json()
         self.assertEqual(body["supabase_url"], self.api.settings.supabase_url)
         self.assertEqual(body["supabase_publishable_key"], self.api.settings.supabase_publishable_key)
-        # Phase 4's frontend reads these exact names; a rename here is a silent
+        # The frontend reads these exact names; a rename here is a silent
         # login failure there, so the key set is pinned rather than just probed.
         self.assertEqual(set(body), {"supabase_url", "supabase_publishable_key"})
 
@@ -1271,7 +1269,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status_code, 200)
         # earthdata_mcp_manager is never started in this test (lifespan
-        # never runs), so it reports its initial "connecting" state (T17).
+        # never runs), so it reports its initial "connecting" state.
         self.assertEqual(
             response.json(), {"status": "ok", "db": True, "agent": True, "earthdata_mcp": "connecting"},
         )

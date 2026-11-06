@@ -1,17 +1,16 @@
 """
-T60 Phase 1: a named coalition is a real boundary, and it is reachable.
+A named coalition is a real boundary, and it is reachable.
 
 The Ozone Transport Region is not an OSM place and has no ``global_regions``
-entry (D3 forbids one -- its bounding box would silently swallow West
-Virginia, most of Ohio and part of Ontario). Before this phase the resolver
-had exactly one door: ``if location_lower in self.global_regions``, else
-geocode -- so a checked-in polygon with no preset key was unreachable and
-``"otc"`` went to Nominatim, which answers with an airport in Chad (V2).
+entry (its bounding box would silently swallow West Virginia, most of Ohio
+and part of Ontario). Without the dispatcher, a polygon with no preset key
+would be unreachable and ``"otc"`` would go to Nominatim, which answers with
+an airport in Chad.
 
 These tests pin the dispatcher seam that makes a polygon-only preset
 reachable, the three-state outcome that keeps a broken asset away from the
-geocoder (D3b), and the V1 Virginia verdict -- positively, since an
-extent-only assertion would pass on a polygon over-including 96% of a state.
+geocoder, and the Virginia handling -- positively, since an extent-only
+assertion would pass on a polygon over-including 96% of a state.
 """
 import importlib.util
 import os
@@ -34,7 +33,7 @@ class CoalitionPresetTests(unittest.IsolatedAsyncioTestCase):
     def test_otc_resolves_to_a_real_polygon_without_a_global_regions_entry(self):
         """The whole point of the seam: no preset key, still resolves."""
         resolver = self._resolver()
-        # D3: the coalition deliberately has no bounding-box preset to fall
+        # The coalition deliberately has no bounding-box preset to fall
         # back on. If this ever gains one, the fail-closed rule is moot.
         self.assertNotIn("otc", resolver.global_regions)
 
@@ -45,7 +44,7 @@ class CoalitionPresetTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Ozone Transport Region", region["display_name"])
 
     def test_otc_polygon_covers_every_member_and_no_non_member(self):
-        """D3's motivation, pinned: the coalition's *envelope* would swallow
+        """Why coalitions have no bounding box: the coalition's *envelope* would swallow
         West Virginia, most of Ohio and part of Ontario. The dissolved
         polygon must not."""
         from shapely.geometry import Point
@@ -73,10 +72,10 @@ class CoalitionPresetTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(geometry.contains(Point(lon, lat)))
 
     def test_virginia_is_excluded_and_the_omission_is_disclosed(self):
-        """The V1/D3a verdict, pinned on both halves.
+        """Virginia's partial inclusion, pinned on both halves.
 
-        An extent-only assertion is not the test: the PRD's original Phase 1
-        test would have passed on a polygon over-including 96% of Virginia.
+        An extent-only assertion would pass on a polygon over-including 96% of
+        Virginia.
         So this asserts the shape *and* that the resolved region tells the
         researcher what was left out -- in ``display_name``, which is what an
         answer cites, not in a code comment nobody reads.
@@ -126,8 +125,7 @@ class CoalitionPresetTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(jurisdiction, otc["approximation"])
 
     def test_new_england_is_the_six_states_not_a_rectangle(self):
-        """Design tension 3, pinned. D12 listed ``"new england"`` as an alias
-        of ``northeast us``, which is ``box(-80, 37, -66, 48)`` -- 8.3x New
+        """``"new england"`` must not alias ``northeast us``, which is ``box(-80, 37, -66, 48)`` -- 8.3x New
         England's true area, containing New York, Philadelphia, Baltimore and
         DC. A researcher who asks for New England and gets a mean over
         Philadelphia has been told nothing."""
@@ -152,11 +150,11 @@ class CoalitionPresetTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(region["geometry"].contains(Point(lon, lat)))
 
     def test_every_otc_alias_produces_an_identical_region(self):
-        """Tension 4: aliases resolve *through* ``_finalize_preset``, not
+        """Aliases resolve *through* ``_finalize_preset``, not
         around it. An alias table that builds its own dict is a second
         definition of what a region is, and the two will drift. Comparing the
         whole object -- not just ``region_type`` -- is the load-bearing half;
-        D12a's collision check is the cheap half."""
+        the collision check is the cheap half."""
         resolver = self._resolver()
         canonical = resolver.resolve_location("otc")
 
@@ -173,9 +171,9 @@ class CoalitionPresetTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(resolver.resolve_location(alias), canonical)
 
     def test_northeastern_us_is_identical_to_northeast_us(self):
-        """D12's phrasing-variance patch. Today ``"northeastern us"`` misses
+        """Phrasing variants. Without an alias, ``"northeastern us"`` misses
         the preset dict and geocodes to a railway platform at Northeastern
-        University in Boston (Phase 0 gate, V2)."""
+        University in Boston."""
         resolver = self._resolver()
 
         self.assertEqual(
@@ -194,15 +192,15 @@ class CoalitionPresetTests(unittest.IsolatedAsyncioTestCase):
     "region-coalition test dependencies are not installed",
 )
 class CoalitionFailsClosedTests(unittest.IsolatedAsyncioTestCase):
-    """D3b: a coalition that matched a known name and then failed to produce a
+    """A coalition that matched a known name and then failed to produce a
     polygon must NOT fall through to the geocoder.
 
     The assertion that matters is that the geocoder **was not called**, not
     merely that the answer was empty -- an empty answer is what you would also
     get from a geocode miss, and ``"OTC"`` does not miss. It resolves live to
-    an aerodrome in Chad, handed back as ``region_type: polygon`` (V2).
+    an aerodrome in Chad, handed back as ``region_type: polygon``.
 
-    Verified by mutation, not assumed: a fail-OPEN dispatcher (the D3b
+    Verified by mutation, not assumed: a fail-OPEN dispatcher (the
     short-circuit removed) returns ``region is None`` here **too**, because
     the stubbed geocoder returns None -- so an emptiness assertion alone
     cannot tell the two apart. Only ``assert_not_called`` catches it, and
@@ -281,8 +279,8 @@ class DispatcherSeamTests(unittest.IsolatedAsyncioTestCase):
         return RegionResolver()
 
     async def test_sync_and_async_agree_on_every_new_string(self):
-        """T42's own shipped bug was these two paths normalizing differently,
-        which is why ``_normalize_location_name`` is shared (D11a). A
+        """These two paths must not normalize differently, which is why
+        ``_normalize_location_name`` is shared. A
         dispatcher wired into only one resolver is a region that resolves two
         ways -- and ``export_service`` calls the sync one while every analysis
         tool calls the async one."""
@@ -336,7 +334,7 @@ class DispatcherSeamTests(unittest.IsolatedAsyncioTestCase):
         async_geocode.assert_not_called()
 
     def test_collision_assertion_fires_on_a_shadowing_alias(self):
-        """D12a. A hand-maintained table that silently shadows ``"us"`` or
+        """A hand-maintained table that silently shadows ``"us"`` or
         ``"georgia"`` is the cheapest possible way to reintroduce a confident
         wrong region, and review does not reliably catch it."""
         from tta_backend.utils import region_dispatch
@@ -359,7 +357,7 @@ class DispatcherSeamTests(unittest.IsolatedAsyncioTestCase):
                         region_dispatch.assert_no_alias_collisions(global_regions)
 
         # ...and a coalition id that grew a bounding-box preset, which would
-        # quietly re-open the D3 fallback the whole design forbids.
+        # quietly re-open the bounding-box fallback coalitions must not have.
         with patch.dict(region_dispatch.COALITIONS, {"usa": None}):
             with self.assertRaises(AliasCollisionError):
                 region_dispatch.assert_no_alias_collisions(global_regions)

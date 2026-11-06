@@ -2,7 +2,7 @@ import { groupInventoryByRole, confidenceHint } from '../utils/variableRoles'
 import { formatUnits } from '../utils/displayFormat.js'
 import SciText from './SciText.jsx'
 
-// Grouped, name-first variable inventory (PRD T35). Renders the backend's
+// Grouped, name-first variable inventory. Renders the backend's
 // classified `inventory` as role sections — science first, one clean
 // Unclassified group last when non-empty — so a scientist can see at a glance
 // what analyses a dataset makes possible ("does this product carry cloud

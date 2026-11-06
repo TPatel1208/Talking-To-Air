@@ -42,14 +42,11 @@ class EarthdataToolsetTests(unittest.IsolatedAsyncioTestCase):
         tools = await load_earthdata_tools(self.settings, lambda: "1")
         model_tool_names = {t.name for t in curated_model_tools(tools)}
 
-        # align is internal as of T08 (the compare tool's period mode calls
-        # it directly) but still never model-facing, same as the other
-        # internal/hidden composite plumbing. get_retrieval_status,
-        # retrieve_timeseries, cite_dataset, and get_provenance are demoted
-        # to internal-only as of T11 (MCP-first minimal toolset).
-        # inspect_granules joins the internal set as of T21 (discovery
-        # pane's granule-inspection endpoint) — the agent keeps coverage +
-        # the size gate, so this stays off the model surface too.
+        # align is internal (the compare tool's period mode calls it
+        # directly) but never model-facing, like the other composite
+        # plumbing. get_retrieval_status, retrieve_timeseries, cite_dataset,
+        # get_provenance and inspect_granules are internal-only too (the
+        # minimal toolset; the agent keeps coverage + the size gate).
         for hidden in (
             "retrieve_subset",
             "estimate_retrieval_size",
@@ -71,7 +68,7 @@ class EarthdataToolsetTests(unittest.IsolatedAsyncioTestCase):
     "MCP client test dependencies are not installed",
 )
 class DescribeDatasetModelViewTests(unittest.IsolatedAsyncioTestCase):
-    """T13: describe_dataset's model-facing result stays proportional to what
+    """describe_dataset's model-facing result stays proportional to what
     the model actually uses (variable names to subset), never every
     fill-value/valid-range record a many-variable TEMPO-style collection
     carries — while the discovery pane's direct calls through the same raw

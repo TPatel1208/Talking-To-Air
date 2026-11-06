@@ -1,9 +1,6 @@
-"""Per-phase wall-clock timing for the retrieval/visualization pipeline (T51).
+"""Per-phase wall-clock timing for the retrieval/visualization pipeline.
 
-The only durations this backend recorded were per-HTTP-request and whole-turn
-elapsed, so a slow turn could never be attributed to a phase and every
-performance decision was a guess. :func:`phase_timer` closes that gap: it
-records a phase's *own* span to the ``pipeline_phase_duration_seconds``
+:func:`phase_timer` lets a slow turn be attributed to a phase: it records a phase's *own* span to the ``pipeline_phase_duration_seconds``
 histogram and emits a structured ``phase_timing`` log event carrying the
 phase, its duration, the thread it ran on, and whatever cheap size context
 the call site can supply (cells in/out, bytes read).

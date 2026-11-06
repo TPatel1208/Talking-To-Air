@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 # Shared singleton (utils.plotting.get_geocoding_service) — one cache and
 # one rate limiter across every consumer (plot tools and this module), not
-# a private instance that can't see the others' cached lookups (T11).
+# a private instance that can't see the others' cached lookups.
 geocoding_service = get_geocoding_service()
 
 settings = get_settings()

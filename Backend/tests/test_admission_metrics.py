@@ -31,7 +31,7 @@ the resting floor -- CPython does not promptly return freed memory to the OS,
 so RSS after a large reduction still reflects most of what that reduction
 took. Deliberately *current* RSS rather than a monotonic high-water mark, for
 the reason ``_current_process_rss_bytes`` already documents: peak-only readers
-climb forever and hide the plateau-then-shrink shape T45 added them to expose.
+climb forever and hide the plateau-then-shrink shape.
 """
 from __future__ import annotations
 

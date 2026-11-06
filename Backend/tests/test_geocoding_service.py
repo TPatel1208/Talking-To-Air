@@ -1,5 +1,5 @@
 """
-Geocoder unification tests (T11): one shared GeocodingService instance
+Geocoder unification tests: one shared GeocodingService instance
 (one cache, one rate limiter, one policy-compliant User-Agent) should back
 every consumer — the satellite plot/stat/validation tools' RegionResolver
 and the ground sensor tools' EPA AQS module — instead of each constructing

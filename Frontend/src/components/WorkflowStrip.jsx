@@ -22,7 +22,7 @@ const DOT = {
   animation: 'wm-bounce 1.2s ease-in-out infinite',
 }
 
-/* T64 Phase 4: one row per sub-agent the supervisor runs in parallel, so
+/* One row per sub-agent the supervisor runs in parallel, so
  * their narration reads apart instead of overwriting one line. */
 function LaneRows({ lanes, elapsedSeconds }) {
   return (
@@ -53,7 +53,7 @@ function formatElapsed(seconds) {
   return `${minutes}m ${remainder}s`
 }
 
-/* T19: a live strip above the streaming answer — current stage label,
+/* A live strip above the streaming answer — current stage label,
  * progress/detail when present, elapsed time. Collapses (returns null) the
  * moment the strip's `active` flag goes false (the first answer token
  * arrived); on error, shows the stage that was in progress when it failed. */

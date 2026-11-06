@@ -7,8 +7,8 @@ that was.
 ``dimension``/``dimension_value`` already mean two things depending on metadata
 the caller cannot see -- a physical value on a coordinate-bearing dimension, an
 integer index on a coordinate-less one. This module exists so that asking for a
-physical level is a *third* parameter rather than a third meaning of the second
-(T58 D1): a unit in the request cannot be misread, and a bare number is refused
+physical level is a *third* parameter rather than a third meaning of the second:
+a unit in the request cannot be misread, and a bare number is refused
 rather than assumed to be whichever axis happened to be first.
 """
 from __future__ import annotations
@@ -45,10 +45,9 @@ _LEVEL_PATTERN = re.compile(r"^\s*([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*([A-Za
 def parse_level(text: str, available: dict[str, Any] | None = None) -> LevelRequest:
     """Parse ``"500 hPa"`` / ``"26 km"`` into a request, or refuse.
 
-    Strict on purpose (D11). A bare ``"500"`` is not an under-specified request
-    that can be helpfully completed -- on a product publishing both pressure
-    and altitude it is genuinely two different questions, and picking one is
-    how the T56 routing bug happened. ``available`` (``{kind: units}`` read off
+    Strict on purpose. A bare ``"500"`` can't be helpfully completed: on a
+    product publishing both pressure and altitude it's two different
+    questions. ``available`` (``{kind: units}`` read off
     the granule) lets the refusal answer with the product's OWN vocabulary
     instead of a generic list of units nobody published.
     """
@@ -135,15 +134,13 @@ def resolve_level(
     ``narrowed`` is the region-narrowed, PRE-aggregation array. That is not a
     convenience: the vertical axes ride the time dimension, so the temporal
     reduction destroys them, and by the time the existing selection seam runs
-    there is nothing left to match a height against (T58 finding 1). The index
-    this returns then goes through that unchanged selection path (D7).
+    there is nothing left to match a height against. The index this returns
+    then goes through that unchanged selection path.
 
     ``dataset`` is the opened Dataset the array came out of, so a product that
     publishes its vertical axis as an ordinary DATA VARIABLE rather than a CF
-    auxiliary coordinate is still resolvable. Without it this saw only
-    ``narrowed.coords`` and told a researcher "this product does not publish an
-    altitude axis" about a product that plainly does -- and that
-    ``plot_vertical_profile``, reading the same granule, charts happily.
+    auxiliary coordinate is still resolvable (``narrowed.coords`` alone
+    would miss it).
     """
     from tta_backend.preprocessing.regional_reduction import reduce_keeping_axes
 
@@ -543,11 +540,9 @@ def _column_weights(ordered: xr.DataArray, dim: str, lat_weights: xr.DataArray |
 
 # Below a MAJORITY, most of the analyzed region resolves to some layer other
 # than the one returned, and labelling the result with the requested level is a
-# claim about data it does not show. Derived, not chosen: the Phase 1 spike's
-# lowest observed dominance on a real product and a modest AOI was 83.1%, so
-# this refuses nothing measured to be sound, while a 51/49 coin flip -- which
-# grilling named as the case that must not resolve -- falls below it. A 2/3
-# threshold was proposed and rejected: nothing makes 66.7% safe and 66.6% not.
+# claim about data it does not show. The lowest dominance seen on a real
+# product was 83.1%, so this refuses nothing sound, while a 51/49 split falls
+# below it.
 _MIN_DOMINANT_FRACTION = 0.5
 
 
@@ -555,7 +550,7 @@ def _refuse_if_not_honestly_one_layer(
     request: LevelRequest, requested: float, axis_units: str, index: int, dominant: int | None,
     agreement: dict[str, Any], values: np.ndarray,
 ) -> None:
-    """Refuse when a single index cannot honestly stand for the request (D6)."""
+    """Refuse when a single index cannot honestly stand for the request."""
     from tta_backend.earthdata_mcp.results import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
 
     fraction = agreement["dominant_fraction"]
@@ -588,7 +583,7 @@ def _refuse_if_not_honestly_one_layer(
         # region containing two unrelated vertical structures. A 60/40 split
         # clears the floor comfortably, but if those two groups are fourteen
         # layers apart then no single index describes the region. On every
-        # measurement the spike took, the runner-up was the NEIGHBOURING layer;
+        # real measurement, the runner-up was the NEIGHBOURING layer;
         # a distant one is evidence, not noise.
         raise MCPToolError(
             CATEGORY_DIMENSION_CHOICE_REQUIRED,

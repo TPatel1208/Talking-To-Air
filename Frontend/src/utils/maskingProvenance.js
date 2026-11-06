@@ -26,7 +26,7 @@ export function resolveMasking(chart) {
     qaStatus,
     qaSource: masking.qa_source || '',
     qaNote: masking.qa_note || '',
-    // T55: the pass rate the mask actually produced, counted backend-side from
+    // The pass rate the mask actually produced, counted backend-side from
     // the same boolean condition that discarded the pixels. Every field is
     // normalized to null-when-absent rather than defaulted, because a genuine
     // 0 (a scene QA wiped out, or a scene with nothing retrievable to check)
@@ -65,7 +65,7 @@ export function formatQaPassRate(masking) {
   return `${pct.toFixed(1)}%`
 }
 
-// Region fidelity (T42): the backend discloses *what kind* of region it
+// Region fidelity: the backend discloses *what kind* of region it
 // masked -- region_type is 'polygon' (the named place's real boundary),
 // 'bounding_box' (a rectangle that averages in whatever it spans),
 // 'point_buffer' (a 0.1° box around a geocoded point with no boundary), or
@@ -74,27 +74,22 @@ export function formatQaPassRate(masking) {
 // case and needs no caveat. display_name is the place the geocoder actually
 // resolved, so a wrong-place answer is catchable. Rides on chart.provenance.
 //
-// T60 D10 adds 'composite_union' (a "+" grammar region, e.g. "NY + NJ") and
-// D10b makes it FAITHFUL: it is the exact union of real state boundaries, as
-// truthful as 'polygon', so it joins the no-caveat set. Left out, the note
-// lookup would fall through to the raw enum and a correct answer would read
-// as a defect (Phase 3b gate, V16, traced not assumed).
+// 'composite_union' (a "+" grammar region, e.g. "NY + NJ") is FAITHFUL: the
+// exact union of real boundaries, as truthful as 'polygon', so no caveat.
 //
-// D10a also splits the two facts region_type was carrying. 'boundary_cells'
+// region_type and region_origin are two facts. 'boundary_cells'
 // is *rasterization fidelity*; 'composite_union' is *shape provenance*. Both
 // can be true at once, so region_origin rides alongside rather than being
 // overwritten -- otherwise a small composite that self-heals silently stops
 // telling the researcher its shape was a construction.
 //
-// T60 Phase 5 adds 'buffer' (a CUSTOM grammar region, "within 50 miles of
-// NYC") on the same footing. It is a geodesic AEQD construction retaining
-// 99.99% of pi r^2 at every latitude the Phase 5 gate measured -- the exact
-// shape that was asked for, so faithful.
+// 'buffer' (a "within 50 miles of NYC" region) is faithful too: a geodesic
+// construction of exactly the shape that was asked for.
 //
 // It is deliberately NOT 'point_buffer', which means the opposite thing: "no
 // boundary was found, so here is a 0.1 degree box around a geocoded point".
 // Conflating a deliberate, precisely-sized buffer with that fallback would
-// invert the disclosure (D10).
+// invert the disclosure.
 const FAITHFUL_REGION_TYPES = new Set(['polygon', 'composite_union', 'buffer'])
 
 export function resolveRegionFidelity(chart) {
@@ -124,7 +119,7 @@ const REGION_TYPE_NOTE = {
 
 const REGION_ORIGIN_NOTE = {
   composite_union: 'combined from the boundaries you named',
-  // D10a's likely path for a buffer, not a corner: a 50-mile disc is smaller
+  // The likely path for a buffer, not a corner: a 50-mile disc is smaller
   // than a few TEMPO L3 cells, so the self-heal to 'boundary_cells' is the
   // ordinary outcome and this line is the only thing left saying the shape was
   // a deliberate construction rather than a place with a boundary.
@@ -135,7 +130,7 @@ export function regionTypeNote(regionType) {
   return REGION_TYPE_NOTE[regionType] || 'approximated — see the metadata for details'
 }
 
-// The D10a second sentence: what the shape *was* before rasterization
+// The second sentence: what the shape *was* before rasterization
 // downgraded the slot. Empty when the origin adds nothing (a plain polygon
 // that self-healed is already fully described by the note above).
 export function regionOriginNote(regionOrigin) {

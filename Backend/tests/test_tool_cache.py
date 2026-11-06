@@ -1,13 +1,13 @@
 """
 tests/test_tool_cache.py
 =========================
-T53: the discovery-metadata cache at the ``bind_workspace`` seam. Every
+The discovery-metadata cache at the ``bind_workspace`` seam. Every
 model-facing MCP tool call already passes through that one wrapper for
-workspace injection, T31 credential injection and T18 error classification —
+workspace injection, credential injection and error classification —
 so the cache lives there too, as an *allowlist* of effectively-immutable
 metadata calls.
 
-The load-bearing part of the PRD is the exclusion list: coverage and
+The load-bearing part is the exclusion list: coverage and
 availability are never cached (new granules land continuously and the agent's
 availability answers are tool-grounded on purpose), retrieval tools have side
 effects, and errors are never stored (a ``provider_unavailable`` during an MCP
@@ -121,7 +121,7 @@ class ToolCacheAllowlistTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_two_workspaces_never_cross_serve_each_others_entries(self):
         """workspace_id participates in the key even though CMR metadata is
-        public, so the T31 entitlement question never has to be answered."""
+        public, so per-user entitlement never has to be considered."""
         from tta_backend.earthdata_mcp.workspace import bind_workspace
 
         await bind_workspace(self.tools, lambda: "17")["describe_dataset"].ainvoke({"dataset_handle": "d1"})
@@ -141,7 +141,7 @@ class ToolCacheAllowlistTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([handle for _, handle in self.calls], ["d1", "d2"])
 
     async def test_the_cache_is_invisible_to_the_model_facing_compaction_wrapper(self):
-        """The **raw** result is what is cached, so T13's compaction still runs
+        """The **raw** result is what is cached, so model-view compaction still runs
         normally and a hit is indistinguishable from a miss downstream."""
         from tta_backend.earthdata_mcp.workspace import bind_workspace, model_view_describe_dataset
 
@@ -258,7 +258,7 @@ class ToolCacheNeverStoresErrorsTests(unittest.IsolatedAsyncioTestCase):
     "MCP client test dependencies are not installed",
 )
 class ToolCacheCredentialHygieneTests(unittest.IsolatedAsyncioTestCase):
-    """The cache sits at the same seam as T31 credential injection, so it must
+    """The cache sits at the same seam as credential injection, so it must
     not become a place a decrypted Earthdata token comes to rest — and a hit
     used no credential, so it must not report one as used."""
 

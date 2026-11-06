@@ -94,7 +94,7 @@ class OpenHandleZarrTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(table.num_rows, 2)
 
     async def test_open_handle_emits_an_open_stage_status(self):
-        """T19: open_handle is the single seam every plot/statistics tool
+        """open_handle is the single seam every plot/statistics tool
         passes through to reach an opened dataset — narrating "open" here
         covers every caller (including stat_tools/comparison_tools/
         validation_tools, which have no emit_status calls of their own)
@@ -172,9 +172,9 @@ class OpenHandleZarrTests(unittest.IsolatedAsyncioTestCase):
     "open_handle test dependencies are not installed",
 )
 class OpenHandleEventLoopOffloadTests(unittest.IsolatedAsyncioTestCase):
-    """T16: opening a handle (xr.open_zarr et al.) is CPU/IO work that used
-    to run straight on the event loop, freezing every concurrent stream for
-    its duration. Hermetic per PRD Testing Decisions: no thread-pool
+    """Opening a handle (xr.open_zarr et al.) is CPU/IO work that must not
+    run on the event loop and freeze every concurrent stream. Hermetic: no
+    thread-pool
     internals inspected — only that a concurrent trivial coroutine keeps
     making progress while a (patched-slow) open call is in flight."""
 
@@ -282,7 +282,7 @@ class OpenHandleRecoveryExhaustedTests(unittest.IsolatedAsyncioTestCase):
     "open_handle test dependencies are not installed",
 )
 class OpenHandleClassifiedErrorTests(unittest.IsolatedAsyncioTestCase):
-    """T18: a classified MCP outcome (e.g. a contract-shaped tool failure)
+    """A classified MCP outcome (e.g. a contract-shaped tool failure)
     is a distinct thing from OpenHandleError's own eviction-recovery
     failure — open_handle() must let it propagate as MCPToolError, not
     swallow or relabel it, so a caller can tell "the handle couldn't be
@@ -395,7 +395,7 @@ class OpenHandleGroupedNetcdfTests(unittest.IsolatedAsyncioTestCase):
         """Merging groups by bare name destroys group membership, which is
         classification evidence (variable_roles' qa_statistics/geolocation/
         product priors). Each merged variable must carry its source group as
-        a ``group_path`` attr so post-open classification (T36 evidence) sees
+        a ``group_path`` attr so post-open classification (chart evidence) sees
         the same group a describe_dataset inventory name would."""
         import xarray as xr
 
@@ -426,12 +426,12 @@ class OpenHandleGroupedNetcdfTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ds["max_vertical_column_sample"].attrs.get("group_path"), "qa_statistics")
 
     async def test_open_handle_qualifies_leaf_name_collisions_instead_of_silently_overriding(self):
-        """The same leaf name in two groups used to merge with
-        compat="override" — whichever group iterated first silently won, so
-        a plausible number could come from the wrong variable. Colliding
+        """The same leaf name in two groups must not merge with
+        compat="override", where whichever group iterates first silently wins
+        and a plausible number comes from the wrong variable. Colliding
         variables must keep their group-qualified names, so an explicit
         qualified request resolves exactly and a bare ambiguous one is
-        refused with candidates (T25 doctrine), never guessed."""
+        refused with candidates, never guessed."""
         import xarray as xr
 
         from tta_backend.preprocessing.aggregation_service import AggregationService, VariableChoiceRequired
@@ -469,7 +469,7 @@ class OpenHandleGroupedNetcdfTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(float(da.values[0][0]), 1.0)
 
         # A bare ambiguous request refuses with candidates, never guesses --
-        # T49: as the deterministic picker short-circuit, whose compact
+        # As the deterministic picker short-circuit, whose compact
         # tool-result still names the qualified candidates.
         with self.assertRaises(VariableChoiceRequired) as ctx:
             service.to_dataarray(ds, variable=None)
@@ -538,7 +538,7 @@ class OpenHandleGroupedNetcdfTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(find_lon_coord(da), "longitude")
 
     async def test_open_handle_promotes_cf_identified_latlon_with_unusual_names(self):
-        """T24: the promotion site keys on CF metadata, not a name allowlist,
+        """The promotion site keys on CF metadata, not a name allowlist,
         so a grouped product whose lat/lon are named 'y'/'x' (a spelling the
         allowlist would never guess) but carry standard_name latitude/
         longitude is still attached and resolvable -- covering datasets not
@@ -1118,7 +1118,7 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("longitude", ds.coords)
 
     async def test_open_handle_orders_bundle_by_time_not_filename(self):
-        """T44 story #2: the MCP concatenates bundle members in filename order
+        """The MCP concatenates bundle members in filename order
         ('names sort chronologically'). A provider whose names don't sort
         against their dates would yield a non-monotonic time axis, and a later
         sel(time=slice(...)) would silently return the wrong subset. The open
@@ -1141,7 +1141,7 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(str(times[0])[:10], "2026-07-09")
 
     async def test_open_handle_dedupes_duplicate_bundle_timestamps_keep_first(self):
-        """T44 story #2: overlapping orbits and reprocessed granules can carry
+        """Overlapping orbits and reprocessed granules can carry
         identical timestamps. Left in, they double-count that granule in a mean
         and break later sel(time=...) with an opaque non-unique-index error.
         Keep the first occurrence, disclose the drop in a log event, and never
@@ -1310,7 +1310,7 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(str(ds["time"].values[0])[:10], "2024-06-01")
 
     def test_synthesis_preserves_a_real_datetime_coord_on_a_cased_time_dim(self):
-        """Finding #15: a differently-cased singleton ``Time`` dim can already
+        """A differently-cased singleton ``Time`` dim can already
         carry a *real* per-granule overpass time. Synthesis must rename it to
         ``time`` and KEEP that coordinate -- overwriting it with the attr
         date's (midnight) timestamp would flatten two same-day granules with
@@ -1339,8 +1339,8 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
     def test_synthesis_still_fills_a_cased_time_dim_that_carries_no_coordinate(self):
         """The existing OMI_MINDS_NO2d shape -- a differently-cased singleton
         ``Time`` dim with NO coordinate variable -- must still be renamed and
-        given the synthesized attr timestamp (Finding #15 preserves real
-        coords; it does not stop filling absent ones)."""
+        given the synthesized attr timestamp (real coords are preserved; absent
+        ones are still filled)."""
         import xarray as xr
         from tta_backend.services.open_handle import _synthesize_member_time_coord
 
@@ -1356,7 +1356,7 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(str(out["time"].values[0])[:10], "2024-06-01")
 
     async def test_same_day_granules_with_distinct_overpass_times_both_survive(self):
-        """Finding #15 end-to-end: two same-day granules whose real overpass
+        """End-to-end: two same-day granules whose real overpass
         times live on a differently-cased ``Time`` dim must NOT be flattened to
         one timestamp and deduped down to a single granule -- the daily mean
         must see both observations."""
@@ -1844,7 +1844,7 @@ class OpenNetcdfUnreadableFileTests(unittest.TestCase):
     "open_handle lazy/eager equivalence test dependencies are not installed",
 )
 class OpenNetcdfLazyVsEagerEquivalenceTests(unittest.TestCase):
-    """T45: _open_netcdf can open a file eagerly (chunks=None) or dask-backed,
+    """_open_netcdf can open a file eagerly (chunks=None) or dask-backed,
     and nothing pinned that the two mask/aggregate identically -- a dask-
     related regression in one could silently diverge from the other,
     surfacing as a subtly different mean rather than a test failure.

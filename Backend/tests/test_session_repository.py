@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 
 class DeleteSessionCascadeTests(unittest.IsolatedAsyncioTestCase):
-    """T39: a claimed table artifact is durable in agent_artifacts now, so
+    """A claimed table artifact is durable in agent_artifacts, so
     deleting a session must clean it up the same way it already cleans up
     agent_charts -- otherwise deleted sessions leave orphaned artifact rows
     behind forever."""

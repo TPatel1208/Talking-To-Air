@@ -1,4 +1,4 @@
-// What the scrubber's frames are, relative to the map above them (T59 D14/D16).
+// What the scrubber's frames are, relative to the map above them.
 //
 // TWO disagreements, because there are two questions and a reader has both:
 //
@@ -12,27 +12,21 @@
 //                      tiers, because they were block-meaned to the rendering
 //                      grid and the map was not.
 //
-// Phase 8 is why the second one exists. It measured `mean(frames)` against
-// plane 0 on a real regional TEMPO chart -- 352,181 native cells, k=(5,5) --
-// and got 1.876% in the tier this file used to describe as an exact identity,
-// with a worst pixel 2.72e15 against a map ramp of 5.7e14-3.3e15. The block
-// mean and the across-frame mean do not commute under partial coverage: the
+// The second exists because even the cadence tier isn't exact on the shipped
+// arrays (~1.9% on a real regional TEMPO chart). The block mean and the
+// across-frame mean do not commute under partial coverage: the
 // period plane is block_mean(mean over intervals) and the frames are
 // mean over intervals of block_mean(...), and inside a 5x5 block whose native
 // cells were seen in different hours those weight different things.
 //
-// NEITHER NUMBER BOUNDS THE OTHER. On the coarsened chart Phase 8 measured,
-// the native figure was 3.74% and the shipped one 3.28% -- the block mean
-// partly cancelled the coarsening term rather than compounding it. That is why
-// both are published rather than one standing in for the other, and why they
-// never share a `basis` line.
+// NEITHER NUMBER BOUNDS THE OTHER (the block mean can cancel the coarsening
+// term as easily as compound it), so both are published and they never share
+// a `basis` line.
 //
-// The whole sentence is composed here rather than assembled in JSX: there is no
-// jsdom in this project, so a sentence built in a component is a sentence no
-// test can read -- which is how the one Phase 8 falsified survived two phases.
+// The whole sentence is composed here rather than in JSX: there's no jsdom, so
+// a sentence built in a component is one no test can read.
 //
-// The delta is shown, not offered (Risk 4 is that it becomes a badge nobody
-// reads), and `severity` exists so a double-digit disagreement cannot render
+// The delta is shown, not offered, and `severity` exists so a double-digit disagreement cannot render
 // as the same quiet footnote a sub-1% one does.
 
 import { formatStatValue } from './displayFormat.js'
@@ -47,15 +41,11 @@ export function resolveFrameDelta(chart, statistic = 'mean') {
   const coarsened = block.tier === 'coarsened'
   const downsampled = isDownsampled(block.coarsen_k)
 
-  // A selection plane is a different disclosure, not a differently-worded one
-  // (T59 Phase 15). BOTH of the block's figures belong to the mean: `delta`
-  // is its temporal disagreement and `frame_grid_delta` its shipped-array one,
-  // and a max plane has neither -- max is associative and invariant to
-  // weighting, so Phase 11 G5 measured both identities bit-exact. Passing the
-  // mean's numbers through would attribute a mean-only disagreement to a plane
-  // that does not have it, and passing the plane's own zero through
-  // `formatPct` would print "under 0.1%" for an identity that holds exactly --
-  // which is D6a's own example of the failure `_DELTA_FLOOR` exists to prevent.
+  // A selection plane is a different disclosure, not a differently-worded
+  // one. BOTH of the block's figures belong to the mean, and a max plane has
+  // neither (max is associative, so both identities hold exactly). Passing the
+  // mean's numbers through would misattribute them, and passing the plane's
+  // zero through `formatPct` would print "under 0.1%" for an exact identity.
   if (statistic !== 'mean') {
     return selectionDelta(block, statistic, { cadence, perFrame, coarsened, downsampled, units })
   }
@@ -85,13 +75,10 @@ export function resolveFrameDelta(chart, statistic = 'mean') {
 
 // How a selection plane relates to the frames beside it, and to the map above.
 //
-// The figure is ASSERTED FROM THE PAYLOAD, never from the operation's name. If
-// a plane ever ships a real disagreement, printing "exactly" because max is
-// associative in theory would be the same class of falsehood Phase 8 caught in
-// this file -- a sentence that was true of the mechanism and false of the
-// arrays. The exact branch is the one the backend measures today (Phase 11 G5,
-// `0.0` max abs diff on both identities, both bundles); the other exists so it
-// cannot silently become wrong.
+// The figure is ASSERTED FROM THE PAYLOAD, never from the operation's name: if
+// a plane ever ships a real disagreement, "exactly" must not be printed just
+// because max is associative in theory. The exact branch is what the backend
+// measures today; the other exists so it can't silently become wrong.
 const SELECTION_VERB = { max: 'highest', min: 'lowest' }
 const SELECTION_NOUN = { max: 'maximum', min: 'minimum' }
 
@@ -107,8 +94,7 @@ function selectionDelta(block, statistic, { cadence, perFrame, coarsened, downsa
   const relationship = exact
     // The whole point, and why there is no figure: a selection is associative,
     // so combining the frames reproduces the period plane rather than
-    // approximating it. Stated about the arrays the browser actually holds,
-    // because that is the claim Phase 8 found the mean tier getting wrong.
+    // approximating it. Stated about the arrays the browser actually holds.
     ? `Taking the ${verb} of the frames you can download reproduces the period plane at stop 0 exactly — a ${SELECTION_NOUN[statistic] || statistic} selects one of the values it is given rather than combining them, so there is no disagreement here to measure.`
     : `Combining the frames you can download misses the period plane at stop 0 by ${grid.pct}${grid.maxAbs ? `, up to ${grid.maxAbs} at the worst pixel` : ''} — which this statistic is not supposed to be able to do, so read it as a defect rather than as a caveat.`
 
@@ -136,10 +122,8 @@ function isDownsampled(factors) {
   return factors.some((k) => Number.isFinite(k) && k > 1)
 }
 
-// Stop 0's anchor: the sentence a reader uses to re-orient, and the one place
-// both of Phase 8's presentation caveats land at once. It used to read "the
-// same field the Map tab shows, on the frame grid", which glossed the grid
-// difference in BOTH directions and said nothing about the ramp.
+// Stop 0's anchor: the sentence a reader uses to re-orient, carrying both
+// presentation caveats (grid and color ramp).
 //
 // Neither array is native. `_downsample_grid` strides the map payload to 8,000
 // cells; the frames block-mean to 20,000, or stay native when the region is
@@ -148,26 +132,22 @@ function isDownsampled(factors) {
 // the scrubber's plane is the FINER of the two. A sentence naming only the
 // frames' reduction implies the other array had none.
 //
-// And the ramp is D9's pooled 2-98, which Phase 8 measured at 1.99-2.09x the
-// Map tab's own clip -- entering this mode roughly halves the apparent
-// intensity of everything on screen.
+// And the ramp is the pooled 2-98, roughly 2x the Map tab's own clip --
+// entering this mode roughly halves the apparent intensity on screen.
 //
 // The NUMBER is deliberately not here. It belongs to the delta line directly
 // beneath this one, and one measurement with two homes on one screen is how
 // two homes start disagreeing.
 //
-// D11 GAINS AN EXPLICIT EXCEPTION in a selection mode (D6a decision 3), and it
-// inverts this sentence rather than qualifying it. `plot_singular` has no
+// In a selection mode this sentence inverts rather than qualifies. `plot_singular` has no
 // statistic parameter, so the Map tab is always a period mean: stop 0 in max
 // mode is the period MAX and is emphatically not the field above it. The Map
 // tab does not follow the toggle in any mode, ever, and saying so here is
 // cheaper than a reader inferring it wrongly from a picture that changed.
 //
-// The spatial reducer changes with it. D6a decision 4 makes block MAX the
-// reducer for a selection plane -- every rendered value is one some native
-// cell actually held, where a block mean invents values none did -- so
-// "block-meaned onto the frame grid" would name a mechanism this plane does
-// not have. That is `shippedSentence`'s own bug, one tier along.
+// The spatial reducer changes with it: a selection plane uses block MAX
+// (every rendered value is one some native cell held), so "block-meaned onto
+// the frame grid" would name the wrong mechanism.
 export function aggregateAnchor(delta) {
   if (delta && delta.kind === 'selection') return selectionAnchor(delta)
   // Unknown reads as downsampled, the same way `isDownsampled` treats an
@@ -262,9 +242,7 @@ function figureOf(delta, units) {
   }
 }
 
-// Under 0.1% the screen cannot resolve the number it would be printing: an
-// undownsampled chart's two arrays agree to float32 storage noise (Phase 3's
-// 0.000002%), and "0.0%" reads as a measurement that found nothing rather than
+// Under 0.1% it's float32 storage noise, and "0.0%" reads as a measurement that found nothing rather than
 // as a check that passed. The document's `_pct` draws the floor in the same
 // place for the same reason.
 function formatPct(headline) {
@@ -282,8 +260,7 @@ function severityFor(native, grid, coarsened) {
   return coarsened ? 'unknown' : 'none'
 }
 
-// Thresholds sit where Phase 3's two real measurements fall on either side of
-// them: 5.4% is a caveat a reader should carry, 22.3% means the scrubber and
+// Thresholds sit between two real measurements: 5.4% is a caveat a reader should carry, 22.3% means the scrubber and
 // the map are answering materially different questions.
 function severityOf(headline) {
   if (headline == null) return 'unknown'

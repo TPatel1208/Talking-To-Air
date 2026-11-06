@@ -1,7 +1,7 @@
 """
 dispatch_executor.py
 --------------------
-T64: runs one ``dispatch`` tool call's requests. The supervisor names its
+Runs one ``dispatch`` tool call's requests. The supervisor names its
 sub-agent tasks as a typed list; this module decides what actually runs and
 returns one result per request, in request order.
 """
@@ -50,7 +50,7 @@ class _TurnState:
     runs_used: int = 0
     rounds_used: int = 0
     # canonical_key -> the run of that request, finished or still going. A
-    # repeat awaits the same run instead of starting another (D9).
+    # repeat awaits the same run instead of starting another.
     runs: dict[str, asyncio.Task[_Outcome]] = field(default_factory=dict)
     # A round is one supervisor model step: dispatch calls from the same model
     # message (which ToolNode runs together) share it. ``step`` counts model
@@ -209,7 +209,7 @@ async def _run_capped(state: _TurnState, request: AgentRequest, run_one: RunOne,
 
 async def _run_in_lane(state: _TurnState, request: AgentRequest, run_one: RunOne) -> _Outcome:
     """One request's run. A failure becomes that item's taxonomy answer, never
-    the batch's: the other items' work stands (D10)."""
+    the batch's: the other items' work stands."""
     # The agent's own cap is taken before the shared one, so a satellite run
     # queued behind the satellite cap never holds a slot a ground run could use.
     agent_cap = state.satellite if request.agent == "satellite" else contextlib.nullcontext()

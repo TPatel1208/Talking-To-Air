@@ -1,7 +1,7 @@
 import { computeChartStats } from './chartStats.js'
 import { resolveMasking } from './maskingProvenance.js'
 
-// D11, in one function: the chart describes what the slider points at.
+// The chart describes what the slider points at.
 //
 // Statistics and QA disclosure follow the slider; provenance, citations and
 // methods describe the artifact and must NOT flicker per frame -- that would
@@ -10,11 +10,11 @@ import { resolveMasking } from './maskingProvenance.js'
 // than reimplements there.
 //
 // Every per-frame number comes off the payload, never off the rendered frame
-// grid (D5a): at k=8 a frame has already lost 16% of its own p98 and 70% of
+// grid: at k=8 a frame has already lost 16% of its own p98 and 70% of
 // its max, so recomputing a maximum from the pixels on screen would understate
 // exactly the peak the scrubber exists to find.
 //
-// `statistic` is D6a's toggle (Phase 15), and it does NOT change a single
+// `statistic` (the mean/max/min toggle) does NOT change a single
 // number here -- see `FIELD_NOTE`. It only says which field they are of.
 export function statsForStop(chart, stop, statistic = 'mean') {
   const scoping = FIELD_NOTE[statistic] ? { fieldNote: FIELD_NOTE[statistic] } : null
@@ -57,22 +57,14 @@ export function statsForStop(chart, stop, statistic = 'mean') {
   }
 }
 
-// Design tension 1, resolved by SCOPING THE LABEL rather than by asking the
-// backend for more or by deriving anything from the pixels.
+// Resolved by SCOPING THE LABEL, not by asking the backend for more or
+// deriving anything from the pixels.
 //
-// `stop.statistics` is `_FRAME_STATS` -- the per-frame REGIONAL scalars,
-// computed off the MEAN field, shipping since Phase 3. Phase 13 decision 2 kept
-// them out of the per-plane block on purpose (they describe the interval and
-// the mean field, not the plane), and that reasoning is right. So in max mode
-// the row reading `Max` is the regional max of the mean field, which is a
-// measurably different number from the max plane's peak -- 50.5 against 100.0
-// on Phase 12's own fixture, which is why `PLANE_STATISTICS`' docstring exists.
-//
-// The other two options were rejected with reasons. WITHHOLDING leaves the
-// tab's most useful row empty exactly when someone has gone looking for a peak.
-// RECOMPUTING from the rendered array is what D5a forbids outright: at k=8 a
-// frame has already lost 16% of its own p98 and 70% of its max, so it would
-// understate precisely the peak the scrubber exists to find (see :12-15).
+// `stop.statistics` is `_FRAME_STATS` -- the per-frame REGIONAL scalars of the
+// MEAN field. So in max mode the `Max` row is the regional max of the mean
+// field, a different number from the max plane's peak. Withholding the row
+// would hide it exactly when someone looks for a peak; recomputing from the
+// rendered array would understate the peak (see above).
 //
 // Scoped NARROWLY, and only these three. `count`, `validPct`, `qaPassRate`, the
 // granule count and the empty state are facts about the INTERVAL, equally true

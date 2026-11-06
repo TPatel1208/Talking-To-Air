@@ -22,7 +22,7 @@ export function useDiscovery() {
   const [granules, setGranules] = useState({})
   const [inventories, setInventories] = useState({})
 
-  // T18: every discovery endpoint failure now arrives as
+  // Every discovery endpoint failure arrives as
   // {"error": {"category", "message", "suggestion"}} (api.py's
   // MCPToolError handler) instead of a bare status code — show the human
   // message (and suggestion, when present) instead of "HTTP 422".
@@ -112,7 +112,7 @@ export function useDiscovery() {
   }, [location, timeRange])
 
   // Describe (GET /discovery/dataset/{handle}) returns the MCP's variable
-  // facts plus the T35 classified `inventory` the backend attaches. Toggling
+  // facts plus the classified `inventory` the backend attaches. Toggling
   // an already-loaded card clears it, so the button reads as a disclosure.
   const inspectVariables = useCallback(async (datasetHandle) => {
     const existing = inventories[datasetHandle]

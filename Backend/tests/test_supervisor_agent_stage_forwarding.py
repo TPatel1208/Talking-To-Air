@@ -14,19 +14,19 @@ PLOT_NO2_OVER_NJ = {"requests": [
 
 @unittest.skipIf(importlib.util.find_spec("langchain") is None, "langchain is not installed")
 class DispatchStageForwardingTests(unittest.IsolatedAsyncioTestCase):
-    """T19: narration must not be a fast-path-only feature — a status/job_
+    """Narration must not be a fast-path-only feature — a status/job_
     progress/chart_payload event the satellite sub-agent emits deep inside
     the dispatch tool's own nested stream_response call must still reach
     the supervisor's own outer stream_response (and therefore the SSE
     stream), even when the tool call passes through a ToolNode-style Task
     boundary (asyncio.gather spawns a fresh Task with a copied context per
-    call). This already holds via the same ContextVar-bubbling mechanism
-    T13/T14 established for chart_payload/job_progress — see utils/
+    call). This holds via the same ContextVar-bubbling mechanism used for
+    chart_payload/job_progress — see utils/
     streaming.py's publish_status/publish_job_progress/publish_chart_
     payload, each of which forwards to a `parent_emitter` captured once at
     the nested stream_response's own construction, not re-read per call —
     this test pins that stage status events bubble identically now that
-    emit_status carries a stage/detail payload (T19), and guards against a
+    emit_status carries a stage/detail payload, and guards against a
     future change (e.g. an explicit on_event re-forward) double-emitting."""
 
     async def _build_dispatch(self, fake_satellite_agent):
@@ -69,7 +69,7 @@ class DispatchStageForwardingTests(unittest.IsolatedAsyncioTestCase):
 
         events = [event async for event in stream_response(OuterAgent(), "do it", "outer-thread")]
 
-        # The dispatch executor's own lane markers (T64 Phase 4) aside, the
+        # The dispatch executor's own lane markers aside, the
         # sub-agent's stage arrives exactly once, tagged with its lane.
         status_events = [
             data for event_type, data in events

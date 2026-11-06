@@ -2,11 +2,10 @@
  * utils/artifactMetadataDisplay.js
  * ----------------------------------
  * Pure field-derivation helpers behind the artifact-shaped Metadata tab
- * Overview/Details (T33) -- a sibling to utils/metadataDisplay.js's chart
+ * Overview/Details -- a sibling to utils/metadataDisplay.js's chart
  * version, reading ArtifactReference.metadata shape (table's fetched page,
  * or TimeseriesArtifactMetadata for ground-validation composites) instead
- * of chart provenance. Kept separate from the JSX for the same reason as
- * T32: this repo's frontend test runner is plain `node --test`, no
+ * of chart provenance. Kept separate from the JSX because this repo's frontend test runner is plain `node --test`, no
  * jsdom/RTL, so display logic needs to be testable without rendering.
  */
 

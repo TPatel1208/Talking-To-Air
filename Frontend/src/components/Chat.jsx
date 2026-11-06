@@ -229,7 +229,7 @@ function LoadingMessage({ toolCalls, statusMessage, workflowStage, startedAt }) 
   )
 }
 
-/* ── Follow-up suggestion chips (T22) ── */
+/* ── Follow-up suggestion chips ── */
 function FollowupChips({ suggestions, onSend }) {
   if (!suggestions?.length) return null
 
@@ -263,7 +263,7 @@ function FollowupChips({ suggestions, onSend }) {
 }
 
 /* ── "Reload session" — the one-click recovery affordance on a
-    connection-lost message (T41). Re-fetches history into place rather
+    connection-lost message. Re-fetches history into place rather
     than leaving the researcher to know to reload the session by hand. ── */
 function ReloadSessionButton({ onReloadSession }) {
   if (!onReloadSession) return null
@@ -455,7 +455,7 @@ function MessageBubble({
         {/* Output cards — click opens the full map/chart/table in the central
             OutputPanel. Chart-backed artifact types (map/comparison/chart-backed
             timeseries) duplicate what msg.charts already covers, so only 'table'
-            and ground-validation 'timeseries' artifacts (no matching chart, T33)
+            and ground-validation 'timeseries' artifacts (no matching chart)
             get their own card here. */}
         {!isUser && (msg.charts?.length > 0 || reachableArtifacts(msg).length > 0) && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
@@ -482,14 +482,14 @@ function MessageBubble({
           </div>
         )}
 
-        {/* T49: the deterministic variable-choice picker — shown when the
+        {/* The deterministic variable-choice picker — shown when the
             resolver couldn't confidently choose. Clicking a candidate sends
             its reconstructed prompt through the same path as a typed message. */}
         {!isUser && !msg.isLoading && (
           <VariableChoicePicker variableChoice={msg.variableChoice} onSend={onFollowupClick} />
         )}
 
-        {/* T22: follow-up suggestions grounded in this turn's answer —
+        {/* Follow-up suggestions grounded in this turn's answer —
             clicking one sends it through the same path as typing. */}
         {!isUser && !msg.isLoading && (
           <FollowupChips suggestions={msg.suggestedFollowups} onSend={onFollowupClick} />
@@ -501,9 +501,9 @@ function MessageBubble({
 
 /* ── Empty state ── */
 function EmptyState({ onChipClick }) {
-  // T22: fetched from the backend's own starter-prompt constant (config/
+  // Fetched from the backend's own starter-prompt constant (config/
   // starter_prompts.py) rather than hardcoded here, so every example on
-  // screen is one the eval suite proves works end-to-end (story #4/#11).
+  // screen is one the eval suite proves works end-to-end.
   const [starters, setStarters] = useState([])
 
   useEffect(() => {
@@ -548,7 +548,7 @@ function EmptyState({ onChipClick }) {
         or any other air quality data you can think of.
       </p>
 
-      {/* Starter prompts — span the app's workflow types (story #2) */}
+      {/* Starter prompts — span the app's workflow types */}
       <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'center' }}>
         {starters.map(starter => (
           <button
@@ -592,7 +592,7 @@ export default function Chat({
   const scrollContainerRef = useRef(null)
   const textareaRef = useRef(null)
 
-  // Transient "grid full" hint (T28) -- clicking an unselected, matching
+  // Transient "grid full" hint -- clicking an unselected, matching
   // card while every slot is already taken is inert except for this cue.
   const [capFullHint, setCapFullHint] = useState(false)
   const capFullTimeoutRef = useRef(null)
@@ -617,7 +617,7 @@ export default function Chat({
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
     }
-    // A send can be refused: one turn per thread (T63 D12), and this tab may
+    // A send can be refused: one turn per thread, and this tab may
     // not have known another was running. Nothing reached the server, so the
     // composer takes the text back rather than swallowing it.
     if (await onSend(msg) === false) setInput(msg)
@@ -724,7 +724,7 @@ export default function Chat({
             </button>
           </div>
         )}
-        {/* T41: a failed history load never wipes the screen -- it keeps
+        {/* A failed history load never wipes the screen -- it keeps
             whatever was on it and offers a retry, distinct from the
             request-error banner above so it's clear this is "couldn't load
             history", not "your last message failed." */}

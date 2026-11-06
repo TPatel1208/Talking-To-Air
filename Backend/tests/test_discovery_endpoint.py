@@ -118,7 +118,7 @@ class DiscoveryEndpointTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTest
 
         settings = Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None)
         self.api.app.state.earthdata_mcp_tools = await load_earthdata_tools(settings, current_user_id)
-        # Discovery endpoints read tools through earthdata_mcp_manager (T17);
+        # Discovery endpoints read tools through earthdata_mcp_manager;
         # a bare ready-state stub is enough since these tests only need
         # `.state`/`.tools`, not the real connect/retry machinery.
         self.api.app.state.earthdata_mcp_manager = SimpleNamespace(
@@ -202,7 +202,7 @@ class DiscoveryEndpointTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTest
         self.assertEqual(body["total_size_mb"], 20.0)
         self.assertEqual(body["limit_applied"], 10)
         self.assertEqual(self.aoi_calls, [("Raritan basin", "user-user-1")])
-        # The regression T11 repaired: the tool must be called with a
+        # The tool must be called with a
         # resolved (non-None) aoi_handle, never the raw location string.
         dataset_handle, aoi_handle, time_range, workspace_id, limit = self.granules_calls[0]
         self.assertEqual(dataset_handle, "dataset_smap_l3")
@@ -315,9 +315,8 @@ class DiscoveryEndpointTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTest
         )
 
     async def test_coverage_reports_an_unresolvable_location_structurally_not_as_a_bare_500(self):
-        # T18 story #1/#2, live failure F6 (docs/live-test-2026-07-07.md):
-        # an unresolvable place name used to reach the researcher as a bare
-        # 500. It now answers 422 with a human message and a suggestion.
+        # An unresolvable place name must answer 422 with a human message and
+        # a suggestion, not a bare 500.
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
         with auth_patches:
@@ -335,7 +334,7 @@ class DiscoveryEndpointTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTest
         self.assertIn("suggestion", body["error"])
 
     async def test_discovery_search_fails_honestly_when_the_mcp_is_not_ready(self):
-        # T17 story #3: a bare 500 becomes a clear, structured "data layer
+        # A bare 500 becomes a clear, structured "data layer
         # unavailable" state when the connection manager isn't ready.
         original_manager = self.api.app.state.earthdata_mcp_manager
         self.api.app.state.earthdata_mcp_manager = SimpleNamespace(state="unavailable", tools={})

@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 class LazySatelliteAgent:
-    """Boot-time stand-in for the compiled earthdata agent (PRD T17).
+    """Boot-time stand-in for the compiled earthdata agent.
 
     The supervisor's ``dispatch`` tool and the router fast path
     both close over one long-lived agent reference. Building the real agent
@@ -119,8 +119,8 @@ def build_earthdata_agent(
         middleware=[build_subagent_trim_middleware("earthdata", settings.subagent_trim_token_ceiling)],
         response_format=subagent_response_format(),
     )
-    # This agent is stateless (no checkpointer), so subagent_dispatch's T15
-    # retry demotion — one structured-output re-prompt instead of a full
+    # This agent is stateless (no checkpointer), so subagent_dispatch's retry
+    # demotion — one structured-output re-prompt instead of a full
     # tool-workflow re-run — has no other way to reach the raw chat model.
     agent.subagent_model = llm  # type: ignore[attr-defined]  # an ad-hoc attribute; see above
     return agent

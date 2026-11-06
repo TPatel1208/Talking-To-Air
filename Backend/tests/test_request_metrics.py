@@ -1,7 +1,6 @@
-"""T45: /chat latency in request metrics must reflect the full SSE stream
-duration, not just the time to send response headers — record_request_metrics
-used to observe duration at call_next() return, which for a StreamingResponse
-happens the instant the generator object is constructed (~0ms), so the p95
+"""/chat latency in request metrics must reflect the full SSE stream
+duration, not just the time to send response headers — observing at
+call_next() return would record ~0ms for a StreamingResponse, so the p95
 dashboard could never see the slowest thing in the app.
 """
 import asyncio
@@ -46,7 +45,7 @@ class StreamingRequestMetricsTests(unittest.IsolatedAsyncioTestCase):
     async def test_chat_stream_duration_covers_the_full_stream_not_just_headers(self):
         """Measured on the streaming POST, which is the rollback path now.
 
-        T63 moved the streaming to ``GET /chat/{thread_id}/stream``, so that
+        Streaming normally happens on ``GET /chat/{thread_id}/stream``, so that
         is where a turn's minutes are measured today — see
         test_chat_detached_turns.py. This one keeps the property pinned for
         ``CHAT_DETACHED_TURNS_ENABLED=0``, where the POST streams again.

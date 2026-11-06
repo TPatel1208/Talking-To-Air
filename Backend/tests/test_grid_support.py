@@ -1,9 +1,9 @@
-"""T24: the failure contract for grids the affine mask math can't handle.
+"""The failure contract for grids the affine mask math can't handle.
 
 `mask_data_by_geometry` assumes a 1-D rectilinear lat/lon grid. Handed a 2-D
-curvilinear swath or a projected x/y grid it used to silently mis-mask (or
-crash with an opaque empty-coords error). It must instead raise a specific,
-T18-typed `unsupported_grid` error that tells the researcher the truth about
+curvilinear swath or a projected x/y grid it would silently mis-mask (or crash
+with an opaque empty-coords error), so it must raise a specific, typed
+`unsupported_grid` error that tells the researcher the truth about
 the limitation.
 """
 import unittest
@@ -67,7 +67,7 @@ class MaskGridSupportTests(unittest.TestCase):
         self.assertIn("lambert_conformal_conic", ctx.exception.message)
 
     def test_non_uniform_1d_grid_raises_typed_unsupported_error(self):
-        # T44 story #1: geometry_mask derives ONE resolution from the axis
+        # geometry_mask derives ONE resolution from the axis
         # endpoints, so a 1-D grid whose spacing varies gets a progressively
         # misplaced mask — wrong pixels in the statistics, no error. Refuse it
         # with the typed unsupported_grid contract instead of mis-masking.
@@ -112,7 +112,7 @@ class MaskGridSupportTests(unittest.TestCase):
         # stat tools off-taxonomy — a generic "internal error" for a plot and
         # a false "no data found" for a point query. It must speak the same
         # typed unsupported_grid contract as the curvilinear/projected
-        # refusals (T44 story #3).
+        # refusals.
         da = xr.DataArray(np.ones((2, 2)), dims=("scanline", "ground_pixel"))
 
         with self.assertRaises(MCPToolError) as ctx:

@@ -1,7 +1,7 @@
 """
 services/provenance_service.py
 ================================
-Backend composite behind the provenance pane (PRD T10): walks an artifact's
+Backend composite behind the provenance pane: walks an artifact's
 ``source_handles`` through the MCP's ``get_provenance`` tool, one call per
 handle, and merges the results into a single deduplicated node list
 ("how was this made").

@@ -1,7 +1,7 @@
 """
 preprocessing/variable_choice_builder.py
 =========================================
-PRD T49. Turn a T48 ``Resolution`` into the deterministic, LLM-free
+Turn a variable resolver ``Resolution`` into the deterministic, LLM-free
 ``VariableChoice`` picker payload the frontend renders.
 
 This is the whole "no model in the loop for the candidate list" guarantee made
@@ -76,7 +76,7 @@ def emit_variable_choice_payload(resolution: Resolution, ds: xr.Dataset) -> None
     them from the original request once it captures the event.
 
     Best-effort: a build/emit failure is logged, never re-raised, since the
-    caller still returns the compact P1-bounded ``MCPToolError`` that keeps the
+    caller still returns the compact, size-bounded ``MCPToolError`` that keeps the
     turn honest even if the richer picker couldn't be built."""
     from tta_backend.utils.streaming import emit_variable_choice
 
@@ -93,10 +93,9 @@ def fill_prompts(choice: VariableChoice, original_request: str) -> VariableChoic
     request with the chosen variable appended (e.g. "plot NO2 over New Jersey
     last week" -> "... using tropospheric_NO2_column"), NOT a bare "use <var>".
 
-    Reconstructing the whole request is deliberate (PRD): clicking a candidate
-    re-sends a complete, self-contained turn that carries its own region/time,
-    so the picker never depends on implicit cross-turn context carryover --
-    the mechanism a prior silent-AOI-reuse bug (267db31) came from."""
+    Reconstructing the whole request is deliberate: clicking a candidate
+    re-sends a complete, self-contained turn with its own region/time, so the
+    picker never depends on implicit context from earlier turns."""
     request = " ".join(str(original_request or "").split())
     filled = [
         opt.model_copy(update={"prompt": _compose_prompt(request, opt.name)})

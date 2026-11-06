@@ -1,20 +1,15 @@
-"""Measure the mask/reduce pipeline three ways against a real bundle (T51).
+"""Measure the mask/reduce pipeline three ways against a real bundle.
 
-T52 (the L4 Zarr cube) is blocked on a number nobody has: does the AOI crop's
-slice push down to an h5netcdf hyperslab read, or does dask materialize the
-whole single chunk (``chunks={}`` -> one chunk per variable per file, see
-``services/open_handle._lazy_chunks``) and slice it in memory? If the read
-pushes down, the cube needs no spatial chunking; if it doesn't, it does. That
-is a measurement, not an argument.
+The question: does the AOI crop's slice push down to an h5netcdf hyperslab
+read, or does dask materialize the whole chunk (``chunks={}`` -> one chunk per
+variable per file, see ``services/open_handle._lazy_chunks``) and slice it in
+memory? That decides whether the cube needs spatial chunking.
 
-    | case | description                | lands with |
-    |------|----------------------------|------------|
-    |  1   | current behavior (no crop) | baseline   |
-    |  2   | crop-before-mask           | T50        |
-    |  3   | crop + Zarr cube           | T52        |
-
-Case 3 is a stub that skips with an explanation until T52 exists; the harness
-is written once here and extended once there.
+    | case | description                |
+    |------|----------------------------|
+    |  1   | no crop (baseline)         |
+    |  2   | crop-before-mask           |
+    |  3   | crop + Zarr cube           |
 
 Every case runs the *production* code path -- ``mask_data_by_geometry`` on a
 bundle opened by ``services.open_handle`` -- rather than a reimplementation,
@@ -50,11 +45,11 @@ if BACKEND_DIR not in sys.path:
 
 CASES = {
     1: "current behavior (crop=False)   [baseline]",
-    2: "crop-before-mask (crop=True)    [T50]",
-    3: "crop-before-mask + Zarr cube    [T52]",
+    2: "crop-before-mask (crop=True)",
+    3: "crop-before-mask + Zarr cube",
 }
 
-# Case 3 lands with T52 and is no longer a stub. It still *can* skip -- a
+# Case 3 can skip -- a
 # dataset the cube writer refuses (or a cube that fails its own integrity
 # check) has no case-3 number to report, and saying so is more useful than a
 # fabricated row.
@@ -114,7 +109,7 @@ def _read_bytes_counter() -> int | None:
 def _resolve_aoi(aoi: str):
     """A shapely geometry from either a named preset ("northeast us") or an
     explicit ``minx,miny,maxx,maxy`` box. Deliberately no geocoder: a
-    benchmark must not depend on a network round-trip, and the T50 motivating
+    benchmark must not depend on a network round-trip, and the motivating
     case (a New-Jersey-sized AOI on a continental grid) has no preset."""
     from shapely.geometry import box
 
@@ -355,7 +350,7 @@ def format_report(report: BenchmarkReport) -> str:
     if baseline.median_seconds and cropped.median_seconds:
         lines += ["", f"crop speedup: {baseline.median_seconds / cropped.median_seconds:.2f}x"]
         if baseline.bytes_read is not None and cropped.bytes_read is not None:
-            # The question T52 is blocked on, answered in one line.
+            # The question this benchmark answers, in one line.
             pushed_down = cropped.bytes_read < baseline.bytes_read * 0.9
             lines.append(
                 "read push-down: YES -- the crop's slice reached the reader "
@@ -374,7 +369,7 @@ def format_report(report: BenchmarkReport) -> str:
             lines.append(
                 f"cube read reduction: {saved * 100:.0f}% "
                 f"({cropped.bytes_read / 1048576:.1f} -> {cubed.bytes_read / 1048576:.1f} MiB) "
-                "-- this, not the wall clock, is the number T52 exists to move"
+                "-- this, not the wall clock, is the number the cube exists to move"
             )
     return "\n".join(lines)
 
@@ -393,7 +388,7 @@ def main() -> None:
         default="-74.9,39.1,-73.1,40.9",
         help="Preset name ('northeast us') or minx,miny,maxx,maxy. Use --aoi=... "
         "for a box starting with a negative longitude, or argparse reads it as a "
-        "flag. Defaults to a New-Jersey-sized box -- the T50 motivating case.",
+        "flag. Defaults to a New-Jersey-sized box.",
     )
     parser.add_argument("--runs", type=int, default=3, help="Runs per case; the median is reported.")
     args = parser.parse_args()

@@ -1,16 +1,11 @@
-"""T60 Phase 1.5 (D13): the retrieval plane speaks the coalition vocabulary.
+"""The retrieval plane speaks the region vocabulary.
 
-Phase 1 shipped a correct *mask* for the Ozone Transport Region that no user
-could reach from a prompt. The spatial subset that actually pulls data comes
-from the MCP's ``define_area_of_interest``, which lives in another repo and has
-never heard of the word -- so ``"ozone over the OTC"`` failed at AOI resolution
-before a line of T60 code ran.
-
-Measured live in the Phase 1.5 gate (V6): the agent sends ``"Ozone Transport
-Commission"``, the MCP's geocoder finds nothing, and the agent then *silently
-substitutes* ``"Northeastern United States"`` and retrieves that instead --
-which is not a superset of the OTR, so the mask would have clipped against a
-cube that never covered a third of the region (Risk 5).
+The spatial subset that pulls data comes from the MCP's
+``define_area_of_interest``, which has never heard of e.g. the Ozone Transport
+Region. Live, the agent sends ``"Ozone Transport Commission"``, the MCP's
+geocoder finds nothing, and the agent *silently substitutes* ``"Northeastern
+United States"`` -- not a superset of the OTR, so the mask would clip a cube
+that never covered a third of the region.
 
 These tests drive the real ``bind_workspace`` seam against the in-process fake
 MCP, so what is asserted is what the MCP actually receives.
@@ -63,7 +58,7 @@ class RetrievalExtentTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCa
     async def test_otc_reaches_the_mcp_as_an_extent_never_as_the_word(self):
         """The tracer bullet. ``"the OTC"`` must arrive at the MCP as a real
         footprint, and the string itself must never be handed to the MCP's own
-        geocoder -- which resolves it to an aerodrome in Chad (Phase 0, V2)."""
+        geocoder -- which resolves it to an aerodrome in Chad."""
         from tta_backend.utils.plotting import load_preset_polygons
 
         await self.tools["define_area_of_interest"].ainvoke({"location": "the OTC"})
@@ -77,14 +72,14 @@ class RetrievalExtentTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCa
         self.assertEqual(_parse_bbox(sent), [round(v, 6) for v in expected])
 
     async def test_the_retrieval_extent_contains_the_mask_for_every_coalition(self):
-        """Risk 5, pinned. The retrieval extent must *contain* the mask -- not
+        """The retrieval extent must *contain* the mask -- not
         equal it. A superset is correct, because the mask clips it; anything
         less and the researcher gets a mean over whatever happened to arrive,
         with no signal that part of the region was never retrieved.
 
         Asserted over COALITIONS so a coalition added later cannot skip it.
         Containment, never equality: the envelope is 2.453x the OTR's area
-        (gate V7) and that is the design, not a bug."""
+        and that is the design, not a bug."""
         from shapely.geometry import box
 
         from tta_backend.utils.plotting import RegionResolver, load_preset_polygons
@@ -116,10 +111,9 @@ class RetrievalExtentTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCa
                 )
 
     async def test_a_state_name_reaches_the_mcp_as_an_extent_never_as_the_word(self):
-        """T60 Phase 3a: the states go through this seam too.
+        """The states go through this seam too.
 
-        Three tokens, chosen because the Phase 3a gate (V13) measured each of
-        them failing live and they fail in two different ways:
+        Three tokens, each of which fails live, in two different ways:
 
         - ``"new york"`` came back as New York **City** -- 0.56% of the state.
         - ``"washington"`` came back as Washington **DC** -- **0.00%** overlap,
@@ -145,7 +139,7 @@ class RetrievalExtentTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCa
                 )
 
     async def test_a_composite_reaches_the_mcp_as_an_extent_never_as_the_string(self):
-        """T60 Phase 3b: the ``+`` grammar goes through this seam too, and it
+        """The ``+`` grammar goes through this seam too, and it
         has *less* to fall back on than anything before it.
 
         A coalition has a name the MCP's geocoder might resolve, badly. A
@@ -166,7 +160,7 @@ class RetrievalExtentTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCa
         self.assertEqual(_parse_bbox(sent), [round(v, 6) for v in masked["bounds"]])
 
     async def test_a_composite_with_a_bad_token_refuses_instead_of_geocoding(self):
-        """D8 on the retrieval plane. The MCP must never be asked, because its
+        """On the retrieval plane, the MCP must never be asked, because its
         geocoder is the same Nominatim the mask plane is keeping the string
         away from -- and a fail-open seam is indistinguishable from a working
         one unless the not-called assertion is made."""
@@ -185,7 +179,7 @@ class RetrievalExtentTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCa
         self.assertIn("wakanda", caught.exception.message.lower())
 
     async def test_an_oversized_composite_refuses_before_any_retrieval(self):
-        """D16 where it costs least. The extent gate firing here means a
+        """The extent gate where it costs least. It firing here means a
         continent-spanning union never becomes a retrieval at all, rather than
         being fetched and refused downstream by a byte limit that would name
         the wrong problem."""
@@ -203,15 +197,11 @@ class RetrievalExtentTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCa
         self.assertEqual(caught.exception.category, CATEGORY_TOO_LARGE)
 
     async def test_a_buffer_reaches_the_mcp_as_an_extent_never_as_the_phrase(self):
-        """T60 Phase 5: the buffer grammar goes through this seam too, and it
-        has *less* behind it than anything before it.
+        """The buffer grammar goes through this seam too.
 
-        A coalition has a name the MCP's geocoder might resolve, badly. A
-        composite at least contains real place names. Gate V23 measured
-        ``"within 50 miles of NYC"`` against live Nominatim and it returns
-        **zero hits** -- so an unclaimed buffer is not a wrong retrieval, it is
-        no retrieval at all, after which T46 Phase 2's V6 measured the agent
-        silently substituting a different region. The containment property is
+        Live Nominatim finds **zero hits** for ``"within 50 miles of NYC"``, so
+        an unclaimed buffer is no retrieval at all, after which the agent
+        silently substitutes a different region. The containment property is
         asserted where the extent is decided (test_region_buffer.py); this
         covers the wiring."""
         from unittest.mock import AsyncMock, patch
@@ -241,9 +231,8 @@ class RetrievalExtentTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCa
         self.assertTrue(box(*_parse_bbox(sent)).contains(masked))
 
     async def test_a_refused_buffer_never_reaches_the_mcp(self):
-        """V22 on the retrieval plane. An antimeridian-crossing buffer refused
-        for the mask and retrieved anyway would pull a globe-spanning band --
-        the 200x over-retrieval option (b) was rejected for."""
+        """An antimeridian-crossing buffer refused for the mask and retrieved
+        anyway would pull a globe-spanning band (~200x over-retrieval)."""
         from unittest.mock import AsyncMock, patch
 
         from tta_backend.earthdata_mcp.results import (
@@ -270,8 +259,8 @@ class RetrievalExtentTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCa
     async def test_a_string_outside_the_vocabulary_is_passed_through_untouched(self):
         """The regression this seam is most likely to cause, and the mirror of
         the mask plane's NOT_CLAIMED fall-through. "paris" must reach the MCP
-        byte-identical to pre-T60 behavior -- as must a plain preset key, which
-        this phase deliberately does not claim."""
+        unchanged -- as must a plain preset key, which is deliberately not
+        claimed."""
         for location in ("paris", "Paris, France", "northeast us", "north america", "-75,40,-74,41"):
             with self.subTest(location=location):
                 self.seen.clear()
@@ -279,12 +268,10 @@ class RetrievalExtentTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCa
                 self.assertEqual(self.seen, [location])
 
     async def test_an_alias_onto_a_plain_preset_agrees_with_the_mask_plane(self):
-        """Phase 1 *created* this divergence and this phase closes it. Before
-        T60, "northeastern us" geocoded to an ~11 m railway platform in Boston
-        (Phase 0, V2) on both planes -- consistently wrong. Phase 1 taught the
-        mask plane it means the ``northeast us`` box and left the retrieval
-        plane on the platform, which is Risk 5 exactly: a mask clipping against
-        a cube covering 11 metres of it."""
+        """Aliases are claimed on both planes. The mask plane knows
+        "northeastern us" means the ``northeast us`` box, but the MCP would
+        geocode it to an ~11 m railway platform in Boston, leaving the mask
+        clipping a cube covering 11 metres of it."""
         from tta_backend.utils.plotting import RegionResolver
 
         await self.tools["define_area_of_interest"].ainvoke({"location": "northeastern us"})
@@ -293,10 +280,10 @@ class RetrievalExtentTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCa
         self.assertEqual(_parse_bbox(self.seen[0]), [round(v, 6) for v in masked["bounds"]])
 
     async def test_a_coalition_with_no_polygon_refuses_instead_of_geocoding(self):
-        """Phase 1 fails closed on the mask plane; the retrieval plane must not
+        """The mask plane fails closed; the retrieval plane must not
         fail open behind it. If the boundary asset is missing, the string must
         NOT reach the MCP -- its geocoder is Nominatim, which answers "OTC"
-        with an aerodrome in Chad (Phase 0, V2). A not-found beats a retrieval
+        with an aerodrome in Chad. A not-found beats a retrieval
         over the wrong continent."""
         from unittest.mock import patch
 
@@ -342,7 +329,7 @@ class RetrievalExtentTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCa
         for label, call in callers:
             with self.subTest(caller=label):
                 # Cleared between callers precisely because they'd otherwise
-                # share one T53 entry -- see the cache-collapse test below.
+                # share one tool-cache entry -- see the cache-collapse test below.
                 tool_cache.clear_tool_cache()
                 self.seen.clear()
                 await call()
@@ -351,7 +338,7 @@ class RetrievalExtentTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCa
                 )
 
     async def test_the_vocabulary_collapses_to_one_t53_cache_entry(self):
-        """Tension 4, pinned. The rewrite sits *before* the T53 lookup, which
+        """The rewrite sits *before* the tool-cache lookup, which
         keys on ``kwargs``, so every spelling of the region resolves to one
         entry -- and no key can ever hold a raw coalition string. Were the
         rewrite placed after the lookup instead, the cache would answer "otc"
@@ -381,7 +368,7 @@ class RetrievalExtentTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCa
 
 
 def _parse_bbox(location: str) -> list[float] | None:
-    """The "W,S,E,N" channel the Phase 1.5 gate chose (V5c/V7), parsed back."""
+    """The "W,S,E,N" extent string, parsed back."""
     try:
         parts = [float(p) for p in location.split(",")]
     except (ValueError, AttributeError):

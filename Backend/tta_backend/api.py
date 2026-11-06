@@ -128,18 +128,16 @@ supabase_verifier = SupabaseJwtVerifier(make_jwks_fetcher(settings.supabase_url 
                                         )
 
 async def _on_earthdata_mcp_ready(tools: dict[str, Any]) -> None:
-    """earthdata_mcp_manager's on_ready hook (T17): refreshes the persistent
-    app.state.earthdata_mcp_tools dict (read directly by the unmigrated chart
-    export.png endpoint; export.csv/.nc moved to the readiness gate in T37) and
-    rebuilds the real satellite agent into whatever LazySatelliteAgent the
+    """earthdata_mcp_manager's on_ready hook: refreshes the persistent
+    app.state.earthdata_mcp_tools dict (read directly by the chart export.png
+    endpoint; export.csv/.nc go through the readiness gate) and rebuilds the real satellite agent into whatever LazySatelliteAgent the
     current lifespan cycle assigned to app.state.satellite_agent — see
     agents/earthdata_agent.py for why a mutable placeholder, not a reassigned
     reference, is what makes this visible to the supervisor's already-built
     dispatch tool closure.
 
-    In-flight recovery (2026-07-21): the MCP server crash-restarts, killing the
-    long-lived session; the manager reconnects and re-fires this hook with a new
-    session's bound tools. Refresh the tools dict IN PLACE (refresh_live_tools)
+    In-flight recovery: if the MCP server restarts, the manager reconnects and
+    re-fires this hook with the new session's tools. Refresh the tools dict IN PLACE (refresh_live_tools)
     and rebuild the agent bound to that SAME dict — so a chat turn compiled
     against it before the restart (an in-flight compare mid-retry) reads the
     reconnected tools on its next call instead of retrying the dead session. See
@@ -152,7 +150,7 @@ async def _on_earthdata_mcp_ready(tools: dict[str, Any]) -> None:
     logger.info("earthdata_mcp_satellite_agent_ready", extra={"_event": "earthdata_mcp_satellite_agent_ready"})
 
 
-# T31: one shared instance -- its in-process cache and per-turn
+# One shared instance -- its in-process cache and per-turn
 # last_used_at coalescing are only meaningful as process-lifetime state, and
 # the connector endpoints below invalidate it directly on re-paste/disconnect.
 edl_credential_injector = EdlCredentialInjector(settings)
@@ -171,14 +169,10 @@ chat_stream_service = ChatStreamService(
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global agent
     validate_config()
-    # T61: start the JWKS fetch before the slow half of boot (pool, tables,
-    # store sweeps, render warm, agent build) so the key cache is populated well
-    # before anything can be served. Sync on purpose -- start_warm() creates the
-    # task and returns; awaiting the fetch here would let a Supabase blip during
-    # a deploy stop the container coming up at all (T17 degrade-don't-die), and
-    # the request path already handles a cold cache. Placed after
-    # validate_config() so we never warm against a URL built from an unset
-    # SUPABASE_URL.
+    # Start the JWKS fetch before the slow part of boot so keys are cached
+    # before anything is served. Not awaited: a Supabase blip must not stop the
+    # container starting, and requests handle a cold cache. After
+    # validate_config() so SUPABASE_URL is set.
     supabase_verifier.start_warm()
     await init_db_pool()
     await ensure_session_metadata_table()
@@ -186,18 +180,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await ensure_artifact_table()
     await ensure_chart_table()
 
-    # T52: reclaim staging dirs and manifest-less entries a crash mid-write
-    # left behind. Neither is ever served (the manifest is the completion
-    # marker), so this is space, not correctness. T54: this also rebuilds the
-    # handle->cube index from the surviving manifests, which is what makes that
-    # index derived state — losing the file costs a boot's scan, never an
-    # answer.
+    # Reclaim staging dirs and manifest-less entries left by a crash mid-write
+    # (space, not correctness: they're never served), and rebuild the
+    # handle->cube index from the surviving manifests.
     cube_cache.sweep_store(OPEN_PIPELINE_VERSION)
 
-    # T59 D8: the same reclaim for the frame store. Frames are never served or
-    # rebuilt across a version change, so after a bump every stack in there is
-    # unreachable — but its manifest is still valid, so nothing else would ever
-    # drop it and its bytes would go on counting against the cap.
+    # Same for the frame store: after a version bump old stacks are
+    # unreachable but would otherwise keep counting against the cap.
     frame_store.sweep_store(OPEN_PIPELINE_VERSION)
 
     # Overlay writes are staged and renamed into place; this removes staging
@@ -224,16 +213,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     warmup.warm_render_path()
 
     logger.info("startup_begin", extra={"_model": settings.llm_model})
-    # T17: the backend boots without the earthdata-retrieval MCP — ground/EPA
-    # features work immediately. earthdata_mcp_manager runs a background
-    # connect loop (capped exponential backoff) instead of the old hard
-    # boot-time raise; misconfiguration (a malformed URL) still fails loud
+    # The backend boots without the earthdata-retrieval MCP — ground/EPA
+    # features work immediately. earthdata_mcp_manager connects in the
+    # background (capped exponential backoff); misconfiguration (a malformed URL) still fails loud
     # from validate_config() above, before any of this runs. satellite_agent
     # is a LazySatelliteAgent placeholder — services.subagent_dispatch
     # .run_satellite gates on earthdata_mcp_manager.state before ever
     # touching it, so it's never invoked before _on_earthdata_mcp_ready
     # (module scope) fills it in.
-    # T63: one pool behind both. The log writes a turn's frames and the
+    # One Redis pool behind both. The log writes a turn's frames and the
     # registry holds the per-thread claim and the idempotency records — same
     # Redis, and no reason for two sets of connections to it.
     assert settings.redis_url is not None  # validate_config() refused to boot without it
@@ -247,8 +235,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     earthdata_mcp_manager.start()
 
     # Built once here (not inside build_agent) so the supervisor's tool
-    # wrappers and the router fast path (services/chat_stream_service.py,
-    # T14) invoke the identical sub-agent instances.
+    # wrappers and the router fast path (services/chat_stream_service.py)
+    # invoke the identical sub-agent instances.
     ground_agent = build_ground_agent()
     app.state.ground_agent = ground_agent
     agent = await build_agent(
@@ -525,9 +513,8 @@ async def require_authentication(request: Request, call_next: Callable[[Request]
     if not any(route.matches(request.scope)[0] != Match.NONE for route in app.routes):
         return await call_next(request)
 
-    # T61: header parsing lives here now. It used to sit inside authenticate_request,
-    # which went with the local user table -- the verifier takes a bare token and
-    # knows nothing about HTTP.
+    # Header parsing lives here; the verifier takes a bare token and knows
+    # nothing about HTTP.
     scheme, token = get_authorization_scheme_param(request.headers.get("Authorization"))
     if scheme.lower() != "bearer" or not token:
         return _auth_error(status.HTTP_401_UNAUTHORIZED, "Not authenticated", _BEARER_CHALLENGE)
@@ -548,7 +535,7 @@ async def require_authentication(request: Request, call_next: Callable[[Request]
         # so the refresh throttle's state stays invisible.
         return _auth_error(status.HTTP_401_UNAUTHORIZED, str(exc), _BEARER_CHALLENGE)
     except IdentityProviderUnavailable:
-        # Not a 401. The frontend opens T47's re-auth modal on 401, and signing
+        # Not a 401. The frontend opens its re-auth modal on 401, and signing
         # in again cannot fix an unreachable identity provider -- it would just
         # hand the user a login form that also fails. The message stays vague
         # about which dependency is down.
@@ -563,11 +550,9 @@ async def require_authentication(request: Request, call_next: Callable[[Request]
 # add_middleware inserts at index 0, so the final registration runs first. The
 # auth middleware returns its 401s and 503s directly rather than calling
 # call_next, so anything registered outside it never sees those responses --
-# with CORS registered earlier (i.e. inside), a cross-origin 401 came back with
-# no Access-Control-Allow-Origin and the browser surfaced it as a network error
-# instead of a status. That silently defeats T47: shouldPromptReauth(401) never
-# fires, and the 401-vs-503 distinction above is invisible to the client it was
-# written for. Do not move this back up next to the app construction.
+# with CORS inside, a cross-origin 401 has no Access-Control-Allow-Origin and
+# the browser reports a network error instead, so the frontend's re-auth
+# prompt never fires. Do not move this up next to the app construction.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -621,7 +606,7 @@ class ConnectorStatusView(BaseModel):
     connected_at: Optional[datetime] = None
     expires_at: Optional[datetime] = None
 
-# T30: per-user connector (Earthdata Login token, EPA AQS email + key)
+# Per-user connector (Earthdata Login token, EPA AQS email + key)
 # storage. Registry-driven -- CONNECTOR_REGISTRY is the single source of what
 # cards the frontend can render and what connector_type values these
 # endpoints accept. No endpoint here ever selects or returns
@@ -678,7 +663,7 @@ def _require_auth_method(entry: dict[str, Any], auth_method: str) -> None:
 
 
 def _invalidate_connector_cache(connector_type: str, user_id: str) -> None:
-    """T31: a re-paste or disconnect must never be shadowed by the
+    """A re-paste or disconnect must never be shadowed by the
     injector's short-TTL cache of the previous (possibly invalid) row."""
     if connector_type == CONNECTOR_TYPE_EARTHDATA:
         edl_credential_injector.invalidate(user_id)
@@ -762,7 +747,7 @@ async def health(request: Request) -> dict[str, Any] | JSONResponse:
     db_ok, db_error = await check_db_pool(timeout_seconds=2.0)
     active_agent = getattr(app.state, "agent", None) or agent
     agent_ok = active_agent is not None
-    # T17 story #6: the data layer's connection state, not just db/agent —
+    # The data layer's connection state, not just db/agent —
     # so an MCP outage or schema mismatch is visible to monitoring the same
     # way it's visible to a researcher.
     manager = getattr(app.state, "earthdata_mcp_manager", None)
@@ -800,7 +785,7 @@ def config_auth(request: Request) -> dict[str, Any]:
 
     The publishable key is safe to hand an anonymous caller. It normally reaches
     a project's Postgres through Supabase's PostgREST, but our data lives in our
-    own database (decision 1: identity provider only), so it can do nothing here
+    own database (Supabase is the identity provider only), so it can do nothing here
     but talk to Supabase Auth. Do not "fix" this by hiding it behind auth.
     """
     return {
@@ -812,8 +797,7 @@ def config_auth(request: Request) -> dict[str, Any]:
 @app.get("/debug/heap-snapshot")
 @limiter.limit("1/minute")
 async def heap_snapshot(request: Request, limit: int = 25) -> dict[str, Any]:
-    """T45: tracemalloc top-allocations snapshot for chasing a specific
-    memory incident (the 2026-07-17 QA jump-and-plateau) -- gated behind
+    """tracemalloc top-allocations snapshot for chasing memory issues -- gated behind
     DEBUG_HEAP_PROFILING_ENABLED, off by default, since tracemalloc adds
     per-allocation overhead this deployment shouldn't pay standingly.
     Requires auth like every other route (not in PUBLIC_ENDPOINTS)."""
@@ -840,7 +824,7 @@ async def heap_snapshot(request: Request, limit: int = 25) -> dict[str, Any]:
 @app.get("/config/map-tiles")
 @limiter.limit("120/minute")
 def config_map_tiles(request: Request) -> dict[str, Any]:
-    """T23: basemap/terrain tile sources as configuration, not code, so a
+    """Basemap/terrain tile sources as configuration, not code, so a
     keyed or self-hosted provider can be swapped in without a redeploy.
     Unauthenticated -- the map needs these before the chart underneath it can
     even render, and MAP_TILE_API_KEY (substituted by the resolved_* properties
@@ -858,20 +842,16 @@ def config_map_tiles(request: Request) -> dict[str, Any]:
 @app.get("/capabilities/starters")
 @limiter.limit("120/minute")
 def capabilities_starters(request: Request) -> list[StarterPrompt]:
-    """T22: the empty-chat's example questions — unauthenticated so a
-    first-time visitor sees them before signing in. The single backend-owned
-    constant (config.starter_prompts) is also what the eval harness's
-    task-coverage assertion checks, so nothing here can drift into a broken
-    promise (story #11)."""
+    """The empty-chat's example questions — unauthenticated so a
+    first-time visitor sees them before signing in. The eval harness checks
+    the same constant (config.starter_prompts), so they can't drift into
+    questions the agent can't answer."""
     return STARTER_PROMPTS
 
 
-# T18: one exception handler for every classified MCP tool outcome — pane
-# endpoints, agent tools, and chat answers all trace back to the same
-# taxonomy (story #11: one JSON error shape across every endpoint). T17's
-# unavailable/incompatible states render through this same handler (story
-# #13) via _earthdata_tools raising MCPToolError below, rather than a
-# second, differently-shaped 503.
+# One exception handler for every classified MCP tool outcome, so every
+# endpoint returns the same JSON error shape. MCP unavailable/incompatible
+# states use it too (via _earthdata_tools raising MCPToolError).
 _CATEGORY_STATUS_CODES = {
     CATEGORY_USER_INPUT: status.HTTP_422_UNPROCESSABLE_CONTENT,
     CATEGORY_TOO_LARGE: status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -931,7 +911,7 @@ async def _handle_mcp_tool_error(request: Request, exc: MCPToolError) -> JSONRes
 
 @app.exception_handler(RedisError)
 async def _handle_event_log_unavailable(request: Request, exc: RedisError) -> JSONResponse:
-    """D15: chat is down, not degraded, while the event log is unreachable.
+    """Chat is down, not degraded, while the event log is unreachable.
 
     Every event, the per-thread claim and the stop signal all travel through
     it. The rejected alternatives both hide the outage — a direct-streaming
@@ -948,7 +928,7 @@ async def _handle_event_log_unavailable(request: Request, exc: RedisError) -> JS
 
 @app.exception_handler(turn_registry.RegistryClosing)
 async def _handle_registry_closing(request: Request, exc: Exception) -> JSONResponse:
-    """T63 Phase 4: this replica is draining, so the send goes elsewhere.
+    """This replica is draining, so the send goes elsewhere.
 
     A 503 rather than a queue or a wait: the turn would have to outlive a
     process that is on its way out, and the load balancer already has
@@ -962,7 +942,7 @@ async def _handle_registry_closing(request: Request, exc: Exception) -> JSONResp
 
 def _earthdata_tools(request: Request) -> dict[str, Any]:
     """Discovery/jobs/provenance endpoints' MCP tools, read through
-    earthdata_mcp_manager (T17) rather than app.state.earthdata_mcp_tools
+    earthdata_mcp_manager rather than app.state.earthdata_mcp_tools
     directly, so a not-ready connection answers with the shared structured
     503 instead of proxying a bare 500 from an empty/absent tool dict."""
     manager = getattr(request.app.state, "earthdata_mcp_manager", None)
@@ -980,7 +960,7 @@ def _earthdata_tools(request: Request) -> dict[str, Any]:
 @app.get("/chart/{chart_id}/export.csv")
 @limiter.limit("3/minute")
 async def export_chart_csv(chart_id: str, request: Request) -> StreamingResponse:
-    # T37: resolved through the T17 readiness gate (shared structured 503),
+    # Resolved through the readiness gate (shared structured 503),
     # never app.state.earthdata_mcp_tools directly — a not-ready MCP must
     # fail here, before any 200 header is committed, not inside the
     # StreamingResponse generator.
@@ -989,7 +969,7 @@ async def export_chart_csv(chart_id: str, request: Request) -> StreamingResponse
     if not payload.get("export"):
         raise HTTPException(status_code=422, detail="This chart does not include full-resolution export metadata.")
 
-    # T37: materialize the first chunk before committing to a 200 — the
+    # Materialize the first chunk before committing to a 200 — the
     # common failures (missing handle, evicted export) raise here as a clean
     # 4xx/5xx instead of truncating the download mid-stream. An MCPToolError
     # propagates to the shared taxonomy handler.
@@ -1050,7 +1030,7 @@ async def export_chart_png(chart_id: str, request: Request) -> Response:
 
 def _chart_overlay_source(payload: dict[str, Any], panel: int | None) -> dict[str, Any] | None:
     """The part of a chart payload that owns the overlay: the chart itself, or
-    for a heatmap_multi comparison its Nth panel / difference panel (T23)."""
+    for a heatmap_multi comparison its Nth panel / difference panel."""
     if payload.get("type") == "heatmap_multi":
         if panel is not None:
             panels = payload.get("panels") or []
@@ -1129,9 +1109,8 @@ async def chart_overlay_png(
     return Response(content=content, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
-# T59 D13. A deliberate divergence from overlay.png's `no-store` above, and it
-# rests entirely on D8: a frame blob is never regenerated in place, so this
-# URL's bytes cannot change and a cache that keeps them forever can never serve
+# Unlike overlay.png's `no-store`: a frame blob is never regenerated in
+# place, so this URL's bytes cannot change and a cache that keeps them forever can never serve
 # a stale field. `private` because charts are ownership-scoped — every route
 # here goes through `_get_owned_chart`, there is no shared cache to warm, and
 # no cross-user entry for one researcher's region to leak into.
@@ -1146,15 +1125,14 @@ def _if_none_match(request: Request) -> set[str]:
 @app.get("/chart/{chart_id}/frames.f32.gz")
 @limiter.limit("30/minute")
 async def chart_frames(chart_id: str, request: Request) -> Response:
-    """The float32 frame stack behind a chart's scrubber (T59).
+    """The float32 frame stack behind a chart's scrubber.
 
     Serves the stored bytes still gzipped, so the browser inflates them
     natively and no client-side decompressor stands between the checked bytes
     and the canvas. Everything needed to *label* the scrub — the axis, the
     intervals, coverage, QA rates, per-frame statistics — travels in the chart
-    payload instead, which is why a 404 here degrades the slider rather than
-    breaking the chart (D8: an evicted stack disables the scrubber with the
-    axis still drawn, and is never rebuilt in place).
+    payload instead, so a 404 here (e.g. evicted) disables the scrubber but
+    keeps the axis drawn. Stacks are never rebuilt in place.
     """
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
     frames = payload.get("frames")
@@ -1162,7 +1140,7 @@ async def chart_frames(chart_id: str, request: Request) -> Response:
     if not key:
         raise HTTPException(status_code=404, detail="This chart has no stored frame stack.")
 
-    # Off the event loop for the same reason the overlay read is (T45): a slow
+    # Off the event loop for the same reason the overlay read is: a slow
     # volume must not stall every other in-flight stream for the read's
     # duration, and this one hashes what it reads as well.
     blob = await asyncio.to_thread(
@@ -1179,23 +1157,17 @@ async def chart_frames(chart_id: str, request: Request) -> Response:
 @app.get("/chart/{chart_id}/frames.{statistic}.f32.gz")
 @limiter.limit("30/minute")
 async def chart_frame_plane(chart_id: str, statistic: str, request: Request) -> Response:
-    """One additional statistic's frame stack (T59 D6a decision 5).
+    """One additional statistic's frame stack.
 
-    A path per statistic rather than a query parameter on the mean's URL. A
-    parameter would make one URL serve several bodies, which every cache
-    between the browser and this app then has to be told about with `Vary`, and
-    would turn `_FRAME_CACHE_CONTROL`'s `immutable` into a claim about a URL
-    whose content is no longer fixed. A distinct path is a distinct cache entry
-    needing no coordination at all — and it leaves `frames.f32.gz` untouched
-    outright rather than untouched-as-long-as-nobody-passes-the-parameter,
-    which is what decision 5's "the mean entry keeps its exact shape, URL and
-    cost" actually asks for.
+    A path per statistic, not a query parameter, so each URL has one fixed
+    body: `immutable` caching stays true without `Vary`, and the mean's URL
+    is untouched.
 
     Every failure here is a 404: an unknown statistic, one this chart never
     computed, and one whose entry has been evicted are all "there is no such
     blob", and the frontend's answer to each is the same — offer the statistics
     that are there. The axis is in Postgres either way, so the scrubber stays
-    drawn and labeled (D8).
+    drawn and labeled.
     """
     # Constrained to the statistics the reduction actually produces, so the
     # segment can never become an arbitrary key lookup into the chart's block.
@@ -1283,7 +1255,7 @@ async def chart_methods_endpoint(chart_id: str, request: Request) -> Response:
             citations=citations,
             maturity=provenance.get("maturity"),
             maturity_note=provenance.get("maturity_note"),
-            # T59 D12: the whole payload, not the provenance sub-dict — the
+            # The whole payload, not the provenance sub-dict — the
             # frames disclosure reads two blocks that live at the top level
             # (``frames``/``frames_unavailable`` and ``export.frames``), and
             # the precedence rule between them belongs in one place rather
@@ -1314,7 +1286,7 @@ async def chart_methods_endpoint(chart_id: str, request: Request) -> Response:
 @app.get("/chart/{chart_id}/export.nc")
 @limiter.limit("3/minute")
 async def export_chart_netcdf(chart_id: str, request: Request) -> StreamingResponse:
-    # T37: same readiness gate (shared structured 503) as every other
+    # Same readiness gate (shared structured 503) as every other
     # MCP-backed endpoint, instead of a bespoke bare-detail 503.
     tools = _earthdata_tools(request)
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
@@ -1328,7 +1300,7 @@ async def export_chart_netcdf(chart_id: str, request: Request) -> StreamingRespo
     except DataDownloadError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
 
-    # T37: materialize the first chunk before committing to a 200 — an
+    # Materialize the first chunk before committing to a 200 — an
     # evicted/vanished converted file raises here instead of streaming a
     # truncated "successful" download.
     try:
@@ -1494,7 +1466,7 @@ async def chat(req: ChatRequest, request: Request) -> Response:
         request_id,
     )
     if get_settings().chat_detached_turns_enabled:
-        # T63 D6: the POST only accepts the message. Everything this turn
+        # The POST only accepts the message. Everything this turn
         # narrates goes to the event log and leaves over the GET, so the
         # reattach path is exercised by every turn and cannot rot.
         registry = app.state.turn_registry
@@ -1504,7 +1476,7 @@ async def chat(req: ChatRequest, request: Request) -> Response:
             idempotency_key=request.headers.get("Idempotency-Key"),
             cancel_jobs=_job_canceller(user.id),
         )
-        # D12: a refused send still names the turn, so the caller joins the one
+        # A refused send still names the turn, so the caller joins the one
         # in flight rather than being told only that it cannot send.
         accepted = 409 if claim.outcome == turn_registry.ALREADY_RUNNING else 202
         return JSONResponse(
@@ -1519,7 +1491,7 @@ async def chat(req: ChatRequest, request: Request) -> Response:
 
 
 def _job_canceller(user_id: str) -> turn_registry.CancelJobs:
-    """What a stopped turn uses to drop the retrievals it orphaned (T63 D10).
+    """What a stopped turn uses to drop the retrievals it orphaned.
 
     The MCP is resolved inside the closure rather than captured: the turn
     outlives the request that started it, so whether the provider was reachable
@@ -1563,7 +1535,7 @@ async def chat_stop(thread_id: ThreadId, request: Request) -> dict[str, Any]:
     """Stop the turn running on this thread, from any tab or any replica.
 
     Named by thread rather than by turn: after a reattach the tab pressing
-    Stop may have joined the turn rather than started it (D12), and knows only
+    Stop may have joined the turn rather than started it, and knows only
     which conversation it is looking at.
     """
     user = request.state.current_user
@@ -1586,7 +1558,7 @@ async def chat_stream(
     cursor: Annotated[str | None, Query(alias="from")] = None,
     known_turn: Annotated[str | None, Query(alias="turn")] = None,
 ) -> StreamingResponse:
-    """The only place a chat turn's SSE comes from (T63 D6).
+    """The only place a chat turn's SSE comes from.
 
     A reader hands back the cursor it last saw and gets only what it missed,
     so switching sessions, sleeping a laptop or landing on a different replica
@@ -1607,7 +1579,7 @@ async def chat_stream(
     turn_id = await registry.turn_for(thread_id, include_ended=known_turn is not None)
     if turn_id is None:
         # No turn to attach to. History is the source of truth for anything
-        # that finished long enough ago to have been dropped (D8).
+        # that finished long enough ago to have been dropped.
         raise HTTPException(status_code=404, detail="No turn is running on this thread")
     return StreamingResponse(
         registry.follow(turn_id, cursor),
@@ -1622,7 +1594,7 @@ async def chat_status(thread_id: ThreadId, request: Request) -> dict[str, Any]:
     """Whether this thread has a turn in flight, without opening its stream.
 
     For the sidebar: a thread the user sent a message to and then navigated
-    away from keeps running under it (T63) — this is what lets a badge say so
+    away from keeps running under it — this is what lets a badge say so
     for every thread that is not the one on screen, without paying for a
     stream connection per row.
     """
@@ -1673,12 +1645,9 @@ async def _stamp_activity_on_first_frame(
     transcript once, at the end, so a turn that is stopped or dies leaves a
     titled row over an empty conversation.
 
-    Wrapped here rather than inside ChatStreamService, and deliberately: this
-    is the one point both protocols pass through, and it holds whatever the
-    route produced without knowing which route that was. The fast path never
-    enters ``stream_response`` -- the seam T63 Phase 5's heartbeat fell
-    through -- so a stamp written from inside a route is one new route away
-    from leaving threads unlisted.
+    Wrapped here, not inside ChatStreamService, because every route passes
+    through this point; the fast path never enters ``stream_response``, so a
+    stamp inside a route could miss threads.
 
     Stamped before the frame is yielded: a reader that has seen the frame may
     ask for the session list in the next breath.
@@ -1699,7 +1668,7 @@ async def _stamp_activity_on_first_frame(
         yield frame
 
 
-# T37: session endpoint catch-alls answer with a fixed generic detail — the
+# Session endpoint catch-alls answer with a fixed generic detail — the
 # real exception goes to the logs with request context, never to the client.
 _INTERNAL_ERROR_DETAIL = "Internal server error"
 

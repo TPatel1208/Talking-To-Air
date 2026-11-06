@@ -1,4 +1,4 @@
-"""T60 Phase 3b: the ``+`` composition grammar (D5).
+"""The ``+`` composition grammar ("NY + NJ").
 
 ``region_dispatch`` is a table lookup -- a string is in the vocabulary or it is
 not. This is a different kind of thing: a grammar that *constructs* a region
@@ -6,10 +6,9 @@ per request out of tokens that each have to resolve, with a failure mode
 (``"NY + NJ + Wakanda"``) that must name which token failed. Keeping the two
 apart leaves the PRESET tier readable as the one-sitting table it is.
 
-**Why this is not called from ``region_dispatch.dispatch``**, which the phase
-prompt recommended: ``dispatch`` is defined over an *already normalized* string,
-and D11a fixes the order as **split on ``+`` first, then normalize each token**.
-Normalizing first strips only the *leading* ``"the "``, so ``"the ny + nj"``
+**Why this is not called from ``region_dispatch.dispatch``**: ``dispatch``
+takes an *already normalized* string, but composition must **split on ``+``
+first, then normalize each token**. Normalizing first strips only the *leading* ``"the "``, so ``"the ny + nj"``
 would resolve and ``"ny + the nj"`` would hard-fail on ``"the nj"`` -- two
 spellings of one request, two outcomes. Routing composition through ``dispatch``
 would mean handing it both the raw and the normalized form, muddying the
@@ -17,7 +16,7 @@ one-input contract that keeps ``dispatch`` simple. So this is its own gate,
 ahead of normalization, on both resolvers and on the retrieval-plane wrapper.
 
 Network-free, like ``region_dispatch``: every member is a checked-in Natural
-Earth boundary and the geocoder is never consulted (D8).
+Earth boundary and the geocoder is never consulted.
 """
 from dataclasses import dataclass
 from collections.abc import Callable
@@ -31,18 +30,15 @@ if TYPE_CHECKING:  # the runtime imports stay function-local (circularity);
     from tta_backend.utils.plotting import RegionResolver
     from tta_backend.utils.region_dispatch import ExtentDispatch
 
-# D5: symbol-only. No natural-language "and"/"or" -- no legitimate place name
+# Symbol-only. No natural-language "and"/"or" -- no legitimate place name
 # contains a literal "+", so the split can never collide with a real place,
 # and no disambiguation heuristic is needed that could itself misfire
 # ("New York and New Jersey" versus "Trinidad and Tobago").
 SEPARATOR = "+"
 
-# Tension 2, resolved to option (b) by gate V17: a postal code is a composite
-# *member*, never a bare place name. Measured live, five of seven ambiguous
-# codes resolve to a foreign country today -- DE Germany, CA Canada, IN India,
-# LA Laos, ME Montenegro -- and each is a correct answer to a different
-# question. Claiming them bare would swap a right region for a confident wrong
-# one under a name the user typed, which is the D12b regression exactly.
+# A postal code is only a composite *member*, never a bare place name: bare
+# codes like DE, CA, IN, LA and ME correctly geocode to countries (Germany,
+# Canada, ...), and claiming them would swap a right answer for a wrong one.
 #
 # The ``+`` is what supplies the missing context: nobody writes "DE + NJ"
 # meaning Germany plus New Jersey.
@@ -57,14 +53,10 @@ POSTAL_TO_STATE: dict[str, str] = {
 
 
 # Country spelling -> the normalized ``ADMIN`` it means. Hand-curated and never
-# fuzzy-matched, which is the mechanism D12 sanctions and D6/D12 both refuse to
-# replace with edit distance.
+# fuzzy-matched (no edit distance).
 #
-# Verified Finding 6 said ``ADMIN`` is "already the colloquial country name, so
-# no separate alias table is needed for the common case". The Phase 4 gate
-# checked it, because it was the one load-bearing PRD claim this phase depends
-# on that had never been re-examined, and it is **partly refuted**: of 61
-# spellings a researcher might plausibly type, 41 hit and **20 missed**. Some
+# Needed because ``ADMIN`` names often aren't what people type: of 61
+# plausible spellings, 20 missed. Some
 # are Natural Earth being formal where nobody else is (``United Republic of
 # Tanzania``, ``Hong Kong S.A.R.``, ``Republic of Serbia``); some are ordinary
 # English usage the source simply does not carry (``UK``, ``Britain``,
@@ -101,10 +93,9 @@ COUNTRY_ALIASES: dict[str, str] = {
     "holy see": "vatican",
 }
 
-# D7's escape hatch for the *country* side of a state/country collision. The
-# state side already had one (the postal code, D6's path); without this one a
-# disambiguation error would name a way to say "the state" and no way at all to
-# say "the country", which is the stuck user D7 is explicit about not creating.
+# Escape hatch for the *country* side of a state/country collision
+# ("georgia (country)"). The state side already has one (the postal code);
+# without this, a disambiguation error could offer no way to say the country.
 #
 # A suffix rather than an alias-table row, because ``ambiguous_member_tokens``
 # derives its collisions from the two vocabularies -- so the hatch has to work
@@ -112,12 +103,11 @@ COUNTRY_ALIASES: dict[str, str] = {
 COUNTRY_SUFFIX = "(country)"
 
 
-# D16's extent gate, and the number is deliberately NOT a new one.
+# Extent gate, derived from an existing limit rather than a new number.
 #
-# Risk 6 is what it bounds: a sparse composite's envelope is not its footprint.
-# "CA + NY" unions two small polygons into a continent-wide box and
-# _crop_to_mask_footprint crops to that envelope, not per-part -- the render
-# path OOM T50/T59 already met, reachable in one typed string.
+# A sparse composite's envelope isn't its footprint: "CA + NY" unions two small
+# polygons into a continent-wide box, and the crop uses that envelope, so one
+# typed string could reach the render OOM.
 #
 # The resolver runs BEFORE any cube exists, so it cannot count real grid cells;
 # it has an envelope in degrees. The conversion is anchored to this codebase's
@@ -126,25 +116,18 @@ COUNTRY_SUFFIX = "(country)"
 #
 #   17,024,450 cells / (59 deg x 155 deg) = 1,861.6 cells/deg^2
 #
-# Gate V15 measured every candidate against the two ceilings already decided
-# here, and MAX_FRAME_NATIVE_CELLS is the only one that fits:
+# Measured against the existing ceilings, only MAX_FRAME_NATIVE_CELLS fits:
 #
 #   NY + NJ              88,731    hawaii (bare)      389,240
 #   CA + NY           1,218,220    alaska (bare)    1,776,288
 #   CA + ME           1,594,902    alaska + florida 8,563,388   <- refused
 #   all 51 unioned   10,857,189                                 <- refused
 #
-# MAX_PLANE_NATIVE_CELLS (1,000,000) is excluded BY MEASUREMENT: it would
-# refuse bare "alaska", a token Phase 3a shipped as working. And at 4,000,000
-# no single 3a token trips the gate (Alaska, the worst, sits at 44% of it), so
-# this is composite-only with no hole -- while still biting on 62 of the 1,275
-# two-state pairs (4.9%), all of them genuinely continent-spanning.
+# MAX_PLANE_NATIVE_CELLS (1,000,000) would refuse bare "alaska". At 4,000,000
+# no single state trips it, but 62 of 1,275 continent-spanning state pairs do.
 #
-# Deriving rather than restating is the point of tension 4: two constants both
-# meaning "too big" can drift apart, and then a refusal names a limit that is
-# not the one that fired. If a cheaper reduction ever raises the frame ceiling,
-# this ceiling should move with it -- they answer the same question about the
-# same container.
+# Derived, not restated, so the two "too big" limits can't drift apart. If the
+# frame ceiling rises, this should rise with it.
 CELLS_PER_SQUARE_DEGREE = (2950 * 5771) / (59.0 * 155.0)
 
 
@@ -161,9 +144,9 @@ MAX_COMPOSITE_ENVELOPE_DEG2 = _envelope_ceiling_deg2()
 class CompositeResult:
     """Claimed or not, in the shape ``region_dispatch.DispatchResult`` uses.
 
-    There is no third "claimed and failed" state here, and that is the whole
-    of D14: a composition that fails *raises*, because the caller has to be
-    told **which token** failed and a ``None`` cannot carry that.
+    There is no third "claimed and failed" state: a composition that fails
+    *raises*, because the caller has to be told **which token** failed and a
+    ``None`` cannot carry that.
     """
 
     claimed: bool
@@ -174,7 +157,7 @@ NOT_CLAIMED = CompositeResult(claimed=False)
 
 
 def is_composite(raw_name: str) -> bool:
-    """Is this string syntactically a composition (D8)?
+    """Is this string syntactically a composition?
 
     Deliberately answered on the **raw** string and on the separator alone.
     Once this returns ``True`` the geocoder is off the table for good, even on
@@ -185,12 +168,10 @@ def is_composite(raw_name: str) -> bool:
 
 
 def split_tokens(raw_name: str, normalize: Callable[[str], str]) -> list[str]:
-    """D11a's order, and it is the whole trap: **split first, normalize each**.
+    """**Split first, then normalize each token** (the order matters).
 
     ``normalize`` is ``RegionResolver._normalize_location_name`` passed in, not
-    re-implemented -- T42's known bug was the sync and async paths normalizing
-    differently, and a dispatcher with its own casing/whitespace/``"the "``
-    handling reintroduces it one layer up.
+    re-implemented, so there's only one normalization to keep in sync.
     """
     return [normalize(token) for token in raw_name.split(SEPARATOR)]
 
@@ -198,16 +179,16 @@ def split_tokens(raw_name: str, normalize: Callable[[str], str]) -> list[str]:
 def _member_geometry(token: str, resolver: "RegionResolver") -> Any:
     """Resolve one token to a member boundary, or ``None`` if it is not one.
 
-    D15's order, now complete: **U.S. state by postal code or full name, then
-    country by ``ADMIN``**. A postal hit resolves *through* the canonical state
+    Order: **U.S. state by postal code or full name, then country by
+    ``ADMIN``**. A postal hit resolves *through* the canonical state
     key, so ``"NY + NJ"`` and ``"new york + new jersey"`` build from
     byte-identical member objects -- the same rule ``ALIASES`` follows.
 
     The state tier is first and that is what makes ``"GA + France"`` resolve
     ``GA`` as Georgia rather than Gabon -- but the ordering is a tiebreak of
-    last resort here, not the mechanism. The mechanism is D6: **countries never
-    match on an ISO code at all**, only on a name. Verified Finding 5 measured
-    26 of 51 postal codes colliding with real ISO alpha-2 codes, so a grammar
+    last resort here, not the mechanism. The mechanism: **countries never
+    match on an ISO code at all**, only on a name. 26 of 51 postal codes
+    collide with real ISO alpha-2 codes, so a grammar
     that admitted codes would be ambiguous for over half the states; banning
     them removes the collision at the root instead of resolving it by order.
     """
@@ -225,13 +206,13 @@ def _member_geometry(token: str, resolver: "RegionResolver") -> Any:
 
 
 def assert_no_country_collisions(global_regions: dict[str, Any]) -> None:
-    """D12a's guard, extended to ``COUNTRY_ALIASES`` (Phase 4).
+    """The alias-collision guard, extended to ``COUNTRY_ALIASES``.
 
     Deliberately checks only what is knowable **without opening the asset**.
     ``RegionResolver.__init__`` calls this, and reading
     ``admin0_countries.geojson`` here would spend the 165 ms cold parse on
     every process that constructs a resolver -- including every request for
-    ``"paris"`` -- which is the cost the second asset exists to avoid (V19).
+    ``"paris"`` -- which is the cost the second asset exists to avoid.
 
     The asset-dependent invariants are asserted where they belong instead: the
     builder refuses a duplicate feature id at build time, and tests pin that
@@ -252,7 +233,7 @@ def assert_no_country_collisions(global_regions: dict[str, Any]) -> None:
     for alias, target in COUNTRY_ALIASES.items():
         for table, what in (
             (global_regions, "global_regions preset"),
-            (ALIASES, "T60 alias"),
+            (ALIASES, "region alias"),
             (COALITIONS, "coalition"),
             (POSTAL_TO_STATE, "U.S. postal code"),
             (US_STATES, "U.S. state"),
@@ -267,16 +248,12 @@ def assert_no_country_collisions(global_regions: dict[str, Any]) -> None:
 def ambiguous_member_tokens() -> set[str]:
     """Tokens that name both a U.S. state and a country -- **derived**.
 
-    Risk 2 of the PRD says the fail-closed ambiguity list is hand-maintained
-    and that a future collision would need adding by hand. It does not have to
-    be: the collision is computable from the two member vocabularies, so a
-    country that starts colliding tomorrow fails closed the day the asset is
-    rebuilt rather than the day somebody notices.
+    Computed from the two member vocabularies rather than hand-maintained, so
+    a new collision fails closed as soon as the asset is rebuilt.
 
-    Today this is exactly ``{"georgia"}`` (Verified Finding 7, and the Phase 4
-    gate's V19 re-ran it over all 242). ``"antarctica"`` is deliberately *not*
-    here: it collides with a preset, not with a member vocabulary, and a preset
-    is not a composite member (D15).
+    Today this is exactly ``{"georgia"}``. ``"antarctica"`` is deliberately
+    *not* here: it collides with a preset, and presets aren't composite
+    members.
     """
     from tta_backend.utils.plotting import load_admin0_polygons
 
@@ -284,10 +261,10 @@ def ambiguous_member_tokens() -> set[str]:
 
 
 def _check_unambiguous(token: str) -> None:
-    """D7, at the one position V20 left it applying in full.
+    """Whether a token is an ambiguous state/country name.
 
-    Asked of the **token**, never of the key it would resolve through, so
-    ``"GA"`` -- D7's own escape hatch -- cannot trip the guard it escapes.
+    Asked of the **token**, never of the key it resolves through, so the
+    escape hatch ``"GA"`` can't trip the guard.
     """
     if token not in ambiguous_member_tokens():
         return
@@ -310,16 +287,12 @@ def _check_unambiguous(token: str) -> None:
 
 
 def _country_geometry(token: str) -> Any:
-    """The Phase 4 tier: a country, by name only (D6).
+    """The country tier: a country, by name only.
 
     Countries are **member-only** vocabulary -- no ``global_regions`` entry, no
-    ``_POLYGON_PRESET_IDS`` entry, no bounds table (V21). 3a gave the states
-    those and justified it on a state having an honest bounding box; that
-    justification is dead here, because Russia, Fiji, New Zealand, the USA and
-    Antarctica each have a 360-degree-wide envelope and a whole-globe rectangle
-    is not an honest anything. The consequence is not a worse fallback -- it is
-    that a bare ``"russia"`` never enters this vocabulary, so the question never
-    arises and nothing about it changes from today.
+    ``_POLYGON_PRESET_IDS`` entry, no bounds table. Unlike states, many have no
+    honest bounding box (Russia, Fiji, the USA span 360 degrees), so a bare
+    ``"russia"`` still goes to the geocoder as before.
 
     So the member dict is built here rather than through ``_finalize_preset``:
     there is no preset to finalize, and routing a country through it would
@@ -328,12 +301,9 @@ def _country_geometry(token: str) -> Any:
     """
     from tta_backend.utils.plotting import load_admin0_polygons
 
-    # D7's country-side escape hatch, as a *grammar* form rather than a table
-    # entry. Written as an alias it would have to be added by hand for each new
-    # state/country collision -- and the guard that sends people here derives
-    # its collisions, so the hatch it names has to exist for a collision nobody
-    # has written down yet. No ADMIN value ends in "(country)", so the suffix
-    # cannot shadow a real name.
+    # The "(country)" escape hatch is a grammar form, not a table entry, so it
+    # works for collisions nobody has written down yet. No ADMIN value ends in
+    # "(country)", so it can't shadow a real name.
     if token.endswith(f" {COUNTRY_SUFFIX}"):
         token = token[: -len(COUNTRY_SUFFIX) - 1].strip()
 
@@ -346,12 +316,10 @@ def _country_geometry(token: str) -> Any:
 
 
 def _composition_label(kinds: list[str]) -> str:
-    """What the composite is a composite *of* -- T42's disclosure, kept true.
+    """What the composite is a composite *of*, for the region disclosure.
 
-    3b could hard-code "composite of N U.S. states" because that was the whole
-    member vocabulary. With two tiers the label has to follow the members, or
-    ``"Spain + Portugal"`` cites itself as a composite of U.S. states: the
-    region right, the sentence describing it wrong.
+    Follows the actual members, so ``"Spain + Portugal"`` isn't described as
+    a composite of U.S. states.
     """
     distinct = set(kinds)
     if distinct == {"state"}:
@@ -364,7 +332,7 @@ def _composition_label(kinds: list[str]) -> str:
 
 
 def _malformed(raw_name: str) -> "MCPToolError":
-    """D15: an empty member is a *syntax* mistake, not a vocabulary one.
+    """An empty member is a *syntax* mistake, not a vocabulary one.
 
     ``"NY +"``, ``"+ NJ"`` and ``"NY + + NJ"`` all produce an empty token, and
     reporting that as ``"'' is not a U.S. state"`` would send someone hunting
@@ -382,17 +350,13 @@ def _malformed(raw_name: str) -> "MCPToolError":
 
 
 def _unresolved_token(token: str, raw_name: str) -> "MCPToolError":
-    """D8's refusal, and D14's channel for it.
+    """The refusal for a token that isn't a known member.
 
-    Naming the token is the entire point. Over the old ``dict | None`` contract
-    every call site collapsed the failure to
-    ``"Could not resolve location: 'NY + NJ + Wakanda'"`` -- which tells the
-    researcher (and the model, which could otherwise retry with a fix) nothing
-    about *which* of the three words was the problem.
+    Names the token, so the researcher (or the model, retrying) knows which
+    word in ``'NY + NJ + Wakanda'`` was the problem.
 
-    The message also names what the token was tried against, which D15 makes
-    possible by closing the vocabulary: presets and coalitions are **not**
-    members, so there is a finite, statable list.
+    Also names what it was tried against: the member vocabulary is closed
+    (presets and coalitions aren't members), so the list is finite.
     """
     from tta_backend.earthdata_mcp.results import CATEGORY_USER_INPUT, MCPToolError
 
@@ -410,7 +374,7 @@ def _unresolved_token(token: str, raw_name: str) -> "MCPToolError":
 
 
 def _too_large(raw_name: str, bounds: tuple[float, float, float, float]) -> "MCPToolError":
-    """D16's refusal. Names the envelope, the estimate, **and** the limit that
+    """The too-large refusal. Names the envelope, the estimate, **and** the limit that
     fired -- a message quoting a number nothing compared against is how a
     refusal ends up misleading the person reading it."""
     from tta_backend.earthdata_mcp.results import CATEGORY_TOO_LARGE, MCPToolError
@@ -431,10 +395,9 @@ def _too_large(raw_name: str, bounds: tuple[float, float, float, float]) -> "MCP
 
 
 def _member_too_large(token: str, name: str, bounds: tuple[float, float, float, float]) -> "MCPToolError":
-    """D16's refusal for a *single* member that cannot fit on its own (V21).
+    """The too-large refusal for a *single* member that cannot fit on its own.
 
-    Two mistakes deserve two answers, the same way ``_malformed`` and
-    ``_unresolved_token`` split one refusal in 3b. ``_too_large`` says the
+    Separate from ``_too_large``, which says the
     members are far apart and to ask for nearer ones -- true and useful for
     ``"Brazil + Japan"``, and **actively wrong** for ``"France + Germany"``,
     which is the case that made this branch necessary. France and Germany share
@@ -447,8 +410,7 @@ def _member_too_large(token: str, name: str, bounds: tuple[float, float, float, 
 
     Ten of the 242 countries land here -- the USA, New Zealand, Russia,
     Antarctica, France, Kiribati, Canada, Fiji, the Netherlands and China. No
-    U.S. state does: Alaska, the worst, is 954 deg^2 against a 2,148.7 ceiling
-    (V15), so nothing Phase 3a or 3b shipped changes behaviour here.
+    U.S. state does: Alaska, the worst, is 954 deg^2 against a 2,148.7 ceiling.
     """
     from tta_backend.earthdata_mcp.results import CATEGORY_TOO_LARGE, MCPToolError
     from tta_backend.preprocessing.frame_stack import MAX_FRAME_NATIVE_CELLS
@@ -491,20 +453,14 @@ def _check_extent(raw_name: str, bounds: tuple[float, float, float, float]) -> N
 
 
 def dispatch_composite_extent(raw_name: str, resolver: "RegionResolver") -> "ExtentDispatch":
-    """The retrieval plane's answer for a ``+`` string (tension 3, D13).
+    """The retrieval plane's answer for a ``+`` string.
 
-    Not optional, and for a stronger reason than the coalitions had. A
-    coalition at least has a *name* the MCP's geocoder might resolve (badly --
-    "OTC" is an aerodrome in Chad). A composite has **no key at all**: it is
-    constructed per request, and D8 forbids the geocoder from ever seeing the
-    string. So there is nothing behind this. Unclaimed here means the AOI step
-    either fails outright or resolves the raw string to something unrelated,
-    after which the mask clips a cube that never covered the region and
-    nothing says so (Risk 5).
+    Required: a composite has no name the MCP's geocoder could resolve, so
+    without this the AOI step fails or resolves something unrelated, and the
+    mask then clips a cube that never covered the region.
 
-    Returns the union's **envelope** as a bbox, by the same argument Phase 1.5
-    pinned and 3a re-proved over 51 states: retrieval must *contain* the mask,
-    not equal it. The extent gate has already run inside ``dispatch_composite``,
+    Returns the union's **envelope** as a bbox: retrieval must *contain* the
+    mask, not equal it. The extent gate has already run inside ``dispatch_composite``,
     so an envelope too large to process is refused here too rather than
     retrieved and then refused downstream.
     """
@@ -516,11 +472,8 @@ def dispatch_composite_extent(raw_name: str, resolver: "RegionResolver") -> "Ext
     if not composed.claimed:
         return EXTENT_NOT_CLAIMED
     if composed.region is None:
-        # Not reachable today -- ``dispatch_composite`` raises rather than
-        # returning claimed-with-None, which is the whole of D14. Guarded
-        # anyway because the alternative here is fail-OPEN: returning
-        # EXTENT_NOT_CLAIMED would send the raw "+" string to the MCP's own
-        # Nominatim, which is precisely what D8 forbids.
+        # Unreachable (``dispatch_composite`` raises instead), but guarded:
+        # falling through would send the raw "+" string to the MCP's geocoder.
         raise _malformed(raw_name)
     # Formatted by region_dispatch's own helper, so the two planes cannot
     # disagree about the wire format of a bbox.
@@ -555,9 +508,8 @@ def dispatch_composite(raw_name: str, resolver: "RegionResolver") -> CompositeRe
         "bounds": geometry.bounds,
         "name": " + ".join(names),
         "display_name": f"{' + '.join(names)} ({_composition_label(kinds)})",
-        # D10: a construction, not a named place. D10a: the same fact is
-        # written to ``region_origin`` as well, because ``region_type`` is the
-        # *rasterization* slot and ``apply_mask_region_type`` overwrites it.
+        # A construction, not a named place. Also written to ``region_origin``,
+        # because ``apply_mask_region_type`` can overwrite ``region_type``.
         "region_type": "composite_union",
         "region_origin": "composite_union",
     })

@@ -1,12 +1,10 @@
-"""Deployment-contract guard for the T52 Zarr cube store.
+"""Deployment-contract guard for the Zarr cube store.
 
 A cube costs minutes to build — the full open pipeline plus a read, compress
 and write of the whole dataset — and `tta-backend` is rebuilt constantly
 (CLAUDE.md). Without a named volume the store is wiped on every container
 recreate, so it would be empty every time anyone looked and the feature would
-surface as "the cache doesn't help" rather than as a broken deployment. That
-is the `overlay_store` failure mode exactly ("chart quality lowered on refresh
-or restart"), which is why this test exists before anyone reports it.
+surface as "the cache doesn't help" rather than as a broken deployment.
 
 The volume must also be backend-only and read-write: the frontend has no
 business reading cubes, and a read-only mount would fail every write silently

@@ -207,9 +207,9 @@ class BuildArtifactReferenceTimeseriesTests(unittest.TestCase):
         self.assertEqual(ref.metadata["source_handles"], ["cube_1"])
 
     def test_carries_stats_coverage_and_exceedance_dates_when_present(self):
-        # T33: validate_against_ground/exceedance_overlay already compute these
-        # facts (ts_payload["stats"]/["coverage"]/["exceedance_dates"]) but the
-        # artifact stub used to drop them -- the new Overview/Details needs them.
+        # validate_against_ground/exceedance_overlay compute these facts
+        # (ts_payload["stats"]/["coverage"]/["exceedance_dates"]), and the
+        # artifact must keep them for Overview/Details.
         from tta_backend.services.artifact_registry import build_artifact_reference
 
         payload = {
@@ -235,10 +235,9 @@ class BuildArtifactReferenceTimeseriesTests(unittest.TestCase):
         self.assertEqual(ref.metadata["exceedance_dates"], ["2024-01-02", "2024-01-05"])
 
     def test_carries_masking_provenance_when_present(self):
-        # T34 review fix: validate_against_ground/exceedance_overlay compute
-        # QA-masking provenance (ts_payload["masking"], same top-level spot
-        # plot_tools uses) but the artifact stub used to drop it -- the
-        # ground-validation Overview's "Data quality" field needs it.
+        # validate_against_ground/exceedance_overlay compute QA-masking
+        # provenance (ts_payload["masking"], same top-level spot plot_tools
+        # uses), and the ground-validation Overview's "Data quality" needs it.
         from tta_backend.services.artifact_registry import build_artifact_reference
 
         payload = {
@@ -261,7 +260,7 @@ class BuildArtifactReferenceTimeseriesTests(unittest.TestCase):
         self.assertEqual(ref.metadata["masking"]["qa_source"], "collections_yaml")
 
     def test_stats_coverage_and_exceedance_dates_are_optional(self):
-        # Additive/optional (T33) -- a payload with none of these still builds
+        # Additive/optional -- a payload with none of these still builds
         # a valid artifact, existing smaller-shape consumers unaffected.
         from tta_backend.services.artifact_registry import build_artifact_reference
 

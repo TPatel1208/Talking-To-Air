@@ -291,7 +291,7 @@ class TlsIsSuppliedByTheDeploymentTests(unittest.TestCase):
 
 
 class BackendReceivesTheSignalThatStartsItsShutdownTests(unittest.TestCase):
-    """T63's drain is only reachable if SIGTERM reaches uvicorn.
+    """The shutdown drain is only reachable if SIGTERM reaches uvicorn.
 
     Everything the shutdown path does -- telling each reader its turn was
     interrupted, handing the threads back, flushing what the turns had
@@ -301,11 +301,9 @@ class BackendReceivesTheSignalThatStartsItsShutdownTests(unittest.TestCase):
     forward the signal: it dies, the kernel takes the container down with it,
     and uvicorn is killed without ever shutting down.
 
-    Measured live 2026-09-20 on the deployed stack: a turn running, backend
-    stopped, process gone in 2.5s with no shutdown log of any kind, no
-    ``interrupted`` entry in the event log, and the reader left with a raw
-    network error. A larger ``stop_grace_period`` would not have helped --
-    nothing was waiting on it.
+    Observed live: with a turn running, the process was gone in 2.5s with no
+    shutdown log, no ``interrupted`` entry, and a raw network error for the
+    reader. A larger ``stop_grace_period`` doesn't help -- nothing waits on it.
     """
 
     def test_the_server_stops_waiting_for_connections_that_never_close(self):
@@ -380,7 +378,7 @@ class BackendReceivesTheSignalThatStartsItsShutdownTests(unittest.TestCase):
                 "the server runs under a shell that is not replaced, so `sh` "
                 "is PID 1 and uvicorn is its child. Docker's SIGTERM goes to "
                 "`sh`, which does not forward it, so uvicorn never runs its "
-                "lifespan shutdown and T63's drain never executes: every "
+                "lifespan shutdown and the turn drain never executes: every "
                 "deploy interrupts every in-flight turn without telling "
                 "anyone. Prefix the command with `exec`.",
             )

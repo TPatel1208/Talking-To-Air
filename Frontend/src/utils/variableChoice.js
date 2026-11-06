@@ -1,5 +1,5 @@
-// T49: the deterministic variable-choice picker payload the backend attaches
-// to a chat 'done' event when the T48 resolver's confidence was medium or low.
+// The deterministic variable-choice picker payload the backend attaches
+// to a chat 'done' event when the variable resolver's confidence was medium or low.
 // This module is the pure, testable core (extraction + threshold + grouping +
 // filtering); VariableChoicePicker.jsx is the thin rendering shell over it,
 // following the codebase pattern of keeping logic in a util (see followups.js /
@@ -9,7 +9,7 @@
 // opens a searchable, grouped modal instead of an unscrollable wall of chips.
 export const VARIABLE_CHOICE_MODAL_THRESHOLD = 6
 
-// Taxonomy category order for the modal's grouped list (PRD): the distinct
+// Taxonomy category order for the modal's grouped list: the distinct
 // products a researcher most likely wants first, equivalent variants next, and
 // the deprioritized-but-not-hidden implementation/plumbing fields last.
 const CATEGORY_ORDER = ['distinct', 'equivalent', 'implementation']

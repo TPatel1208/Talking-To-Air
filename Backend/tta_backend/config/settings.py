@@ -151,14 +151,14 @@ class Settings:
     await_retrieval_timeout_seconds: int = field(
         default_factory=lambda: max(1, _int_env("AWAIT_RETRIEVAL_TIMEOUT_SECONDS", 900))
     )
-    # T38: the one seam every MCP call passes through (earthdata_mcp/results.py
+    # The one seam every MCP call passes through (earthdata_mcp/results.py
     # call_tool) times out an individual tool.ainvoke — generous by default
     # because retrieve_subset submissions and large export_result calls are
     # legitimately slow, but bounded so a wedged call can't pin a turn forever.
     mcp_call_timeout_seconds: int = field(
         default_factory=lambda: max(1, _int_env("MCP_CALL_TIMEOUT_SECONDS", 120))
     )
-    # T38: the whole-turn deadline stream_chat_events/_fast_path_events enforce
+    # The whole-turn deadline stream_chat_events/_fast_path_events enforce
     # around their event loop. Must stay comfortably above
     # await_retrieval_timeout_seconds (validate_startup asserts this) so a
     # legitimate long retrieval poll is never misread as a hung turn.
@@ -201,7 +201,7 @@ class Settings:
     agent_recursion_limit: int = field(
         default_factory=lambda: max(1, _int_env("AGENT_RECURSION_LIMIT", 40))
     )
-    # T64: per-turn limits on the supervisor's dispatch fan-out. Concurrency
+    # Per-turn limits on the supervisor's dispatch fan-out. Concurrency
     # caps how many sub-agents run at once; satellite gets its own lower cap
     # because it is the memory-heavy path. The request budget counts sub-agent
     # runs across every dispatch call in a turn, and rounds count the calls
@@ -302,19 +302,10 @@ class Settings:
     # such a file is under budget, opens once, and is left exactly as written.
     #
     # This per-request peak *is* the memory profile: nothing holds datasets in
-    # RAM between requests, and no setting bounds such a cache. open_handle
-    # opens lazily (chunks={}) and drops the dataset with the request, so warm
-    # RSS sits near 204 MiB. What outlives a request is on disk (the cube
-    # store, the bundle-extract dir) or capped by entry count (the
-    # discovery-metadata cache) — never a byte budget held in-process.
-    #
-    # Stated because the knob that implied otherwise did cost one estimate:
-    # memory_cache_max_bytes, a 500 MB budget on an LRU of eagerly-loaded
-    # datasets, lost its only reader when the legacy Harmony loader was
-    # deleted, and then read as a live 500 MB reserve when this container was
-    # sized. Deleted rather than left to imply a guarantee it never made, the
-    # same call made for satellite_max_results_cap, which the same commit
-    # orphaned.
+    # RAM between requests, so warm RSS sits near 204 MiB. What outlives a
+    # request is on disk (the cube store, the bundle-extract dir) or capped by
+    # entry count (the discovery-metadata cache) — there is no in-process
+    # byte budget to size the container for.
     open_max_chunk_bytes: int = field(
         default_factory=lambda: max(1, _int_env("OPEN_MAX_CHUNK_BYTES", 32 * 1024 ** 2))
     )
@@ -353,15 +344,12 @@ class Settings:
     heavy_admission_limit: int = field(
         default_factory=lambda: max(0, _int_env("HEAVY_ADMISSION_LIMIT", 0))
     )
-    # T23: the server-rendered map overlay PNGs (tools/satellite_tools/
+    # The server-rendered map overlay PNGs (tools/satellite_tools/
     # plot_tools.py). Only reachable through the authenticated
     # /chart/{id}/overlay.png route, which checks chart ownership first.
     #
-    # Also a setting rather than an ``APP_ROOT``-relative constant, and for the
-    # same reason: the constant was computed at import and created
-    # `Backend/overlay_store/` in the checkout, so the suite wrote into the
-    # developer's own store. Gitignored, so that state survived branch switches
-    # while never appearing in `git status`.
+    # A setting rather than an ``APP_ROOT``-relative constant, so importing
+    # doesn't create a store inside the checkout.
     overlay_store_dir: str = field(
         default_factory=lambda: os.getenv("OVERLAY_STORE_DIR", "/app/overlay_store/overlays")
     )
@@ -374,11 +362,10 @@ class Settings:
     overlay_store_max_bytes: int = field(
         default_factory=lambda: max(1, _int_env("OVERLAY_STORE_MAX_BYTES", 1024 ** 3))
     )
-    # T52: the L4 Zarr cube cache (services/cube_cache.py). A backend-only
-    # Docker named volume, NOT a tempdir — cubes cost minutes to build and
-    # `tta-backend` is rebuilt constantly, so a tempdir store would be empty
-    # every time you looked and would surface as "the cache doesn't help"
-    # (the overlay_store failure mode exactly).
+    # The Zarr cube cache (services/cube_cache.py). A backend-only Docker
+    # named volume, NOT a tempdir — cubes cost minutes to build and the
+    # container is rebuilt constantly, so a tempdir store would always be
+    # empty.
     cube_store_dir: str = field(default_factory=lambda: os.getenv("CUBE_STORE_DIR", "/app/cube_store"))
     # A fixed byte cap, deliberately not a percentage of free space — that
     # silently expands to fill any disk, which is how docker_data.vhdx reached
@@ -411,7 +398,7 @@ class Settings:
     cube_write_max_store_fraction: float = field(
         default_factory=lambda: min(1.0, max(0.0, _float_env("CUBE_WRITE_MAX_STORE_FRACTION", 0.5)))
     )
-    # T59 Phase 4: the frame blob store (services/frame_store.py). Its own
+    # The frame blob store (services/frame_store.py). Its own
     # backend-only named volume, and deliberately NOT inside overlay_store:
     # each store's startup sweep and size accounting assume it owns its
     # directory, and each is sized against its own cap.
@@ -421,11 +408,11 @@ class Settings:
     # A quarter of cube_store's cap, and fixed bytes for the same reason: a
     # percentage of free space silently expands to fill any disk, which is how
     # docker_data.vhdx reached 296 GB. The proportion is the right one — a
-    # frame stack is a rendering convenience D8 already refuses to regenerate,
-    # while a cube is minutes of recompute.
+    # frame stack is a rendering convenience, while a cube is minutes of
+    # recompute.
     #
-    # Entry size is bounded by construction (D7 caps frames at 60, D5 caps
-    # cells at 20,000, so an entry is at most 60 x 20,000 x 4 = 4.58 MiB raw),
+    # Entry size is bounded by construction (frames capped at 60, cells at
+    # 20,000, so an entry is at most 60 x 20,000 x 4 = 4.58 MiB raw),
     # so this store needs an LRU sweeper and *no per-entry cap*: the thrash
     # cube_write_max_store_fraction guards against — one entry big enough to
     # evict the whole store to fit itself — cannot occur at 4.58 MiB against
@@ -434,17 +421,14 @@ class Settings:
     frame_store_max_bytes: int = field(
         default_factory=lambda: max(1, _int_env("FRAME_STORE_MAX_BYTES", 1024 ** 3))
     )
-    # T54: serve a cube straight off the handle->cube index, skipping the
-    # export_result round-trip entirely. Defaults ON — that skip is the whole
-    # point, and it is what makes an upstream eviction or a crash-restart cost
-    # a local Zarr read instead of minutes of rematerializing. Set to 0 to
-    # restore T52's unconditional verify-first ordering without a redeploy, so
-    # the optimization can be switched off in production if it is ever
-    # implicated in a bad answer.
+    # Serve a cube straight off the handle->cube index, skipping the
+    # export_result round-trip, so an upstream eviction or MCP restart costs a
+    # local Zarr read instead of minutes of rematerializing. Set to 0 to always
+    # verify first (a production kill switch, no redeploy needed).
     cube_skip_export_verify: bool = field(
         default_factory=lambda: os.getenv("CUBE_SKIP_EXPORT_VERIFY", "1").strip() != "0"
     )
-    # T53: the discovery-metadata cache at the bind_workspace seam
+    # The discovery-metadata cache at the bind_workspace seam
     # (earthdata_mcp/tool_cache.py). Collection metadata changes on the order
     # of never and AOI resolution from a location string is deterministic, so
     # the TTL is a safety net rather than a freshness mechanism — freshness is
@@ -466,19 +450,18 @@ class Settings:
 
     log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO").upper())
     log_format: str = field(default_factory=lambda: os.getenv("LOG_FORMAT", "text").strip().lower())
-    # T45: gates the /debug/heap-snapshot tracemalloc endpoint. Off by
+    # Gates the /debug/heap-snapshot tracemalloc endpoint. Off by
     # default -- tracemalloc adds per-allocation overhead, so this is an
     # opt-in diagnostic for chasing a specific memory incident, not a
     # standing production setting.
     debug_heap_profiling_enabled: bool = field(
         default_factory=lambda: os.getenv("DEBUG_HEAP_PROFILING_ENABLED", "").strip() == "1"
     )
-    # T63: the kill-switch between the streaming POST and detached turns.
+    # The kill-switch between the streaming POST and detached turns.
     # Wholesale, never a blend -- the two disagree about what POST /chat
     # returns, so a per-request mix would leave the client guessing.
     #
-    # On since Phase 5 taught the frontend the 202-then-GET protocol; this
-    # is now what a rollback turns *off*. A rollback needs nothing but this
+    # On by default; turning it off is a rollback. A rollback needs nothing but this
     # variable and a restart: the client branches on the response (200 +
     # text/event-stream against 202 + JSON) rather than on a flag of its
     # own, so one bundle serves both and no image is rebuilt.
@@ -486,7 +469,7 @@ class Settings:
         default_factory=lambda: os.getenv("CHAT_DETACHED_TURNS_ENABLED", "1").strip() != "0"
     )
     long_request_seconds: float = field(default_factory=lambda: float(os.getenv("LONG_REQUEST_SECONDS", "30")))
-    # T61: Supabase is the identity provider; our own Postgres stays. Both are
+    # Supabase is the identity provider; our own Postgres stays. Both are
     # required at boot (validate_startup) now that the auth middleware verifies
     # against them -- see the note there for why a missing URL has to be fatal
     # rather than merely absent. Typed Optional anyway, because the dataclass
@@ -510,16 +493,15 @@ class Settings:
         default_factory=lambda: os.getenv("SUPABASE_PUBLISHABLE_KEY", "").strip() or None
     )
 
-    # T30: per-user connector secret storage (MultiFernet). Comma-separated so
+    # Per-user connector secret storage (MultiFernet). Comma-separated so
     # a rotation can carry an old + new key simultaneously -- unset entirely
     # means the connectors feature degrades to a structured 503 rather than
     # blocking boot (ground/EPA-only deployments never need this).
     connector_encryption_key: str | None = field(default_factory=lambda: os.getenv("CONNECTOR_ENCRYPTION_KEY"))
 
-    # T23 MapLibre basemap/terrain sources. Configuration (not code) so a
-    # keyed/self-hosted provider can be swapped in without a redeploy as
-    # traffic grows; see the T23 PRD's "Further Notes" on these providers'
-    # lack of an SLA.
+    # MapLibre basemap/terrain sources. Configuration (not code) so a
+    # keyed/self-hosted provider can be swapped in without a redeploy (these
+    # free providers have no SLA).
     #
     # CARTO began watermarking keyless raster tiles "API KEY REQUIRED" in late
     # August 2026. The key is free (5M tile requests/month) and is the only
@@ -630,7 +612,7 @@ class Settings:
             missing.append("GROQ_API_KEY")
         if "portkey" in configured_providers and not self.portkey_api_key:
             missing.append("PORTKEY_API_KEY")
-        # T61: without it the backend boots fine, then rejects every token.
+        # Without it the backend boots fine, then rejects every token.
         if not self.supabase_url:
             missing.append("SUPABASE_URL")
         # The frontend can't sign anyone in without it.
@@ -658,7 +640,7 @@ class Settings:
                 "being deployed, then add it to _VETTED_MODELS in config/settings.py."
             )
 
-        # T38: a turn deadline that isn't comfortably above the retrieval
+        # A turn deadline that isn't comfortably above the retrieval
         # poll-loop's own deadline would make every retrieval that runs the
         # full await_retrieval_timeout_seconds a guaranteed turn timeout.
         if self.chat_turn_timeout_seconds <= self.await_retrieval_timeout_seconds:
@@ -669,14 +651,14 @@ class Settings:
 
         # A malformed earthdata-retrieval MCP URL is a config typo to fix,
         # not an outage — it must fail loudly at boot rather than being
-        # retried forever by the connection manager (T17).
+        # retried forever by the connection manager.
         parsed_mcp_url = urlsplit(self.earthdata_mcp_url)
         if parsed_mcp_url.scheme not in ("http", "https") or not parsed_mcp_url.netloc:
             raise ConfigurationError(
                 f"Invalid EARTHDATA_MCP_URL {self.earthdata_mcp_url!r}: must be an http(s) URL"
             )
 
-        # T30: an unset CONNECTOR_ENCRYPTION_KEY degrades the connectors
+        # An unset CONNECTOR_ENCRYPTION_KEY degrades the connectors
         # feature to a 503 (ground/EPA-only deployments don't need it) -- but
         # a *set-and-malformed* key is a half-configured secret store, worse
         # than none, so it fails boot loudly rather than surfacing as a

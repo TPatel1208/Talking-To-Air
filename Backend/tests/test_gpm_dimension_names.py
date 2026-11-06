@@ -5,15 +5,13 @@ GPM-style HDF5 products (IMERG) carry no netCDF dimension scales, so both
 NetCDF engines open them with engine-invented placeholder dims
 (``phony_dim_N``) — the science variable ends up with NO lat/lon
 coordinates, and every mask/plot/stat call refused with "Could not find
-lat/lon coordinates. Dims present: ['time','dim0'...]" while the same
-handle retrieved and opened fine (QA 2026-07-17 major finding: a GPM plot
-died at the stats step with a generic internal error, and the follow-up
-point query answered a false "no data found").
+lat/lon coordinates. Dims present: ['time','dim0'...]" even though the same
+handle retrieved and opened fine.
 
 The files DO declare their real dims: every variable carries GPM's
 per-variable ``DimensionNames`` attribute ("time,lon,lat"). Honoring that
-declaration is coordinate discovery, the same doctrine as T24's
-CF-metadata-primary lat/lon identification. These tests write a real
+declaration is coordinate discovery, like the CF-metadata-primary lat/lon
+identification. These tests write a real
 dimension-scale-less HDF5 with h5py (no xarray writer can produce one) and
 drive it through the public open/stat seams.
 """

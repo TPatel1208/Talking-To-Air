@@ -2,7 +2,7 @@
 //
 // A turn "settles" the moment `loading` goes true -> false. At that instant
 // the newest chart of the final assistant message takes focus, or failing
-// that its first reachable artifact (T33's card rules).
+// that its first reachable artifact (see artifactReachability).
 //
 // `null` means "leave focus where it is", and it is load-bearing in three
 // cases: mid-turn, a turn that ends on something other than an assistant

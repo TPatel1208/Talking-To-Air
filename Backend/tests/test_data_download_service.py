@@ -1,7 +1,7 @@
 """
 tests/test_data_download_service.py
 =====================================
-T10: the data-download endpoints' backend seam. Calls the MCP's
+The data-download endpoints' backend seam. Calls the MCP's
 ``convert_format`` tool to materialize a handle in a downloadable format
 (e.g. NetCDF), then streams the converted file's bytes directly — no
 parallel download system, just the same file:// export contract
@@ -45,7 +45,7 @@ class IterConvertedChunksTests(unittest.IsolatedAsyncioTestCase):
             fixture_path = fixture.name
         self.addCleanup(os.unlink, fixture_path)
 
-        # Real contract (T17 live-verified): convert_format takes
+        # Real contract (live-verified): convert_format takes
         # source_handle/output_format (not handle/target_format) and mints a
         # new cube_ handle — it never returns storage_uri itself. Resolving
         # bytes requires a follow-up export_result on that new handle, same

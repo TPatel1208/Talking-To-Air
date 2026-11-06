@@ -38,12 +38,12 @@ class CollectionConfig(BaseModel):
     version:       str = ""
     description:   str = ""
     cadence:       Literal["hourly", "daily", "monthly"] = "daily"
-    # ── Provenance display (T32) ─────────────────────────────────────────────
+    # ── Provenance display ──────────────────────────────────────────────────
     # Free-text, not parsed by any masking/aggregation logic -- surfaced as
     # "<provider> — <instrument>" in the Metadata tab's Source dataset block.
     provider:      str = ""
     instrument:    str = ""
-    # ── Scientific maturity (T57) ────────────────────────────────────────────
+    # ── Scientific maturity ─────────────────────────────────────────────────
     # Where the product sits in its provider's validation lifecycle, and the
     # caveat that comes with that. This is scientific provenance, not
     # descriptive metadata: a Beta product's own user guide can say publication
@@ -61,7 +61,7 @@ class CollectionConfig(BaseModel):
     # ── Variable selection ────────────────────────────────────────────────
     primary_var:                 str
     quality_flag_var:            Optional[str] = None
-    # T25 Phase 3: the Tier-1 pinned QA rule for quality_flag_var -- which
+    # The Tier-1 pinned QA rule for quality_flag_var -- which
     # flag values count as good (or, equivalently, bad). At most one is
     # normally set; qa_good_values takes precedence if both are (datasets/
     # qa_flags.py::resolve_qa_info).
@@ -175,7 +175,7 @@ COLLECTIONS_WITHOUT_QUALITY_FLAG: dict[str, str] = {
         "fit_RMS, avg_residual and retrieval_exit_status BEFORE gridding. It recommends "
         "further screening on eff_cloud_fraction and the zenith angles, which are "
         "continuous thresholds rather than an enumerated flag, so they are a declarative "
-        "threshold mask (T56 D6) and not something the good/bad-values doctrine can "
+        "threshold mask and not something the good/bad-values doctrine can "
         "express"
     ),
     "MODIS_AOD_AQUA": (
@@ -222,7 +222,7 @@ COLLECTIONS_WITHOUT_QUALITY_FLAG: dict[str, str] = {
 def known_quality_flag_vars() -> frozenset[str]:
     """Leaf names of every ``quality_flag_var`` pinned in the registry.
 
-    Used to exclude QA-flag variables from science-variable choice (T25): a
+    Used to exclude QA-flag variables from science-variable choice: a
     flag riding along in a retrieval request or an opened multi-variable file
     is never a science-variable candidate. Registry ``variables`` lists are
     HDF group-qualified (e.g. ``product/main_data_quality_flag``) while

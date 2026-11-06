@@ -55,7 +55,7 @@ class ModelFactoryTests(unittest.TestCase):
         self.assertEqual(fake.calls, [_Schema])
 
     def test_structured_output_hook_carries_the_sub_agent_envelope_schema(self):
-        """T15: the retry demotion's single re-prompt routes through this
+        """The retry demotion's single re-prompt routes through this
         same seam with the real SubAgentEnvelope schema (asserted here
         hermetically — no live provider call)."""
         from tta_backend.config.model_factory import structured_output
@@ -76,11 +76,10 @@ class ModelFactoryTests(unittest.TestCase):
         self.assertEqual(fake.calls, [SubAgentEnvelope])
 
     def test_suggested_followups_is_optional_in_the_schema_fed_to_structured_output(self):
-        """T22: the follow-ups field is additive to T15's single schema
-        source — proving it's optional here (not required) is what makes it
+        """The follow-ups field is additive to the single envelope schema — proving it's optional here (not required) is what makes it
         safe to feed to both providers' with_structured_output without
         reopening either provider's call site. Hermetic — no live provider
-        call, per the Testing Decisions' factory-seam extension."""
+        call."""
         from tta_backend.config.model_factory import structured_output
         from tta_backend.models import SubAgentEnvelope
 
@@ -169,7 +168,7 @@ class RetryCeilingTests(unittest.TestCase):
 
 
 class GeminiNativeToolSchemaTests(unittest.TestCase):
-    """T64 Phase 0 F1/F3: langchain_google_genai's converter reduces a list of
+    """langchain_google_genai's converter reduces a list of
     union items to STRING/OBJECT, and its bind_tools cannot carry a raw JSON
     schema. A tool that names its own JSON schema must reach the request
     untouched, bound the way create_agent binds (bind_tools(tools, tool_choice=...))."""
@@ -230,7 +229,7 @@ class GeminiNativeToolSchemaTests(unittest.TestCase):
         self.assertEqual(list(declarations["lookup"].parameters.properties), ["code"])
 
     def test_tool_choice_none_reaches_gemini_as_function_calling_mode_none(self):
-        """The supervisor closes dispatch with tool_choice "none" (T64); the
+        """The supervisor closes dispatch with tool_choice "none"; the
         native-schema path must not drop it on the way to the request."""
         from langchain_core.messages import HumanMessage
         from langchain_core.tools import StructuredTool
@@ -285,7 +284,7 @@ class GeminiNativeToolSchemaTests(unittest.TestCase):
 
 
 class PortkeyProviderTests(unittest.TestCase):
-    """Dispatch must use the T64 native schema, where ``agent`` is required."""
+    """Dispatch must use the native schema, where ``agent`` is required."""
 
     def _settings(self, **overrides):
         from tta_backend.config.settings import Settings

@@ -1,4 +1,4 @@
-// T19: pure state machine driving the chat's workflow strip. Takes the same
+// Pure state machine driving the chat's workflow strip. Takes the same
 // SSE vocabulary useChat.js already switches on (status/job_progress/text/
 // error/done) — no new event names — and folds each event into the small
 // bit of state the strip renders: current stage, its human label, an
@@ -14,7 +14,7 @@ export const INITIAL_WORKFLOW_STATE = {
   // The lane label that was running when a laned turn failed.
   failedLane: null,
   active: false,
-  // T64 Phase 4: one row per sub-agent the supervisor runs in parallel,
+  // One row per sub-agent the supervisor runs in parallel,
   // in order of first appearance. Events carrying a `lane` land here.
   lanes: [],
 }

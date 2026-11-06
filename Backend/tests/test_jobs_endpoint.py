@@ -42,7 +42,7 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
         # proves the endpoint never leaks one researcher's jobs to another.
         # Shape mirrors the real list_workspace contract: {handles: [{handle,
         # type, created_at, summary}]}, not the fabricated {jobs, job_handle,
-        # dataset} keys the fake used to return (T26).
+        # dataset} keys the fake used to return.
         self.workspace_jobs = {
             "user-user-1": [
                 {
@@ -83,7 +83,7 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         settings = Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None)
         self.api.app.state.earthdata_mcp_tools = await load_earthdata_tools(settings, current_user_id)
-        # Jobs endpoints read tools through earthdata_mcp_manager (T17).
+        # Jobs endpoints read tools through earthdata_mcp_manager.
         self.api.app.state.earthdata_mcp_manager = SimpleNamespace(
             state="ready", tools=self.api.app.state.earthdata_mcp_tools,
         )
@@ -121,9 +121,9 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(jobs2[0]["message"], "harmony: provider GES_DISC rejected request: invalid bbox")
 
     async def test_get_jobs_surfaces_prd021s_enriched_status_fields(self):
-        """The /jobs endpoint is a thin HTTP wrapper over list_jobs — PRD
-        021's curated request_spec slice must reach the frontend verbatim
-        (T27's card reads short_name/variables/aoi_bbox/etc. straight off
+        """The /jobs endpoint is a thin HTTP wrapper over list_jobs — the
+        MCP's curated request_spec slice must reach the frontend verbatim
+        (the job card reads short_name/variables/aoi_bbox/etc. straight off
         the job)."""
         self.statuses["job_1"] = {
             **self.statuses["job_1"],
@@ -200,7 +200,7 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cancel_calls, [("job_1", "user-user-1")])
 
     async def test_cancel_nonexistent_job_answers_200_with_an_honest_not_found_body(self):
-        """T47 finding #3: cancelling a handle the workspace never had must
+        """Cancelling a handle the workspace never had must
         not read as success. The MCP's own "a missing job is a valid answer"
         philosophy says surface it as data, not an HTTP error — so the
         endpoint answers 200 with an explicit ``status: "not_found"`` the

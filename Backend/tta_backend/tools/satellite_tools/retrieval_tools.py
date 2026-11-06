@@ -159,7 +159,7 @@ def make_point_timeseries(mcp_tools: dict[str, BaseTool]) -> BaseTool:
             variable       : single variable short name to sample.
 
         Returns:
-            JSON string — compact chart summary (T13) with the artifact id,
+            JSON string — compact chart summary with the artifact id,
             or the terminal job status verbatim if the retrieval failed.
         """
         try:

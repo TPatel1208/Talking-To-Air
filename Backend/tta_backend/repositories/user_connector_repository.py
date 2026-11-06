@@ -15,12 +15,9 @@ async def ensure_user_connector_table() -> None:
     async with pg_connection() as conn:
         await conn.execute(
             """
-            -- T61: user_id is the Supabase `sub` UUID off a verified JWT, not
-            -- a local row -- the `users` table is gone, so the FK it referenced
-            -- goes too. It guarded against nothing: the value never came from
-            -- user input, only from a signature we checked ourselves. Cost of
-            -- losing it, accepted deliberately: no cascade, so a deleted user's
-            -- encrypted token outlives them here until a reaper exists.
+            -- user_id is the Supabase `sub` UUID from a verified JWT, so there
+            -- is no local users table to reference. Accepted cost: no cascade,
+            -- so a deleted user's encrypted token stays until a reaper exists.
             CREATE TABLE IF NOT EXISTS user_connectors (
                 id TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL,
@@ -35,14 +32,11 @@ async def ensure_user_connector_table() -> None:
             )
             """
         )
-        # T61: CREATE TABLE IF NOT EXISTS is a no-op on a database that already
-        # has this table, so dropping the FK from the DDL above only ever
-        # reaches a *fresh* one. Every existing deployment keeps
-        # user_connectors_user_id_fkey pointing at a `users` table that is about
-        # to be dropped -- which makes `DROP TABLE users` fail outright, and
-        # makes the first upsert carrying a Supabase `sub` raise
-        # ForeignKeyViolation because no local row can vouch for it. There is no
-        # migration framework here, so this ensure_* function is the migration.
+        # CREATE TABLE IF NOT EXISTS won't touch an existing table, so older
+        # databases still have the user_id FK to the removed `users` table,
+        # which breaks `DROP TABLE users` and every upsert with a Supabase
+        # `sub`. There's no migration framework, so this ensure_* function is
+        # the migration.
         # Looked up rather than dropped by name: the name is Postgres's default
         # rather than one we chose, and IF EXISTS on a guessed name would fail
         # silently and leave the constraint in place.
@@ -118,7 +112,7 @@ async def delete_connector(user_id: str, connector_type: str) -> bool:
 
 
 async def get_connector_secret_row(user_id: str, connector_type: str) -> dict[str, Any] | None:
-    """T31: the one read that includes ``encrypted_secret`` -- used only by
+    """The one read that includes ``encrypted_secret`` -- used only by
     services/connector_credential_service.py to resolve a per-call injection
     candidate (earthdata_mcp/workspace.py). Never used to build an API
     response; callers decrypt just-in-time and never persist the plaintext."""
@@ -133,7 +127,7 @@ async def get_connector_secret_row(user_id: str, connector_type: str) -> dict[st
 
 
 async def touch_last_used_at(user_id: str, connector_type: str) -> None:
-    """T31: bumped fire-and-forget by services/connector_credential_service.py
+    """Bumped fire-and-forget by services/connector_credential_service.py
     after a successful call that actually injected this connector's token."""
     async with pg_connection() as conn:
         await conn.execute(
@@ -143,7 +137,7 @@ async def touch_last_used_at(user_id: str, connector_type: str) -> None:
 
 
 async def set_connector_status(user_id: str, connector_type: str, status: str) -> None:
-    """T31: flips status (e.g. to ``error`` on a classified TOKEN_INVALID
+    """Flips status (e.g. to ``error`` on a classified TOKEN_INVALID
     against an injected call) so the Connectors tab agrees with a failure
     the researcher just saw in chat."""
     async with pg_connection() as conn:

@@ -1,9 +1,9 @@
 """
 tests/test_results_classifier.py
 ==================================
-PRD T18: parse_tool_result is the single classification point turning every
-raw MCP tool outcome into either a parsed dict or a typed MCPToolError. This
-is the table-driven test the PRD calls for — it pins the raw shapes the
+parse_tool_result is the single classification point turning every raw MCP
+tool outcome into either a parsed dict or a typed MCPToolError. This
+table-driven test pins the raw shapes the
 adapter is known to produce (clean JSON, the MCP's structured not_found
 passthrough, FastMCP validation-error prose, a tool-raised ValueError's
 prose, unrecognized garbage) so a future adapter upgrade that changes error
@@ -109,7 +109,7 @@ class ParseToolResultClassifierTests(unittest.TestCase):
         self.assertIsNotNone(ctx.exception.suggestion)
 
     def test_inverted_bounding_box_prose_classifies_as_user_input(self):
-        """T46 live repro (2026-07-17): define_area_of_interest rejects an
+        """define_area_of_interest rejects an
         inverted bbox with 'south latitude exceeds north latitude'. That is a
         researcher-fixable input, so it must classify as user_input (not the
         contract fallback) — the whole silent-substitution guard depends on it
@@ -236,7 +236,7 @@ class ParseToolResultClassifierTests(unittest.TestCase):
         self.assertEqual(ctx.exception.category, "contract")
 
     def test_self_produced_error_envelope_reraises_as_mcp_tool_error(self):
-        """bind_workspace (T18) serializes a classified MCPToolError into this
+        """bind_workspace serializes a classified MCPToolError into this
         exact JSON envelope for model consumption; a downstream backend
         composite calling parse_tool_result on that same string must recover
         the typed exception, not treat it as a normal result."""
@@ -418,7 +418,7 @@ class CallToolConnectionFailureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, '{"results": []}')
 
     async def test_call_tool_times_out_on_a_never_resolving_tool_and_classifies_as_provider_unavailable(self):
-        # T38: call_tool is the one seam every MCP call passes through — a
+        # call_tool is the one seam every MCP call passes through — a
         # wedged tool.ainvoke (stuck MCP call) must not pin the caller
         # forever. A tiny explicit timeout stands in for
         # settings.mcp_call_timeout_seconds without needing real time to pass.

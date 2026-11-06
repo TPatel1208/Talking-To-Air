@@ -2,7 +2,7 @@ import unittest
 
 
 class SupervisorPromptT25Phase4Tests(unittest.TestCase):
-    """T25 Phase 4: the supervisor prompt states the same asymmetry as the
+    """The supervisor prompt states the same asymmetry as the
     earthdata agent's — satellite is universal over gridded Earthdata
     collections, ground/cross-source confirmation is air-quality-only — so
     routing never promises a ground check for a non-AQ satellite query."""
@@ -45,9 +45,9 @@ class SupervisorPromptT25Phase4Tests(unittest.TestCase):
 class SupervisorPlaceNameTests(unittest.TestCase):
     """The supervisor expanded "the OTC region" into "the Ozone Transport
     Commission (OTC) region (northeastern US)" in its delegation, and the
-    subagent sent a spelling the region vocabulary does not hold. Since T64
-    the rule lives on the location field the model fills: the Phase 0 gate
-    saw it keep every location verbatim with no prompt rule at all."""
+    subagent sent a spelling the region vocabulary does not hold. The rule
+    lives on the location field the model fills, and models keep every
+    location verbatim with no prompt rule at all."""
 
     def test_every_request_kinds_location_field_says_to_write_it_as_the_user_did(self):
         from tta_backend.models import dispatch_json_schema
@@ -62,7 +62,7 @@ class SupervisorPlaceNameTests(unittest.TestCase):
 
 
 class SupervisorPromptDispatchTests(unittest.TestCase):
-    """T64: the supervisor's only sub-agent tool is dispatch. A prompt still
+    """The supervisor's only sub-agent tool is dispatch. A prompt still
     naming the retired ask_* tools, or the once-per-agent STOP rule the
     executor replaced, contradicts the tool the model actually has."""
 
@@ -81,7 +81,7 @@ class SupervisorPromptDispatchTests(unittest.TestCase):
         self.assertNotIn("already retrieved", prompt)
 
     def test_prompt_leaves_the_data_sources_header_to_the_server(self):
-        """D14: the header is computed from what ran; a model told to write
+        """The header is computed from what ran; a model told to write
         one can claim a dataset or check that never happened."""
         from tta_backend.config.supervisor_prompt import SUPERVISOR_PROMPT
 
@@ -91,7 +91,7 @@ class SupervisorPromptDispatchTests(unittest.TestCase):
         self.assertIn("do not write a \"data sources\" line", prompt)
 
     def test_a_plot_of_an_air_quality_pollutant_is_a_satellite_request_alone(self):
-        """Phase 0 F5: asked to plot ozone over the OTC, a lite model added an
+        """Asked to plot ozone over the OTC, a lite model added an
         unrequested ground request."""
         from tta_backend.config.supervisor_prompt import SUPERVISOR_PROMPT
 

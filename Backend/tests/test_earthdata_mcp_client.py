@@ -55,7 +55,7 @@ class EarthdataMCPClientTests(unittest.IsolatedAsyncioTestCase):
             await load_raw_mcp_tools(self._settings(url=server.url))
 
     async def test_load_raw_mcp_tools_fails_loud_when_list_workspace_missing(self):
-        # T05's jobs panel composes list_workspace + get_retrieval_status;
+        # The jobs panel composes list_workspace + get_retrieval_status;
         # a stack that can't list a workspace's jobs should fail at boot.
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
         from tta_backend.earthdata_mcp.client import EarthdataMCPUnavailableError, load_raw_mcp_tools
@@ -69,7 +69,7 @@ class EarthdataMCPClientTests(unittest.IsolatedAsyncioTestCase):
             await load_raw_mcp_tools(self._settings(url=server.url))
 
     async def test_load_raw_mcp_tools_fails_loud_when_convert_format_missing(self):
-        # T10's data-download endpoints need format conversion (e.g. NetCDF)
+        # The data-download endpoints need format conversion (e.g. NetCDF)
         # over the exported handle; a stack that can't convert formats
         # should fail at boot, not mid-download.
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
@@ -84,7 +84,7 @@ class EarthdataMCPClientTests(unittest.IsolatedAsyncioTestCase):
             await load_raw_mcp_tools(self._settings(url=server.url))
 
     async def test_probe_mcp_tools_returns_every_required_tool_name(self):
-        # T40: the steady-state heartbeat probe is a listing, not a full
+        # The steady-state heartbeat probe is a listing, not a full
         # load+bind -- it still proves every required tool is present.
         from tta_backend.earthdata_mcp.client import REQUIRED_TOOL_NAMES, probe_mcp_tools
 

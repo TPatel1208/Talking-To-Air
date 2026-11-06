@@ -1,4 +1,4 @@
-"""T64 D4/D5/D8/D9/D10: running one dispatch call's requests -- capped
+"""Running one dispatch call's requests -- capped
 concurrency, an all-or-nothing per-turn budget, dedupe by canonical request,
 per-item failure isolation, results in request order."""
 import asyncio
@@ -91,7 +91,7 @@ class DispatchExecutorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runner.peak["satellite"], 2)
 
     async def test_a_rate_limited_item_is_its_own_error_and_its_siblings_still_finish(self):
-        """Phase 0 F7: on the free tier a 429 inside a batch is likely; it
+        """On the free tier a 429 inside a batch is likely; it
         must cost that item, not the batch."""
         from tta_backend.services.dispatch_executor import execute_dispatch
 
@@ -105,7 +105,7 @@ class DispatchExecutorTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("RESOURCE_EXHAUSTED", failed)
 
     async def test_a_list_that_would_overrun_the_turns_budget_is_rejected_whole(self):
-        """D8: six sub-agent runs per turn. A half-run list would hand the
+        """Six sub-agent runs per turn. A half-run list would hand the
         model a half-answer to reason about."""
         from tta_backend.services.dispatch_executor import begin_model_step, execute_dispatch
 
@@ -163,7 +163,7 @@ class DispatchExecutorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(runner.runs), 6)
 
     async def test_two_dispatch_calls_in_one_model_message_share_one_run_of_a_common_request(self):
-        """D5: ToolNode runs parallel tool calls as sibling Tasks, each with a
+        """ToolNode runs parallel tool calls as sibling Tasks, each with a
         copied context; the turn's state must still be one object."""
         from tta_backend.services.dispatch_executor import execute_dispatch
 

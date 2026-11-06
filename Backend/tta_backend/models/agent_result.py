@@ -14,7 +14,7 @@ class ChartPayload(BaseModel, extra="allow"):
 
 
 class VariableChoiceOption(BaseModel):
-    """One candidate the researcher may pick when the variable resolver (T48)
+    """One candidate the researcher may pick when the variable resolver
     couldn't confidently choose. Every field is a fact the resolver computed
     (name/category/units/valid_fraction/reasons) plus the pre-composed
     ``prompt`` the dispatch layer builds by templating the original request
@@ -29,7 +29,7 @@ class VariableChoiceOption(BaseModel):
 
 
 class VariableChoice(BaseModel):
-    """T49: the deterministic, LLM-free picker payload for a variable-choice
+    """The deterministic, LLM-free picker payload for a variable-choice
     turn. ``message`` is a template filled only from resolver facts (candidate
     count, excluded-empty count); ``candidates`` is the resolver's own ranked
     list, never capped and never paraphrased by the model. Rendered as inline
@@ -46,14 +46,14 @@ class AgentResult(BaseModel):
     images: list[bytes] = Field(default_factory=list)
     handles: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
-    # T22: up to two follow-up questions grounded in this turn's handles/
+    # Up to two follow-up questions grounded in this turn's handles/
     # artifacts, propagated straight from a sub-agent's envelope (never
-    # synthesized by the backend, story #12). None means the sub-agent
-    # offered none — always legitimate (story #7) — and salvage
+    # synthesized by the backend). None means the sub-agent offered none
+    # (always legitimate), and salvage
     # (services/subagent_dispatch.py) never sets this, so a malformed
     # envelope never carries invented suggestions.
     suggested_followups: list[str] | None = Field(default=None, max_length=2)
-    # T49: when the T48 resolver's confidence was medium or low, the
+    # When the variable resolver's confidence was medium or low, the
     # deterministic variable picker attached alongside (medium) or in place of
     # (low) a chart. Populated by run_satellite from the out-of-band
     # variable_choice event — never by the sub-agent's envelope — so the
@@ -78,7 +78,7 @@ class SubAgentEnvelope(BaseModel):
         default_factory=list,
         description="Every obs_/cube_ handle produced in this task; empty if none.",
     )
-    # T22: optional. More than two fails validation, which makes the model
+    # Optional. More than two fails validation, which makes the model
     # retry the call (one more model call each time).
     suggested_followups: list[str] | None = Field(
         default=None,
@@ -102,7 +102,7 @@ DispatchStatus = Literal["ok", "error", "duplicate", "rejected"]
 
 
 class DispatchItemResult(BaseModel):
-    """T64: what became of one request in a dispatch call. ``index`` is its
+    """What became of one request in a dispatch call. ``index`` is its
     position in the request list; ``result`` is absent only when the item was
     rejected and never ran."""
 
@@ -119,7 +119,7 @@ class DispatchItemResult(BaseModel):
 
 
 class DispatchResult(BaseModel):
-    """T64: the dispatch tool's return value, one item per request, always in
+    """The dispatch tool's return value, one item per request, always in
     request order regardless of which sub-agent finished first."""
 
     results: list[DispatchItemResult]
@@ -142,7 +142,7 @@ def parse_dispatch_result(raw: Any) -> DispatchResult | None:
 
 def parse_tool_results(raw: Any) -> list[AgentResult]:
     """Every AgentResult a supervisor ToolMessage carries, in order: the items
-    of a dispatch batch that ran, or the single result a pre-T64 checkpoint
+    of a dispatch batch that ran, or the single result a legacy checkpoint
     (ask_* tools, fast-path write-back) holds. Empty for anything else."""
     batch = parse_dispatch_result(raw)
     if batch is not None:

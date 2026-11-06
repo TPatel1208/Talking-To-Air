@@ -1,14 +1,14 @@
 """
 services/measurement_explanation.py
 =====================================
-PRD T36 Phase 3 -- the read-only bridge from P2's deterministic evidence to a
-grounded, on-demand explanation. ``explain_measurement`` looks up a persisted
-chart payload (``agent_charts``, where P2 already stored ``provenance.evidence``)
+Read-only bridge from a chart's stored evidence to a grounded, on-demand
+explanation. ``explain_measurement`` looks up a persisted chart payload
+(``agent_charts``, which already holds ``provenance.evidence``)
 and returns a compact reliability-relevant subset: the evidence facts *verbatim*,
 the masking ``qa_status``/``qa_source`` disclosure, the plotted variable/units,
 and an explicit ``has_evidence`` bool.
 
-No recomputation (P2 owns the numbers -- this returns the stored list unchanged),
+No recomputation (returns the stored list unchanged),
 no MCP call, no LLM. An unknown chart_id, a chart without provenance, or a
 science-only chart with no companion evidence all resolve to
 ``has_evidence: false`` plus a plain-language ``reason`` -- never an error the
@@ -33,10 +33,10 @@ _NO_EVIDENCE_REASON = (
 
 
 def summarize_measurement_evidence(payload: dict[str, Any] | None) -> dict[str, Any]:
-    """The pure reliability subset of one persisted chart payload -- the facts
-    layer P3 explains, read straight off ``provenance`` with no recomputation.
+    """The pure reliability subset of one persisted chart payload, read
+    straight off ``provenance`` with no recomputation.
 
-    Returns ``evidence`` (P2's ``provenance.evidence`` list, verbatim), the
+    Returns ``evidence`` (the ``provenance.evidence`` list, verbatim), the
     ``masking`` qa_status/qa_source when present, the plotted variable/units, and
     an explicit ``has_evidence`` bool. Missing payload / provenance / evidence
     each yield ``has_evidence: false`` with a plain ``reason`` -- never raises.
@@ -68,8 +68,8 @@ def summarize_measurement_evidence(payload: dict[str, Any] | None) -> dict[str, 
         "has_evidence": bool(evidence),
     }
     if evidence:
-        # Verbatim -- P2 is the single source of truth for every number; this
-        # accessor never re-derives a stat.
+        # Verbatim -- the stored evidence is the single source of truth for
+        # every number; this accessor never re-derives a stat.
         result["evidence"] = evidence
     else:
         result["reason"] = _NO_EVIDENCE_REASON
@@ -89,7 +89,7 @@ async def explain_measurement(
 ) -> dict[str, Any]:
     """Look up the persisted chart and return its reliability subset. A lookup
     that fails (or an unknown id) degrades to ``has_evidence: false`` with a
-    reason -- the agent never has to decode an error path (PRD T36 P3).
+    reason -- the agent never has to decode an error path.
 
     ``chart_id`` is a free-text, LLM-supplied tool argument, so ownership is
     enforced here with the same semantics as every HTTP chart endpoint

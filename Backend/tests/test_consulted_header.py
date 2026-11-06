@@ -1,4 +1,4 @@
-"""T64 D14: the "Data sources: ..." header is computed from what the turn's
+"""The "Data sources: ..." header is computed from what the turn's
 dispatch calls actually ran, never written by the model. It names the
 datasets a satellite run plotted and EPA AQS for a ground run."""
 import unittest

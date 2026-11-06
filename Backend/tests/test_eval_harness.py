@@ -135,7 +135,7 @@ class EvalHarnessStructureTests(unittest.TestCase):
     "eval harness test dependencies are not installed",
 )
 class StarterPromptEvalCoverageTests(unittest.TestCase):
-    """T22: the empty-chat starter list is a marketing surface for what the
+    """The empty-chat starter list is a marketing surface for what the
     system provably does — every entry's id must name a real eval task (direct
     or e2e), or a starter could rot into a broken promise with nothing to
     catch it. Pure consistency check, no tokens spent."""
@@ -155,7 +155,7 @@ class StarterPromptEvalCoverageTests(unittest.TestCase):
         self.assertEqual(missing, [])
 
     def test_starter_prompts_span_more_than_one_category(self):
-        """User story #2: the breadth of the app must be visible at a
+        """The breadth of the app must be visible at a
         glance — a starter list that collapsed to one workflow type would
         pass the id-coverage check above while still failing the product
         intent."""
@@ -171,7 +171,7 @@ class StarterPromptEvalCoverageTests(unittest.TestCase):
     "eval harness test dependencies are not installed",
 )
 class RobustnessTaskTests(unittest.IsolatedAsyncioTestCase):
-    """T15: the malformed-envelope robustness task is scripted at the
+    """The malformed-envelope robustness task is scripted at the
     finalization seam (subagent_dispatch._finalize_sub_agent_result) rather
     than the live model loop — spends no model tokens, runs on every
     invocation of the suite structure tests above."""
@@ -198,7 +198,7 @@ class RobustnessTaskTests(unittest.IsolatedAsyncioTestCase):
     "eval harness test dependencies are not installed",
 )
 class E2ETaskStructureTests(unittest.TestCase):
-    """T16: three tasks that enter through ChatStreamService.stream_chat_
+    """Three tasks that enter through ChatStreamService.stream_chat_
     events with the real intent_router and real sub-agents — extend, not
     replace, the 13 direct-agent tasks above."""
 
@@ -220,7 +220,7 @@ class E2ETaskStructureTests(unittest.TestCase):
         self.assertEqual(categories, {"e2e_ground", "e2e_satellite", "e2e_cross_source", "e2e_routing"})
 
     def test_the_routing_tasks_reach_the_supervisor_and_forbid_a_ground_request(self):
-        """T64 Phase 0 F5: two prompts on which a lite supervisor model added
+        """Two prompts on which a lite supervisor model added
         a ground request nobody asked for. They must route past the regex fast
         path, or they would never exercise the supervisor at all."""
         from tta_backend.services.intent_router import route_intent
@@ -255,7 +255,7 @@ class E2ETaskStructureTests(unittest.TestCase):
         self.assertIsNone(by_category["e2e_satellite"].date_check)
 
     def test_only_the_satellite_task_carries_a_stage_sequence_check(self):
-        """T19: dead-chat as a command-detectable regression — only the
+        """Dead-chat as a command-detectable regression — only the
         satellite e2e task exercises the composites/handle tools that
         narrate stages; ground and cross-source don't need this check."""
         by_category = {task.category: task for task in self._tasks()}
@@ -269,8 +269,7 @@ class E2ETaskStructureTests(unittest.TestCase):
     "eval harness test dependencies are not installed",
 )
 class RelativeDateCheckTests(unittest.TestCase):
-    """T11 Further Notes / T16: a 'yesterday' query was live-caught
-    dispatching *today's* date (2026-07-07 live test). Pure logic over
+    """A 'yesterday' query has been caught dispatching *today's* date. Pure logic over
     captured (endpoint, params) tuples — no live model needed."""
 
     def test_true_when_a_captured_call_used_real_utc_yesterday(self):
@@ -301,7 +300,7 @@ class RelativeDateCheckTests(unittest.TestCase):
     "eval harness test dependencies are not installed",
 )
 class StageSequenceCheckTests(unittest.TestCase):
-    """T19: pure logic over a captured/fabricated joined SSE string — no
+    """Pure logic over a captured/fabricated joined SSE string — no
     live model needed to prove the scoring logic itself is correct; the
     live enforcement only runs under -m eval (EvalSuiteTests below)."""
 
@@ -376,7 +375,7 @@ class AgentsConsultedParsingTests(unittest.TestCase):
     "eval harness test dependencies are not installed",
 )
 class AgentsOkScoringTests(unittest.TestCase):
-    """Since T64 D14 the header names what actually ran, so scoring it can
+    """The header names what actually ran, so scoring it can
     fail a turn for an agent it should not have consulted, not only for one
     it missed."""
 
@@ -407,7 +406,7 @@ class AgentsOkScoringTests(unittest.TestCase):
     "eval harness test dependencies are not installed",
 )
 class ResultsTableTests(unittest.TestCase):
-    """T16 user story 9: a compact per-task table (pass/fail, trace verdict,
+    """A compact per-task table (pass/fail, trace verdict,
     seconds) so a regression's location is obvious from the output alone —
     hermetic, built from fabricated results rather than a live run."""
 
@@ -451,7 +450,7 @@ class ResultsTableTests(unittest.TestCase):
     "eval harness test dependencies are not installed",
 )
 class RateLimitDetectionTests(unittest.TestCase):
-    """T16 user story 3: single-user rate-limit pressure — the original
+    """Single-user rate-limit pressure — the original
     outage mode — must never silently reappear. Groq's client only logs
     retries (no exception raised on the caller's side), so the harness
     watches the groq/httpx loggers for the duration of a run. The satellite
@@ -637,7 +636,7 @@ class EvalSuiteTests(unittest.IsolatedAsyncioTestCase):
         from eval_harness import CATEGORY_BUDGETS, PASS_THRESHOLD, TOTAL_TASKS, format_results_table, run_eval_suite
         from fake_earthdata_mcp import HandleVolume
 
-        # T13: the subagent trim safety net's ceiling is sized so it never
+        # The subagent trim safety net's ceiling is sized so it never
         # fires in a healthy workflow — this run is the proof. If it fires
         # here, either a real compaction gap regressed or the ceiling itself
         # needs raising, not the tasks.
@@ -646,7 +645,7 @@ class EvalSuiteTests(unittest.IsolatedAsyncioTestCase):
                 volume = HandleVolume(tmpdir)
                 results = await run_eval_suite(volume)
 
-        # T16 user story 9: the table is the deliverable a human reads —
+        # The table is the deliverable a human reads —
         # a regression's location must be obvious from the output alone.
         print("\n" + format_results_table(results))
 

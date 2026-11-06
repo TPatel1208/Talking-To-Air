@@ -277,7 +277,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("chart_payload_parse_failure", captured.output[0])
 
     async def test_chat_stream_service_persists_and_emits_a_bubbled_chart_payload_event(self):
-        """T13: emit_chart's ("chart_payload", dict) event (bubbled up from a
+        """emit_chart's ("chart_payload", dict) event (bubbled up from a
         sub-agent's own stream, mirroring job_progress) is persisted and
         emitted as a "chart" SSE event directly, without waiting for the
         sub-agent's final tool_result envelope."""
@@ -334,7 +334,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(chart_events), 1)
 
     async def test_chat_stream_service_ends_the_turn_with_a_timeout_error_then_done_when_the_budget_expires(self):
-        """T38: a wedged model stream must not hang the turn forever — once
+        """A wedged model stream must not hang the turn forever — once
         chat_turn_timeout_seconds elapses, the SSE sequence ends with the
         timeout `error` (naming no in-flight jobs here) then `done`, and the
         underlying agent stream is actually cancelled, not just abandoned."""

@@ -34,7 +34,7 @@ def reduce_keeping_axes(
     ``keep=("time",)`` is the timeseries: one regional value per timestep.
     ``keep=("time", "layer")`` is the profile's intermediate: one regional
     value per (timestep, layer), computed BEFORE time is collapsed, so the
-    later temporal mean weights cadence buckets rather than granules (T56 D4).
+    later temporal mean weights cadence buckets rather than granules.
 
     ``mean`` is the cos(latitude) area-weighted mean — the ONE regional-mean
     definition (``aggregation_service.area_weighted_mean``), falling back to an

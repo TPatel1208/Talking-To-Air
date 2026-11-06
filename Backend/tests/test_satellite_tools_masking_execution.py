@@ -1,14 +1,11 @@
 """
 tests/test_satellite_tools_masking_execution.py
 ==================================================
-T25 masking-execution fix: the honesty-guard commit (321d507) proved that
-before this fix, every real tool path opened a Dataset, extracted just the
-science DataArray, and lost the sibling QA-flag variable before it ever
-reached AggregationService.aggregate() -- so no tool actually ran QA masking
-despite collections.yaml pinning qa_good_values for TEMPO_NO2/TEMPO_HCHO/etc.
-The existing test_aggregation_service.py unit tests hid this gap by passing
-a full Dataset straight to aggregate(), a shape no production tool call
-ever takes.
+Every real tool path opens a Dataset and extracts just the science
+DataArray, so the sibling QA-flag variable must still reach
+AggregationService.aggregate() (via source_ds) or no tool runs QA masking.
+Unit tests that pass a full Dataset straight to aggregate() can't see this;
+no production tool call takes that shape.
 
 These are integration tests at the tool layer, mirroring production shape:
 open a real Dataset (science var + sibling QA-flag var) through the same
@@ -155,7 +152,7 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["aggregation_meta"]["masking"]["qa_status"], "verified")
 
     async def test_compute_statistic_result_discloses_region_type_and_display_name(self):
-        """T42: the stats result names *what kind* of region was masked and the
+        """The stats result names *what kind* of region was masked and the
         display_name it resolved, so "mean over the US" is checkable against
         what was actually computed. 'global' is a preset bounding box."""
         import xarray as xr
@@ -179,7 +176,7 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["display_name"], "Global")
 
     async def test_plot_singular_provenance_discloses_region_type_and_display_name(self):
-        """T42: heatmap provenance names what kind of region was masked and the
+        """Heatmap provenance names what kind of region was masked and the
         display_name it resolved (rides alongside region_name via
         _attach_reproducibility)."""
         import xarray as xr
@@ -209,7 +206,7 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provenance["display_name"], "Global")
 
     async def test_compute_statistic_subcell_region_self_heals_to_boundary_cells(self):
-        """T42: a region smaller than a grid cell covers no cell center, so
+        """A region smaller than a grid cell covers no cell center, so
         center-containment masking returns nothing. Instead of "no valid
         data", the tool returns the touched boundary cells and discloses
         region_type: boundary_cells. The stubbed region is a 0.2° box inside
@@ -309,7 +306,7 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(full["masking"]["qa_source"], "collections_yaml")
 
     async def test_conduct_temporal_statistic_reports_the_qa_loss_the_plotted_line_cannot_show(self):
-        """T55: masking runs before each timestep collapses to one scalar, so a
+        """Masking runs before each timestep collapses to one scalar, so a
         timestep the mask gutted still contributes a clean finite value. Here
         every timestep returns -- a naive "timesteps returned" completeness
         signal reads 100% -- while a quarter of the observations were actually
@@ -464,9 +461,8 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(trend_values[0], round(stat_result["mean"], 6), places=5)
 
     async def test_conduct_temporal_statistic_attaches_aggregation_meta_like_the_heatmap_path(self):
-        """T32: the timeseries chart path never called _attach_reproducibility
-        with agg_meta at all, so its Granules/cadence block never rendered
-        even though masking info was present. TEMPO_NO2 is registered
+        """The timeseries chart path must call _attach_reproducibility with
+        agg_meta, or its Granules/cadence block never renders. TEMPO_NO2 is registered
         cadence=hourly (collections.yaml), so this also proves cadence is
         threaded through, not just a hardcoded 'daily'."""
         import xarray as xr
@@ -503,7 +499,7 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(agg_meta["granule_dates"]), 2)
         self.assertEqual(agg_meta["masking"]["qa_status"], "verified")
 
-        # The same fields land in provenance (T25 Phase 3 convention),
+        # The same fields land in provenance,
         # never just in internal aggregation_meta.
         self.assertEqual(full["provenance"]["n_granules"], 2)
         self.assertEqual(full["provenance"]["cadence"], "hourly")
@@ -562,7 +558,7 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("2024-01-01 to 2024-01-02", agg_meta["aggregation_label"])
 
     async def test_conduct_temporal_statistic_attaches_dataset_and_source_from_registry(self):
-        """T32: dataset/source come from the TEMPO_NO2 registry entry matched
+        """dataset/source come from the TEMPO_NO2 registry entry matched
         via the opened granule's short_name attribute -- the same match
         col_info_for_variable already performs for masking, not a second
         lookup."""
@@ -602,12 +598,11 @@ class MaskingExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provenance["qa_methodology"]["qa_good_values"], [0])
 
     async def test_plot_singular_attaches_dataset_and_source_without_a_second_registry_lookup(self):
-        """T32's variable-definition/dataset attach must ride on the same
+        """The variable-definition/dataset attach must ride on the same
         col_info the masking pipeline already resolved -- not a second call
         to the registry. Spies on col_info_for_variable (the shared seam every
-        satellite tool resolves masking metadata through) and asserts the call
-        count is unchanged from before this PRD: exactly one, for the one
-        masking resolution the tool already performed."""
+        satellite tool resolves masking metadata through) and asserts exactly
+        one call, for the one masking resolution the tool performs."""
         import xarray as xr
         from tta_backend.tools.satellite_tools.plot_tools import make_plot_singular
 

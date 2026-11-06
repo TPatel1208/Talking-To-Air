@@ -60,7 +60,7 @@ class RetrievalNarrationTests(unittest.TestCase):
 
     def test_it_omits_facts_the_caller_did_not_have(self):
         """safe_retrieve's real shape: it only ever sees an opaque aoi_handle,
-        never a place name (the T46 note on its scope_registry call). A missing
+        never a place name (see its scope_registry call). A missing
         fact is omitted, not rendered as an empty slot or a "None"."""
         from tta_backend.services import retrieval_narration
 

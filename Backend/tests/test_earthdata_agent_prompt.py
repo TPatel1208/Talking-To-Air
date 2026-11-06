@@ -117,7 +117,7 @@ class EarthdataAgentPromptT22Tests(unittest.TestCase):
 
 
 class EarthdataAgentPromptT25Phase4Tests(unittest.TestCase):
-    """T25 Phase 4: the prompt states the satellite arm is universal over
+    """The prompt states the satellite arm is universal over
     gridded Earthdata collections, that ground/cross-source confirmation is
     an air-quality-only capability the agent must never promise elsewhere,
     and instructs the agent to consume describe_dataset's variable metadata
@@ -177,11 +177,11 @@ class EarthdataAgentPromptT25Phase4Tests(unittest.TestCase):
 
 
 class EarthdataAgentPromptT36Phase3Tests(unittest.TestCase):
-    """T36 Phase 3: the prompt has an "Explaining measurement reliability"
+    """The prompt has an "Explaining measurement reliability"
     section that routes reliability questions through explain_measurement and
     holds the grounding discipline — evidence-only, evidence-vs-verdict, and an
-    honest empty-evidence path that offers to retrieve the companions (the P1
-    loop) rather than confabulating confidence."""
+    honest empty-evidence path that offers to retrieve the companions rather
+    than confabulating confidence."""
 
     def _prompt(self):
         from tta_backend.config.earthdata_agent_prompt import get_earthdata_agent_prompt
@@ -218,7 +218,7 @@ class EarthdataAgentPromptT36Phase3Tests(unittest.TestCase):
         self.assertIn("has_evidence", prompt)
         self.assertIn("no companion evidence", prompt)
         # Offers the QA flag / cloud fraction retrieval as a suggested followup
-        # (the P1 loop), and refuses to manufacture confidence.
+        # and refuses to manufacture confidence.
         self.assertIn("qa flag", prompt)
         self.assertIn("cloud fraction", prompt)
         self.assertIn("suggested_followups", prompt)
@@ -319,7 +319,7 @@ class EarthdataAgentPromptPlaceNameTests(unittest.TestCase):
 
 
 class EarthdataAgentPromptGroundToolScopeTests(unittest.TestCase):
-    """T64: the researcher's message rides along as context, so a phrase like
+    """The researcher's message rides along as context, so a phrase like
     "along with ground sensor readings" reaches a visualize task too. The ground
     tools refuse outside a compare task; the prompt says so, so the agent does
     not spend a model step finding out."""

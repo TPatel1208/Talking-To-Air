@@ -22,7 +22,7 @@ class StoredArtifact:
 
 
 class ArtifactStore:
-    """Table artifacts, write-through to Postgres (T39).
+    """Table artifacts, write-through to Postgres.
 
     ``put_table`` (mint) only ever touches the in-memory dict -- the tool
     that mints a table doesn't yet know who owns it. ``claim`` (the stream
@@ -82,9 +82,8 @@ class ArtifactStore:
             stored.payload.rows,
             stored.payload.metadata,
         )
-        # T39 user story #4: rows are only ever written here (mint stays
-        # in-memory-only), so no unclaimed row should ever exist -- this is
-        # a defensive sweep against a future write path that changes that.
+        # Rows are only written on claim, so unclaimed rows shouldn't exist.
+        # Defensive sweep in case a future write path changes that.
         await artifact_repository.delete_expired_unclaimed(self.ttl_seconds)
         return self._build_reference(artifact_id, stored)
 

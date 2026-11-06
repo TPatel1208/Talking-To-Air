@@ -8,7 +8,7 @@ quality variables that say whether to trust it (``main_data_quality_flag``,
 (``solar_zenith_angle``, ``radiative_cloud_frac``), and internal
 retrieval/diagnostic fields (``amf_troposphere``, ``fitted_slant_column``).
 ``describe_dataset`` returns a flat variable inventory but classifies none of
-it (PRD T35).
+it.
 
 ``classify_variable`` assigns each variable one of four canonical roles plus
 an explicit fallback, combining evidence in strict precedence — the same
@@ -45,7 +45,7 @@ not bare ``cloud``) so a cloud-*screened* science column
 
 Pure functions -- no I/O, no network -- so the classifier is trivially
 unit-testable and has one canonical interpretation shared by the inventory UI
-and (later) T36.
+and the chart evidence.
 """
 from __future__ import annotations
 
@@ -68,8 +68,8 @@ CONFIDENCE_NONE: Optional[str] = None  # unclassified
 
 # ── Group priors ─────────────────────────────────────────────────────────────
 # Groups whose membership alone settles the role, regardless of the leaf name
-# (PRD: "qa_statistics/* -> quality even when the name matches no rule;
-# geolocation/* -> geometry unambiguously").
+# (qa_statistics/* -> quality even when the name matches no rule;
+# geolocation/* -> geometry unambiguously).
 _QUALITY_GROUPS = {"qa_statistics"}
 _GEOMETRY_GROUPS = {"geolocation"}
 # Groups that are *positive evidence* for science -- but only for a variable
@@ -321,10 +321,9 @@ def related_variables(
     quality_flag_var: str | None = None,
     plotted_variable: str | None = None,
 ) -> dict[str, Any]:
-    """A lightweight related-variables view for the chart page (PRD T35): the
+    """A lightweight related-variables view for the chart page: the
     plotted variable's role plus its companion siblings, matched cheaply from
-    the classified inventory — links, not a re-render of the whole inventory
-    (the thin edge of T36).
+    the classified inventory — links, not a re-render of the whole inventory.
 
     ``variables`` may be either ``describe_dataset`` records or bare registry
     variable strings; the chart path passes the registry's curated subset (the

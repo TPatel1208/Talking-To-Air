@@ -396,7 +396,7 @@ class HelperTests(unittest.TestCase):
         finalized = _finalize_sub_agent_result(raw, "earthdata")
 
         # A malformed envelope no longer discards ninety seconds of correct
-        # work over a formatting technicality (T15) — the raw prose becomes
+        # work over a formatting technicality — the raw prose becomes
         # the summary and everything collected from the tool stream survives.
         self.assertEqual(finalized.text, raw.text)
         self.assertEqual(len(finalized.charts), 1)
@@ -473,7 +473,7 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(finalized.metadata.get("error"), "invalid_envelope")
         self.assertFalse(finalized.metadata.get("salvaged"))
         self.assertIn("earthdata", finalized.text.lower())
-        # T18: this is a rendered contract-category template, not free text —
+        # This is a rendered contract-category template, not free text —
         # matches config.error_templates.render_error_answer's fixed wording.
         from tta_backend.config.error_templates import render_error_answer
 
@@ -738,7 +738,7 @@ class RunGroundTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result.text, "ok")
 
     async def test_run_ground_renders_an_unexpected_exception_through_the_taxonomy(self):
-        # T37: a bare exception string (possibly empty: KeyError('x') →
+        # A bare exception string (possibly empty: KeyError('x') →
         # "'x'") must never become the ground agent's "answer".
         from tta_backend.services import subagent_dispatch
         from tta_backend.config.error_templates import render_error_answer
@@ -1387,7 +1387,7 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((FakeSatelliteAgent.calls, second.text), (2, "ok"))
 
     async def test_run_satellite_returns_the_deterministic_message_when_the_mcp_is_not_ready(self):
-        # T17 story #13: gate on the connection manager's state before ever
+        # Gate on the connection manager's state before ever
         # touching the sub-agent, so an outage costs zero model calls.
         from tta_backend.services import subagent_dispatch
         from tta_backend.earthdata_mcp.connection import STATE_UNAVAILABLE
@@ -1406,9 +1406,9 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("satellite data layer is temporarily unavailable", result.text)
         self.assertEqual(result.metadata.get("data_layer"), STATE_UNAVAILABLE)
-        # T18: rendered from the shared provider_unavailable template — the
+        # Rendered from the shared provider_unavailable template — the
         # same code path the supervisor's ask_earthdata_agent tool wrapper
-        # dispatches through, so both paths fail identically (story #12).
+        # dispatches through, so both paths fail identically.
         from tta_backend.config.error_templates import render_error_answer
 
         self.assertEqual(
@@ -1439,7 +1439,7 @@ class RunSatelliteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.text, "Plotted NO2 over NJ.")
 
     async def test_run_satellite_renders_an_unexpected_exception_through_the_taxonomy(self):
-        # T37: an arbitrary exception string must never become the
+        # An arbitrary exception string must never become the
         # sub-agent's "answer" the supervisor can dress up — it renders as
         # the taxonomy's honest contract answer, real exception in the logs.
         from tta_backend.services import subagent_dispatch

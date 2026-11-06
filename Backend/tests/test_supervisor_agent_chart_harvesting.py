@@ -15,7 +15,7 @@ PLOT_NO2_OVER_NJ = {"requests": [
 @unittest.skipIf(importlib.util.find_spec("langchain") is None, "langchain is not installed")
 class RunSatelliteChartHarvestingTests(unittest.IsolatedAsyncioTestCase):
     """run_satellite (behind the dispatch tool) harvests charts from the
-    ("chart_payload", dict) events emit_chart produces (T13), not by parsing
+    ("chart_payload", dict) events emit_chart produces, not by parsing
     ChartPayload out of tool_result content — plot/comparison tool results
     are compact summaries now and no longer parse as a ChartPayload."""
 

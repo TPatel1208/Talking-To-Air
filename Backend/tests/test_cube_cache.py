@@ -1,4 +1,4 @@
-"""T52 — the L4 Zarr cube cache: a versioned, self-invalidating cache of the
+"""The Zarr cube cache: a versioned, self-invalidating cache of the
 open pipeline's *output*.
 
 The behaviours pinned here are the ones whose failure mode is a silently wrong
@@ -130,13 +130,12 @@ class CacheKeyTests(unittest.TestCase):
         self.assertNotEqual(self._identity(b"a" * 16), self._identity(b"b" * 32))
 
     def test_source_identity_survives_a_replay_that_delivered_the_same_content(self):
-        """T54's re-key, stated as the thing it fixes.
+        """Content-based keys, stated as the thing they fix.
 
         A rematerialize rewrites the export file: new mtime, new size, so a new
         *filesystem* identity — while delivering the very same granules through
         the very same service chain. Keyed on filesystem metadata that cube
-        misses and rebuilds for nothing, which is precisely the rebuild-the-
-        input-to-an-answer-you-already-hold failure T54 exists to end."""
+        misses and rebuilds for nothing."""
         from tta_backend.services.cube_cache import source_identity
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -251,9 +250,8 @@ class RoundTripTests(StoreTestCase):
         np.testing.assert_array_equal(cached["v"].values, [2.0e13, 4.0e13])
 
     def test_slash_qualified_collided_leaf_names_survive_the_round_trip(self):
-        """Landmine 2. Collided leaves are renamed to "group/leaf" (T25's
-        refuse-with-candidates protection depends on those qualified names
-        downstream), and ``/`` is Zarr's group separator — so they cannot
+        """Collided leaves are renamed to "group/leaf" (refuse-with-candidates
+        depends on those qualified names downstream), and ``/`` is Zarr's group separator — so they cannot
         round-trip as flat variables. Escaping on write plus the manifest's
         name map is what keeps them intact; relying on Zarr silently turns one
         variable into a nested group."""
@@ -277,7 +275,7 @@ class RoundTripTests(StoreTestCase):
         np.testing.assert_array_equal(cached["support_data/foo"].values, [3.0, 4.0])
 
     def test_an_ambiguous_bare_name_refuses_identically_cubed_and_uncubed(self):
-        """T25's doctrine must not change across the cube: a bare name that
+        """Behaviour must not change across the cube: a bare name that
         two groups both claim still refuses with candidates rather than
         silently picking one."""
         import numpy as np
@@ -312,7 +310,7 @@ class IntegrityTests(StoreTestCase):
     can never cost a turn."""
 
     def _entry_dirs(self):
-        # Cube entries only. The store root also holds T54's handle index, a
+        # Cube entries only. The store root also holds the handle index, a
         # plain file beside them, which is not an entry and is never swept.
         if not os.path.isdir(self.store_root):
             return []
@@ -485,8 +483,8 @@ class RefusalTests(StoreTestCase):
 
     def test_a_name_collision_created_by_escaping_is_refused_rather_than_merged(self):
         """Escaping ``/`` is what makes collided leaves storable, but it can
-        itself collide. Silently merging two variables into one is precisely
-        the T25 failure the qualified names exist to prevent, so refuse."""
+        itself collide. Silently merging two variables into one is what the
+        qualified names exist to prevent, so refuse."""
         import numpy as np
         import xarray as xr
 
@@ -992,7 +990,7 @@ class OpenHandleCubeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(dict(third.sizes), dict(first.sizes))
 
     async def test_a_cached_answer_is_numerically_identical_to_an_uncached_one(self):
-        """User story #2: a cache can never change a scientific result."""
+        """A cache can never change a scientific result."""
         import xarray as xr
 
         from tta_backend.services.open_handle import open_handle
@@ -1006,7 +1004,7 @@ class OpenHandleCubeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         xr.testing.assert_identical(uncached, cached)
 
     async def test_a_corrupt_cube_costs_the_turn_nothing(self):
-        """User story #3: the answer still arrives, just uncached."""
+        """The answer still arrives, just uncached."""
         import numpy as np
 
         from tta_backend.services.open_handle import open_handle
@@ -1023,7 +1021,7 @@ class OpenHandleCubeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         np.testing.assert_array_equal(served["no2"].values, first["no2"].values)
 
     async def test_a_hit_and_a_miss_are_both_visible_on_metrics(self):
-        """User story #6: a cache that is never populated and a cache that
+        """A cache that is never populated and a cache that
         does not help are different problems with different fixes."""
         from prometheus_client import REGISTRY
 
@@ -1063,7 +1061,7 @@ class OpenHandleCubeIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
 @requires_stack
 class ChunkingTests(StoreTestCase):
-    """T51 measured that the T50 crop does **not** push down to a hyperslab
+    """The AOI crop does **not** push down to a hyperslab
     read: a 700x reduction in cells reduced bought 3.47x wall-clock and *zero*
     reduction in bytes read, because ``chunks={}`` gives one chunk per variable
     per file and dask materializes the whole granule before the crop trims it.

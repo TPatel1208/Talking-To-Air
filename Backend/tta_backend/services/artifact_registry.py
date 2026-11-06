@@ -13,7 +13,7 @@ from tta_backend.models.artifact import (
 )
 
 # Chart payloads carry an internal render "type" (used by Plotly on the
-# frontend and by export_service's PNG/CSV dispatch) that predates the T06
+# frontend and by export_service's PNG/CSV dispatch) that predates the
 # artifact vocabulary. This maps that render type to the artifact type shown
 # in the gallery — the render type itself is left untouched.
 _RENDER_TYPE_TO_ARTIFACT_TYPE = {
@@ -28,7 +28,7 @@ _RENDER_TYPE_TO_ARTIFACT_TYPE = {
 def build_artifact_reference(payload: dict[str, Any]) -> ArtifactReference | None:
     """Build a typed, validated ArtifactReference from a chart-style payload.
 
-    Returns None if the payload's render type has no T06 artifact mapping
+    Returns None if the payload's render type has no artifact mapping
     (e.g. a plain table). Raises pydantic.ValidationError if the payload is
     missing fields its artifact type requires.
 

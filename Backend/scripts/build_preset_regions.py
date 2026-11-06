@@ -1,4 +1,4 @@
-"""Generate Backend/data/preset_regions.geojson (T42 region fidelity, T60 coalitions).
+"""Generate Backend/data/preset_regions.geojson (preset boundaries and coalitions).
 
 One-off build step, not run at request time. Turns Natural Earth 110m
 admin-0 countries into the handful of real preset boundaries the
@@ -8,7 +8,7 @@ the ``CONTINENT`` field. Geometries are simplified (preserve_topology) so
 the checked-in file stays small; the source is fetched once here, never at
 runtime.
 
-T60 additionally dissolves *coalitions* -- named multi-jurisdiction regions
+It also dissolves *coalitions* -- named multi-jurisdiction regions
 that are not OSM places and cannot be geocoded -- from the Natural Earth
 **50m admin-1** layer, at a finer tolerance (see ``ADMIN1_TOLERANCE``).
 
@@ -28,34 +28,30 @@ SOURCE_URL = (
     "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/"
     "geojson/ne_110m_admin_0_countries.geojson"
 )
-# T60/D2: coalitions dissolve *standalone jurisdictions*, so they need 50m,
+# Coalitions dissolve *standalone jurisdictions*, so they need 50m,
 # not the 110m the continent dissolves are built from.
 ADMIN1_SOURCE_URL = (
     "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/"
     "geojson/ne_50m_admin_1_states_provinces.geojson"
 )
-# T60/D2a: measured in the Phase 0 gate (docs/prds/prd-t60-phase0-gate-verdict.md
-# V4). The builder's existing 0.1 constant retains only **58.71%** of DC's area
+# Measured: a 0.1 tolerance retains only **58.71%** of DC's area
 # -- and with Virginia excluded, DC's Potomac edge is on the OTR's outer
 # boundary, so that distortion would land on the boundary itself. 0.01 (~1.1 km)
 # holds DC to within 0.2% and costs 15.8 KB for the OTR polygon. The 110m
 # continent/US features keep their existing tolerances, unchanged.
 ADMIN1_TOLERANCE = 0.01
 
-# T60 Phase 4: the individually-addressable countries, the composite grammar's
-# second member vocabulary (D6).
+# The individually-addressable countries, the composite grammar's
+# second member vocabulary.
 ADMIN0_SOURCE_URL = (
     "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/"
     "geojson/ne_50m_admin_0_countries.geojson"
 )
-# T60/D2a at country scale, and this is where a *uniform* tolerance stops
-# working. The Phase 4 gate (V18) measured ``ADMIN1_TOLERANCE`` against all 242
-# countries: it retains **33.2% of Vatican City**, 50.0% of Ashmore and Cartier,
-# 76.6% of Tuvalu, 81.2% of Monaco -- 40 of 242 outside a two-sided 99-101%
-# band. D2 switched to 50m *specifically* to protect Vatican/Monaco/Singapore/
-# Liechtenstein, and the tolerance D2a picked undid it; nobody had measured that
-# because the states are all within one order of magnitude of each other in size
-# and the countries span six.
+# At country scale a *uniform* tolerance stops working. ``ADMIN1_TOLERANCE``
+# against all 242 countries retains **33.2% of Vatican City**, 50.0% of Ashmore
+# and Cartier, 76.6% of Tuvalu, 81.2% of Monaco -- 40 of 242 outside a two-sided
+# 99-101% band. The states are within one order of magnitude of each other in
+# size; the countries span six.
 #
 # So the tolerance is proportional to the feature's **own** linear scale:
 #
@@ -66,7 +62,7 @@ ADMIN0_SOURCE_URL = (
 # because they cross the antimeridian, so a span-based measure would hand
 # exactly those five an enormous tolerance.
 #
-# Measured over all 242 (V18): band **99.39% - 100.48%**, nothing outside it, no
+# Measured over all 242: band **99.39% - 100.48%**, nothing outside it, no
 # exception list, and a worst-case Hausdorff error of 1.3% of the feature's own
 # scale (Guinea-Bissau). Vatican goes 33.2% -> 100.00% at a tolerance of
 # 0.000088 deg. A size *floor* ("do not simplify below X") was measured too and
@@ -75,7 +71,7 @@ ADMIN0_SOURCE_URL = (
 #
 # These are deliberately NOT ``ADMIN1_TOLERANCE``. That constant is shared with
 # the 51 states and the two coalitions, and re-cutting them to help the
-# countries would move 3a's asset pins for no measured reason.
+# countries would move the state asset pins for no measured reason.
 ADMIN0_TOLERANCE_CAP = 0.02
 ADMIN0_TOLERANCE_DIVISOR = 100
 CONUS_BOX = box(-125, 24, -66, 50)
@@ -85,7 +81,7 @@ CONTINENTS = [
     "Africa", "Asia", "Oceania", "Antarctica",
 ]
 
-# T60: named coalitions, dissolved from whole admin-1 units by postal code.
+# Named coalitions, dissolved from whole admin-1 units by postal code.
 # The ``properties`` travel into the checked-in asset so the approximation is
 # legible in the data itself, not only in a code comment.
 COALITIONS = {
@@ -133,18 +129,16 @@ _DATASETS = os.path.join(
     "tta_backend", "datasets",
 )
 OUT_PATH = os.path.join(_DATASETS, "preset_regions.geojson")
-# T60/Phase 3a: the states need a bounding box that does *not* require reading
+# The states need a bounding box that does *not* require reading
 # the GeoJSON, because a ``global_regions`` entry has to exist even when the
 # asset does not -- otherwise a missing asset drops 51 keys silently instead of
 # degrading them to honest rectangles the way every other preset does. Emitted
 # from the same fetch, in the same run, so the two artifacts cannot drift; a
 # test asserts they agree on all 51 keys and bounds rather than trusting it.
 STATES_OUT_PATH = os.path.join(_DATASETS, "us_states.py")
-# T60 Phase 4: a **separate** asset, not merged into preset_regions.geojson.
+# A **separate** asset, not merged into preset_regions.geojson.
 #
-# 3a merged the states after V11 found the two-file case rested on a byte pin
-# that did not exist. The Phase 4 gate (V19) found the opposite for countries,
-# by measurement: merging produces a 304-feature file that
+# Measured: merging produces a 304-feature file that
 # ``load_preset_polygons`` -- a dict comprehension keyed on ``feature["id"]`` --
 # silently reduces to **302** polygons, because ``georgia`` and ``antarctica``
 # are both a shipped preset id *and* an ADMIN value. Last feature wins, so
@@ -160,12 +154,11 @@ STATES_OUT_PATH = os.path.join(_DATASETS, "us_states.py")
 COUNTRIES_OUT_PATH = os.path.join(_DATASETS, "admin0_countries.geojson")
 
 # Natural Earth's own ``type`` for a US admin-1 unit, mapped to the
-# parenthetical the resolved region cites. Phase 3a gate V12 measured why this
-# is not cosmetic: ``"washington"`` geocodes live to Washington DC with 0.00%
+# parenthetical the resolved region cites. Not cosmetic: ``"washington"`` geocodes live to Washington DC with 0.00%
 # overlap with Washington State, and ``"new york"`` to New York City with
-# 0.47% of the state. D15 gives both tokens to the state, so the answer has to
+# 0.47% of the state. Both tokens go to the state, so the answer has to
 # say which "Washington" it meant -- in ``display_name``, which is what an
-# answer cites (T42), not in a code comment.
+# answer cites, not in a code comment.
 ADMIN1_KINDS = {
     "State": ("state", "U.S. state"),
     "Federal District": ("federal_district", "U.S. federal district"),
@@ -194,7 +187,7 @@ def _feature(preset_id: str, name: str, geom, tolerance: float,
     }
 
 
-EXPECTED_US_ADMIN1 = 51  # 50 states + DC, measured in the Phase 0 gate (V4)
+EXPECTED_US_ADMIN1 = 51  # 50 states + DC
 
 
 def _us_admin1(features: list[dict]) -> list[dict]:
@@ -231,12 +224,11 @@ def _us_admin1(features: list[dict]) -> list[dict]:
 
 
 def _state_features(features: list[dict]) -> list[dict]:
-    """One feature per US admin-1 unit, at the admin-1 tolerance (D2a).
+    """One feature per US admin-1 unit, at the admin-1 tolerance.
 
     Undissolved -- these are the same units ``_coalition_features`` merges,
-    kept individually. Phase 0's V4 settled 0.01 deg on DC, which retains
-    100.17% of its area there and only **58.71%** at the builder's 0.1
-    constant."""
+    kept individually. 0.01 deg retains 100.17% of DC's area; 0.1 retains
+    only **58.71%**."""
     out = []
     for f in _us_admin1(features):
         props = f["properties"]
@@ -299,21 +291,20 @@ def _write_states_table(state_features: list[dict]) -> None:
           f"{len(state_features)} states)")
 
 
-EXPECTED_ADMIN0 = 242  # measured in the Phase 4 gate, 2026-08-16
+EXPECTED_ADMIN0 = 242  # measured against the mirror
 
 
 def _preset_key(name: str) -> str:
     """Mirror of ``RegionResolver._normalize_location_name``.
 
     The build script deliberately does not import the backend, so this is a
-    copy -- and a copy of a normalizer is exactly the T42 bug (two paths
-    normalizing differently) waiting to happen. What keeps it honest is that
+    copy -- and two normalizers can drift apart. What keeps it honest is that
     the *asset* is checked in: a test asserts every emitted id is already a
     fixed point of the real normalizer, so a drift between the two shows up as
     a failing test rather than as a country that only resolves when spelled
     with a leading "the".
 
-    Measured (V19): ``"The Bahamas"`` is the only one of the 242 that this
+    ``"The Bahamas"`` is the only one of the 242 that this
     changes, and it is the whole reason the strip cannot be skipped -- keyed on
     ``ADMIN.lower()`` alone, ``"bahamas"`` would never resolve while
     ``"the bahamas"`` would."""
@@ -322,14 +313,14 @@ def _preset_key(name: str) -> str:
 
 
 def _admin0_tolerance(geom) -> float:
-    """The V18 scheme: 1% of the feature's own linear scale, capped."""
+    """1% of the feature's own linear scale, capped."""
     if geom.area <= 0:
         return 0.0
     return min(ADMIN0_TOLERANCE_CAP, math.sqrt(geom.area) / ADMIN0_TOLERANCE_DIVISOR)
 
 
 def _country_features(features: list[dict]) -> list[dict]:
-    """One feature per country, keyed on the normalized ``ADMIN`` (D6).
+    """One feature per country, keyed on the normalized ``ADMIN``.
 
     Matched on ``ADMIN`` and never on an ISO code -- Verified Finding 5, 26 of
     51 U.S. postal codes are also ISO alpha-2 country codes, and banning codes
@@ -344,7 +335,7 @@ def _country_features(features: list[dict]) -> list[dict]:
         raise ValueError(
             f"admin-0 source has {len(features)} features, expected "
             f"{EXPECTED_ADMIN0}, with every ADMIN non-empty; the mirror changed "
-            "-- re-run the Phase 4 V18/V19 measurements before moving this constant"
+            "-- re-check the tolerance and id-collision measurements before moving this constant"
         )
 
     out, seen = [], {}
@@ -352,8 +343,7 @@ def _country_features(features: list[dict]) -> list[dict]:
         admin = f["properties"]["ADMIN"]
         key = _preset_key(admin)
         if key in seen:
-            # V19's finding, turned into a build-time refusal rather than a
-            # comment nobody re-reads. Two features under one id is a silent
+            # A build-time refusal rather than a comment nobody re-reads. Two features under one id is a silent
             # overwrite in every consumer, because they all key on the id.
             raise KeyError(
                 f"admin-0 key {key!r} is produced by both {seen[key]!r} and "
@@ -366,10 +356,10 @@ def _country_features(features: list[dict]) -> list[dict]:
 
 
 def _coalition_features(features: list[dict]) -> list[dict]:
-    """Dissolve each T60 coalition from whole 50m admin-1 US jurisdictions.
+    """Dissolve each coalition from whole 50m admin-1 US jurisdictions.
 
     Fails loudly on a missing postal code: a coalition silently short a member
-    is precisely the confident-wrong-shape this PRD exists to prevent, and it
+    is a confident wrong shape, and it
     would be invisible in the output."""
     by_postal = {
         f["properties"].get("postal"): shape(f["geometry"])
@@ -425,7 +415,7 @@ def main() -> None:
     print(f"wrote {OUT_PATH} ({os.path.getsize(OUT_PATH)} bytes, "
           f"{len(out_features)} features)")
 
-    # T60 Phase 4, its own file (see COUNTRIES_OUT_PATH for why it is not
+    # Countries get their own file (see COUNTRIES_OUT_PATH for why it is not
     # merged into the collection above).
     countries = _country_features(_load_features(ADMIN0_SOURCE_URL))
     with open(COUNTRIES_OUT_PATH, "w", encoding="utf-8") as fh:

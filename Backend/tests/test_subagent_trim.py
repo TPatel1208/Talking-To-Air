@@ -10,7 +10,7 @@ REQUIRED_MODULES = ["langchain", "langchain_core"]
     "langchain is not installed",
 )
 class SubagentTrimMiddlewareTests(unittest.IsolatedAsyncioTestCase):
-    """T13's high-ceiling safety net on the sub-agents: a last-resort trim
+    """The high-ceiling safety net on the sub-agents: a last-resort trim
     that must never fire in a healthy workflow, but converts an unforeseen
     bloat source into a degraded-but-alive turn instead of a provider 413,
     logging subagent_trim_activated whenever it actually removes messages.

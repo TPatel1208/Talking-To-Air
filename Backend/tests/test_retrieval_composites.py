@@ -41,7 +41,7 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
         return tools, settings
 
     async def test_await_retrieval_finalizes_a_pending_variable_choice_into_the_ready_handle(self):
-        """T25: the retrieval composite records the model's chosen science
+        """The retrieval composite records the model's chosen science
         variable, keyed by the handle the job resolves to, so a later plot/
         stat/compare call inherits it instead of AggregationService.
         to_dataarray refusing a multi-variable file all over again."""
@@ -65,9 +65,9 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(variable_choice_registry.get("obs_choice"), "Cloud_Fraction")
 
     async def test_await_retrieval_finalizes_a_pending_requested_scope_into_the_ready_handle(self):
-        """T46: the requested scope safe_retrieve/point_timeseries recorded by
+        """The requested scope safe_retrieve/point_timeseries recorded by
         job_handle is promoted onto the obs_/cube_ handle the job resolves to,
-        so a later plot can echo it — the same two-step handoff as the T25
+        so a later plot can echo it — the same two-step handoff as the
         variable choice above."""
         from tta_backend.services import scope_registry
         from tta_backend.services.retrieval_composites import await_retrieval
@@ -158,7 +158,7 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["message"], "harmony: provider GES_DISC rejected request: invalid bbox")
 
     async def test_await_retrieval_forwards_each_polls_progress_as_a_stage_status(self):
-        """T19 story #2: retrieval progress narrated as a percentage while
+        """Retrieval progress narrated as a percentage while
         the job runs, forwarded from the same poll that already drives
         emit_job_progress — one poll, two audiences (job panel + chat
         strip), never two separate polling loops."""
@@ -343,10 +343,8 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
             await await_retrieval("job_3", tools, settings=settings)
 
     async def test_a_completed_await_observes_exactly_one_harmony_fetch_duration(self):
-        """T51 regression guard. ``observe_harmony_fetch`` and its histogram
-        shipped with no call site at all and sat dead across three releases --
-        the metrics module advertising a capability the system didn't have.
-        This is the assertion that notices if it goes dead again."""
+        """``observe_harmony_fetch`` must have a real call site, or the
+        metrics module advertises a capability the system doesn't have."""
         from tta_backend.services.retrieval_composites import await_retrieval
 
         responses = [
@@ -681,7 +679,7 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("product/vertical_column_troposphere", variables)
 
     async def test_safe_retrieve_records_the_requested_time_range_scope_for_the_job(self):
-        """T46: safe_retrieve only ever sees an opaque aoi_handle (not a place
+        """safe_retrieve only ever sees an opaque aoi_handle (not a place
         name), but it knows the requested time_range — record it so a later
         plot can disclose a single-day request served by a monthly mean."""
         from tta_backend.services import scope_registry
@@ -703,8 +701,8 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_safe_retrieve_records_what_the_wait_is_for(self):
         """Everything that makes a multi-minute materialize legible is known
-        right here, synchronously, and used to be dropped: the science variable
-        (already isolated for the T25 choice record), the requested time range,
+        right here, synchronously, and must not be dropped: the science variable
+        (already isolated for the choice record), the requested time range,
         and the size the estimator just quoted."""
         from tta_backend.services import retrieval_narration
         from tta_backend.services.retrieval_composites import safe_retrieve
@@ -981,7 +979,7 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(result["job_handle"], variable_choice_registry._pending)
 
     async def test_safe_retrieve_records_the_science_variable_when_a_qa_flag_rides_along(self):
-        """T25 review #2: a standard TEMPO retrieval requests the science
+        """A standard TEMPO retrieval requests the science
         variable *and* main_data_quality_flag together (both group-qualified).
         Counting raw ``variables`` would see 2 and record nothing, so the
         opened 2-var file later refuses. The QA flag isn't a science choice --
@@ -1060,7 +1058,7 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
     "MCP client test dependencies are not installed",
 )
 class PointTimeseriesTests(unittest.IsolatedAsyncioTestCase):
-    """T20: the point-timeseries composite — resolve AOI, gate the
+    """The point-timeseries composite — resolve AOI, gate the
     requested span, submit a point-sampled retrieve_timeseries call, and
     await it to a terminal state. Chart/open concerns live in the tool
     wrapper (tools/satellite_tools/retrieval_tools.py); this only covers
@@ -1156,7 +1154,7 @@ class PointTimeseriesTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("product/main_data_quality_flag", submitted["variables"])
 
     async def test_point_timeseries_records_the_requested_location_and_time_range_scope(self):
-        """T46: point_timeseries has both the place name and the time range, so
+        """point_timeseries has both the place name and the time range, so
         it records the full requested scope — echoed onto the cube handle the
         job resolves to (via await_retrieval), disclosable end-to-end."""
         from tta_backend.services import scope_registry

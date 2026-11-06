@@ -1,7 +1,7 @@
 """
 tests/test_variable_roles.py
 ============================
-PRD T35 — variable-role taxonomy. Validated against the *real* product
+Variable-role taxonomy. Validated against the *real* product
 inventories captured under ``tests/fixtures/variable_inventories/`` (task
 zero: describe_dataset against every registered collection, plus a spot
 granule open for MODIS AOD where UMM-Var is empty), not against the rules the
@@ -344,7 +344,7 @@ class EnrichmentSeamTests(unittest.TestCase):
         """A live MCP response with a non-string variable name must not become
         an unhandled 500 (api.py registers only the MCPToolError handler): the
         result degrades to its bare, inventory-less shape — the same honest
-        degrade plot_tools' evidence path already applies (T18 doctrine)."""
+        degrade plot_tools' evidence path already applies."""
         from tta_backend.services.discovery_service import _attach_inventory
 
         result = {"handle": "dataset_x", "variables": [{"name": 123}]}

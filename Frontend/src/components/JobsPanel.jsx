@@ -30,7 +30,7 @@ function MetadataRow({ label, value }) {
   )
 }
 
-// PRD 021's enriched get_retrieval_status fields — undefined for whichever
+// The MCP's enriched get_retrieval_status fields — undefined for whichever
 // don't apply to this job's provider/shape, so each row hides itself rather
 // than showing a blank value.
 function JobMetadata({ job }) {

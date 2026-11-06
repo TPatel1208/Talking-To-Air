@@ -10,7 +10,7 @@ first produces narration.
 The stamp is applied to the frame iterator at the one point both protocols
 share, *outside* ``ChatStreamService``. That placement is the property worth
 pinning: the fast path dispatches sub-agents directly and never enters
-``stream_response`` (the same seam T63 Phase 5's heartbeat fell through), so
+``stream_response``, so
 anything that stamps from inside a route is one new route away from being
 wrong.
 """

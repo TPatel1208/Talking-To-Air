@@ -14,7 +14,7 @@ regardless of how many granules landed in it. If the delta below is material,
 the current implementation does not deliver that intent at masked pixels, and
 T59 D4 becomes a correctness fix rather than a viewer prerequisite.
 
-Metric (T59 D16)
+Metric
 ----------------
 Over cells finite in BOTH fields, with ``w = cos(latitude)``::
 

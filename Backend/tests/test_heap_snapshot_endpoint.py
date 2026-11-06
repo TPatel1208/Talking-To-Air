@@ -1,5 +1,4 @@
-"""T45: a one-off heap-profiling seam for chasing a specific memory
-incident (the 2026-07-17 QA jump-and-plateau) -- gated behind
+"""A heap-profiling seam for chasing memory issues -- gated behind
 DEBUG_HEAP_PROFILING_ENABLED so tracemalloc's per-allocation overhead is
 opt-in, never a standing production cost. The endpoint requires auth like
 every other route (not listed in PUBLIC_ENDPOINTS).

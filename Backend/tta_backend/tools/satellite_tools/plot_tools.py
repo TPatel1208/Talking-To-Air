@@ -123,17 +123,11 @@ def overlay_store_dir() -> str:
     """Where rendered overlay PNGs are persisted.
 
     Overlays must only be reachable through the authenticated
-    /chart/{id}/overlay.png route (T23), so nothing serves this directory
+    /chart/{id}/overlay.png route, so nothing serves this directory
     statically.
 
-    Resolved per call from settings, and *not* a module constant with an
-    ``os.makedirs`` beside it, as it was until this became a setting. A constant
-    can only be computed at import time, and the value available then was
-    ``APP_ROOT``-relative — so merely importing this module created
-    ``Backend/overlay_store/`` inside the checkout, and the test suite wrote
-    into the developer's own store. Gitignored, so that state survived branch
-    switches and stayed invisible to ``git status``. The directory is now
-    created at write time by the one function that writes.
+    Resolved per call from settings (not at import time), so importing this
+    module never creates a directory. The writer creates it on demand.
     """
     return get_settings().overlay_store_dir
 
@@ -301,10 +295,8 @@ def _da_to_heatmap_payload(
     diverging: bool = False, render_overlay: bool = False, value_range: tuple[float, float] | None = None,
     scale_disclosure: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    # T51: the overlay PNG rasterization and grid downsampling are pure CPU on
-    # the plot path, and are where a "the chart took forever" turn actually
-    # spends its time once the data is in memory. Timed at this one seam so
-    # every caller (singular/multiple/compare panels) is covered.
+    # Rasterization and downsampling are where a slow plot spends its CPU
+    # time. Timed at this one seam so every caller is covered.
     with phase_timer(
         "render",
         cells_in=int(getattr(da, "size", 0)),
@@ -351,16 +343,12 @@ def _build_heatmap_payload(
     # A caller may impose a shared/diverging scale across multiple panels
     # (comparison_tools) -- the overlay below must colorize against that
     # same range, or the rendered map and its legend would disagree about
-    # what a color means (T23's anti-drift guarantee).
+    # what a color means.
     vmin, vmax = value_range if value_range is not None else _percentile_bounds(arr)
-    # Disclose how the color scale was set so the legend can be honest about
-    # saturation (T43): a percentile clip saturates the extreme tails, which a
-    # reader must not mistake for the data's true range. A caller imposing its
-    # own range (comparison's shared/diverging scale) says how that range was
-    # derived via ``scale_disclosure`` -- a shared 2/98 clip or a diverging
-    # 98th-percentile-magnitude clip is still a clip, just computed across
-    # panels, so the same saturation warning must fire. Absent a disclosure,
-    # an imposed range is a true fixed choice (nothing to clip).
+    # Disclose how the color scale was set, so the legend can warn that a
+    # percentile clip saturates the tails. A caller imposing its own range
+    # passes ``scale_disclosure`` if that range is also a clip; without one,
+    # an imposed range is a fixed choice (nothing to warn about).
     if value_range is not None:
         scale = scale_disclosure if scale_disclosure is not None else {"method": "explicit"}
     else:
@@ -370,7 +358,7 @@ def _build_heatmap_payload(
     lons_out = da[lon_coord].values
 
     # Full-native-resolution extent, captured before downsampling, for the
-    # server-rendered overlay PNG (T23) — visual fidelity and interaction
+    # server-rendered overlay PNG — visual fidelity and interaction
     # resolution are deliberately decoupled. The bounds are pixel-EDGE, not
     # pixel-center: render_overlay rasterizes edge-to-edge (left =
     # lons[0] - res/2, …), so reporting center min/max here would pin an
@@ -429,7 +417,7 @@ def _heatmap_dims(payload: dict[str, Any] | None) -> list[int] | None:
 
 def _summary_dims_and_range(payload: dict[str, Any], render_type: str | None) -> tuple[Any, Any, Any]:
     """Grid dimensions and value range for the compact model-facing summary —
-    enough for the agent to describe the chart (T13 story #4) without
+    enough for the agent to describe the chart without
     re-reading the raw grid."""
     if render_type == "heatmap":
         return _heatmap_dims(payload), payload.get("vmin"), payload.get("vmax")
@@ -458,7 +446,7 @@ def _summary_dims_and_range(payload: dict[str, Any], render_type: str | None) ->
 
 
 def _chart_model_summary(payload: dict[str, Any]) -> dict[str, Any]:
-    """The compact, model-facing view of a chart payload (T13): render type,
+    """The compact, model-facing view of a chart payload: render type,
     title, variable, units, dimensions, value range, artifact id, and source
     handles — everything the agent needs to describe the chart and cite it,
     never the raw grid the frontend renders from ``emit_chart``."""
@@ -485,14 +473,11 @@ def _chart_model_summary(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _frames_summary(payload: dict[str, Any]) -> dict[str, Any]:
-    """What the model is told about the chart's time axis (T59 D7/D3).
+    """What the model is told about the chart's time axis.
 
-    Compact, in T13's posture -- the axis itself is up to 60 labeled intervals
-    with coverage and QA rates on each, and the agent needs none of that to say
-    "you can scrub this". What it does need is the two facts it cannot see any
-    other way: that a scrubber exists, and, when one does not, WHICH refusal
-    was hit. A disclosure that never leaves the payload is a disclosure nobody
-    is told, because the agent only ever sees this summary.
+    Kept compact: the agent only needs to know that a scrubber exists or,
+    if not, which refusal was hit. It only ever sees this summary, so a
+    refusal not stated here never reaches the user.
     """
     frames = payload.get("frames")
     if isinstance(frames, dict) and frames.get("frames"):
@@ -500,9 +485,8 @@ def _frames_summary(payload: dict[str, Any]) -> dict[str, Any]:
             "n_frames": len(frames["frames"]),
             "cadence": frames.get("cadence"),
             "tier": frames.get("tier"),
-            # D6a decision 7's toggle. Compact in T13's posture -- names, not
-            # the per-plane disclosure blocks, because the agent needs to know
-            # a max exists and not what its ``extent_overstatement`` was.
+            # Names only: the agent needs to know a max plane exists, not its
+            # per-plane disclosures.
             "statistics": _scrubbable_statistics(frames),
         }
         planes_unavailable = frames.get("planes_unavailable")
@@ -521,14 +505,11 @@ def _scrubbable_statistics(frames: dict[str, Any]) -> list[str]:
 
     Derived from the keys that LANDED, never from what was asked for: a plane
     whose write failed, or one evicted since, has a block entry and no ``_key``,
-    and an agent that offered it would be promising a toggle the researcher
-    watches 404. The same rule the urls are minted under, read off the same
-    field.
+    and offering it would promise a toggle that 404s. Same rule the urls
+    are minted under.
 
-    ``"mean"`` leads the list although it is never a ``planes`` key -- it is the
-    chart's own top-level entry (D6a decision 5), and a list that named only the
-    extras would read as though the default were not among them. Ordered by
-    ``PLANE_STATISTICS`` rather than by dict order so the agent sees one stable
+    ``"mean"`` leads the list even though it's the chart's top-level entry,
+    not a ``planes`` key. Ordered by ``PLANE_STATISTICS`` for a stable
     vocabulary.
     """
     from tta_backend.preprocessing.frame_stack import PLANE_STATISTICS
@@ -574,9 +555,9 @@ def _wire_overlay_urls(payload: dict[str, Any]) -> None:
 
 def _save_chart(payload: dict[str, Any], name: str) -> str:
     """Emit the full chart payload out-of-band (frontend chart/artifact
-    pipeline) and return a compact model-facing summary (T13).
+    pipeline) and return a compact model-facing summary.
 
-    Mints a stable artifact id for render types the T06 artifact vocabulary
+    Mints a stable artifact id for render types the artifact vocabulary
     covers (map/comparison/timeseries) and embeds an `_artifact_refs` entry
     so the id is visible to both the calling LLM (to cite in its envelope,
     see config/earthdata_agent_prompt.py) and the gallery — mirroring the
@@ -611,7 +592,7 @@ def _save_chart(payload: dict[str, Any], name: str) -> str:
 def _open_dataarray(ds: xr.Dataset, handle: str | None = None, variable: str | None = None) -> xr.DataArray:
     """Pick the science variable off an opened Dataset, unmasked.
 
-    Resolution (T25): explicit ``variable`` -> the choice recorded for
+    Resolution: explicit ``variable`` -> the choice recorded for
     ``handle`` at retrieval time -> the file's only data variable -> the
     collection's pinned ``primary_var`` (via short_name attr) -> a structured
     candidate-listing error (AggregationService.to_dataarray).
@@ -662,7 +643,7 @@ def _query_definition(da: xr.DataArray, region: dict[str, Any] | None, aggregati
 
 
 def _dataset_facts(col_info: dict[str, Any] | None) -> dict[str, Any]:
-    """Registry facts about the *collection* (T32) -- distinct from
+    """Registry facts about the *collection* -- distinct from
     ``provenance["variable"]``, which names the science variable plotted,
     not the dataset it came from. ``col_info`` is whatever
     ``col_info_for_variable`` already resolved for the masking pipeline
@@ -679,18 +660,17 @@ def _dataset_facts(col_info: dict[str, Any] | None) -> dict[str, Any]:
         "provider": provider,
         "instrument": instrument,
         "source": " — ".join(part for part in (provider, instrument) if part),
-        # T57: where the product sits in its provider's validation lifecycle,
-        # and that provider's own caveat. Rides in provenance so it reaches the
-        # chart disclosure and, from there, methods.md -- a "don't publish on
-        # this" warning is worthless if it only ever appears in chat.
+        # The product's validation maturity and the provider's caveat. Kept in
+        # provenance so it reaches the chart disclosure and methods.md, not
+        # just chat.
         "maturity": col_info.get("maturity") or "unknown",
         "maturity_note": col_info.get("maturity_note") or "",
     }
 
 
 def _variable_definition(da: xr.DataArray, col_info: dict[str, Any] | None) -> dict[str, Any]:
-    """long_name/valid-range/mask facts for the plotted variable (T32
-    Details -> Variable Definition), sourced from the registry col_info
+    """long_name/valid-range/mask facts for the plotted variable (Details ->
+    Variable Definition), sourced from the registry col_info
     already resolved for masking and the CF ``long_name`` attribute the
     opened DataArray already carries -- no new MCP round trip.
     ``advisory_notes`` stays empty here: those only exist in describe_dataset's
@@ -720,8 +700,8 @@ def _variable_definition(da: xr.DataArray, col_info: dict[str, Any] | None) -> d
 
 
 def _qa_methodology(col_info: dict[str, Any] | None) -> dict[str, Any]:
-    """The pinned collections.yaml QA rule as general methodology (T32
-    Details -> Provenance) -- distinct from ``masking``, which discloses
+    """The pinned collections.yaml QA rule as general methodology (Details
+    -> Provenance) -- distinct from ``masking``, which discloses
     what was actually applied to *this* request."""
     col_info = col_info or {}
     methodology = {
@@ -750,7 +730,7 @@ def _inventory_records(ds: xr.Dataset) -> list[dict[str, Any]]:
 
 
 def _related_variables(da: xr.DataArray, col_info: dict[str, Any] | None, ds: xr.Dataset | None = None) -> dict[str, Any]:
-    """A lightweight related-variables view for the chart page (PRD T35): the
+    """A lightweight related-variables view for the chart page: the
     plotted variable's role plus its QA/uncertainty/context siblings. Built
     from the opened Dataset's actual bands when it travels — the SAME source
     ``_evidence`` reads, so the related-variables panel and the evidence facts
@@ -820,7 +800,7 @@ def _band_time_mean(band: xr.DataArray, resolved: dict[str, Any]) -> xr.DataArra
     dimension to a per-pixel mean, so an evidence fact describes the SAME
     time-reduced field the science variable is plotted as -- not a
     space-time-mean that, for uncertainty, would be divided by the science
-    *time-mean* (two incommensurable aggregations; T36 evidence honesty).
+    *time-mean* (two incommensurable aggregations).
 
     Fill/range masking happens BEFORE the time reduction so a fill sentinel
     (e.g. -9999) is never averaged into the per-pixel mean; the time collapse
@@ -874,7 +854,7 @@ def _band_mean_fact(
     if valid_count == 0:
         return None
     # Cos(latitude) area-weighted, the SAME regional-mean definition as the
-    # headline science mean (Finding #13) -- an unweighted grid-cell mean
+    # headline science mean -- an unweighted grid-cell mean
     # over-weights poleward pixels, so context/uncertainty evidence over a
     # continental region would silently disagree with the value it qualifies.
     # Falls back to the unweighted mean when the band has no latitude dim.
@@ -896,20 +876,20 @@ def _band_mean_fact(
 
 
 def _evidence(ds: xr.Dataset | None, da: xr.DataArray, col_info: dict[str, Any] | None, region: dict[str, Any] | None) -> list[dict[str, Any]]:
-    """Deterministic companion-evidence facts (PRD T36 Phase 2): the quality
+    """Deterministic companion-evidence facts: the quality
     and context bands sitting unused beside the plotted science variable in the
     same opened Dataset, summarized as co-located facts a scientist can use to
     judge *this* measurement -- retrieval uncertainty, cloud fraction, aerosol
-    index -- each with honest coverage. No LLM, no narrative; this is the facts
-    layer P3 will later explain. The QA pass rate is deliberately NOT here
-    (T55): it is counted where the mask is applied and reported once as masking
-    provenance, so it cannot disagree with the plotted data.
+    index -- each with honest coverage. No LLM, no narrative;
+    measurement_explanation turns these into words. The QA pass rate is
+    deliberately NOT here: it is counted where the mask is applied and reported
+    once as masking provenance, so it cannot disagree with the plotted data.
 
-    Driven entirely by T35's ``classify_inventory`` over ``ds.data_vars`` (the
+    Driven entirely by ``classify_inventory`` over ``ds.data_vars`` (the
     High-confidence CF ``standard_name`` tier is reachable here, post-open) so
     an evidence band is never invented -- a product with no context siblings
     (e.g. MODIS AOD) yields ``[]``. Only bands already present in ``ds`` are
-    read; fetching a companion the file lacks is out of scope (Phase 3+).
+    read; companions the file lacks are not fetched.
 
     Returns a list of ``{name, role, stat, value, units, coverage}`` facts
     (uncertainty facts may add ``pct_of_science``). Best-effort: a band that
@@ -985,7 +965,7 @@ def _evidence_facts(
     science_leaf = _evi_leaf(da.name)
 
     # The masked science mean, for uncertainty-as-percent-of-science. Cos-lat
-    # area-weighted (Finding #13) so the pct-of-science ratio divides a
+    # area-weighted so the pct-of-science ratio divides a
     # weighted band mean by a weighted science mean -- like by like -- rather
     # than mixing a weighted numerator with an unweighted denominator.
     #
@@ -994,10 +974,8 @@ def _evidence_facts(
     science_mean = _DeferredScienceMean(da)
 
     # Locate the QA-flag variable purely to EXCLUDE it from the context/
-    # uncertainty loop below. Its pass rate is not an evidence fact: T55 counts
-    # it where the mask is actually applied (aggregation_service) and reports it
-    # once as masking provenance, so there is no second computation here that
-    # could legitimately disagree with the mask the chart was drawn from.
+    # uncertainty loop below. Its pass rate is counted once where the mask is
+    # applied (aggregation_service), so it can't disagree with the chart.
     qf_var = _aggregation_service.qa_flag_variable(ds, da, col_info)
     qf_leaf = _evi_leaf(qf_var) if qf_var else None
 
@@ -1063,7 +1041,7 @@ def _merged_multi_provenance(panels: list[dict[str, Any]]) -> dict[str, Any]:
     — minus the per-panel ``evidence``/``related_variables`` sections. Those
     are region-specific facts (QA pass rate, cloud fraction); presenting one
     panel's as the whole comparison's would mislead exactly the trust
-    judgment they exist to support (T36). Each panel keeps its own."""
+    judgment they exist to support. Each panel keeps its own."""
     merged = dict(panels[0].get("provenance", {}))
     merged.pop("evidence", None)
     merged.pop("related_variables", None)
@@ -1076,8 +1054,8 @@ def _merged_multi_provenance(panels: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _delivered_scope(region_name: str, start_date: str, end_date: str, agg_meta: dict[str, Any] | None) -> dict[str, Any]:
     """The scope the retrieval actually delivered — region and the data's own
-    date span and cadence. Compared against the recorded requested scope by
-    the T46 disclosure template."""
+    date span and cadence. Compared against the recorded requested scope to
+    disclose any substitution."""
     return {
         "region_name": region_name,
         "start_date": start_date,
@@ -1088,7 +1066,7 @@ def _delivered_scope(region_name: str, start_date: str, end_date: str, agg_meta:
 
 def _requested_scope(handles: list[str]) -> dict[str, Any] | None:
     """The requested scope a composite recorded for any of this chart's source
-    handles (T46), or None if none was recorded (a plot over a handle minted
+    handles, or None if none was recorded (a plot over a handle minted
     outside safe_retrieve/point_timeseries — nothing to disclose against)."""
     for handle in handles:
         recorded = scope_registry.get(handle)
@@ -1108,21 +1086,16 @@ def _provenance(
         "start_date": start_date,
         "end_date": end_date,
         "region_name": region_name,
-        # T46 silent scope substitution: the delivered scope (always) and the
-        # requested scope the composite recorded for this handle (when one was
-        # recorded) travel together, so the dispatch layer can disclose a
-        # single-day request served by a monthly mean, or a clamped range, in
-        # the chat answer -- not just the Metadata tab's fine print.
+        # Delivered and requested scope travel together, so the answer can
+        # disclose e.g. a single-day request served by a monthly mean.
         "delivered_scope": _delivered_scope(region_name, start_date, end_date, agg_meta),
         "requested_scope": _requested_scope(handles),
-        # T42 region fidelity: what kind of region was masked, and the
+        # Region fidelity: what kind of region was masked, and the
         # display_name it resolved to -- so a bounding-box "US" or a
         # wrong-place geocode is checkable in the answer, not just the title.
         "region_type": (region or {}).get("region_type"),
-        # T60 D10a: region_type is the *rasterization* fact and
-        # apply_mask_region_type overwrites it on a self-heal. The shape's
-        # own provenance -- "this was a construction, not a named place" --
-        # travels beside it or it is lost before the researcher sees it.
+        # region_type can be overwritten on a self-heal, so whether the shape
+        # was constructed (not a named place) is carried separately.
         "region_origin": (region or {}).get("region_origin"),
         "display_name": (region or {}).get("display_name") or region_name,
         "aggregation": aggregation,
@@ -1140,22 +1113,19 @@ def _provenance(
         provenance["cadence"] = agg_meta["cadence"]
         provenance["granule_dates"] = agg_meta["granule_dates"]
         if agg_meta.get("masking"):
-            # T25 Phase 3: qa_status (verified/cf-deterministic/inferred, not
+            # qa_status (verified/cf-deterministic/inferred, not
             # verified/not applied) travels into the answer the agent sees,
             # not just internal meta -- an inferred QA mask must be a
             # disclosed fact, never a silent guess.
             provenance["masking"] = agg_meta["masking"]
         if agg_meta.get("variable_resolution"):
-            # T48: which variable the resolver auto-picked (and its disclosure)
+            # Which variable the resolver auto-picked (and its disclosure)
             # rides into provenance, so the dispatch layer can append the
             # deterministic note naming the chosen product + alternatives.
             provenance["variable_resolution"] = agg_meta["variable_resolution"]
         if agg_meta.get("level_resolution"):
-            # T58 D5: which layer a physical level resolved to, how much of the
-            # analyzed region agrees with that layer, and how far the layer
-            # actually sits from what was asked. Travels with the result because
-            # "nearest available layer to 300 hPa" and "a 300 hPa map" are
-            # different claims, and only the disclosure distinguishes them.
+            # Which layer a physical level resolved to and how far it is from
+            # what was asked: "nearest layer to 300 hPa" isn't "a 300 hPa map".
             provenance["level_resolution"] = agg_meta["level_resolution"]
     return provenance
 
@@ -1199,7 +1169,7 @@ def _attach_reproducibility(
     return payload
 
 
-# ── Frame stack (T59 Phase 5) ─────────────────────────────────────────────────
+# ── Frame stack ───────────────────────────────────────────────────────────────
 
 #: Which gate refusals a reader is told about, and which pass in silence.
 #:
@@ -1218,24 +1188,19 @@ _DISCLOSED_FRAME_REFUSALS = ("cadence_unknown", "span_too_long", "extent_too_lar
 
 
 def _attach_frames(payload: dict[str, Any], result: AggregatedResult, masked: xr.DataArray, agg_meta: dict[str, Any]) -> None:
-    """D7's auto-upgrade: give ``payload`` a browsable time axis, or say why not.
+    """Give ``payload`` a browsable time axis, or say why not.
 
-    Additive and optional, always (D15). ``type`` stays ``"heatmap"``, the
-    aggregate stays exactly what it was, and every unupgraded consumer --
-    ``CHART_TABS``, ``_RENDER_TYPE_TO_ARTIFACT_TYPE``, export's ``heatmap_multi``
-    branches -- keeps reading the aggregate and stays correct. That is the
-    fallback, not a bug.
+    Purely additive: ``type`` stays ``"heatmap"`` and the aggregate is
+    unchanged, so consumers that ignore frames stay correct.
 
     ``result`` is the ``AggregatedResult``, which carries the masked field the
     map was reduced from and the QA counters the mask recorded on the way.
     ``masked`` is the pre-QA geometry-masked array, the only place
-    ``region_area`` exists. Both are handed over rather than re-derived: D5a
-    binds here, and a number the caller forgets to pass is a second full I/O
-    pass over a lazily-opened bundle with nothing saying so.
+    ``region_area`` exists. Both are passed in because re-deriving them would
+    be a second full read of a lazily-opened bundle.
 
-    Never raises. A frame stack is a rendering convenience, and nothing about
-    building one may cost a researcher the chart they asked for -- the same
-    posture ``_render_and_store_overlay`` takes toward a failed PNG render.
+    Never raises: a failed frame stack must never cost the user the chart
+    (same as ``_render_and_store_overlay``).
     """
     from tta_backend.preprocessing import frame_stack as frame_stack_module
     from tta_backend.preprocessing.frame_stack import (
@@ -1267,12 +1232,9 @@ def _attach_frames(payload: dict[str, Any], result: AggregatedResult, masked: xr
     # frame_gate refuses a missing time axis, so past it there always is one.
     assert time_dim is not None
 
-    # D6a's extra planes, behind their own extent limit. A chart above it is
-    # NOT refused -- it keeps exactly the mean scrubber it has always had, and
-    # only the toggle is withheld -- because Phase 14 measured the three-
-    # statistic build being OOM-killed at extents the mean build completes at,
-    # and paying for the new tier with the old one is not a trade anyone asked
-    # for.
+    # Max/min planes have their own extent limit, because building all three
+    # statistics can OOM where the mean alone fits. Above it the chart keeps
+    # its mean scrubber; only the toggle is withheld.
     plane_refusal = plane_gate(field.data, time_dim=time_dim)
     statistics = ("mean",) if plane_refusal is not None else PLANE_STATISTICS
 
@@ -1283,14 +1245,11 @@ def _attach_frames(payload: dict[str, Any], result: AggregatedResult, masked: xr
                 time_dim=time_dim,
                 cadence=cadence,
                 statistics=statistics,
-                # Every scientific quantity off the NATIVE field (D5a). The
-                # region's own cos(latitude)-weighted footprint denominates
-                # coverage -- without it a frame is denominated on the BOUNDING
-                # BOX, and a complete retrieval over the continental US reads
-                # 60% covered because the Atlantic counts as missing
-                # observations. The counters carry the per-timestep areas
-                # finding 12's roll-up needs, and the value bracket the pooled
-                # 2-98 histogram would otherwise buy with a second full pass.
+                # Every quantity comes from the native field. Coverage uses the
+                # region's own footprint, not the bounding box (otherwise a full
+                # US retrieval reads 60% covered because the Atlantic counts as
+                # missing). The counters also save a second pass for the 2-98
+                # histogram.
                 region_area=masked.attrs.get("region_area"),
                 qa_counts=field.counts,
             )
@@ -1302,11 +1261,9 @@ def _attach_frames(payload: dict[str, Any], result: AggregatedResult, masked: xr
         return
 
     if plane_refusal is not None:
-        # Beside the axis rather than beside ``frames_unavailable``, because
-        # this chart HAS a scrubber -- what it lacks is the toggle, and a
-        # reader who finds no toggle and no reason is in exactly the position
-        # ``_DISCLOSED_FRAME_REFUSALS`` exists to keep them out of. Additive,
-        # and absent entirely when every plane was built (D15).
+        # Next to the axis, not ``frames_unavailable``: the chart has a
+        # scrubber, it just lacks the toggle, and that should come with a
+        # reason. Absent when every plane was built.
         block["planes_unavailable"] = {
             "reason": plane_refusal.reason, "detail": plane_refusal.detail,
         }
@@ -1326,27 +1283,21 @@ def _attach_frames(payload: dict[str, Any], result: AggregatedResult, masked: xr
             "cells_per_frame": stack.cells_per_frame,
             "coarsen_k": [int(k) for k in stack.coarsen_k],
             "boundary": "pad",
-            # What the EXPORT is, unchanged and unchanging (D12). The exported
+            # What the EXPORT is, unchanged and unchanging. The exported
             # thing is still the period aggregate of the mean, so this field
             # still says so.
             "statistic": "mean",
-            # What the SCRUBBER offers, which is a different fact about the
-            # same recipe and therefore a different key. Renaming or
-            # repurposing the one above would change the meaning of a field
-            # already on the wire -- the one thing D15 exists to prevent -- and
-            # leave every archived row ambiguous about which sense it meant.
-            # Derived from what LANDED, so the row reproduces the stack it
-            # holds rather than the one that was asked for.
+            # What the SCRUBBER offers: a separate key, so the field above
+            # keeps its meaning on archived rows. Derived from what landed,
+            # not what was asked for.
             "statistics": _scrubbable_statistics(block),
             "dtype": "float32",
             "span": [stack.frames[0].t_start, stack.frames[-1].t_end],
             "pipeline_version": OPEN_PIPELINE_VERSION,
         },
-        # D12, said in the row rather than only in JSX: export is the period
-        # aggregate and is unchanged by any of this. The frame grid is a
-        # rendering resolution -- a 20,000-cell block mean that has already
-        # lost 16% of its own p98 at k=8 -- and exporting it would put a
-        # downsampled field into someone's paper.
+        # Recorded in the row, not just the UI: exports are the period
+        # aggregate. The frame grid is a downsampled rendering and must never
+        # end up in someone's paper.
         "exports": "period aggregate",
     }
 
@@ -1358,15 +1309,11 @@ def _wire_frames_url(payload: dict[str, Any]) -> None:
     ``chart_id`` exists, and the key addresses the blob store directly rather
     than being anything the frontend may hold.
 
-    No ``_key`` means the axis is drawn and the values did not land, which is a
-    state D8 already requires the frontend to handle: a labeled, unscrubbable
-    axis. It is also exactly what an evicted chart looks like later.
+    No ``_key`` means the values didn't land: the frontend shows a labeled
+    axis that can't be scrubbed (same as an evicted chart).
 
-    Each of D6a's extra planes gets the same treatment under the same rule, at
-    a path of its own (Phase 13 decision 1). Applied PER PLANE rather than to
-    the block as a whole: ``store_frame_stack`` degrades one statistic at a
-    time, so an absent url here means that statistic is unavailable and never
-    that the chart is broken. The mean's url is untouched by any of it.
+    Each extra plane gets its own url under the same rule, per plane, so a
+    missing url means only that statistic is unavailable.
     """
     frames = payload.get("frames")
     chart_id = payload.get("chart_id")
@@ -1379,16 +1326,13 @@ def _wire_frames_url(payload: dict[str, Any]) -> None:
             plane["url"] = f"/chart/{chart_id}/frames.{statistic}.f32.gz"
 
 
-# ── Vertical profile (T56) ────────────────────────────────────────────────────
+# ── Vertical profile ──────────────────────────────────────────────────────────
 
-# Post-narrowing ceiling on the cells a profile reduces over (T56 D11). The
-# reduction is a mean that dask streams at num_workers=2, so peak memory stays
-# chunk-bounded no matter how large this gets -- what runs away is wall clock. A
-# regional profile is nowhere near it (a New Jersey box is ~38x38x24 per
-# granule); a full-domain one is 137M cells per variable per scan, which would
-# spend minutes producing 24 numbers. Refused as the same structured too_large
-# error every other size gate raises, so the agent relays "narrow the request"
-# instead of the researcher watching a turn time out.
+# Post-narrowing ceiling on the cells a profile reduces over. Memory stays
+# chunk-bounded regardless; this protects wall-clock time. Regional profiles
+# are far below it (New Jersey is ~38x38x24 per granule); a full domain would
+# take minutes. Raises the standard too_large error so the agent asks the user
+# to narrow the request.
 _MAX_PROFILE_CELLS = 40_000_000
 
 
@@ -1670,8 +1614,8 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]) -> BaseTool:
             ds = await open_handle(handle, mcp_tools)
             # Normalize longitude on the whole opened Dataset, before
             # extracting the science DataArray -- so it and its sibling
-            # QA-flag variable (still reachable through ds, T25 masking-
-            # execution fix) share one coordinate convention. Doing this
+            # QA-flag variable (still reachable through ds) share one
+            # coordinate convention. Doing this
             # only on the extracted DataArray would leave ds's flag variable
             # on the original 0..360 convention, and da.where(qf.isin(...))
             # would align on an empty intersection instead of masking.
@@ -1680,10 +1624,9 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]) -> BaseTool:
                 ds = _normalize_longitudes(ds, ds_lon_coord)
             da = _open_dataarray(ds, handle=handle, variable=variable)
         except VariableChoiceRequired as e:
-            # T49: the file is genuinely ambiguous. Hand the choice to the
-            # researcher as a deterministic, uncapped picker (out-of-band), and
-            # return the compact P1-bounded refusal to the model as this call's
-            # terminal result — the model never sees or re-feeds the full list.
+            # Genuinely ambiguous file: send the researcher a variable picker
+            # out-of-band and return a compact refusal to the model, which
+            # never sees the full list.
             emit_variable_choice_payload(e.resolution, ds)
             emit_status("Waiting for a variable choice.", stage=STAGE_RENDER)
             return json.dumps({"error": e.mcp_error.to_dict()})
@@ -1695,9 +1638,8 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]) -> BaseTool:
             return json.dumps({"error": f"Failed to open handle '{handle}': {e}"})
 
         emit_status("Resolving requested location...", stage=STAGE_RENDER)
-        # T60 D14: a composite that cannot be built raises the taxonomy's
-        # error naming the offending token -- a ``None`` return could never
-        # carry which token failed. Same shape as the open_handle catch.
+        # A composite region that can't be built raises an error naming the
+        # bad token (a None return couldn't say which one).
         try:
             region = await _resolver.aresolve_location(location)
         except MCPToolError as e:
@@ -1709,7 +1651,7 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]) -> BaseTool:
         emit_status("Generating visualization...", stage=STAGE_RENDER)
 
         def _mask_aggregate_payload() -> tuple[str | None, dict[str, Any] | None, str | None, Any]:
-            # CPU-bound mask -> aggregate -> payload chain (T16): run off the
+            # CPU-bound mask -> aggregate -> payload chain: run off the
             # event loop via admission.run_heavy below -- which also bounds how
             # many may run at once -- so a large grid doesn't
             # freeze every other concurrent stream for its duration.
@@ -1720,7 +1662,7 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]) -> BaseTool:
                     raise ValueError(f"Cannot find lat/lon coords. Available: {list(da.coords)}")
                 masked = _normalize_longitudes(da, lon_coord)
                 masked = mask_data_by_geometry(masked, region["geometry"])
-                apply_mask_region_type(masked, region)  # T42: disclose boundary_cells self-heal
+                apply_mask_region_type(masked, region)  # discloses a boundary_cells self-heal
                 bounds = region["bounds"]  # (minx, miny, maxx, maxy)
                 masked = _sel_bounds(masked, lat_coord, lon_coord, bounds)
             except Exception as e:
@@ -1729,13 +1671,11 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]) -> BaseTool:
             units = masked.attrs.get("units", "")
             variable_name = str(masked.name or "")
             col_info = col_info_for_variable(masked, ds)
-            # T58 D7 -- resolve early, select late. The vertical axes ride the
-            # time dimension, so aggregate() destroys them; a physical level has
-            # to be turned into an index HERE, on the narrowed pre-aggregation
-            # array. The index then goes through the SAME selection seam a
-            # direct dimension/dimension_value request uses, which is what keeps
-            # the two ways of asking for one layer agreeing about n_granules,
-            # date range and provenance (Architectural Constraint).
+            # Resolve early, select late: aggregate() destroys the vertical
+            # axes, so turn a physical level into an index here. It then uses
+            # the same selection path as a direct dimension request, so both
+            # ways of asking for a layer agree on n_granules, dates and
+            # provenance.
             selected_dim, selected_value = dimension, dimension_value
             level_disclosure = None
             try:
@@ -1759,7 +1699,7 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]) -> BaseTool:
             agg_meta = aggregation.meta
             if level_disclosure is not None:
                 agg_meta["level_resolution"] = level_disclosure
-            # T48: the variable-resolution disclosure was stashed on ``da`` by
+            # The variable-resolution disclosure was stashed on ``da`` by
             # to_dataarray, but masking's ``.where`` above stripped it before
             # aggregate() saw ``masked`` -- so carry it across from the
             # pre-mask array into the meta the provenance is built from.
@@ -1794,7 +1734,7 @@ def make_plot_singular(mcp_tools: dict[str, BaseTool]) -> BaseTool:
             except Exception as e:
                 return "payload", None, None, f"Failed to build chart payload: {e}"
 
-            # T59 D7: the time axis this map collapsed, kept and browsable --
+            # The time axis this map collapsed, kept and browsable --
             # after the reproducibility block, because the frame spec lands
             # beside it in ``payload["export"]``.
             _attach_frames(payload, aggregation, masked, agg_meta)
@@ -1864,7 +1804,7 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]) -> BaseTool:
                 # See plot_singular: normalize the whole Dataset's longitude
                 # before extraction, so da and its sibling QA-flag variable
                 # (still reachable through ds) share one coordinate
-                # convention (T25 masking-execution fix).
+                # convention.
                 ds_lon_coord = find_lon_coord(ds)
                 if ds_lon_coord:
                     ds = _normalize_longitudes(ds, ds_lon_coord)
@@ -1881,9 +1821,8 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]) -> BaseTool:
                 return json.dumps({"error": f"Failed to open handle '{handle}' for '{location}': {e}"})
 
             emit_status("Resolving requested location...", stage=STAGE_RENDER)
-            # T60 D14: a composite that cannot be built raises the taxonomy's
-            # error naming the offending token -- a ``None`` return could never
-            # carry which token failed. Same shape as the open_handle catch.
+            # A composite region that can't be built raises an error naming the
+            # bad token (a None return couldn't say which one).
             try:
                 region = await _resolver.aresolve_location(location)
             except MCPToolError as e:
@@ -1896,7 +1835,7 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]) -> BaseTool:
                 da: xr.DataArray = da, ds: xr.Dataset | None = ds, region: dict[str, Any] = region, handle: str = handle,
                 location: str = location, variable_name: str = variable_name,
             ) -> tuple[str | None, dict[str, Any] | None, str | None, Any]:
-                # CPU-bound mask -> aggregate -> payload chain (T16), run off
+                # CPU-bound mask -> aggregate -> payload chain, run off
                 # the event loop via admission.run_heavy below, which also bounds
                 # how many such reductions may hold memory at once.
                 try:
@@ -1906,7 +1845,7 @@ def make_plot_multiple(mcp_tools: dict[str, BaseTool]) -> BaseTool:
                         raise ValueError(f"Cannot find lat/lon coords. Available: {list(da.coords)}")
                     masked = _normalize_longitudes(da, lon_coord)
                     masked = mask_data_by_geometry(masked, region["geometry"])
-                    apply_mask_region_type(masked, region)  # T42: disclose boundary_cells self-heal
+                    apply_mask_region_type(masked, region)  # discloses a boundary_cells self-heal
                 except Exception as e:
                     return "mask", None, None, f"Masking failed for '{location}': {e}"
 
@@ -2060,9 +1999,8 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]) -> BaseTool:
             return json.dumps({"error": f"No time dimension found. dims={list(da.dims)}"})
 
         emit_status("Resolving requested location...", stage=STAGE_RENDER)
-        # T60 D14: a composite that cannot be built raises the taxonomy's
-        # error naming the offending token -- a ``None`` return could never
-        # carry which token failed. Same shape as the open_handle catch.
+        # A composite region that can't be built raises an error naming the
+        # bad token (a None return couldn't say which one).
         try:
             region = await _resolver.aresolve_location(location)
         except MCPToolError as e:
@@ -2074,10 +2012,10 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]) -> BaseTool:
 
         def _mask_aggregate_timeseries() -> tuple[str | None, Any]:
             # CPU-bound mask -> per-timestep aggregate -> payload chain
-            # (T16), run off the event loop via admission.run_heavy below, which also
+            # run off the event loop via admission.run_heavy below, which also
             # bounds how many such reductions may hold memory at once.
             masked = mask_data_by_geometry(da, region["geometry"])
-            apply_mask_region_type(masked, region)  # T42: disclose boundary_cells self-heal
+            apply_mask_region_type(masked, region)  # discloses a boundary_cells self-heal
 
             lat_coord = find_lat_coord(masked)
             lon_coord = find_lon_coord(masked)
@@ -2110,20 +2048,15 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]) -> BaseTool:
 
                 return "dimension_choice_required", _dimension_choice_error(masked, str(extra_dims[0])).to_dict()
 
-            # T25 masking-execution fix: route through the same shared
-            # masking-resolution path aggregate() uses (collections.yaml ->
-            # UMM-Var -> CF-attrs precedence, plus the three-tier QA-flag
-            # doctrine) instead of a hand-rolled apply_quality_mask(ds=None)
-            # call -- this path now actually applies QA-flag masking (via
-            # source_ds=ds) and discloses it honestly, the same as
-            # plot/stat, rather than a parallel copy that always claimed
-            # "not applied".
+            # Use the same masking path as aggregate() (collections.yaml ->
+            # UMM-Var -> CF attrs), so QA masking is actually applied (via
+            # source_ds=ds) and disclosed the same way as plot/stat.
             col_info = col_info_for_variable(masked, ds)
             masked, masking_provenance = _aggregation_service.resolve_and_mask(
                 masked, variable=variable_name, col_info=col_info, source_ds=ds,
             )
 
-            # One reduction, retaining time (T56 Phase 2). The regional mean is
+            # One reduction, retaining time. The regional mean is
             # the cos(latitude) area-weighted mean -- the SAME definition the
             # stats tool and the vertical profile use -- so a trend line, a
             # single-value stats mean and a profile over the identical region
@@ -2131,18 +2064,16 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]) -> BaseTool:
             # latitudes (cells shrink by cos(lat) toward the poles), biasing
             # continental trends; median/std/max/min stay per-cell.
             #
-            # This replaced a per-timestep Python loop. The arithmetic is the
-            # same, but the loop forced one walk of the lazily-opened bundle's
-            # dask graph PER GRANULE -- 36 walks on an ordinary TEMPO day, for
-            # 36 numbers.
+            # Vectorized: a per-timestep loop would walk the lazy dask graph
+            # once per granule.
             reduced = reduce_keeping_axes(masked, keep=(time_dim,), stat=stat)
 
             times, values, valid_time_indices = [], [], []
             for i, value in enumerate(np.atleast_1d(np.asarray(reduced.values))):
                 # NaN is "this timestep had nothing left after masking" -- it
                 # drops off the line rather than plotting as a very clean zero.
-                # (The companion QA series still covers it: T55 reports every
-                # timestep, including the ones the chart cannot show.)
+                # (The companion QA series still reports every timestep,
+                # including ones the chart can't show.)
                 if not np.isfinite(value):
                     continue
                 raw_time = masked[time_dim].values[i]
@@ -2161,7 +2092,7 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]) -> BaseTool:
             paired = sorted(zip(times, values, valid_time_indices, strict=True))
             sorted_times, sorted_values, sorted_valid_time_indices = zip(*paired, strict=True)
 
-            # T32: same aggregation_label/granule_dates/n_granules/cadence
+            # Same aggregation_label/granule_dates/n_granules/cadence
             # summary the heatmap/comparison paths get from aggregate() --
             # conduct_temporal_statistic keeps every timestep instead of
             # reducing over time, so it builds this from its own
@@ -2250,7 +2181,7 @@ def make_plot_vertical_profile(mcp_tools: dict[str, BaseTool]) -> BaseTool:
             # Same convention as every other tool: normalize the whole opened
             # Dataset's longitude before extraction, so the science variable
             # and anything still reached through ``ds`` share one coordinate
-            # convention (T25 masking-execution fix).
+            # convention.
             ds_lon_coord = find_lon_coord(ds)
             if ds_lon_coord:
                 ds = _normalize_longitudes(ds, ds_lon_coord)
@@ -2276,15 +2207,13 @@ def make_plot_vertical_profile(mcp_tools: dict[str, BaseTool]) -> BaseTool:
                     "conduct_temporal_statistic for a time series."
                 )})
             # More than one non-spatial, non-time axis: which one is "vertical"
-            # is a scientific choice, and the T25 doctrine is to refuse rather
-            # than guess. The existing structured error already lists the
+            # is a scientific choice, so refuse rather than guess. The existing structured error already lists the
             # candidate's values, which is what a caller needs to choose.
             return json.dumps({"error": _dimension_choice_error(da, candidates[0]).to_dict()})
 
         emit_status("Resolving requested location...", stage=STAGE_RENDER)
-        # T60 D14: a composite that cannot be built raises the taxonomy's
-        # error naming the offending token -- a ``None`` return could never
-        # carry which token failed. Same shape as the open_handle catch.
+        # A composite region that can't be built raises an error naming the
+        # bad token (a None return couldn't say which one).
         try:
             region = await _resolver.aresolve_location(location)
         except MCPToolError as e:
@@ -2296,7 +2225,7 @@ def make_plot_vertical_profile(mcp_tools: dict[str, BaseTool]) -> BaseTool:
         emit_status("Computing vertical profile...", stage=STAGE_RENDER)
 
         def _narrow_mask_reduce() -> tuple[str | None, Any]:
-            # CPU-bound narrow -> mask -> reduce chain (T16), run off the event
+            # CPU-bound narrow -> mask -> reduce chain, run off the event
             # loop via admission.run_heavy below, which also bounds how many
             # such reductions may hold memory at once.
             lat_coord = find_lat_coord(da)
@@ -2310,14 +2239,14 @@ def make_plot_vertical_profile(mcp_tools: dict[str, BaseTool]) -> BaseTool:
             # its lat/lon dims, so the same ``.where`` and crop narrow them
             # identically, with no second alignment to get wrong.
             narrowed = mask_data_by_geometry(da, region["geometry"])
-            apply_mask_region_type(narrowed, region)  # T42
+            apply_mask_region_type(narrowed, region)
             # The region's own footprint on this grid, captured before the bbox
             # crop and before masking strips attrs -- the honest denominator for
             # per-layer coverage (see _per_layer_valid_fraction).
             region_cells = narrowed.attrs.get("region_cells")
             narrowed = _sel_bounds(narrowed, lat_coord, lon_coord, region["bounds"])
 
-            # T56 D11: bounded AFTER narrowing, because narrowing is what makes
+            # Bounded AFTER narrowing, because narrowing is what makes
             # the ordinary regional case small. Peak memory is chunk-bounded
             # either way; what this protects is the researcher's wall clock.
             oversized = _profile_scale_guard(narrowed)
@@ -2333,7 +2262,7 @@ def make_plot_vertical_profile(mcp_tools: dict[str, BaseTool]) -> BaseTool:
                 narrowed, variable=variable_name, col_info=col_info, source_ds=ds,
             )
 
-            # D4 space-then-time: one area-weighted mean per (timestep, layer)
+            # Space then time: one area-weighted mean per (timestep, layer)
             # first, then the cadence-bucket-weighted mean over time. The
             # intermediate matrix is deliberately not kept -- that is the
             # curtain view, and nothing here reads it.

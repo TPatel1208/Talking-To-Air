@@ -20,7 +20,7 @@ import numpy as np
 
 
 def d16(f, m, lats):
-    """D16's metric, spelled as characterize_d4 and probe_t59_frame_stack spell
+    """The frame/map delta, computed as characterize_d4_bucket_mean does
     it: a ratio of cos(lat)-weighted sums, never a mean of per-pixel ratios."""
     w = np.broadcast_to(np.cos(np.deg2rad(lats))[:, None], m.shape)
     ok = np.isfinite(f) & np.isfinite(m)

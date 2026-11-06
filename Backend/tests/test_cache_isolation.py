@@ -1,24 +1,17 @@
 """Process-global cache isolation between tests, under any runner.
 
-Two caches here outlive a single test by design — T53's discovery-metadata
-cache (``earthdata_mcp.tool_cache``) and T-jobs' terminal-status cache
+Two caches here outlive a single test by design — the discovery-metadata
+cache (``earthdata_mcp.tool_cache``) and the jobs terminal-status cache
 (``services.jobs_service``). Both are process-lifetime state, so without
 something clearing them between tests, one test's call is served to the next
 test's identical call and that test's handler never runs. The symptom is not a
 visible cache error: the later test simply observes that its fake was never
 invoked.
 
-That is not hypothetical. It cost CI four failures
-(``test_earthdata_mcp_workspace``, ``test_earthdata_mcp_edl_injection``,
-``test_discovery_endpoint``), and it went unseen because the only thing clearing
-the caches was an autouse fixture in ``conftest.py`` — which pytest loads and
-``unittest`` does not. The suite was isolated under one runner and not the
-other, and nothing said so.
-
-So this module asserts the *property*, not the mechanism: a test that populates
-a cache must not leave it populated for the next one. It is deliberately
-runner-agnostic — it fails under any runner whose isolation is missing, which is
-exactly the signal that was absent before.
+An autouse fixture in ``conftest.py`` alone isn't enough (pytest loads it,
+``unittest`` does not), so this module asserts the *property*, not the
+mechanism: a test that populates a cache must not leave it populated for the
+next one, under any runner.
 
 The ``test_a_``/``test_b_`` prefixes are load-bearing: ``unittest`` orders test
 methods alphabetically and pytest uses definition order, so both runners execute
@@ -46,7 +39,7 @@ _ARGS = {"query": "isolation-probe"}
 
 
 class ToolCacheIsolationTests(ProcessCacheIsolation, unittest.TestCase):
-    """T53's discovery-metadata cache must not survive into the next test."""
+    """The discovery-metadata cache must not survive into the next test."""
 
     def test_a_a_test_can_populate_the_tool_cache(self) -> None:
         from tta_backend.earthdata_mcp import tool_cache
@@ -89,20 +82,18 @@ class TerminalStatusCacheIsolationTests(ProcessCacheIsolation, unittest.TestCase
 
 
 class CubeStoreIsolationTests(unittest.TestCase):
-    """T52's cube store leaks the other way: not stale memory, stale *disk*.
+    """The cube store leaks the other way: not stale memory, stale *disk*.
 
     The two caches above are process-global and are fixed by clearing them. The
     cube store cannot be — it is a directory, and its default
     (``CUBE_STORE_DIR``, falling back to the deployment volume) names a real,
     shared, long-lived location. Under Docker that is the production named
     volume; on a Windows checkout the same POSIX default resolves against the
-    current drive, and the suite was observed writing cubes and rewriting
-    ``handle_index.json`` there.
+    current drive.
 
-    Two things follow, and both are bugs. Tests mutate a store a developer or a
-    deployment also uses; and they *read* it, so a run's outcome depends on what
-    earlier runs left behind — which is how a cube-cache test came to pass on a
-    clean machine and fail on one that had run the suite before.
+    Two bugs would follow: tests mutate a store a developer or deployment also
+    uses, and they *read* it, so a run's outcome depends on what earlier runs
+    left behind.
 
     ``test_cube_cache.StoreTestCase`` redirects per test, but that only covers
     classes that opt in, and it unwinds its redirect at teardown — so a
@@ -183,7 +174,7 @@ class CubeStoreIsolationTests(unittest.TestCase):
 
 
 class FrameStoreIsolationTests(unittest.TestCase):
-    """T59's frame store leaks the same way the cube store does, and worse.
+    """The frame store leaks the same way the cube store does, and worse.
 
     Same default shape — ``FRAME_STORE_DIR`` falling back to a deployment
     volume, which on a Windows checkout resolves against the current drive — so
@@ -194,7 +185,7 @@ class FrameStoreIsolationTests(unittest.TestCase):
     cubes a developer would later hit; this store has an LRU sweeper, so a test
     that writes past ``FRAME_STORE_MAX_BYTES`` **deletes** whatever is coldest.
     Pointed at a real store, a single eviction test would silently strip the
-    scrubber off charts nobody touched — and D8 forbids rebuilding them.
+    scrubber off charts nobody touched — and frames are never rebuilt.
     """
 
     @staticmethod

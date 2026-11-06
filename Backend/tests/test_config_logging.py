@@ -254,7 +254,7 @@ class ConfigLoggingTests(unittest.TestCase):
     def test_validate_startup_requires_the_supabase_identity_provider(self):
         from tta_backend.config.settings import Settings
 
-        # T61: unconditional, unlike the provider keys. api.py builds the
+        # Unconditional, unlike the provider keys. api.py builds the
         # verifier's issuer as f"{supabase_url}/auth/v1" at import, so a None
         # URL constructs a verifier reading "None/auth/v1" that rejects every
         # token with "Invalid issuer." on a backend that booted clean. Naming
@@ -269,8 +269,7 @@ class ConfigLoggingTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "SUPABASE_URL"):
             loaded.validate_startup()
 
-        # Unread by the backend until Phase 3 serves it from /config/auth, and
-        # required anyway: the frontend cannot sign anyone in without it, so a
+        # Required even though only /config/auth serves it: the frontend cannot sign anyone in without it, so a
         # deploy carrying one of the pair is broken either way.
         loaded = Settings(
             db_password="x",
@@ -344,7 +343,7 @@ class ConfigLoggingTests(unittest.TestCase):
         from tta_backend.config.settings import ConfigurationError, Settings
 
         # A config typo (bad scheme, no host) is a bug to fix at boot, not an
-        # outage the connection manager should retry (T17).
+        # outage the connection manager should retry.
         loaded = Settings(
             db_password="x", **REQUIRED_KWARGS, google_api_key="x", groq_api_key="x",
             earthdata_mcp_url="not-a-url",
@@ -508,11 +507,11 @@ class ConfigLoggingTests(unittest.TestCase):
         self.assertEqual(loaded.log_format, "text")
 
     def test_configure_logging_silences_the_benign_langchain_google_genai_schema_warning(self):
-        """T45: langchain_google_genai._function_utils logs
+        """langchain_google_genai._function_utils logs
         "Key '...' is not supported in schema, ignoring" at WARNING for
         every unrecognized JSON-schema keyword in a tool's pydantic model —
         known-benign, but noisy enough to drown real WARNING/ERROR events in
-        the log auditor's correlation (QA note, 2026-07-17). Silenced at
+        the log auditor's correlation. Silenced at
         logger config rather than at each call site."""
         from tta_backend.utils.logging import configure_logging
 

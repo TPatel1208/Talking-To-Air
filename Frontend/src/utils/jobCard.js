@@ -1,12 +1,11 @@
-// Pure selectors over a job row from useJobs (T27). Kept side-effect-free so
+// Pure selectors over a job row from useJobs. Kept side-effect-free so
 // JobsPanel's badge/action/upstream-line choices are unit-testable without a
-// component-test rig, per T05's precedent.
+// component-test rig.
 //
 // A job merges list_workspace's handle summary with get_retrieval_status's
 // response (services/jobs_service.list_jobs): `status` is the durable state
 // (pending/submitted/running/materializing/ready/failed/expired/cancelled)
-// and `phase` is harmony-retrieval-mcp's qualitative label for it (PRD 007 —
-// e.g. "queued at provider", "materializing"). Badge color always comes from
+// and `phase` is harmony-retrieval-mcp's qualitative label for it (e.g. "queued at provider", "materializing"). Badge color always comes from
 // `status`; the label prefers `phase` since it reads better mid-flight
 // ("queued at provider" vs. "submitted") and coincides with `status` once a
 // job is terminal.
@@ -44,7 +43,7 @@ const STATUS_COLORS = {
   paused: 'var(--warning)',
 }
 
-// PRD 021's `upstream` outcomes on a cancel response. "unsupported" (OPeNDAP,
+// The MCP's `upstream` outcomes on a cancel response. "unsupported" (OPeNDAP,
 // or a job never submitted upstream) has nothing meaningful to report, so it
 // intentionally has no line — showing one would imply a provider call that
 // never happened.

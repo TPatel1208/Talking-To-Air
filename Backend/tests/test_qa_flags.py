@@ -44,7 +44,7 @@ class ParseFlagMeaningsTests(unittest.TestCase):
 
 
 class ResolveQaInfoTierTests(unittest.TestCase):
-    """T25 Phase 3: pinned yaml rule -> CF flag_meanings (deterministic or
+    """Pinned yaml rule -> CF flag_meanings (deterministic or
     agent-inferred) -> no mask, one tier per test."""
 
     def test_tier1_pinned_good_values_wins_even_with_cf_attrs_present(self):

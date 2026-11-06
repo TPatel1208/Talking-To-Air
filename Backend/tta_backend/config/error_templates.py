@@ -1,14 +1,11 @@
 """
 config/error_templates.py
 ===========================
-PRD T18: deterministic answers for the two chat-level failure points where
-no sub-agent turn ever produced text a model composed — the dispatch-time
-"data layer isn't ready" gate (T17) and a salvage with nothing to salvage
-(T15's envelope-parse failure with no prose at all). Both live in
-services/subagent_dispatch.py, which the supervisor's tool wrappers and the
-router fast path (T14) call identically, so templating here gives both
-paths the same answer for the same failure (story #12) with no model call
-in either.
+Deterministic answers for chat-level failures where no model composed any
+text — the dispatch-time "data layer isn't ready" gate and an envelope-parse
+failure with no prose to salvage. Both live in services/subagent_dispatch.py,
+which the supervisor and the router fast path both call, so both paths give
+the same answer for the same failure with no model call.
 
 Every template is filled only from observed facts (``stage``, ``detail``)
 — never a guess at cause. This is what keeps the system honest when it's
@@ -85,7 +82,7 @@ def render_error_answer(category: str, stage: str, detail: str | None = None) ->
     return template.format(stage=stage, detail=detail)
 
 
-# T38: distinct from the taxonomy templates above — a turn deadline is not an
+# Distinct from the taxonomy templates above — a turn deadline is not an
 # MCPToolError category, it is stream_chat_events/_fast_path_events giving up
 # on the whole turn rather than one classified failure. Names any job handles
 # still running server-side (collected from this turn's job_progress events)
@@ -128,7 +125,7 @@ def render_overloaded_answer() -> str:
     return _OVERLOADED_TEMPLATE
 
 
-# T46: silent scope substitution. When a retrieval answers a materially
+# Silent scope substitution. When a retrieval answers a materially
 # different question than the one asked — a single-day request served by a
 # monthly mean, a time range clamped to coverage, a region that resolved to a
 # different place — the researcher must read that in the chat answer, not
@@ -137,7 +134,7 @@ def render_overloaded_answer() -> str:
 # model can't paraphrase away an inconvenient correction it didn't want to
 # admit. Rendered from provenance's requested_scope/delivered_scope facts in
 # the dispatch layer (services/subagent_dispatch.py), the same seam that
-# appends T18/T37 error answers.
+# appends the error answers.
 
 
 def _date_part(value: str | None) -> str | None:
@@ -174,7 +171,7 @@ def _place_key(name: str) -> str:
 
 def _same_place(requested: str, delivered: str) -> bool:
     """Whether the delivered region is the same place the request named, only
-    canonicalized (Finding #10). Exact-string identity misfires on geocoder
+    canonicalized. Exact-string identity misfires on geocoder
     canonicalization drift ("California" -> "California, United States") and on
     abbreviation expansion inside the name ("Los Angeles, CA" -> "Los Angeles,
     California, United States"), both of which fabricate a "substitution"
@@ -188,12 +185,12 @@ def _same_place(requested: str, delivered: str) -> bool:
     return _place_key(requested) == _place_key(delivered)
 
 
-# T48: universal variable resolver disclosure. When a wide, unregistered,
+# Variable resolver disclosure. When a wide, unregistered,
 # group-structured product has no single obvious variable, the resolver scores
 # and ranks the candidates and auto-picks the top populated science field --
 # but when the choice is among scientifically-distinct products (different
 # sensor/algorithm/overpass/wavelength), that fork must be disclosed in the
-# chat answer, not buried. Like the T46 scope note above, this is a
+# chat answer, not buried. Like the scope note above, this is a
 # deterministic template filled only from the resolver's own facts (the chosen
 # label + the ranked alternatives) -- never model prose -- so the model can't
 # paraphrase away a scientific choice it made on the researcher's behalf.
@@ -229,7 +226,7 @@ def render_scope_note(requested_scope: dict[str, Any] | None, delivered_scope: d
     request). Filled only from observed facts — never a guess at why the
     substitution happened.
 
-    "Differ materially" (decided against real T46 cases):
+    "Differ materially" (decided against real cases):
     - time: requested vs delivered date parts differ (any narrowing/widening,
       including a single day served by a whole month);
     - region: the delivered region/display name differs from the requested

@@ -1,8 +1,6 @@
-"""T51: per-phase wall-clock timing for the retrieval/plot pipeline.
+"""Per-phase wall-clock timing for the retrieval/plot pipeline.
 
-Before this, the only durations recorded anywhere were per-HTTP-request and
-whole-turn elapsed, so "that turn felt slow" could never be attributed to a
-phase. ``phase_timer`` records a phase's own span to a Prometheus histogram
+So "that turn felt slow" can be attributed to a phase: ``phase_timer`` records a phase's own span to a Prometheus histogram
 and a structured ``phase_timing`` log event.
 
 It wraps the hot path, so the governing constraint is that it must never be
@@ -173,7 +171,7 @@ class PhaseLabelsetTests(unittest.TestCase):
 
         self.assertEqual(
             set(PIPELINE_PHASES),
-            # qa_pass_rate (T55) is its own phase, not part of "mask": it is an
+            # qa_pass_rate is its own phase, not part of "mask": it is an
             # eager reduction added to the masking path, and the whole point of
             # timing it separately is to see what the honesty feature costs.
             #
@@ -187,7 +185,7 @@ class PhaseLabelsetTests(unittest.TestCase):
             # spent building provenance from the unaggregated Dataset, after
             # the render timer had already closed.
             #
-            # "frames" (T59 Phase 5) is the bucketed reduction behind a map's
+            # "frames" is the bucketed reduction behind a map's
             # scrubber. Its own phase for the same reason "qa_pass_rate" is:
             # it adds a whole extra graph walk over a lazily-opened bundle --
             # measured at 9.2 s against a 12-15 s open+mask -- and what an
@@ -202,8 +200,8 @@ class PhaseLabelsetTests(unittest.TestCase):
 
 class InstrumentedPipelineTests(unittest.TestCase):
     """The timer is only worth having if the phases are actually wired. These
-    exercise each phase through its public entry point -- the scaffolding this
-    PRD replaces was dead precisely because nothing asserted it had a caller."""
+    exercise each phase through its public entry point, so a phase with no
+    caller is noticed."""
 
     def _small_grid(self):
         import numpy as np
@@ -312,7 +310,7 @@ class MetricsEndpointExposesPhaseHistogramTests(unittest.IsolatedAsyncioTestCase
 class InstrumentedOpenHandleTests(unittest.IsolatedAsyncioTestCase):
     """``export`` (MCP round-trip), ``extract`` (bundle unzip) and ``open``
     (per-member opens + concat) are the three phases a slow retrieval turn
-    could be hiding in, and no timing separated them before T51."""
+    could be hiding in."""
 
     async def asyncSetUp(self):
         import tempfile

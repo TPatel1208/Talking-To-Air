@@ -129,7 +129,7 @@ class FastPathCheckpointTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(key, item["result"]["charts"][0])
 
     async def test_fast_path_write_back_records_the_turn_as_a_dispatch_call(self):
-        """T64 D15: history the supervisor reads names only the tool it has."""
+        """History the supervisor reads names only the tool it has."""
         from tta_backend.models import AgentResult, ChartPayload
 
         supervisor = RecordingSupervisor()

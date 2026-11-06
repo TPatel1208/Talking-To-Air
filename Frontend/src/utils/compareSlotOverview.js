@@ -1,4 +1,4 @@
-// Pure decision helpers behind CompareGrid's per-slot metadata affordance (T34).
+// Pure decision helpers behind CompareGrid's per-slot metadata affordance.
 // Kept separate from the CompareGrid component so they're testable with the
 // repo's existing node:test pattern -- no React-rendering infra required.
 

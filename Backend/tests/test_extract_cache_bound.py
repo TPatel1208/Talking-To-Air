@@ -1,6 +1,6 @@
 """The bundle extract cache must be bounded by size, and swept when idle.
 
-Phase 4 of the admission work. Admission control bounds what the heavy paths
+Admission control bounds what the heavy paths
 hold in *memory*; this bounds what the open path leaves on *disk*, which is the
 other exhaustible resource a burst of large retrievals can run the container
 out of -- and the one this project has already been bitten by (docker_data.vhdx
@@ -100,12 +100,11 @@ class TheExtractCacheIsBoundedBySizeTests(unittest.TestCase):
         )
 
     def test_a_pinned_entry_is_never_evicted_to_make_room(self):
-        """T52's pin has to hold against the size cap too, not just the TTL.
+        """The cube-write pin has to hold against the size cap too, not just the TTL.
 
         A pinned entry is one a cube write is *currently reading from*, through
         a lazy Dataset whose reads do not touch mtime. Deleting it to reclaim
-        disk pulls the files out from under an in-flight write -- the exact
-        failure the pin was introduced to prevent, arriving through a new door.
+        disk pulls the files out from under an in-flight write.
         """
         from tta_backend.services.open_handle import _prune_extract_cache
 

@@ -259,7 +259,7 @@ class TurnEventLog:
 
         Both answers come off the same entry, and the caller that wants one
         usually wants the other: "has it ended, and if not, when did it last
-        say anything" is the whole of liveness (D14). Asking separately would
+        say anything" is the whole of liveness. Asking separately would
         double the cost of the one path that polls.
         """
         entries = await self._redis.xrevrange(self._key(turn_id), max="+", min="-", count=1)

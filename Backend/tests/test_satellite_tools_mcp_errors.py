@@ -1,12 +1,10 @@
 """
 tests/test_satellite_tools_mcp_errors.py
 ==========================================
-PRD T18: handle-based satellite tools already catch OpenHandleError at their
-open_handle() call sites and surface it verbatim (prior art: open_handle's
-verbatim error surfacing, test_open_handle.py). Since parse_tool_result now
-classifies more raw shapes into MCPToolError, those same call sites must
-also catch MCPToolError — one representative tool per file, not every call
-site, mirroring how thoroughly OpenHandleError itself was covered before.
+Handle-based satellite tools catch OpenHandleError at their open_handle()
+call sites and surface it verbatim. Since parse_tool_result classifies many
+raw shapes into MCPToolError, those same call sites must also catch
+MCPToolError — one representative tool per file, not every call site.
 """
 import importlib.util
 import json

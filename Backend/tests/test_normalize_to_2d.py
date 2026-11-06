@@ -10,8 +10,7 @@ REQUIRED_MODULES = ["affine", "cartopy", "rasterio", "shapely", "xarray"]
     "plotting dependencies are not installed",
 )
 class NormalizeTo2dTests(unittest.TestCase):
-    """T25: the silent `.mean(dim=extra_dims)` fallback is deleted -- a
-    surviving non-spatial, non-time dimension with no selection must refuse
+    """No silent `.mean(dim=extra_dims)` fallback -- a surviving non-spatial, non-time dimension with no selection must refuse
     with a structured, candidate-listing error naming the dimension and its
     coordinate values (e.g. a MERRA-2 72-level vertical dim), never a
     confident-looking whole-atmosphere average."""
@@ -170,7 +169,7 @@ class NormalizeTo2dTests(unittest.TestCase):
         self.assertIn("layer", ctx.exception.message)
 
     def test_time_like_dim_still_auto_reduces_without_a_selector(self):
-        """Time is the one transparent auto-reduction (PRD T25) -- a
+        """Time is the one transparent auto-reduction -- a
         surviving time-identified dim must not raise, even without a
         selector, unlike a genuine extra dim such as a vertical level."""
         from tta_backend.utils.plotting import _normalize_to_2d

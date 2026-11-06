@@ -24,11 +24,11 @@ import { API_BASE } from '../config.js'
 
 const ACTIVE_THREAD_STORAGE_KEY = 'tta.activeThreadId'
 
-// D12: one turn per thread. The server answers a second send with a 409, so
+// One turn per thread. The server answers a second send with a 409, so
 // there is nothing to gain by sending it — and aborting the running turn to
 // make room would throw away an answer the user is waiting for.
 const ALREADY_RUNNING_MESSAGE = 'This conversation already has a turn running. Wait for it to finish, or press Stop.'
-// D15: Redis carries every event, the per-thread claim and the stop signal,
+// Redis carries every event, the per-thread claim and the stop signal,
 // so chat is down rather than degraded. Reloading history would not help.
 const UNAVAILABLE_MESSAGE = 'Chat is temporarily unavailable. Try again in a moment.'
 // How often a reader's resume point is written down while a turn streams.
@@ -41,7 +41,7 @@ const CONNECTION_LOST_MESSAGE = 'Connection lost before the response finished. T
 const BACKGROUND_STATUS_POLL_MS = 3000
 
 function newIdempotencyKey() {
-  // D13: the 202 handshake makes the retry window real, so a resent POST has
+  // The 202 handshake makes the retry window real, so a resent POST has
   // to be answerable with the turn it already bought.
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID()
   return `send-${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -66,7 +66,7 @@ export function useChat(onJobProgress) {
   // Sidebar badge state per thread: 'running' | 'done' | 'error', absent for
   // a thread with nothing to report. Keyed independently of `messages` and
   // `threadId` because its whole point is to outlive the user switching away
-  // from the thread it describes (T63's detached turns keep running there).
+  // from the thread it describes (detached turns keep running there).
   //
   // Seeded with 'running' for every thread this browser still has a turn
   // record for, before anything has confirmed whether those turns are still
@@ -197,11 +197,9 @@ export function useChat(onJobProgress) {
 
   // Close this client's reader, and nothing else.
   //
-  // The half of the old `abortActiveRequest` that switching sessions,
-  // unmounting and logging out want. Under T63 the turn does not belong to
-  // this connection: it keeps running, keeps writing to its event log, and
-  // is there to attach to again. Killing it here is the bug the whole series
-  // exists to fix.
+  // What switching sessions, unmounting and logging out want. The turn does
+  // not belong to this connection: it keeps running, keeps writing to its
+  // event log, and is there to attach to again. Never kill it here.
   const detach = useCallback(() => {
     const controller = abortControllerRef.current
     if (controller && !controller.signal.aborted) {
@@ -235,10 +233,9 @@ export function useChat(onJobProgress) {
     )))
   }, [])
 
-  // The other half of the old `abortActiveRequest`: stop the *turn*, not just
-  // this reader.
+  // Stop the *turn*, not just this reader.
   //
-  // The stop is server-side (D10), and so is the ending: the server cancels
+  // The stop is server-side, and so is the ending: the server cancels
   // the turn, cancels the provider retrievals it orphaned, and writes a
   // `stopped` terminal entry that every tab watching this thread receives.
   // Ending the bubble here instead would give the tab that pressed Stop a
@@ -270,7 +267,7 @@ export function useChat(onJobProgress) {
   }, [detach, cancelScheduledFlush])
 
   // Returns 'loaded' | 'not-found' | 'failed'. On a transient failure the
-  // current messages are left in place (T41) -- a blip in the connection
+  // current messages are left in place -- a blip in the connection
   // must not read as "your conversation was deleted." Only a genuine 404
   // (the session doesn't exist) clears the view.
   const loadHistory = useCallback(async (id) => {
@@ -305,14 +302,12 @@ export function useChat(onJobProgress) {
    * Read an SSE body to its end, applying every frame to `ctx.streamId`.
    *
    * One handler for both protocols. The streaming POST and the GET carry
-   * byte-identical frames (D5) — the event log stores what `sse()` rendered
+   * byte-identical frames — the event log stores what `sse()` rendered
    * — so two handlers would have nothing to gain and somewhere to drift.
    *
    * Returns whether the stream ended the way it is supposed to. It is not
-   * enough to watch for `done`: the closing set is four names wide, and even
-   * before Phase 5 the generic failure path emitted `error` and no `done` at
-   * all, so the old single-name guard already mislabelled a real backend
-   * error as a lost connection.
+   * enough to watch for `done`: the closing set is four names wide (e.g. the
+   * generic failure path emits `error` and no `done`).
    */
   const consumeStream = useCallback(async (res, ctx) => {
     if (!res.body) throw new Error('Streaming response was empty')
@@ -422,7 +417,7 @@ export function useChat(onJobProgress) {
         if (chunk) {
           queueAssistantUpdate(streamId, msg => ({
             content: `${msg.content || ''}${chunk}`,
-            // User story #6: narration stops cleanly the moment the
+            // Narration stops cleanly the moment the
             // answer starts streaming — progress never talks over
             // results.
             workflowStage: applyWorkflowEvent(msg.workflowStage || INITIAL_WORKFLOW_STATE, 'text', data),
@@ -434,7 +429,7 @@ export function useChat(onJobProgress) {
         threadIdRef.current = newId
         persistActiveThread(newId)
         clearTurnRecord(window.localStorage, newId)
-        // A turn that ended is history's to tell, not this stream's (D8).
+        // A turn that ended is history's to tell, not this stream's.
         // A reader that only *joined* this turn — a remount, a second tab —
         // is sitting on top of a history fetch that may already contain the
         // same answer, and one told it was `truncated` rendered a hole; both
@@ -443,7 +438,7 @@ export function useChat(onJobProgress) {
         // it.
         //
         // The bubble is still completed first, and deliberately: the reload
-        // can fail transiently, and T41 keeps the current messages when it
+        // can fail transiently, and a failed reload keeps the current messages when it
         // does — which would leave this bubble spinning on an answer that
         // had already arrived.
         if (endsWithHistoryReload({ reattached: ctx.reattached, truncated: state.truncated })) {
@@ -454,7 +449,7 @@ export function useChat(onJobProgress) {
           charts: msg.charts || [],
           artifacts: msg.artifacts?.length ? msg.artifacts : (data.artifacts || []),
           suggestedFollowups: extractSuggestedFollowups(data),
-          // T49: the deterministic variable-choice picker, when the resolver
+          // The deterministic variable-choice picker, when the resolver
           // couldn't confidently choose. null the vast majority of turns.
           variableChoice: extractVariableChoice(data),
           statusMessage: '',
@@ -471,7 +466,7 @@ export function useChat(onJobProgress) {
       } else if (event === 'stopped' || event === 'interrupted') {
         // The two endings the user did not ask for and did not get an answer
         // from. Both leave whatever the turn had already produced in place:
-        // a stopped turn's charts are persisted (D11), and an interrupted
+        // a stopped turn's charts are persisted, and an interrupted
         // one's partial text is still the most it managed to say.
         if (ctx.threadId) clearTurnRecord(window.localStorage, ctx.threadId)
         queueAssistantUpdate(streamId, msg => terminalMessagePatch(event, data, msg))
@@ -551,7 +546,7 @@ export function useChat(onJobProgress) {
    *
    * Runs on mount and on every session switch, which is what makes "switch
    * away and come back" and "reload the page mid-turn" work at all — and
-   * what lets a second tab join a turn rather than forking one (D12).
+   * what lets a second tab join a turn rather than forking one.
    *
    * The 404 is the ordinary case: most threads have no turn in flight.
    */
@@ -732,10 +727,9 @@ export function useChat(onJobProgress) {
     if (!message) return
 
     if (loadingRef.current) {
-      // Refused here rather than sent and refused there. Under D12 the
-      // server answers this with a 409 whatever the client does first, and
-      // the thing the old code did first — abort the running turn — now
-      // throws away an answer that is still being produced.
+      // Refused here rather than sent and refused there: the server answers
+      // with a 409 anyway, and aborting the running turn would throw away an
+      // answer that is still being produced.
       setError(ALREADY_RUNNING_MESSAGE)
       return false
     }
@@ -818,7 +812,7 @@ export function useChat(onJobProgress) {
         return false
       }
 
-      // D6: the POST carried no events at all. Everything this turn narrates
+      // The POST carried no events at all. Everything this turn narrates
       // arrives over the GET, so the reattach path runs on every turn and
       // cannot rot.
       writeTurnRecord(window.localStorage, acceptedThread, {
@@ -868,7 +862,7 @@ export function useChat(onJobProgress) {
         isError: true,
         isLoading: false,
         statusMessage: '',
-        // User story #9: the strip shows which stage failed, so the error
+        // The strip shows which stage failed, so the error
         // answer has visible context instead of the progress trail just
         // vanishing.
         workflowStage: applyWorkflowEvent(prevMsg.workflowStage || INITIAL_WORKFLOW_STATE, 'error', {}),
@@ -912,8 +906,7 @@ export function useChat(onJobProgress) {
     await attachToThread(id)
   }, [attachToThread, cancelScheduledFlush, clearTurnStatus, detach, loadHistory, persistActiveThread])
 
-  // The reload affordance on a connection-lost or interrupted message (T41,
-  // T63): reuses switchSession on the same thread so there's exactly one
+  // The reload affordance on a connection-lost or interrupted message: reuses switchSession on the same thread so there's exactly one
   // history-hydration code path, and — since switchSession now reattaches —
   // one recovery path for a turn that is still running.
   const reloadSession = useCallback(() => switchSession(threadIdRef.current), [switchSession])

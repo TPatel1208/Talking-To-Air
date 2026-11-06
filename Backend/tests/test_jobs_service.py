@@ -273,9 +273,9 @@ class ListJobsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(jobs[0]["message"], "harmony: provider GES_DISC rejected request: invalid bbox")
 
     async def test_list_jobs_passes_through_prd021s_enriched_status_fields_untouched(self):
-        """list_jobs is a thin composite (entry | status merge) — PRD 021's
+        """list_jobs is a thin composite (entry | status merge) — the MCP's
         curated request_spec slice on get_retrieval_status must reach the
-        frontend verbatim, with no backend-side reshaping (T27)."""
+        frontend verbatim, with no backend-side reshaping."""
         from tta_backend.services.jobs_service import list_jobs
 
         async def list_workspace(workspace_id):
@@ -537,9 +537,9 @@ class CancelJobTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls["job_handle"], "job_1")
 
     async def test_cancel_job_passes_through_prd021s_upstream_flag_untouched(self):
-        """cancel_job is a thin proxy — PRD 021's `upstream` outcome
+        """cancel_job is a thin proxy — the MCP's `upstream` outcome
         ("requested"/"unsupported"/"already_terminal"/"error") must reach the
-        frontend verbatim so the cancel UX can render an honest line (T27)."""
+        frontend verbatim so the cancel UX can render an honest line."""
         from tta_backend.services.jobs_service import cancel_job
 
         async def cancel_retrieval(job_handle, workspace_id):

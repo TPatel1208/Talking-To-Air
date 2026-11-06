@@ -1,9 +1,8 @@
-"""PRD T56 — the vertical axis as a first-class scientific concept.
+"""The vertical axis as a first-class scientific concept.
 
 Every fact pinned here was measured against a real granule
-(``TEMPO_O3PROF_L3_V04_20251001T120743Z_S002.nc``, spike 2026-08-08) rather than
-read out of documentation, which is incomplete for this L3 product. Where a
-number looks arbitrary, the spike finding it came from is named.
+(``TEMPO_O3PROF_L3_V04_20251001T120743Z_S002.nc``) rather than read out of
+documentation, which is incomplete for this L3 product.
 """
 import importlib.util
 import json
@@ -32,7 +31,7 @@ ALTITUDES_TOP_DOWN = [60.0, 44.0, 27.0, 13.0, 5.0, 1.0]
 
 
 class ProfileProductIsRegisteredWithItsMeasuredFactsTests(unittest.TestCase):
-    """Phase 1 gate: the profile feature is unreachable until the collection is
+    """The profile feature is unreachable until the collection is
     registered, because an unregistered collection has no pinned masking rule
     and therefore masks nothing (see test_collection_registry_qa_coverage)."""
 
@@ -71,7 +70,7 @@ class ProfileProductIsRegisteredWithItsMeasuredFactsTests(unittest.TestCase):
         self.assertIn("product", cfg.groups)
 
     def test_the_valid_range_is_permissive_enough_to_survive_a_single_layer(self):
-        """Finding 7/D7: a partial column runs 0.23-32.9 DU by layer, while the
+        """A partial column runs 0.23-32.9 DU by layer, while the
         sibling O3TOT product's ``valid_min: 50.0`` describes a TOTAL column.
         Copying it here would silently wipe every one of the 24 layers."""
         cfg = self._cfg()
@@ -80,7 +79,7 @@ class ProfileProductIsRegisteredWithItsMeasuredFactsTests(unittest.TestCase):
         self.assertAlmostEqual(cfg.fill_value, -1.2676506e30)
 
     def test_the_product_is_recorded_as_publishing_no_quality_flag(self):
-        """D5/finding 5: the L3 producer pre-filtered on fit_RMS, avg_residual
+        """The L3 producer pre-filtered on fit_RMS, avg_residual
         and retrieval_exit_status before gridding, so there is no per-pixel flag
         band by design -- a fact that must be recorded, not merely absent."""
         from tta_backend.datasets.registry import COLLECTIONS_WITHOUT_QUALITY_FLAG
@@ -125,7 +124,7 @@ class NarrowingWorksOnAFieldThatHasAVerticalAxisTests(unittest.TestCase):
 
         self.assertIn("layer", narrowed.dims)
         self.assertEqual(narrowed.sizes["layer"], 3)
-        # Only the western column is in the region, and T50's crop-before-mask
+        # Only the western column is in the region, and crop-before-mask
         # narrows the field to that footprint rather than carrying an
         # all-NaN column into the reduction.
         self.assertEqual(list(narrowed["longitude"].values), [-75.0])
@@ -155,7 +154,7 @@ class NarrowingWorksOnAFieldThatHasAVerticalAxisTests(unittest.TestCase):
 
 
 class ReducingOverTheAnalyzedRegionKeepsOneNamedAxisTests(unittest.TestCase):
-    """Phase 2: the timeseries and the profile differ only in WHICH axis
+    """The timeseries and the profile differ only in WHICH axis
     survives the spatial reduction. The reduction itself -- cos(latitude)
     weighting, the per-cell fallback for non-mean statistics, the absent-not-
     zero treatment of an empty slice -- is one piece of previously-corrected
@@ -198,7 +197,7 @@ class ReducingOverTheAnalyzedRegionKeepsOneNamedAxisTests(unittest.TestCase):
             self.assertAlmostEqual(float(got), want, places=9)
 
     def test_keeping_time_and_the_vertical_axis_yields_the_profile_intermediate(self):
-        """D4's space-then-time order: one area-weighted mean per (timestep,
+        """Space-then-time order: one area-weighted mean per (timestep,
         layer) BEFORE time is collapsed. Reducing time first would weight a
         densely-sampled hour as heavily as a whole cadence bucket."""
         import math
@@ -292,7 +291,7 @@ def _o3prof_dataset(xr, np, *, layer_values, lat=(10.0, 20.0), lon=(30.0, 40.0),
     "vertical profile integration test dependencies are not installed",
 )
 class VerticalProfileToolTests(unittest.IsolatedAsyncioTestCase):
-    """Phase 3: the tool a researcher actually calls. Reduces lat/lon and time
+    """The tool a researcher actually calls. Reduces lat/lon and time
     away, keeps the vertical axis, and reports the physical axis alongside the
     values so the chart never has to guess which end of the array is the sky."""
 
@@ -414,10 +413,10 @@ class VerticalProfileToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(sum(payload["values"]) / expected_total, 1.0, places=5)
 
     async def test_the_temporal_mean_weights_cadence_buckets_not_granules(self):
-        """D4: 'the average over the period' means each cadence bucket counts
+        """'The average over the period' means each cadence bucket counts
         once. Two scans inside one hour and one in the next must not let the
-        busy hour outvote the quiet one -- the same Finding #11 correction the
-        map and timeseries paths already carry. A plain granule mean answers
+        busy hour outvote the quiet one -- the same weighting the map and
+        timeseries paths use. A plain granule mean answers
         4.667 here; the bucket-weighted mean answers 6.0."""
         import numpy as np
 
@@ -436,7 +435,7 @@ class VerticalProfileToolTests(unittest.IsolatedAsyncioTestCase):
             self.assertAlmostEqual(value, 6.0, places=6)
 
     async def test_the_product_discloses_that_it_publishes_no_quality_flag(self):
-        """D5: this is the rare case where 'no QA mask' is honest rather than a
+        """This is the rare case where 'no QA mask' is honest rather than a
         gap -- the L3 producer screened the retrievals before gridding. The
         disclosure has to say exactly that, not the ambiguous 'not applied'
         that also covers 'we never looked'."""
@@ -531,7 +530,7 @@ class VerticalProfileToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("conduct_temporal_statistic", result["error"])
 
     async def test_the_profile_is_a_citable_artifact_of_its_own_kind(self):
-        """A profile is not a time series (D2). Sharing the ``ts_`` prefix or
+        """A profile is not a time series. Sharing the ``ts_`` prefix or
         the timeseries artifact type would let the export and compare paths
         treat pressures as timestamps."""
         self._add("obs_prof", layer_values=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
@@ -545,7 +544,7 @@ class VerticalProfileToolTests(unittest.IsolatedAsyncioTestCase):
 
 class VerticalAxisIdentificationTests(unittest.TestCase):
     """Which variable IS the vertical axis, decided by CF metadata rather than
-    by name -- the same doctrine T24 applied to lat/lon. There is exactly one
+    by name -- the same rule as lat/lon. There is exactly one
     of these decisions in the codebase; the profile tool and the
     dimension-refusal suggestion both read it."""
 
@@ -584,8 +583,7 @@ class VerticalAxisIdentificationTests(unittest.TestCase):
         labelled ``standard_name: none`` classified as not-vertical at all,
         which reads to the caller as "this product has no pressure axis".
 
-        Fails safe rather than wrong, but it fails on a real file (found while
-        reviewing T58's conversion seam)."""
+        Fails safe rather than wrong, but it fails on a real file."""
         from tta_backend.utils.geo_utils import vertical_axis_kind
 
         for placeholder in ("none", "None", "N/A", "n/a", "NA", "unknown", "unset", "-", "   "):
@@ -845,7 +843,7 @@ class ProfileExportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(rows), 4)
 
     async def test_the_csv_never_writes_a_pressure_into_a_time_column(self):
-        """D2's concrete reason for keeping ``profile`` a payload type of its
+        """The concrete reason for keeping ``profile`` a payload type of its
         own: routed as a timeseries, these rows would be labelled ``time``."""
         from tta_backend.services.export_service import ExportService
 
@@ -947,7 +945,7 @@ class RetrievingTheScienceVariableRetrievesItsVerticalAxesTests(unittest.TestCas
 
 
 class ProfileIsReachableFromWhereResearchersAlreadyAreTests(unittest.TestCase):
-    """Phase 6 routing. A capability nobody can find is not a capability, and
+    """Routing. A capability nobody can find is not a capability, and
     the refusal researchers already hit -- "this variable has an extra
     dimension, pick a value" -- is exactly the moment they wanted the profile.
     Turning that refusal into the discovery path costs one string."""
@@ -1037,7 +1035,7 @@ class ProfileIsReachableFromWhereResearchersAlreadyAreTests(unittest.TestCase):
 
 
 class MaturityReachesTheArtifactsAPaperIsWrittenFromTests(unittest.TestCase):
-    """T57 / D8. The ozone profile is published as BETA -- CMR's own entry
+    """Product maturity. The ozone profile is published as BETA -- CMR's own entry
     title says so -- and its user guide states that publishing research on it
     is "not recommended and highly discouraged". Maturity is scientific
     provenance, not descriptive metadata: the place it has to arrive is the

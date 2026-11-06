@@ -1,14 +1,12 @@
 """
 tests/test_fast_path_user_scoping.py
 ======================================
-T26 regression: the satellite fast path (services/chat_stream_service.py::
-_fast_path_events) used to call run_satellite directly, bypassing
-stream_response's own current_user_id binding entirely — every fast-pathed
-retrieval landed in a shared "user-None" workspace (113 orphaned rows found
-live). Fixed by wrapping stream_chat_events in user_id_context(user_id)
-*before* the fast path's asyncio.create_task(run()) spawns, so that task
-(and every context it copies further down, including the sub-agent's own
-tool calls) sees the real user id.
+The satellite fast path (services/chat_stream_service.py::_fast_path_events)
+calls run_satellite directly, bypassing stream_response's own current_user_id
+binding, so stream_chat_events binds user_id_context(user_id) *before* the
+fast path's task spawns. That task (and every context it copies, including the
+sub-agent's tool calls) must see the real user id, not a shared "user-None"
+workspace.
 
 These tests drive the real bind_workspace wrapper against a fake MCP server
 through the actual ChatStreamService seam, rather than asserting on
@@ -65,7 +63,7 @@ class FastPathUserScopingTests(unittest.IsolatedAsyncioTestCase):
             Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None)
         )
         # Bound against current_user_id itself (the real ContextVar getter
-        # api.py wires up in production, T18) — not a stand-in lambda — so
+        # api.py wires up in production) — not a stand-in lambda — so
         # this test actually exercises the getter the fix threads context to.
         self.bound_tools = bind_workspace(raw_tools, current_user_id)
 
@@ -101,7 +99,7 @@ class FastPathUserScopingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_missing_user_id_never_reaches_the_mcp_as_user_none(self):
         """A None user id must not silently pool into a shared "user-None"
-        workspace (T26). bind_workspace's own guard (asserted directly and
+        workspace. bind_workspace's own guard (asserted directly and
         more precisely in test_earthdata_mcp_workspace.py's
         WorkspaceMissingUserContextTests) raises before the MCP is ever
         called; run_satellite's existing generic-failure handling folds that

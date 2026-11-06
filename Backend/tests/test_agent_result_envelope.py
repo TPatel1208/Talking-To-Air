@@ -46,8 +46,8 @@ class SubAgentEnvelopeTests(unittest.TestCase):
 
 
 class SubAgentEnvelopeSuggestedFollowupsTests(unittest.TestCase):
-    """T22: an optional, additive field — offering none is always legitimate
-    (story #7); the field must never be required, and prose that exceeds the
+    """An optional, additive field — offering none is always legitimate;
+    the field must never be required, and prose that exceeds the
     two-suggestion cap is a malformed envelope (salvage territory), not a
     silently truncated list."""
 
@@ -103,7 +103,7 @@ class AgentResultHandlesFieldTests(unittest.TestCase):
         self.assertEqual(parsed.handles, ["obs_1"])
 
     def test_agent_result_without_suggestions_omits_the_field_from_json(self):
-        """T22: 'missing suggestions' means the key is absent from the wire
+        """'Missing suggestions' means the key is absent from the wire
         payload, not present-and-null."""
         from tta_backend.models.agent_result import AgentResult, agent_result_to_json
 

@@ -1,22 +1,14 @@
-"""T60 Phase 3b: the ``+`` grammar, its vocabulary, and its error channel.
+"""The ``+`` grammar ("NY + NJ"), its vocabulary, and its error channel.
 
-Phase 3a made the 51 states individually resolvable. This phase adds the
-grammar that resolves *against* them -- ``"NY + NJ"`` -- and it needed two
-things Phase 3a deliberately did not ship.
+**The postal codes.** On live Nominatim, five of seven ambiguous codes resolve
+to a *foreign country* -- ``DE`` Germany, ``CA`` Canada, ``IN`` India, ``LA``
+Laos, ``ME`` Montenegro -- each a correct answer to a different question. So a
+postal code is a *composite member*, never a bare place name.
 
-**The postal codes.** 3a held them because ``"DE"`` is also Germany. The 3b
-gate (V17) measured that on live Nominatim and it is worse than assumed: five
-of seven ambiguous codes resolve to a *foreign country* -- ``DE`` Germany,
-``CA`` Canada, ``IN`` India, ``LA`` Laos, and ``ME`` **Montenegro**, which was
-not even on the PRD's collision list. Every one of those is a correct answer to
-a different question, so claiming bare postal codes would replace a right region
-with a confident wrong one -- the D12b regression, re-run. Hence tension 2
-option **(b)**: a postal code is a *composite member*, never a bare place name.
-
-**The error channel.** D8 -- hard-fail naming the unresolved token -- is
-unimplementable over ``dict | None``: ``"NY + NJ + Wakanda"`` collapses to
+**The error channel.** Hard-failing with the unresolved token named is
+impossible over ``dict | None``: ``"NY + NJ + Wakanda"`` collapses to
 ``"Could not resolve location: 'NY + NJ + Wakanda'"``, which never names
-Wakanda. D14 makes it a raised ``MCPToolError`` instead.
+Wakanda. So it raises ``MCPToolError`` instead.
 """
 import importlib.util
 import unittest
@@ -66,7 +58,7 @@ class CompositeUnionTests(unittest.IsolatedAsyncioTestCase):
     "region composition test dependencies are not installed",
 )
 class UnresolvedTokenTests(unittest.IsolatedAsyncioTestCase):
-    """D8 + D14. The failure has to name the *token*, and it has to be a
+    """The failure has to name the *token*, and it has to be a
     raised ``MCPToolError`` to do so -- over ``dict | None`` the whole
     composition collapses into one string that names nothing."""
 
@@ -81,15 +73,14 @@ class UnresolvedTokenTests(unittest.IsolatedAsyncioTestCase):
         simply *missed* the composite would also return no geocoder hit in a
         test that only checked the error, because the raw string would be
         handed to Nominatim and Nominatim would answer. Only the call
-        assertion distinguishes "refused" from "silently reinterpreted", and
-        this bit Phase 1.
+        assertion distinguishes "refused" from "silently reinterpreted".
 
         The token assertion is on the **quoted** token, not on the substring.
         A message that merely echoes the raw request contains "wakanda" for
         free -- ``assertIn("wakanda", ...)`` passes on
         ``"'NY + NJ + Wakanda' contains a member that is not a U.S. state"``,
-        which is precisely the pre-D14 answer this phase exists to replace.
-        Found by mutating the message; the loose assertion did not notice."""
+        which doesn't name the token. Found by mutating the message; the loose
+        assertion did not notice."""
         from tta_backend.earthdata_mcp.results import MCPToolError
 
         resolver = self._resolver()
@@ -101,7 +92,7 @@ class UnresolvedTokenTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("'wakanda'", caught.exception.message.lower())
 
     async def test_the_async_resolver_refuses_the_same_way(self):
-        """T42's standing bug was the two resolvers disagreeing. The analysis
+        """The two resolvers must not disagree. The analysis
         tools all use the async one, so a refusal that only the sync path
         raises is a refusal the researcher never sees."""
         from tta_backend.earthdata_mcp.results import MCPToolError
@@ -120,7 +111,7 @@ class UnresolvedTokenTests(unittest.IsolatedAsyncioTestCase):
     "region composition test dependencies are not installed",
 )
 class PostalVocabularyTests(unittest.IsolatedAsyncioTestCase):
-    """Tension 2 option (b), measured into place by gate V17."""
+    """Postal codes as composite members only."""
 
     def _resolver(self):
         from tta_backend.utils.plotting import RegionResolver
@@ -133,14 +124,12 @@ class PostalVocabularyTests(unittest.IsolatedAsyncioTestCase):
         state key rather than assembling its own dict -- a second definition of
         what a region is will drift from the first. Comparing only
         ``region_type`` or only the geometry would miss a wrong
-        ``display_name``, which is the field carrying the ``"(U.S. state)"``
-        disambiguation V12 put there.
+        ``display_name``, which carries the ``"(U.S. state)"`` disambiguation.
 
-        **50 of 51 as of Phase 4.** ``"georgia"`` in full is now ambiguous
-        between the state and the country and fails closed by design (D7, as
-        Phase 4's V20 narrowed it), while ``"GA"`` still resolves -- so the
-        equivalence this asserts is *deliberately* broken for exactly that one
-        name, and D7's whole point is the asymmetry. The exclusion is derived
+        **50 of 51.** ``"georgia"`` in full is ambiguous between the state and
+        the country inside a composite and fails closed by design, while
+        ``"GA"`` still resolves -- so the equivalence is *deliberately* broken
+        for that one name. The exclusion is derived
         from the same function the guard uses rather than hard-coded, so a
         second collision joins it automatically; both readings of Georgia are
         pinned in ``test_region_countries.py::GeorgiaAmbiguityTests``."""
@@ -151,7 +140,7 @@ class PostalVocabularyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(US_STATES), 51)
         ambiguous = ambiguous_member_tokens()
         self.assertEqual(ambiguous, {"georgia"},
-                         "a new state/country collision appeared; D7's guard "
+                         "a new state/country collision appeared; the ambiguity guard "
                          "now covers it and this exclusion grew with it")
 
         for key, state in US_STATES.items():
@@ -159,12 +148,12 @@ class PostalVocabularyTests(unittest.IsolatedAsyncioTestCase):
                 continue
             with self.subTest(state=key):
                 postal = state["postal"]
-                # The duplicate-member form, which D15 explicitly permits
-                # ("duplicate and overlapping members simply union"). It runs
+                # The duplicate-member form (duplicate and overlapping members
+                # simply union). It runs
                 # the full composite path while keeping the envelope equal to
                 # the single state's own -- pairing every state against a
                 # fixed partner instead made "AK + wyoming" span 2,253 deg^2
-                # and trip D16's gate, testing the gate rather than the
+                # and trip the extent gate, testing the gate rather than the
                 # vocabulary.
                 by_code = resolver.resolve_location(f"{postal} + {postal}")
                 by_name = resolver.resolve_location(f"{key} + {key}")
@@ -175,12 +164,11 @@ class PostalVocabularyTests(unittest.IsolatedAsyncioTestCase):
                 )
 
     def test_a_bare_postal_code_still_reaches_the_geocoder_untouched(self):
-        """Tension 2 (b)'s whole content, and the reason it is (b).
+        """Bare postal codes are not claimed.
 
-        V17 measured ``"DE"`` resolving live to **Germany** -- a correct answer
-        to a different question. Claiming it for Delaware would swap a right
-        region for a confident wrong one under a name the user typed, which is
-        the D12b regression re-run. Bare codes stay exactly as they are; the
+        ``"DE"`` resolves live to **Germany** -- a correct answer to a
+        different question. Claiming it for Delaware would swap a right region
+        for a confident wrong one under a name the user typed. Bare codes stay exactly as they are; the
         ``+`` is what supplies the missing context."""
         resolver = self._resolver()
 
@@ -192,7 +180,7 @@ class PostalVocabularyTests(unittest.IsolatedAsyncioTestCase):
                 geocode.assert_called_once_with(token)
 
     def test_the_split_happens_before_the_normalization_not_after(self):
-        """D11a, requirement #5, and it reads as a stylistic choice but is not.
+        """Split first, then normalize -- not a stylistic choice.
 
         ``_normalize_location_name`` strips only the **leading** ``"the "``. So
         under normalize-then-split, ``"the ny + nj"`` resolves and
@@ -200,8 +188,8 @@ class PostalVocabularyTests(unittest.IsolatedAsyncioTestCase):
         two spellings, two outcomes. The last two spellings below are the pair
         that catches it; the first three would pass either way.
 
-        Asserted through **both** resolvers, because T42's standing bug was the
-        two paths normalizing differently."""
+        Asserted through **both** resolvers, so they can't normalize
+        differently."""
         resolver = self._resolver()
         canonical = resolver.resolve_location("new york + new jersey")
 
@@ -227,7 +215,7 @@ class PostalVocabularyTests(unittest.IsolatedAsyncioTestCase):
     "region composition test dependencies are not installed",
 )
 class ClosedVocabularyTests(unittest.TestCase):
-    """D15's closed member vocabulary, and the malformed grammar."""
+    """The closed member vocabulary, and the malformed grammar."""
 
     def _resolver(self):
         from tta_backend.utils.plotting import RegionResolver
@@ -237,12 +225,12 @@ class ClosedVocabularyTests(unittest.TestCase):
         """``"otc + ohio"`` and ``"conus + mexico"`` hard-fail **on purpose**,
         and this test exists so the next reader does not "fix" it.
 
-        D15 keeps the member vocabulary closed and finite. Admitting presets
-        would make every future alias a potential composite member and reopen
-        the collision surface D6 closed by banning ISO country codes -- and
+        The member vocabulary is closed and finite. Admitting presets would
+        make every future alias a potential composite member and reopen the
+        collision surface the ISO-code ban closed -- and
         ``"conus"`` and ``"otc"`` are both *already resolvable on their own*,
         so this is a restriction on combining them, not on reaching them.
-        Revisit as a follow-on PRD, not by deleting this test."""
+        Revisit deliberately, not by deleting this test."""
         from tta_backend.earthdata_mcp.results import MCPToolError
 
         resolver = self._resolver()
@@ -277,9 +265,8 @@ class ClosedVocabularyTests(unittest.TestCase):
                 self.assertNotIn("is not a u.s. state", message)
 
     def test_a_string_with_no_plus_is_untouched(self):
-        """Requirement #11. Phase 1.5 and 3a each guarded this; the parser
-        gives it a brand-new way to break, because every location string in
-        the system now passes through ``is_composite`` first."""
+        """Every location string passes through ``is_composite`` first, so
+        this gives existing resolution a new way to break."""
         resolver = self._resolver()
 
         # A preset, a coalition and a state: all still resolve without a geocode.
@@ -300,17 +287,15 @@ class ClosedVocabularyTests(unittest.TestCase):
     "region composition test dependencies are not installed",
 )
 class ExtentGateTests(unittest.TestCase):
-    """D16, on gate V15's measurements.
+    """The composite extent gate.
 
-    Risk 6 is the thing being bounded: a sparse composite's envelope is not
-    its footprint. ``"alaska + florida"`` unions two polygons into a box
+    A sparse composite's envelope is not its footprint. ``"alaska + florida"`` unions two polygons into a box
     spanning 8.56 M native cells at TEMPO L3, and ``_crop_to_mask_footprint``
     crops to that envelope rather than per-part -- the render-path OOM this
-    codebase already knows about (T50/T59), reachable in one typed string.
+    codebase already knows about, reachable in one typed string.
 
-    The ceiling is **not a new tunable number.** V15 measured every candidate
-    against the two ceilings this codebase already decided, and
-    ``MAX_FRAME_NATIVE_CELLS`` was the only one that fits:
+    The ceiling is **not a new tunable number.** Measured against the two
+    existing ceilings, only ``MAX_FRAME_NATIVE_CELLS`` fits:
 
     | case                    | cells      | vs 4,000,000 | vs 1,000,000 |
     |-------------------------|-----------:|--------------|--------------|
@@ -322,8 +307,7 @@ class ExtentGateTests(unittest.TestCase):
     | all 51 unioned          | 10,857,189 | **OVER**     | **OVER**     |
 
     ``MAX_PLANE_NATIVE_CELLS`` is excluded **by measurement**, not by taste: it
-    would refuse bare ``"alaska"``, a token Phase 3a just shipped as working,
-    which is a gate with a hole in the opposite direction.
+    would refuse bare ``"alaska"``.
     """
 
     def _resolver(self):
@@ -350,10 +334,10 @@ class ExtentGateTests(unittest.TestCase):
         """The other side of the band, and the reason it is two-sided.
 
         A ceiling set too low is not a safe failure -- it withdraws working
-        behaviour. ``"CA + NY"`` is the PRD's own sparse-union example and it
-        must still resolve; bare ``"alaska"`` is the single 3a token nearest
-        the ceiling and it must be untouched, or D16 has become a gate on
-        Phase 3a rather than on compositions."""
+        behaviour. ``"CA + NY"`` is the canonical sparse-union example and it
+        must still resolve; bare ``"alaska"`` is the state nearest the ceiling
+        and must be untouched, or the gate would be on states rather than on
+        compositions."""
         resolver = self._resolver()
 
         self.assertEqual(
@@ -388,19 +372,16 @@ class ExtentGateTests(unittest.TestCase):
     "region composition test dependencies are not installed",
 )
 class ShapeProvenanceTests(unittest.TestCase):
-    """D10a. ``region_type`` was carrying two orthogonal facts in one slot.
+    """``region_type`` and ``region_origin`` are two orthogonal facts.
 
     ``composite_union`` is *shape provenance* -- this shape is a construction,
     not a named place. ``boundary_cells`` is *rasterization fidelity* -- the
     mask self-healed onto the cells the region touches. Both can be true at
-    once, and ``apply_mask_region_type`` unconditionally overwrote the first
-    with the second.
+    once, and ``apply_mask_region_type`` overwrites ``region_type``.
 
-    Gate V16 confirmed this is the *likely* path, not a corner: every one of
-    the six masking sites calls ``apply_mask_region_type`` **before**
-    ``_build_provenance``, so the origin was lost before the researcher could
-    ever see it. Without this test D10a is a refactor with no behaviour
-    behind it.
+    This is the *likely* path, not a corner: all six masking sites call
+    ``apply_mask_region_type`` **before** ``_build_provenance``, so without
+    ``region_origin`` the shape provenance would be lost.
     """
 
     def _coarse_grid(self):
@@ -425,23 +406,10 @@ class ShapeProvenanceTests(unittest.TestCase):
         self.assertEqual(region["region_type"], "composite_union")
         # **The constructor states its own origin, before any masking runs.**
         #
-        # Added in Phase 5, from a mutation this class did not catch. 3b's own
-        # mutation #3 deleted ``region_origin`` from the constructor *and* from
-        # ``apply_mask_region_type`` together, and two tests died -- which read
-        # as proof. The single-point mutant (constructor only) **survives every
-        # assertion below**, because ``apply_mask_region_type`` does
-        # ``setdefault("region_origin", region["region_type"])``: it *derives*
-        # the origin from whatever the slot held, so it reconstructs
-        # ``composite_union`` for free. The assertions below therefore prove
-        # ``apply_mask_region_type``, which the sibling test already covers,
-        # and not the composite constructor this class is named for.
-        #
-        # The behaviour was never actually unpinned -- the constructor-only
-        # mutant is caught by
-        # ``test_a_composite_chart_puts_both_disclosure_fields_on_the_wire``,
-        # one file over. But a test whose docstring says "without this test
-        # D10a is a refactor with no behaviour behind it" should be the test
-        # that dies, and it was not.
+        # Asserted directly because the assertions below would pass without
+        # it: ``apply_mask_region_type`` does
+        # ``setdefault("region_origin", region["region_type"])``, which
+        # reconstructs ``composite_union`` from the slot for free.
         self.assertEqual(region["region_origin"], "composite_union")
 
         masked = mask_data_by_geometry(self._coarse_grid(), region["geometry"])
@@ -455,8 +423,8 @@ class ShapeProvenanceTests(unittest.TestCase):
     def test_a_plain_polygon_keeps_its_own_origin_through_the_self_heal(self):
         """The generalisation, and the reason ``apply_mask_region_type`` is
         where the preservation lives rather than the composite constructor:
-        Phase 5's ``buffer`` will need exactly this and should not have to
-        remember to opt in."""
+        ``buffer`` needs exactly this and shouldn't have to remember to opt
+        in."""
         from tta_backend.utils.plotting import (
             RegionResolver, apply_mask_region_type, mask_data_by_geometry,
         )
@@ -477,19 +445,15 @@ class ShapeProvenanceTests(unittest.TestCase):
     "region composition test dependencies are not installed",
 )
 class RetrievalPlaneAgreementTests(unittest.TestCase):
-    """Requirement #10, and tension 3 is not optional here.
+    """The retrieval plane must claim composites.
 
-    A coalition at least has a *key* the MCP might have heard of. A composite
-    has nothing at all -- it is constructed per request, and D8 forbids the
-    geocoder from ever seeing the string. So if ``dispatch_extent`` does not
-    claim it, the retrieval plane has no fallback whatsoever: the AOI step
-    would either fail outright or, worse, resolve ``"NY + NJ"`` to whatever
-    Nominatim makes of it, after which the mask clips a cube that never
-    covered the region and nothing says so (Risk 5).
+    A composite has no key the MCP could resolve, and the geocoder must never
+    see the string. Unclaimed, the AOI step would fail or resolve ``"NY +
+    NJ"`` to whatever Nominatim makes of it, and the mask would then clip a
+    cube that never covered the region.
 
-    Asserted where the extent is decided, following Phase 3a's precedent --
-    51 fake-MCP round trips at ~1.5 s each is a price 3a already declined, and
-    the seam itself is proven separately in test_region_retrieval_extent.py.
+    Asserted where the extent is decided (51 fake-MCP round trips would be
+    too slow); the seam itself is tested in test_region_retrieval_extent.py.
     """
 
     def _cases(self):
@@ -499,8 +463,7 @@ class RetrievalPlaneAgreementTests(unittest.TestCase):
     def test_the_retrieval_extent_contains_the_composite_mask(self):
         """Containment, never equality. The envelope of a union is a strict
         superset of it, and that over-inclusion is correct because the mask
-        clips it -- retrieval must contain the mask, not equal it (Phase 1.5,
-        tension 3; re-proved over 51 states in 3a)."""
+        clips it -- retrieval must contain the mask, not equal it."""
         from shapely.geometry import box
 
         from tta_backend.utils import region_composition
@@ -525,18 +488,16 @@ class RetrievalPlaneAgreementTests(unittest.TestCase):
                 )
 
     def test_the_postal_table_stays_out_of_global_regions(self):
-        """Requirement #13, and it is the structural half of tension 2 (b).
+        """The postal table stays out of ``global_regions``.
 
-        Phase 3a added ``AliasCollisionError`` precisely because a new name
-        table merging into ``global_regions`` by assignment would silently
-        overwrite. A postal table is the next such table, and option (b) keeps
-        it out of ``global_regions`` entirely -- so the guard stays green *by
-        construction* rather than by luck.
+        ``AliasCollisionError`` exists because a name table merged into
+        ``global_regions`` by assignment would silently overwrite. Keeping the
+        postal table out entirely keeps the guard green *by construction*.
 
         That matters beyond the guard: ``in``, ``or``, ``me``, ``de`` and
         ``la`` as bare region names would be 51 two-letter landmines waiting
-        for a future preset or alias to collide with. This test fails the
-        moment someone "simplifies" (b) into (a) without revisiting V17."""
+        for a future preset or alias to collide with. This fails if someone
+        merges the postal table into ``global_regions``."""
         from tta_backend.utils import region_composition, region_dispatch
         from tta_backend.utils.plotting import RegionResolver
 

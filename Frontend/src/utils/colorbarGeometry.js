@@ -24,7 +24,7 @@ function rgbaToCss([r, g, b, a = 255]) {
 }
 
 // A one-line disclosure for the legend when the color scale is a percentile
-// clip (T43): the extreme tails are saturated, so a reader must not mistake
+// clip: the extreme tails are saturated, so a reader must not mistake
 // the colored range for the data's true min/max. Returns null for a
 // caller-imposed (explicit) scale — which is not a clip of this field — and
 // for older payloads carrying no `scale` at all.

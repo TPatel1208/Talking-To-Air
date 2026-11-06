@@ -1,22 +1,20 @@
-"""T60: a refused region must never become a retrieval of a *different* one.
+"""A refused region must never become a retrieval of a *different* one.
 
 **Why this is an eval and not a unit test.** Everything below the model is
 already unit-tested: `test_region_retrieval_extent.py` proves the seam refuses,
 `test_region_buffer.py` and `test_region_composition.py` prove each refusal
 names its cause. What none of them can prove is what the *model* does when it
 receives one — and the failure this guards against is a model behaviour, not a
-backend one. T46 Phase 2's V6 measured it live: the AOI step refused "Ozone
-Transport Commission", and the agent silently substituted "Northeastern United
-States" and retrieved that, after which the mask clipped a cube that never
-covered the region and nothing said so.
+backend one. Live, the AOI step refused "Ozone Transport Commission", and the
+agent silently substituted "Northeastern United States" and retrieved that,
+after which the mask clipped a cube that never covered the region.
 
-The Phase 5 agent gate re-confirmed how cheap that failure is to reach. Before
-the alias fix, "the OTC region" resolved to a **0.2-degree box in Connecticut**
-standing in for an eleven-state region — disclosed honestly as a geocoded
+The failure is cheap to reach: without an alias, "the OTC region" resolved to a
+**0.2-degree box in Connecticut** standing in for an eleven-state region — disclosed honestly as a geocoded
 point, and completely wrong. Silent geographic substitution does not look like
 an error; it looks like an answer.
 
-**Why the assertion is what it is.** For a region T60 refuses,
+**Why the assertion is what it is.** For a refused region,
 ``region_aware_area_of_interest`` returns the error envelope *without* calling
 the MCP tool. So the fake MCP's ``define_area_of_interest`` should never run at
 all. If the model relays the refusal, it stays unrun. If the model quietly
@@ -25,7 +23,7 @@ records it. ``aoi_calls == []`` is therefore exactly "no silent substitution",
 with no natural-language matching in the loop.
 
 **Why the geocoder is mocked.** The buffer grammar resolves ``X`` through
-``geocoding_service`` (D9), so an un-mocked run would hit live Nominatim once
+``geocoding_service``, so an un-mocked run would hit live Nominatim once
 per iteration, at 1 req/sec, with answers that can change under us. The
 investigation probe (``tests/probe_region_grammar.py``) keeps the live path for
 end-to-end work; this file is the deterministic, network-free half.
@@ -52,7 +50,7 @@ REQUIRED_MODULES = [
 
 # Newark, so "within 3000 miles of NYC" and "NY + Wakanda" both centre on a
 # real, unambiguous point without asking anyone. Nominatim's own response
-# shape, minus the boundary: what a buffer needs from X is a point (D9).
+# shape, minus the boundary: what a buffer needs from X is a point.
 GEOCODER_HIT = {
     "latitude": 40.7128,
     "longitude": -74.0060,
@@ -62,9 +60,8 @@ GEOCODER_HIT = {
 }
 
 # Each case is a region the backend refuses, and the specific reason it names.
-# Deliberately NOT included: "within 50 of Newark". The Phase 5 gate measured
-# the model supplying "miles" for a bare number, twice, against two different
-# prompt wordings — so that refusal never reaches the model at all. It is a
+# Deliberately NOT included: "within 50 of Newark". The model supplies "miles"
+# for a bare number itself, so that refusal never reaches the model at all. It is a
 # documented limitation of this model, not a regression to guard, and pinning
 # it here would make the eval red for something no code change can fix.
 REFUSED_REGIONS = [
@@ -98,7 +95,7 @@ class RegionRefusalEvalTests(unittest.IsolatedAsyncioTestCase):
 
         ``load_earthdata_tools`` rather than ``load_raw_mcp_tools`` is the
         whole point: ``bind_workspace`` is what applies
-        ``region_aware_area_of_interest``, so T60's refusals are in the path.
+        ``region_aware_area_of_interest``, so the region refusals are in the path.
         The scripted eval harness builds its agent the other way, which is why
         no eval task has ever exercised this seam.
         """
@@ -128,7 +125,7 @@ class RegionRefusalEvalTests(unittest.IsolatedAsyncioTestCase):
 
             tool_calls: list[str] = []
             text: list[str] = []
-            # D9's geocode, faked at the GeocodingService seam so the buffer
+            # The buffer's geocode, faked at the GeocodingService seam so the buffer
             # grammar resolves X without a live Nominatim call.
             with patch(
                 "tta_backend.utils.plotting.GeocodingService.ageocode",
@@ -167,8 +164,8 @@ class RegionRefusalEvalTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("safe_retrieve", tool_calls)
 
                 # The refusal has to reach the researcher, not be swallowed
-                # into a generic "no data" — the whole reason D14 makes these
-                # errors name their cause.
+                # into a generic "no data" — the reason these errors name
+                # their cause.
                 if names:
                     self.assertIn(
                         names, answer.lower(),

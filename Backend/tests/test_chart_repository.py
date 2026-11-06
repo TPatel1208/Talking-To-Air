@@ -15,7 +15,7 @@ _SCHEMA_SQL = os.path.abspath(
 class SchemaContractTests(unittest.TestCase):
     """The `agent_charts.id` column must be TEXT, not UUID.
 
-    save_chart honors caller-minted ids, and T06 artifact-typed plots mint
+    save_chart honors caller-minted ids, and artifact-typed plots mint
     prefixed, non-UUID ids (`map_...`, `cmp_...`, `ts_...`) that the frontend
     later cites verbatim to fetch the chart. A UUID column rejects those at
     INSERT ("invalid input syntax for type uuid"), silently breaking chart
