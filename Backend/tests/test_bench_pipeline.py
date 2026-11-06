@@ -99,7 +99,7 @@ class BenchPipelineTests(unittest.TestCase):
         self.assertAlmostEqual(report.case(1).value, report.case(2).value, places=10)
 
     def test_case_three_runs_against_a_real_cube_and_agrees_on_the_answer(self):
-        """T52 landed, so case 3 is no longer a stub: it cubes the opened
+        """Case 3 cubes the opened
         Dataset through the shipped writer and reduces over what a cache *hit*
         serves. Agreeing with cases 1 and 2 to full precision is the guard that
         matters -- a cache that changed a scientific result would be worse than
@@ -145,7 +145,7 @@ class BenchPipelineTests(unittest.TestCase):
         table = bench_pipeline.format_report(self._report())
 
         self.assertIn("case", table)
-        for fragment in ("baseline", "crop-before-mask", "T52"):
+        for fragment in ("baseline", "crop-before-mask", "Zarr cube"):
             self.assertIn(fragment, table)
 
     def test_a_variable_that_is_not_in_the_bundle_fails_with_the_names_that_are(self):
