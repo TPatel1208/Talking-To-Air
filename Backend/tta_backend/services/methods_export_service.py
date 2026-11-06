@@ -1,7 +1,7 @@
 """
 services/methods_export_service.py
 ====================================
-T10: assembles the Markdown a paper's methods section needs, deterministically,
+Assembles the Markdown a paper's methods section needs, deterministically,
 from an artifact's own lineage and citations (provenance_service's output) —
 never from the chat transcript, and never through an LLM, so the same
 session always yields the same text. An optional LLM polish pass may later
@@ -65,10 +65,8 @@ def build_methods_markdown(
 
     lines += _frames_section(chart or {})
 
-    # T57: stated ABOVE the references, because it qualifies everything the
-    # reader is about to cite. Emitted only when the maturity is actually
-    # known: printing a "Data maturity: unknown" heading would read as a
-    # finding, and an unstated maturity must never become a reassuring one.
+    # Above the references because it qualifies what the reader will cite.
+    # Omitted when unknown: an "unknown" heading would read as a finding.
     if maturity and maturity != "unknown":
         lines += ["", "### Data maturity", "", f"- Product maturity: **{maturity}**"]
         if maturity_note:
@@ -83,25 +81,17 @@ def build_methods_markdown(
 
 
 # --------------------------------------------------------------------------
-# T59 Phase 7 — the temporal-frames disclosure (D12).
+# Temporal-frames disclosure
 #
-# Two blocks exist in a chart's jsonb row and they could in principle disagree:
-# ``payload["export"]["frames"]["spec"]`` is the reproducibility recipe written
-# beside ``source_handles``/``variable``/``region_name``, and
-# ``payload["frames"]`` is the artifact ``frame_store._axis_block`` wrote.
+# A chart row holds two frame blocks: the reproducibility recipe
+# (``payload["export"]["frames"]["spec"]``) and the render block
+# (``payload["frames"]``, written by ``frame_store._axis_block``).
 #
-# ONE precedence rule, applied ONCE in ``_recipe`` rather than per call site:
-# **the spec is authoritative for every field it carries**, the render block
-# stands in for the fields it shares when a row has no spec, and the two are
-# never consulted separately for the same statement. The measured facts — the
-# per-frame counts the gap tally is derived from, and the D16 delta — come from
-# the render block alone, because only it has them.
-#
-# They are NOT copied into the spec at plot time. Both blocks are written
-# together by ``_attach_frames``, in the same branch of the same write, so
-# there is no state where one exists without the other; duplicating the delta
-# into the recipe would put one number in two places in one document, which is
-# the disagreement this rule exists to prevent.
+# One precedence rule, applied only in ``_recipe``: the spec wins for every
+# field it carries, and the render block fills in shared fields when there's
+# no spec. Measured facts (per-frame counts, the delta) come only from the
+# render block. They're never copied into the spec, so each number has one
+# source.
 # --------------------------------------------------------------------------
 
 #: Fields the recipe and the artifact both carry, and which therefore need the
@@ -130,11 +120,9 @@ def _frames_section(chart: dict[str, Any]) -> list[str]:
 
     * **frames present** — the full disclosure.
     * **refused** — which refusal, in the backend's own words.
-    * **neither** — silence. Frames are additive (D15): the map is identical
-      whether or not one was built, so their absence says nothing about the
-      figure the reader is citing. Printing "temporal frames: none" would read
-      as a finding about a feature the request never implied — the same reason
-      T57 omits an unknown maturity rather than printing one.
+    * **neither** — silence. Frames don't change the map, so their absence
+      says nothing about the figure, and "temporal frames: none" would read
+      as a finding.
     """
     render = chart.get("frames")
     if not isinstance(render, dict) or not render.get("frames"):
@@ -159,10 +147,8 @@ def _frames_section(chart: dict[str, Any]) -> list[str]:
     if grid:
         lines.append(grid)
     lines.append(_gap_rule(render.get("frames") or [], coarsened))
-    # D12, for the reader who is about to put the download in a paper: the
-    # frame grid is a rendering resolution and export never touches it. The
-    # label is taken from the row rather than restated here — a row that does
-    # not say what its export is must not have the claim invented for it.
+    # Exports are always native resolution, never the frame grid. The label
+    # comes from the row; if the row doesn't say, don't invent it.
     label = _export_label(chart)
     if label:
         lines.append(
@@ -194,21 +180,13 @@ def _planes_section(
     render: dict[str, Any], recipe: dict[str, Any], cadence: str, units: Any,
     agreement_stated: bool,
 ) -> list[str]:
-    """What else this figure's time axis can be browsed as (D6a).
+    """What else this figure's time axis can be browsed as (e.g. max/min).
 
-    Its own section, for ``### Frame–map agreement``'s reason: it carries a
-    measured number that qualifies what the reader is about to cite. The lead
-    keeps D12 unambiguous in the same breath — a plane is browsable and is not
-    downloadable, in any phase.
+    Planes are browsable, never downloadable.
 
-    ``agreement_stated`` closes a hazard this document has and the screen does
-    not. On screen the toggle REPLACES the delta disclosure — ``resolveFrameDelta``
-    branches on the statistic before it touches either of the mean's figures —
-    so the mean's 1.876% is never on the page beside a max plane. Here both
-    sections are always present, and a figure whose subject is unstated three
-    lines above bullets about a different statistic is a figure a reader can
-    take for that statistic's. The clause lives in this section rather than
-    that one so the figures above keep their single account of themselves.
+    With ``agreement_stated``, the lead says the agreement figures above are
+    the mean's. On screen the toggle replaces them, but here both sections
+    appear, so a reader could otherwise take them for this plane's.
     """
     selections = [
         name for name in _browsable_statistics(render, recipe)
@@ -241,17 +219,10 @@ def _planes_section(
 def _plane_refusal_section(render: dict[str, Any]) -> list[str]:
     """Why this figure has a scrubber and no extra statistics — or silence.
 
-    Three states here too, and the middle one did not exist before Phase 14:
-
     * **planes present** — the disclosure above.
-    * **refused** — this, with the gate's own sentence. ``_refusal_section``'s
-      posture one level in: what is missing is the toggle rather than the axis,
-      and a reader who finds no mode and no reason is exactly the person the
-      disclosed refusals exist to keep out of that position.
-    * **neither** — silence, and a document byte-identical to what it was.
-      Phase 13 omitted ``planes`` rather than emitting it empty precisely so
-      this state stays distinguishable from the one above, and every chart
-      plotted before Phase 14 is in it.
+    * **refused** — this, with the gate's own sentence, so a missing toggle
+      always comes with a reason.
+    * **neither** (no ``planes`` key, e.g. older charts) — silence.
     """
     refusal = render.get("planes_unavailable")
     if not isinstance(refusal, dict) or not refusal.get("reason"):
@@ -270,21 +241,15 @@ def _plane_lines(
     """One plane: what a frame of it holds, and whether it satisfies the
     identity the payload claims for it.
 
-    **The identity is read off the payload's own figure, never off the
-    operation's name.** A maximum is associative in theory, and printing
-    "exactly" on that ground would be the same class of falsehood Phase 8
-    caught one file along — true of the mechanism, false of the arrays. The
-    exact branch is what the backend measures today (Phase 11 G5: ``0.0`` max
-    abs diff on both identities, both live bundles); the other exists so it
-    cannot silently become wrong, and it names the figure a defect because for
-    this statistic that is what it would be.
+    Based on the payload's measured figure, never the operation's name. A
+    non-zero figure for max/min is reported as a defect, since selection
+    can't disagree with itself.
     """
     noun = _SELECTION_NOUNS[name]
     figure = _delta_figure(plane.get("frame_grid_delta"), units)
     lead = f"- **{noun.capitalize()}**: {_selection_frame_rule(name, recipe, cadence)}"
     if figure is None:
-        # Unmeasured is not the same as agreeing — ``_delta_section``'s rule,
-        # one plane in. Every row written before Phase 12 is in this state.
+        # Unmeasured is not the same as agreeing (e.g. older charts).
         return [
             lead
             + f" Whether taking the {noun} of the stored frame planes "
@@ -319,19 +284,13 @@ def _plane_lines(
 
 
 def _overstatement_lines(plane: dict[str, Any]) -> list[str]:
-    """D6a decision 9 / Phase 11 G4: how much ground a rendered peak claims.
+    """How much ground a rendered peak claims, versus what was measured.
 
-    **Phase 14's finding binds this wording.** ``ceiling`` is k² and is NOT an
-    upper bound — both sums in ``_overstatement_terms`` are cos(latitude)-
-    weighted per cell, so a block whose max sits on its lowest-weighted row
-    contributes more than k², and the pooled figure straddles k² rather than
-    approaching it from below (measured 4.0000014 against a ceiling of 4).
-    Nothing here says "up to k×" or "at most 25×", and ``ceiling`` is
-    deliberately not rendered at all. What the quantity supports is this
-    chart's own measured figure.
+    ``ceiling`` (k²) is NOT an upper bound: the sums are cos(latitude)-
+    weighted, so the figure can exceed k². Never say "up to k×" and don't
+    render ``ceiling``; state only this chart's measured figure.
 
-    ``None`` on every plane but max, and this is silence rather than a zero: a
-    block minimum paints a trough and decision 9 measures the peak.
+    Only the max plane has this; others return nothing (not a zero).
     """
     measured = plane.get("extent_overstatement")
     if not isinstance(measured, dict):
@@ -409,19 +368,11 @@ def _export_label(chart: dict[str, Any]) -> str | None:
     return str(label) if label else None
 
 
-# Where a disagreement stops being a caveat and starts being a finding, and the
-# ONLY threshold this document has: below it the delta is still stated, in its
-# own section, without editorial — "0.4% is fine for one analysis and material
-# for another, and that judgment is the reader's" (D16). Above it the lead
-# sentence goes bold, which is the only hierarchy Markdown offers.
+# Above this, the delta's lead sentence goes bold; below it, it's stated
+# without comment (whether it matters is the reader's call).
 #
-# The value is ``frameDelta.js:severityOf``'s ``high`` edge, and Phase 3's two
-# real measurements fall on either side of it: 5.4% is a caveat a reader should
-# carry, 22.3% means the scrubber and the map are answering materially
-# different questions. The screen resolves three bands and the document two, so
-# only this edge is shared — pinned by a test naming the JS source, because two
-# thresholds for one number is how the screen and the document start
-# disagreeing.
+# Must match the ``high`` edge in ``frameDelta.js:severityOf``; a test pins
+# them together.
 _DELTA_HIGH = 0.10
 
 
@@ -430,28 +381,19 @@ def _delta_section(
 ) -> list[str]:
     """The two disagreements, as one section — or nothing at all.
 
-    **Two, because there are two questions and a reader has both.** ``delta``
-    (D16) asks whether the frames are a different temporal aggregation from the
-    map, and answers it at native resolution so a +1.2 and a -1.2 inside one
-    block cannot cancel. ``frame_grid_delta`` asks whether the two arrays in
-    the payload are each other's average, and answers it on the arrays. Phase 8
-    measured 3.74% and 3.28% for one chart: the block mean partly cancelled the
-    coarsening term there, so neither number bounds the other and publishing
-    only one leaves the reader with the wrong bound in an unknown direction.
+    Two different questions, so both are stated:
 
-    Emitted in BOTH tiers now. In the cadence tier ``delta`` is rightly absent
-    — a frame IS a cadence bucket and measuring their difference would find
-    nothing — but the frames were still block-meaned to the rendering grid and
-    the map was not, so a figure with no temporal disagreement can and does
-    have an array disagreement. That is the gap Phase 8 found: the tier with
-    nothing to disclose was the tier stating the flattest identity.
+    * ``delta``: are the frames a different temporal aggregation from the
+      map? Measured at native resolution so errors can't cancel per block.
+    * ``frame_grid_delta``: is the map the average of the shipped frame
+      arrays? Measured on the arrays.
 
-    Silent when nothing at all was measured and the tier is exact, which is
-    every row written before this was measured. A section built from what was
-    measured rather than from what would be nice to say.
+    Neither bounds the other. In the cadence tier ``delta`` is absent (a
+    frame is a bucket), but the frames were still block-meaned for display,
+    so ``frame_grid_delta`` can be non-zero.
 
-    The T57 maturity block's placement, for the T57 reason: above the
-    References, because it qualifies everything the reader is about to cite.
+    Silent when nothing was measured and the tier is exact. Placed above the
+    References because it qualifies what the reader will cite.
     """
     coarsened = _is_coarsened(recipe)
     native = _delta_figure(render.get("delta"), units)
@@ -485,8 +427,7 @@ def _delta_section(
             shipped,
         )
     if native is not None and shipped is not None:
-        # Phase 8 §2, in one line, because a reader handed two numbers will
-        # otherwise assume the larger one contains the smaller.
+        # Otherwise a reader assumes the larger number contains the smaller.
         lines.append(
             "- The two are measured on different arrays and neither bounds the "
             "other: the block mean can cancel part of the coarsening as easily "
@@ -530,13 +471,8 @@ def _figure_lines(label: str, figure: tuple[float, str, str | None]) -> list[str
     return lines
 
 
-# The second number this document shares with the screen, after
-# ``_DELTA_HIGH`` — and it is here as a named constant for the same reason that
-# one is. Phase 8 measured what an unpinned shared value is worth: editing the
-# JS edge to 0.15 left every test in both languages green, because a comment
-# naming the other file is not a check. ``frameDelta.js:formatPct`` draws the
-# floor in the same place, and ``SharedDeltaThresholdTests`` reads it out of
-# the JS source and compares.
+# Must match the floor in ``frameDelta.js:formatPct``;
+# ``SharedDeltaThresholdTests`` reads the JS source and compares.
 _DELTA_FLOOR = 0.001
 _DELTA_FLOOR_TEXT = "under 0.1%"
 
@@ -544,10 +480,7 @@ _DELTA_FLOOR_TEXT = "under 0.1%"
 def _pct(headline: float) -> str:
     """One decimal place, or an honest floor.
 
-    Under 0.1% the document cannot resolve the number it would be printing:
-    an undownsampled chart's arrays agree to float32 storage noise (Phase 3's
-    0.000002%), and rendering that as "0.0%" claims a precision this document
-    does not have while reading like a measurement that found nothing.
+    Below 0.1% it's float32 noise, and "0.0%" would claim false precision.
     """
     if headline < _DELTA_FLOOR:
         return _DELTA_FLOOR_TEXT
@@ -632,8 +565,7 @@ def _as_float(value: Any) -> float | None:
 
 
 def _gap_rule(frames: list[Any], coarsened: bool) -> str:
-    """How many frames hold nothing, and — kept apart — which kind of nothing
-    (D10).
+    """How many frames hold nothing, and — kept apart — which kind of nothing.
 
     Counted in FRAMES, and named as intervals only in tier one where the two
     are the same thing. Each entry here is one frame; in tier two a frame spans
@@ -715,21 +647,15 @@ def _is_coarsened(recipe: dict[str, Any]) -> bool:
 
 
 def _weighting_rule(recipe: dict[str, Any], cadence: str, coarsened: bool) -> str:
-    """D4's equal weighting, at whichever level this tier applies it.
+    """How equal weighting applies in this tier.
 
-    Tier one: a frame IS a cadence bucket, and the map is the mean of the
-    frames. Tier two: a frame is the mean of its buckets' MEANS, not of their
-    granules — D4's rule one level up, so the tier that exists to fit long
-    spans does not reintroduce granule weighting where sampling is most uneven.
+    Tier one: a frame is a cadence bucket, and the map is the mean of the
+    frames. Tier two: a frame is the mean of its buckets' means, not of their
+    granules, so long spans don't reintroduce granule weighting.
     """
     if not coarsened:
-        # "of those INTERVALS at NATIVE RESOLUTION", not "of the frames". A
-        # frame is an array on the rendering grid; an interval is a span of
-        # time. The equal weighting is a fact about the second, and stating it
-        # about the first invited a reader to check it by averaging their
-        # download — which Phase 8 did, and got 1.876% instead of nothing.
-        # ``_delta_section`` now reports that figure; this sentence goes back
-        # to describing the reduction, which is what it is true of.
+        # Say "intervals at native resolution", not "frames": averaging the
+        # rendered frames won't exactly reproduce the map (see _delta_section).
         return (
             f"- Each frame is one {cadence} interval of this product, and the "
             "period map is the equally-weighted mean of those intervals at "

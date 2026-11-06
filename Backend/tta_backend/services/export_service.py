@@ -118,8 +118,8 @@ async def hold_admission(chunks: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
 
 
 async def materialize_first_chunk(chunks: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
-    """Await ``chunks``' first chunk before the caller commits to a response
-    (T37): the common export failures (not-ready tools, missing handle,
+    """Await ``chunks``' first chunk before the caller commits to a response:
+    the common export failures (not-ready tools, missing handle,
     evicted export) surface while producing that first chunk, and letting
     them raise *here* — before any 200 header is sent — turns a silently
     truncated download into a clean 4xx/5xx. Returns an iterator that
@@ -132,30 +132,15 @@ async def materialize_first_chunk(chunks: AsyncIterator[bytes]) -> AsyncIterator
 
 
 async def _resolve_export_region(region_name: str) -> dict[str, Any] | None:
-    """Resolve an export's region, tolerating a *lookup failure* and refusing
-    to tolerate a *refusal* (T60 D14).
+    """Resolve an export's region: tolerate a lookup failure, but not a refusal.
 
-    Both export paths used to wrap this in a bare ``except Exception: region =
-    None``, which is a reasonable guard against a Nominatim timeout -- an
-    unmasked chart beats a failed download -- and a catastrophe against a
-    region the resolver deliberately declined to guess at. With no region the
-    export renders ``extent=None, mask_geometry=None``: a chart over the
-    **entire globe**, carrying the region name the researcher asked for. That
-    is the T46 silent-scope-substitution failure arriving through the export
-    path, and D14's raised error would have walked straight into it.
+    A lookup failure (e.g. a Nominatim timeout) returns None, and an unmasked
+    chart beats a failed download. A refusal (``MCPToolError``) propagates:
+    with no region the export would draw the whole globe under the name the
+    researcher asked for.
 
-    So ``MCPToolError`` propagates (the API's handler turns it into a clean
-    4xx naming the token) and everything else still degrades as before.
-    Extracted to one function because two call sites drifting apart on this
-    question is how one of them quietly keeps the old behaviour.
-
-    Asynchronous because of the resolver it reaches. The sync twin's throttle
-    is a bare ``time.sleep`` and its request a blocking ``requests.get`` --
-    the geocoder's own comment named this module as the caller that ran them
-    on the event loop -- and because the throttle is process-global, the waits
-    of concurrent exports stack rather than overlap. ``aresolve_location``
-    yields the loop across both, so a queue of uncached regions costs the same
-    wall-clock time and freezes nothing while it waits.
+    Shared by both export paths so they can't drift apart. Async so the
+    geocoder's throttle doesn't block the event loop.
     """
     from tta_backend.earthdata_mcp.results import MCPToolError
     from tta_backend.utils.plotting import RegionResolver
@@ -179,10 +164,8 @@ async def _replay_then_stream(first: bytes | None, rest: AsyncIterator[bytes]) -
         async for chunk in rest:
             yield chunk
     except MCPToolError as exc:
-        # The 200 is already committed — the honest remaining move is a
-        # clearly marked trailer so the file self-identifies as truncated
-        # (T37 story #2). Category only, never the message: the trailer is
-        # file content a researcher may share onward.
+        # The 200 is already sent, so mark the file as truncated. Category
+        # only, never the message: researchers may share this file.
         logger.exception("export_stream_failed_mid_stream", extra={"_category": exc.category})
         yield f"\n# EXPORT INCOMPLETE — {exc.category}\n".encode("utf-8")
     except Exception:
@@ -399,14 +382,11 @@ class ExportService:
                 async for row in self._iter_heatmap_csv_rows(export, tools):
                     yield row
 
-    # ── Vertical profile (T56) ──────────────────────────────────────────────
+    # ── Vertical profile ────────────────────────────────────────────────────
     #
-    # Both profile exports read the payload and nothing else. Every other chart
-    # type re-opens its source granule because what it displays is a thinned
-    # version of what it measured; a profile's 24 numbers per axis ARE the
-    # measurement, so a re-read could only reproduce them -- and the export
-    # keeps working after the source handle is evicted, which no other type
-    # manages.
+    # Profile exports read only the payload. Other chart types re-open the
+    # source because they display thinned data, but a profile's numbers are
+    # the full measurement, so this works even after the handle is evicted.
 
     _PROFILE_AXES = ("pressure", "altitude")
 
@@ -489,22 +469,12 @@ class ExportService:
     ) -> xr.DataArray:
         """Open the source granule and narrow it to what the export draws.
 
-        Only the two genuinely asynchronous steps happen here: the handle open
-        (already offloaded by T16) and the region lookup. The rest -- variable
-        resolution, longitude normalisation, geometry masking, the bounds
-        selection and the dask reduction -- is synchronous CPU work on a full
-        grid and belongs on a worker thread, not on the one loop that also
-        carries every other user's stream.
+        Only the handle open and region lookup are async; the rest is CPU work
+        on a full grid and runs on a worker thread to keep the event loop free.
 
-        The region lookup has to move *ahead* of the narrowing to get there:
-        it is a coroutine, and there is no loop inside the thread to await it
-        on. It reads the payload and nothing from the array, so the data is
-        unaffected -- but the ordering is visible in one case. An export whose
-        variable cannot be resolved *and* whose region the resolver refuses
-        now surfaces the region refusal rather than the variable error. That
-        is the better of the two to lead with (D14's refusal is the one that
-        silently becomes a globe-wide chart if it is ever dropped), and the
-        cost is a geocode spent on an export that was going to fail anyway.
+        The region lookup runs first because it can't be awaited inside the
+        thread. So if both the variable and the region fail, the region
+        refusal is the error reported.
         """
         from tta_backend.services.open_handle import open_handle
 
@@ -537,7 +507,7 @@ class ExportService:
 
         # Pass the source handle so a stored payload whose ``variable`` wasn't
         # persisted (or was persisted as None) still inherits the science
-        # variable recorded for this handle at retrieval time (T25). If it
+        # variable recorded for this handle at retrieval time. If it
         # can't be resolved -- a genuinely multi-science-variable file with no
         # recorded choice -- surface it as the export path's own ValueError
         # (a clean 422) instead of letting the structured MCPToolError escape
@@ -546,10 +516,8 @@ class ExportService:
         try:
             da = AggregationService().to_dataarray(ds, variable=export.get("variable"), handle=handle)
         except VariableChoiceRequired as exc:
-            # T49's interactive picker is a chat-turn affordance; a raw export
-            # download has no chat surface to attach it to, so this path keeps
-            # the pre-T49 behavior -- surface the bounded refusal as the export's
-            # own clean 422 ValueError.
+            # A download has no chat to show the variable picker in, so
+            # return the refusal as a 422.
             raise ValueError(exc.mcp_error.message) from exc
         except MCPToolError as exc:
             raise ValueError(exc.message) from exc
