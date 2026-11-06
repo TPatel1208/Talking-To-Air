@@ -65,7 +65,7 @@ class _Coalition:
 COALITIONS: dict[str, _Coalition] = {
     "otc": _Coalition(
         name="Ozone Transport Region",
-        # The V1 verdict, disclosed at the point of use. The polygon is the
+        # Disclosed at the point of use: the polygon is the
         # eleven whole States CAA 184(a) names, plus DC; the statute's twelfth
         # component is the DC-area CMSA, which 50m admin-1 cannot express.
         display_name=(

@@ -854,7 +854,7 @@ def _band_mean_fact(
     if valid_count == 0:
         return None
     # Cos(latitude) area-weighted, the SAME regional-mean definition as the
-    # headline science mean (Finding #13) -- an unweighted grid-cell mean
+    # headline science mean -- an unweighted grid-cell mean
     # over-weights poleward pixels, so context/uncertainty evidence over a
     # continental region would silently disagree with the value it qualifies.
     # Falls back to the unweighted mean when the band has no latitude dim.
@@ -965,7 +965,7 @@ def _evidence_facts(
     science_leaf = _evi_leaf(da.name)
 
     # The masked science mean, for uncertainty-as-percent-of-science. Cos-lat
-    # area-weighted (Finding #13) so the pct-of-science ratio divides a
+    # area-weighted so the pct-of-science ratio divides a
     # weighted band mean by a weighted science mean -- like by like -- rather
     # than mixing a weighted numerator with an unweighted denominator.
     #

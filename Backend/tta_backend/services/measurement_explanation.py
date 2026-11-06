@@ -33,10 +33,10 @@ _NO_EVIDENCE_REASON = (
 
 
 def summarize_measurement_evidence(payload: dict[str, Any] | None) -> dict[str, Any]:
-    """The pure reliability subset of one persisted chart payload -- the facts
-    layer P3 explains, read straight off ``provenance`` with no recomputation.
+    """The pure reliability subset of one persisted chart payload, read
+    straight off ``provenance`` with no recomputation.
 
-    Returns ``evidence`` (P2's ``provenance.evidence`` list, verbatim), the
+    Returns ``evidence`` (the ``provenance.evidence`` list, verbatim), the
     ``masking`` qa_status/qa_source when present, the plotted variable/units, and
     an explicit ``has_evidence`` bool. Missing payload / provenance / evidence
     each yield ``has_evidence: false`` with a plain ``reason`` -- never raises.
@@ -68,8 +68,8 @@ def summarize_measurement_evidence(payload: dict[str, Any] | None) -> dict[str, 
         "has_evidence": bool(evidence),
     }
     if evidence:
-        # Verbatim -- P2 is the single source of truth for every number; this
-        # accessor never re-derives a stat.
+        # Verbatim -- the stored evidence is the single source of truth for
+        # every number; this accessor never re-derives a stat.
         result["evidence"] = evidence
     else:
         result["reason"] = _NO_EVIDENCE_REASON

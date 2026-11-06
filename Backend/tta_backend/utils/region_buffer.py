@@ -170,7 +170,7 @@ def _region(request: BufferRequest, geo_result: dict[str, Any], geometry: "BaseG
     """The resolved region, in ``dispatch_composite``'s shape.
 
     ``display_name`` cites the **geocoder's own label** and says the shape is a
-    construction. Gate V25 measured ``"Springfield"`` resolving confidently to
+    construction. E.g. ``"Springfield"`` resolves confidently to
     Springfield, Illinois out of some thirty candidates -- the existing hazard
     of every bare place name, not one this grammar introduces, and the existing
     mitigation is exactly this: put the geocoder's answer where a reader can
@@ -199,7 +199,7 @@ def _region(request: BufferRequest, geo_result: dict[str, Any], geometry: "BaseG
 
 
 def _check_pole(request: BufferRequest, geo_result: dict[str, Any]) -> None:
-    """V22, decided separately from the antimeridian, and checked **first**.
+    """Refuse buffers containing a pole; checked **before** the antimeridian.
 
     A buffer containing a pole is not a distorted polygon, it is an
     unrepresentable one. Measured at 89.5 N with r = 200 km: the pole is 55.8
@@ -208,7 +208,7 @@ def _check_pole(request: BufferRequest, geo_result: dict[str, Any]) -> None:
     and comes back down the far meridian at that latitude. The shape does not
     cover the pole and **does not cover its own centre**. The region wanted is
     a polar cap with a hole at the top; no lat/lon polygon expresses it, and
-    splitting at +/-180 (option (b)) does not help -- run on this case it
+    splitting at +/-180 does not help -- run on this case it
     returns a ``GeometryCollection`` with the same two holes.
 
     Ordered ahead of the antimeridian check because such a ring wraps 360
@@ -255,7 +255,7 @@ def _crosses_antimeridian(geometry: "BaseGeometry") -> bool:
     threshold needs no tuning and cannot drift into a real request.
 
     Note this is not the same question as "is the bbox wide": a buffer at 89 N
-    legitimately spans 127 deg of longitude (V22) without crossing anything.
+    legitimately spans 127 deg of longitude without crossing anything.
     """
     for ring in _rings(geometry):
         lons = [x for x, _ in ring.coords]

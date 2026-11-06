@@ -1097,7 +1097,7 @@ def _synthesize_member_time_coord(ds: Any) -> Any:
     if candidates:
         ds = ds.rename({candidates[0]: "time"})
         # Preserve a real per-granule time coordinate the differently-cased dim
-        # already carried (Finding #15): only OMI_MINDS_NO2d's case -- a Time
+        # already carried: only OMI_MINDS_NO2d's case -- a Time
         # dim with no coordinate variable -- needs the attr timestamp. When the
         # dim already indexes a real datetime (a genuine overpass time),
         # overwriting it with the attr date's (midnight) stamp would collapse
@@ -1114,7 +1114,7 @@ def _has_real_time_coord(ds: Any) -> bool:
     """Whether ``ds`` already carries a genuine datetime ``time`` coordinate
     (an indexed datetime64 with at least one non-NaT value) -- as opposed to a
     bare dimension or an integer index that only *names* time. Synthesis fills
-    the latter but must never clobber the former (Finding #15)."""
+    the latter but must never clobber the former."""
     import numpy as np
 
     if "time" not in ds.coords:
