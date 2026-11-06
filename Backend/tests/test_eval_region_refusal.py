@@ -25,7 +25,7 @@ records it. ``aoi_calls == []`` is therefore exactly "no silent substitution",
 with no natural-language matching in the loop.
 
 **Why the geocoder is mocked.** The buffer grammar resolves ``X`` through
-``geocoding_service`` (D9), so an un-mocked run would hit live Nominatim once
+``geocoding_service``, so an un-mocked run would hit live Nominatim once
 per iteration, at 1 req/sec, with answers that can change under us. The
 investigation probe (``tests/probe_region_grammar.py``) keeps the live path for
 end-to-end work; this file is the deterministic, network-free half.
@@ -52,7 +52,7 @@ REQUIRED_MODULES = [
 
 # Newark, so "within 3000 miles of NYC" and "NY + Wakanda" both centre on a
 # real, unambiguous point without asking anyone. Nominatim's own response
-# shape, minus the boundary: what a buffer needs from X is a point (D9).
+# shape, minus the boundary: what a buffer needs from X is a point.
 GEOCODER_HIT = {
     "latitude": 40.7128,
     "longitude": -74.0060,

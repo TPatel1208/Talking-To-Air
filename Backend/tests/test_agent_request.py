@@ -162,7 +162,7 @@ def _requests(*items):
 
 
 class CanonicalKeyTests(unittest.TestCase):
-    """The identity the dispatch executor dedupes on (D9): the typed fields
+    """The identity the dispatch executor dedupes on: the typed fields
     define the task; prior_findings is context, so rewording it cannot dodge
     dedupe."""
 
@@ -192,8 +192,8 @@ class CanonicalKeyTests(unittest.TestCase):
 
 
 class RenderTaskTests(unittest.TestCase):
-    """The task string a sub-agent receives (D7): a fixed template over the
-    typed fields plus the researcher's own words (D6) -- no model rewrites
+    """The task string a sub-agent receives: a fixed template over the
+    typed fields plus the researcher's own words -- no model rewrites
     anything on the way.
 
     The fields come first and are the task; the researcher's message follows

@@ -74,7 +74,7 @@ class SatelliteToolsFactoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(full["units"], "mol/m^2")
         self.assertEqual(full["metadata"]["source_handles"], ["obs_1"])
 
-        # The model-facing result is the compact summary (T13).
+        # The model-facing result is the compact summary.
         self.assertEqual(payload["render_type"], "heatmap")
         self.assertEqual(payload["variable"], "no2")
         self.assertEqual(payload["units"], "mol/m^2")

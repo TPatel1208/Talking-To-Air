@@ -1434,7 +1434,7 @@ class PlanesAreOptionalTests(unittest.TestCase):
         scrub, and a max plane scrubbed against the MEAN's clip would saturate
         at every stop that has a peak in it -- which is every stop anyone
         switched to the max plane to look at. Pooled at native resolution
-        before the block reduction, the same as the mean's (D5a)."""
+        before the block reduction, the same as the mean's."""
         stack = self._stack(statistics=("mean", "max", "min"))
 
         self.assertIsNotNone(stack.value_range)

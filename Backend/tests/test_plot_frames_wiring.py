@@ -796,7 +796,7 @@ class PlotSingularFrameWiringTests(_PlotHarness, unittest.IsolatedAsyncioTestCas
         )
 
     async def test_an_unregistered_product_says_why_there_is_no_scrubber(self):
-        """The refusal above the backstop is disclosed, not silent (D3).
+        """The refusal above the backstop is disclosed, not silent.
 
         An off-registry product's cadence is "unknown" -- a fact this backend
         does not have, never a default of "daily" -- and a frame axis has no
@@ -872,7 +872,7 @@ class PlotSingularFrameWiringTests(_PlotHarness, unittest.IsolatedAsyncioTestCas
         self.assertTrue(framed["chart_id"].startswith("map_"))
         for key in ("lats", "lons", "values", "statistics", "vmin", "vmax", "scale"):
             self.assertEqual(framed[key], plain[key], key)
-        # The aggregate is the export, framed or not (D12).
+        # The aggregate is the export, framed or not.
         self.assertEqual(
             {k: v for k, v in framed["export"].items() if k != "frames"},
             {k: v for k, v in plain["export"].items() if k != "frames"},
@@ -963,7 +963,7 @@ class PlotSingularFrameWiringTests(_PlotHarness, unittest.IsolatedAsyncioTestCas
         spec lands beside them, so the durable row says how the stack was
         reduced rather than only holding what it produced.
 
-        And it records what export actually ships (D12). The 20,000-cell block
+        And it records what export actually ships. The 20,000-cell block
         mean is a rendering resolution, not a scientific product -- at k=8 a
         frame has already lost 16% of its own p98 -- so exporting it would put
         a downsampled field into someone's paper."""

@@ -173,7 +173,7 @@ class PhaseLabelsetTests(unittest.TestCase):
 
         self.assertEqual(
             set(PIPELINE_PHASES),
-            # qa_pass_rate (T55) is its own phase, not part of "mask": it is an
+            # qa_pass_rate is its own phase, not part of "mask": it is an
             # eager reduction added to the masking path, and the whole point of
             # timing it separately is to see what the honesty feature costs.
             #
@@ -187,7 +187,7 @@ class PhaseLabelsetTests(unittest.TestCase):
             # spent building provenance from the unaggregated Dataset, after
             # the render timer had already closed.
             #
-            # "frames" (T59 Phase 5) is the bucketed reduction behind a map's
+            # "frames" is the bucketed reduction behind a map's
             # scrubber. Its own phase for the same reason "qa_pass_rate" is:
             # it adds a whole extra graph walk over a lazily-opened bundle --
             # measured at 9.2 s against a 12-15 s open+mask -- and what an

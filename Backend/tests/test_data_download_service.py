@@ -1,7 +1,7 @@
 """
 tests/test_data_download_service.py
 =====================================
-T10: the data-download endpoints' backend seam. Calls the MCP's
+The data-download endpoints' backend seam. Calls the MCP's
 ``convert_format`` tool to materialize a handle in a downloadable format
 (e.g. NetCDF), then streams the converted file's bytes directly — no
 parallel download system, just the same file:// export contract

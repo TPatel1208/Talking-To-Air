@@ -26,7 +26,7 @@ class DispatchStageForwardingTests(unittest.IsolatedAsyncioTestCase):
     payload, each of which forwards to a `parent_emitter` captured once at
     the nested stream_response's own construction, not re-read per call —
     this test pins that stage status events bubble identically now that
-    emit_status carries a stage/detail payload (T19), and guards against a
+    emit_status carries a stage/detail payload, and guards against a
     future change (e.g. an explicit on_event re-forward) double-emitting."""
 
     async def _build_dispatch(self, fake_satellite_agent):
@@ -69,7 +69,7 @@ class DispatchStageForwardingTests(unittest.IsolatedAsyncioTestCase):
 
         events = [event async for event in stream_response(OuterAgent(), "do it", "outer-thread")]
 
-        # The dispatch executor's own lane markers (T64 Phase 4) aside, the
+        # The dispatch executor's own lane markers aside, the
         # sub-agent's stage arrives exactly once, tagged with its lane.
         status_events = [
             data for event_type, data in events

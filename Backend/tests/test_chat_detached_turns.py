@@ -1,4 +1,4 @@
-"""Chat turns that outlive the connection that started them (T63 Phase 2).
+"""Chat turns that outlive the connection that started them.
 
 ``POST /chat`` accepts the message and hands back a turn id; the turn runs on
 its own and writes into the event log; ``GET /chat/{thread_id}/stream`` is the
@@ -437,7 +437,7 @@ class DetachedChatTurnTests(unittest.IsolatedAsyncioTestCase):
         """Stop names a thread, not a turn.
 
         The button is pressed in a tab that may have joined the turn rather
-        than started it (D12) — after a reattach it knows the thread and
+        than started it — after a reattach it knows the thread and
         nothing else — so the server resolves which turn that is.
         """
         blocked = asyncio.Event()

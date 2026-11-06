@@ -285,7 +285,7 @@ class RouterFastPathTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_fast_path_done_event_omits_suggestions_for_a_salvaged_result(self):
         """T22 story #7/#12: a malformed final message is salvaged from raw
-        prose (T15) — it must never carry suggestions, even when the
+        prose — it must never carry suggestions, even when the
         salvaged prose happens to contain question marks."""
         from tta_backend.services.chat_stream_service import ChatStreamService
         from tta_backend.services.chart_service import ChartService

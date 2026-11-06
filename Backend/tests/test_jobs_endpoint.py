@@ -42,7 +42,7 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
         # proves the endpoint never leaks one researcher's jobs to another.
         # Shape mirrors the real list_workspace contract: {handles: [{handle,
         # type, created_at, summary}]}, not the fabricated {jobs, job_handle,
-        # dataset} keys the fake used to return (T26).
+        # dataset} keys the fake used to return.
         self.workspace_jobs = {
             "user-user-1": [
                 {
@@ -83,7 +83,7 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         settings = Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None)
         self.api.app.state.earthdata_mcp_tools = await load_earthdata_tools(settings, current_user_id)
-        # Jobs endpoints read tools through earthdata_mcp_manager (T17).
+        # Jobs endpoints read tools through earthdata_mcp_manager.
         self.api.app.state.earthdata_mcp_manager = SimpleNamespace(
             state="ready", tools=self.api.app.state.earthdata_mcp_tools,
         )

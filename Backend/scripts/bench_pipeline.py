@@ -1,4 +1,4 @@
-"""Measure the mask/reduce pipeline three ways against a real bundle (T51).
+"""Measure the mask/reduce pipeline three ways against a real bundle.
 
 T52 (the L4 Zarr cube) is blocked on a number nobody has: does the AOI crop's
 slice push down to an h5netcdf hyperslab read, or does dask materialize the

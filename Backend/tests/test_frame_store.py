@@ -116,7 +116,7 @@ def make_frame_stack(n_frames: int = 24, ny: int = 60, nx: int = 80):
 
 
 def with_planes(stack, statistics=("max", "min")):
-    """The same stack, carrying its own max/min planes (T59 Phase 12).
+    """The same stack, carrying its own max/min planes.
 
     Each plane's arrays are the mean's offset by a constant large enough that
     no finite value appears in two planes, so a test that silently read the
@@ -145,7 +145,7 @@ def with_planes(stack, statistics=("max", "min")):
                 "headline": 0.0, "max_abs": 0.0,
                 "basis": PLANE_AGREEMENT_BASIS[name],
             },
-            # This plane's own pooled 2-98 (D9), never the mean's.
+            # This plane's own pooled 2-98, never the mean's.
             value_range=(-3.14e14 + offset, 6.21e15 + offset),
             # D6a decision 9, on the max plane alone. Phase 12's live figure.
             extent_overstatement=None if name != "max" else {
@@ -239,7 +239,7 @@ class ChartRowCarriesTheAxisTests(FrameStoreTestCase):
         self.assertEqual(empty["statistics"], {"count": 0})
 
         # The grid the values are laid out on, so a blob is interpretable, and
-        # the pooled scale, so one colour means one value at every stop (D9).
+        # the pooled scale, so one colour means one value at every stop.
         self.assertEqual(block["lats"], [round(float(v), 6) for v in stack.lats])
         self.assertEqual(block["lons"], [round(float(v), 6) for v in stack.lons])
         self.assertEqual(block["cells_per_frame"], stack.cells_per_frame)

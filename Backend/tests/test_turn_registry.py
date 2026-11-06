@@ -250,7 +250,7 @@ class TurnRegistryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(await self.entries(claim.turn_id)), 3)
 
     async def test_a_second_send_while_a_turn_runs_is_refused_with_the_running_turn(self):
-        """One turn per thread (D12).
+        """One turn per thread.
 
         The supervisor is one LangGraph thread on a shared checkpointer, and
         two concurrent ``astream`` calls on it interleave checkpoint writes.
@@ -735,7 +735,7 @@ class TurnRegistryTests(unittest.IsolatedAsyncioTestCase):
 
         A reader has no other way to learn the turn is over -- a stopped turn
         emits no ``done`` of its own, so without the terminal entry the stream
-        just goes quiet and looks like a dead replica (D14).
+        just goes quiet and looks like a dead replica.
         """
         gate = asyncio.Event()
         self.addCleanup(gate.set)
@@ -933,7 +933,7 @@ class TurnRegistryTests(unittest.IsolatedAsyncioTestCase):
         """Only what is still running is cancelled.
 
         A retrieval that reached ``ready`` produced a result the user keeps
-        (D11) and may already be cached; cancelling it at the provider throws
+        and may already be cached; cancelling it at the provider throws
         that away and can turn a completed job into a ``cancelled`` row in the
         Jobs panel, which reads as data loss rather than as a stop.
         """

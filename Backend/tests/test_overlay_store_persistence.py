@@ -1,4 +1,4 @@
-"""Deployment-contract guard for the server-rendered map overlays (T23).
+"""Deployment-contract guard for the server-rendered map overlays.
 
 The overlay PNGs are the *native* high-quality map layer: the frontend
 (MapLibreHeatmapPanel) shows them when /chart/{id}/overlay.png resolves, and

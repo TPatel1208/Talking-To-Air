@@ -387,7 +387,7 @@ class HandleVolume:
         path.write_bytes(contents)
 
     def set_delivered_content(self, handle: str, content_digest: str, *, partial: bool = False) -> None:
-        """Declare what the job behind ``handle`` actually delivered (PRD 023).
+        """Declare what the job behind ``handle`` actually delivered.
 
         Calling this again with a different digest models real upstream drift —
         a late-arriving NRT granule, an unpinned Harmony submit that picked a

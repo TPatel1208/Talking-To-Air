@@ -1,7 +1,7 @@
 """
 tests/test_measurement_explanation.py
 ========================================
-PRD T36 Phase 3 -- the read-only ``explain_measurement`` accessor. It bridges
+The read-only ``explain_measurement`` accessor. It bridges
 P2's persisted ``provenance.evidence`` to a grounded explanation by returning a
 compact reliability subset, with NO recomputation and NO error path:
 

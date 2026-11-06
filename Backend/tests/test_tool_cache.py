@@ -1,7 +1,7 @@
 """
 tests/test_tool_cache.py
 =========================
-T53: the discovery-metadata cache at the ``bind_workspace`` seam. Every
+The discovery-metadata cache at the ``bind_workspace`` seam. Every
 model-facing MCP tool call already passes through that one wrapper for
 workspace injection, T31 credential injection and T18 error classification —
 so the cache lives there too, as an *allowlist* of effectively-immutable

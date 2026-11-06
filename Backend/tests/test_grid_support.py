@@ -112,7 +112,7 @@ class MaskGridSupportTests(unittest.TestCase):
         # stat tools off-taxonomy — a generic "internal error" for a plot and
         # a false "no data found" for a point query. It must speak the same
         # typed unsupported_grid contract as the curvilinear/projected
-        # refusals (T44 story #3).
+        # refusals.
         da = xr.DataArray(np.ones((2, 2)), dims=("scanline", "ground_pixel"))
 
         with self.assertRaises(MCPToolError) as ctx:

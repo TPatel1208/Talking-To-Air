@@ -1,7 +1,7 @@
 """
 tests/test_provenance_endpoint.py
 ===================================
-T10: the provenance pane's HTTP surface — provenance, citations, methods
+The provenance pane's HTTP surface — provenance, citations, methods
 export, and NetCDF download, each scoped to the chart's owner exactly like
 the existing /chart/{id}/export.* routes.
 """
@@ -112,7 +112,7 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
         settings = Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None)
         self.api.app.state.earthdata_mcp_tools = await load_earthdata_tools(settings, current_user_id)
         # Provenance/citations/methods/export.nc all read tools through
-        # earthdata_mcp_manager (T17/T37).
+        # earthdata_mcp_manager.
         self.api.app.state.earthdata_mcp_manager = SimpleNamespace(
             state="ready", tools=self.api.app.state.earthdata_mcp_tools,
         )
@@ -209,7 +209,7 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("- 2026-07-01", response.text, "retrieval date derives from the materialized event")
 
     async def test_methods_endpoint_discloses_the_charts_temporal_frames(self):
-        # T59 Phase 7 / D12: the bucketing disclosure is mandatory, and it is
+        # The bucketing disclosure is mandatory, and it is
         # the whole chart payload — not the provenance sub-dict — that carries
         # both frames blocks. Without this wiring the disclosure exists and
         # never reaches a reader.

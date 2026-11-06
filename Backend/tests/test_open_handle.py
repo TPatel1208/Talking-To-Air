@@ -469,7 +469,7 @@ class OpenHandleGroupedNetcdfTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(float(da.values[0][0]), 1.0)
 
         # A bare ambiguous request refuses with candidates, never guesses --
-        # T49: as the deterministic picker short-circuit, whose compact
+        # As the deterministic picker short-circuit, whose compact
         # tool-result still names the qualified candidates.
         with self.assertRaises(VariableChoiceRequired) as ctx:
             service.to_dataarray(ds, variable=None)

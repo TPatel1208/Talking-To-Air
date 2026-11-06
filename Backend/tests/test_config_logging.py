@@ -254,7 +254,7 @@ class ConfigLoggingTests(unittest.TestCase):
     def test_validate_startup_requires_the_supabase_identity_provider(self):
         from tta_backend.config.settings import Settings
 
-        # T61: unconditional, unlike the provider keys. api.py builds the
+        # Unconditional, unlike the provider keys. api.py builds the
         # verifier's issuer as f"{supabase_url}/auth/v1" at import, so a None
         # URL constructs a verifier reading "None/auth/v1" that rejects every
         # token with "Invalid issuer." on a backend that booted clean. Naming
@@ -344,7 +344,7 @@ class ConfigLoggingTests(unittest.TestCase):
         from tta_backend.config.settings import ConfigurationError, Settings
 
         # A config typo (bad scheme, no host) is a bug to fix at boot, not an
-        # outage the connection manager should retry (T17).
+        # outage the connection manager should retry.
         loaded = Settings(
             db_password="x", **REQUIRED_KWARGS, google_api_key="x", groq_api_key="x",
             earthdata_mcp_url="not-a-url",

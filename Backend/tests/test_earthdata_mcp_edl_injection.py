@@ -155,7 +155,7 @@ class EdlTokenInjectionMatrixTests(ProcessCacheIsolation, unittest.IsolatedAsync
         self.assertIn("query", properties)
 
     async def test_missing_user_context_fails_loud_regardless_of_the_injector(self):
-        # T37: the refusal answers as a classified contract error envelope;
+        # The refusal answers as a classified contract error envelope;
         # the injector must never have been consulted (no token to leak).
         import json
 
@@ -172,7 +172,7 @@ class EdlTokenInjectionMatrixTests(ProcessCacheIsolation, unittest.IsolatedAsync
     async def test_contract_check_still_reaches_ready_with_no_edl_token_in_the_required_param_contract(self):
         """T31: edl_token is feature-detected, never required -- an
         un-upgraded MCP (every tool here except search_datasets) must still
-        pass the connect-time schema check (T17)."""
+        pass the connect-time schema check."""
         from tta_backend.earthdata_mcp.connection import check_tool_schemas
 
         mismatches = check_tool_schemas(self.tools)

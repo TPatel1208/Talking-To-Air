@@ -1,7 +1,7 @@
 """
 tests/test_earthdata_mcp_connection.py
 =========================================
-PRD T17: the connection manager owns the earthdata-retrieval MCP relationship
+The connection manager owns the earthdata-retrieval MCP relationship
 as an attached service, not a boot dependency. These tests fake the manager's
 own seam (a loader callable standing in for load_raw_mcp_tools) rather than
 spinning up a real MCP server — the manager's job is state/retry/schema-diff
@@ -34,7 +34,7 @@ async def _probe_ok(_settings) -> set[str]:
     """Default success probe for tests that only care about connect/retry/
     schema-diff/on_ready behavior, not heartbeat dampening -- just needs to
     not raise. Since the manager reaches ready and keeps heartbeating for
-    its whole lifetime (T17), any test that reaches ready and lets the
+    its whole lifetime, any test that reaches ready and lets the
     fake sleep yield needs an explicit probe -- the production default
     (probe_mcp_tools) would otherwise hit a real network call."""
     return set()
@@ -219,7 +219,7 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(observed_state_at_callback[0], STATE_READY)
 
     async def test_on_ready_does_not_re_fire_on_a_healthy_heartbeat(self):
-        # T17: a steady-state loop must not rebuild the satellite agent every
+        # A steady-state loop must not rebuild the satellite agent every
         # heartbeat — only a genuine transition into ready calls on_ready.
         from tta_backend.earthdata_mcp.connection import EarthdataMCPConnectionManager, STATE_READY
 
@@ -316,7 +316,7 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_detects_a_later_outage_and_recovers_without_a_restart(self):
-        # T17 story #5/#6: the manager must keep watching after boot — a
+        # The manager must keep watching after boot — a
         # mid-session MCP outage (not just a down-at-boot one) has to flip
         # /health away from "ready", or every consumer gated on manager.state
         # would let a bare connection failure through during that window
@@ -600,7 +600,7 @@ class HeartbeatDampeningTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(on_ready_calls), 1)
 
     async def test_steady_state_probes_dont_call_the_loader(self):
-        # The whole point of the light probe (PRD T40): steady-state
+        # The whole point of the light probe: steady-state
         # heartbeats must not repeat the expensive full load-bind-verify
         # path every interval -- only a genuine (re)connect calls the loader.
         from tta_backend.earthdata_mcp.connection import EarthdataMCPConnectionManager, STATE_READY

@@ -531,7 +531,7 @@ class VerticalProfileToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("conduct_temporal_statistic", result["error"])
 
     async def test_the_profile_is_a_citable_artifact_of_its_own_kind(self):
-        """A profile is not a time series (D2). Sharing the ``ts_`` prefix or
+        """A profile is not a time series. Sharing the ``ts_`` prefix or
         the timeseries artifact type would let the export and compare paths
         treat pressures as timestamps."""
         self._add("obs_prof", layer_values=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0])

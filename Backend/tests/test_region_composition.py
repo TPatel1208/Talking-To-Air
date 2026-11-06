@@ -306,7 +306,7 @@ class ExtentGateTests(unittest.TestCase):
     its footprint. ``"alaska + florida"`` unions two polygons into a box
     spanning 8.56 M native cells at TEMPO L3, and ``_crop_to_mask_footprint``
     crops to that envelope rather than per-part -- the render-path OOM this
-    codebase already knows about (T50/T59), reachable in one typed string.
+    codebase already knows about, reachable in one typed string.
 
     The ceiling is **not a new tunable number.** V15 measured every candidate
     against the two ceilings this codebase already decided, and

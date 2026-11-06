@@ -1,4 +1,4 @@
-"""T60 Phase 1.5 (D13): the retrieval plane speaks the coalition vocabulary.
+"""T60 Phase 1.5: the retrieval plane speaks the coalition vocabulary.
 
 Phase 1 shipped a correct *mask* for the Ozone Transport Region that no user
 could reach from a prompt. The spatial subset that actually pulls data comes

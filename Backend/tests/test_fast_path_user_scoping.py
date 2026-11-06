@@ -101,7 +101,7 @@ class FastPathUserScopingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_missing_user_id_never_reaches_the_mcp_as_user_none(self):
         """A None user id must not silently pool into a shared "user-None"
-        workspace (T26). bind_workspace's own guard (asserted directly and
+        workspace. bind_workspace's own guard (asserted directly and
         more precisely in test_earthdata_mcp_workspace.py's
         WorkspaceMissingUserContextTests) raises before the MCP is ever
         called; run_satellite's existing generic-failure handling folds that

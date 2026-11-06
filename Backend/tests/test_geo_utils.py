@@ -110,7 +110,7 @@ class IdentifyLatLonTests(unittest.TestCase):
 
 class IdentifyTimeTests(unittest.TestCase):
     """T25: time identification gets the same CF-metadata-primary treatment
-    as lat/lon (T24), so a MERRA-2-style `valid_time` dim is recognized as
+    as lat/lon, so a MERRA-2-style `valid_time` dim is recognized as
     time instead of falling into the dimension-choice-required error path."""
 
     def test_cf_standard_name_identifies_time_regardless_of_dim_name(self):

@@ -38,7 +38,7 @@ if TESTS_DIR not in sys.path:
 
 
 def _profile_payload():
-    """A vertical-profile export (T56). Hermetic on purpose: a profile renders
+    """A vertical-profile export. Hermetic on purpose: a profile renders
     from its own payload and never re-reads a granule, so this exercises
     ``build_chart_png``'s render-and-save half with no MCP server, no handle
     volume, and no network in the picture."""

@@ -1,7 +1,7 @@
 """
 tests/test_methods_export_service.py
 ======================================
-T10: golden tests for the deterministic methods-text generator. Canned
+Golden tests for the deterministic methods-text generator. Canned
 lineage/citation fixtures (the same shapes provenance_service produces from
 the REAL MCP — nodes with prefix-derived kinds, events keyed
 ``event_type``/``detail``/``created_at``, citations as CMR records) go in;
@@ -1439,7 +1439,7 @@ class FramesShapeDefensivenessTests(unittest.TestCase):
 
     def test_a_chart_with_no_frames_and_no_refusal_says_nothing_at_all(self):
         # The third state, and the one the frontend also keeps silent — but for
-        # a reason of its own: frames are additive (D15), so the map is
+        # a reason of its own: frames are additive, so the map is
         # identical whether one was built or not, and their absence says
         # nothing about the figure being cited. "Temporal frames: none" would
         # read as a finding, the way T57's omitted maturity would.

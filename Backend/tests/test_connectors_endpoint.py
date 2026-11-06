@@ -1,7 +1,7 @@
 """
 tests/test_connectors_endpoint.py
 ==================================
-T30: the Connectors HTTP surface -- list/set-token/disconnect, each scoped to
+The Connectors HTTP surface -- list/set-token/disconnect, each scoped to
 the caller via request.state.current_user exactly like every other per-user
 endpoint (jobs, sessions, charts).
 """

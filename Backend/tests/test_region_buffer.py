@@ -1,4 +1,4 @@
-"""T60 Phase 5: the ``"within N miles|km of X"`` grammar (D9).
+"""T60 Phase 5: the ``"within N miles|km of X"`` grammar.
 
 **Why the area assertion the PRD prescribes is not the headline test here.**
 The Phase 5 gate (V22) measured an AEQD buffer at 20 N, 179.5 E: its geodesic
@@ -12,7 +12,7 @@ either (650.4 deg^2, under the 2,148.7 ceiling).
 
 The test that earns its place is therefore a **containment** assertion against
 points at a known bearing and geodesic distance from the centre. The area
-invariant ships too -- it is what catches a degree-buffer regression (D9) -- but
+invariant ships too -- it is what catches a degree-buffer regression -- but
 it is not what proves the shape.
 
 Network-free: the geocoder is faked at the ``GeocodingService`` seam, the same
@@ -28,7 +28,7 @@ REQUIRED_MODULES = ["httpx", "cartopy", "shapely", "rasterio", "affine", "pyproj
 
 # Nominatim's own shape for a hit, so the fake exercises the same keys the real
 # geocoder returns. A ``polygon`` of ``None`` is deliberate: what the buffer
-# grammar needs from ``X`` is a *point* (D9), so a geocoder hit with no boundary
+# grammar needs from ``X`` is a *point*, so a geocoder hit with no boundary
 # is the ordinary case, not a degraded one.
 NYC = {
     "latitude": 40.7128,

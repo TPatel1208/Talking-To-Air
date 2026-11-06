@@ -170,7 +170,7 @@ class NormalizeTo2dTests(unittest.TestCase):
         self.assertIn("layer", ctx.exception.message)
 
     def test_time_like_dim_still_auto_reduces_without_a_selector(self):
-        """Time is the one transparent auto-reduction (PRD T25) -- a
+        """Time is the one transparent auto-reduction -- a
         surviving time-identified dim must not raise, even without a
         selector, unlike a genuine extra dim such as a vertical level."""
         from tta_backend.utils.plotting import _normalize_to_2d

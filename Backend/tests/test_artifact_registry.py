@@ -261,7 +261,7 @@ class BuildArtifactReferenceTimeseriesTests(unittest.TestCase):
         self.assertEqual(ref.metadata["masking"]["qa_source"], "collections_yaml")
 
     def test_stats_coverage_and_exceedance_dates_are_optional(self):
-        # Additive/optional (T33) -- a payload with none of these still builds
+        # Additive/optional -- a payload with none of these still builds
         # a valid artifact, existing smaller-shape consumers unaffected.
         from tta_backend.services.artifact_registry import build_artifact_reference
 

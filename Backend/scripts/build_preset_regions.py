@@ -28,13 +28,13 @@ SOURCE_URL = (
     "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/"
     "geojson/ne_110m_admin_0_countries.geojson"
 )
-# T60/D2: coalitions dissolve *standalone jurisdictions*, so they need 50m,
+# Coalitions dissolve *standalone jurisdictions*, so they need 50m,
 # not the 110m the continent dissolves are built from.
 ADMIN1_SOURCE_URL = (
     "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/"
     "geojson/ne_50m_admin_1_states_provinces.geojson"
 )
-# T60/D2a: measured in the Phase 0 gate (docs/prds/prd-t60-phase0-gate-verdict.md
+# Measured in the Phase 0 gate (docs/prds/prd-t60-phase0-gate-verdict.md
 # V4). The builder's existing 0.1 constant retains only **58.71%** of DC's area
 # -- and with Virginia excluded, DC's Potomac edge is on the OTR's outer
 # boundary, so that distortion would land on the boundary itself. 0.01 (~1.1 km)
@@ -42,8 +42,8 @@ ADMIN1_SOURCE_URL = (
 # continent/US features keep their existing tolerances, unchanged.
 ADMIN1_TOLERANCE = 0.01
 
-# T60 Phase 4: the individually-addressable countries, the composite grammar's
-# second member vocabulary (D6).
+# The individually-addressable countries, the composite grammar's
+# second member vocabulary.
 ADMIN0_SOURCE_URL = (
     "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/"
     "geojson/ne_50m_admin_0_countries.geojson"
@@ -85,7 +85,7 @@ CONTINENTS = [
     "Africa", "Asia", "Oceania", "Antarctica",
 ]
 
-# T60: named coalitions, dissolved from whole admin-1 units by postal code.
+# Named coalitions, dissolved from whole admin-1 units by postal code.
 # The ``properties`` travel into the checked-in asset so the approximation is
 # legible in the data itself, not only in a code comment.
 COALITIONS = {
@@ -140,7 +140,7 @@ OUT_PATH = os.path.join(_DATASETS, "preset_regions.geojson")
 # from the same fetch, in the same run, so the two artifacts cannot drift; a
 # test asserts they agree on all 51 keys and bounds rather than trusting it.
 STATES_OUT_PATH = os.path.join(_DATASETS, "us_states.py")
-# T60 Phase 4: a **separate** asset, not merged into preset_regions.geojson.
+# A **separate** asset, not merged into preset_regions.geojson.
 #
 # 3a merged the states after V11 found the two-file case rested on a byte pin
 # that did not exist. The Phase 4 gate (V19) found the opposite for countries,
@@ -165,7 +165,7 @@ COUNTRIES_OUT_PATH = os.path.join(_DATASETS, "admin0_countries.geojson")
 # overlap with Washington State, and ``"new york"`` to New York City with
 # 0.47% of the state. D15 gives both tokens to the state, so the answer has to
 # say which "Washington" it meant -- in ``display_name``, which is what an
-# answer cites (T42), not in a code comment.
+# answer cites, not in a code comment.
 ADMIN1_KINDS = {
     "State": ("state", "U.S. state"),
     "Federal District": ("federal_district", "U.S. federal district"),
@@ -231,7 +231,7 @@ def _us_admin1(features: list[dict]) -> list[dict]:
 
 
 def _state_features(features: list[dict]) -> list[dict]:
-    """One feature per US admin-1 unit, at the admin-1 tolerance (D2a).
+    """One feature per US admin-1 unit, at the admin-1 tolerance.
 
     Undissolved -- these are the same units ``_coalition_features`` merges,
     kept individually. Phase 0's V4 settled 0.01 deg on DC, which retains
@@ -329,7 +329,7 @@ def _admin0_tolerance(geom) -> float:
 
 
 def _country_features(features: list[dict]) -> list[dict]:
-    """One feature per country, keyed on the normalized ``ADMIN`` (D6).
+    """One feature per country, keyed on the normalized ``ADMIN``.
 
     Matched on ``ADMIN`` and never on an ISO code -- Verified Finding 5, 26 of
     51 U.S. postal codes are also ISO alpha-2 country codes, and banning codes

@@ -1,5 +1,5 @@
 """
-T60 Phase 1: a named coalition is a real boundary, and it is reachable.
+A named coalition is a real boundary, and it is reachable.
 
 The Ozone Transport Region is not an OSM place and has no ``global_regions``
 entry (D3 forbids one -- its bounding box would silently swallow West
@@ -10,7 +10,7 @@ geocode -- so a checked-in polygon with no preset key was unreachable and
 
 These tests pin the dispatcher seam that makes a polygon-only preset
 reachable, the three-state outcome that keeps a broken asset away from the
-geocoder (D3b), and the V1 Virginia verdict -- positively, since an
+geocoder, and the V1 Virginia verdict -- positively, since an
 extent-only assertion would pass on a polygon over-including 96% of a state.
 """
 import importlib.util
@@ -34,7 +34,7 @@ class CoalitionPresetTests(unittest.IsolatedAsyncioTestCase):
     def test_otc_resolves_to_a_real_polygon_without_a_global_regions_entry(self):
         """The whole point of the seam: no preset key, still resolves."""
         resolver = self._resolver()
-        # D3: the coalition deliberately has no bounding-box preset to fall
+        # The coalition deliberately has no bounding-box preset to fall
         # back on. If this ever gains one, the fail-closed rule is moot.
         self.assertNotIn("otc", resolver.global_regions)
 
@@ -282,7 +282,7 @@ class DispatcherSeamTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_sync_and_async_agree_on_every_new_string(self):
         """T42's own shipped bug was these two paths normalizing differently,
-        which is why ``_normalize_location_name`` is shared (D11a). A
+        which is why ``_normalize_location_name`` is shared. A
         dispatcher wired into only one resolver is a region that resolves two
         ways -- and ``export_service`` calls the sync one while every analysis
         tool calls the async one."""

@@ -1,7 +1,7 @@
 """
 tests/test_point_timeseries.py
 ================================
-PRD T20: the model-facing point_timeseries tool (tools/satellite_tools/
+The model-facing point_timeseries tool (tools/satellite_tools/
 retrieval_tools.py::make_point_timeseries) — drives it at the tool seam
 against the fake MCP, asserting external behavior only: a chart event with
 the series, a compact tool result carrying the artifact id and source

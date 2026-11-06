@@ -377,7 +377,7 @@ class RetrievalPlaneAgreementTests(unittest.TestCase):
 
     def test_a_near_miss_string_still_reaches_the_geocoder_on_the_mask_plane(self):
         """Criterion #6's other half. The 51 keys are matched exactly, never by
-        prefix or token overlap (D12) -- a confident wrong preset is worse than
+        prefix or token overlap -- a confident wrong preset is worse than
         a geocode miss. ``"new york city"`` and ``"washington dc"`` are the
         strings a researcher types when they mean precisely the place D15 just
         took the bare token away from, and they must still get it."""

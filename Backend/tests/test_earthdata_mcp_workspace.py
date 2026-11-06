@@ -245,7 +245,7 @@ class WorkspaceMissingUserContextTests(ProcessCacheIsolation, unittest.IsolatedA
         self.tools = await load_raw_mcp_tools(Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None))
 
     async def test_a_none_user_id_returns_a_contract_error_instead_of_minting_user_none(self):
-        # T37: the refusal is still loud, but it now classifies as a T18
+        # The refusal is still loud, but it now classifies as a T18
         # contract error envelope — legible like every other failure —
         # instead of surfacing as an unclassified traceback string.
         import json

@@ -637,7 +637,7 @@ class EvalSuiteTests(unittest.IsolatedAsyncioTestCase):
         from eval_harness import CATEGORY_BUDGETS, PASS_THRESHOLD, TOTAL_TASKS, format_results_table, run_eval_suite
         from fake_earthdata_mcp import HandleVolume
 
-        # T13: the subagent trim safety net's ceiling is sized so it never
+        # The subagent trim safety net's ceiling is sized so it never
         # fires in a healthy workflow — this run is the proof. If it fires
         # here, either a real compaction gap regressed or the ceiling itself
         # needs raising, not the tasks.

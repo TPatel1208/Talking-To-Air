@@ -1,7 +1,7 @@
 """
 tests/test_provenance_service.py
 ==================================
-T10: the provenance panel's backend seam. Exercises provenance_service
+The provenance panel's backend seam. Exercises provenance_service
 against the fake earthdata-retrieval MCP (real wire protocol, fake tool
 handlers) exactly like the T05/T09 service tests.
 

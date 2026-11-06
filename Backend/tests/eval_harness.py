@@ -1,16 +1,16 @@
 """
 eval_harness.py
 =================
-The scripted eval for the earthdata agent (PRD T04): 14 canned research
+The scripted eval for the earthdata agent: 14 canned research
 tasks run against the real agent wired to the fake-MCP seam, scored on
-tool-call trace and terminal outcome, plus 5 end-to-end tasks (T16, T64) that
+tool-call trace and terminal outcome, plus 5 end-to-end tasks that
 enter through ChatStreamService.stream_chat_events with the real
 intent_router and real sub-agents — one ground, one satellite, one
 cross-source, two supervisor routing checks — exercising the router fast
 path, the supervisor's dispatch and envelope handling under the same gate. Lives beside the test suite behind the opt-in "eval" pytest
 marker (tests/test_eval_harness.py) because it spends real model tokens —
 this module is the harness itself, not a test file. The one "robustness"
-task (T15) is the exception — it is scored at the finalization seam
+task is the exception — it is scored at the finalization seam
 instead of the live model loop, so it spends no tokens.
 
 Every task also records wall-clock (elapsed_seconds) and fails its
@@ -106,7 +106,7 @@ _FULL_SATELLITE_WORKFLOW_STAGES = [
 
 def _stage_sequence(joined: str) -> list[str]:
     """The ordered list of stage keys named in a joined SSE event stream's
-    status events (T19) — e.g. 'event: status\\ndata: {..., "stage": "search"}'."""
+    status events — e.g. 'event: status\\ndata: {..., "stage": "search"}'."""
     return _STAGE_KEY_PATTERN.findall(joined)
 
 
@@ -187,7 +187,7 @@ class E2ETask:
     agent(s) ran (``expects_ground``/``expects_satellite``) plus a
     non-error terminal answer; ``date_check`` is an optional extra
     assertion over EPA AQS calls captured during the run (see
-    _dispatched_correct_relative_date); ``stage_check`` (T19) is an
+    _dispatched_correct_relative_date); ``stage_check`` is an
     optional extra assertion over the ordered stage keys narrated during
     the run (see _stage_sequence/_covers_full_satellite_workflow)."""
     name: str
@@ -196,8 +196,8 @@ class E2ETask:
     handlers: dict[str, Callable[..., Awaitable[dict]]]
     expects_ground: bool = False
     expects_satellite: bool = False
-    # T64: fail the task if the ground agent ran at all. The header names
-    # what actually ran (D14), so an unrequested ground check is visible.
+    # Fail the task if the ground agent ran at all. The header names
+    # what actually ran, so an unrequested ground check is visible.
     forbids_ground: bool = False
     aqs_get: AqsGetHandler | None = None
     date_check: DateCheck | None = None
@@ -583,7 +583,7 @@ def _dispatched_correct_relative_date(aqs_calls: list[tuple[str, dict]]) -> bool
 
 def _agents_consulted(text: str) -> set[str]:
     """Parse the "Agent consulted: ..." header both routing paths emit into
-    the set of agent names named. The router fast path (T14) emits a
+    the set of agent names named. The router fast path emits a
     single-source header ("Agent consulted: GROUND"); the supervisor path
     (services/consulted_header.py, from what dispatch ran) emits one combined header
     ("Agent consulted: GROUND + SATELLITE") — this handles both shapes."""

@@ -752,7 +752,7 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("error", result)
 
         # (a) the full panel/stats detail still reaches the frontend pipeline,
-        # out-of-band from the model-facing return value (T13).
+        # out-of-band from the model-facing return value.
         full = emitted["payload"]
         self.assertEqual(full["type"], "heatmap_multi")
         self.assertEqual(full["mode"], "n-panel")
@@ -768,13 +768,13 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
         expected_newark = ((1.0 + 2.0) * w10 + (3.0 + 4.0) * w20) / (2 * (w10 + w20))
         self.assertAlmostEqual(full["stats"]["Newark"]["mean"], expected_newark)
         self.assertAlmostEqual(full["stats"]["Philly"]["mean"], 10.0 * expected_newark)
-        # Finding #12: each region's extremes disclose they summarize the
+        # Each region's extremes disclose they summarize the
         # period-mean map, not the instantaneous peak.
         self.assertEqual(full["stats"]["Newark"]["basis"], "period-mean")
         self.assertEqual(full["stats"]["Philly"]["basis"], "period-mean")
         self.assertNotIn("difference", full)
 
-        # T23: each panel gets its own rendered overlay, colorized against
+        # Each panel gets its own rendered overlay, colorized against
         # the *shared* vmin/vmax (not each panel's own percentile bounds) --
         # the anti-drift guarantee between the map and its legend.
         chart_id = result["chart_id"]
@@ -904,11 +904,11 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
         # Diverging, zero-centered scale.
         self.assertAlmostEqual(full["difference"]["vmin"], -full["difference"]["vmax"])
 
-        # T23: the difference panel gets a rendered overlay too.
+        # The difference panel gets a rendered overlay too.
         self.assertEqual(full["difference"]["overlay"]["url"], f"/chart/{result['chart_id']}/overlay.png")
 
         # (b) the model-facing result is the compact summary, using the
-        # difference grid's own dimensions/value range (T13).
+        # difference grid's own dimensions/value range.
         self.assertEqual(result["render_type"], "heatmap_multi")
         self.assertEqual(result["grid_dims"], [2, 2])
         self.assertAlmostEqual(result["vmin"], full["difference"]["vmin"])

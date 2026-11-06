@@ -236,7 +236,7 @@ class ParseToolResultClassifierTests(unittest.TestCase):
         self.assertEqual(ctx.exception.category, "contract")
 
     def test_self_produced_error_envelope_reraises_as_mcp_tool_error(self):
-        """bind_workspace (T18) serializes a classified MCPToolError into this
+        """bind_workspace serializes a classified MCPToolError into this
         exact JSON envelope for model consumption; a downstream backend
         composite calling parse_tool_result on that same string must recover
         the typed exception, not treat it as a normal result."""

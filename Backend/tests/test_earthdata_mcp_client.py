@@ -84,7 +84,7 @@ class EarthdataMCPClientTests(unittest.IsolatedAsyncioTestCase):
             await load_raw_mcp_tools(self._settings(url=server.url))
 
     async def test_probe_mcp_tools_returns_every_required_tool_name(self):
-        # T40: the steady-state heartbeat probe is a listing, not a full
+        # The steady-state heartbeat probe is a listing, not a full
         # load+bind -- it still proves every required tool is present.
         from tta_backend.earthdata_mcp.client import REQUIRED_TOOL_NAMES, probe_mcp_tools
 

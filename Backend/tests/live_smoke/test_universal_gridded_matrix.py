@@ -1,7 +1,7 @@
 """
 tests/live_smoke/test_universal_gridded_matrix.py
 ====================================================
-PRD T25 Phase 0: the live-smoke acceptance matrix scaffold for "universal
+The live-smoke acceptance matrix scaffold for "universal
 gridded datasets". One parametrized row per dataset/assumption named in the
 PRD's Acceptance Matrix section, run against the real earthdata-retrieval MCP
 (same opt-in gate as test_mcp_contract.py — T17).

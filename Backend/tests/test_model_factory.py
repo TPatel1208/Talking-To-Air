@@ -230,7 +230,7 @@ class GeminiNativeToolSchemaTests(unittest.TestCase):
         self.assertEqual(list(declarations["lookup"].parameters.properties), ["code"])
 
     def test_tool_choice_none_reaches_gemini_as_function_calling_mode_none(self):
-        """The supervisor closes dispatch with tool_choice "none" (T64); the
+        """The supervisor closes dispatch with tool_choice "none"; the
         native-schema path must not drop it on the way to the request."""
         from langchain_core.messages import HumanMessage
         from langchain_core.tools import StructuredTool

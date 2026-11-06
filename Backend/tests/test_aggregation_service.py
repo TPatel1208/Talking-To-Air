@@ -456,7 +456,7 @@ class AggregationServiceTests(unittest.TestCase):
         with self.assertRaises(VariableChoiceRequired) as ctx:
             AggregationService().to_dataarray(ds)
 
-        # T49: the LLM-facing compact tool result the signal carries is still
+        # The LLM-facing compact tool result the signal carries is still
         # P1-bounded (the full, uncapped candidate list rides out-of-band to
         # the picker instead of being re-fed to the model).
         exc = ctx.exception.mcp_error
@@ -1425,7 +1425,7 @@ class QaPassRateCounterTests(unittest.TestCase):
     def test_qa_flag_variable_names_the_sibling_flag_without_masking_anything(self):
         """plot_tools needs to *identify* the QA flag so it can exclude it from
         the evidence band loop -- its pass rate is already reported once, from
-        the mask itself (T55), so a second computation there could only
+        the mask itself, so a second computation there could only
         disagree. A narrow public accessor for that question, so the caller
         stops reaching across a module seam into a private method.
 

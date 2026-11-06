@@ -118,7 +118,7 @@ class DiscoveryEndpointTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTest
 
         settings = Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None)
         self.api.app.state.earthdata_mcp_tools = await load_earthdata_tools(settings, current_user_id)
-        # Discovery endpoints read tools through earthdata_mcp_manager (T17);
+        # Discovery endpoints read tools through earthdata_mcp_manager;
         # a bare ready-state stub is enough since these tests only need
         # `.state`/`.tools`, not the real connect/retry machinery.
         self.api.app.state.earthdata_mcp_manager = SimpleNamespace(
@@ -335,7 +335,7 @@ class DiscoveryEndpointTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTest
         self.assertIn("suggestion", body["error"])
 
     async def test_discovery_search_fails_honestly_when_the_mcp_is_not_ready(self):
-        # T17 story #3: a bare 500 becomes a clear, structured "data layer
+        # A bare 500 becomes a clear, structured "data layer
         # unavailable" state when the connection manager isn't ready.
         original_manager = self.api.app.state.earthdata_mcp_manager
         self.api.app.state.earthdata_mcp_manager = SimpleNamespace(state="unavailable", tools={})

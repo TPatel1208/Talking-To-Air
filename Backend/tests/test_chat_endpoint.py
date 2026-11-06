@@ -43,7 +43,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         return auth_helpers.patch_verifier()
 
     async def test_chat_streams_done_event(self):
-        """The streaming POST, which is now the rollback path (T63).
+        """The streaming POST, which is now the rollback path.
 
         Pinned with the kill switch explicitly off. Detached turns are the
         default since Phase 5 — ``POST /chat`` answers 202 and the stream
@@ -78,7 +78,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("event: status", response.text)
         self.assertIn('"message": "Downloading satellite granules..."', response.text)
-        # T19: the supervisor path's own status forwarding must not rebuild
+        # The supervisor path's own status forwarding must not rebuild
         # a message-only payload — stage/detail have to survive to the wire.
         self.assertIn('"stage": "progress"', response.text)
         self.assertIn('"detail": 40', response.text)
@@ -206,7 +206,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("forged", response.text)
 
     async def test_session_endpoint_500s_never_leak_the_exception_text(self):
-        # T37: internal error text (driver messages, paths) must go to the
+        # Internal error text (driver messages, paths) must go to the
         # logs, not the client — every 500 body carries the generic detail.
         class FakeAgent:
             async def aget_state(self, config):
@@ -250,7 +250,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
             "user_id": self.user.id,
         }
 
-        # T37: export endpoints read tools through the readiness gate.
+        # Export endpoints read tools through the readiness gate.
         self.api.app.state.earthdata_mcp_manager = SimpleNamespace(state="ready", tools={})
         self.addCleanup(setattr, self.api.app.state, "earthdata_mcp_manager", None)
 
@@ -370,7 +370,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("temporarily unavailable", body["message"])
 
     async def test_chart_csv_export_fails_clean_when_the_stream_dies_before_the_first_chunk(self):
-        # T37: the common failures (missing handle, evicted export) surface
+        # The common failures (missing handle, evicted export) surface
         # inside the CSV generator. The endpoint must materialize the first
         # chunk before committing to a 200, so these become a clean 422 —
         # never a 0-byte file that looks like a successful download.
@@ -405,7 +405,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("source handle", response.json()["detail"])
 
     async def test_chart_csv_export_marks_a_mid_stream_failure_with_an_incomplete_trailer(self):
-        # T37: once streaming has begun the 200 is committed — a failure
+        # Once streaming has begun the 200 is committed — a failure
         # after the first chunk must append a clearly marked trailer so a
         # truncated file is never mistaken for the full dataset.
         payload = {
@@ -492,7 +492,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("temporarily unavailable", body["message"])
 
     async def test_chart_netcdf_export_fails_clean_when_the_converted_file_is_gone(self):
-        # T37: an evicted/vanished converted file must fail before the 200
+        # An evicted/vanished converted file must fail before the 200
         # commits — never stream a 0-byte "successful" NetCDF download.
         payload = {
             "chart_id": "chart-1",
@@ -780,7 +780,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 404)
 
     def _frame_chart(self, planes: bool = False):
-        """A chart whose frame stack has been stored (T59 Phase 4).
+        """A chart whose frame stack has been stored.
 
         Returns ``(payload, stack)``. The store is redirected at a tempdir for
         the test, so this writes a real entry through the real write path
@@ -788,7 +788,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         store actually holds.
 
         ``planes`` attaches D6a's max and min planes, each of which stores an
-        entry of its own with a URL of its own (T59 Phase 13).
+        entry of its own with a URL of its own.
         """
         import tempfile
 
@@ -1271,7 +1271,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status_code, 200)
         # earthdata_mcp_manager is never started in this test (lifespan
-        # never runs), so it reports its initial "connecting" state (T17).
+        # never runs), so it reports its initial "connecting" state.
         self.assertEqual(
             response.json(), {"status": "ok", "db": True, "agent": True, "earthdata_mcp": "connecting"},
         )

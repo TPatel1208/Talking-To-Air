@@ -552,7 +552,7 @@ class RefusingALevelThatCannotHonestlyBeCalledOneTests(unittest.TestCase):
 
     def test_a_clearly_dominated_layer_resolves_with_its_disclosure_rather_than_refusing(self):
         """The spike's 300 hPa case: 83.1% dominant, 16.9% runner-up. Clearly
-        dominated -- the honest artifact is a number, not a refusal (D5/D6)."""
+        dominated -- the honest artifact is a number, not a refusal."""
         columns = [MEASURED_PRESSURE_HPA, MEASURED_PRESSURE_HPA, _shifted(MEASURED_PRESSURE_HPA, 1)]
 
         resolution = self._resolve("300 hPa", columns)

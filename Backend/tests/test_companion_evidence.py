@@ -1,7 +1,7 @@
 """
 tests/test_companion_evidence.py
 ==================================
-PRD T36 Phase 2 -- deterministic companion evidence. ``_evidence`` reads the
+Deterministic companion evidence. ``_evidence`` reads the
 quality/context bands sitting unused beside the plotted science variable in the
 same opened Dataset and summarizes them as co-located facts (QA pass rate,
 retrieval uncertainty, cloud fraction, aerosol index), each carrying an honest
@@ -76,7 +76,7 @@ class EvidenceComputationTests(unittest.TestCase):
         self.assertIn("uv_aerosol_index", names)
         # Never the science variable itself.
         self.assertNotIn("column_amount_o3", names)
-        # T55: the QA pass rate is no longer an evidence fact. It is counted
+        # The QA pass rate is no longer an evidence fact. It is counted
         # where the mask is applied and reported once, as masking provenance --
         # a second computation here could legitimately disagree with it (this
         # path re-crops the flag band spatially, ignorant of any dim_selector
@@ -191,7 +191,7 @@ class EvidenceComputationTests(unittest.TestCase):
         facts = _evidence(ds, da, col_info, _global_region())
         by_role = {f["name"]: f["role"] for f in facts}
 
-        # T55: the flag itself is excluded from the evidence list -- its pass
+        # The flag itself is excluded from the evidence list -- its pass
         # rate is reported once, as masking provenance.
         self.assertNotIn("main_data_quality_flag", by_role)
         # Uncertainty band summarized as a quality mean, with pct-of-science.
