@@ -54,7 +54,7 @@ class ClaimPersistsToRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["rows"], [{"date": "2024-01-01", "value": 10}])
 
     async def test_claim_sweeps_expired_unclaimed_db_rows(self):
-        """T39 user story #4: claim-time sweep of DB rows that were somehow
+        """Claim-time sweep of DB rows that were somehow
         left unclaimed past the TTL, so the table doesn't grow unboundedly
         from abandoned intermediate results."""
         from tta_backend.services.artifact_store import ArtifactStore

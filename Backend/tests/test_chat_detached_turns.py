@@ -6,8 +6,7 @@ only thing that ever produces SSE. Switching away, sleeping a laptop or being
 routed to a different replica costs a reader its cursor, never the turn.
 
 ``CHAT_DETACHED_TURNS_ENABLED`` is the switch between this and the old
-streaming POST. On by default since Phase 5 taught the frontend the protocol;
-setting it to ``0`` is the rollback.
+streaming POST. On by default; setting it to ``0`` is the rollback.
 
 Real Redis, same as the registry and event log tests.
 """
@@ -181,7 +180,7 @@ class DetachedChatTurnTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_reader_that_names_no_turn_is_not_handed_one_that_already_ended(self):
         """Asking "is anything running?" must not replay a finished turn.
 
-        Phase 5 probes this route on every mount and every session switch. A
+        The frontend probes this route on every mount and every session switch. A
         thread whose last turn finished ten seconds ago still resolves through
         ``last_turn`` for another ten minutes, so an unqualified probe would
         replay that whole answer into a fresh bubble on top of the history

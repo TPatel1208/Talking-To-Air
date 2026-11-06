@@ -1,5 +1,5 @@
 """
-In-process fake earthdata-retrieval MCP server, for T02 tests.
+In-process fake earthdata-retrieval MCP server, for tests.
 
 Runs a real FastMCP server over streamable HTTP on a background uvicorn
 thread, on a free local port, so the real MultiServerMCPClient (and the
@@ -46,10 +46,9 @@ INTERNAL_RAW_TOOL_NAMES = (
     "inspect_granules",
 )
 # Representative sample of raw tools that must never reach the model,
-# per the PRD's "Hidden" list (transforms / format / inspection
-# plumbing) — enough to prove filtering, not the full real-server surface.
-# summarize_dataset is real (the MCP still serves it) but this backend has
-# no consumer for it (T11: dropped from CURATED/REQUIRED entirely).
+# (transforms / format / inspection plumbing) — enough to prove filtering,
+# not the full real-server surface. summarize_dataset is real (the MCP still
+# serves it) but this backend has no consumer for it.
 HIDDEN_RAW_TOOL_NAMES = (
     "retrieve_data",
     "summarize_dataset",
@@ -253,10 +252,9 @@ class HandleVolume:
         self._factories: dict[str, tuple[str, Callable[[], Any]]] = {}
         self.rematerialize_calls: dict[str, int] = {}
         self.export_calls: dict[str, int] = {}
-        # Handles with no entry here are *legacy* handles: materialized before
-        # upstream PRD 023, so their ready export carries no content_digest at
-        # all. That is the default on purpose — it keeps every pre-T54 test
-        # exercising T52's verify-first ordering unchanged.
+        # Handles with no entry here are *legacy* handles: their ready export
+        # carries no content_digest. That is the default on purpose — it keeps
+        # most tests on the verify-first ordering.
         self._delivered: dict[str, dict] = {}
 
     def _path(self, handle: str) -> pathlib.Path:

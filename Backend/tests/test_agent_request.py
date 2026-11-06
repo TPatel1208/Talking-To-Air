@@ -1,4 +1,4 @@
-"""T64: the typed requests the supervisor's dispatch tool carries, in the
+"""The typed requests the supervisor's dispatch tool carries, in the
 shape a model actually sends them (plain dicts, ISO date strings)."""
 import unittest
 
@@ -74,8 +74,8 @@ def _walk(node):
 
 
 class DispatchJsonSchemaTests(unittest.TestCase):
-    """The declaration the model is given. Phase 0 gated exactly one shape on
-    every vetted Gemini model: a plain anyOf union with the list caps."""
+    """The declaration the model is given: the one shape verified on every
+    supported Gemini model, a plain anyOf union with the list caps."""
 
     def test_requests_are_a_capped_anyof_union_of_both_request_classes(self):
         from tta_backend.models.agent_request import dispatch_json_schema
@@ -251,7 +251,7 @@ class RenderTaskTests(unittest.TestCase):
 
 
 class RenderedTaskPromptContractTests(unittest.TestCase):
-    """D7: the sub-agents keep taking a string, so each one's prompt must say
+    """The sub-agents keep taking a string, so each one's prompt must say
     what the labeled lines render_task sends mean. A label added to the
     template without a word in the prompt is a field the agent has to guess."""
 

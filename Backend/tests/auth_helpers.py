@@ -3,8 +3,8 @@ tests/auth_helpers.py
 =====================
 Fixture identity for the tests that exercise authenticated endpoints.
 
-T61 replaced the local ``users`` table with Supabase-issued **ES256** access
-tokens, verified locally against a JWKS. These helpers mint tokens the real
+Auth uses Supabase-issued **ES256** access tokens, verified locally against a
+JWKS. These helpers mint tokens the real
 verifier accepts and hand the app a verifier holding the matching public key.
 
 **Why patching, not ``dependency_overrides``.** The auth check is a *middleware*

@@ -5,13 +5,9 @@ Pytest bootstrap. Three jobs, all of which must happen before any test module
 is imported.
 
 **1. Put ``Backend/`` on ``sys.path``** so ``import tta_backend...`` resolves
-in a checkout where the package has not been ``pip install -e``'d. This lived
-copy-pasted at the top of 102 test files, each carrying a stale "TODO: remove
-after pyproject.toml install" — stale because pyproject *did* land, but its
-flat include list omitted ``api`` and ``earthdata_mcp``, so the hack stayed
-load-bearing anyway. The tta_backend.* refactor fixed the packaging; this is
-the one remaining reason the path needs help, and one copy is enough now that
-pytest is the runner everywhere (CI, ``--profile test``, and locally).
+in a checkout where the package has not been ``pip install -e``'d. One copy
+here is enough since pytest is the runner everywhere (CI, ``--profile test``,
+and locally).
 
 Consequence worth knowing: ``python Backend/tests/test_x.py`` no longer works
 on its own. Use ``python -m pytest Backend/tests/test_x.py``. The ``__main__``
@@ -31,7 +27,7 @@ rasterio's own data dir can't be located, this is a no-op. The Docker image,
 where PROJ resolves correctly on its own, is never touched.
 
 **3. Redirect the on-disk stores to tempdirs** so the suite stops reading and
-writing the real ones — T52's cube store, T23's overlay store, and the public
+writing the real ones — the cube store, the overlay store, and the public
 chart-output directory. See :func:`_isolate_on_disk_stores`.
 """
 import importlib.util
@@ -47,11 +43,8 @@ if BACKEND_DIR not in sys.path:
 # tta_backend.api caches get_settings() in a module-level variable at import
 # time, so whichever test file happens to import it first (collection order
 # is filesystem-dependent, not alphabetical-guaranteed) permanently decides
-# what the Supabase settings are for the whole run. This used to be
-# JWT_SECRET_KEY, set only as a side effect of test_chat_endpoint.py importing
-# before test_auth_endpoints.py -- fragile, and silently masked locally by a
-# real value in .env. The reasoning survives T61 unchanged: set these here,
-# before any test module is imported, so it can't depend on import order again.
+# what the Supabase settings are for the whole run. So set them here, before
+# any test module is imported, so they can't depend on import order.
 #
 # The host must be syntactically real but must never be reached. Verification
 # runs against a fixture keypair injected in place of the verifier, so nothing
@@ -102,14 +95,13 @@ def _isolate_on_disk_stores() -> None:
     test can still be in flight during the next. There is no point in the
     session at which it is safe for the default to be a real directory.
 
-    Left un-redirected, T52's cube store defaults to the deployment volume —
+    Left un-redirected, the cube store defaults to the deployment volume —
     production's named volume under Docker, ``C:\\app\\cube_store`` on a Windows
     checkout — which the suite then reads back, making a run's outcome depend on
     what earlier runs left behind.
 
-    T23's overlay store was worse: an ``APP_ROOT``-relative constant with an
-    ``os.makedirs`` beside it, so it landed *inside the checkout* and a bare
-    import was enough to create it.
+    The overlay store would be worse: an ``APP_ROOT``-relative default lands
+    *inside the checkout*.
 
     The policy lives in ``tests/cache_isolation.py`` with the rest of it; this
     is just the call site early enough to matter.
@@ -135,18 +127,16 @@ _isolate_on_disk_stores()
 def _isolate_process_caches():
     """Blanket cache isolation, for pytest.
 
-    T53's discovery-metadata cache is process-global by design, so without this
+    The discovery-metadata cache is process-global by design, so without this
     one test's ``search_datasets(query="no2")`` would be served to the next
     test's identical call and its handler would never run — a shared-state leak,
     not a behavior change.
 
     The *policy* — which caches are process-global and therefore leak — lives in
     ``tests/cache_isolation.py``, not here, because this file is pytest-only and
-    the leak is not: ``unittest`` never loads a conftest, so CI's
-    ``unittest discover`` ran without this fixture and four tests failed on state
-    earlier ones had left. Anything that must hold under every runner cannot live
-    in this file. This fixture is now just pytest's adapter onto the shared
-    policy; a ``TestCase`` gets the same guarantee runner-independently by mixing
+    the leak is not: ``unittest`` never loads a conftest. Anything that must
+    hold under every runner cannot live in this file. This fixture is just
+    pytest's adapter onto the shared policy; a ``TestCase`` gets the same guarantee runner-independently by mixing
     in ``cache_isolation.ProcessCacheIsolation``.
     """
     import sys

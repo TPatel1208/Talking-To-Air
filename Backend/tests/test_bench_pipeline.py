@@ -1,14 +1,13 @@
-"""T51: the cache benchmark harness.
+"""The cache benchmark harness.
 
-T52 (the L4 Zarr cube) cannot have its chunking designed without numbers that
-did not exist -- specifically, whether the AOI crop's slice pushes down to an
+The cube's chunking depends on a measurement: whether the AOI crop's slice pushes down to an
 h5netcdf hyperslab read or whether dask materializes the whole single chunk
 (``chunks={}`` -> one chunk per variable per file) and slices in memory. That
 is a measurement, not an argument, and this harness is what takes it.
 
 These tests run the harness end-to-end against a fixture bundle on a tiny
 synthetic grid: enough to prove the harness reports what it claims to and
-that case 3 skips cleanly until T52 lands, without pretending a 4x4 grid
+that case 3 runs against a real cube, without pretending a 4x4 grid
 says anything about production timings.
 """
 import importlib.util
@@ -24,7 +23,7 @@ SCRIPTS_DIR = os.path.join(BACKEND_DIR, "scripts")
 if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
 
-# A small AOI on a continental grid -- the shape T50 exists for, and the only
+# A small AOI on a continental grid -- the shape crop-before-mask exists for, and the only
 # shape where cropping can show anything at all.
 SMALL_AOI = "-74.9,39.1,-73.1,40.9"
 
@@ -91,7 +90,7 @@ class BenchPipelineTests(unittest.TestCase):
         self.assertLess(report.case(2).cells_reduced, report.case(1).cells_reduced)
 
     def test_the_two_cases_agree_on_the_answer(self):
-        """The harness's own guard. T50's claim is that cropping moves no
+        """The harness's own guard. The claim is that cropping moves no
         number; a benchmark that silently compared two different answers
         would be measuring the wrong thing fast."""
         report = self._report()

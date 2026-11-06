@@ -4,8 +4,8 @@ tests/live_smoke/test_mcp_contract.py
 An opt-in suite that drives the real discovery -> AOI -> coverage ->
 retrieve -> export chain against the real earthdata-retrieval MCP (both
 Docker stacks up), asserting the exact response-key contracts a fake MCP
-cannot prove. Its first assertions are the keys that drifted before (T11's
-`aoi_handle`-vs-`handle` bug): the fake mirrored the wrong key and a 100%
+cannot prove. Its first assertions are the keys that drifted before
+(`aoi_handle` vs `handle`): the fake mirrored the wrong key and a 100%
 green suite still shipped broken production behavior. Only a check against
 the real thing can catch a lying mirror.
 
@@ -34,9 +34,8 @@ pytestmark = pytest.mark.live_mcp
 # ready/failed/expired/cancelled — NOT "materialized". This suite intentionally
 # does not reuse services/retrieval_composites.py's TERMINAL_STATUSES, which
 # still assumes "materialized" and never recognizes a real job's actual
-# terminal status; that mismatch is a separate, pre-existing production bug
-# this suite surfaced but does not fix (out of scope for T17 — see the final
-# assertion below for the specific fact this suite proves about it).
+# terminal status; that mismatch is a separate production bug this suite
+# surfaced but does not fix (see the final assertion below).
 _REAL_TERMINAL_STATUSES = {"ready", "failed", "expired", "cancelled"}
 _POLL_INTERVAL_SECONDS = 3
 # Live-verified: a real Harmony-routed submit -> poll -> materialize
@@ -121,7 +120,7 @@ class LiveMCPContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(export_result.get("status"), "ready")
         self.assertIn("storage_uri", export_result, f"export_result missing 'storage_uri': {export_result}")
 
-        # T24 anti-lying-mirror: open the real exported granule and assert the
+        # Anti-lying-mirror: open the real exported granule and assert the
         # canonical identifier finds its lat/lon. The synthetic test matrix
         # enumerates the structural shapes of Earthdata files; this pins one
         # real Harmony round-trip to those shapes, so a divergence between
@@ -162,7 +161,7 @@ class LiveMCPContractTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("time_start", granule, f"granule record missing 'time_start': {granule}")
 
     async def test_list_workspace_and_get_retrieval_status_use_the_real_contract_keys(self):
-        """T26: services/jobs_service.py::list_jobs reads list_workspace's
+        """services/jobs_service.py::list_jobs reads list_workspace's
         {handles: [{handle, type, created_at, summary}]} shape (filtered to
         type == "job") and fans out get_retrieval_status per handle — a fake
         MCP mirroring the wrong keys ({jobs, job_handle, dataset}) shipped a

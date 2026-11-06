@@ -1,8 +1,8 @@
-"""T50: crop to the AOI before masking, without moving a single number.
+"""Crop to the AOI before masking, without moving a single number.
 
-``mask_data_by_geometry`` used to apply a full-grid ``.where``, so "mean NO2
-over New Jersey" against a continental grid reduced over an array that is
->99% NaN by construction. It now narrows the data -- and the already-
+A full-grid ``.where`` would make "mean NO2 over New Jersey" against a
+continental grid reduce over an array that is >99% NaN by construction.
+``mask_data_by_geometry`` narrows the data -- and the already-
 rasterized mask -- to the mask's own footprint before the ``.where``.
 
 Rasterization deliberately stays on the full grid: it costs ~10% of the call,
@@ -68,7 +68,7 @@ class AoiCropEquivalenceTests(unittest.TestCase):
         self.assertLess(cropped.size, uncropped.size / 10)
 
     def test_subcell_region_still_recovers_the_same_boundary_cells(self):
-        """T42: a region covering no cell *center* is rescued with
+        """A region covering no cell *center* is rescued with
         ``all_touched``, which keeps cells the geometry merely grazes -- and
         such a cell's center can sit outside the geometry's own bbox. Cropping
         to the *mask's* footprint rather than the geometry's bbox is what
@@ -202,7 +202,7 @@ class AoiCropEquivalenceTests(unittest.TestCase):
         self.assertEqual(outcome(True), outcome(False))
 
     def test_irregular_grid_still_refuses_instead_of_cropping_into_a_lie(self):
-        """T44: the affine mask math assumes one cell size. A grid whose
+        """The affine mask math assumes one cell size. A grid whose
         spacing changes only *outside* the AOI would look uniform once
         cropped -- the crop must not launder an unsupported grid into a
         silently mis-placed mask."""
@@ -260,7 +260,7 @@ class AoiCropEquivalenceTests(unittest.TestCase):
         service = AggregationService()
         regions = {
             "small box": SMALL_AOI,
-            # Sub-cell: the T42 point-buffer shape.
+            # Sub-cell: the point-buffer shape.
             "point buffer": box(-74.06, 40.71, -73.96, 40.81),
             # A real, ragged, continental-scale polygon where cos(lat)
             # weighting genuinely matters.

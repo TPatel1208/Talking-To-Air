@@ -1,21 +1,19 @@
 """Cache isolation, independent of which runner is executing.
 
-Several caches and stores outlive a single test by design — T53's
+Several caches and stores outlive a single test by design — the
 discovery-metadata cache (``earthdata_mcp.tool_cache``), the jobs
-terminal-status cache (``services.jobs_service``), T52's Zarr cube store, T23's
+terminal-status cache (``services.jobs_service``), the Zarr cube store, the
 overlay PNG store, and the public chart-output directory. The first two are
 process-lifetime *memory*, so unless something clears them between tests, one
 test's call is served to the next test's identical call and that test's handler
 never runs. The last three are *disk*, and need the opposite treatment — see
 :func:`isolate_cube_store` and :func:`_isolate_store`.
 
-For the two in-memory ones, the only thing clearing them used to be an autouse
-fixture in ``Backend/conftest.py``. pytest loads that file; ``unittest`` does
-not. So the suite was isolated under one runner and silently order-dependent
-under the other, and CI — which ran ``unittest discover`` — paid for it with
-four failures nobody could reproduce locally.
+An autouse fixture in ``Backend/conftest.py`` isn't enough: pytest loads that
+file and ``unittest`` does not, so the suite would be isolated under one runner
+and silently order-dependent under the other.
 
-This module is the runner-agnostic half of the fix. :func:`clear_process_caches`
+This module is the runner-agnostic half. :func:`clear_process_caches`
 is the single definition of *what leaks*; ``conftest.py``'s fixture calls it, and
 :class:`ProcessCacheIsolation` gives any ``TestCase`` the same guarantee through
 ``setUp``, which every runner honours because it is the framework's own contract
@@ -115,13 +113,10 @@ def _deployment_dir(env_var: str, attr: str) -> str:
 
 
 def isolate_overlay_store() -> str:
-    """Redirect T23's overlay PNG store (``plot_tools``).
+    """Redirect the overlay PNG store (``plot_tools``).
 
-    Until this existed the store was an ``APP_ROOT``-relative constant with an
-    ``os.makedirs`` beside it, so merely *importing* ``plot_tools`` created
-    ``Backend/overlay_store/`` in the checkout — a directory the developer uses
-    and Docker backs with a named volume. Gitignored, so the pollution survived
-    branch switches and never showed up in ``git status``.
+    Its default would be ``Backend/overlay_store/`` in the checkout — a
+    directory the developer uses and Docker backs with a named volume.
     """
     return _isolate_store(OVERLAY_STORE_ENV, "tta-overlay-store-")
 
@@ -132,7 +127,7 @@ def deployment_overlay_store_dir() -> str:
 
 
 def isolate_frame_store() -> str:
-    """Redirect T59's frame blob store (``services/frame_store.py``).
+    """Redirect the frame blob store (``services/frame_store.py``).
 
     Same reasoning as the cube store: its default is the deployment volume
     (``/app/frame_store``), which under Docker is production's named volume and
@@ -151,28 +146,26 @@ def deployment_frame_store_dir() -> str:
 
 
 def isolate_cube_store() -> str:
-    """Point T52's cube store at a throwaway directory for this whole process.
+    """Point the cube store at a throwaway directory for this whole process.
 
     Unlike the two in-memory caches, the cube store cannot be fixed by clearing
     it between tests, because the problem is *where it is*. Its default is the
     deployment volume (``/app/cube_store``) — a real, shared, long-lived
     directory. Under Docker that is production's named volume; on a Windows
     checkout the same POSIX default resolves against the current drive
-    (``C:\\app\\cube_store``). Either way the suite was writing cubes and
-    rewriting ``handle_index.json`` in a store it does not own, and reading it
-    back, so a run's result depended on what earlier runs had left there.
+    (``C:\\app\\cube_store``). Either way the suite would write cubes and
+    rewrite ``handle_index.json`` in a store it does not own, and read it back,
+    so a run's result would depend on what earlier runs left there.
 
     ``test_cube_cache.StoreTestCase`` already redirects per test, and still
     should — a test that asserts on store contents wants a store no other test
     has touched. But that is opt-in, and it *unwinds* at teardown: a cube write
     still in flight when the patch stops resolves the root afterwards and lands
-    in the real store. That is how a ``handle_index.json`` outside any tempdir
-    came to hold an ``obs_cubed`` entry pointing at a cube directory that does
-    not exist beside it — a torn write, split across two stores.
+    in the real store (a torn write, split across two stores).
 
     So this moves the floor rather than adding another opt-in: for the lifetime
     of the test process the *default* is a tempdir, and StoreTestCase's
-    teardown now reverts to that instead of to somewhere real.
+    teardown reverts to that instead of to somewhere real.
 
     Idempotent, and deliberately one directory per process rather than per call:
     cubes are written in the background and read back later, so a root that

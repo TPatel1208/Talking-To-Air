@@ -64,7 +64,7 @@ class AgentHelperTests(unittest.TestCase):
         )
 
     def test_compact_model_input_reduces_a_dispatch_batch_to_per_item_text_without_grids(self):
-        """T64 D12: a batch is not an AgentResult, so without its own branch
+        """A batch is not an AgentResult, so without its own branch
         it would reach the supervisor model as raw JSON, chart grids and all."""
         from tta_backend.agents.supervisor_agent import _compact_model_input_content
         from tta_backend.models import AgentResult, ChartPayload, DispatchItemResult, DispatchResult

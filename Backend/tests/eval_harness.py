@@ -95,7 +95,7 @@ def _always_valid(envelope, tool_calls: list[str]) -> bool:
 
 _STAGE_KEY_PATTERN = re.compile(r'"stage":\s*"([^"]+)"')
 
-# The canonical satellite-workflow stage order (T19 Testing Decisions) —
+# The canonical satellite-workflow stage order —
 # extra/duplicate stages (e.g. two "coverage" emissions, one per await_
 # retrieval poll) are fine; contains_subsequence only requires these eight
 # to appear in order, not contiguously.
@@ -181,7 +181,7 @@ StageCheck = Callable[[list[str]], bool]
 
 @dataclass
 class E2ETask:
-    """A T16 end-to-end task: enters through ChatStreamService.stream_chat_
+    """An end-to-end task: enters through ChatStreamService.stream_chat_
     events (real intent_router, real sub-agents, fake MCP) rather than
     run_eval_task's direct single-agent invocation. Scored on which
     agent(s) ran (``expects_ground``/``expects_satellite``) plus a
@@ -277,7 +277,7 @@ def _refused_without_retrieving(envelope, tool_calls: list[str]) -> bool:
 
 
 def _point_timeseries_used_no_grid_retrieval(envelope, tool_calls: list[str]) -> bool:
-    """T20: the point-timeseries composite is the whole retrieval — a grid
+    """The point-timeseries composite is the whole retrieval — a grid
     pull (safe_retrieve) alongside it means the model reached for the
     heavier path this composite exists to replace."""
     return (
@@ -447,7 +447,7 @@ def build_eval_tasks(volume) -> list[EvalTask]:
         outcome_check=_refused_without_retrieving,
     ))
 
-    # ── Ground validation (1) — PRD T07 signature workflow ──────────────
+    # ── Ground validation (1) — signature workflow ──────────────────────
     def make_ground_validation_dataset():
         import pandas as pd
 
@@ -493,7 +493,7 @@ def build_eval_tasks(volume) -> list[EvalTask]:
         aqs_get=_ground_validation_aqs_get,
     ))
 
-    # ── Region/period comparison (1) — PRD T08 signature workflow #2 ────
+    # ── Region/period comparison (1) — signature workflow #2 ────────────
     def make_compare_period_a():
         return xr.Dataset(
             {"no2": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]], {"units": "mol/m^2"})},
@@ -546,11 +546,10 @@ def build_eval_tasks(volume) -> list[EvalTask]:
         outcome_check=_handles_nonempty,
     ))
 
-    # ── Robustness (1) — PRD T15 malformed-envelope salvage ─────────────
+    # ── Robustness (1) — malformed-envelope salvage ─────────────────────
     # A real model cannot be reliably scripted to emit malformed JSON, so
     # this task is scored at the finalization seam (run_robustness_task)
-    # rather than through the live agent loop the other 12 tasks use — see
-    # decision record §6.
+    # rather than through the live agent loop the other 12 tasks use.
     tasks.append(EvalTask(
         name="robustness_malformed_final_envelope",
         category="robustness",
@@ -570,10 +569,9 @@ def _real_yesterday_yyyymmdd() -> str:
 
 def _dispatched_correct_relative_date(aqs_calls: list[tuple[str, dict]]) -> bool:
     """True if any captured (endpoint, params) EPA AQS call used real UTC
-    'yesterday' as its bdate/edate. The 2026-07-07 live test caught a
-    "yesterday" query dispatched with *today's* date (T11 Further Notes);
-    after T11 deleted the legacy date-conversion tools, relative-date
-    correctness is enforced only here."""
+    'yesterday' as its bdate/edate. A "yesterday" query has been dispatched
+    with *today's* date before, and relative-date correctness is enforced only
+    here."""
     target = _real_yesterday_yyyymmdd()
     return any(
         params.get("bdate") == target or params.get("edate") == target
@@ -679,7 +677,7 @@ def build_e2e_tasks(volume) -> list[E2ETask]:
             aqs_get=_e2e_ground_aqs_get,
         ),
         # ── Routing (supervisor path, satellite only) ────────────────────
-        # T64 Phase 0 F5: prompts on which a lite supervisor model added a
+        # Prompts on which a lite supervisor model added a
         # ground request nobody asked for. Worded to miss the router's
         # satellite regex, so they reach the supervisor.
         E2ETask(
@@ -710,7 +708,7 @@ def build_e2e_tasks(volume) -> list[E2ETask]:
 
 def all_task_ids(volume) -> set[str]:
     """Every eval task id — direct-agent (build_eval_tasks) plus e2e
-    (build_e2e_tasks) — the set T22's starter-prompt coverage check runs
+    (build_e2e_tasks) — the set the starter-prompt coverage check runs
     against."""
     return (
         {task.name for task in build_eval_tasks(volume)}
@@ -719,7 +717,7 @@ def all_task_ids(volume) -> set[str]:
 
 
 def starter_prompts_missing_eval_tasks(volume) -> list[str]:
-    """T22 story #4: the empty-chat starter list (config.starter_prompts)
+    """The empty-chat starter list (config.starter_prompts)
     is a marketing surface — every entry's id must name a real eval task, or
     a starter prompt could rot into a broken promise with nothing to catch
     it. Returns the ids of any entries with no matching eval task (empty
@@ -791,7 +789,7 @@ async def run_eval_task(task: EvalTask, *, model: str | None = None) -> EvalTask
 
 
 async def run_robustness_task() -> EvalTaskResult:
-    """T15's malformed-envelope robustness task: exercises the salvage path
+    """The malformed-envelope robustness task: exercises the salvage path
     directly at the finalization seam (services.subagent_dispatch.
     _finalize_sub_agent_result) — a successful tool workflow (already-
     collected chart + artifact) followed by a final message that is prose,
@@ -867,7 +865,7 @@ async def run_e2e_task(task: E2ETask, volume, *, model: str | None = None) -> Ev
     from tta_backend.utils.streaming import get_call_budget
 
     # A shared top-level context runs every task in the suite sequentially
-    # (see run_eval_suite) — clear the T16 per-request budget holder so one
+    # (see run_eval_suite) — clear the per-request budget holder so one
     # task's ground/satellite call count never bleeds into the next.
     get_call_budget().clear()
 
