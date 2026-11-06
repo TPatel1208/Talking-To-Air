@@ -49,7 +49,7 @@ function CollapsedRail({ label, onExpand }) {
 }
 
 // There is deliberately no token key here. supabase-js owns session
-// persistence and refresh (decision 6); a second copy of the token in our own
+// persistence and refresh; a second copy of the token in our own
 // storage would be a rival source of truth, and the stale one wins on reload.
 const ACTIVE_THREAD_STORAGE_KEY = 'tta.activeThreadId'
 
@@ -63,10 +63,8 @@ const FIELD_STYLE = {
 }
 
 // Sign-in only. There is no register tab: signup is invite-only and disabled
-// in the Supabase project (decision 8), so a register button could produce
-// nothing but a rejection. The username field went with it -- it was read by
-// this form and by a JWT claim, and displayed nowhere in the product, so email
-// replaces it at no cost.
+// in the Supabase project, so a register button could produce nothing but a
+// rejection. Sign-in is by email.
 function LoginForm({ onSubmit, heading = 'Talking to Air', subtitle = 'Sign in to continue.' }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -198,13 +196,13 @@ function AuthScreen({ onSignIn }) {
   )
 }
 
-// T47: an auth failure mid-analysis raises this over the preserved view rather
+// An auth failure mid-analysis raises this over the preserved view rather
 // than dropping the researcher to a blank login screen. Re-login resumes the
 // same thread in place (the active thread id is deliberately not cleared), so
 // a 40-minute session survives a lapsed token.
 //
-// It now fires far less often than it used to: a 401 means the *refresh* token
-// lapsed, not the access token, which supabase-js renews on its own.
+// It fires rarely: a 401 means the *refresh* token lapsed, not the access
+// token, which supabase-js renews on its own.
 function SessionExpiredModal({ onSignIn }) {
   return (
     <div
@@ -280,7 +278,7 @@ function AuthenticatedApp({ user, onLogout }) {
 
   // A job card's "View result" action hands off to the agent rather than
   // rendering the obs_handle itself — same one-pipeline principle as
-  // handleRetrieve, and no new backend surface for opening a handle (T27).
+  // handleRetrieve, and no new backend surface for opening a handle.
   const handleViewResult = useCallback((job) => {
     if (!job.obs_handle) return
     const label = job.short_name || job.dataset_handle || 'this retrieval'
@@ -309,7 +307,7 @@ function AuthenticatedApp({ user, onLogout }) {
     if (settledFocus) setFocusedOutput(settledFocus)
   }
 
-  // Compare mode (T28): off | choosing-count | active. Pure in-memory state,
+  // Compare mode: off | choosing-count | active. Pure in-memory state,
   // owned here alongside focusedOutput -- no new store, no persistence, and
   // it resets on reload or session switch exactly like focusedOutput does.
   const [compareMode, setCompareMode] = useState('off')
@@ -502,14 +500,14 @@ export default function App() {
   // Bumped by the retry button on the config-error screen.
   const [configAttempt, setConfigAttempt] = useState(0)
 
-  // T47: a 401 during an active session raises the re-auth modal instead of
+  // A 401 during an active session raises the re-auth modal instead of
   // wiping the session and dumping the user to the login screen.
   const handleUnauthorized = useCallback(() => dispatch({ type: 'unauthorized' }), [])
 
   // The app's first request, and everything waits behind it: the identity
   // provider's coordinates are served at runtime rather than baked into this
-  // bundle (decision 11), so one image runs against either project. Failure is
-  // a screen with a retry rather than a blank page -- T17's degrade-don't-die.
+  // bundle, so one image runs against either project. Failure is a screen
+  // with a retry rather than a blank page.
   useEffect(() => {
     let cancelled = false
     fetch(`${API_BASE}/config/auth`)
@@ -578,7 +576,7 @@ export default function App() {
     // as the session lands and mounts the authenticated tree, whose useChat
     // reads this key on mount -- clearing afterwards is a race the previous
     // user's thread can win. A re-auth deliberately keeps it, which is what
-    // resumes the exact conversation the researcher was in (T47).
+    // resumes the exact conversation the researcher was in.
     if (authTransition(kind).clearActiveThread) {
       window.localStorage.removeItem(ACTIVE_THREAD_STORAGE_KEY)
     }
@@ -621,8 +619,7 @@ export default function App() {
   // already-signed-in user watch it flash by on every single reload.
   if (view === 'restoring') return <Splash message="Restoring your session..." />
   // Not signed out -- unasked. Dropping to the login form here would clear the
-  // active thread on the sign-in that follows, which is the one thing T47
-  // exists to prevent.
+  // active thread on the sign-in that follows, losing the researcher's place.
   if (view === 'restore-error') {
     return (
       <Splash
@@ -639,7 +636,7 @@ export default function App() {
     <>
       <AuthenticatedApp
         // Keyed on the user, never on the access token. A token key would
-        // change on every auto-refresh -- every 45 minutes, decision 10 -- and
+        // change on every auto-refresh (every 45 minutes) and
         // React would discard this entire tree mid-analysis.
         key={userIdOf(state)}
         user={state.session?.user}
