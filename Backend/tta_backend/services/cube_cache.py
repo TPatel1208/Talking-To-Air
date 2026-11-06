@@ -1,14 +1,11 @@
 """
 services/cube_cache.py
 ======================
-T52 — an L4 cache of the *output* of the open pipeline, stored as Zarr.
+A Zarr cache of the open pipeline's *output*.
 
-``open_handle`` re-does the whole interpretation pipeline on every call —
-export round-trip, unzip, N per-member ``_open_netcdf`` (each behind the HDF5
-lock, each re-running group discovery, ``DimensionNames`` renaming, leaf-
-collision qualification, merging and lat/lon promotion), then concat, dedupe
-and sort — against bytes that have not changed. The extract cache saves only
-the unzip. This module caches everything above it.
+Without it, ``open_handle`` re-runs the full interpretation (per-member opens,
+group discovery, merging, lat/lon promotion, concat) on unchanged bytes. The
+extract cache only saves the unzip; this caches everything after it.
 
 The dependency direction is one-way: ``open_handle`` calls in here; this
 module never calls back into ``open_handle``.
@@ -34,7 +31,7 @@ _REFUSED_NAME = "refused.json"
 _STAGING_PREFIX = "staging-"
 
 # The escape for ``/`` in a variable name. Collided leaves are renamed to
-# "group/leaf" (open_handle's T25 qualification) and ``/`` is Zarr's group
+# "group/leaf" by open_handle, and ``/`` is Zarr's group
 # separator, so those names cannot round-trip as flat variables. Never rely on
 # Zarr to preserve them: escape on write, restore from the manifest's name map
 # on read.
@@ -61,36 +58,16 @@ def source_identity(
 ) -> str:
     """The identity of the bytes a cube was built from.
 
-    T52 defined this as filesystem metadata — path, size, mtime — mirroring the
-    extract cache's key, and noted that defining it as a *function* rather than
-    an inlined tuple was so that adopting a stronger identifier from the MCP
-    would be a one-line change with every caller left working. T54 is that
-    change: it collects the payoff of that abstraction, and ``cache_key``, the
-    manifest, eviction, integrity and the round-trip contract are all untouched.
+    Uses ``handle + content_digest`` when available, otherwise path, size
+    and mtime.
 
-    **Why the handle is part of the content identity, and not just the digest.**
-    Upstream's ``content_digest`` (PRD 023) hashes
-    ``{granule_ids, provider_used, service_chain, output_format}`` — what the
-    job *delivered* — and is explicitly the complement of
-    ``compute_request_signature``, which is what carries the *intent*: bbox,
-    time range, variables. So the digest alone does not separate two handles
-    that resolve the same granules through the same chain but subset them
-    differently: one day of TEMPO L3 over Newark and over Houston share every
-    hashed component and differ in every delivered byte. Keying on the digest
-    alone would serve the Newark cube for the Houston question — a silently
-    wrong scientific answer carrying correct-looking provenance. The ``obs_``
-    handle *is* the request identity (one handle, one durable request spec), so
-    composing the two gives an identity that means "this ask, as actually
-    delivered": a replay that drifts moves the digest and misses, and two
-    different asks never collide. The cross-handle dedupe this gives up is
-    already handled upstream by PRD 020, which reuses one handle for a repeat
-    ask.
+    The handle must be included: the digest covers which granules were
+    delivered, not the bbox/time subset. One day of TEMPO over Newark and
+    over Houston share a digest, so the digest alone would serve the wrong
+    city's cube.
 
-    Falls back to filesystem identity — byte-for-byte T52's behaviour — for a
-    handle materialized before PRD 023, and for a ``partial`` digest: upstream
-    marks a digest partial when the provider named no granules (an AppEEARS
-    point sample), and a digest that cannot see granules cannot detect granule
-    drift.
+    Falls back to filesystem identity when there's no digest, or when it's
+    ``partial`` (the provider named no granules, so it can't detect drift).
     """
     if content_digest and not partial:
         return f"{handle}|{_DIGEST_PREFIX}{content_digest}"
@@ -102,9 +79,8 @@ def is_content_identity(source: str) -> bool:
     """Whether ``source`` was derived from what the MCP said it delivered,
     rather than from filesystem metadata.
 
-    This is the predicate that licenses skipping ``export_result`` (T54): a
-    filesystem identity only says a file with these bytes sits at this path,
-    which is knowledge you can only have by asking upstream in the first place.
+    Only content identities can skip ``export_result``; a filesystem identity
+    needs the MCP to say where the file is first.
     """
     return f"|{_DIGEST_PREFIX}" in source
 
@@ -363,10 +339,7 @@ def write_cube(
             return False
         manifest = {
             "source_identity": source,
-            # T54: the handle this cube was built for. The index below is
-            # derived state; this is what makes it *rebuildable* — a lost or
-            # corrupt index is reconstructed by scanning manifests, and
-            # degrades to T52's ordering meanwhile rather than to an error.
+            # The handle index is rebuilt from this field if it's lost.
             "handle": handle,
             "pipeline_version": pipeline_version,
             "engine": engine,
@@ -405,9 +378,8 @@ class CubeContractError(RuntimeError):
 def _build_name_map(ds: Any) -> dict[str, str]:
     """``{escaped: original}`` for every slash-qualified variable name.
 
-    Raises if escaping would make two variables collide: silently merging a
-    collided leaf back into one variable is exactly the failure T25's qualified
-    names exist to prevent, and it would be invisible in the output.
+    Raises if escaping would make two variables collide, since that would
+    silently merge them.
     """
     name_map = {_escape_name(str(n)): str(n) for n in ds.variables if "/" in str(n)}
     existing = {str(n) for n in ds.variables}
@@ -459,15 +431,10 @@ def _prepare_for_write(ds: Any, name_map: dict[str, str]) -> Any:
     return _apply_cube_chunks(writable)
 
 
-# T51 measured that the T50 crop does NOT push down to a hyperslab read: with
-# ``chunks={}`` (one chunk per variable per file), a 700x reduction in cells
-# reduced bought 3.47x wall-clock and *zero* reduction in bytes read -- dask
-# materializes the whole granule chunk and the crop only trims it in memory.
-# So the cube's headroom is the 86.8 MiB, not the 0.17 s, and a spatially
-# monolithic cube would make every regional question pay the full continental
-# read all over again. Hence: moderate spatial chunks, and as much of the time
-# axis as fits in the budget (regional subset + reduce over time is the shape
-# every question about this data takes).
+# Spatial crops don't reduce bytes read from a whole-granule chunk, so a
+# spatially monolithic cube would make every regional question read the whole
+# continent. Use moderate spatial chunks and as much of the time axis as fits:
+# questions are almost always "regional subset, reduce over time".
 _CUBE_SPATIAL_CHUNK = 256
 _CUBE_TARGET_CHUNK_BYTES = 8 * 1024 ** 2
 
@@ -575,13 +542,11 @@ def _invalidate(key: str, reason: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# T54: the handle -> cache_key index
+# handle -> cache_key index
 # ---------------------------------------------------------------------------
-# One JSON file beside the cubes. It is **derived state, never the system of
-# record**: every mapping in it is also recorded in the cube's own manifest, so
-# a lost, truncated or unparseable index costs a rebuild, never a wrong answer.
-# Any failure to read or write it degrades to T52's ordering exactly — the
-# lookup happens after ``export_result``, correct and merely slower.
+# One JSON file beside the cubes. Derived state only: every mapping is also in
+# the cube's manifest, so a broken index costs a rebuild, never a wrong answer.
+# If it can't be read, lookups just fall back to after ``export_result``.
 
 _INDEX_NAME = "handle_index.json"
 
@@ -622,9 +587,8 @@ def _write_index(index: dict[str, str]) -> None:
 def note_handle(handle: str, key: str) -> None:
     """Record that ``handle``'s cube lives at ``key``.
 
-    Called both when a cube lands and on a *verified* hit, so a cube written
-    before this index existed earns its index entry the next time the ordinary
-    T52 path serves it, with no migration to run.
+    Called when a cube lands and on every verified hit, so unindexed cubes
+    get indexed without a migration.
     """
     if not handle or not key:
         return
@@ -648,18 +612,11 @@ def _forget_handle(handle: str) -> None:
 def lookup_by_handle(handle: str) -> Any | None:
     """Serve ``handle``'s cube **without asking the MCP anything**, or None.
 
-    This is the reorder. It answers the question ``open_handle`` previously
-    could not ask until an ``export_result`` round-trip had completed — and in
-    the two cases that matter most (the source was evicted upstream; the MCP is
-    mid-crash-restart) that round-trip is exactly what was standing between a
-    researcher and a cube already on their disk.
+    Lets a cube on disk answer even when the source was evicted upstream or
+    the MCP is down.
 
-    Serving without upstream verification is licensed by *content* identity and
-    nothing else (:func:`is_content_identity`): a filesystem identity only
-    records that a file with these bytes sat at this path, which is knowledge
-    obtainable only by asking upstream in the first place. Local verification is
-    **not** relaxed in exchange — the same per-hit integrity sweep T52 runs on
-    every hit runs here too, via :func:`lookup`.
+    Only cubes with a content identity qualify (:func:`is_content_identity`).
+    The usual integrity check still runs, via :func:`lookup`.
     """
     from tta_backend.utils.metrics import record_cache_hit, record_cube_index_hit, record_cube_index_miss
 
@@ -677,20 +634,16 @@ def lookup_by_handle(handle: str) -> Any | None:
         record_cube_index_miss()
         return None
     if not is_content_identity(str(manifest.get("source_identity") or "")):
-        # A legacy handle (materialized before upstream PRD 023) or a partial
-        # digest. Its cube is perfectly good — it just has to be reached the
-        # T52 way, after a round-trip that confirms the file is still there.
+        # Legacy handle or partial digest: the cube is fine but must be
+        # reached via export_result, which confirms the file still exists.
         record_cube_index_miss()
         return None
     ds = lookup(key)  # validates integrity, self-heals, never raises
     if ds is None:
         record_cube_index_miss()
         return None
-    # Both counters, deliberately. ``cache_hits_total`` has meant "the open
-    # pipeline was skipped" since T52 and that is just as true here, so letting
-    # this path bypass it would have made T52's hit rate appear to collapse on
-    # the day T54 shipped. The index counter records the *additional* win this
-    # path alone delivers: the round-trip was skipped too.
+    # Both counters: ``cache_hits_total`` means "open pipeline skipped" (true
+    # here too); the index counter adds "export round-trip skipped".
     record_cache_hit("zarr")
     record_cube_index_hit()
     return ds
@@ -789,10 +742,9 @@ def sweep_store(current_pipeline_version: str) -> None:
     way). Required rather than defaulted, so a caller cannot quietly skip the
     reclaim by forgetting it.
 
-    T54: rebuilds the handle index on the way out, rather than leaving that to
-    a second call at the startup site. The rebuild has to run *after* the sweep
-    or it would index entries this function is about to delete, and coupling
-    the two is what makes that ordering impossible to get wrong from outside.
+    Rebuilds the handle index at the end. It has to run after the sweep (or
+    it would index deleted entries), so it lives here rather than with the
+    caller.
     """
     root = _store_root()
     try:

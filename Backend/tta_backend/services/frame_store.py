@@ -1,12 +1,11 @@
 """
 services/frame_store.py
 =======================
-T59 Phase 4 — where a frame stack lives once it has been computed.
+Where a frame stack lives once it has been computed.
 
-D13's split, which is the whole design of this module: the frame **axis** and
-every per-frame disclosure go in the chart's jsonb row; only the float32
-**values** go in a bounded LRU blob store. The split is by durability, and it
-buys three things:
+The frame **axis** and every per-frame disclosure go in the chart's jsonb
+row; only the float32 **values** go in a bounded LRU blob store. Splitting by
+durability buys three things:
 
 * the slider is fully labeled and functional *before* the blob lands, because
   the axis arrives with the chart payload;
@@ -38,13 +37,12 @@ _BLOB_NAME = "frames.f32.gz"
 _MANIFEST_NAME = "manifest.json"
 _STAGING_PREFIX = "staging-"
 
-# Measured on real harvested stacks (Phase 2 §2): level 9 buys 0.0-0.2% for
-# 1.1-1.9x the CPU, level 1 costs 1.0-1.6% for 9-29% less. 6 is the nginx and
-# zlib default and is correct here for the same reason it is correct there.
+# Measured on real stacks: level 9 saves only 0.0-0.2% for 1.1-1.9x the CPU,
+# so use the zlib default.
 _GZIP_LEVEL = 6
 
 #: The values, laid out as ``(1 + n_frames, ny, nx)`` float32: the period mean
-#: is plane 0 — D5's "frame 0" — and the frames follow in axis order.
+#: is plane 0, and the frames follow in axis order.
 _PERIOD_INDEX = 0
 
 #: The statistic a ``FrameStack``'s own top-level values are, and so the one an
@@ -73,7 +71,7 @@ class FrameBlob:
 
     gzipped: bytes
     #: The digest of exactly these bytes, recorded at write time and verified
-    #: on the way out. It doubles as the ETag: the blob is immutable (D8), so
+    #: on the way out. It doubles as the ETag: the blob is immutable, so
     #: an entity tag derived from its content can never go stale, and it costs
     #: nothing extra because the integrity check computes it anyway.
     etag: str
@@ -84,12 +82,12 @@ def store_frame_stack(stack: Any, *, pipeline_version: str) -> dict[str, Any]:
 
     The return value is the *whole* frontend contract minus the field itself:
     the labeled axis, the grid the values are laid out on, the pooled scale and
-    every per-frame disclosure D10 requires. It carries ``_key`` only if the
+    every per-frame disclosure. It carries ``_key`` only if the
     values actually landed — a caller holding a block without one has a chart
     with a drawn, labeled, unscrubbable axis, which is also exactly what an
     evicted chart looks like later.
 
-    Each of ``stack.planes`` (D6a decision 5) gets **its own entry**, written
+    Each of ``stack.planes`` gets **its own entry**, written
     the same way and listed under ``block["planes"][statistic]`` with a ``_key``
     under the same rule: present only if that plane's values landed. So the
     property the frontend already relies on holds per statistic — an absent
@@ -163,11 +161,9 @@ def read_frames(
 ) -> FrameBlob | None:
     """Serve the stored blob for ``key``, or None on a miss.
 
-    Transparently fallible, in ``cube_cache``'s posture: no failure on this
-    path ever propagates. A store that can refuse is strictly better than one
-    that can be subtly wrong, and here "subtly wrong" means a field someone
-    would read. The caller degrades to a labeled, unscrubbable axis, which is a
-    state D8 already requires the frontend to handle.
+    Never raises (like ``cube_cache``): a store that can refuse beats one
+    that can be subtly wrong. The caller falls back to a labeled axis that
+    can't be scrubbed, which the frontend already handles.
 
     An entry that fails *integrity* — a digest that does not add up, a blob
     that will not open, a superseded pipeline version — is dropped as well as
@@ -192,10 +188,8 @@ def read_frames(
     manifest = _read_manifest(key)
     if manifest is None:
         return None
-    # D8's guard, and the reason it is a *drop* rather than a refusal: the
-    # version only moves forward, so an entry produced under a superseded
-    # interpretation of the source files can never be served again. Keeping it
-    # would charge the store for bytes no request can ever reach.
+    # Drop, don't just miss: versions only move forward, so this entry can
+    # never be served again.
     if str(manifest.get("pipeline_version") or "") != pipeline_version:
         _invalidate(key, "pipeline_version_superseded")
         return None
@@ -378,7 +372,7 @@ def evict_to_fit(incoming_bytes: int, *, protect: Iterable[str] = ()) -> int:
     An LRU sweeper is the *whole* policy — no per-entry cap, deliberately.
     ``cube_write_max_store_fraction`` exists to stop an entry big enough to
     evict the whole store to fit itself and then be evicted by the next write;
-    D7 caps frames at 60 and D5 caps cells at 20,000, so an entry is at most
+    frames are capped at 60 and cells at 20,000, so an entry is at most
     4.58 MiB raw against a 1 GiB store and that thrash cannot occur. A chart
     carrying all three statistics is three such entries rather than one, so it
     reaches the cap three times as fast — but the thrash argument rests on the
@@ -561,7 +555,7 @@ def _axis_block(stack: Any, *, pipeline_version: str) -> dict[str, Any]:
             for frame in stack.frames
         ],
         # How to read the blob, for a consumer that has one. The realized cell
-        # count, never D5's 20,000 ceiling: integer coarsening quantizes, so a
+        # count, never the 20,000 ceiling: integer coarsening quantizes, so a
         # real grid lands at 70-96% of what was asked for.
         "shape": _shape(stack),
         "dtype": "float32",
@@ -574,27 +568,18 @@ def _axis_block(stack: Any, *, pipeline_version: str) -> dict[str, Any]:
         "buckets_per_frame": int(stack.buckets_per_frame),
         "coarsen_k": [int(k) for k in stack.coarsen_k],
         "delta": stack.delta,
-        # The second delta, beside the first and never folded into it. `delta`
-        # asks whether the coarser temporal aggregation is a different
-        # measurement (natively, so a +1.2 and a -1.2 in one block cannot
-        # cancel); this asks whether the two planes in THIS blob are each
-        # other's average. Phase 8 measured 3.74% and 3.28% for the same chart
-        # — neither bounds the other, and the smaller one was the one on
-        # screen.
+        # Separate from `delta`: this asks whether the planes in this blob
+        # average to the period plane. Neither delta bounds the other.
         "frame_grid_delta": stack.frame_grid_delta,
         "value_range": (
             None if stack.value_range is None
             else [float(v) for v in stack.value_range]
         ),
-        # What that range actually is, in one self-describing line, for the
-        # same reason ``QA_PASS_RATE_BASIS`` exists and the same way the D16
-        # delta already carries its own basis: a 2-98 pooled across every frame
-        # AND the period mean, at native resolution before the block mean, is
-        # not inferable from two numbers — and D9 turns on this scale being the
-        # scrubber's alone, never the Map tab's.
+        # Describes how value_range was computed, which two numbers can't
+        # convey. This scale is the scrubber's only, never the Map tab's.
         "scale_basis": POOLED_SCALE_BASIS,
-        # D8: frames are never served or rebuilt across a version change, and
-        # the stamp is what makes that checkable on a chart written months ago.
+        # Frames are never served across a version change; this makes that
+        # checkable on old charts.
         "pipeline_version": pipeline_version,
     }
     planes = {
@@ -617,19 +602,13 @@ def _plane_block(plane: Any) -> dict[str, Any]:
     Exactly the fields that genuinely differ per plane, and deliberately no
     others. ``t_start``/``t_end``/``n_granules``/``valid_fraction``/
     ``qa_pass_rate`` describe the *interval* and ``statistics`` is the per-frame
-    regional scalar off the **mean** field — a measurably different number from
-    this plane's peak (50.5 against 100.0 on Phase 12's fixture). The grid,
-    the shape, the block size, the cadence and the tier are shared by
-    construction: every plane of a chart is the same blocks of the same grid
-    over the same axis. Copying any of them here would give a quantity that has
-    one account a second one, which is the failure the three separate basis
-    strings in ``frame_stack`` exist to prevent, wearing a fourth shoe.
+    regional scalar off the **mean** field, not this plane's peak. Grid,
+    shape, block size, cadence and tier are shared by every plane, so they
+    aren't copied here (one source per value).
     """
     return {
-        # This plane's own pooled 2-98 (D9), never the mean's: one colour has
-        # to mean one value at every stop of a scrub, and a max plane rendered
-        # against the mean's clip saturates at exactly the stops someone
-        # switched to it to see.
+        # This plane's own 2-98 range, not the mean's: a max plane on the
+        # mean's scale would saturate at its peaks.
         "value_range": (
             None if plane.value_range is None
             else [float(v) for v in plane.value_range]
@@ -639,8 +618,7 @@ def _plane_block(plane: Any) -> dict[str, Any]:
         # quiet falsehood: a selection plane's figure is 0.0 under its own
         # basis and large under the mean's.
         "frame_grid_delta": plane.frame_grid_delta,
-        # D6a decision 9, on the max plane alone. Explicitly None elsewhere,
-        # the same way `delta` is None in the cadence tier: "measured, and there
-        # is no such quantity here" is a different statement from silence.
+        # Max plane only; explicitly None elsewhere ("no such quantity",
+        # which differs from "not measured").
         "extent_overstatement": plane.extent_overstatement,
     }
