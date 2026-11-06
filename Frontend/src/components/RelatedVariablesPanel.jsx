@@ -1,10 +1,10 @@
 import { relatedVariableSections, hasRelatedVariables, roleLabel, ROLE_META } from '../utils/variableRoles'
 import { buildRelatedVariableActions } from '../utils/companionActions'
 
-// Chart-page related-variables panel (PRD T35/T36): the plotted variable's
+// Chart-page related-variables panel: the plotted variable's
 // role plus its QA / uncertainty / context siblings, each with one-click
 // actions that dispatch a prefilled prompt through the same `sendMessage`
-// path as T22's FollowupChips. Actions are capability-gated in
+// path as FollowupChips. Actions are capability-gated in
 // utils/companionActions.js -- this component only renders whatever that
 // gate returns, it never invents a button. Renders nothing when a product
 // carries no companions (e.g. MODIS AOD) -- no invented context.

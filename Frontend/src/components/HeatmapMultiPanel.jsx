@@ -1,7 +1,7 @@
 /**
  * HeatmapMultiPanel.jsx
  * ----------------------
- * Comparison charts (T08/T23): region mode shows each panel as a static
+ * Comparison charts: region mode shows each panel as a static
  * small-multiple (its own server-rendered overlay PNG, or a canvas-fallback
  * thumbnail) with state outlines drawn over it and a colorbar -- one shared
  * bar when every panel was drawn on the same scale -- and no basemap; click

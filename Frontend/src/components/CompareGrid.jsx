@@ -4,7 +4,7 @@
  * Compare mode's comparison grid. Two independent kinds share the same
  * slot/badge/cap shell (App.jsx, compareMode.js) but render differently:
  *
- * - heatmap (T28): one independent, fully interactive MapLibreHeatmapPanel
+ * - heatmap: one independent, fully interactive MapLibreHeatmapPanel
  *   per filled slot -- own pan/zoom/hover, no synced viewport. Grid is
  *   repeat(min(n,2)) columns -- 2 gives one row of 2, 3 gives a 2+1 layout,
  *   4 gives a proper 2x2. When every filled slot shares the same variable/units, all
@@ -12,7 +12,7 @@
  *   shared legend here instead of their own; otherwise each panel keeps its
  *   own natively computed scale and legend, with an inline note explaining
  *   why.
- * - timeseries (T29): when every filled slot shares the same units and every
+ * - timeseries: when every filled slot shares the same units and every
  *   pair of time ranges overlaps, one overlaid Plotly figure (one trace/
  *   legend entry per slot) replaces the grid entirely. On any mismatch, it
  *   falls back to the same small-multiple grid layout, mounting one
@@ -76,8 +76,8 @@ const infoToggleStyle = (active) => ({
 
 // Small-multiple grid shared by both kinds: one card per slot, `renderChart`
 // supplies the kind-specific panel for filled slots. Each filled slot also
-// gets an info toggle that expands T32's MetadataOverview (unchanged) below
-// the visualization, growing the cell rather than overlaying it (T34).
+// gets an info toggle that expands MetadataOverview below the visualization,
+// growing the cell rather than overlaying it.
 function SlotGrid({ compareCount, compareSelection, height, hint, renderChart, onFocusChart, getNote }) {
   const [expanded, setExpanded] = useState(() => new Set())
 
@@ -136,7 +136,7 @@ function SlotGrid({ compareCount, compareSelection, height, hint, renderChart, o
   )
 }
 
-// heatmap kind (T28): independent live MapLibreHeatmapPanel per slot, plus
+// heatmap kind: independent live MapLibreHeatmapPanel per slot, plus
 // the shared-color-scale legend/toggle when every filled slot's variable and
 // units match.
 function HeatmapCompareBody({ compareCount, compareSelection, autoScaleEach, onToggleAutoScale, height, onFocusChart }) {
@@ -199,7 +199,7 @@ function HeatmapCompareBody({ compareCount, compareSelection, autoScaleEach, onT
   )
 }
 
-// timeseries kind (T29): one overlaid Plotly figure when every filled slot
+// timeseries kind: one overlaid Plotly figure when every filled slot
 // shares units and its time range overlaps every other slot's; otherwise the
 // same small-multiple grid as the heatmap path, mounting independent
 // TimeSeriesPanel instances instead.

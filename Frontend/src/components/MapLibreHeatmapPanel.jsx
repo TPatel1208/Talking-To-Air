@@ -2,22 +2,14 @@
  * MapLibreHeatmapPanel.jsx
  * -------------------------
  * Renders a single heatmap chart payload as a NASA-scientific interactive
- * map (T23): a shaded-relief terrain basemap, the data field as a
+ * map: a shaded-relief terrain basemap, the data field as a
  * full-native-resolution server-rendered PNG overlay (GPU-bilinear
  * smoothed), region borders, and a scientific colorbar.
  *
- * Deliberately has NO per-cell readout. One lived here until 2026-08-05 and
- * was removed on purpose: it answered by nearest-neighbour lookup against
- * the shipped arrays, and those are thinned to <=8k cells, so on a
- * native-resolution scene (TEMPO CONUS is 2880x7750) the value it reported
- * could come from a cell tens of kilometres from the cursor -- printed to
- * three decimals, with no masking provenance or QA status attached. In a
- * product where every answer is a scientific claim, a precise-looking
- * number pulled from the wrong place is worse than no number, and asking
- * in chat already answers point questions with provenance. The arrays stay
- * for the canvas fallback and for stats; they are not an inspection
- * surface. Re-adding a readout means a server-side query at native
- * resolution, not another nearest-neighbour scan over the thinned grid.
+ * Deliberately has NO per-cell readout. The shipped arrays are thinned to
+ * <=8k cells, so a nearest-neighbour lookup could report a value from tens of
+ * kilometres away, with no provenance. Point questions go through chat. A
+ * readout would need a server-side query at native resolution.
  *
  * Degrades instead of dying: overlay missing/failed -> client canvas from
  * the arrays; basemap/terrain tiles failed -> flat fill, overlay still
@@ -87,7 +79,7 @@ function canvasCornersFromArrays(lats, lons) {
 
 function addCanvasFallbackOverlay(map, payload, { animate = false } = {}) {
   const { lats, lons, values, vmin, vmax, colormap } = payload
-  // `values` is either the payload's nested rows or a T59 frame's flat float32
+  // `values` is either the payload's nested rows or a scrubber frame's flat float32
   // VIEW over the shared stack buffer -- handed straight through, never copied.
   const haveValues = Array.isArray(values) || ArrayBuffer.isView(values)
   if (!Array.isArray(lats) || !Array.isArray(lons) || !haveValues) return
@@ -105,14 +97,10 @@ function addCanvasFallbackOverlay(map, payload, { animate = false } = {}) {
   if (map.getSource('overlay')) map.removeSource('overlay')
   if (map.getSource('overlay-canvas')) map.removeSource('overlay-canvas')
 
-  // `animate` is set only while a T59 frame is showing. A canvas source with
-  // animate:false uploads its texture once on add, so swapping a frame's
-  // pixels into an existing canvas would draw nothing; animate:true makes
-  // MapLibre re-upload on its own render loop. Deliberately not a
-  // requestAnimationFrame play/pause dance -- useChat's rAF loop already
-  // taught this codebase that a backgrounded tab stops delivering those, and
-  // an overlay that depends on one never firing is an overlay that silently
-  // keeps showing the previous hour.
+  // `animate` is set only while a scrubber frame is showing. A canvas source
+  // with animate:false uploads its texture once, so swapping a frame's pixels
+  // would draw nothing; animate:true makes MapLibre re-upload on its own loop.
+  // Not driven by requestAnimationFrame, which stops in background tabs.
   map.addSource('overlay-canvas', {
     type: 'canvas',
     canvas,
@@ -152,7 +140,7 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, colorScale
   const drawOverlayRef = useRef(null)
 
   // An externally supplied vmin/vmax/colormap wins over the payload's own --
-  // this is the hook compare mode's shared-scale logic (T28) uses to recolor
+  // this is the hook compare mode's shared-scale logic uses to recolor
   // every panel onto one range. The overlay PNG is baked at the payload's
   // native scale, so an override asks the overlay route to recolor the value
   // raster it stored beside it, at full resolution. A chart drawn before those
@@ -165,7 +153,7 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, colorScale
   const overrideRef = useRef(colorScaleOverride)
   useEffect(() => { overrideRef.current = colorScaleOverride }, [colorScaleOverride])
 
-  // The T59 frame currently selected on the scrubber: `{ values, lats, lons }`,
+  // The frame currently selected on the scrubber: `{ values, lats, lons }`,
   // where `values` is a zero-copy view over one plane of the frame stack.
   // Null outside scrubber mode, and null while the blob is still in flight --
   // in which case the aggregate stays drawn, on whatever scale is current.
@@ -329,7 +317,7 @@ export default function MapLibreHeatmapPanel({ payload, height = 420, colorScale
   // Only disclose the payload's percentile clip when the shown scale is still
   // the payload's own -- an active colorScaleOverride (compare auto-scale)
   // replaces vmin/vmax, so that clip no longer describes what's rendered. An
-  // override that states its OWN basis (T59's pooled 2-98) says so in the same
+  // override that states its OWN basis (the scrubber's pooled 2-98) says so in the same
   // place, so the legend never goes quiet about which scale is drawn.
   const clipNote = colorScaleOverride ? (colorScaleOverride.legendNote || null) : scaleClipNote(scale)
 

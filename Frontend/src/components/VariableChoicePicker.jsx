@@ -8,7 +8,7 @@ import {
   formatValidFraction,
 } from '../utils/variableChoice'
 
-// T49: the deterministic variable-choice picker. When the T48 resolver's
+// The deterministic variable-choice picker. When the variable resolver's
 // confidence was medium or low, the backend attaches a `variableChoice` payload
 // to the turn; this renders it so the researcher picks the variable themselves
 // instead of trusting (or re-typing over) a guess. Clicking a candidate sends
@@ -17,7 +17,7 @@ import {
 // substituted in, so a click never depends on cross-turn context carryover.
 //
 // <=6 candidates render as inline chips (visually like FollowupChips); a wide
-// file (the 400-variable AERDA case that motivated T49) opens a searchable,
+// file (e.g. a 400-variable AERDA product) opens a searchable,
 // category-grouped modal instead of an unscrollable wall of chips. All logic
 // lives in utils/variableChoice.js; this is the thin rendering shell.
 

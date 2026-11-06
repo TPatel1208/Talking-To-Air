@@ -1,11 +1,10 @@
 /**
  * components/MetadataOverview.jsx
  * ----------------------------------
- * The chart Metadata tab's Overview panel (T32), split into its own module
- * (T34 review fix) so CompareGrid.jsx's per-slot metadata overview toggle
+ * The chart Metadata tab's Overview panel, split into its own module so
+ * CompareGrid.jsx's per-slot metadata overview toggle
  * can import it without creating a circular dependency: OutputPanel.jsx
- * imports CompareGrid.jsx (for the Compare tab), and CompareGrid.jsx used
- * to import MetadataOverview back from OutputPanel.jsx.
+ * imports CompareGrid.jsx (for the Compare tab).
  */
 import { useMemo, useState } from 'react'
 import { resolveMasking } from '../utils/maskingProvenance'
@@ -94,7 +93,7 @@ export function MetadataOverview({ chart, onViewStatistics, onViewFullMetadata, 
         </div>
       </div>
 
-      {/* T58 D5: a map built from a physical-level request is "the nearest
+      {/* A map built from a physical-level request is "the nearest
           available layer to 300 hPa", never "a 300 hPa map" -- and only this
           block distinguishes them. Sits ABOVE data quality because it qualifies
           what the chart depicts, not how well it was measured. Absent entirely
@@ -180,7 +179,7 @@ export function MetadataOverview({ chart, onViewStatistics, onViewFullMetadata, 
         <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginTop: '4px' }}>
           Version {fmt(provenance.dataset_version)} · {fmt(provenance.source)}
         </div>
-        {/* T57: maturity sits INSIDE the source-dataset block, above the
+        {/* Maturity sits INSIDE the source-dataset block, above the
             citation button, because it qualifies exactly what that button
             copies. A cautionary level (the provider saying "don't publish on
             this yet") is weighted rather than listed beside the version

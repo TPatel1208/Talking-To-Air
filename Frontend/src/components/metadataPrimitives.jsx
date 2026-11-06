@@ -4,8 +4,8 @@
  * The label/value row shared by the Metadata tab's JSX shells
  * (OutputPanel.jsx) and MetadataOverview.jsx. Split out on its own so
  * MetadataOverview.jsx doesn't need to import OutputPanel.jsx (and vice
- * versa) just to reach it -- that mutual import was a circular dependency
- * between OutputPanel.jsx and CompareGrid.jsx (T34 review fix).
+ * versa) just to reach it, which would create a circular dependency
+ * between OutputPanel.jsx and CompareGrid.jsx.
  *
  * smallButtonStyle/copyToClipboard live in utils/metadataUiHelpers.js
  * instead of here: a file mixing component and non-component exports

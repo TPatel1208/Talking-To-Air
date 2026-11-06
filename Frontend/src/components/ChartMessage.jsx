@@ -301,7 +301,7 @@ export function TimeSeriesPanel({ payload }) {
   )
 }
 
-// The vertical profile (T56): one value per atmospheric layer, plotted against
+// The vertical profile: one value per atmospheric layer, plotted against
 // the layer's physical pressure or altitude rather than its index.
 //
 // Everything decidable about this chart lives in utils/verticalProfile.js --
@@ -369,7 +369,7 @@ export function ProfilePanel({ payload }) {
   )
 }
 
-// Compare mode's chart-overlay path (T29): one Plotly figure, one trace (and
+// Compare mode's chart-overlay path: one Plotly figure, one trace (and
 // legend entry) per series, sharing a single time and value axis. Only
 // mounted when the compatibility check (utils/timeseriesCompare.js) finds
 // matching units and overlapping time ranges across every slot -- reuses
