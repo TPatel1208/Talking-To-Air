@@ -48,7 +48,7 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertEqual(float(da.sel(lat=40.0, lon=-75.0)), 3.0)
 
     def test_clustered_granules_are_cadence_weighted_not_over_counted(self):
-        """Finding #11: 'average over the period' must weight each cadence
+        """'Average over the period' must weight each cadence
         bucket equally, not each granule. Three granules on 2024-01-01 (value
         10) and one on 2024-01-02 (value 0): the naive per-granule mean is
         (10+10+10+0)/4 = 7.5, over-weighting the dense first day. The
@@ -74,7 +74,7 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertAlmostEqual(float(result.ds["no2"].sel(lat=40.0, lon=-75.0)), 5.0)
 
     def test_evenly_cadenced_granules_are_unchanged_by_weighting(self):
-        """Finding #11 guard: one granule per cadence bucket weights every day
+        """Guard: one granule per cadence bucket weights every day
         equally already, so the cadence-weighted mean equals the plain mean --
         the fix only moves clustered sampling, never evenly-spaced series."""
         from tta_backend.preprocessing.aggregation_service import AggregationService
@@ -154,7 +154,7 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertEqual(values[1, 1], 20.0)
 
     def test_aggregate_meta_discloses_cf_attrs_masking_when_no_registry_or_umm_var_info(self):
-        """T25 Phase 1: an unregistered collection with no UMM-Var facts still
+        """An unregistered collection with no UMM-Var facts still
         gets a masking-provenance disclosure — the CF-attrs tier — instead of
         aggregate() staying silent about where fill/valid came from."""
         from tta_backend.preprocessing.aggregation_service import AggregationService
@@ -222,7 +222,7 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertEqual(result.meta["masking"]["valid_range_source"], "collections_yaml")
 
     def test_timeseries_aggregation_meta_matches_aggregate_meta_shape(self):
-        """T32: conduct_temporal_statistic keeps every timestep instead of
+        """conduct_temporal_statistic keeps every timestep instead of
         reducing over time, so it can't call aggregate() directly -- this
         wrapper must build the identical aggregation_label/granule_dates/
         n_granules/cadence summary aggregate() derives internally, from the
@@ -344,7 +344,7 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertEqual(meta["granule_dates"], ["2024-06-01", "2024-06-02"])
 
     def test_twelve_clustered_monthly_granules_are_not_labeled_annual(self):
-        """Finding #14: "Annual" is inferred from a granule *count* of 12, not
+        """"Annual" is inferred from a granule *count* of 12, not
         the date *span*. Twelve monthly-cadence granules clustered inside a
         single month (reprocessed/overlapping) span days, not a year -- calling
         that "Annual" is a false provenance claim. The label must reflect the
@@ -368,7 +368,7 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertIn("2024-01-01 to 2024-01-12", meta["aggregation_label"])
 
     def test_twelve_monthly_granules_spanning_a_year_are_labeled_annual(self):
-        """Finding #14 guard: a real year of monthly means (span ~a year) must
+        """Guard: a real year of monthly means (span ~a year) must
         still read "Annual" -- the fix narrows the label to genuine spans, it
         doesn't remove it."""
         from tta_backend.preprocessing.aggregation_service import AggregationService
@@ -398,8 +398,7 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertEqual(da.name, "no2")
 
     def test_to_dataarray_picks_the_science_var_over_plumbing_in_a_multi_var_file(self):
-        """T48: the VariableResolver replaces the old blanket refusal. A
-        MOD08_D3-style file pairs a geophysical field with plumbing
+        """A MOD08_D3-style file pairs a geophysical field with plumbing
         (Cloud_Fraction is a category-1 implementation variable) -- so instead
         of refusing and dumping both, the resolver excludes the plumbing and
         auto-picks the single populated science field. The choice rides out on
@@ -418,12 +417,10 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertEqual(facts["chosen"], "Aerosol_Optical_Depth")
 
     def test_to_dataarray_resolves_a_wide_unregistered_mean_file_to_a_populated_field(self):
-        """P2 win (AERDA_D3_VIIRS_MODIS, dataset_a88593edb7246c9b): a
-        Yori-aggregated L3 merges to hundreds of ``group/Mean`` data_vars with
-        no registry default. The old tail refused with an unusable candidate
-        dump; the resolver now scores the Mean fields, drops empties, ranks, and
-        auto-picks a populated one -- a real map on the first try instead of a
-        refusal. The resolution facts (chosen + disclosure) ride out on attrs."""
+        """A Yori-aggregated L3 (e.g. AERDA_D3_VIIRS_MODIS) merges to hundreds
+        of ``group/Mean`` data_vars with no registry default. The resolver
+        scores the Mean fields, drops empties, ranks, and auto-picks a
+        populated one -- a real map on the first try instead of a refusal. The resolution facts (chosen + disclosure) ride out on attrs."""
         from tta_backend.preprocessing.aggregation_service import VARIABLE_RESOLUTION_ATTR, AggregationService
 
         data_vars = {
@@ -440,13 +437,13 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertIsNotNone(da.attrs[VARIABLE_RESOLUTION_ATTR]["disclosure"])
 
     def test_ambiguous_variable_error_is_bounded_for_a_pathologically_wide_unresolvable_file(self):
-        """P1 bound, still load-bearing for the files that genuinely refuse: a
+        """Size bound for the files that genuinely refuse: a
         wide file whose candidates carry no strong disambiguating signal (no
         units, no Mean leaf, no CF metadata) is a real fork the resolver won't
         guess -- it refuses. That refusal message must be bounded in size
         regardless of candidate count: name a capped sample, disclose the true
-        total, and say how many are hidden -- an O(1) error, never the 20 KB
-        O(N) dump that drove the original context blowup."""
+        total, and say how many are hidden -- an O(1) error, never an O(N)
+        dump that floods the model's context."""
         from tta_backend.earthdata_mcp.results import CATEGORY_VARIABLE_CHOICE_REQUIRED
         from tta_backend.preprocessing.aggregation_service import AggregationService, VariableChoiceRequired
 
@@ -457,11 +454,11 @@ class AggregationServiceTests(unittest.TestCase):
             AggregationService().to_dataarray(ds)
 
         # The LLM-facing compact tool result the signal carries is still
-        # P1-bounded (the full, uncapped candidate list rides out-of-band to
+        # size-bounded (the full, uncapped candidate list rides out-of-band to
         # the picker instead of being re-fed to the model).
         exc = ctx.exception.mcp_error
         self.assertEqual(exc.category, CATEGORY_VARIABLE_CHOICE_REQUIRED)
-        # O(1) size: the whole point of P1 -- must not scale with 200 vars.
+        # O(1) size: must not scale with 200 vars.
         self.assertLess(len(exc.message), 4000)
         self.assertLess(len(exc.to_tool_json()), 4000)
         # Still honest about the true total and that candidates are hidden.
@@ -534,7 +531,7 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertEqual(ctx.exception.mcp_error.category, CATEGORY_VARIABLE_CHOICE_REQUIRED)
 
     def test_aggregate_surfaces_the_variable_resolution_disclosure_in_meta(self):
-        """T48 disclosure plumbing: when aggregate() resolves an ambiguous
+        """Disclosure plumbing: when aggregate() resolves an ambiguous
         multi-product file itself (Dataset input), the resolver's chosen
         variable and its disclosure must ride out in meta -- the channel the
         tool layer copies into chart provenance and the dispatch layer appends
@@ -620,7 +617,7 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertEqual(da.name, "Aerosol_Optical_Depth")
 
     def test_to_dataarray_resolves_a_group_qualified_recorded_choice_against_merged_leaf_names(self):
-        """T25 review #1: retrieval records the model's choice group-qualified
+        """Retrieval records the model's choice group-qualified
         (``product/vertical_column_troposphere``), but open_handle merges HDF
         groups down to bare leaf names -- so resolution has to match on the
         leaf, or a registered TEMPO retrieval refuses its own recorded choice."""
@@ -655,7 +652,7 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertEqual(float(da.values[0, 0]), 1.0)
 
     def test_to_dataarray_resolves_a_science_plus_flag_pair_to_the_science_var_without_refusal(self):
-        """T25 review #2: a standard TEMPO retrieval opens science +
+        """A standard TEMPO retrieval opens science +
         main_data_quality_flag (2 data_vars). The QA flag is not a science-
         variable candidate, so resolution picks the sole science var rather
         than raising CATEGORY_VARIABLE_CHOICE_REQUIRED and offering the flag."""
@@ -714,10 +711,10 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertNotIn("main_data_quality_flag", cand_names)
 
     def test_aggregate_recognizes_a_valid_time_dim_as_time(self):
-        """T25: a MERRA-2-style `valid_time` dim (no CF standard_name, just
+        """A MERRA-2-style `valid_time` dim (no CF standard_name, just
         the bare name) must still auto-reduce like a literal 'time' dim,
         rather than surviving into _normalize_to_2d as an unrecognized extra
-        dimension that used to be silently averaged."""
+        dimension."""
         from tta_backend.preprocessing.aggregation_service import AggregationService
 
         ds = self.xr.Dataset(
@@ -735,7 +732,7 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertEqual(result.meta["n_granules"], 2)
 
     def test_aggregate_applies_tier1_pinned_qa_rule_and_tags_verified(self):
-        """T25 Phase 3: a pinned collections.yaml quality_flag_var + qa_good_values
+        """A pinned collections.yaml quality_flag_var + qa_good_values
         rule masks deterministically with no CF flag_meanings needed at all,
         and result.meta["masking"]["qa_status"] discloses it as "verified"."""
         from tta_backend.datasets.qa_flags import QA_VERIFIED
@@ -756,14 +753,12 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertTrue(self.np.isnan(values[0, 1]))  # flag 1 (not in qa_good_values) masked
 
     def test_aggregate_applies_tier1_qa_rule_via_source_ds_when_data_is_an_already_extracted_dataarray(self):
-        """T25 masking-execution fix: production never passes aggregate() a
+        """Production never passes aggregate() a
         Dataset -- every tool extracts the science DataArray first (crops it
         to a region, normalizes longitude, etc.) and only the *opened*
-        Dataset still carries the sibling QA-flag variable. Before
-        source_ds, aggregate(cropped_da, ...) always saw qf_source=None and
-        the honesty guard downgraded to "not applied" no matter what
-        collections.yaml pinned. This proves source_ds restores real masking
-        for that exact shape."""
+        Dataset still carries the sibling QA-flag variable. Without source_ds,
+        aggregate(cropped_da, ...) sees no flag variable and reports "not
+        applied". This proves source_ds gives real masking for that shape."""
         from tta_backend.datasets.qa_flags import QA_VERIFIED
         from tta_backend.preprocessing.aggregation_service import AggregationService
 
@@ -826,7 +821,7 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertTrue(self.np.isnan(values[0, 0, 1]))
 
     def test_aggregate_discovers_qa_flag_var_via_ancillary_variables_attr(self):
-        """T25 Phase 3: for an unregistered collection with no pinned
+        """For an unregistered collection with no pinned
         quality_flag_var, the CF `ancillary_variables` attribute on the
         science variable is a real machine-readable pointer to the QA
         variable -- resolved without any registry entry."""
@@ -858,7 +853,7 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertEqual(values[1, 1], 4.0)
 
     def test_aggregate_discovers_the_sole_sibling_flag_var_with_no_ancillary_attr(self):
-        """T25 Phase 3: with no pinned name and no `ancillary_variables` CF
+        """With no pinned name and no `ancillary_variables` CF
         attr, a single sibling data var carrying flag_values+flag_meanings is
         still discoverable deterministically -- there is nothing ambiguous
         about picking the only candidate."""
@@ -882,7 +877,7 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertTrue(self.np.isnan(values[0, 1]))
 
     def test_aggregate_ambiguous_cf_tokens_with_agent_proposal_masks_and_tags_inferred(self):
-        """T25 Phase 3: ambiguous flag_meanings tokens are never auto-applied
+        """Ambiguous flag_meanings tokens are never auto-applied
         -- only the agent's proposed good-token list resolves them, and the
         result is tagged "inferred, not verified", not silently folded into
         "verified" or "cf-deterministic"."""
@@ -931,12 +926,11 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertEqual(list(values[0]), [1.0, 2.0, 3.0])
 
     def test_aggregate_no_qa_metadata_anywhere_discloses_not_applied(self):
-        """T25 Phase 3: a prose-only-QA product (e.g. MOD08_D3) has no
-        pinned rule and no CF flag_values/flag_meanings anywhere -- masking
-        stays off, and meta says so explicitly rather than staying silent.
+        """A prose-only-QA product (e.g. MOD08_D3) has no pinned rule and no
+        CF flag_values/flag_meanings anywhere -- masking stays off, and meta
+        says so explicitly rather than staying silent.
 
-        Since 2026-08-02 that disclosure is the more precise "publishes no
-        quality flag variable": nothing here is unknown, there is simply no
+        The disclosure is "publishes no quality flag variable": nothing here is unknown, there is simply no
         flag band to interpret. MODIS L3 AOD is quality-screened at L2 before
         gridding, so this is a permanent product property, not a gap to pin."""
         from tta_backend.datasets.qa_flags import QA_NO_FLAG_VARIABLE
@@ -1263,7 +1257,7 @@ class AggregationServiceTests(unittest.TestCase):
 
 @unittest.skipIf(importlib.util.find_spec("xarray") is None, "xarray is not installed")
 class QaPassRateCounterTests(unittest.TestCase):
-    """T55: the QA pass rate reported to the researcher is counted where the
+    """The QA pass rate reported to the researcher is counted where the
     mask is actually applied -- from the same boolean condition
     ``apply_quality_mask`` masks with -- so it is structurally incapable of
     disagreeing with the plotted data."""
@@ -1377,7 +1371,7 @@ class QaPassRateCounterTests(unittest.TestCase):
         self.assertEqual(counts["flag_missing"], 1)
 
     def test_the_pass_rate_is_cos_latitude_area_weighted_not_a_raw_pixel_ratio(self):
-        """Finding #13's doctrine, applied to quality: an unweighted pixel
+        """Area weighting, applied to quality: an unweighted pixel
         count sitting in the same stat grid as an area-weighted mean is an
         inconsistency. Two good pixels at the equator and two bad ones at 80N
         are 50% of the pixels but ~85% of the *area* -- the shrunken poleward
@@ -1468,7 +1462,7 @@ class QaPassRateCounterTests(unittest.TestCase):
         self.assertEqual(provenance["qa_counted_extent"], {"lat": 2, "lon": 2})
 
     def test_a_lazy_array_stays_lazy_and_its_graph_is_computed_exactly_once(self):
-        """T51's finding applied here: counting adds an eager reduction to the
+        """Counting adds an eager reduction to the
         masking path, *before* the reduction the ``aggregate`` phase already
         pays for, on lazily-opened multi-granule bundles. Two guarantees earn
         the feature its keep -- the returned array is still lazy (masking did

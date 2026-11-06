@@ -32,7 +32,7 @@ def _cadence_tier_chart(**overrides) -> dict:
     period map is their average. Twelve hourly frames, all observed.
 
     ``coarsen_k`` is 5x5, deliberately — the regime a real regional retrieval
-    lands in (Phase 8: 352,181 native cells), and the regime in which "the map
+    lands in (~352k native cells), and the regime in which "the map
     is the mean of the frames" stops being true of the arrays themselves.
     """
     from tta_backend.preprocessing.frame_stack import FRAME_GRID_DELTA_BASIS
@@ -73,12 +73,10 @@ def _cadence_tier_chart(**overrides) -> dict:
         "span": ["2025-06-14T00:00:00", "2025-06-14T12:00:00"],
         "pipeline_version": "t59-1",
     }
-    # Phase 8's measurement on `map_2ea3dd7b34cf`: a cadence-tier chart has no
-    # `delta` — its frames ARE its cadence buckets — and still misses the
-    # period plane by 1.876% on the arrays it hands the browser, because the
-    # block mean and the across-frame mean do not commute under partial
-    # coverage. The tier with nothing to disclose was the tier stating the
-    # flattest identity.
+    # Taken from a real chart: a cadence-tier chart has no `delta` (its frames
+    # ARE its cadence buckets) and still misses the period plane by ~1.9% on
+    # the arrays it hands the browser, because the block mean and the
+    # across-frame mean do not commute under partial coverage.
     render.setdefault("frame_grid_delta", {
         "headline": 0.018760,
         "max_abs": 2.72e15,
@@ -94,16 +92,12 @@ def _coarsened_tier_chart(
     grid_headline=0.0328, grid_max_abs=1.953e15, **overrides,
 ) -> dict:
     """Tier two: a frame averages several cadence buckets, so the frames are a
-    DIFFERENT temporal aggregation from the map, which D14 computes
-    independently. Phase 3 measured that disagreement at 22.3% and 5.4% on two
-    real TEMPO bundles, and the 60-frame budget is reached at ~2.5 days — so
-    this is the common case, not the edge.
+    DIFFERENT temporal aggregation from the map (5-22% on real TEMPO bundles),
+    and the 60-frame budget is reached at ~2.5 days — so this is the common
+    case, not the edge.
 
-    The two defaults for the shipped-array figure are Phase 8's measurement on
-    `map_1531e35a0e18`, where the disclosed 3.74% sat beside arrays that
-    disagreed by 3.28%: the block mean partly CANCELLED the coarsening term
-    there rather than compounding it, so neither number bounds the other and
-    the smaller one was the one on screen.
+    The defaults come from a real chart where the native delta (3.74%) and the
+    shipped-array one (3.28%) differ: neither bounds the other.
     """
     from tta_backend.preprocessing.frame_stack import (
         DELTA_BASIS, FRAME_GRID_DELTA_BASIS,
@@ -129,7 +123,7 @@ def _coarsened_tier_chart(
 
 
 def _planes_chart(*, statistics=("mean", "max", "min"), planes=None, **overrides) -> dict:
-    """A chart carrying D6a's extra planes, shaped as Phase 13/14 write them.
+    """A chart carrying the extra max/min planes, shaped as the backend writes them.
 
     Two blocks again, and they carry DIFFERENT plane facts on purpose. The
     spec's ``statistics`` is the recipe's list of what the axis can be browsed
@@ -137,7 +131,7 @@ def _planes_chart(*, statistics=("mean", "max", "min"), planes=None, **overrides
     disclosures — ``frame_grid_delta``, ``extent_overstatement``, ``value_range``
     — live only on the render block, the way the mean's delta already does.
 
-    The defaults are Phase 11 G4/G5's live measurements: both selection
+    The defaults are real measurements: both selection
     identities bit-exact (``0.0``), and the max plane's spatial overstatement at
     24.7x pooled with a worst frame of 24.9x.
     """
@@ -196,7 +190,7 @@ def _markdown_for(chart: dict) -> str:
 
 
 class TemporalFramesDisclosureTests(unittest.TestCase):
-    """T59 D12: the bucketing disclosure is mandatory, and it lands here rather
+    """The bucketing disclosure is mandatory, and it lands here rather
     than only in JSX for the same reason ``QA_PASS_RATE_BASIS`` exists — the
     reader of this document cannot see what was on screen."""
 
@@ -212,9 +206,8 @@ class TemporalFramesDisclosureTests(unittest.TestCase):
                 # "of those intervals at native resolution", not "of the
                 # frames". A frame is an array on the rendering grid and an
                 # interval is a span of time; the equal weighting is a fact
-                # about the second, and stating it about the first told the
-                # reader they could check it by averaging a download. Phase 8
-                # did exactly that and got 1.876%.
+                # about the second; stating it about the first would suggest
+                # averaging a download reproduces the map (it's off by ~1.9%).
                 "- Each frame is one hourly interval of this product, and the period "
                 "map is the equally-weighted mean of those intervals at native "
                 "resolution: every interval counts once, however many granules it "
@@ -290,10 +283,9 @@ class TemporalFramesDisclosureTests(unittest.TestCase):
         self.assertNotIn(" 0 hourly", markdown)
 
     def test_the_two_empty_interval_states_are_counted_apart_never_merged(self):
-        # Phase 3 §4, measured: TEMPO only scans in daylight, so 28 of 54 hourly
-        # buckets on a padded 2.2-day span hold no contributing granule. The two
-        # empty states are different measurements and D10 requires them
-        # distinguishable — ``qa_pass_rate=0.0`` is "observed, QA rejected all of
+        # TEMPO only scans in daylight, so 28 of 54 hourly buckets on a padded
+        # 2.2-day span hold no contributing granule. The two empty states are
+        # different measurements and must stay distinguishable — ``qa_pass_rate=0.0`` is "observed, QA rejected all of
         # it"; ``qa_pass_rate=None`` is "nothing was retrieved". A single "28
         # gaps" tally would report a QA problem and a coverage problem as one
         # number.
@@ -344,18 +336,17 @@ class TemporalFramesDisclosureTests(unittest.TestCase):
 
 
 class BrowsableStatisticsTests(unittest.TestCase):
-    """T59 Phase 16 / D6a decisions 8 and 9: the planes leave the screen.
+    """The planes' disclosures in ``methods.md``.
 
     A ``methods.md`` goes into supplementary material and is read by someone
-    who was not sitting at the scrubber. Phase 15 gave the max plane four
-    sentences on screen; a reader who browsed it, screenshotted it and cited
-    the figure has none of them here.
+    who was not sitting at the scrubber, so the on-screen caveats about the
+    max plane must appear here too.
 
     Its own section rather than bullets under ``### Temporal frames``, for the
     reason ``### Frame–map agreement`` has one: it carries a measured number
     that qualifies what the reader is about to cite. The lead sentence does the
-    work of keeping it separate from the artifact — D12 is unchanged and the
-    export bullet above stays exactly where it is.
+    work of keeping it separate from the artifact — exports are unchanged and
+    the export bullet above stays exactly where it is.
     """
 
     def test_a_chart_with_planes_names_what_its_axis_can_be_browsed_as(self):
@@ -369,15 +360,12 @@ class BrowsableStatisticsTests(unittest.TestCase):
         )
 
     def test_a_chart_that_never_had_planes_says_nothing_at_all(self):
-        """Phase 13's reason for omitting the key rather than emitting it
-        empty, arriving at the last consumer.
+        """No ``planes`` key means no section at all.
 
-        Every chart plotted before Phase 14 is in this state, and this document
-        is generated, archived and never diffed by a human — so a row written a
-        year ago must render exactly as it rendered then. "Browsable
+        Older charts are in this state, and this document is archived and never
+        diffed, so an old row must render exactly as it did. "Browsable
         statistics: none" would read as a finding about a feature the request
-        never implied, which is ``_frames_section``'s third state and T57's
-        omitted maturity, one level in.
+        never implied.
         """
         markdown = _markdown_for(_cadence_tier_chart())
 
@@ -394,16 +382,14 @@ class BrowsableStatisticsTests(unittest.TestCase):
         self.assertNotIn("Browsable statistics", markdown)
 
     def test_each_plane_states_its_identity_and_prints_no_percentage_for_it(self):
-        """D6a decision 8: one sentence stating the identity, and an EXACT
+        """One sentence stating the identity, and an EXACT
         equality rather than a tolerance in disguise.
 
         Both of the render block's figures belong to the mean — ``delta`` is
         its temporal disagreement and ``frame_grid_delta`` its shipped-array
-        one — and a selection plane has neither. Passing the mean's 1.876%
-        through here would attribute a mean-only disagreement to a plane that
-        does not have it; passing the plane's own ``0.0`` through ``_pct``
-        would print "under 0.1%", which D6a names as exactly the failure
-        ``_DELTA_FLOOR`` exists to prevent.
+        one — and a selection plane has neither. Passing the mean's figure
+        through would misattribute it; passing the plane's own ``0.0`` through
+        ``_pct`` would print "under 0.1%" for an exact identity.
         """
         section = _section(_markdown_for(_planes_chart()), "Browsable statistics")
 
@@ -430,8 +416,7 @@ class BrowsableStatisticsTests(unittest.TestCase):
         says to read it as a defect.
 
         Claiming "exactly" because a maximum is associative *in theory* would
-        be the same class of falsehood Phase 8 caught in ``frameDelta.js``:
-        true of the mechanism, false of the arrays. The screen's
+        be true of the mechanism but possibly false of the arrays. The screen's
         ``selectionDelta`` branches on the payload for this reason, and this
         document must branch on the same fact rather than on the operation's
         name.
@@ -505,13 +490,12 @@ class BrowsableStatisticsTests(unittest.TestCase):
         self.assertNotIn("reproduces the stored period plane exactly — a maximum", section)
 
     def test_the_max_plane_discloses_the_ground_a_rendered_peak_claims(self):
-        """Phase 11 G4, asked for in ``methods.md`` by name.
+        """The extent overstatement, in ``methods.md``.
 
         With both of the max tier's deltas structurally zero, this one number
         carries all the weight the mean tier spreads over two — and it is the
         one a reader who screenshotted a peak into a slide has no other way to
-        learn. ``EXTENT_OVERSTATEMENT_BASIS`` is the third basis string in
-        ``frame_stack`` and until now had never been printed anywhere.
+        learn. ``EXTENT_OVERSTATEMENT_BASIS`` is printed with it.
         """
         from tta_backend.preprocessing.frame_stack import EXTENT_OVERSTATEMENT_BASIS
 
@@ -527,8 +511,8 @@ class BrowsableStatisticsTests(unittest.TestCase):
         self.assertIn(f"- Basis: {EXTENT_OVERSTATEMENT_BASIS}.", section)
 
     def test_the_overstatement_is_this_chart_s_own_measurement_not_a_constant(self):
-        # Phase 14's k=(2,2) chart measured 4.0000014 — a different figure from
-        # Phase 11's ≈24.7×, and the document must be the chart's own.
+        # A k=(2,2) chart measures 4.0000014, not the ~24.7× of a k=(5,5) one,
+        # and the document must print the chart's own figure.
         chart = _planes_chart()
         chart["frames"]["planes"]["max"]["extent_overstatement"].update(
             {"headline": 4.0000014, "worst_frame": 4.31, "ceiling": 4},
@@ -542,21 +526,21 @@ class BrowsableStatisticsTests(unittest.TestCase):
 
     def test_the_min_plane_is_given_no_overstatement_it_does_not_have(self):
         # ``extent_overstatement`` is None on every plane but max, by
-        # construction: a block minimum paints a trough, not a peak, and D6a
-        # decision 9 measures the peak. Silence, not a zero.
+        # construction: a block minimum paints a trough, not a peak. Silence,
+        # not a zero.
         section = _section(_markdown_for(_planes_chart()), "Browsable statistics")
 
         self.assertEqual(section.count("Every cell of a block is drawn"), 1)
         self.assertNotIn("lowest value, so the ground shown", section)
 
     def test_the_document_never_claims_the_overstatement_has_a_bound(self):
-        """Phase 14's finding, addressed to this phase by name.
+        """Never render ``ceiling``.
 
         ``ceiling`` is k² and is NOT an upper bound: both sums in
         ``_overstatement_terms`` are cos(latitude)-weighted per cell, so a
         block whose max sits on its lowest-weighted row contributes more than
         k², and the pooled figure straddles k² rather than approaching it from
-        below. The fixture here is Phase 14's own straddling measurement —
+        below. The fixture here is a real straddling measurement —
         4.0000014 against a ceiling of 4 — so a document that rendered the
         ceiling would be printing a number this chart has already exceeded.
         """
@@ -613,7 +597,7 @@ class BrowsableStatisticsTests(unittest.TestCase):
         self.assertNotIn(" 0 hourly", section)
 
     def test_a_chart_above_the_plane_ceiling_says_so_in_the_gates_own_words(self):
-        """The middle state, which did not exist before Phase 14.
+        """The middle state: planes refused.
 
         ``_refusal_section``'s posture, one level in: this figure HAS a
         scrubber, so what is missing is the extra statistics rather than the
@@ -717,9 +701,9 @@ class BrowsableStatisticsTests(unittest.TestCase):
         self.assertNotIn("minimum", section)
 
     def test_the_export_sentence_survives_verbatim_and_stays_unambiguous(self):
-        """D12, and the one thing tension 1 was not allowed to blur.
+        """Exports are unchanged.
 
-        A plane is browsable and is not downloadable, in any phase. The export
+        A plane is browsable and is not downloadable. The export
         bullet keeps its exact wording and its exact place in ``### Temporal
         frames``, and the new section states the same fact in its own lead
         rather than qualifying that one.
@@ -837,8 +821,8 @@ class BrowsableStatisticsTests(unittest.TestCase):
 
 
 class SharedPlaneClaimTests(unittest.TestCase):
-    """T59 Phase 16 tension 2: two languages now have to agree about a
-    SENTENCE, and every tool this repo has for that problem takes a number.
+    """Python and JS have to agree about a SENTENCE, and every tool this repo
+    has for that problem takes a number.
 
     ``_DELTA_HIGH`` ↔ ``severityOf``'s high edge and ``_DELTA_FLOOR`` ↔
     ``formatPct``'s floor are constants, and a constant can be read out of the
@@ -853,7 +837,7 @@ class SharedPlaneClaimTests(unittest.TestCase):
 
     * neither language may render a percentage for a selection plane's
       agreement, because the identity holds exactly;
-    * neither may claim a bound on the overstatement (Phase 14);
+    * neither may claim a bound on the overstatement;
     * both must take the overstatement from the payload's measured figure,
       which the document's own two-fixture test proves for this side.
 
@@ -862,7 +846,7 @@ class SharedPlaneClaimTests(unittest.TestCase):
     serves ``frameDelta.js``, so no compose change was needed. Each pattern
     below was verified to BITE by mutating the JS source in memory and
     confirming the assertion fails; a contract test that cannot fail is worse
-    than none, and this repo has measured that exact thing happening.
+    than none.
     """
 
     def _js_source(self, filename: str) -> str:
@@ -916,8 +900,8 @@ class SharedPlaneClaimTests(unittest.TestCase):
 
     def test_the_screens_identity_sentence_prints_no_percentage_either(self):
         """``_pct`` and ``formatPct`` draw the same floor, so a selection
-        plane's ``0.0`` would print "under 0.1%" in both languages — D6a's own
-        example of the failure ``_DELTA_FLOOR`` exists to prevent. This
+        plane's ``0.0`` would print "under 0.1%" in both languages for an exact
+        identity. This
         document's side is asserted above; this is the screen's.
         """
         source = self._js_source("frameDelta.js")
@@ -954,13 +938,11 @@ class SharedPlaneClaimTests(unittest.TestCase):
 
 
 class SharedDeltaThresholdTests(unittest.TestCase):
-    """T59 Phase 8. One number, two languages: ``_DELTA_HIGH`` here and
+    """One number, two languages: ``_DELTA_HIGH`` here and
     ``severityOf``'s ``high`` edge in ``frameDelta.js``.
 
-    Until Phase 8 the only thing joining them was a comment naming the other
-    file, and a comment is not a check — measured 2026-08-11 by editing the JS
-    edge to 0.15 and watching all 339 frontend tests and all 24 tests in this
-    file stay green. The screen resolves three severity bands and this document
+    A comment naming the other file is not a check (changing the JS edge left
+    every test green), so this reads the JS source and compares. The screen resolves three severity bands and this document
     two, so only the ``high`` edge is shared; that edge is what this reads out
     of the JS source and compares.
 
@@ -1018,15 +1000,13 @@ class SharedDeltaThresholdTests(unittest.TestCase):
         )
 
     def test_the_reporting_floor_is_the_same_number_the_screen_uses(self):
-        """Phase 9's second shared constant, pinned the moment it appeared.
+        """The second shared constant: the 0.1% floor.
 
         Both languages refuse to print a percentage below 0.1% — an
         undownsampled chart's arrays agree to float32 storage noise, and "0.0%"
         overstates that while reading like a measurement that found nothing.
         Two floors would put "0.0%" in the document beside "under 0.1%" on the
-        screen for one chart. Less severe than a drifted ``_DELTA_HIGH``, and
-        exactly the same failure: the repo now has the idiom, so the second
-        instance is pinned rather than commented.
+        screen for one chart.
         """
         import re
 
@@ -1072,9 +1052,9 @@ class SharedDeltaThresholdTests(unittest.TestCase):
 
 
 class FrameMapAgreementTests(unittest.TestCase):
-    """T59 D16 / Risk 4. Markdown has no colour and no border, so the only
+    """Markdown has no colour and no border, so the only
     hierarchy available is placement and weight: the delta gets its own section
-    above the References — the T57 maturity block's treatment, because it
+    above the References — like the maturity block, because it
     likewise qualifies everything the reader is about to cite — and a
     double-digit disagreement additionally gets a bolded lead sentence, so it
     cannot render as the same quiet footnote a sub-1% one does."""
@@ -1106,7 +1086,7 @@ class FrameMapAgreementTests(unittest.TestCase):
                 "plane beside them: **3.3%**, largest absolute difference "
                 "1.953e+15 molecules/cm^2.",
                 f"- Basis: {FRAME_GRID_DELTA_BASIS}.",
-                # Phase 8 §2, in one line, because a reader given two numbers
+                # In one line, because a reader given two numbers
                 # will otherwise assume the larger one contains the smaller.
                 "- The two are measured on different arrays and neither bounds "
                 "the other: the block mean can cancel part of the coarsening as "
@@ -1119,11 +1099,8 @@ class FrameMapAgreementTests(unittest.TestCase):
         )
 
     def test_the_shipped_figure_is_never_labelled_with_the_native_basis(self):
-        """Phase 8 §2's mirror gap: tier two disclosed 3.74% under a basis
-        reading "at native resolution" while the arrays on screen disagreed by
-        3.28%. Two quantities under one account of themselves is the same
-        failure ``DELTA_BASIS`` was written to prevent, wearing the other
-        shoe."""
+        """Tier two's native delta and the on-screen arrays' disagreement are
+        different quantities, so each needs its own basis line."""
         from tta_backend.preprocessing.frame_stack import (
             DELTA_BASIS, FRAME_GRID_DELTA_BASIS,
         )
@@ -1142,9 +1119,9 @@ class FrameMapAgreementTests(unittest.TestCase):
         self.assertLess(shipped, section.index(FRAME_GRID_DELTA_BASIS))
 
     def test_a_single_digit_delta_is_stated_plainly_without_the_bolded_lead(self):
-        # job_c1122dfd051c15ee, measured 2026-08-10: 5.43% at 4 buckets/frame.
-        # Still its own section — D16 gates nothing, and whether 5.4% matters is
-        # the reader's judgment, not this document's.
+        # A real measurement: 5.43% at 4 buckets/frame. Still its own section —
+        # the delta gates nothing, and whether 5.4% matters is the reader's
+        # judgment, not this document's.
         markdown = _markdown_for(
             _coarsened_tier_chart(
                 headline=0.0543, max_abs=3.39e15, buckets_per_frame=4,
@@ -1201,8 +1178,8 @@ class FrameMapAgreementTests(unittest.TestCase):
 
     def test_a_coarsened_row_below_the_edge_natively_still_shouts_for_its_arrays(self):
         """The two figures are independent, so the escalation cannot be read
-        off either one alone. Phase 8 measured them going in opposite
-        directions on the same chart."""
+        off either one alone; they can move in opposite directions on the
+        same chart."""
         bolded = "**The frames and the period map are answering"
 
         self.assertIn(
@@ -1216,7 +1193,7 @@ class FrameMapAgreementTests(unittest.TestCase):
         )
 
     def test_the_cadence_tier_reports_what_averaging_its_own_download_gives(self):
-        """The Phase 8 finding, in the document that stated it flattest.
+        """The cadence tier still discloses the shipped-array disagreement.
 
         A cadence-tier frame IS a cadence bucket, so there is no temporal
         disagreement and ``delta`` is rightly absent — but the frames a reader
@@ -1255,7 +1232,7 @@ class FrameMapAgreementTests(unittest.TestCase):
 
     def test_an_undownsampled_chart_reports_the_floor_rather_than_a_bare_zero(self):
         """At k=(1,1) the block mean is the identity function and the two
-        arrays agree to float32 storage noise — Phase 3's 0.000002%. Printing
+        arrays agree to float32 storage noise. Printing
         "0.0%" would overstate that to a precision the document does not have,
         and printing nothing would drop the one tier where the check passes."""
         markdown = _markdown_for(
@@ -1316,7 +1293,7 @@ class FrameMapAgreementTests(unittest.TestCase):
         self.assertIn("float32 storage precision", section)
 
     def test_a_row_predating_the_shipped_array_measurement_stays_silent(self):
-        """A chart written before Phase 9 has no such measurement, and the
+        """An older chart has no such measurement, and the
         section is built from what was measured rather than from what would be
         nice to say. The scoped weighting sentence carries that row on its own:
         it is true at native resolution whether or not anyone checked the
@@ -1352,7 +1329,7 @@ class FrameMapAgreementTests(unittest.TestCase):
 
 
 class ExportLabelTests(unittest.TestCase):
-    """T59 D12: export is unchanged and labeled "period aggregate". The label
+    """Export is unchanged and labeled "period aggregate". The label
     already ships in the jsonb row for a programmatic consumer; this document
     is where the human reader — who cannot see the screen and is about to put
     the download in a paper — learns which field they actually have."""
@@ -1442,7 +1419,7 @@ class FramesShapeDefensivenessTests(unittest.TestCase):
         # a reason of its own: frames are additive, so the map is
         # identical whether one was built or not, and their absence says
         # nothing about the figure being cited. "Temporal frames: none" would
-        # read as a finding, the way T57's omitted maturity would.
+        # read as a finding, as an "unknown" maturity would.
         markdown = _markdown_for({"units": "molecules/cm^2"})
 
         self.assertNotIn("Temporal frames", markdown)
@@ -1583,7 +1560,7 @@ class BuildMethodsMarkdownTests(unittest.TestCase):
         )
 
     def test_a_comparisons_aligned_intermediate_appears_in_the_processing_chain(self):
-        # T10 story 7: a T08 comparison's resampling step must be visible in
+        # A comparison's resampling step must be visible in
         # the method, not hidden — it renders as its own numbered step.
         from tta_backend.services.methods_export_service import build_methods_markdown
 
