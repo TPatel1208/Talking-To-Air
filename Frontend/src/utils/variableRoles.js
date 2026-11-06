@@ -1,4 +1,4 @@
-// Variable-role taxonomy display helpers (PRD T35). Pure functions that turn
+// Variable-role taxonomy display helpers. Pure functions that turn
 // the backend's classified inventory (services/discovery_service.py's additive
 // `inventory` key) and the chart provenance's `related_variables` view into the
 // shapes the inventory panel and the chart-page related-variables panel render.

@@ -1,5 +1,4 @@
-// Which statistic the scrubber is showing, and everything that follows from it
-// (T59 D6a decision 7 / Phase 15).
+// Which statistic the scrubber is showing, and everything that follows from it.
 //
 // A chart under `MAX_PLANE_NATIVE_CELLS` carries a block-max and a block-min
 // plane beside its mean, each with its own bytes, its own pooled clip and its
@@ -36,11 +35,9 @@ export function scrubbableStatistics(chart) {
 // The whole toggle in one read: what is offered, what the reader asked for,
 // what is actually on screen, and why there is nothing to ask for.
 //
-// `selected` and `rendered` are TWO facts, and collapsing them is the failure
-// this phase is written against. Phase 13's statistic guard exists because a
-// wrong plane renders believably -- the same shape, the same grid, the same
-// colours, different numbers -- and the frontend's version of that hazard is
-// the interval between the click and the bytes. `useFrameStack` holds one
+// `selected` and `rendered` are TWO facts; never collapse them. A wrong plane
+// renders believably (same shape, grid and colours, different numbers), and
+// the hazard here is the interval between the click and the bytes. `useFrameStack` holds one
 // result keyed by one url, so during a switch there is no stack at all and the
 // canvas falls back to the chart's own period aggregate, which IS the mean.
 // Saying "max" over it would be exactly the lie the backend refuses to serve.
@@ -59,7 +56,7 @@ export function resolveStatisticChoice(chart, selected, loadState) {
   return {
     options,
     // Offered when there is a choice to make, or when there was one and the
-    // gate took it away -- Phase 5 decision 2's rule, one level in. A chart
+    // gate took it away (with a reason). A chart
     // that never had planes gets neither, and renders exactly as it did.
     offered: options.length > 1 || Boolean(refusal),
     selected: asked,
@@ -76,11 +73,10 @@ export function resolveStatisticChoice(chart, selected, loadState) {
 // plane exists, so someone who scrubbed to hour 17 and then asked for its
 // maximum has done precisely the thing that must not cost them their place.
 //
-// Parked on the aggregate rather than held at 17 while the pixels are absent,
-// because that is Phase 6 decision 2 unchanged -- the aggregate is the only
-// stop whose pixels are actually on screen, and a readout naming hour 17 over
-// the period map "would read as a quiet two days to someone scrubbing for an
-// event". The index comes back on its own when the slider re-enables.
+// Parked on the aggregate rather than held at 17 while the pixels are absent:
+// the aggregate is the only stop actually on screen, and a readout naming
+// hour 17 over the period map would mislead. The index comes back on its own
+// when the slider re-enables.
 export function resolveScrubStop({ stops, index, sliderEnabled }) {
   if (!Array.isArray(stops) || !stops.length) return null
   if (!sliderEnabled) return stops[0]
@@ -88,17 +84,13 @@ export function resolveScrubStop({ stops, index, sliderEnabled }) {
   return stops[clamped] || stops[0]
 }
 
-// How much ground a rendered peak claims (D6a decision 9 / Phase 11 G4).
+// How much ground a rendered peak claims.
 //
 // Block max paints one native cell's peak across every cell of its block, so
-// the area shown at peak level is larger than the area that reached it. G4
-// measured ≈24.7-24.75x on both live bundles with the per-frame spread under
-// half a percentage point -- not an occasional worst case but what block max
-// costs on essentially every finite block, which is why it is disclosed rather
-// than caveated.
+// the area shown at peak level is larger than the area that reached it
+// (~25x on real bundles, on essentially every block), hence it's disclosed.
 //
-// PHASE 14'S FINDING BINDS THIS WORDING: `ceiling` is k^2 and is NOT an upper
-// bound. Both sums in `_overstatement_terms` are cos(latitude)-weighted per
+// `ceiling` is k^2 and is NOT an upper bound. Both sums in `_overstatement_terms` are cos(latitude)-weighted per
 // cell, so a block whose max sits on its lowest-weighted row contributes more
 // than k^2, and the pooled figure straddles k^2 rather than approaching it from
 // below -- measured at 4.0000014 against a ceiling of 4. Nothing here may say
@@ -124,9 +116,8 @@ export function extentOverstatementNote(chart, statistic) {
 // What `useFrameStack` fetches and `decodeFrameStack` reshapes for one
 // statistic: that plane's own url on the layout every plane of the chart
 // shares. Null when the statistic has no bytes -- NEVER the mean's url as a
-// fallback, which is the failure Phase 13 decision 4 built a manifest guard
-// against on the way out: every plane of one chart has the same shape, grid and
-// version, so the wrong one renders a believable field with the wrong numbers.
+// fallback: every plane has the same shape, grid and version, so the wrong one
+// renders a believable field with the wrong numbers.
 //
 // Built field by field rather than spread off the block, because `_key` sits
 // beside `url` in all four of them and addresses the blob store directly.

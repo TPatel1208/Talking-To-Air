@@ -40,7 +40,7 @@ export function buildMapStyle(tileConfig) {
     },
     layers: [
       // Flat fill underneath everything -- the degrade-don't-die fallback
-      // when basemap/terrain tiles fail to load (T17 posture).
+      // when basemap/terrain tiles fail to load.
       { id: 'background', type: 'background', paint: { 'background-color': '#e4e1d8' } },
       { id: 'basemap', type: 'raster', source: 'basemap', paint: { 'raster-fade-duration': 0 } },
       {

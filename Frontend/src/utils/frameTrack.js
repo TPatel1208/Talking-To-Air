@@ -6,9 +6,8 @@
 import { utcDayLabel } from './frameAxis.js'
 
 // Semantic runs, not a finished gradient string. A string is testable only by
-// matching the thing you just wrote -- the exact shape of the Phase 9 failure
-// where `aggregateAnchor`'s test asserted `/block-meaned/` and held a false
-// sentence in place. Runs are data: a test can ask which stops they cover and
+// matching the thing you just wrote, which can lock a false sentence in
+// place. Runs are data: a test can ask which stops they cover and
 // get an answer keyed to the fixture's own state rather than to the output.
 export function buildTrackMarks(axis) {
   const stops = axis?.stops
@@ -33,16 +32,12 @@ export function buildTrackMarks(axis) {
   return marks
 }
 
-// ONE empty state on the track, both kinds. Measured on the design target:
-// `qa-rejected` lands on stops 2 and 26, each the single LEADING stop of a
-// ten-stop run -- it is dusk, the last scan of the day attempted and rejected
-// before a night that retrieves nothing. At 5.9 px per stop a per-kind split
-// renders that as a 5.9 px sliver, which is precisely the density that rules
-// out per-stop ticks in the first place.
+// ONE empty state on the track, both kinds: a per-kind split would render as
+// ~6 px slivers (e.g. the single QA-rejected dusk scan before a night of
+// nothing).
 //
-// D10's split is not lost, it is placed: its own wording puts the distinction
-// in the readout ("the readout says which blank this is"), which names both
-// kinds at the stop the reader is actually on. The track answers "is there
+// The distinction lives in the readout instead, which names the kind at the
+// stop the reader is on. The track answers "is there
 // anything here"; the readout answers "why not".
 function isEmpty(stop) {
   // Stop 0 is the period aggregate, not an interval -- it has no state and is

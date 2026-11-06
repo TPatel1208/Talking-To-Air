@@ -2,7 +2,7 @@
  * utils/metadataDisplay.js
  * -------------------------
  * Pure field-derivation helpers behind the chart Metadata tab's Overview/
- * Details split (T32, OutputPanel.jsx). Kept separate from the JSX so the
+ * Details split (OutputPanel.jsx). Kept separate from the JSX so the
  * "which field goes where, and what renders when a fact is missing" logic
  * is unit-testable without a React render harness (this repo's frontend
  * test runner is plain `node --test`, no jsdom/RTL).
@@ -11,7 +11,7 @@ import { resolveMasking, formatQaPassRate } from './maskingProvenance.js'
 
 export const NOT_AVAILABLE = 'Not available'
 
-// Missing metadata is disclosed, not hidden (T32): every field a section
+// Missing metadata is disclosed, not hidden: every field a section
 // defines renders even when empty, so the user knows a fact was checked
 // for and doesn't exist, rather than wondering if the UI forgot it.
 export function fmt(value) {
@@ -44,8 +44,7 @@ export function dateRangeLabel(provenance) {
   return range || null
 }
 
-// Overview gets a one-line count + cadence, never the date list (T32
-// Overview/Details split -- the full list belongs in Details, not
+// Overview gets a one-line count + cadence, never the date list (the full list belongs in Details, not
 // cluttering the always-expanded Overview).
 export function granuleSummary(chart) {
   const meta = chart?.aggregation_meta
@@ -63,7 +62,7 @@ export function granuleDates(chart) {
   return meta?.granule_dates || provenance.granule_dates || []
 }
 
-// Green/yellow/red trust signal for the Overview QA line (T32): "verified"/
+// Green/yellow/red trust signal for the Overview QA line: "verified"/
 // "cf-deterministic" mean a mask was applied with a deterministic rule
 // (datasets/qa_flags.py), "inferred, not verified" applied one the model
 // proposed, and the ambiguous/not-applied statuses mean no reliable QA
@@ -101,7 +100,7 @@ export function citationString(provenance) {
 }
 
 // Where a product sits in its provider's validation lifecycle, and the caveat
-// that comes with it (T57).
+// that comes with it.
 //
 // Returns null for an unstated maturity, deliberately. "unknown" means nobody
 // checked, which is a different thing from a checked clean bill of health --
@@ -121,13 +120,12 @@ export function maturityFields(chart) {
 }
 
 // Which layer a physical level request resolved to, and how much of an
-// approximation that was (T58 D5).
+// approximation that was.
 //
 // Two INDEPENDENT facts, because either can be perfect while the other is poor:
 // how much of the analyzed region agrees on this layer, and how far the layer
-// actually sits from what was asked. The spike measured a 300 hPa request
-// landing 40 hPa away at 83% agreement, and an 850 hPa request landing 46 hPa
-// away at 100% -- a panel showing only agreement would call the second one
+// actually sits from what was asked. E.g. a 300 hPa request can land
+// 40 hPa away at 83% agreement, and an 850 hPa request 46 hPa away at 100% -- a panel showing only agreement would call the second one
 // perfect. Returns null for a chart that selected no physical level, so the
 // section is absent rather than a row of "Not available" on every ordinary map.
 const LEVEL_DECIMALS = 2
@@ -242,7 +240,7 @@ export function qaMethodologyFields(chart) {
     qaBadValues: methodology.qa_bad_values ?? null,
     fillValueSource: masking.fill_value_source ?? null,
     validRangeSource: masking.valid_range_source ?? null,
-    // T55: what those settings actually did to this data. The realized rate
+    // What those settings actually did to this data. The realized rate
     // belongs beside the rule that produced it -- this block is what gets
     // copied out of the Metadata tab, and a QA rule without its outcome is
     // half the story.

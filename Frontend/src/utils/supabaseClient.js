@@ -31,8 +31,7 @@ function identityOf(config) {
  * Build the Supabase client, or hand back the one already built.
  *
  * `factory` exists so this is testable without reaching the network or a
- * browser -- the same injectable-key-source shape Phase 1 used on the backend
- * verifier (decision 9).
+ * browser -- the same injectable-key-source shape the backend verifier uses.
  */
 export function ensureSupabaseClient(config, factory = createClient) {
   // /config/auth serves JSON null when the backend env var is unset, so an
@@ -60,7 +59,7 @@ export function ensureSupabaseClient(config, factory = createClient) {
   return client
 }
 
-// Null until the config lands. Phase 5's apiFetch reaches for the client on
+// Null until the config lands. apiFetch reaches for the client on
 // every request, including ones in flight while /config/auth is still
 // resolving, and needs a "not yet" it can branch on.
 export function getSupabaseClient() {

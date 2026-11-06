@@ -1,4 +1,4 @@
-// Shared-scale computation for compare mode (T28). Checks whether every
+// Shared-scale computation for compare mode. Checks whether every
 // filled-slot heatmap payload reports the same variable/units (the field
 // the payload already carries -- see chartMetaChips in OutputPanel.jsx for
 // the same provenance.variable / units fallback convention), and if so

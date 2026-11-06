@@ -1,4 +1,4 @@
-// Pure state transitions for `/session/{id}/history` load outcomes (T41).
+// Pure state transitions for `/session/{id}/history` load outcomes.
 // Kept side-effect-free so useChat's "keep messages on a transient failure,
 // only clear on a genuine 404" logic is unit-testable without a fetch mock.
 

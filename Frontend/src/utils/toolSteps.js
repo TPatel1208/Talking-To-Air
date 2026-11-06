@@ -1,4 +1,4 @@
-// T64 Phase 4: the title of the collapsible tool card above an answer. A
+// The title of the collapsible tool card above an answer. A
 // supervisor turn's tool calls are dispatch calls, titled by the requests
 // they carried; a fast-path turn's are the sub-agent's own steps.
 

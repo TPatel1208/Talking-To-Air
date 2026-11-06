@@ -1,4 +1,4 @@
-// The frame blob, laid out for rendering (T59 Phase 6, deliverables 1 and 2).
+// The frame blob, laid out for rendering.
 //
 // `GET /chart/{id}/frames.f32.gz` serves the stack with `Content-Encoding:
 // gzip`, so the browser inflates it on the wire and what arrives here is raw
@@ -6,8 +6,7 @@
 // not be one.
 //
 // ONE flat `Float32Array` over the whole stack, and every frame is a
-// `subarray` VIEW into it. Phase 2 measured the alternative: 100 views cost
-// +0.00 MB, 100 `slice` copies cost +7.64 MB, a full duplicate. Hand the
+// `subarray` VIEW into it (copies would duplicate the whole stack). Hand the
 // canvas a view, never a copy.
 //
 // The layout is read off the payload -- `shape` is [1+N, ny, nx] and

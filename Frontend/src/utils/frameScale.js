@@ -1,5 +1,4 @@
-// The scrubber's colour scale (T59 D9), and the one decision D9 left open:
-// WHEN the map recolours.
+// The scrubber's colour scale, and WHEN the map recolours.
 //
 // Two scales exist for one field -- the Map tab's own percentile clip and the
 // stack's pooled 2-98 (`value_range` + `scale_basis`). The scale is a property
@@ -17,13 +16,13 @@
 //     happens on a click, with the legend redrawing in the same instant.
 //
 // Deliberately NOT `computeSharedColorScale`: that takes min(vmins)/max(vmaxs),
-// a union of per-panel clips, which Phase 3 measured at 2.5-3.9x too wide over
-// a real frame stack -- every ordinary hour in the bottom third of the colormap.
+// a union of per-panel clips, which is 2.5-3.9x too wide over a real frame
+// stack -- every ordinary hour lands in the bottom third of the colormap.
 //
 // Returns the same shape MapLibreHeatmapPanel's `colorScaleOverride` already
 // takes, plus the basis line the legend discloses instead of the payload's own
 // percentile note (which no longer describes what is drawn).
-// `statistic` is D6a's toggle (Phase 15). Each plane pools its OWN 2-98 --
+// `statistic` is the mean/max/min toggle. Each plane pools its OWN 2-98 --
 // the mean's clip on a max plane saturates at exactly the stops someone
 // switched to max to see, which is the one thing that mode exists to show.
 export function resolveScrubberScale(chart, scrubbing, statistic = 'mean') {
@@ -53,9 +52,8 @@ export function resolveScrubberScale(chart, scrubbing, statistic = 'mean') {
 }
 
 // The pooled range for one statistic. The mean's is the chart's own top-level
-// entry (D6a decision 5 -- it is not a `planes` key); a plane's is on its own
-// block, because `value_range` is one of the four things Phase 13 decision 2
-// found genuinely differ per plane.
+// entry (not a `planes` key); a plane's is on its own block, because
+// `value_range` genuinely differs per plane.
 function statisticRange(block, statistic) {
   if (!block) return null
   if (statistic === 'mean') return block
@@ -65,11 +63,9 @@ function statisticRange(block, statistic) {
 // Under a 180px colorbar, so the statistic goes in as a word and the pooling
 // stays the clause it always was.
 //
-// The mean's caption is UNCHANGED, deliberately: D6a decision 5 keeps the mean
-// entry exactly as it was, and a chart that gained planes must not have its
-// default mode reworded by the existence of modes the reader has not opened.
-// What disambiguates the mean is the same click Risk 5's mitigation already
-// rests on -- the toggle, the numbers and this caption all move together.
+// The mean's caption is UNCHANGED, deliberately: a chart that gained planes
+// must not have its default mode reworded by modes the reader hasn't opened.
+// The toggle, the numbers and this caption all change together.
 const SCRUBBER_LEGEND_NOTE = '2nd–98th pct, pooled across frames'
 const PLANE_LEGEND_NOTE = {
   max: '2nd–98th pct, pooled across the max frames',
