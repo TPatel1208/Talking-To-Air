@@ -5,7 +5,7 @@ This is the verification behind the fix/QA_flagging diagnosis. The screenshot
 that started it showed "QA pass rate: Not applied - semantics unknown" on a
 16-granule TEMPO NO2 daily mean, with a min of -3.29e+14. Three claims came out
 of reading the code; this script tests all three against a real file instead of
-a synthetic fixture (probe_reads.py already covers the synthetic case):
+a synthetic fixture:
 
   1. QA masking is skipped because ``main_data_quality_flag`` was never
      retrieved -- not because resolution failed. Tested by running the SAME
