@@ -1,13 +1,13 @@
 """
 preprocessing/variable_resolver.py
 ==================================
-PRD T48. A pure, I/O-free resolver that chooses ONE science variable out of a
+A pure, I/O-free resolver that chooses ONE science variable out of a
 wide, group-structured, unregistered L3 product -- the tail of
 ``AggregationService.to_dataarray``'s cascade, reached only after the exact
 intent/curation tiers (explicit ``variable=``, retrieval-recorded choice,
 single-var, pinned ``primary_var``) have all missed.
 
-The origin case (bug diagnosis 2026-07-19): ``AERDA_D3_VIIRS_MODIS`` is a
+Example: ``AERDA_D3_VIIRS_MODIS`` is a
 Yori-aggregated L3 where ~120 groups share the same four leaves
 (``Mean``/``Standard_Deviation``/``Pixel_Counts``/``Histogram_Counts``), which
 ``open_handle``'s collision-rename qualifies into 432 data variables. There is
@@ -37,15 +37,15 @@ from tta_backend.config.error_templates import render_variable_note
 # Leaves that are never a science-variable candidate unless the user asks for
 # one by name: the statistical moments and pixel bookkeeping a Yori-aggregated
 # L3 stamps beside every geophysical Mean. This is the plumbing, not the
-# science (PRD three-category taxonomy, category 1).
+# science (category 1 of the taxonomy below).
 _IMPLEMENTATION_LEAVES = frozenset({
     "Standard_Deviation",
     "Pixel_Counts",
     "Histogram_Counts",
 })
 
-# Name substrings that mark the plumbing categories the PRD taxonomy
-# enumerates when no metadata signal is present: viewing/solar geometry,
+# Name substrings that mark plumbing categories when no metadata signal is
+# present: viewing/solar geometry,
 # reflectances, land/ocean masks, vegetation index, cloud fraction. Matched
 # case-insensitively against the full (group-qualified) name. Deliberately a
 # fallback -- metadata (standard_name/flag_values) is consulted first.
@@ -65,12 +65,12 @@ _IMPLEMENTATION_NAME_PATTERNS = (
     re.compile(r"data_quality", re.IGNORECASE),
 )
 
-# Category labels carried on each Candidate (PRD taxonomy).
+# Category labels carried on each Candidate.
 CATEGORY_IMPLEMENTATION = "implementation"
 CATEGORY_EQUIVALENT = "equivalent"
 CATEGORY_DISTINCT = "distinct"
 
-# Scoring weights (PRD tunable table -- a documented starting point, calibrated
+# Scoring weights (a tunable starting point, calibrated
 # against the AERDA granule + existing fixtures, NOT a quality claim). Each is
 # a weak signal; the sum ranks populated science candidates. valid_fraction
 # contributes separately (a 0%-valid candidate is dropped, not just penalized).
@@ -82,7 +82,7 @@ _W_LONG_NAME = 20.0
 _W_IMPLEMENTATION = -60.0
 
 # A "strong signal" is what lets the resolver CONFIDENTLY auto-pick among
-# contenders (conservative doctrine, keeping T25 where it is load-bearing): a
+# contenders (conservative: never invent a scientific choice): a
 # candidate carries one when it has units, is an aggregated Mean field, or
 # declares a CF standard_name. A candidate distinguished ONLY by a weak
 # "name looks geophysical" heuristic has no strong signal -- so multiple such
@@ -145,12 +145,12 @@ class Resolution:
     resolution_confidence: str
     scientific_ambiguity: str
     disclosure: str | None = None
-    # T49: how many data variables were dropped for being entirely empty over
+    # How many data variables were dropped for being entirely empty over
     # the requested range (resolve() drops them before scoring). The picker
     # (build_variable_choice) discloses this count so a researcher understands
     # the candidate list is the populated subset, not the whole file. Additive
-    # telemetry of a decision resolve() already makes -- it does not change the
-    # scoring/ranking/classification T48 owns.
+    # telemetry of a decision resolve() already makes; doesn't affect
+    # scoring/ranking.
     excluded_empty_count: int = 0
 
 
@@ -247,7 +247,7 @@ def _table_rank(name: str, table: tuple[tuple[str, int], ...]) -> int:
 
 def _valid_band(valid_fraction: float | None) -> int:
     """The coverage decile a valid_fraction falls in (0..10). Ranking on the
-    QUANTIZED band, not raw fraction, is the reproducibility guard (PRD): only
+    QUANTIZED band, not raw fraction, is the reproducibility guard: only
     a materially larger coverage difference reorders sensors, so day-to-day
     valid-pixel jitter within a band can't flip the chosen product. Within a
     band the stable score/sensor tables decide, giving the same answer across
@@ -302,7 +302,7 @@ def resolve(ds: xr.Dataset, *, requested: str | None = None, handle: str | None 
         category = _classify(name, var)
         requested_here = _matches_request(name, requested)
         # Category-1 plumbing is excluded from the default choice, but an
-        # explicit request un-hides the matching one (PRD: reachable by name).
+        # explicit request un-hides the matching one (reachable by name).
         if category == CATEGORY_IMPLEMENTATION and not requested_here:
             continue
         # Data availability outranks every product-preference signal: an
@@ -363,7 +363,7 @@ def resolve(ds: xr.Dataset, *, requested: str | None = None, handle: str | None 
     #   - exactly one pickable candidate, only weakly signalled -> medium
     #     confidence, auto-pick with a brief note (no contention to refuse over).
     #   - multiple weak, name-only contenders and none strong -> low confidence,
-    #     refuse and ask (never invent a scientific choice, T25).
+    #     refuse and ask (never invent a scientific choice).
     if top is None:
         return Resolution(
             name=None, candidates=candidates,
