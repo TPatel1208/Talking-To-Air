@@ -1,7 +1,7 @@
 """
 earthdata_mcp/tool_cache.py
 ============================
-T53 — a process-lifetime cache of *discovery metadata* MCP results, read and
+A process-lifetime cache of *discovery metadata* MCP results, read and
 written by the one seam every model-facing tool call already passes through
 (``earthdata_mcp/workspace.py``'s ``_bind_one``).
 
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # deliberately adds it here — a denylist would silently cache whatever the MCP
 # grows next.
 #
-# What is deliberately absent is the load-bearing part of T53:
+# What is deliberately absent matters most:
 #   * check_coverage / check_availability look cacheable and are not. New
 #     granules land continuously, and the NRT/current-date work exists
 #     precisely because the agent got availability wrong near the present.
@@ -75,8 +75,8 @@ def _cache_key(tool_name: str, workspace_id: str, args: dict[str, Any]) -> str:
     """``(tool_name, workspace_id, canonical_json(args))``.
 
     ``workspace_id`` participates even though CMR metadata is public: it costs
-    nothing at this volume and means the entitlement question (T31 per-user EDL
-    tokens, ``CATEGORY_EULA_NOT_ACCEPTED``) never has to be answered at all.
+    nothing at this volume and sidesteps per-user entitlement questions
+    (``CATEGORY_EULA_NOT_ACCEPTED``) entirely.
 
     ``edl_token`` is dropped rather than keyed on — it is a credential, and it
     is already implied by ``workspace_id``.

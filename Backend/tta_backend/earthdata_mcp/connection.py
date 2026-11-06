@@ -2,7 +2,7 @@
 earthdata_mcp/connection.py
 =============================
 Owns the earthdata-retrieval MCP connection as an attached service, not a
-boot dependency (PRD T17): a background task connects (and reconnects, with
+boot dependency: a background task connects (and reconnects, with
 capped exponential backoff) while the rest of the backend boots and serves
 ground/EPA traffic immediately. Every consumer that needs MCP tools reads
 them through this manager instead of touching earthdata_mcp.client directly,
@@ -30,7 +30,7 @@ transition into ready (boot or recovery), never on a heartbeat that finds
 the MCP still healthy, so a steady-state loop doesn't rebuild the satellite
 agent every interval for nothing.
 
-Steady-state heartbeats are dampened (PRD T40): a single probe miss logs
+Steady-state heartbeats are dampened: a single probe miss logs
 and re-probes shortly after instead of demoting, so one transient blip
 doesn't flap every consumer to unavailable for 30 seconds. Only
 ``heartbeat_failure_threshold`` *consecutive* misses demotes to
@@ -174,8 +174,8 @@ class EarthdataMCPConnectionManager:
         self._heartbeat_interval = heartbeat_interval_seconds
         self._heartbeat_failure_threshold = heartbeat_failure_threshold
         self._heartbeat_retry_seconds = heartbeat_retry_seconds
-        # T31: passed straight through to bind_workspace below -- None
-        # reproduces pre-T31 behavior exactly (no edl_token ever injected).
+        # Passed straight through to bind_workspace below; None means no
+        # edl_token is ever injected.
         self._edl_injector = edl_injector
         self._state = STATE_CONNECTING
         self._tools: dict[str, BaseTool] | None = None
@@ -310,7 +310,7 @@ class EarthdataMCPConnectionManager:
             return True
 
     async def _heartbeat_while_ready(self, held_probe: Callable[[], Awaitable[Any]] | None = None) -> None:
-        """PRD T40: while ready, probe on the heartbeat interval. A single
+        """While ready, probe on the heartbeat interval. A single
         miss doesn't demote -- it logs and re-probes after a short retry
         delay instead of transitioning, so a transient blip stays invisible
         to every consumer gated on ``.state``. Only
@@ -319,7 +319,7 @@ class EarthdataMCPConnectionManager:
         re-runs the full connect path. A probe that succeeds at any point
         (including between failures) resets the count.
 
-        ``held_probe`` (2026-07-21) pings the HELD session — the one the bound
+        ``held_probe`` pings the HELD session — the one the bound
         tools actually use — so a 404-zombie session (alive-looking after a
         server restart, but every request on its lost session id 404s) is
         detected and healed by a reconnect, instead of masked by a fresh

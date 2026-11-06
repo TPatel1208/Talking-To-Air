@@ -1,16 +1,15 @@
 """
 Parse earthdata-retrieval MCP tool call results into plain dicts, or raise a
-typed, categorized MCPToolError (PRD T18).
+typed, categorized MCPToolError.
 
 A LangChain tool built from an MCP tool returns its structured JSON payload
 wrapped in a list of content blocks (``[{"type": "text", "text": "<json>"}]``)
 rather than a parsed dict — this unwraps that shape. But the same channel
 also carries FastMCP validation-error prose, a tool-raised ValueError's
 message text, and (via ``call_tool``) a connection failure raised instead of
-returned — every shape that isn't clean JSON used to detonate as an
-unhandled exception somewhere different. ``parse_tool_result`` is the one
-place every consumer already calls; it is now the single classification
-point: a dict back, or ``MCPToolError`` with a category a caller can act on.
+returned. ``parse_tool_result`` is the single classification point every
+consumer calls: a dict back, or ``MCPToolError`` with a category a caller can
+act on.
 """
 from __future__ import annotations
 
@@ -46,36 +45,30 @@ CATEGORY_NOT_FOUND = "not_found"
 CATEGORY_TOO_LARGE = "too_large"
 CATEGORY_PROVIDER_UNAVAILABLE = "provider_unavailable"
 CATEGORY_CONTRACT = "contract"
-# T24: a granule whose horizontal grid isn't a 1-D rectilinear lat/lon grid
+# A granule whose horizontal grid isn't a 1-D rectilinear lat/lon grid
 # (2-D curvilinear swath, or projected x/y+CRS) — a known, honest limitation
 # rather than a crash or a silently mis-masked result.
 CATEGORY_UNSUPPORTED_GRID = "unsupported_grid"
-# T25: the backend refuses to invent a scientific choice it was never given.
+# The backend refuses to invent a scientific choice it was never given.
 # CATEGORY_VARIABLE_CHOICE_REQUIRED — a multi-variable file with no explicit
-# variable, no retrieval-recorded choice, raised where AggregationService.
-# to_dataarray used to silently pick next(iter(data.data_vars)).
+# variable and no recorded choice (AggregationService.to_dataarray).
 # CATEGORY_DIMENSION_CHOICE_REQUIRED — a surviving non-spatial, non-time
-# dimension (e.g. a MERRA-2 vertical level) with no selection, raised where
-# _normalize_to_2d used to silently .mean() over it. Both name their
+# dimension (e.g. a MERRA-2 vertical level) with no selection
+# (_normalize_to_2d). Both name their
 # candidates in the message so a researcher (or the model) can pick
 # deliberately instead of receiving whichever value happened to be first.
 CATEGORY_VARIABLE_CHOICE_REQUIRED = "variable_choice_required"
 CATEGORY_DIMENSION_CHOICE_REQUIRED = "dimension_choice_required"
-# T31 (PRD-022 soft dependency): per-user Earthdata credential classes an
-# upgraded MCP raises against an injected edl_token. Structured passthrough
-# only — _classify_dict handles any category generically, so these three
-# need no prose pattern; they exist to drive the actionable message
-# templates below, keyed off the category name PRD-022 sends.
+# Per-user Earthdata credential errors the MCP raises against an injected
+# edl_token. _classify_dict handles them generically; they exist to drive the
+# actionable message templates below.
 CATEGORY_TOKEN_INVALID = "token_invalid"
 CATEGORY_TOKEN_EXPIRED = "token_expired"
 CATEGORY_EULA_NOT_ACCEPTED = "eula_not_accepted"
 
-# T31 story #4/#5: fixed, actionable text for the three credential-injection
-# error classes -- substituted wholesale for whatever message/raw_preview the
-# MCP sent, never interpolating it. This is also the secret-hygiene
-# mechanism (PRD T31): the MCP's own prose for these classes could echo the
-# rejected edl_token (a validation-error style bounce), so it is never
-# forwarded into a log line or an envelope a researcher or the model sees.
+# Fixed, actionable text for the credential errors, replacing whatever the
+# MCP sent. This is also secret hygiene: the MCP's prose could echo the
+# rejected edl_token, so it's never forwarded to logs, users or the model.
 _TOKEN_ERROR_MESSAGES: dict[str, tuple[str, str]] = {
     CATEGORY_TOKEN_INVALID: (
         "Your Earthdata token is invalid.",
@@ -91,7 +84,7 @@ _TOKEN_ERROR_MESSAGES: dict[str, tuple[str, str]] = {
     ),
 }
 
-# The MCP's own structured answers (T18 story #9) — first-class results, not
+# The MCP's own structured answers — first-class results, not
 # errors; passed through as plain dicts for each composite's existing
 # status-based branching (e.g. services/open_handle.py) to interpret.
 _STRUCTURED_PASSTHROUGH_STATUSES = {"not_found", "pending", "expired"}
@@ -100,8 +93,8 @@ _STRUCTURED_PASSTHROUGH_STATUSES = {"not_found", "pending", "expired"}
 class MCPToolError(Exception):
     """A classified MCP tool outcome: what happened (``category``), a human
     ``message``, an optional actionable ``suggestion``, and a ``raw_preview``
-    of whatever the adapter actually returned (for the debug log line T18
-    story #10 asks for — never shown to a researcher)."""
+    of whatever the adapter actually returned (for the debug log line —
+    never shown to a researcher)."""
 
     def __init__(self, category: str, message: str, *, suggestion: str | None = None, raw_preview: str | None = None):
         super().__init__(message)
@@ -120,7 +113,7 @@ class MCPToolError(Exception):
         return body
 
     def to_tool_json(self) -> str:
-        """Structured JSON tool result shape (T18): what a model-facing tool
+        """Structured JSON tool result shape: what a model-facing tool
         call returns instead of raising, and what a backend composite's own
         ``parse_tool_result(raw)`` call recognizes and re-raises from."""
         return json.dumps({"error": self.to_dict()})
@@ -139,7 +132,7 @@ _ADAPTER_ERROR_PREFIX_RE = re.compile(r"^Error calling tool '[^']*':\s*")
 # providers/base.py) — a researcher-fixable input, so these classify as
 # user_input rather than the contract fallback. Unknown ValueError prose
 # (a new raise site the MCP adds later) still classifies safely as contract
-# instead of crashing (T18 Implementation Decisions: additive-safe).
+# instead of crashing.
 _USER_INPUT_PATTERNS: tuple[tuple[str, str], ...] = (
     # Both the single-source ("Nominatim found no results for location ...")
     # and the fallback-exhausted ("Neither Nominatim nor USGS WBD found
@@ -149,12 +142,9 @@ _USER_INPUT_PATTERNS: tuple[tuple[str, str], ...] = (
     # prefix this backend never anchors against.
     ("results for location", "Try a more specific location name."),
     ("location must be provided", "Provide a location."),
-    # T46 live repro (2026-07-17): define_area_of_interest rejects an inverted
-    # bounding box (south >= north). A researcher-fixable input — classifying
-    # it as contract replaced the clear message with the generic dead-end and
-    # let the agent improvise a substitute region ("North America") with no
-    # disclosure. Matched on the invariant clause of both the latitude and
-    # longitude inversion messages.
+    # An inverted bounding box (south >= north) is researcher-fixable input.
+    # Classified as contract, the agent would improvise a substitute region
+    # with no disclosure. Matches both the latitude and longitude messages.
     ("latitude exceeds north latitude", "Check the bounding box: south latitude must be less than north latitude."),
     ("longitude exceeds east longitude", "Check the bounding box: west longitude must be less than east longitude."),
     (
@@ -223,7 +213,7 @@ def _classify_dict(data: dict[str, Any]) -> dict[str, Any]:
             if category == CATEGORY_EULA_NOT_ACCEPTED and resolution_url:
                 suggestion = f"{suggestion} ({resolution_url})"
             raise _log(MCPToolError(category, message, suggestion=suggestion, raw_preview=None))
-        # bind_workspace's own error envelope (T18), round-tripped back
+        # bind_workspace's own error envelope, round-tripped back
         # through this same classifier by a backend composite that calls
         # parse_tool_result on what bind_workspace returned.
         raise _log(MCPToolError(
@@ -257,8 +247,8 @@ def _classify_prose(text: str) -> MCPToolError:
 
     if _VALIDATION_ERROR_RE.match(stripped):
         # FastMCP rejected the call's own parameters — always a bug on this
-        # backend's side (or the model's), never the researcher's; T18
-        # Implementation Decisions: "always a bug, always logged loud."
+        # backend's side (or the model's), never the researcher's, so it's
+        # always logged loud.
         return MCPToolError(
             CATEGORY_CONTRACT,
             "The data service rejected the request as malformed.",
@@ -293,7 +283,7 @@ def _classify_prose(text: str) -> MCPToolError:
 
 
 def _log(exc: MCPToolError) -> MCPToolError:
-    """T18 story #10: every classified error logged with its category and
+    """Every classified error logged with its category and
     raw payload — contract errors loud (always a bug), everything else at
     debug (taxonomy gaps stay discoverable without flooding normal-operation
     logs with researcher-fixable input errors)."""
@@ -316,8 +306,7 @@ async def call_tool(tool: Any, kwargs: dict[str, Any], timeout: float | None = N
     the seam that catches it so no consumer ever sees a bare
     ``httpcore``/``httpx``/``mcp`` transport exception.
 
-    Live-verified 2026-07-08 (MCP stopped mid-session): the streamable-HTTP
-    transport's structured concurrency (anyio task groups) wraps the actual
+    The streamable-HTTP transport's structured concurrency (anyio task groups) wraps the actual
     ``httpx.ConnectError``/``httpcore.ConnectError`` in a ``BaseExceptionGroup``
     rather than raising it bare — ``except*`` unwraps that regardless of
     whether the underlying exception arrived grouped or not (PEP 654).
@@ -326,10 +315,10 @@ async def call_tool(tool: Any, kwargs: dict[str, Any], timeout: float | None = N
     connect-phase types: a call that dies AFTER connecting (MCP restarted
     mid-call, network blip during a long response) raises read/write-phase
     errors (``httpx.ReadTimeout``/``ReadError``/``RemoteProtocolError``,
-    ``httpcore.ReadError``, an ``anyio`` resource error) that the old
-    connect-only tuple let escape unclassified.
+    ``httpcore.ReadError``, an ``anyio`` resource error) that a connect-only
+    list would miss.
 
-    T38: ``call_tool`` is the one seam every model-facing MCP call passes
+    ``call_tool`` is the one seam every model-facing MCP call passes
     through (bind_workspace wraps every tool with it), so a per-call budget
     here bounds a wedged ``tool.ainvoke`` — a stuck MCP call — without the
     caller having to know anything about timeouts. ``timeout`` defaults to
@@ -412,8 +401,7 @@ async def call_tool(tool: Any, kwargs: dict[str, Any], timeout: float | None = N
     else:
         # A clean transport round trip resets the streak — the breaker trips
         # only on *consecutive* failures, so a lone blip between good calls
-        # never counts toward it (same dampening philosophy as the T40
-        # connection heartbeat). A success while tripped is a half-open probe
+        # never counts toward it (same dampening as the connection heartbeat). A success while tripped is a half-open probe
         # that found the server back: close the breaker so the rest of the turn
         # proceeds instead of staying poisoned by an outage that has passed.
         if state is not None:

@@ -34,7 +34,7 @@ async def load_earthdata_tools(
 def curated_model_tools(tools: dict[str, BaseTool]) -> list[BaseTool]:
     """The subset of ``tools`` the model is allowed to see and call directly.
 
-    ``describe_dataset`` is additionally wrapped with a model-view (T13) here
+    ``describe_dataset`` is additionally wrapped with a model-view here
     rather than in ``bind_workspace`` — that seam is shared by non-model
     consumers (services/discovery_service.py calls ``tools["describe_dataset"]``
     directly for the discovery pane), which must keep the full per-variable

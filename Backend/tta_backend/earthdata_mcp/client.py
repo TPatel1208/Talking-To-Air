@@ -2,7 +2,7 @@
 earthdata_mcp/client.py
 ========================
 Async client for the earthdata-retrieval MCP: connects over streamable HTTP
-(bearer token, per T01 settings), loads every tool the MCP exposes, and
+(bearer token from settings), loads every tool the MCP exposes, and
 fails loud if the MCP is unreachable or missing a tool this backend depends
 on — a broken data layer should be discovered at boot, not mid-conversation.
 
@@ -39,10 +39,9 @@ class HeldSession:
     tools: dict[str, BaseTool]
     probe: Callable[[], Awaitable[Any]] | None = None
 
-# Model-facing curated surface (T11 decision record: MCP-first minimal
-# toolset): discovery, AOI, coverage. Retrieval, citation, and provenance
+# Model-facing curated surface (kept minimal): discovery, AOI, coverage. Retrieval, citation, and provenance
 # are demoted to internal-only — the model reaches them only through the
-# safe_retrieve/await_retrieval composites and the T10 backend endpoints.
+# safe_retrieve/await_retrieval composites and the backend endpoints.
 CURATED_TOOL_NAMES = (
     "search_datasets",
     "describe_dataset",
@@ -61,25 +60,24 @@ INTERNAL_TOOL_NAMES = (
     "rematerialize",
     "list_workspace",
     "cancel_retrieval",
-    # T08: the compare tool's period mode calls this directly to grid-align
-    # two retrievals before differencing; deferred until this PRD per T02.
+    # The compare tool's period mode calls this directly to grid-align two
+    # retrievals before differencing.
     "align",
-    # T10: the data-download endpoints call this directly to materialize a
+    # The data-download endpoints call this directly to materialize a
     # handle in a downloadable format (e.g. NetCDF); UI-initiated and
     # deterministic, so it stays off the model-facing surface.
     "convert_format",
-    # T11: used by the await_retrieval composite's internal polling — the
+    # Used by the await_retrieval composite's internal polling — the
     # model never polls status itself.
     "get_retrieval_status",
-    # T11: bypasses the size-estimate gate, so it leaves the model surface;
-    # stays required because the point-timeseries composite (T20) adopts it
-    # as its engine (decision record 2026-07-06/07).
+    # Bypasses the size-estimate gate, so it's off the model surface; still
+    # required because the point-timeseries composite uses it.
     "retrieve_timeseries",
-    # T11: model-facing citation/provenance duplicated T10's backend
-    # endpoints, which call these directly by name — demoted, not removed.
+    # Not model-facing: the citation/provenance backend endpoints call these
+    # directly by name.
     "cite_dataset",
     "get_provenance",
-    # T21: the discovery pane's granule-inspection endpoint calls this
+    # The discovery pane's granule-inspection endpoint calls this
     # directly (services/discovery_service.py) so a researcher can see what
     # a retrieval would pull before committing to it; stays off the model
     # surface (the agent keeps coverage + the size gate).
@@ -93,10 +91,8 @@ REQUIRED_TOOL_NAMES = CURATED_TOOL_NAMES + INTERNAL_TOOL_NAMES
 # services/provenance_service.py, services/retrieval_composites.py,
 # services/data_download_service.py, tools/satellite_tools/comparison_tools.py
 # — plus workspace_id, which earthdata_mcp/workspace.py injects into every
-# call). A tool with no direct call site here (check_availability, per T11)
-# only requires workspace_id: presence is already covered by
-# REQUIRED_TOOL_NAMES, and this backend has no fixed param set to assert
-# beyond that. PRD T17's connect-time schema check (earthdata_mcp/
+# call). A tool with no direct call site here (e.g. check_availability) only
+# requires workspace_id. The connect-time schema check (earthdata_mcp/
 # connection.py) verifies each name here appears in the tool's advertised
 # input schema.
 REQUIRED_TOOL_PARAMS: dict[str, tuple[str, ...]] = {
@@ -117,14 +113,14 @@ REQUIRED_TOOL_PARAMS: dict[str, tuple[str, ...]] = {
     "align": ("source_handles", "workspace_id"),
     "convert_format": ("source_handle", "output_format", "workspace_id"),
     "get_retrieval_status": ("job_handle", "workspace_id"),
-    # T20: services/retrieval_composites.py::point_timeseries's direct call
+    # services/retrieval_composites.py::point_timeseries's direct call
     # site — never output_format, this composite is always point-sampled.
     "retrieve_timeseries": (
         "dataset_handle", "aoi_handle", "time_range", "variables", "point_sample", "workspace_id",
     ),
     "cite_dataset": ("dataset_handle", "workspace_id"),
     "get_provenance": ("handle", "workspace_id"),
-    # T21: services/discovery_service.py::inspect_granules's direct call site.
+    # services/discovery_service.py::inspect_granules's direct call site.
     "inspect_granules": ("dataset_handle", "aoi_handle", "time_range", "limit", "workspace_id"),
 }
 
@@ -135,9 +131,9 @@ class EarthdataMCPUnavailableError(RuntimeError):
 
 def _client(settings: Settings) -> MultiServerMCPClient:
     """Build the earthdata-retrieval streamable-HTTP client. The bearer token
-    here is this backend's *shared* MCP credential (T01), set once per
+    here is this backend's *shared* MCP credential, set once per
     connection; per-user Earthdata credentials flow separately as the
-    ``edl_token`` tool argument (T31), never as a connection header, so one
+    ``edl_token`` tool argument, never as a connection header, so one
     long-lived session serves every user's calls without header divergence."""
     headers = {}
     if settings.earthdata_mcp_token:
@@ -246,7 +242,7 @@ async def load_raw_mcp_tools(settings: Settings) -> dict[str, BaseTool]:
 
 
 async def probe_mcp_tools(settings: Settings) -> set[str]:
-    """Lightweight steady-state heartbeat check (PRD T40): list the MCP's
+    """Lightweight steady-state heartbeat check: list the MCP's
     tool names and confirm every required tool is still present -- no
     schema fetch beyond what listing requires, no workspace bind. Raises
     ``EarthdataMCPUnavailableError`` exactly like ``load_raw_mcp_tools``

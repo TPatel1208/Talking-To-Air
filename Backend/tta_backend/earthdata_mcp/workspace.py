@@ -34,14 +34,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# T31: parameters injected here and hidden from the model-facing schema —
+# Parameters injected here and hidden from the model-facing schema —
 # workspace_id always, edl_token only for a tool whose advertised schema
 # includes it (feature-detected per tool at bind time, see _bind_one).
 _HIDDEN_PARAMS = ("workspace_id", "edl_token")
 
 
 class EdlCredentialInjector(Protocol):
-    """Duck-typed seam bind_workspace calls into for T31 per-user Earthdata
+    """Duck-typed seam bind_workspace calls into for per-user Earthdata
     credential injection — implemented by
     services.connector_credential_service.EdlCredentialInjector. Kept as a
     Protocol (not an import) so earthdata_mcp stays decoupled from the
@@ -54,7 +54,7 @@ class EdlCredentialInjector(Protocol):
     async def mark_invalid(self, user_id: str) -> None: ...
 
 
-# T19: one wrapper covers every curated discovery tool without touching the
+# One wrapper covers every curated discovery tool without touching the
 # MCP — searching/resolving/checking are exactly the stages the model-facing
 # discovery tools correspond to (earthdata_mcp/client.py's CURATED_TOOL_NAMES).
 _STAGE_BY_TOOL_NAME: dict[str, tuple[str, str]] = {
@@ -68,13 +68,11 @@ _STAGE_BY_TOOL_NAME: dict[str, tuple[str, str]] = {
 
 
 class MissingUserContextError(RuntimeError):
-    """A workspace-bound MCP tool was called with no user context bound
-    (T26). A context-less workspace is an isolation hole, not a default —
-    minting a shared ``"user-None"`` workspace silently pooled every
-    caller's retrievals together, so this fails loud instead. Since T37 it
-    is returned classified as a T18 ``contract`` error envelope (still
-    logged loudly — it indicates a programming error) rather than raised
-    bare into an unclassified traceback string."""
+    """A workspace-bound MCP tool was called with no user context bound.
+    A context-less workspace is an isolation hole (a shared ``"user-None"``
+    workspace would pool every caller's retrievals), so this fails loud.
+    Returned as a ``contract`` error envelope and logged loudly, since it
+    indicates a programming error."""
 
 
 def bind_workspace(
@@ -84,19 +82,15 @@ def bind_workspace(
     edl_injector: EdlCredentialInjector | None = None,
 ) -> dict[str, BaseTool]:
     """Return copies of ``tools`` with workspace_id injected and hidden from
-    the schema. ``edl_injector`` (T31) additionally injects the calling
+    the schema. ``edl_injector`` additionally injects the calling
     user's decrypted Earthdata token as ``edl_token`` — but only for a tool
     whose advertised schema includes that parameter, and only when the
-    injector resolves one (connected ∧ unexpired); omitting ``edl_injector``
-    (the default) reproduces the pre-T31 behavior exactly, token or no
-    token, advertised or not."""
+    injector resolves one (connected ∧ unexpired). Without ``edl_injector``
+    (the default) no token is ever injected."""
     bound = {name: _bind_one(tool, user_id_getter, edl_injector) for name, tool in tools.items()}
-    # T60 D13: applied here, not in curated_model_tools, and deliberately so.
-    # model_view_describe_dataset's *shape* is the precedent; its application
-    # point is not. That one wraps only the model-facing copy because
-    # discovery_service needs the untrimmed tool. The requirement here is the
-    # opposite -- all three AOI callers must be translated, and all three take
-    # the dict this function returns.
+    # Applied here, not in curated_model_tools: unlike describe_dataset's
+    # model view, all three AOI callers must get the region translation, and
+    # all three take the dict this function returns.
     if "define_area_of_interest" in bound:
         bound["define_area_of_interest"] = region_aware_area_of_interest(
             bound["define_area_of_interest"]
@@ -116,9 +110,8 @@ def _bind_one(
     user_id_getter: Callable[[], str | None],
     edl_injector: EdlCredentialInjector | None,
 ) -> BaseTool:
-    # T31: feature-detected once at bind time, off the MCP's advertised
-    # schema for *this* tool — an un-upgraded MCP (or a tool PRD-022 hasn't
-    # reached yet) simply never gets edl_token, no matter how live the
+    # Feature-detected once at bind time, off the MCP's advertised schema for
+    # *this* tool — a tool that doesn't advertise it never gets edl_token, no matter how live the
     # user's connector is. Never added to the required-parameter contract
     # check (earthdata_mcp/connection.py's REQUIRED_TOOL_PARAMS), so an
     # un-upgraded MCP still reaches ready.
@@ -142,7 +135,7 @@ def _bind_one(
         if stage_info is not None:
             emit_status(stage_info[1], stage=stage_info[0])
 
-        # T53: the discovery-metadata cache, read here — after workspace_id is
+        # The discovery-metadata cache, read here — after workspace_id is
         # known (it is part of the key) and *before* both the credential
         # resolve and the call_tool round-trip, so a hit costs neither a
         # decrypt nor a network call. No credential was used on a hit, so
@@ -153,7 +146,7 @@ def _bind_one(
             if hit is not None:
                 return hit
 
-        # T31 injection policy: connected ∧ unexpired ∧ advertising: send
+        # Injection policy: connected ∧ unexpired ∧ advertising: send
         # nothing otherwise and let the MCP fall back to its shared env
         # credential. edl_injector.resolve() owns the connected/unexpired
         # check and the just-in-time decrypt; it never caches plaintext.
@@ -166,33 +159,26 @@ def _bind_one(
                 kwargs["edl_token"] = token
                 injected_by = edl_injector
 
-        # T18: bind_workspace is the one place every model-facing MCP tool
-        # call passes through — classify here (call_tool catches a raised
-        # transport failure, parse_tool_result classifies the returned
-        # content) and hand back the structured error envelope instead of a
-        # raw exception. On success ``raw`` is returned unchanged, so a
-        # backend composite's own parse_tool_result(raw) call downstream
-        # behaves exactly as before; on error, that same downstream call
-        # recognizes the envelope and re-raises the typed MCPToolError.
+        # Every model-facing MCP call passes through here, so classify here
+        # (call_tool catches transport failures, parse_tool_result classifies
+        # content) and return a structured error envelope instead of raising.
+        # On success ``raw`` is unchanged; downstream parse_tool_result calls
+        # recognize the envelope and re-raise the typed MCPToolError.
         try:
             raw = await call_tool(tool, kwargs)
             result = parse_tool_result(raw)
         except MCPToolError as exc:
-            # T31: TOKEN_INVALID attributed to a token *this call actually
-            # injected* flips the connector's stored status so the
-            # Connectors tab agrees with the failure. TOKEN_EXPIRED relies
-            # on T30's derived-expired instead (no stored-status write), and
+            # TOKEN_INVALID for a token *this call actually injected* flips
+            # the connector's stored status so the Connectors tab agrees.
+            # TOKEN_EXPIRED relies on the derived expiry instead (no stored-status write), and
             # EULA_NOT_ACCEPTED never touches status — the token is fine,
             # the entitlement isn't. Never fires for the shared-credential
             # path (injected is False), so one user's bad token can't flip
             # another's connector.
             if injected_by is not None and exc.category == CATEGORY_TOKEN_INVALID:
                 await injected_by.mark_invalid(user_id)
-            # T46 story #4: a rejected AOI *input* must leave a greppable trace.
-            # The live 2026-07-17 incident (define_area_of_interest rejected an
-            # inverted bbox, the agent improvised "North America") left nothing
-            # to grep for. Log the named event with the offending location so a
-            # silent-substitution regression is discoverable from logs; the
+            # A rejected AOI *input* must leave a greppable trace, so a silent
+            # region substitution is discoverable from logs; the
             # dispatch-layer guard (services/subagent_dispatch.py) uses the same
             # signal to refuse the substituted answer.
             if tool.name == "define_area_of_interest" and exc.category == CATEGORY_USER_INPUT:
@@ -209,7 +195,7 @@ def _bind_one(
             # Fire-and-forget and coalesced per agent turn inside mark_used
             # itself — never on this call's critical path, never failing it.
             injected_by.mark_used(user_id)
-        # T19 story #3: surface the granule count once check_coverage's own
+        # Surface the granule count once check_coverage's own
         # response is known, so a researcher sees why their request is
         # small or large before the (potentially long) retrieval wait.
         if tool.name == "check_coverage" and isinstance(result, dict) and "granule_count" in result:
@@ -261,18 +247,13 @@ def _region_resolver() -> RegionResolver:
 
 
 def region_aware_area_of_interest(tool: BaseTool) -> BaseTool:
-    """Wrap an already workspace-bound ``define_area_of_interest`` so the T60
-    region vocabulary reaches the *retrieval* plane (D13).
+    """Wrap an already workspace-bound ``define_area_of_interest`` so our
+    region vocabulary (coalitions, aliases, composites, buffers) reaches the
+    *retrieval* plane.
 
-    Phase 1 shipped a correct mask for the Ozone Transport Region that no user
-    could reach from a prompt: the spatial subset that actually pulls data is
-    resolved by the MCP, in another repo, by a geocoder that has never heard of
-    the word. Measured live in the Phase 1.5 gate (V6), ``"ozone over the OTC"``
-    does not politely fail -- the AOI step refuses ``"Ozone Transport
-    Commission"``, and the agent then silently substitutes ``"Northeastern
-    United States"`` and retrieves *that*, which is not a superset of the OTR.
-    The mask would then clip against a cube that never covered the Mid-Atlantic
-    third of the region, with nothing to say so (Risk 5).
+    The MCP's own geocoder doesn't know these names: for ``"ozone over the
+    OTC"`` the AOI step fails, the agent substitutes "Northeastern United
+    States", and the mask then clips a cube that never covered the region.
 
     **Why a named wrapper and not a branch in ``_bind_one``.** ``_bind_one`` is
     generic MCP plumbing -- workspace binding, credential injection, error
@@ -288,7 +269,7 @@ def region_aware_area_of_interest(tool: BaseTool) -> BaseTool:
     wrapper is applied in ``bind_workspace``, which is the single dict all three
     take their tools from.
 
-    **Which side of the T53 cache this sits on, and why it matters.** Outside,
+    **Which side of the tool cache this sits on, and why it matters.** Outside,
     i.e. *before*. The rewrite happens here, and only then does ``_bind_one``'s
     ``_call`` compute the cache key from ``kwargs``. So "otc", "the OTC", "otr"
     and "ozone transport region" all collapse to a single key, and no key can
@@ -296,9 +277,8 @@ def region_aware_area_of_interest(tool: BaseTool) -> BaseTool:
     placed after the lookup, the cache would answer "otc" with whatever had been
     stored for the raw string.
 
-    A string outside the vocabulary is passed through untouched -- byte-identical
-    to pre-T60 behavior, which is the mirror of the mask plane's NOT_CLAIMED
-    fall-through and the regression this seam is most likely to cause.
+    A string outside the vocabulary is passed through untouched, mirroring
+    the mask plane's NOT_CLAIMED fall-through.
     """
     from tta_backend.utils import region_buffer, region_composition, region_dispatch
 
@@ -306,25 +286,17 @@ def region_aware_area_of_interest(tool: BaseTool) -> BaseTool:
         location = kwargs.get("location")
         if isinstance(location, str):
             resolver = _region_resolver()
-            # T60 D5: the "+" grammar reads the RAW string, ahead of
-            # normalization (D11a -- split first, then normalize each token),
-            # exactly as the mask plane does. A composite has no key the MCP
-            # could ever resolve, so an unclaimed one would reach Nominatim as
-            # a literal string with a "+" in it. Its failures (a bad token,
-            # D8; an over-large envelope, D16) travel as MCPToolError and
-            # convert to the same tool-JSON envelope used below.
+            # The "+" grammar reads the RAW string (split first, then
+            # normalize), as the mask plane does. Unclaimed, it would reach
+            # Nominatim as a literal string. Failures (bad token, envelope too
+            # large) travel as MCPToolError and become the envelope below.
             try:
                 composed = region_composition.dispatch_composite_extent(location, resolver)
-                # T60 D9/D13: the buffer grammar, second, in the same order the
-                # mask plane uses (gate V25 -- "within 50 km of NY + NJ"
-                # contains a "+" and belongs to the composition grammar, which
-                # hard-fails it naming the token). A buffer phrase has no name
-                # at all: V23 measured "within 50 miles of NYC" returning zero
-                # Nominatim hits, so unclaimed it is not a wrong retrieval but
-                # a failed one -- after which the agent silently substitutes
-                # (T46 Phase 2, V6). Its refusals (units, a named region as X,
-                # the antimeridian, a pole, D16's extent) ride the same
-                # MCPToolError channel already caught here.
+                # The buffer grammar second, same order as the mask plane
+                # ("within 50 km of NY + NJ" belongs to composition). Nominatim
+                # finds nothing for a buffer phrase, so unclaimed it would fail
+                # and the agent would substitute. Its refusals use the same
+                # MCPToolError channel.
                 buffered = (
                     composed if composed.claimed
                     else await region_buffer.adispatch_buffer_extent(location, resolver)
@@ -335,7 +307,7 @@ def region_aware_area_of_interest(tool: BaseTool) -> BaseTool:
                     extra={"_event": "region_composite_unresolved", "_location": location},
                 )
                 return exc.to_tool_json()
-            # D11a: the same normalization the mask plane uses, so neither
+            # The same normalization the mask plane uses, so neither
             # plane can normalize differently than the other.
             normalized = resolver._normalize_location_name(location)
             dispatched = (
@@ -345,8 +317,8 @@ def region_aware_area_of_interest(tool: BaseTool) -> BaseTool:
             if dispatched.claimed:
                 if dispatched.location is None:
                     # Claimed and failed. Refusing is the point: falling
-                    # through would hand the MCP's Nominatim the very string
-                    # D3b exists to keep away from it.
+                    # through would hand the MCP's geocoder the very string
+                    # we must keep away from it.
                     logger.error(
                         "region_extent_unresolved",
                         extra={
@@ -374,7 +346,7 @@ def region_aware_area_of_interest(tool: BaseTool) -> BaseTool:
 def model_view_describe_dataset(tool: BaseTool) -> BaseTool:
     """Wrap an already workspace-bound ``describe_dataset`` tool so its
     model-facing result stays proportional to what the model actually uses
-    (T13): variable names/units/advisories to subset, never every
+    — variable names/units/advisories to subset, never every
     fill-value/valid-range record a many-variable collection carries.
 
     Applied only to the curated model-facing tool list
@@ -391,7 +363,7 @@ def model_view_describe_dataset(tool: BaseTool) -> BaseTool:
         except MCPToolError as exc:
             # ``tool`` is already bind_workspace-wrapped, so ``raw`` here is
             # either real content or bind_workspace's own error envelope
-            # (T18) — re-raised by parse_tool_result and passed straight
+            # — re-raised by parse_tool_result and passed straight
             # through unchanged rather than re-wrapped.
             return exc.to_tool_json()
         return json.dumps(_compact_describe_dataset_result(result))
@@ -418,7 +390,7 @@ def _compact_describe_dataset_result(result: dict[str, Any]) -> dict[str, Any]:
 def _compact_variable(var: dict[str, Any]) -> dict[str, Any]:
     """name/long_name/units/advisory_notes plus a one-line mask_note derived
     from fill/range presence — the model needs variable names to subset, not
-    every fill-value/valid-range record (T13 story #11)."""
+    every fill-value/valid-range record."""
     out: dict[str, Any] = {
         "name": var.get("name"),
         "long_name": var.get("long_name"),
