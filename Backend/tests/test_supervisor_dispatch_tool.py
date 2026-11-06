@@ -18,9 +18,15 @@ class FakeGroundAgent:
 
     async def ainvoke(self, input_, config):
         self.tasks.append(input_["messages"][0].content)
-        return {"messages": [SimpleNamespace(
-            content=_envelope("Nearest NO2 monitor is Camden Spruce St, station_id 34-007-0002."), type="ai",
-        )]}
+        lookup = {
+            "Header": [{"status": "success", "query_location": "Camden"}],
+            "Body": [{"station_id": "34-007-0002", "station_name": "Camden Spruce St",
+                      "latitude": 39.934446, "longitude": -75.125291}],
+        }
+        return {"messages": [
+            SimpleNamespace(name="find_closest_monitor", content=json.dumps(lookup), type="tool"),
+            SimpleNamespace(content=_envelope("Nearest NO2 monitor is Camden Spruce St."), type="ai"),
+        ]}
 
 
 class FakeSatelliteAgent:
