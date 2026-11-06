@@ -1,19 +1,13 @@
-"""T60 Phase 3b / D14: the named-token refusal reaches the researcher.
+"""The named-token refusal reaches the researcher.
 
-D8 says ``"NY + NJ + Wakanda"`` hard-fails naming the unresolved token. D14 is
-why that was not implementable before this phase: both resolvers returned
-``dict | None``, and every call site collapsed ``None`` into one generic
-string -- ``"Could not resolve location: 'NY + NJ + Wakanda'"`` -- which names
-the whole composition and therefore names nothing.
+``"NY + NJ + Wakanda"`` hard-fails naming the unresolved token, which needs a
+raised ``MCPToolError``: over ``dict | None`` every call site collapsed it to
+``"Could not resolve location: 'NY + NJ + Wakanda'"``, which names nothing.
 
-The Phase 3b gate (V14) counted the blast radius, and the PRD's "six call
-sites" was wrong: there are **eleven**, and nine of them sit outside any
-``try``. Two more are worse than untouched. ``export_service`` wraps its
-resolve in ``except Exception: region = None`` and then renders with
-``extent=None, mask_geometry=None`` -- so a raised refusal would have been
-swallowed into **a chart over the entire globe, labelled with the region the
-researcher asked for**. That is the T46 silent-scope-substitution failure
-arriving through the export path, created by D14 rather than found by it.
+There are eleven call sites, nine outside any ``try``. ``export_service`` is
+the dangerous one: a bare ``except Exception: region = None`` would swallow a
+refusal into **a chart over the entire globe, labelled with the region the
+researcher asked for**.
 
 One representative per file plus both export sites, mirroring how
 test_satellite_tools_mcp_errors.py covers this seam.
@@ -77,7 +71,7 @@ class ToolsSurfaceTheNamedTokenTests(unittest.IsolatedAsyncioTestCase):
     def _assert_names_the_token(self, raw):
         """The tool answered, in the taxonomy's structured shape, naming the
         token. Any of the three could regress independently: a crash gives no
-        JSON, a bare-string catch gives no ``category``, and the pre-D14
+        JSON, a bare-string catch gives no ``category``, and a ``None``
         collapse gives a message that never says "Wakanda"."""
         payload = json.loads(raw)
         self.assertIn("error", payload, f"tool did not answer structurally: {raw[:200]}")
@@ -151,7 +145,7 @@ class ToolsSurfaceTheNamedTokenTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_the_extent_refusal_travels_the_same_channel(self):
-        """D16's refusal is the same contract as D8's, so it must not need a
+        """The too-large refusal is the same contract as the unknown-token one, so it must not need a
         second mechanism. Different category, same structured answer."""
         from tta_backend.tools.satellite_tools.stat_tools import make_compute_statistic_tool
 
@@ -163,7 +157,7 @@ class ToolsSurfaceTheNamedTokenTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("4,000,000", payload["error"]["message"])
 
     async def test_a_composite_chart_puts_both_disclosure_fields_on_the_wire(self):
-        """D10a/D10b's precondition, which gate V16 traced: ``region_type``
+        """``region_type``
         does reach the frontend on ``chart.provenance``, so the new
         ``region_origin`` has to travel the same way or the frontend cannot
         tell a self-healed composite from a self-healed rectangle."""
@@ -181,9 +175,8 @@ class ToolsSurfaceTheNamedTokenTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("New Jersey", payload["display_name"])
 
     async def test_an_ordinary_geocode_miss_still_answers_as_it_always_did(self):
-        """The regression net. D14 changes how a *composite* fails; a plain
-        unresolvable place must still produce the same plain message, or this
-        phase has quietly rewritten an error surface it was not asked to."""
+        """The regression net. This changes how a *composite* fails; a plain
+        unresolvable place must still produce the same plain message."""
         from unittest.mock import patch
 
         from tta_backend.tools.satellite_tools.stat_tools import make_compute_statistic_tool
@@ -202,8 +195,7 @@ class ToolsSurfaceTheNamedTokenTests(unittest.IsolatedAsyncioTestCase):
     "region composition error-channel test dependencies are not installed",
 )
 class ExportServiceMustNotSwallowTheRefusalTests(unittest.IsolatedAsyncioTestCase):
-    """V14's load-bearing finding, and the only one of the eleven that is a
-    bug rather than a chore.
+    """The export path must not swallow a refusal.
 
     ``except Exception: region = None`` is a reasonable guard against a
     geocoder hiccup and a catastrophe against a refusal: the export proceeds

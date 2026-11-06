@@ -1,25 +1,24 @@
-"""T60 Phase 4: countries as composite members.
+"""Countries as composite members.
 
-Phase 3b built the ``+`` grammar over one member vocabulary (the 51 U.S.
-states). This phase adds the second, and the Phase 4 gate found that three
-properties the design had been relying on stop holding at country scale.
+The ``+`` grammar's second member vocabulary, after the 51 U.S. states. Three
+properties that held for states stop holding at country scale.
 
 **The tolerance.** ``ADMIN1_TOLERANCE`` holds all 51 states inside a
-99.64-100.24% band and retains **33.2% of Vatican City** (V18). A uniform
+99.64-100.24% band and retains **33.2% of Vatican City**. A uniform
 tolerance is refuted; the shipped scheme is proportional to each feature's own
 linear scale.
 
 **The collisions.** ``georgia`` and ``antarctica`` are both a shipped preset id
 and an ``ADMIN`` value, so a *merged* asset would silently reduce 304 features
-to 302 polygons and mask the Caucasus under the name ``"georgia"`` (V19). Hence
-a separate asset, and countries as **member-only** vocabulary: a bare country
-name is not claimed by this phase at all.
+to 302 polygons and mask the Caucasus under the name ``"georgia"``. Hence a
+separate asset, and countries as **member-only** vocabulary: a bare country
+name is not claimed at all.
 
 **The extent.** Ten of 242 countries exceed the composite ceiling on their own,
 including France -- whose envelope is 119x its land area because of the
-overseas departments (V21). ``"France + Germany"`` therefore refuses, and the
-refusal has to say *why*, because 3b's "ask for nearer members" advice is
-actively wrong for two countries that share a border.
+overseas departments. ``"France + Germany"`` therefore refuses, and the
+refusal has to say *why*, because "ask for nearer members" advice is actively
+wrong for two countries that share a border.
 """
 import importlib.util
 import unittest
@@ -77,10 +76,10 @@ class CountryMemberTests(unittest.TestCase):
         self.assertFalse(geometry.covers(Point(*PARIS)), "France leaked in")
 
     def test_ga_resolves_as_the_us_state_and_never_as_gabon(self):
-        """D6: **country tokens never match on an ISO code**, only on a name.
+        """**Country tokens never match on an ISO code**, only on a name.
 
         ``GA`` is simultaneously Georgia's USPS code and Gabon's ISO alpha-2
-        code -- one of the 26 such collisions Verified Finding 5 measured. The
+        code -- one of 26 such collisions. The
         design does not resolve that by preferring the state; it resolves it by
         never admitting codes into the country tier at all, so there is no
         second candidate to prefer over. The state tier running first is a
@@ -104,13 +103,12 @@ class CountryMemberTests(unittest.TestCase):
                          "GA matched Gabon's ISO code")
 
     def test_a_two_letter_code_that_is_not_a_state_resolves_to_nothing(self):
-        """D6's ban, asserted where it is actually load-bearing.
+        """The ISO-code ban, asserted where it is actually load-bearing.
 
-        **Found by mutation, not by design.** The ``GA``/Gabon test above looks
-        like it pins "countries never match on a code", and it does not: every
-        token that is *both* a postal code and an ISO code hits the state tier
-        first and never reaches the country lookup at all. A mutant that added
-        an ISO map to the country tier passed the entire suite.
+        The ``GA``/Gabon test above doesn't pin it: every token that is *both*
+        a postal code and an ISO code hits the state tier first and never
+        reaches the country lookup. An ISO map in the country tier would pass
+        that test.
 
         ``GB`` is the case with no state to shadow it -- not a USPS code, but
         the ISO alpha-2 for the United Kingdom, which is in the vocabulary
@@ -128,13 +126,9 @@ class CountryMemberTests(unittest.TestCase):
                               caught.exception.message.lower())
 
     def test_a_composite_of_countries_does_not_call_itself_a_composite_of_states(self):
-        """``display_name`` is what a T42 answer cites, so it cannot be left
-        saying "composite of 2 U.S. states" about Spain and Portugal.
-
-        3b hard-coded that phrase because the member vocabulary was the 51
-        states and nothing else. Adding a tier without touching the label is
-        how a disclosure quietly starts lying -- the region would be right and
-        the sentence describing it wrong, which T42 exists to prevent."""
+        """``display_name`` is what an answer cites, so it cannot say
+        "composite of 2 U.S. states" about Spain and Portugal -- the region
+        would be right and the sentence describing it wrong."""
         resolver = self._resolver()
 
         countries = resolver.resolve_location("Spain + Portugal")["display_name"]
@@ -148,9 +142,9 @@ class CountryMemberTests(unittest.TestCase):
         self.assertIn("2 members", mixed, mixed)
 
     def test_an_unknown_token_is_told_it_was_tried_against_countries_too(self):
-        """D8's refusal names what the token was tried *against*, which D15
-        makes possible by closing the vocabulary. The vocabulary just grew, so
-        a message still saying "is not a U.S. state" would send someone
+        """The refusal names what the token was tried *against*, which the
+        closed vocabulary makes possible. With countries added, a message
+        still saying "is not a U.S. state" would send someone
         hunting for a spelling mistake in a country name they typed correctly
         and that simply is not matched by ``ADMIN``."""
         from tta_backend.earthdata_mcp.results import MCPToolError
@@ -165,20 +159,16 @@ class CountryMemberTests(unittest.TestCase):
                       "the refusal still describes a states-only vocabulary")
 
     def test_france_refuses_by_naming_france_not_by_blaming_the_phrasing(self):
-        """V21, and the phase's most surprising measurement.
-
-        ``"France + Germany"`` was criterion #2 in the phase prompt. It
-        **refuses**, and it should: France's envelope is 8,524 deg^2 -- 119x its
+        """``"France + Germany"`` **refuses**, and it should: France's envelope is 8,524 deg^2 -- 119x its
         own land area -- because ``ADMIN`` France runs from French Guiana
         (-61.8) to Reunion (+55.8). The union with Germany is 8,988 deg^2 =
         16.7 M native cells, 4.2x the frame ceiling, and letting it through
         would put exactly that allocation into ``_crop_to_mask_footprint``.
 
-        What must not ship is 3b's *message*. It says the members are far apart
-        and to ask for nearer ones -- and France and Germany share a border, so
-        every word of that is wrong and there is nothing the user can fix. A
-        refusal that misdescribes the problem is the trap D7 names in a
-        different guise: it leaves the user stuck.
+        What must not ship is the far-apart *message*: it says to ask for
+        nearer members, but France and Germany share a border, so there is
+        nothing the user can fix. A refusal that misdescribes the problem
+        leaves the user stuck.
 
         So this asserts the refusal **names France**, and does not offer the
         nearer-members advice that belongs to the other mistake."""
@@ -250,7 +240,7 @@ class PriorPhasesStillHoldTests(unittest.TestCase):
         self.assertAlmostEqual(region["geometry"].area, expected.area, places=9)
 
     def test_a_bad_token_still_names_that_token(self):
-        """D14's headline behaviour. The country tier is the obvious place for
+        """The country tier is the obvious place for
         an unknown token to silently acquire a *second* chance at resolving --
         or for the message to start naming the wrong thing."""
         from tta_backend.earthdata_mcp.results import MCPToolError
@@ -263,7 +253,7 @@ class PriorPhasesStillHoldTests(unittest.TestCase):
         self.assertIn("'wakanda'", caught.exception.message.lower())
 
     def test_presets_and_coalitions_are_still_not_composite_members(self):
-        """D15, and the country tier is exactly what could have reopened it --
+        """Presets aren't members, and the country tier could have reopened that --
         ``"mexico"`` is now a member while ``"conus"`` still is not."""
         from tta_backend.earthdata_mcp.results import MCPToolError
 
@@ -292,14 +282,13 @@ class PriorPhasesStillHoldTests(unittest.TestCase):
 
 def _unsimplified_areas() -> dict:
     """Areas of the **unsimplified** 50m admin-0 features, deg^2, measured in
-    the Phase 4 gate against ``ne_50m_admin_0_countries.geojson`` (3,083,490
-    bytes) and checked in as a fixture.
+    against ``ne_50m_admin_0_countries.geojson`` (3,083,490 bytes) and checked
+    in as a fixture.
 
     Checked in rather than fetched because no test may touch the network, and
     the whole point of the assertion is to compare the shipped geometry against
-    something the shipped geometry cannot influence. All 242, because that is
-    the set V18's scheme claims to hold -- a spot-check of the seven the gate
-    happened to print would not test the claim, it would test the examples."""
+    something the shipped geometry cannot influence. All 242, because a
+    spot-check would test the examples, not the claim."""
     import json
     import os
 
@@ -314,13 +303,12 @@ def _unsimplified_areas() -> dict:
     "region country test dependencies are not installed",
 )
 class Admin0FidelityTests(unittest.TestCase):
-    """D2a at country scale -- where the constant D2a picked stops working.
+    """Simplification tolerance at country scale.
 
-    D2 switched the standalone tiers to 50m *specifically* to protect Vatican,
-    Monaco, Singapore and Liechtenstein. D2a then picked 0.01 deg on a
-    measurement over the 51 U.S. states, which all sit within one order of
-    magnitude of each other in size. The countries span six, and at 0.01 the
-    protection D2 bought is undone: **33.2% of Vatican City survives**.
+    The 50m source protects Vatican, Monaco, Singapore and Liechtenstein, but
+    the 0.01 deg tolerance chosen for U.S. states (all within one order of
+    magnitude in size) undoes that for countries (six orders):
+    **33.2% of Vatican City survives**.
 
     The shipped scheme is proportional to each feature's own linear scale,
     which is why it holds for Vatican and Russia at once.
@@ -387,7 +375,7 @@ class Admin0FidelityTests(unittest.TestCase):
     "region country test dependencies are not installed",
 )
 class DuplicateNameTests(unittest.TestCase):
-    """V19: two names exist in both vocabularies, and one asset would lose one."""
+    """Two names exist in both vocabularies, and one asset would lose one."""
 
     def _resolver(self):
         from tta_backend.utils.plotting import RegionResolver
@@ -420,7 +408,7 @@ class DuplicateNameTests(unittest.TestCase):
         )
 
     def test_neither_asset_silently_loses_a_feature_to_a_duplicate_id(self):
-        """The V19 finding, as a standing guard rather than a decision record.
+        """Why the assets are separate, as a standing guard.
 
         Merging the countries into ``preset_regions.geojson`` produces 304
         features that ``load_preset_polygons`` reduces to **302** polygons --
@@ -449,7 +437,7 @@ class DuplicateNameTests(unittest.TestCase):
             )
 
     def test_the_country_alias_table_shadows_nothing_that_already_resolves(self):
-        """D12a's mechanism, extended to the table this phase adds.
+        """The alias-collision guard, extended to the country alias table.
 
         A hand-curated table that silently shadows ``"us"`` or a postal code is
         the cheapest possible way to reintroduce a confident wrong region, and
@@ -511,8 +499,8 @@ class DuplicateNameTests(unittest.TestCase):
                                  "the same name")
 
     def test_no_country_name_is_two_letters_so_none_can_shadow_a_postal_code(self):
-        """D6 from the other direction. Finding 5 measured 26 of 51 postal
-        codes colliding with ISO alpha-2 codes; the grammar bans codes, and
+        """The ISO-code ban from the other direction. 26 of 51 postal codes
+        collide with ISO alpha-2 codes; the grammar bans codes, and
         this pins that no *name* sneaks a code in through the back door."""
         from tta_backend.utils.plotting import load_admin0_polygons
         from tta_backend.utils.region_composition import POSTAL_TO_STATE
@@ -521,7 +509,7 @@ class DuplicateNameTests(unittest.TestCase):
         self.assertEqual(countries & set(POSTAL_TO_STATE), set())
 
     def test_the_country_asset_is_not_opened_unless_a_country_is_asked_for(self):
-        """The invariant the whole two-asset decision rests on (V19).
+        """The invariant the two-asset decision rests on.
 
         Splitting the assets buys nothing if something on the common path opens
         the country file anyway -- the 165 ms cold parse would simply move, and
@@ -573,11 +561,10 @@ class DuplicateNameTests(unittest.TestCase):
     "region country test dependencies are not installed",
 )
 class AntimeridianAndCeilingTests(unittest.TestCase):
-    """V21, both halves: what reaches the MCP, and where D16's hole is."""
+    """Both halves: what reaches the MCP, and why the extent gate has no hole."""
 
-    # Phase 3a decision 4 justified giving the states ``global_regions`` entries
-    # by writing down that no state crosses the antimeridian -- Alaska's 50m
-    # extent is -178.195..-130.014, wholly western. That justification does not
+    # States get ``global_regions`` entries because none crosses the
+    # antimeridian (Alaska's 50m extent is -178.195..-130.014). That doesn't
     # transfer: these five each span the full 360 degrees, so their honest
     # bounding box is the entire globe.
     ANTIMERIDIAN = [
@@ -628,14 +615,12 @@ class AntimeridianAndCeilingTests(unittest.TestCase):
                               "the refusal must name the member responsible")
 
     def test_a_bare_country_is_not_claimed_by_either_plane(self):
-        """Criterion #9: D16 stays composite-only, and the hole is *absent*.
+        """The extent gate stays composite-only, with no hole.
 
-        V15 established the gate has no hole because no bare state token trips
-        it. Ten bare country tokens would -- France and Canada among them -- so
-        the argument had to be remade, not restated. It is remade by scope:
-        countries are **member-only** vocabulary (V21), reachable only between
-        ``+`` signs. A bare country never enters the T60 vocabulary, so the
-        ceiling has nothing to refuse and nothing that resolves today stops.
+        No bare state trips it, but ten bare countries would (France and
+        Canada among them). Countries are **member-only** vocabulary,
+        reachable only between ``+`` signs, so a bare country never enters
+        this vocabulary and nothing that resolves today stops.
 
         This is what makes ``"france"`` still work while ``"France + Germany"``
         refuses, and it is the only reason those two are consistent."""
@@ -666,9 +651,9 @@ class AntimeridianAndCeilingTests(unittest.TestCase):
         geocode.assert_called_once_with("france")
 
     def test_no_us_state_is_affected_by_the_new_member_gate(self):
-        """The member gate is new behaviour on a shared path, so it has to be
-        shown not to bite anything 3a and 3b shipped. V15 measured Alaska, the
-        worst of the 51, at 954 deg^2 against a 2,148.7 ceiling."""
+        """The member gate is on a shared path, so it must not bite any
+        state. Alaska, the worst of the 51, is 954 deg^2 against a 2,148.7
+        ceiling."""
         from tta_backend.datasets.us_states import US_STATES
         from tta_backend.utils.region_composition import MAX_COMPOSITE_ENVELOPE_DEG2
 
@@ -684,25 +669,20 @@ class AntimeridianAndCeilingTests(unittest.TestCase):
     "region country test dependencies are not installed",
 )
 class GeorgiaAmbiguityTests(unittest.TestCase):
-    """D7, as V20 narrowed it: fail closed **where no reading is established**."""
+    """Fail closed on state/country ambiguity **where no reading is established**."""
 
     def _resolver(self):
         from tta_backend.utils.plotting import RegionResolver
         return RegionResolver()
 
     def test_georgia_as_a_composite_member_refuses_and_names_both_escape_hatches(self):
-        """The position where D7 applies in full.
+        """Inside a composite, ambiguity fails closed.
 
-        Composite membership for countries is new surface: ``"georgia +
-        florida"`` resolves to nothing today, so there is no established
-        reading to destroy, and D15's order would silently hand it to the
-        state. That is a genuine coin flip with no incumbent -- D7's case
-        exactly.
+        ``"georgia + florida"`` has no established reading, and the resolution
+        order would silently hand it to the state: a genuine coin flip.
 
-        Both hatches are asserted, and that is the point rather than a
-        flourish. D7 says a bare "ambiguous" message leaves the user stuck;
-        naming only ``GA`` would leave *half* of them stuck, with a stated way
-        to ask for the state and no way at all to ask for the country."""
+        Both escape hatches are asserted: naming only ``GA`` would give a way
+        to ask for the state and none for the country."""
         from tta_backend.earthdata_mcp.results import CATEGORY_USER_INPUT, MCPToolError
 
         resolver = self._resolver()
@@ -719,18 +699,11 @@ class GeorgiaAmbiguityTests(unittest.TestCase):
                       "no escape hatch named for the country")
 
     def test_a_bare_georgia_still_resolves_to_the_us_state_untouched(self):
-        """V20: D7 applied literally here would *remove* working behaviour.
+        """Bare ``"georgia"`` keeps resolving to the U.S. state.
 
-        ``"georgia"`` resolves to the U.S. state today through
-        ``global_regions`` (3a), and 3a's V12 measured live Nominatim already
-        preferring the state -- 99.41% coverage, ``boundary/administrative``.
-        Both planes agree, and they agree correctly.
-
-        D7's stated justification is that "silently picking either meaning
-        would be wrong roughly half the time". That premise does not hold at
-        this position: the meaning was not picked by this design, it was picked
-        by 3a and by OSM before that, and refusing now would convert a
-        currently-correct answer into an error."""
+        It resolves via ``global_regions``, and live Nominatim prefers the
+        state too (99.41% coverage). Both planes agree, so refusing here would
+        turn a correct answer into an error."""
         from shapely.geometry import Point
 
         resolver = self._resolver()
@@ -744,7 +717,7 @@ class GeorgiaAmbiguityTests(unittest.TestCase):
 
     def test_the_postal_hatch_resolves_the_state_inside_a_composite(self):
         """``GA`` must survive the guard -- the check is on the *token*, not on
-        the key it resolves through, or D7's own escape hatch would trip it."""
+        the key it resolves through, or the escape hatch would trip it."""
         from shapely.geometry import Point
 
         resolver = self._resolver()
@@ -752,7 +725,7 @@ class GeorgiaAmbiguityTests(unittest.TestCase):
         self.assertTrue(region["geometry"].covers(Point(*ATLANTA)))
 
     def test_the_country_hatch_resolves_the_country_inside_a_composite(self):
-        """And the other side, which is the half D7's text does not supply."""
+        """And the other side: a way to ask for the country."""
         from shapely.geometry import Point
 
         resolver = self._resolver()

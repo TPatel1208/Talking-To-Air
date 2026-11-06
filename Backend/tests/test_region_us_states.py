@@ -1,18 +1,16 @@
-"""T60 Phase 3a: the fifty-one U.S. states and DC are individually resolvable.
+"""The fifty-one U.S. states and DC are individually resolvable.
 
-Before this phase every state name fell through ``RegionResolver``'s exact-match
-gate to Nominatim. The Phase 3a gate (V12) measured what that actually costs on
-eight live queries: six of eight already came back as the correct
-``boundary/administrative`` relation, so on the mask plane this phase is mostly
-buying *determinism* -- no network, no rate limiter, no OSM relation edits.
+Otherwise state names fall through to Nominatim. On eight live queries six of
+eight came back correct, so on the mask plane this mostly buys *determinism*
+(no network, no rate limiter, no OSM edits).
 
-Two of the eight were not neutral, and they are the reason the phase ships:
+Two of the eight were wrong, and they are the reason states are presets:
 
 - ``"new york"`` resolved to New York **City** -- 0.47% of the state.
 - ``"washington"`` resolved to Washington **DC**, tagged ``place/city`` --
   **0.00%** overlap with Washington State, 47 degrees of longitude away.
 
-The retrieval plane is worse, and structurally so (V13). Even for the tokens
+The retrieval plane is worse, and structurally so. Even for the tokens
 Nominatim geocodes correctly the MCP's extent does **not** contain the shipped
 mask: Georgia covers 99.99% and still fails containment because the mask comes
 from Natural Earth and the extent comes from OSM, and two providers have
@@ -83,23 +81,20 @@ class StatePresetTests(unittest.IsolatedAsyncioTestCase):
                     # Not the rectangle it degrades to.
                     self.assertLess(geometry.area, box(*geometry.bounds).area)
 
-                    # T42's shipped bug was the two resolvers normalizing
-                    # differently; export_service calls the sync one and every
-                    # analysis tool calls the async one.
+                    # The two resolvers must normalize identically; both are
+                    # used in production paths.
                     self.assertEqual(await resolver.aresolve_location(key), region)
 
         sync_geocode.assert_not_called()
         async_geocode.assert_not_called()
 
     def test_the_v12_ambiguous_tokens_land_on_the_state_and_say_so(self):
-        """Criterion #3, and the reason the phase ships at all.
+        """The answer must say which Washington / New York it meant.
 
-        Gate V12, live: ``"washington"`` returned Washington **DC** tagged
-        ``place/city`` -- 0.00% overlap with Washington State -- and
-        ``"new york"`` returned New York **City**, 0.47% of the state. D15
-        hands both tokens to the state, so the answer must *say* which one it
-        meant; ``display_name`` is where T42 puts that, and it is what a plot
-        title and a provenance block cite."""
+        Live, ``"washington"`` returned Washington **DC** (0.00% overlap with
+        the state) and ``"new york"`` returned New York **City** (0.47% of the
+        state). Both tokens now go to the state, so ``display_name`` (what a
+        plot title and provenance cite) must say so."""
         from shapely.geometry import Point
 
         resolver = self._resolver()
@@ -115,7 +110,7 @@ class StatePresetTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(new_york["geometry"].contains(Point(-73.94, 40.71)))      # NYC too
 
         # ...and the other Washington is still reachable by its own name, which
-        # is what makes D15's order a disambiguation rather than a deletion.
+        # is what makes this a disambiguation rather than a deletion.
         dc = resolver.resolve_location("district of columbia")
         self.assertEqual(dc["display_name"],
                          "District of Columbia (U.S. federal district)")
@@ -150,12 +145,11 @@ class StatePresetTests(unittest.IsolatedAsyncioTestCase):
 
 
 # Areas of the **unsimplified** 50m admin-1 features, deg2, measured against
-# ne_50m_admin_1_states_provinces.geojson (2,325,694 bytes) in the Phase 3a
-# gate. Checked in as constants because criterion #8 forbids a test touching
-# the network, and the whole point of the assertion is to compare the shipped
+# ne_50m_admin_1_states_provinces.geojson (2,325,694 bytes). Checked in as
+# constants because tests must not touch the network, and the whole point of the assertion is to compare the shipped
 # geometry against something the shipped geometry cannot influence.
 #
-# DC and RI are the jurisdictions D2a exists to protect. NH and CT are the
+# DC and RI are the small jurisdictions the tolerance exists to protect. NH and CT are the
 # minimum and maximum retention across all 51, so the band is anchored at both
 # real extremes rather than at a guess.
 UNSIMPLIFIED_AREA_DEG2 = {
@@ -171,8 +165,8 @@ UNSIMPLIFIED_AREA_DEG2 = {
     "region us-state test dependencies are not installed",
 )
 class SmallJurisdictionFidelityTests(unittest.TestCase):
-    """D2a, pinned. Phase 0's V4 measured DC at **58.71%** area retention under
-    the builder's pre-existing 0.1 deg constant -- a 41% distortion of a
+    """The 0.01 deg tolerance, pinned. At 0.1 deg DC retains only **58.71%**
+    of its area -- a 41% distortion of a
     jurisdiction 16 km across. 0.01 deg is not a preference, it is the number
     that keeps DC. If ``ADMIN1_TOLERANCE`` is ever raised and the asset
     rebuilt, this is what fails.
@@ -183,8 +177,7 @@ class SmallJurisdictionFidelityTests(unittest.TestCase):
         return RegionResolver()
 
     def test_small_jurisdictions_keep_their_area_within_a_two_sided_band(self):
-        """Two-sided on purpose. V4's other finding was that simplification
-        can *enlarge*: dropping a concave vertex adds area, and DC reads
+        """Two-sided on purpose. Simplification can also *enlarge*: dropping a concave vertex adds area, and DC reads
         **100.17%**, not 99-point-something. A one-sided ``>= 99%`` assertion
         would pass on a polygon inflated to 150% of the jurisdiction."""
         resolver = self._resolver()
@@ -206,8 +199,7 @@ class SmallJurisdictionFidelityTests(unittest.TestCase):
         """Area retention alone is satisfied by a displaced blob of the right
         size. These are the edges that matter: DC's western boundary is the
         Potomac line against non-member Virginia -- the same line the OTR's
-        outer boundary runs along, which is why V4 called DC's 58.71% the
-        deciding number rather than RI's."""
+        outer boundary runs along."""
         from shapely.geometry import Point
 
         resolver = self._resolver()
@@ -229,10 +221,7 @@ class SmallJurisdictionFidelityTests(unittest.TestCase):
     "region us-state test dependencies are not installed",
 )
 class CheckedInAssetTests(unittest.TestCase):
-    """Criterion #7. The gate (V11) chose one merged asset over two, and
-    measured that the two-file argument -- "the 11 features have a byte pin the
-    merge would move" -- was false: there was no pin anywhere in the suite. So
-    this phase adds the first one rather than moving one.
+    """States and coalitions share one asset, and this pins its bytes.
     """
 
     def _asset(self):
@@ -298,12 +287,10 @@ class CheckedInAssetTests(unittest.TestCase):
     "region us-state test dependencies are not installed",
 )
 class RetrievalPlaneAgreementTests(unittest.TestCase):
-    """Criterion #5, and the whole reason gate V13 was a gate.
+    """States are claimed on the retrieval plane too.
 
-    Phase 1.5 scoped ``dispatch_extent`` to ``COALITIONS`` u ``ALIASES`` and
-    left plain preset keys to reach the MCP untranslated -- defensible for 39
-    mostly-continental boxes. V13 measured what that costs once the vocabulary
-    is 51 states, and the answer was not "51 times a small thing":
+    Plain preset keys reach the MCP untranslated, which is fine for the
+    mostly-continental boxes but not for states:
 
     - ``"new york"`` retrieved New York City (0.56% of the state) and
       ``"washington"`` retrieved Washington DC (**0.00%**).
@@ -321,7 +308,7 @@ class RetrievalPlaneAgreementTests(unittest.TestCase):
     def test_the_extent_contains_the_mask_for_every_one_of_the_fifty_one(self):
         """Containment, never equality -- the envelope of a boundary is a
         strict superset of it and that over-inclusion is correct, because the
-        mask clips it (Phase 1.5, tension 3). Over all 51 so a state added or
+        mask clips it. Over all 51 so a state added or
         dropped by a future asset rebuild cannot skip it."""
         from shapely.geometry import box
 
@@ -352,9 +339,8 @@ class RetrievalPlaneAgreementTests(unittest.TestCase):
                 )
 
     def test_a_string_outside_the_vocabulary_is_still_not_claimed(self):
-        """Criterion #6, which now gets 51 new chances to break. The seam is an
-        *additional* door: "paris" and the 39 pre-existing presets must reach
-        ``define_area_of_interest`` byte-identical to pre-T60 behavior."""
+        """The seam is an *additional* door: "paris" and the other presets must
+        reach ``define_area_of_interest`` unchanged."""
         from tta_backend.utils import region_dispatch
         from tta_backend.utils.plotting import RegionResolver
 
@@ -376,11 +362,11 @@ class RetrievalPlaneAgreementTests(unittest.TestCase):
                 )
 
     def test_a_near_miss_string_still_reaches_the_geocoder_on_the_mask_plane(self):
-        """Criterion #6's other half. The 51 keys are matched exactly, never by
+        """The 51 keys are matched exactly, never by
         prefix or token overlap -- a confident wrong preset is worse than
         a geocode miss. ``"new york city"`` and ``"washington dc"`` are the
-        strings a researcher types when they mean precisely the place D15 just
-        took the bare token away from, and they must still get it."""
+        strings a researcher types when they mean precisely the place the bare
+        token no longer resolves to, and they must still get it."""
         from tta_backend.utils.plotting import RegionResolver
 
         resolver = RegionResolver()
@@ -397,11 +383,9 @@ class RetrievalPlaneAgreementTests(unittest.TestCase):
                 self.assertEqual(region["region_type"], "point_buffer")
 
     def test_the_alias_collision_assertion_still_passes_with_the_states_added(self):
-        """D12a, re-run against the 51 new keys. The gate measured zero
-        collisions between state names and anything that already resolved --
-        including ``"georgia"``, which the PRD worried about and which
-        ``global_regions`` never had an entry for. This is what keeps that
-        true."""
+        """The alias-collision guard over the 51 state keys: zero collisions
+        with anything that already resolved (including ``"georgia"``), and
+        this keeps it that way."""
         from tta_backend.utils import region_dispatch
         from tta_backend.utils.plotting import RegionResolver
 
@@ -415,12 +399,11 @@ class RetrievalPlaneAgreementTests(unittest.TestCase):
             self.assertNotIn(coalition_id, resolver.global_regions)
 
     def test_a_state_key_that_shadows_a_preset_raises_instead_of_overwriting(self):
-        """D12a extended to the merge itself, and this is not hypothetical.
+        """The collision guard extended to the merge itself.
 
         The states are written into ``global_regions`` by assignment, so a key
-        that already exists would be *silently replaced* -- and **Phase 4 is
-        the phase that adds countries**, where ``"georgia"`` the country meets
-        ``"georgia"`` the state head on. A count assertion catches that only
+        that already exists would be *silently replaced* (e.g. ``"georgia"``
+        the country vs the state). A count assertion catches that only
         until someone updates the count; a named error at construction says
         which key and why.
 

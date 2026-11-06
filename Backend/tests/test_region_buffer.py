@@ -1,13 +1,13 @@
-"""T60 Phase 5: the ``"within N miles|km of X"`` grammar.
+"""The ``"within N miles|km of X"`` grammar.
 
-**Why the area assertion the PRD prescribes is not the headline test here.**
-The Phase 5 gate (V22) measured an AEQD buffer at 20 N, 179.5 E: its geodesic
+**Why an area assertion is not the headline test here.** An AEQD buffer at
+20 N, 179.5 E has a geodesic
 area is 31,412.1 km^2, *99.99% of pi r^2*, and the polygon is the **complement**
 of the buffer -- a point 10 km east reads ``False``, a point 10 km *west* reads
 ``False``, and (0 E, 20 N) off West Africa reads ``True``. ``pyproj.Geod`` walks
 the ring and the ring is correct; only shapely's planar reading of it wraps the
 long way around the planet. So an assertion of the form ``area ~= pi r^2`` pins
-a property the bug *preserves*, and the D16 extent gate does not catch it
+a property the bug *preserves*, and the extent gate does not catch it
 either (650.4 deg^2, under the 2,148.7 ceiling).
 
 The test that earns its place is therefore a **containment** assertion against
@@ -93,9 +93,9 @@ class BufferShapeTests(unittest.IsolatedAsyncioTestCase):
             )
 
     def test_the_same_physical_radius_in_km_and_miles_is_one_polygon(self):
-        """D16. Asserted as *geometry* equality, not as two areas that match.
+        """Asserted as *geometry* equality, not as two areas that match.
 
-        Two areas agreeing is a much weaker claim: the dateline polygon in V22
+        Two areas agreeing is a much weaker claim: the dateline polygon above
         has the right area and the wrong shape, so an area-only comparison
         between two broken shapes would agree with itself. Symmetric difference
         and Hausdorff distance both compare the boundaries point for point."""
@@ -112,10 +112,10 @@ class BufferShapeTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(miles.hausdorff_distance(km), 1e-9)
 
     def test_a_buffer_at_10n_and_at_60n_have_the_same_area(self):
-        """The PRD's cos-latitude invariant, and the one number that catches a
+        """The cos-latitude invariant, and the one number that catches a
         degree-buffer regression.
 
-        Measured in the gate: a ``Point.buffer(100/111.32)`` retains 97.8% of
+        A ``Point.buffer(100/111.32)`` retains 97.8% of
         the intended area at 10 N and **50.2%** at 60 N, because a longitude
         degree shrinks by ``cos(latitude)``. The AEQD approach holds 99.99% at
         both. The tolerance below is tight enough that the naive
@@ -149,20 +149,18 @@ class BufferShapeTests(unittest.IsolatedAsyncioTestCase):
     "region buffer test dependencies are not installed",
 )
 class AntimeridianTests(unittest.IsolatedAsyncioTestCase):
-    """V22, and the reason this phase needed a gate.
+    """Antimeridian-crossing buffers are refused.
 
     A 100 km buffer at 20 N, 179.5 E has a geodesic area of 31,412.1 km^2 --
     99.99% of pi r^2 -- and shapely reads its ring as the whole planet *except*
-    the buffer. The envelope is 650.4 deg^2, under the 2,148.7 ceiling, so D16
-    passes it. Neither the area assertion nor the extent gate can see this.
+    the buffer. The envelope is 650.4 deg^2, under the 2,148.7 ceiling, so the
+    extent gate passes it. Neither the area assertion nor the gate can see this.
 
-    The verdict is **refuse**, option (a). Option (b) -- split at +/-180 into a
-    MultiPolygon -- was measured and produces a correct mask behind a bounding
-    box of ``-180,19.10,180,20.90``: **1,210,757 cells retrieved for a 6,052
-    cell region**, 200x its own footprint, which the gate still cannot catch.
-    That is Risk 6 verbatim, and Phase 4 already refuses the USA, Russia, Fiji,
-    New Zealand, Kiribati and Antarctica as composite members for exactly this
-    property. Option (b) also does not fix the pole.
+    So these **refuse**. Splitting at +/-180 gives a correct mask behind a
+    bounding box of ``-180,19.10,180,20.90``: **1,210,757 cells retrieved for a
+    6,052 cell region**, which the gate still can't catch (countries with this
+    property are refused as composite members too). Splitting doesn't fix the
+    pole either.
     """
 
     def _resolver(self):
@@ -236,8 +234,8 @@ class AntimeridianTests(unittest.IsolatedAsyncioTestCase):
     "region buffer test dependencies are not installed",
 )
 class PolarTests(unittest.IsolatedAsyncioTestCase):
-    """V22, decided separately from the antimeridian because it is a different
-    failure and option (b) does not fix it.
+    """Pole-containing buffers, refused separately from the antimeridian
+    because it is a different failure and splitting doesn't fix it.
 
     A 200 km buffer at 89.5 N physically contains the North Pole -- the pole is
     55.8 km away. Measured, the AEQD polygon's **maximum latitude is 88.7094**:
@@ -299,8 +297,8 @@ class BufferRefusalTests(unittest.IsolatedAsyncioTestCase):
             return resolver.resolve_location(phrase)
 
     def test_within_3000_miles_of_nyc_refuses_with_the_named_limit(self):
-        """D16. The PRD's own example, and the gate measured it at 11,270.2
-        deg^2 = 20,980,751 cells against a 4,000,000-cell limit."""
+        """The extent gate: 3000 miles is 11,270.2 deg^2 = 20,980,751 cells
+        against a 4,000,000-cell limit."""
         from tta_backend.earthdata_mcp.results import CATEGORY_TOO_LARGE, MCPToolError
         from tta_backend.preprocessing.frame_stack import MAX_FRAME_NATIVE_CELLS
 
@@ -320,9 +318,8 @@ class BufferRefusalTests(unittest.IsolatedAsyncioTestCase):
         )
 
     def test_a_bare_number_refuses_naming_both_units(self):
-        """Tension 3, decided against a silent default: 50 miles is 80.5 km,
-        so guessing is a 61% error for half of users, and D12b is the standing
-        precedent against replacing an unknown with a confident guess."""
+        """No silent default unit: 50 miles is 80.5 km, so guessing is a 61%
+        error for half of users."""
         from tta_backend.earthdata_mcp.results import CATEGORY_USER_INPUT, MCPToolError
 
         with self.assertRaises(MCPToolError) as caught:
@@ -336,13 +333,12 @@ class BufferRefusalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.geocode.call_count, 0)
 
     def test_a_buffer_around_a_named_region_refuses_rather_than_geocoding_it(self):
-        """V25, and D9's "X resolves only as a single geocoded point, never
-        recursively through PRESET/COMPOSITE".
+        """X resolves only as a single geocoded point, never through a preset
+        or composite.
 
-        Unclaimed, ``"within 50 km of otc"`` geocodes ``"otc"``, which the
-        Phase 0 gate measured resolving live to **an aerodrome in Chad**. It
-        would ship as ``region_type: buffer``, faithfully disclosed, and be
-        wrong by a continent -- D12b's failure mode wearing a new label."""
+        Unclaimed, ``"within 50 km of otc"`` geocodes ``"otc"``, which resolves
+        live to **an aerodrome in Chad** -- faithfully disclosed as a buffer,
+        and wrong by a continent."""
         from tta_backend.earthdata_mcp.results import CATEGORY_USER_INPUT, MCPToolError
 
         for phrase, token in [
@@ -368,11 +364,9 @@ class BufferRefusalTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(self._resolve(phrase)["region_type"], "buffer")
 
     def test_an_unresolvable_target_refuses_and_never_falls_back_to_the_phrase(self):
-        """D8's rule, applied to this grammar: once a string is syntactically a
-        buffer the geocoder is off the table for the *phrase*. Gate V23
-        measured that ``"within 50 miles of NYC"`` returns **zero** Nominatim
-        hits, and T46 Phase 2's V6 measured what the agent does next -- it
-        silently substitutes a different region and retrieves that."""
+        """Once a string is syntactically a buffer, the geocoder never sees
+        the *phrase*. Nominatim finds **zero** hits for ``"within 50 miles of
+        NYC"``, and the agent then silently substitutes a different region."""
         from tta_backend.earthdata_mcp.results import CATEGORY_USER_INPUT, MCPToolError
 
         with self.assertRaises(MCPToolError) as caught:
@@ -389,10 +383,9 @@ class BufferRefusalTests(unittest.IsolatedAsyncioTestCase):
     "region buffer test dependencies are not installed",
 )
 class SyncAsyncForkTests(unittest.IsolatedAsyncioTestCase):
-    """D11b, and gate V24 verified all three surfaces against the live code:
-    ``export_service`` calls the sync ``resolve_location``; ``stat_tools``,
-    ``plot_tools`` and ``validation_tools`` call the async one exclusively; and
-    the retrieval-plane wrapper's ``_call`` is itself ``async def``.
+    """Sync and async twins. ``stat_tools``, ``plot_tools`` and
+    ``validation_tools`` call the async resolver, and the retrieval-plane
+    wrapper's ``_call`` is itself ``async def``.
 
     A single blocking twin would put ``requests.get(timeout=15)`` on the event
     loop, which is the hazard the split exists to prevent."""
@@ -451,10 +444,9 @@ class SyncAsyncForkTests(unittest.IsolatedAsyncioTestCase):
     "region buffer test dependencies are not installed",
 )
 class BufferOriginTests(unittest.TestCase):
-    """D10a. ``region_type`` is rasterization fidelity, ``region_origin`` is
-    shape provenance, and a small buffer on a coarse grid is the *likely* path
-    to the self-heal, not a corner -- which is precisely the case D10a was
-    written for."""
+    """``region_type`` is rasterization fidelity, ``region_origin`` is shape
+    provenance, and a small buffer on a coarse grid is the *likely* path to
+    the self-heal, not a corner."""
 
     def _coarse_grid(self):
         """Cell centres 30 deg apart, so a 50-mile buffer lands entirely
@@ -485,9 +477,8 @@ class BufferOriginTests(unittest.TestCase):
         # ``apply_mask_region_type`` does ``setdefault("region_origin",
         # region["region_type"])`` -- it *derives* the origin from whatever the
         # slot held. So a self-heal assertion alone cannot tell a constructor
-        # that declares its provenance from one that forgot to; it proves
-        # ``apply_mask_region_type``, which 3b already proved. This line is
-        # what makes the test prove D10a for the buffer path.
+        # that declares its provenance from one that forgot to. This line is
+        # what makes the test cover the buffer constructor.
         self.assertEqual(region["region_origin"], "buffer")
 
         masked = mask_data_by_geometry(self._coarse_grid(), region["geometry"])
@@ -504,16 +495,12 @@ class BufferOriginTests(unittest.TestCase):
     "region buffer test dependencies are not installed",
 )
 class RetrievalPlaneAgreementTests(unittest.IsolatedAsyncioTestCase):
-    """V23. The retrieval plane must claim a buffer, and the argument is
-    stronger here than for anything T60 has shipped before.
+    """The retrieval plane must claim a buffer.
 
-    A coalition has a name the MCP's geocoder might resolve, badly. A composite
-    has no key but does contain real place names. A buffer phrase has
-    **nothing** -- measured live in the gate, ``"within 50 miles of NYC"``
-    returns *zero* Nominatim hits. Unclaimed, the AOI step simply fails, and
-    T46 Phase 2's V6 measured what happens next: the agent silently substitutes
-    a different region and retrieves that, after which the mask clips a cube
-    that never covered the buffer (Risk 5).
+    A buffer phrase has nothing a geocoder can use (live Nominatim finds *zero*
+    hits for ``"within 50 miles of NYC"``). Unclaimed, the AOI step fails and
+    the agent silently substitutes a different region, after which the mask
+    clips a cube that never covered the buffer.
     """
 
     async def _extent(self, phrase, hit=NYC):
@@ -528,9 +515,8 @@ class RetrievalPlaneAgreementTests(unittest.IsolatedAsyncioTestCase):
             return await region_buffer.adispatch_buffer_extent(phrase, resolver), resolver
 
     async def test_the_retrieval_extent_contains_the_buffer_mask(self):
-        """Containment, never equality -- retrieval must *contain* the mask
-        (Phase 1.5's invariant, re-proved over 51 states in 3a and over the
-        composites in 3b). Because V22 refuses the wrapping cases, every buffer
+        """Containment, never equality -- retrieval must *contain* the mask.
+        Because the wrapping cases are refused, every buffer
         that reaches here has an honest bounding box and the containment is
         exact by construction rather than by tolerance."""
         from unittest.mock import AsyncMock

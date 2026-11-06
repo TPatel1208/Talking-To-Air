@@ -1,5 +1,5 @@
 """
-T42 region fidelity: the region you named is the region we computed.
+Region fidelity: the region you named is the region we computed.
 
 RegionResolver now discloses *what kind* of region it resolved
 (``region_type``: polygon | bounding_box | point_buffer | boundary_cells)
@@ -73,14 +73,11 @@ class RegionResolverFidelityTests(unittest.IsolatedAsyncioTestCase):
 
     def test_geocoded_point_geometry_is_not_disclosed_as_a_polygon(self):
         """Nominatim wraps a *point* hit in GeoJSON too, and a zero-area point
-        is not a boundary. Measured in the T60 Phase 0 gate (V2): ``"OTC"``
-        returns a GeoJSON ``Point`` at an airport in Chad and ``"northeastern
-        us"`` a GeoJSON ``Point`` on a Boston railway platform -- both were
-        disclosed as ``region_type: polygon``, which is exactly the claim T42's
-        vocabulary exists to make checkable. (Both of those strings are now
-        claimed by the T60 dispatcher before the geocoder is reached, so this
-        drives the branch with a string outside that vocabulary -- the defect
-        is the geocoder's, not the coalitions'.)"""
+        is not a boundary. E.g. ``"OTC"`` returns a GeoJSON ``Point`` at an
+        airport in Chad and ``"northeastern us"`` one on a Boston railway
+        platform; neither may be disclosed as ``region_type: polygon``. (Both
+        strings are claimed by the region dispatcher first, so this uses a
+        string outside that vocabulary.)"""
         geo = {
             "latitude": 42.3399,
             "longitude": -71.0892,
