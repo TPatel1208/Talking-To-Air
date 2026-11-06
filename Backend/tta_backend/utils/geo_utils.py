@@ -120,8 +120,8 @@ def identify_time(obj: Any) -> str | None:
     """Return the name of the time variable on a Dataset or DataArray,
     identified by CF metadata (``standard_name: time`` / ``axis: T`` /
     datetime64 dtype) rather than the literal name "time" -- so a
-    MERRA-2-style ``valid_time`` dimension is still recognized as time (T25),
-    the same CF-metadata-primary treatment T24 gave lat/lon. The bare-name
+    MERRA-2-style ``valid_time`` dimension is still recognized as time,
+    like lat/lon identification. The bare-name
     allowlist remains the fallback for files with no CF hints at all."""
     cands = _candidate_vars(obj)
     dims = set(obj.dims)
@@ -132,7 +132,7 @@ def identify_time(obj: Any) -> str | None:
 
 
 # CF unit strings a physical VERTICAL axis is published against, by kind. As
-# with lat/lon (T24), the identification signal is the vocabulary rather than
+# with lat/lon, the identification signal is the vocabulary rather than
 # any one variable name: TEMPO_O3PROF spells its axes
 # ``ozone_profile_pressure``/``ozone_profile_altitude``, MERRA-2 spells its
 # ``lev``, and the next layered product will spell them something else again --
@@ -300,7 +300,7 @@ def _has_metre_xy(obj: Any) -> bool:
 # floating-point wobble (0.25° cells stored as binary floats jitter in the
 # ~1e-9 range); a genuinely non-uniform axis (a stretched gap, a concatenation
 # of two resolutions) is orders of magnitude past this. Picked against real
-# MERRA-2 / TEMPO L3 grids (T44).
+# MERRA-2 / TEMPO L3 grids.
 _GRID_STEP_REL_TOLERANCE = 1e-3
 
 
@@ -341,7 +341,7 @@ def _grid_kind(obj: Any) -> str:
 
 
 def ensure_supported_grid(obj: Any) -> None:
-    """Raise a T24-typed :class:`MCPToolError` when ``obj`` is on a grid the
+    """Raise a typed :class:`MCPToolError` when ``obj`` is on a grid the
     1-D rectilinear mask/plot math can't honor, so a researcher gets a
     specific "not supported yet" answer instead of a silent mis-mask or an
     opaque empty-coords crash. A rectilinear grid (or one with no

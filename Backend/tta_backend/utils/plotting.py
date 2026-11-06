@@ -71,8 +71,8 @@ def get_geocoding_service() -> "GeocodingService":
 
 
 # Real (simplified Natural Earth 110m) boundaries for the multi-country
-# presets, so "mean over the US" doesn't average in Sonora and the Atlantic
-# (T42). Built once by scripts/build_preset_regions.py and checked in under
+# presets, so "mean over the US" doesn't average in Sonora and the Atlantic.
+# Built once by scripts/build_preset_regions.py and checked in under
 # datasets/ (data/ is a runtime volume, .dockerignore'd -- this asset must be
 # baked into the image). Loaded lazily and cached here -- no runtime fetch.
 _PRESET_REGIONS_PATH = os.path.join(
@@ -106,9 +106,8 @@ def load_preset_polygons() -> dict[str, Any]:
         return {}
 
 
-# T60 Phase 4: the 242 individually-addressable countries, the ``+`` grammar's
-# second member vocabulary (D6). A **second** asset rather than more features in
-# the one above, on two measurements (Phase 4 gate, V18/V19):
+# The 242 individually-addressable countries, usable in the ``+`` grammar. A
+# separate asset from the one above, for two reasons:
 #
 #   * ``georgia`` and ``antarctica`` are each a shipped preset id *and* an
 #     ``ADMIN`` value. Merged, this dict comprehension silently reduces 304
@@ -130,21 +129,19 @@ def load_admin0_polygons() -> dict[str, Any]:
 
     Keys are already normalized by the builder, so ``"bahamas"`` resolves even
     though the source spells it ``"The Bahamas"`` -- the only one of the 242
-    that ``_normalize_location_name`` changes (V19).
+    that ``_normalize_location_name`` changes.
 
     Carrying the source's own ``ADMIN`` spelling alongside the geometry is why
     this returns a richer value than ``load_preset_polygons``: the key is
     lower-cased and ``"the "``-stripped, and an answer that cited *that* would
     say "Bahamas", "Eswatini" and "Hong Kong S.A.R" for places Natural Earth
     spells "The Bahamas", "eSwatini" and "Hong Kong S.A.R.". ``display_name``
-    is what a T42 answer cites, so it gets the real spelling rather than a
+    is what an answer cites, so it gets the real spelling rather than a
     ``.title()`` reconstruction of a normalized key.
 
-    Degrades to ``{}`` like ``load_preset_polygons``, which for this asset means
-    every country token stops resolving and the composite grammar reports it as
-    an unknown token. That is the fail-closed answer D3b requires: there is no
-    bounding-box tier under this one to fall back to, by design (V21), and the
-    geocoder is off the table for anything containing a ``+`` (D8)."""
+    Degrades to ``{}`` like ``load_preset_polygons``: country tokens then fail
+    as unknown. Deliberately fail-closed: there's no bounding-box fallback, and
+    anything containing ``+`` never goes to the geocoder."""
     try:
         with open(_ADMIN0_COUNTRIES_PATH, encoding="utf-8") as fh:
             fc = json.load(fh)
@@ -421,9 +418,8 @@ def plot_map(
     return fig, ax
 
 def _non_selectable_dims(data_array: xr.DataArray) -> set[Any]:
-    """Dims that never require an explicit selection: spatial (lat/lon, by
-    CF identification -- T24) and time (by CF identification -- T25, the one
-    transparent auto-reduction)."""
+    """Dims that never require an explicit selection: spatial (lat/lon) and
+    time (the one transparent auto-reduction), both found by CF metadata."""
     non_selectable = set(LAT_COORD_CANDIDATES + LON_COORD_CANDIDATES)
     non_selectable |= {name for name in (find_lat_coord(data_array), find_lon_coord(data_array)) if name}
     time_name = identify_time(data_array)
@@ -451,8 +447,8 @@ def _dimension_choice_error(data_array: xr.DataArray, dim: str) -> MCPToolError:
     suggestion = f"Pass a dimension selector for '{dim}' with one of the values above."
     # A refused VERTICAL dimension is the moment a researcher wanted the whole
     # profile, not one level out of it -- and this refusal is where they already
-    # are. Naming the tool here turns the dead end into the discovery path
-    # (T56 D10). Kept conditional on the dimension actually being vertical:
+    # are. Naming the tool here turns the dead end into the discovery path.
+    # Kept conditional on the dimension actually being vertical:
     # suggesting a profile for a wavelength axis would send them somewhere that
     # cannot help.
     if is_vertical_dim(data_array, dim):
@@ -537,7 +533,7 @@ def _normalize_to_2d(data_array: xr.DataArray, dim_selector: dict[str, Any] | No
     Squeeze a DataArray down to 2D (lat, lon):
       1. Drop all size-1 dimensions (handles Time=1 cleanly).
       2. Apply any explicit ``dim_selector`` ({dim_name: coordinate value}).
-      3. A surviving time dim (T25) still auto-reduces (mean) -- it's the
+      3. A surviving time dim still auto-reduces (mean) -- it's the
          one transparent reduction, already disclosed via aggregate()'s own
          cadence/n_granules meta; this is a defense-in-depth squeeze for a
          caller that reaches _normalize_to_2d before aggregate() reduces it.
@@ -579,7 +575,7 @@ def geometry_mask(
     """
     # The affine transform below assumes a 1-D rectilinear lat/lon grid. A
     # 2-D curvilinear swath or a projected x/y grid would be silently
-    # mis-masked here -- refuse with a specific, typed error instead (T24).
+    # mis-masked here -- refuse with a specific, typed error instead.
     ensure_supported_grid(data_array)
 
     # Find lat/lon coordinates (handle different naming conventions)
@@ -630,7 +626,7 @@ def geometry_mask(
         dtype=np.uint8
     )
 
-    # Empty-mask self-heal (T42): a region smaller than a grid cell can cover
+    # Empty-mask self-heal: a region smaller than a grid cell can cover
     # zero cell *centers*, so center-containment rasterization returns nothing
     # for data that is right there. Retry with all_touched -- which keeps any
     # cell the geometry intersects at all -- and, if that recovers cells,
@@ -713,7 +709,7 @@ def _crop_to_mask_footprint(
     mask_da: xr.DataArray,
 ) -> Tuple[xr.DataArray, xr.DataArray]:
     """Narrow ``data_array`` and its already-rasterized ``mask_da`` to the
-    smallest window containing every cell the mask keeps (T50).
+    smallest window containing every cell the mask keeps.
 
     "Mean NO2 over New Jersey" against a continental grid otherwise applies a
     continental ``.where`` and reduces over an array that is >99% NaN by
@@ -792,8 +788,8 @@ def mask_data_by_geometry(
     crop : bool, optional
         Narrow the data (and the mask) to the mask's footprint before the
         ``.where``, so the reduction doesn't run over a grid that is almost
-        entirely NaN by construction (T50). Pass ``False`` for the pre-T50
-        full-grid behavior; the values kept are identical either way.
+        entirely NaN by construction. Pass ``False`` for the full-grid
+        behavior; the values kept are identical either way.
 
     Returns
     -------
@@ -803,9 +799,8 @@ def mask_data_by_geometry(
     mask_da = geometry_mask(data_array, geometry)
 
     if crop:
-        # T51: the crop and the .where are timed separately because the whole
-        # point of T50 was to move work from the second into the first -- one
-        # combined number could not show that trade.
+        # The crop and the .where are timed separately: the crop exists to
+        # move work out of the .where, and one number couldn't show that.
         with phase_timer("crop", cells_in=int(data_array.size)) as timing:
             data_array, mask_da = _crop_to_mask_footprint(data_array, mask_da)
             timing["cells_out"] = int(data_array.size)
@@ -825,7 +820,7 @@ def mask_data_by_geometry(
     # field alike.
     with phase_timer("mask", cells_in=int(data_array.size), cropped=crop):
         masked = data_array.where(mask_da)
-    # Carry the mask's fidelity signal (T42): when geometry_mask self-healed
+    # Carry the mask's fidelity signal: when geometry_mask self-healed
     # an empty mask to boundary cells, surface that here (``.where`` doesn't
     # keep the mask's attrs) so the tool can disclose region_type.
     if mask_da.attrs.get("region_type"):
@@ -833,8 +828,7 @@ def mask_data_by_geometry(
     # How many cells the ANALYZED REGION actually covers on this grid, recorded
     # here because this is the only place the rasterized mask exists -- a caller
     # re-deriving it would have to re-rasterize on the cropped axes, whose
-    # float32 step differs in the 8th digit and flips cells on the boundary
-    # (the T50 finding).
+    # float32 step differs in the 8th digit and flips cells on the boundary.
     #
     # It is the honest denominator for any "what fraction of the region had a
     # value" figure. The obvious alternative -- the cropped array's cell count --
@@ -847,10 +841,9 @@ def mask_data_by_geometry(
     # one weight definition (``cos_lat_weights``). A count and an area are not
     # interchangeable denominators: cells shrink toward the poles, so a
     # coverage figure whose numerator is area-weighted and whose denominator is
-    # a cell count describes two different fields at once -- Finding #13's
-    # mismatch, arriving through the denominator instead of the numerator. The
-    # frame stack's ``valid_fraction`` (T59 D10) needs the area; T56's
-    # per-layer coverage still reads the count.
+    # a cell count describes two different fields at once. The frame stack's
+    # ``valid_fraction`` needs the area; per-layer profile coverage still reads
+    # the count.
     #
     # Imported here rather than at module scope: aggregation_service reaches
     # back into this module's masking helpers, and a top-level import would
@@ -866,22 +859,15 @@ def mask_data_by_geometry(
 
 def apply_mask_region_type(masked: xr.DataArray, region: dict[str, Any]) -> None:
     """Downgrade ``region['region_type']`` to the masking-time fact when the
-    mask self-healed (T42): a sub-cell region that ``geometry_mask`` rescued
+    mask self-healed: a sub-cell region that ``geometry_mask`` rescued
     with ``all_touched`` is ``boundary_cells``, not the polygon/box/point the
     resolver first named. Mutates the caller-owned ``region`` dict in place.
 
-    T60 D10a: ``region_type`` was carrying two orthogonal facts in one slot.
-    ``boundary_cells`` is *rasterization fidelity*; ``composite_union`` (and
-    Phase 5's ``buffer``) is *shape provenance* -- "this shape is a
-    construction, not a named place". Both can be true at once, and the
-    downgrade below used to destroy the second. It is the *likely* path, not a
-    corner: a small construction on a coarse grid self-heals, and every
-    masking site calls this before building provenance, so the researcher
-    would never learn the shape was constructed.
-
-    The prior value is preserved into ``region_origin`` here rather than at
-    each constructor, so a future origin (D9's buffer) cannot forget to opt
-    in. ``setdefault``, because a constructor that already stated its origin
+    ``boundary_cells`` is rasterization fidelity; ``composite_union`` and
+    ``buffer`` are shape provenance ("a construction, not a named place").
+    Both can be true at once (a small construction on a coarse grid
+    self-heals), so the prior value is preserved into ``region_origin`` here,
+    in one place, rather than at each constructor. ``setdefault``, because a constructor that already stated its origin
     is the more specific answer."""
     mask_region_type = masked.attrs.get("region_type")
     if mask_region_type:
@@ -1111,21 +1097,15 @@ class RegionResolver:
         'east africa':        {'geometry': box( 29, -12, 52, 16), 'bounds': ( 29, -12, 52, 16), 'name': 'East Africa'},
         'southern africa':    {'geometry': box( 11, -35, 40, -15), 'bounds': ( 11, -35, 40, -15), 'name': 'Southern Africa'},
     }
-        # T60 Phase 3a: the 51 U.S. admin-1 units, from the generated table.
-        # Ordinary presets -- an honest envelope here, upgraded to the real
-        # boundary by ``_finalize_preset`` -- because unlike a coalition a
-        # state *has* an honest bounding box (D3's objection does not apply;
-        # no state crosses the antimeridian). ``display_name`` carries the
-        # disambiguation D15's resolution order makes necessary: gate V12
-        # measured "washington" geocoding live to Washington DC with 0.00%
-        # overlap with Washington State.
+        # The 51 U.S. admin-1 units, from the generated table. Ordinary
+        # presets (a state has an honest bounding box, upgraded to the real
+        # boundary by ``_finalize_preset``). ``display_name`` disambiguates,
+        # e.g. "washington" otherwise geocodes to Washington DC.
         for _key, _state in US_STATES.items():
             if _key in self.global_regions:
-                # D12a, applied to the merge itself. These go in by
-                # assignment, so a key that already existed would be silently
-                # replaced -- and Phase 4 adds countries, where "georgia" the
-                # country meets "georgia" the state. Naming the key beats a
-                # count assertion that only holds until someone updates it.
+                # These go in by assignment, so an existing key would be
+                # silently replaced (e.g. "georgia" the country vs the state).
+                # Fail naming the key.
                 raise region_dispatch.AliasCollisionError(
                     f"U.S. admin-1 key {_key!r} shadows an existing "
                     "global_regions preset; resolve the ambiguity explicitly "
@@ -1137,12 +1117,11 @@ class RegionResolver:
                 'name': _state['name'],
                 'display_name': _state['display_name'],
             }
-        # D12a: the T60 alias/coalition tables are hand-maintained, and a
-        # table that silently shadows "us" or "georgia" is the cheapest way
-        # to reintroduce a confident wrong region. Checked against this
-        # instance's presets rather than left to review.
+        # The alias/coalition tables are hand-maintained; one that silently
+        # shadows "us" or "georgia" would resolve a confident wrong region, so
+        # check against this instance's presets.
         region_dispatch.assert_no_alias_collisions(self.global_regions)
-        # T60 Phase 4's table, same rule. Kept a separate call because it
+        # The country table, same rule. Kept a separate call because it
         # deliberately does not open the country asset -- see its docstring;
         # doing so here would spend the 165 ms cold parse on every resolver,
         # including the ones that only ever resolve "paris".
@@ -1151,7 +1130,7 @@ class RegionResolver:
     # Preset keys that resolve to a real polygon (feature id in
     # preset_regions.geojson). Everything else in ``global_regions`` stays a
     # disclosed bounding box -- pure-ocean/quadrant concepts where a rectangle
-    # is the honest answer (T42).
+    # is the honest answer.
     _POLYGON_PRESET_IDS = {
         "united states": "united states", "usa": "united states", "us": "united states",
         "conus": "conus", "continental us": "conus",
@@ -1159,17 +1138,17 @@ class RegionResolver:
         "north america": "north america", "south america": "south america",
         "europe": "europe", "africa": "africa", "asia": "asia",
         "oceania": "oceania", "antarctica": "antarctica",
-        # T60 coalitions. These are NOT ``global_regions`` keys (D3 -- a
-        # coalition has no honest bounding box), so they are unreachable via
+        # Coalitions. These are NOT ``global_regions`` keys (a coalition has
+        # no honest bounding box), so they are unreachable via
         # the exact-match gate below and arrive only through region_dispatch.
         "otc": "otc", "new england": "new england",
-        # T60 Phase 3a: the 51 states. Feature id is the lowercased name, so
+        # The 51 states. Feature id is the lowercased name, so
         # the preset key and the polygon id are the same string.
         **{key: key for key in US_STATES},
     }
 
     def _finalize_preset(self, preset: dict[str, Any], key: str) -> dict[str, Any]:
-        """Return a preset enriched with the T42 fidelity disclosure fields.
+        """Return a preset enriched with the region-fidelity disclosure fields.
         A multi-country concept (US, a continent) is upgraded to its real
         Natural Earth polygon and labelled ``region_type: polygon``; every
         other preset stays the crude rectangle it is, honestly labelled
@@ -1199,7 +1178,7 @@ class RegionResolver:
         A GeoJSON hit is not automatically a boundary. Nominatim wraps a
         *point* result in GeoJSON as readily as an administrative area, so
         ``geojson is not None`` was never the same question as "did we get a
-        footprint" -- measured in the T60 Phase 0 gate (V2), both ``"OTC"``
+        footprint" -- both ``"OTC"``
         (an aerodrome in Chad) and ``"northeastern us"`` (an ~11 m railway
         platform in Boston) return GeoJSON ``Point`` geometries and were being
         disclosed as ``polygon``. A zero-area geometry gets the same 0.1° box
@@ -1227,33 +1206,24 @@ class RegionResolver:
 
     @staticmethod
     def _normalize_location_name(location_name: str) -> str:
-        """One normalization for both resolvers (T42 sync/async parity): lower,
-        strip, collapse whitespace, and drop a leading "the " so "the
-        Netherlands" and "the north america" resolve the same by either code
-        path. Previously only the async path stripped "the ", so the same
-        input could resolve two different ways."""
+        """One normalization for both resolvers (sync and async must agree):
+        lower, strip, collapse whitespace, and drop a leading "the " so "the
+        Netherlands" and "the north america" resolve the same either way."""
         normalized = " ".join(location_name.lower().strip().split())
         return normalized.removeprefix("the ")
 
     def resolve_location(self, location_name: str) -> dict[str, Any] | None:
         """Convert location name to RegionResult with geometry"""
-        # T60 D5/D11a: the ``+`` grammar reads the RAW string, ahead of
-        # normalization, because the split has to happen before "the " is
-        # stripped -- otherwise "ny + the nj" and "the ny + nj" resolve
-        # differently. Raises (D14) rather than returning None on a bad token.
+        # The ``+`` grammar reads the RAW string, before normalization, so
+        # "ny + the nj" and "the ny + nj" resolve the same. Raises rather than
+        # returning None on a bad token.
         composed = region_composition.dispatch_composite(location_name, self)
         if composed.claimed:
             return composed.region
-        # T60 D9/D11b: the buffer grammar, and it runs AFTER composition
-        # deliberately (gate V25). "within 50 km of NY + NJ" contains a "+",
-        # so the composition grammar claims it first and hard-fails naming the
-        # token -- the right answer, because D9 forbids X from resolving
-        # recursively through COMPOSITE. Reversing the order would turn that
-        # refusal into a buffer around a region D9 does not allow. This is the
-        # sync twin, which is what this sync method needs -- but note that
-        # export_service, once its only production caller, now takes
-        # ``aresolve_location``. Nothing in production reaches this line today;
-        # the region suites do.
+        # The buffer grammar runs AFTER composition on purpose: "within 50 km
+        # of NY + NJ" must fail in the composition grammar, since buffering a
+        # composite isn't allowed. (Sync twin; production uses
+        # ``aresolve_location``, but the region tests reach this.)
         buffered = region_buffer.dispatch_buffer(location_name, self)
         if buffered.claimed:
             return buffered.region
@@ -1262,10 +1232,7 @@ class RegionResolver:
         dispatched = region_dispatch.dispatch(location_lower, self)
         if dispatched.claimed:
             # Claimed-and-failed returns None here and never reaches the
-            # geocoder (D3b). Phase 1 surfaces that as the call sites'
-            # existing "Could not resolve location: '<string>'" -- honest, and
-            # it names the string but not the reason; D14's taxonomy error is
-            # Phase 3's.
+            # geocoder; callers report "Could not resolve location".
             return dispatched.region
         if location_lower in self.global_regions:
             return self._finalize_preset(self.global_regions[location_lower], location_lower)
@@ -1278,16 +1245,13 @@ class RegionResolver:
 
     async def aresolve_location(self, location_name: str) -> dict[str, Any] | None:
         """Async version of resolve_location() for agent tool execution."""
-        # T60 D5: the same gate, in the same place, for the same reason as the
-        # sync twin -- the composition tier is pure, so both share one copy.
+        # Same gate as the sync twin; the composition tier is pure, so both
+        # share one copy.
         composed = region_composition.dispatch_composite(location_name, self)
         if composed.claimed:
             return composed.region
-        # T60 D9/D11b: the async twin, in the same position and by the same
-        # V25 ordering argument as the sync one. This is the twin every
-        # analysis tool reaches (stat/plot/validation call the async resolver
-        # exclusively -- gate V24), and it is async precisely so the geocode
-        # does not block the event loop.
+        # Async twin, same ordering as the sync one. Every analysis tool uses
+        # this one, so the geocode doesn't block the event loop.
         buffered = await region_buffer.adispatch_buffer(location_name, self)
         if buffered.claimed:
             return buffered.region

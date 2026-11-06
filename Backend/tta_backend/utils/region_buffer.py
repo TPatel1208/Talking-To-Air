@@ -1,21 +1,14 @@
-"""T60 Phase 5: the ``"within N miles|km of X"`` grammar (D9).
+"""The ``"within N miles|km of X"`` grammar.
 
-**This module is the one region module that is NOT network-free**, and that is
-why it is a separate file rather than a third grammar inside
-``region_composition``. That module's docstring claims network-freedom in its
-first paragraph and the claim is load-bearing -- every composite member is a
-checked-in Natural Earth boundary and the geocoder is never consulted (D8).
-Here ``X`` resolves through ``geocoding_service`` (D9), so the claim would stop
-being true for the file that makes it. Keeping the I/O in its own module lets
-``region_composition`` keep its contract honestly, and gives D11b's sync/async
-fork exactly one place to live.
+**The one region module that is NOT network-free**: ``X`` resolves through
+``geocoding_service``. Kept separate so ``region_composition`` stays
+network-free, and so the sync/async split lives in one place.
 
 **The fork is one line wide.** Parsing, unit conversion, the AEQD projection,
 the antimeridian and pole checks and the extent gate are all pure and shared;
 only the geocode call differs between :func:`dispatch_buffer` (sync, reached by
-``export_service``) and :func:`adispatch_buffer` (async, reached by every
-analysis tool and by the retrieval-plane wrapper). Gate V24 verified all three
-surfaces against the live code.
+``resolve_location``) and :func:`adispatch_buffer` (async, reached by every
+analysis tool and by the retrieval-plane wrapper).
 """
 import math
 import re
@@ -31,8 +24,7 @@ if TYPE_CHECKING:
     from tta_backend.utils.plotting import RegionResolver
     from tta_backend.utils.region_dispatch import ExtentDispatch
 
-# D16, and V22 chose the spellings deliberately rather than accepting whatever
-# a regex happened to admit. Both systems, because for an atmospheric-science
+# Accepted unit spellings, chosen deliberately. Both systems, because for an atmospheric-science
 # tool "within 50 km of X" is at least as likely as miles -- and a bare number
 # is **refused** rather than defaulted (see ``_missing_units``).
 METRES_PER_UNIT: dict[str, float] = {
@@ -50,12 +42,10 @@ _UNIT_LABEL = {1000.0: "km", 1609.344: "miles"}
 
 # Syntactically a buffer: "within <something> of <something>". Deliberately
 # loose, and asked *before* the strict parse, for the same reason
-# ``is_composite`` answers on the separator alone (D8): once a string is
-# recognisably a buffer request the geocoder is off the table, so a malformed
-# radius has to reach a named refusal rather than falling through to Nominatim
-# as a literal place name. Gate V23 measured what that fall-through costs --
-# ``"within 50 miles of NYC"`` returns **zero** Nominatim hits, after which the
-# agent silently substitutes a different region (T46 Phase 2, V6).
+# ``is_composite`` answers on the separator alone: once a string looks like a
+# buffer request it never goes to the geocoder, so a malformed radius gets a
+# named refusal. (Nominatim finds nothing for the phrase, and the agent then
+# silently substitutes a different region.)
 _SHAPE = re.compile(r"^within\s+.+\s+of\s+.+$")
 
 # The strict parse. ``unit`` is optional in the *pattern* so that a bare number
@@ -65,12 +55,12 @@ _PARSE = re.compile(
     r"^within\s+(?P<amount>\d+(?:\.\d+)?)\s*(?P<unit>[a-z]*)\s+of\s+(?P<target>.+)$"
 )
 
-# V22, design tension 4: measured at r = 100 km, 40 N. 64 segments per quadrant
+# Measured at r = 100 km, 40 N: 64 segments per quadrant
 # is a 257-vertex ring retaining **99.988%** of pi r^2; 128 buys 0.007
 # percentage points for double the vertices, and 32 costs 0.03. The 0.012%
 # shortfall is roughly four orders of magnitude below one TEMPO L3 cell, and
-# since ``dispatch_buffer_extent`` sends a bbox rather than geometry (V23,
-# following Phase 1.5's V5/V7) the vertex count never reaches the wire.
+# since ``dispatch_buffer_extent`` sends a bbox rather than geometry, the
+# vertex count never reaches the wire.
 QUAD_SEGS = 64
 
 
@@ -78,8 +68,8 @@ QUAD_SEGS = 64
 class BufferResult:
     """Claimed or not, in the shape ``CompositeResult`` uses.
 
-    There is no third "claimed and failed" state, for the same reason D14 gives
-    the composite grammar: a buffer that fails *raises*, because the caller has
+    There is no third "claimed and failed" state, as with the composite
+    grammar: a buffer that fails *raises*, because the caller has
     to be told which part of the request was the problem -- the units, the
     target, the antimeridian, the size -- and a ``None`` carries none of that.
     """
@@ -118,13 +108,9 @@ class BufferRequest:
 def is_buffer(raw_name: str, normalize: Callable[[str], str]) -> bool:
     """Is this string syntactically a buffer request?
 
-    Answered on the normalized string, but **after** ``is_composite`` has had
-    it (V25): ``"within 50 km of NY + NJ"`` contains a ``+``, so the composition
-    grammar claims it first and hard-fails naming the token -- which is the
-    right answer, because D9 forbids ``X`` from resolving recursively through
-    COMPOSITE and the Non-Goals list recursive CUSTOM composition. Reversing
-    the order would silently turn that refusal into a buffer around a region
-    D9 does not allow.
+    Answered on the normalized string, but **after** ``is_composite``:
+    ``"within 50 km of NY + NJ"`` must fail in the composition grammar,
+    because buffering a composite isn't allowed.
     """
     return isinstance(raw_name, str) and bool(_SHAPE.match(normalize(raw_name)))
 
@@ -155,12 +141,11 @@ def parse_buffer(raw_name: str, normalize: Callable[[str], str]) -> BufferReques
 
 
 def build_buffer(latitude: float, longitude: float, metres: float) -> "BaseGeometry":
-    """D9's geometry: project to a local azimuthal-equidistant CRS centred on
-    the point, buffer in metres, project back.
+    """Project to a local azimuthal-equidistant CRS centred on the point,
+    buffer in metres, project back.
 
-    Pure, and shared by both twins. The alternative D9 rejects -- a degree
-    buffer with a fixed miles-per-degree constant -- was measured in the gate
-    and retains 76.5% of the intended area at 40 N, 50.2% at 60 N and 17.5% at
+    Pure, and shared by both twins. A degree buffer with a fixed
+    miles-per-degree constant would retain only 76.5% of the intended area at 40 N, 50.2% at 60 N and 17.5% at
     80 N, because a longitude degree shrinks by ``cos(latitude)``. This
     approach holds 99.99% at every latitude tested including 89 N.
     """
@@ -197,16 +182,16 @@ def _region(request: BufferRequest, geo_result: dict[str, Any], geometry: "BaseG
         "bounds": geometry.bounds,
         "name": name,
         # The radius is already in ``name``; what ``display_name`` adds is the
-        # T42 disclosure that this is a *constructed* shape and how it was
+        # disclosure that this is a *constructed* shape and how it was
         # measured -- "geodesic" being the load-bearing word, since the same
         # phrase computed in degrees would be half this size at 60 N.
         "display_name": f"{name} (geodesic buffer)",
-        # D10: a request-time construction, not a named place, and explicitly
+        # A request-time construction, not a named place, and explicitly
         # NOT ``point_buffer`` -- which already means "we could not find a
         # boundary, so here is a 0.1 deg box". Labelling a deliberate,
         # precisely-sized buffer with it would invert the disclosure.
         "region_type": "buffer",
-        # D10a: the same fact in the slot ``apply_mask_region_type`` does not
+        # The same fact in the slot ``apply_mask_region_type`` does not
         # overwrite. A small buffer on a coarse grid self-heals to
         # ``boundary_cells``, which is the *likely* path, not a corner.
         "region_origin": "buffer",
@@ -285,7 +270,7 @@ def _rings(geometry: "BaseGeometry") -> list[Any]:
 
 
 def _check_antimeridian(request: BufferRequest, geo_result: dict[str, Any], geometry: "BaseGeometry") -> None:
-    """V22, option (a): refuse, rather than split.
+    """Refuse antimeridian-crossing buffers rather than split them.
 
     The shape being refused is not merely distorted -- it is inverted. Measured
     at 20 N, 179.5 E with r = 100 km: a point 10 km east reads ``False``, a
@@ -294,14 +279,11 @@ def _check_antimeridian(request: BufferRequest, geo_result: dict[str, Any], geom
     no direction in which the polygon is right, and its area is 99.99% of
     pi r^2 the whole time.
 
-    Splitting it at +/-180 (option (b)) fixes the mask and leaves the bounding
-    box at ``-180 .. 180``: 1,210,757 cells retrieved for a 6,052-cell region,
-    which D16's gate passes at 650.4 deg^2. Phase 4 already refuses the USA,
-    Russia, Fiji, New Zealand, Kiribati and Antarctica as composite members for
-    that exact property, and a request-time buffer does not get an exemption
-    the checked-in countries are denied.
+    Splitting at +/-180 fixes the mask but leaves the bounding box at
+    ``-180 .. 180`` (1.2M cells retrieved for a 6k-cell region). Countries
+    with that property are refused as composite members too.
 
-    What this costs was measured over nine real places near the antimeridian:
+    Cost, over nine real places near the antimeridian:
     **nothing at all at 50 km or 100 km**; a 250 km buffer at Suva or Anadyr,
     and 500 km at four Pacific cities. TEMPO's field of regard (lon 168 W-13 W)
     does not reach the antimeridian at all.
@@ -340,15 +322,10 @@ def _resolved(request: BufferRequest, geo_result: dict[str, Any] | None) -> dict
 
 
 def dispatch_buffer(raw_name: str, resolver: "RegionResolver") -> BufferResult:
-    """The sync twin (D11b).
+    """The sync twin.
 
-    Gate V24 verified export_service as the caller that reached this, via
-    ``resolve_location``. That is no longer true: export_service moved to
-    ``aresolve_location`` (and so to :func:`adispatch_buffer`) to get the
-    blocking geocoder off the event loop, which leaves this twin with **no
-    production caller**. It stays reachable through ``resolve_location``, and
-    the region suites exercise it there, so treat a V24 re-verification as
-    open rather than settled -- do not read the old claim as still checked."""
+    No production caller today (export_service uses the async resolver); it
+    stays reachable through ``resolve_location`` and the region tests use it."""
     request = _claim(raw_name, resolver)
     if request is None:
         return NOT_CLAIMED
@@ -359,7 +336,7 @@ def dispatch_buffer(raw_name: str, resolver: "RegionResolver") -> BufferResult:
 
 
 async def adispatch_buffer(raw_name: str, resolver: "RegionResolver") -> BufferResult:
-    """The async twin (D11b). Reached by every analysis tool and by the
+    """The async twin. Reached by every analysis tool and by the
     retrieval-plane wrapper, both of which are ``async`` -- a single blocking
     twin would put ``requests.get(timeout=15)`` on the event loop, the hazard
     the sync/async split exists to prevent."""
@@ -371,32 +348,20 @@ async def adispatch_buffer(raw_name: str, resolver: "RegionResolver") -> BufferR
 
 
 async def adispatch_buffer_extent(raw_name: str, resolver: "RegionResolver") -> "ExtentDispatch":
-    """The retrieval plane's answer for a buffer phrase (D13, gate V23).
+    """The retrieval plane's answer for a buffer phrase.
 
-    Not optional, and the argument is stronger than the composite's. A
-    coalition has a name the MCP's geocoder might resolve, badly -- ``"OTC"``
-    is an aerodrome in Chad. A composite has no key but does contain real place
-    names. A buffer phrase has **nothing**: measured live in the gate,
-    ``"within 50 miles of NYC"`` returns *zero* Nominatim hits. Unclaimed, the
-    AOI step fails outright, and T46 Phase 2's V6 measured what the agent does
-    next -- it silently substitutes a different region and retrieves that,
-    after which the mask clips a cube that never covered the buffer (Risk 5).
+    Required: Nominatim finds nothing for "within 50 miles of NYC", so without
+    this the AOI step fails and the agent substitutes a different region.
 
-    Returns the buffer's **envelope** as a bbox, by the invariant Phase 1.5
-    pinned and 3a/3b re-proved: retrieval must *contain* the mask, not equal
-    it. Sends a bbox rather than geometry because V5/V7 measured a 519-vertex
-    OTR polygon buying **zero** granule reduction over its bbox while costing
-    12,951 bytes on every call and in the T53 cache key.
+    Returns the buffer's **envelope** as a bbox: retrieval must *contain* the
+    mask, not equal it, and a polygon gives no granule reduction over its bbox
+    while bloating every call and cache key.
 
-    Async only, and that is not an omission: the retrieval-plane wrapper's
-    ``_call`` is itself ``async def`` (gate V24), so there is no caller for a
-    sync twin here and adding one would put a blocking geocode within reach of
-    the event loop for no purpose.
+    Async only: the retrieval-plane wrapper is async, so a sync twin would only
+    invite a blocking geocode.
 
-    Because V22 refuses the antimeridian and polar cases before this point,
-    every buffer that arrives has an honest, non-wrapping bounding box -- the
-    V22 refusal is what makes this function a one-liner. Had the split option
-    been taken, this would have had to send ``-180,...,180``.
+    Antimeridian and polar cases are refused earlier, so every bounding box
+    here is non-wrapping.
     """
     from tta_backend.utils.region_dispatch import EXTENT_NOT_CLAIMED, ExtentDispatch
 
@@ -404,12 +369,9 @@ async def adispatch_buffer_extent(raw_name: str, resolver: "RegionResolver") -> 
     if not buffered.claimed:
         return EXTENT_NOT_CLAIMED
     if buffered.region is None:
-        # Not reachable today -- ``adispatch_buffer`` raises rather than
-        # returning claimed-with-None, which is the whole of D14. Guarded
-        # anyway, and guarded by *raising*, because the alternative here is
-        # fail-OPEN: returning EXTENT_NOT_CLAIMED would send the raw phrase to
-        # the MCP's own Nominatim, which is what D8 forbids. The same guard
-        # ``dispatch_composite_extent`` carries, for the same reason.
+        # Unreachable (``adispatch_buffer`` raises instead), but guarded by
+        # raising: falling through would send the raw phrase to the MCP's
+        # geocoder. Same guard as ``dispatch_composite_extent``.
         raise _malformed(raw_name)
     return ExtentDispatch(claimed=True, location=_outward_bbox(buffered.region["bounds"]))
 
@@ -473,20 +435,18 @@ def _named_region_vocabulary(resolver: "RegionResolver") -> set[str]:
 
 
 def _check_not_a_named_region(request: BufferRequest, resolver: "RegionResolver") -> None:
-    """D9: ``X`` resolves **only** as a single geocoded point, never
-    recursively through PRESET or COMPOSITE (a Non-Goal).
+    """``X`` resolves **only** as a single geocoded point, never through a
+    preset or composite.
 
-    Without this, ``"within 50 km of otc"`` geocodes the bare string ``"otc"``,
-    which the Phase 0 gate measured resolving live to **an aerodrome in Chad**
-    -- shipped as ``region_type: buffer``, faithfully disclosed, and wrong by a
-    continent. That is D12b's failure mode with a new label on it.
+    Without this, ``"within 50 km of otc"`` geocodes the bare string ``"otc"``
+    to **an aerodrome in Chad** -- wrong by a continent.
 
     Checked before the geocode, so a refused request costs no network call and
     no Nominatim rate-limit slot.
 
     This costs nothing a researcher would type: all 90 ``global_regions`` keys
     are regions -- continents, sub-continents, countries, U.S. states -- with
-    **not one city among them** (gate V25), so ``"within 50 km of paris"``,
+    **not one city among them**, so ``"within 50 km of paris"``,
     ``"...of nyc"`` and ``"...of chicago"`` are untouched.
     """
     target = resolver._normalize_location_name(request.target)
@@ -510,13 +470,11 @@ def _check_not_a_named_region(request: BufferRequest, resolver: "RegionResolver"
 
 
 def _unresolved_target(request: BufferRequest) -> "MCPToolError":
-    """D8's rule, carried to this grammar: once a string is syntactically a
-    buffer, the geocoder never sees the *phrase*.
+    """Once a string is syntactically a buffer, the geocoder never sees the
+    *phrase*.
 
-    Gate V23 measured ``"within 50 miles of NYC"`` returning **zero** Nominatim
-    hits, so falling through would not even produce a wrong answer -- it would
-    produce a failed AOI step, after which T46 Phase 2's V6 measured the agent
-    silently substituting a different region and retrieving that instead.
+    Nominatim finds nothing for "within 50 miles of NYC", so falling through
+    would fail the AOI step and the agent would substitute a different region.
     """
     from tta_backend.earthdata_mcp.results import CATEGORY_USER_INPUT, MCPToolError
 
@@ -531,13 +489,13 @@ def _unresolved_target(request: BufferRequest) -> "MCPToolError":
 
 
 def _check_extent(request: BufferRequest, geo_result: dict[str, Any], geometry: "BaseGeometry") -> None:
-    """D16's gate, reusing ``MAX_COMPOSITE_ENVELOPE_DEG2`` rather than minting a
+    """The extent gate, reusing ``MAX_COMPOSITE_ENVELOPE_DEG2`` rather than minting a
     third constant -- two numbers both meaning "too big" drift apart, and then
     a refusal names a limit that is not the one that fired.
 
     Measured against the 2,148.7 deg^2 ceiling: 50 km of NYC is 1.1, 50 miles
     2.8, 500 miles 276.5, 1000 miles 1,113.1 -- and 3000 miles is **11,270.2
-    deg^2 = 20,980,751 cells**, the PRD's own example.
+    deg^2 = 20,980,751 cells**.
 
     The message is new even though the number is not: ``_too_large`` says the
     members are far apart and to ask for nearer ones, which is meaningless
@@ -576,12 +534,10 @@ def _malformed(raw_name: str) -> "MCPToolError":
 
 
 def _missing_units(raw_name: str, amount: str) -> "MCPToolError":
-    """D16, and the gate's tension-3 decision: a bare number **refuses**.
+    """A bare number **refuses** rather than defaulting a unit.
 
-    Defaulting silently is a 50%-wrong answer for half of users -- 50 miles is
-    80.5 km, not a rounding error -- and D12b is the standing precedent against
-    replacing an unknown with a confident guess. So the message names both
-    units rather than picking one.
+    50 miles is 80.5 km, so guessing would be badly wrong for half of users.
+    The message names both units.
     """
     from tta_backend.earthdata_mcp.results import CATEGORY_USER_INPUT, MCPToolError
 

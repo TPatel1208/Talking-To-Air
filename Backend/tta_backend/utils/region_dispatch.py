@@ -1,21 +1,13 @@
-"""T60 region dispatch: the door a polygon-only preset can get through.
+"""Region dispatch: how polygon-only presets (coalitions, aliases, states)
+get resolved.
 
-``RegionResolver`` has historically had exactly one gate --
-``if location_lower in self.global_regions`` -- with everything else falling
-through to Nominatim. ``_POLYGON_PRESET_IDS`` is consulted *inside*
-``_finalize_preset``, i.e. only after that gate has already passed: it can
-upgrade a preset to a real polygon, but it can never reach one. So a
-checked-in coalition polygon with no ``global_regions`` key -- which is
-exactly what D3 requires, since a coalition's bounding box would silently
-swallow West Virginia, most of Ohio and part of Ontario -- was unreachable.
+``RegionResolver``'s exact-match gate only covers ``global_regions`` keys,
+and coalitions deliberately have none (a coalition's bounding box would
+swallow West Virginia, most of Ohio and part of Ontario). This runs *ahead*
+of that lookup and answers in three states, not two (see ``DispatchResult``).
 
-This module is that missing door. It runs *ahead* of the existing exact-match
-lookup and answers in three states, not two (see ``DispatchResult``).
-
-Scope: PRESET tier only. The ``+`` composition grammar (D5) and the CUSTOM
-buffer grammar (D9) are later phases; this module is deliberately a pure,
-network-free lookup so both resolvers can share one copy of it (D11b's
-sync/async fork only becomes necessary when CUSTOM lands).
+Preset tier only; the ``+`` and buffer grammars live in region_composition and
+region_buffer. A pure, network-free lookup so both resolvers share one copy.
 """
 from dataclasses import dataclass
 from collections.abc import Sequence
@@ -39,10 +31,9 @@ class DispatchResult:
       alias and then failed to produce a polygon (missing or corrupt asset).
 
     The third state is the reason this is not a ``dict | None``. Collapsing it
-    into the second is the specific bug D3b exists to prevent: a missing asset
-    would become a Nominatim query for the string ``"OTC"``, which resolves
-    live to an *airport in Chad* and is handed back labelled
-    ``region_type: polygon`` (Phase 0 gate, V2). Fail-closed here is not a
+    into the second would turn a missing asset into a Nominatim query for
+    ``"OTC"``, which resolves to an *airport in Chad* labelled
+    ``region_type: polygon``. Fail-closed here is not a
     degraded answer versus a good one -- it is a not-found versus a mask over
     the wrong continent.
     """
@@ -60,7 +51,7 @@ class _Coalition:
 
     ``name`` is the short label a plot title should carry; ``display_name`` is
     the string the *answer* should cite, and for an approximated coalition it
-    is where the approximation is disclosed (D3a) -- not in a code comment,
+    is where the approximation is disclosed -- not in a code comment,
     where no researcher will read it.
     """
 
@@ -69,7 +60,7 @@ class _Coalition:
 
 
 # Coalition ids are feature ids in datasets/preset_regions.geojson, emitted by
-# scripts/build_preset_regions.py. By D3 none of these may have a
+# scripts/build_preset_regions.py. None of these may have a
 # ``global_regions`` entry; ``assert_no_alias_collisions`` enforces that.
 COALITIONS: dict[str, _Coalition] = {
     "otc": _Coalition(
@@ -89,8 +80,8 @@ COALITIONS: dict[str, _Coalition] = {
     ),
 }
 
-# Normalization happens *before* lookup and is ``RegionResolver``'s own
-# (D11a), so "the OTC", "  OTC  " and "otc" all arrive here as "otc" and
+# Normalization happens *before* lookup and is ``RegionResolver``'s own,
+# so "the OTC", "  OTC  " and "otc" all arrive here as "otc" and
 # neither resolver can normalize differently than the other.
 ALIASES: dict[str, str] = {
     "otr": "otc",
@@ -117,12 +108,10 @@ class ExtentDispatch:
     - **claimed, location is None** -- a known coalition or alias that failed
       to produce a footprint.
 
-    The third state exists here for exactly the reason D3b gives on the mask
-    plane, one plane over. Falling through on a missing asset hands ``"OTC"``
-    to the MCP's own geocoder, which is Nominatim, which returns an aerodrome
-    in **Chad** (Phase 0 gate, V2). Phase 1 fails closed on the mask; the
-    retrieval plane must not fail open behind it, or the mask clips a cube that
-    never covered the region and nothing says so.
+    The third state exists for the same reason as on the mask side: falling
+    through on a missing asset hands ``"OTC"`` to the MCP's geocoder, which
+    returns an aerodrome in **Chad**, and the mask then clips a cube that never
+    covered the region.
     """
 
     claimed: bool
@@ -133,14 +122,10 @@ EXTENT_NOT_CLAIMED = ExtentDispatch(claimed=False)
 
 
 def _bbox_string(bounds: Sequence[float]) -> str:
-    """``"W,S,E,N"`` decimal degrees -- the channel the Phase 1.5 gate chose.
+    """``"W,S,E,N"`` decimal degrees, not GeoJSON.
 
-    V5 measured both channels live: the MCP accepts the 12,951-byte OTR
-    GeoJSON whole (``vertex_count: 519``, untruncated) *and* derives from it
-    the identical ``bbox`` this string carries. V7 then measured what the
-    difference buys -- ``estimate_retrieval_size`` returned **81 granules for
-    both**, so the polygon costs 12,951 bytes on every call (and in the T53
-    cache key) for a measured zero reduction in what is fetched.
+    Sending the polygon fetches the same granules as its bbox, while adding
+    ~13 KB to every call and cache key.
 
     The envelope is 2.453x the polygon's area, and that over-inclusion is
     *correct*: the mask clips it. Retrieval must contain the mask, not equal
@@ -152,36 +137,26 @@ def _bbox_string(bounds: Sequence[float]) -> str:
 
 
 def dispatch_extent(normalized_name: str, global_regions: dict[str, Any]) -> ExtentDispatch:
-    """Translate a T60 vocabulary word into an extent the MCP can consume.
+    """Translate a dispatch vocabulary word into an extent the MCP can consume.
 
     ``normalized_name`` must already have been through
-    ``RegionResolver._normalize_location_name`` (D11a), so both planes
+    ``RegionResolver._normalize_location_name``, so both planes
     normalize identically and cannot disagree about what string they were
     handed.
 
     Scope is ``COALITIONS`` plus ``ALIASES`` plus the 51 U.S. admin-1 units,
     and nothing else. Any *other* ``global_regions`` key typed directly
     ("northeast us", "north america", "paris") is *not* claimed and reaches the
-    MCP byte-identical to today; those already work, and translating them would
-    be a blast radius no phase has measured.
+    MCP unchanged; those already work.
 
-    The *alias* forms are claimed even when they point at a plain preset, and
-    that is not an inconsistency -- it is Risk 5. Phase 1 taught the mask plane
-    that "northeastern us" means the ``northeast us`` box; the MCP still
-    geocodes that string to an ~11 m railway platform in Boston (Phase 0, V2).
-    Leaving the alias untranslated is precisely the two-plane divergence where
-    the mask clips against a cube that never covered it.
+    *Aliases* are claimed even when they point at a plain preset: the mask
+    knows "northeastern us" means the ``northeast us`` box, but the MCP
+    geocodes it to a railway platform in Boston, so the cube wouldn't cover
+    the mask.
 
-    The **states** are claimed for the same reason, on a measurement rather
-    than on symmetry (Phase 3a gate, V13). Two of five probed tokens retrieved
-    a different place outright -- "new york" as New York City, "washington" as
-    Washington DC, 0.00% overlap. But the deciding finding was the three that
-    geocoded *correctly* and still failed containment: Georgia covers 99.99% of
-    the shipped mask and its retrieved extent still stops 0.018 deg short on
-    the west edge, because the mask is Natural Earth 50m and the extent was
-    OSM. Two providers, two sets of edges. No geocoder improvement closes that
-    -- only both planes deriving from one polygon, which is what claiming the
-    state here does. A state reaches the ``global_regions`` branch below, so
+    **States** are claimed too: "new york" and "washington" geocode to the
+    cities, and even correct geocodes use OSM edges that don't contain the
+    Natural Earth mask. Deriving both from one polygon fixes that. A state reaches the ``global_regions`` branch below, so
     the extent it sends is the same envelope ``_finalize_preset`` masks with.
     """
     from tta_backend.utils.plotting import load_preset_polygons
@@ -210,7 +185,7 @@ class AliasCollisionError(RuntimeError):
 
 
 def assert_no_alias_collisions(global_regions: dict[str, Any]) -> None:
-    """Fail loudly if the hand-maintained tables shadow anything (D12a).
+    """Fail loudly if the hand-maintained tables shadow anything.
 
     A table that silently shadows ``"georgia"`` or ``"us"`` is the cheapest
     possible way to reintroduce a confident wrong region, and review is not a
@@ -243,7 +218,7 @@ def dispatch(normalized_name: str, resolver: "RegionResolver") -> DispatchResult
     """Resolve ``normalized_name`` if it is in this module's vocabulary.
 
     ``normalized_name`` must already have been through
-    ``RegionResolver._normalize_location_name`` (D11a). ``resolver`` supplies
+    ``RegionResolver._normalize_location_name``. ``resolver`` supplies
     ``global_regions`` and ``_finalize_preset`` -- every region this module
     returns is built by ``_finalize_preset``, never assembled here, so an
     alias is indistinguishable from its canonical key (same ``region_type``,
@@ -260,7 +235,7 @@ def dispatch(normalized_name: str, resolver: "RegionResolver") -> DispatchResult
         coalition = COALITIONS[target]
         polygon = load_preset_polygons().get(target)
         if polygon is None:
-            # D3b: claimed and failed. The caller must NOT geocode.
+            # Claimed and failed. The caller must NOT geocode.
             return DispatchResult(claimed=True, region=None)
         preset = {
             "geometry": polygon,
