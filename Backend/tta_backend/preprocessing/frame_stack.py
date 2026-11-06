@@ -2,7 +2,7 @@
 preprocessing/frame_stack.py
 ============================
 The bucketed reduction: one field per interval of the requested span, instead
-of one field for the whole of it (T59 Phase 3).
+of one field for the whole of it.
 
 ``aggregate()`` collapses the time axis to a single 2-D field. This module
 keeps that axis, grouped into cadence buckets, so a week of TEMPO NO2 can be
@@ -15,7 +15,7 @@ frames would mean ``keep=("time", "lat", "lon")``, which collapses nothing at
 all: the two operations frames actually need -- group time into buckets, then
 block-mean lat/lon -- are both additions to it rather than uses of it, and
 teaching one function to sometimes-group-and-sometimes-not is how a shared
-reduction acquires two behaviours behind one name.
+reduction ends up with two behaviours behind one name.
 
 It IS the right home for the per-frame REGIONAL statistics, and this module
 calls it for exactly that (``keep=("bucket",)``). That is the reuse worth
@@ -35,72 +35,50 @@ import xarray as xr
 from tta_backend.utils import xarray_ops
 from tta_backend.utils.geo_utils import find_lat_coord, find_lon_coord
 
-# D5's cell ceiling. A CEILING, not a target: ``k`` below is an integer, so a
+# Cell ceiling per frame. A CEILING, not a target: ``k`` below is an integer, so a
 # real grid lands at 70-96% of it (14,124 measured on a 535x658 regional grid,
 # 19,107 on the full 2950x5771 TEMPO domain). ``FrameStack.cells_per_frame``
 # carries what was realized, never this number.
 FRAME_CELL_CEILING = 20_000
 
-# D7's gate. A month of hourly granules is a 700-stop slider no human can use;
-# above this the cadence buckets are grouped and the scrubber becomes D14's
-# second tier.
+# Max frames. A month of hourly granules would be a 700-stop slider; above
+# this, cadence buckets are grouped (the "coarsened" tier).
 MAX_FRAMES = 60
 
-# D3's backstop, on SPATIAL EXTENT -- the term D7 does not bound. Phase 3 §7
-# measured a production-shaped ``build_frame_stack`` being OOM-killed by the
-# kernel on the full TEMPO domain in the 3.9 GB container, while Phase 2's bare
-# ``groupby().mean().coarsen().mean()`` survives the same bundle at 1,363 MB.
-# So the reduction's own consumers are what push it over, and a frame-count
-# gate lets a full-domain request straight through to a reduction that dies.
+# Spatial-extent limit (the frame cap doesn't bound memory). A full-domain
+# TEMPO build is OOM-killed in the 3.9 GB container, so the frame count alone
+# isn't enough.
 #
-# The number is the largest extent MEASURED to complete, rounded up, not a
-# guess with a safety factor:
+# Set to the largest extent measured to complete, rounded up:
 #
 #   535 x 658   =   352 k cells, 54 hourly buckets ->   385 MB   completed
 #   1250 x 3000 =  3.75 M cells, 54 hourly buckets -> 1,342 MB   completed
 #   2950 x 5771 = 17.0 M cells, 54 hourly buckets -> OOM-KILLED
 #
-# Two cheaper-reduction levers exist and NEITHER is measured: rechunking the
-# grouped intermediate spatially before the fused consumers (each chunk is a
-# full 2950x5771x8 = 136 MB slab today), and unfusing the pooled histogram back
-# into its own pass. Either could raise this constant -- with a number attached.
-# Until one of them is measured, a full-domain scrub is refused out loud rather
-# than attempted and killed.
+# Untested ways to raise it: rechunk the grouped intermediate spatially, or
+# compute the pooled histogram in its own pass. Until then, full-domain scrubs
+# are refused rather than attempted and killed.
 MAX_FRAME_NATIVE_CELLS = 4_000_000
 
-# The same backstop for a build carrying D6a's EXTRA PLANES, and it is a
-# different number because the constant above was measured on a build that
-# carried none. Phase 14 measured this one the same way -- one arm per process,
-# in the same 3.9 GB container, against this same function:
+# Same limit for builds with the extra max/min planes, measured the same way
+# (3.9 GB container):
 #
 #   1,050,000 cells  1 stat  681.8 MB   3 stats  1,308 MB   both completed
 #   1,400,000 cells                     3 stats  OOM-KILLED
 #   1,800,000 cells                     3 stats  OOM-KILLED
 #   3,750,000 cells  1 stat  1,343.5 MB 3 stats  OOM-KILLED
 #
-# Phase 11's ratio is not what fails: 1,308/681.8 = 1.92x reproduces its 1.91x
-# at three times the extent, so the single fused compute behaves exactly as D6a
-# decision 6 assumed. What fails is headroom. The one-statistic arm reproduces
-# Phase 5's own anchor to within 0.1% (1,343.5 against 1,342 MB), which means
-# the constant above was set at the last extent that survived -- it has no
-# margin by construction, so ANY increase in the reduction's cost breaks it.
+# Three statistics cost ~1.9x one. The limit above has no headroom, so any
+# extra cost breaks it.
 #
-# Deliberately a SECOND limit rather than a smaller first one. Lowering
-# MAX_FRAME_NATIVE_CELLS to fit three statistics would refuse charts from 1M to
-# 4M cells that scrub perfectly well today, charging an existing capability for
-# a new one. Above this line a chart keeps exactly the mean scrubber it has
-# always had; only the extra planes are withheld, and the tool says why.
-#
-# Under the largest measured survivor, not at it: 1,050,000 survived once at
-# 1,308 MB with roughly 300 MB to spare, in a container whose own baseline moved
-# by 400 MB during the session that measured it.
+# A separate limit, not a lower first one, so 1M-4M cell charts keep their
+# mean scrubber; above this only the extra planes are withheld (with a reason).
+# Set below the largest survivor, since the container baseline varies ~400 MB.
 MAX_PLANE_NATIVE_CELLS = 1_000_000
 
-# D3's other backstop, on SPAN, sitting above D14's coarsening rather than
-# instead of it. Coarsening is what fits a long span into the frame budget and
-# Phase 3 §2 measured it as the common case (a 2.2-day TEMPO retrieval is
-# already 54 hourly frames), but it has no ceiling of its own: it will fold a
-# decade of hourly buckets into 60 stops and label each one a scrub position.
+# Span limit, on top of coarsening. Coarsening is the common case (2.2 days of
+# TEMPO is already 54 hourly frames) but has no ceiling of its own: it would
+# fold a decade of hourly buckets into 60 stops.
 #
 # The limit is expressed as buckets PER FRAME rather than as a duration,
 # because that is the quantity that decides whether a stop is still an interval
@@ -110,21 +88,16 @@ MAX_PLANE_NATIVE_CELLS = 1_000_000
 MAX_BUCKETS_PER_FRAME = 24
 MAX_SPAN_BUCKETS = MAX_FRAMES * MAX_BUCKETS_PER_FRAME
 
-#: D14's two tiers, named so a payload consumer can branch on them.
+#: The two tiers, named so a payload consumer can branch on them.
 #: ``cadence`` -- the frames ARE the cadence buckets and the period map is
 #: derived from them exactly. ``coarsened`` -- the frames are a DIFFERENT
 #: temporal aggregation, and ``FrameStack.delta`` quantifies the relationship.
 CADENCE_TIER = "cadence"
 COARSENED_TIER = "coarsened"
 
-# D9's clip, and how many bins the pooled distribution is accumulated in. A
-# quantile is not a streaming reduction, so an exact one over a lazily-opened
-# multi-granule stack means either holding N x native in memory (the thing the
-# Architectural Constraint forbids) or walking the graph twice. A histogram is
-# the third option: bounded memory, one walk, and at 2^16 bins the quantization
-# is ~1.5e-5 of the field's range -- some five orders of magnitude finer than
-# TEMPO's own retrieval uncertainty, and far below anything a colour ramp can
-# show.
+# The 2-98 color clip, and the histogram bins it's computed from. An exact
+# quantile would need the whole stack in memory or a second pass; a 2^16-bin
+# histogram is one pass with error far below what a color ramp can show.
 POOLED_CLIP = (2.0, 98.0)
 _POOLED_BINS = 1 << 16
 
@@ -147,24 +120,13 @@ _CADENCE_STEP = {"hourly": "h", "daily": "D", "monthly": "MS"}
 
 BUCKETABLE_CADENCES = tuple(_CADENCE_STEP)
 
-#: D6a decision 1: the statistics a stack can carry as a FIELD -- one value per
-#: pixel per frame, ``groupby(bucket).max(time)`` block-maxed onto the frame
-#: grid.
+#: The statistics a stack can carry as a FIELD (one value per pixel per frame).
 #:
-#: **This is NOT ``_FRAME_STATS``, and the two must never be merged.** That
-#: tuple, further down, is the per-frame REGIONAL SCALAR: one number for the
-#: whole region, which ``Frame.statistics["max"]`` has carried since Phase 3 and
-#: which already renders in the readout. This one is a PLANE. They share three
-#: words and nothing else -- a chart can show the max plane while every frame's
-#: scalar max is unchanged, and the scalar max of the max plane is not even the
-#: same number as the scalar max of the mean plane. Naming them alike is how a
-#: quantity acquires two accounts of itself, which is the failure
-#: ``DELTA_BASIS``' own docstring exists to prevent, wearing a third shoe.
+#: **Not the same as ``_FRAME_STATS``; never merge them.** That is the
+#: per-frame regional SCALAR (one number per region). This is a PLANE.
 #:
-#: ``"mean"`` is in this tuple because it is a legal request, not because it
-#: lands in ``FrameStack.planes``: the mean plane is the one this module has
-#: always shipped and it stays in the top-level fields (D6a decision 5 -- "the
-#: mean entry keeps its exact current shape, URL and cost").
+#: ``"mean"`` is a legal request but stays in the top-level fields, not
+#: ``FrameStack.planes``, so its shape, URL and cost never change.
 PLANE_STATISTICS = ("mean", "max", "min")
 
 # Grid-neutral dim names a non-mean plane wears inside the fused dataset.
@@ -278,20 +240,13 @@ def frame_gate(
 
 
 def plane_gate(da: xr.DataArray, *, time_dim: str) -> FrameRefusal | None:
-    """Whether ``da`` may be built with D6a's EXTRA PLANES. ``None`` = yes.
+    """Whether ``da`` may be built with the extra max/min planes. ``None`` = yes.
 
-    Separate from :func:`frame_gate` rather than a parameter on it, because the
-    two answer different questions about the same field: that one decides
-    whether there is a scrubber at all, this one decides how many statistics it
-    can offer. A field can pass the first and fail this one, and the right
-    outcome then is the mean scrubber it already had -- never a refusal, which
-    is why this returns its own answer instead of turning into a third arm of
-    the other's ``extent_too_large``.
+    Separate from :func:`frame_gate`: that decides whether there's a
+    scrubber at all, this decides how many statistics it offers. Failing
+    this keeps the mean scrubber; it's never a refusal.
 
-    Assumes its caller has already run :func:`frame_gate`; everything that gate
-    checks (a real time axis, a bucketable cadence, a 2-D field) is a
-    precondition for building any plane at all, and repeating it here would give
-    one refusal two homes.
+    Assumes the caller already ran :func:`frame_gate`.
     """
     cells = _native_cells(da, time_dim)
     if cells > MAX_PLANE_NATIVE_CELLS:
@@ -341,8 +296,7 @@ class Frame:
 
     A 90%-masked bucket renders as a clean low uniform field, indistinguishable
     from a calm day to someone scrubbing for an event, so the interval's own
-    coverage travels with it rather than being inferable from the picture
-    (D10).
+    coverage travels with it rather than being inferable from the picture.
     """
 
     t_start: str
@@ -351,7 +305,7 @@ class Frame:
     #: cos(latitude)-weighted fraction of the ANALYZED REGION that held a value
     #: in this interval, measured on the native field. Never derived from
     #: ``FrameStack.values`` -- a block is finite if any cell in it is, so the
-    #: frame grid reports a sparse hour as almost fully covered (D10).
+    #: frame grid reports a sparse hour as almost fully covered.
     valid_fraction: float
     #: This interval's QA pass rate, rolled up by AREA SUMS across its
     #: timesteps (finding 12). ``None`` when nothing in the interval was
@@ -359,22 +313,18 @@ class Frame:
     #: run" stays distinguishable from a real 0%.
     qa_pass_rate: float | None
     #: ``count``/``mean``/``min``/``max`` for this interval, reduced from the
-    #: NATIVE field (D5a). ``{"count": 0}`` alone when nothing survived --
-    #: absent, not a maximum of zero. Unrounded: formatting is the payload's
-    #: business, and rounding here would make the D14 tier-1 identity between
-    #: the frames and the period map uncheckable.
+    #: NATIVE field. ``{"count": 0}`` alone when nothing survived --
+    #: absent, not a maximum of zero. Unrounded, so the tier-one identity
+    #: between frames and the period map stays checkable.
     statistics: dict[str, Any]
 
 
 @dataclass(frozen=True)
 class StatisticPlane:
-    """One additional statistic's own pair of rendered planes (D6a).
+    """One additional statistic's own pair of rendered planes.
 
-    The mean is NOT one of these. It lives in ``FrameStack``'s own top-level
-    fields where it always has, so a caller that never asks for a second
-    statistic sees a stack byte-identical to the one this module shipped before
-    max existed -- decision 5's "the mean entry keeps its exact current shape,
-    URL and cost", read at the Python level and not only at the wire level.
+    The mean is NOT one of these; it stays in ``FrameStack``'s top-level
+    fields, so callers that only want the mean see an unchanged stack.
 
     Everything here is the same KIND of quantity as its top-level counterpart
     and none of it is the same NUMBER: a block max is not a block mean, and the
@@ -386,18 +336,13 @@ class StatisticPlane:
     period_values: np.ndarray
     #: The same quantity ``FrameStack.frame_grid_delta`` carries, reduced
     #: across frames by THIS plane's own statistic (see ``_frame_grid_delta``'s
-    #: ``combine``). D6a decision 8 expects an exact ``0.0`` here on every
-    #: selection plane in both tiers, and Phase 11 G5 measured exactly that on
-    #: two live bundles. It is computed rather than asserted because a promised
-    #: zero and a measured one are different claims -- the same reason
-    #: ``frame_grid_delta`` exists at all.
+    #: ``combine``). Expected to be exactly ``0.0`` for max/min, but computed
+    #: rather than assumed.
     frame_grid_delta: dict[str, Any]
-    #: THIS plane's own pooled 2-98 clip (D9), never the mean plane's: one
-    #: colour has to mean one value at every stop of a scrub, and a max plane
-    #: rendered against the mean's clip saturates at exactly the stops someone
-    #: switched to it to see.
+    #: THIS plane's own pooled 2-98 clip, never the mean's: a max plane on the
+    #: mean's scale would saturate at its peaks.
     value_range: tuple[float, float] | None
-    #: D6a decision 9, on the ``"max"`` plane only: how much ground a rendered
+    #: On the ``"max"`` plane only: how much ground a rendered
     #: peak claims (see ``_extent_overstatement``). ``None`` on every other
     #: plane, and on a chart that never coarsened.
     extent_overstatement: dict[str, Any] | None = None
@@ -407,7 +352,7 @@ class StatisticPlane:
 class FrameStack:
     """The frame axis and the float32 array the frontend renders.
 
-    ``values`` is a RENDERING artifact and nothing is derived from it (D5a).
+    ``values`` is a RENDERING artifact and nothing is derived from it.
     Every number a reader is shown comes off the native field before the block
     mean, because at k=8 a frame has already lost 16% of its own p98 and 70%
     of its max.
@@ -415,9 +360,9 @@ class FrameStack:
 
     frames: list[Frame]
     values: np.ndarray
-    #: The period mean on the SAME frame grid by the SAME method -- "frame 0"
-    #: (D5). Parking the scrubber here reproduces the Map tab exactly, and in
-    #: the cadence tier a reader can check D4's identity by averaging the stack.
+    #: The period mean on the SAME frame grid by the SAME method ("frame 0").
+    #: It reproduces the Map tab, and in the cadence tier equals the average
+    #: of the frames.
     period_values: np.ndarray
     lats: np.ndarray
     lons: np.ndarray
@@ -428,7 +373,7 @@ class FrameStack:
     #: How many cadence buckets one frame holds. 1 in the cadence tier.
     buckets_per_frame: int
     tier: str
-    #: D16, present only in the coarsened tier: ``headline`` (the weighted
+    #: Present only in the coarsened tier: ``headline`` (the weighted
     #: relative disagreement between the frames' own period mean and the map's)
     #: and ``max_abs`` (the worst pixel, in the field's physical units).
     #: ``None`` in the cadence tier -- the relationship there is identity, and
@@ -442,14 +387,12 @@ class FrameStack:
     #: 0.000002%. Never interchangeable with ``delta``; neither bounds the
     #: other.
     frame_grid_delta: dict[str, Any]
-    #: The scrubber's pooled 2-98 clip (D9), or ``None`` when nothing survived.
+    #: The scrubber's pooled 2-98 clip, or ``None`` when nothing survived.
     #: The Map tab's own range is untouched: deriving it from the stack would
     #: make a map's colours depend on whether frames happened to be built.
     value_range: tuple[float, float] | None
-    #: D6a's additional planes, keyed by statistic -- ``"max"`` and ``"min"``,
-    #: never ``"mean"``. Empty unless the caller asked for them, which is what
-    #: keeps every existing caller's stack unchanged rather than merely
-    #: compatible.
+    #: Additional planes keyed by statistic (``"max"``/``"min"``, never
+    #: ``"mean"``). Empty unless requested.
     planes: dict[str, StatisticPlane] = dataclass_field(default_factory=dict)
 
 
@@ -519,18 +462,12 @@ def build_frame_stack(
 
     The reduction is composed as ONE lazy graph --
     ``groupby(bucket).mean().coarsen(k, boundary="pad").mean()`` -- and computed
-    once. That composition is not a stylistic preference: measured on a
-    36-granule full-domain TEMPO open (2950x5771 = 17M cells) it stays lazy at
-    32,042 tasks and materializes (32, 99, 193) = 4.9 MB, against the 2,179 MB
-    the grouped-then-coarsened intermediate would need. Do not rewrite it as a
-    chunked or hand-rolled reduction; that adds real complexity to solve a
-    measured non-problem.
+    once. Keep it that way: on a full-domain TEMPO open it materializes 4.9 MB
+    instead of the 2,179 MB intermediate. Don't hand-roll a chunked version.
 
-    ``statistics`` names the PLANES to build (D6a). It defaults to the mean
-    alone, which is this module's whole history: the mean's planes stay in the
-    top-level fields under their own names, and anything else asked for lands
-    in ``FrameStack.planes``. Extra statistics join the same fused graph rather
-    than getting one each -- see ``_plane_terms``.
+    ``statistics`` names the PLANES to build (default: mean only). The mean
+    stays in the top-level fields; extras land in ``FrameStack.planes`` and
+    join the same fused graph (see ``_plane_terms``).
     """
     # An unknown or unbucketable cadence cannot define a period, and it is not
     # a corner case: a Harmony bundle member carries no ``short_name``, so an
@@ -577,7 +514,7 @@ def build_frame_stack(
         bucket=axis_labels,
     ).fillna(0.0)
 
-    # The period map, DERIVED from the buckets (D4). Each cadence bucket counts
+    # The period map, DERIVED from the buckets. Each cadence bucket counts
     # once, whatever survived in it -- which is what ``_cadence_weighted_mean``
     # now computes too, so frame 0 and the Map tab cannot disagree.
     period_native = buckets.mean(dim="bucket", skipna=True)
@@ -684,8 +621,7 @@ def _planes(
     narrowed there -- except that for a selection statistic the narrowing costs
     nothing even in principle: ``max`` picks a value some native cell held
     rather than computing one, and rounding a selection to float32 rounds the
-    same number the mean plane's own cells were rounded from. Where the mean
-    carries Phase 3's 0.000002% storage noise, this carries none.
+    same number the mean plane's own cells were rounded from.
     """
     planes: dict[str, StatisticPlane] = {}
     for name in statistics:
@@ -714,16 +650,14 @@ def _planes(
 
 
 def _extent_overstatement(computed: xr.Dataset, k: tuple[int, int]) -> dict[str, Any] | None:
-    """D6a decision 9's disclosure: how much ground a rendered peak claims.
+    """How much ground a rendered peak claims.
 
     ``headline`` pools every finite block of every frame into ONE ratio of
     weighted sums; ``worst_frame`` is the single frame that stretched a peak
     furthest, disclosed beside the pooled figure rather than folded into it,
     the same way ``delta`` carries a headline and a worst pixel. ``ceiling`` is
-    k^2 -- the value the pooled figure would take if exactly one native cell
-    reached each block's max and no block ran short of real cells, which Phase
-    11 measured as very nearly the case on both live bundles (24.70x and 24.75x
-    against a ceiling of 25).
+    k^2 -- the value if exactly one native cell reached each block's max and
+    no block ran short of real cells (real bundles land very close to it).
 
     It gates nothing, for the reason ``_delta`` gates nothing: whether painting
     a peak across 25 cells' worth of ground invalidates a particular reading is
@@ -840,7 +774,7 @@ def _histogram(field: xr.DataArray, edges: np.ndarray) -> xr.DataArray:
 def _pooled_range(
     histogram: np.ndarray, edges: np.ndarray,
 ) -> tuple[float, float] | None:
-    """D9's 2-98 clip, read off the pooled histogram's CDF.
+    """The 2-98 color clip, read off the pooled histogram's CDF.
 
     NOT ``min(vmins)/max(vmaxs)`` over per-frame clips, which is what the
     frontend's ``computeSharedColorScale`` does for comparison panels: that
@@ -872,7 +806,7 @@ def _pooled_range(
 def _frame_group_size(n_buckets: int, max_frames: int) -> int:
     """How many cadence buckets go into one frame.
 
-    1 wherever the native cadence fits the budget -- D14's tier one, where the
+    1 wherever the native cadence fits the budget -- tier one, where the
     frames ARE the cadence buckets and the period map is derived from them
     exactly. Above it the frames become a different temporal aggregation, and
     ``_delta`` is what keeps that honest rather than silent.
@@ -889,8 +823,7 @@ def _group_buckets(
 
     A frame is the mean of its cadence buckets' means, NOT the mean of their
     granules: the tier that exists to fit long spans would otherwise
-    reintroduce granule weighting exactly where sampling is most uneven, which
-    is the bias D4 was fixed to remove.
+    reintroduce granule weighting exactly where sampling is most uneven.
 
     The field's own reducer is the mean and the granule counts' is the sum,
     which is the one thing about this fold that does NOT follow the plane's
@@ -940,9 +873,8 @@ def _plane_terms(
     open: dask fuses all three groupby-then-coarsen reductions off one read of
     each source chunk exactly as it already fuses ``period_values``,
     ``n_granules``, ``observed_area`` and ``_delta_terms``, so a second
-    statistic is arithmetic on chunks that were being read anyway. Phase 11's
-    G1 measured it both ways -- an exact 6-read parity on synthetic loads, and
-    1.5-1.9x (never 3x) wall-clock and peak RSS on two live bundles.
+    statistic is arithmetic on chunks that were being read anyway (measured
+    at 1.5-1.9x the cost, not 3x).
 
     Every block-reduced term goes through ``_bare_grid`` before it lands in the
     dataset, for the reason that function's docstring gives at length: three
@@ -954,12 +886,8 @@ def _plane_terms(
         buckets = getattr(da.groupby(grouper), name)(
             dim=time_dim, skipna=True,
         ).reindex(bucket=axis_labels)
-        # The period plane is DERIVED from the cadence buckets, exactly as the
-        # mean's is (D4): each bucket counts once. For a selection statistic
-        # that is a distinction without a difference -- the max of the bucket
-        # maxima is the max of everything -- but deriving it the same way keeps
-        # one rule rather than two, and keeps stop 0 reproducible from the
-        # stack a reader downloaded (D6a decision 3).
+        # Derived from the cadence buckets like the mean's, so there's one rule
+        # (for max it's the same result either way).
         period_native = getattr(buckets, name)(dim="bucket", skipna=True)
         frames_native = _grouped_by(buckets, group, name)
         terms[f"plane_{name}_values"] = _bare_grid(
@@ -970,11 +898,8 @@ def _plane_terms(
             _block_reduce(period_native, lat_dim, lon_dim, k_lat, k_lon, name),
             lat_dim, lon_dim,
         )
-        # Its OWN pooled 2-98 clip (D9), over its own frames and its own period
-        # plane. A max plane scrubbed against the mean plane's clip would
-        # saturate at every stop with a peak in it, which is every stop anyone
-        # switched to it to look at. Native resolution, before the block
-        # reduction, exactly as the mean's is (D5a and ``POOLED_SCALE_BASIS``).
+        # Its OWN pooled 2-98 clip (the mean's would saturate a max plane's
+        # peaks), at native resolution like the mean's.
         terms[f"plane_{name}_histogram"] = (
             _histogram(frames_native, edges) + _histogram(period_native, edges)
         )
@@ -992,7 +917,7 @@ def _overstatement_terms(
     k_lat: int,
     k_lon: int,
 ) -> dict[str, xr.DataArray]:
-    """D6a decision 9's two lazy sums, per frame, at NATIVE resolution.
+    """The extent-overstatement's two lazy sums, per frame, at NATIVE resolution.
 
     A block max paints one cell's value across every cell its block covers, so
     the rendered peak claims k^2 cells' worth of ground for an observation that
@@ -1000,18 +925,16 @@ def _overstatement_terms(
     native cell it covers, observed or not, because that is the ground the
     pixel colours -- and the denominator is the area that actually held the
     block's own maximum. Both cos(latitude)-weighted, both summed before
-    anything is divided (D16: a ratio of weighted sums, never a mean of
-    per-block ratios, never signed).
+    anything is divided (a ratio of weighted sums, never a mean of per-block
+    ratios, never signed).
 
     ``coarsen(...).construct(...)`` rather than a reduction, because the
     numerator needs each native cell compared against ITS OWN block's max --
     the block max has to come back down to native resolution to be compared,
     and construct is the reshape that makes both live in one lazy expression.
     It is a view, not a materialization: the sums collapse it straight back
-    down, so this rides the graph walk the frames were already paying for --
-    which is what Phase 11 G4 means by measuring the overstatement "in the same
-    walk that already materializes the native max field", and what the
-    read-counter test holds open.
+    down, so it rides the graph walk the frames already pay for (the
+    read-counter test enforces this).
 
     Nothing is emitted at k=(1,1): every rendered pixel IS a native cell there,
     and a ``1.0x`` would read as a measurement of an extent that was never
@@ -1092,15 +1015,11 @@ def _block_reduce(
     against a synthetic control; an all-NaN block correctly stays NaN rather
     than becoming 0.
 
-    ``how`` is the block reducer, and it is the SAME reducer as the plane's
-    temporal one on purpose (D6a decision 4): a max plane block-MAXES, because
-    a block mean of a per-pixel max would render a smoothed field and defeat
-    the product -- D5a measured the block mean keeping a p50 of 29.8% of a
-    single-cell max at k=8, where Phase 11 measured block max keeping 100.0% at
-    every percentile of every frame of both live bundles. The pad and all-NaN
-    guarantees above were re-measured for ``max``/``min`` in that same gate
-    (G3): the pad is skipped and an all-NaN block stays NaN rather than
-    collapsing to the ``-inf``/``+inf`` identity element.
+    ``how`` is the block reducer, deliberately the same as the plane's
+    temporal one: a max plane block-MAXES, since block-meaning a max smooths
+    away the peaks (at k=8 it keeps only ~30% of a single-cell max). For
+    max/min too, the pad is skipped and an all-NaN block stays NaN (not
+    ``-inf``/``+inf``).
     """
     if (k_lat, k_lon) == (1, 1):
         return field
@@ -1121,9 +1040,7 @@ def _bare_grid(field: xr.DataArray, lat_dim: str, lon_dim: str) -> xr.DataArray:
     ``latitude``/``longitude`` makes xarray align them on those coordinate
     VALUES -- an outer join onto the union of all three label sets, which
     silently reindexes EVERY variable in the dataset, including ones nobody
-    touched, onto a mostly-NaN grid, and raises nothing. Phase 11's own probe
-    script hit it and caught it only because a printed shape stopped matching
-    the crop two lines above.
+    touched, onto a mostly-NaN grid, and raises nothing.
 
     The blocks are identical across statistics -- same ``k``, same padding --
     so there is one right answer for what to label them, and it is the mean
@@ -1196,7 +1113,7 @@ def _valid_fractions(
 def _delta_terms(
     frames_native: xr.DataArray, period_native: xr.DataArray, group: int,
 ) -> dict[str, xr.DataArray]:
-    """D16's three sums, lazy, at NATIVE resolution.
+    """The delta's three sums, lazy, at NATIVE resolution.
 
     ``F`` is the mean of the coarse frame means -- what a reader averaging the
     scrubber would get -- and ``M`` is the period map. In the cadence tier they
@@ -1204,7 +1121,7 @@ def _delta_terms(
 
     Compared over the cells finite in BOTH, so a cell one form reaches and the
     other does not is excluded rather than counted as an infinite disagreement.
-    Native, because D5a binds here too: measuring on the frame grid would
+    Native, because measuring on the frame grid would
     compare two block means, and a +1.2 and a -1.2 in one block average away.
     """
     if group == 1:
@@ -1226,7 +1143,7 @@ def _delta_terms(
 
 
 def _delta(computed: xr.Dataset, group: int) -> dict[str, Any] | None:
-    """The D16 disclosure: a ratio of weighted sums, and the worst pixel.
+    """The frame/map disagreement: a ratio of weighted sums, and the worst pixel.
 
     NEVER a mean of per-pixel ratios. Geophysical fields go near zero, so
     relative error explodes there -- a real TEMPO bundle reported 1017% at a
@@ -1267,7 +1184,7 @@ def _frame_grid_delta(
     *,
     combine: str = "mean",
 ) -> dict[str, Any]:
-    """D16's metric applied to the arrays that SHIP -- a second quantity beside
+    """The delta metric applied to the arrays that SHIP -- a second quantity beside
     ``_delta``, never a replacement for it.
 
     The two answer different questions and a reader has both. ``_delta`` asks
@@ -1449,8 +1366,8 @@ def _qa_pass_rates(
 
 
 #: The per-frame statistics, keyed as ``_field_statistics`` keys them so the
-#: scrubber's statistics block and the map's are the same shape (D11: the chart
-#: describes what the slider points at, and frame 0 reproduces today exactly).
+#: scrubber's statistics block and the map's are the same shape (frame 0
+#: reproduces the map's).
 _FRAME_STATS = ("mean", "min", "max")
 
 
@@ -1491,7 +1408,7 @@ def _statistics_per_frame(computed: xr.Dataset, n_frames: int) -> list[dict[str,
         count = int(counts[index])
         # A bucket with no surviving cell has no mean, no floor and no peak.
         # Emitting 0.0 for them would put a measurement where there is an
-        # absence, which is the whole of D10.
+        # absence.
         if count == 0:
             out.append({"count": 0})
             continue
@@ -1507,7 +1424,7 @@ def _statistics_per_frame(computed: xr.Dataset, n_frames: int) -> list[dict[str,
 def _spatial_dims(da: xr.DataArray, spatial: list[str]) -> tuple[str, str]:
     """The (lat, lon) dimension names, by CF metadata rather than by position.
 
-    T24's rule: a Harmony-reformatted grid can arrive ordered (time, lon, lat),
+    A Harmony-reformatted grid can arrive ordered (time, lon, lat),
     and coarsening the wrong axis would blur the field along one direction
     while leaving the other native.
     """
