@@ -47,7 +47,7 @@ jobs:
       # requires-python all say 3.12 too; keep all five in step. The uv version
       # matches the one the Dockerfile copies in.
       # Pinned by commit: setup-uv publishes exact tags only, no moving v10.
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           version: "0.12.21"
           python-version: "3.12"
