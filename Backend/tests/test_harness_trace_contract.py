@@ -392,6 +392,26 @@ class StepRecorderContract:
         self.assertEqual((e.status, e.failure_category, e.reason),
                          ("failed", FailureCategory.NO_DATA, "no valid pixels"))
 
+    async def test_step_failure_result_and_eviction_category_are_stored(self):
+        rec = await self.recorder()
+        with self.assertRaises(StepFailure):
+            async with rec.step(kind="use", capability="ops.mask"):
+                raise StepFailure(FailureCategory.INPUT_EVICTED, "data gone",
+                                  result={"evicted": ["grid_1"]})
+        [e] = await self.recorded()
+        self.assertEqual((e.status, e.failure_category, e.result),
+                         ("failed", FailureCategory.INPUT_EVICTED, {"evicted": ["grid_1"]}))
+
+    async def test_step_failure_with_an_unstorable_result_becomes_an_internal_error(self):
+        rec = await self.recorder()
+        with self.assertRaises(StepFailure) as caught:
+            async with rec.step(kind="use", capability="ops.mask"):
+                raise StepFailure(FailureCategory.NO_DATA, "short", result="x" * (MAX_JSON_BYTES + 1))
+        self.assertEqual(caught.exception.category, FailureCategory.INTERNAL_ERROR)
+        [e] = await self.recorded()
+        self.assertEqual((e.failure_category, e.reason, e.result),
+                         (FailureCategory.INTERNAL_ERROR, "the step's outcome could not be recorded", None))
+
     async def test_long_step_failure_reason_is_truncated_not_lost(self):
         rec = await self.recorder()
         with self.assertRaises(StepFailure):

@@ -43,6 +43,8 @@ MAX_REASON_CHARS = 1000
 
 class FailureCategory(enum.StrEnum):
     BAD_INPUT = "bad_input"
+    # An input handle's data was evicted; re-running the step that made it recovers it.
+    INPUT_EVICTED = "input_evicted"
     NO_DATA = "no_data"
     REQUEST_TOO_LARGE = "request_too_large"
     SOURCE_UNAVAILABLE = "source_unavailable"
@@ -83,12 +85,15 @@ class StepFailure(Exception):
     """A step failure that already knows its category and reason.
 
     The reason is stored as given, so callers write it as fixed wording.
+    ``result``, plain JSON, is stored on the failed entry, for what the step
+    still reports, such as the values behind an insufficient_evidence answer.
     """
 
-    def __init__(self, category: FailureCategory, reason: str) -> None:
+    def __init__(self, category: FailureCategory, reason: str, *, result: Any = None) -> None:
         super().__init__(reason)
         self.category = category
         self.reason = reason
+        self.result = result
 
 
 def new_run_id() -> str:
@@ -688,7 +693,7 @@ class PostgresTraceStore:
 
 
 # Fixed wording, so the trace never carries text from an exception or a value.
-_UNRECORDABLE_REASON = "the step's outcome could not be recorded"
+UNRECORDABLE_REASON = "the step's outcome could not be recorded"
 _CANCELLED_REASON = "the step was cancelled"
 
 
@@ -739,7 +744,9 @@ class StepRecorder:
         An exception or cancellation becomes a failed entry and is re-raised. A
         plain exception is recorded by its type name only, since its message can
         carry URLs, headers or query strings. An outcome that cannot be stored
-        is replaced by a failed ``internal_error`` entry and InvalidTrace raised.
+        is replaced by a failed ``internal_error`` entry and InvalidTrace raised;
+        for a StepFailure whose result cannot be stored, an ``internal_error``
+        StepFailure is raised instead, matching the entry.
         """
         common: dict[str, Any] = {
             "run_id": self._run_id,
@@ -769,7 +776,7 @@ class StepRecorder:
                 entry = build(
                     status="failed",
                     failure_category=FailureCategory.INTERNAL_ERROR,
-                    reason=_UNRECORDABLE_REASON,
+                    reason=UNRECORDABLE_REASON,
                 )
             await self._store.append(self._user_id, entry, seq=seq)
             return refused
@@ -784,11 +791,14 @@ class StepRecorder:
             )
             raise
         except StepFailure as exc:
-            await write(
+            refused = await write(
                 status="failed",
                 failure_category=exc.category,
                 reason=exc.reason[:MAX_REASON_CHARS],
+                result=exc.result,
             )
+            if refused is not None:
+                raise StepFailure(FailureCategory.INTERNAL_ERROR, UNRECORDABLE_REASON) from None
             raise
         except Exception as exc:
             await write(

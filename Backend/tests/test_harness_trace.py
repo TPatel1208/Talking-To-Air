@@ -98,11 +98,11 @@ class EntryValidationTests(unittest.TestCase):
         with self.assertRaises(InvalidTrace):
             entry(reason="x" * 2000)
 
-    def test_failure_categories_are_the_design_table_plus_cancelled(self):
+    def test_failure_categories_are_the_design_table_plus_cancelled_and_input_evicted(self):
         self.assertEqual({c.value for c in FailureCategory}, {
             "bad_input", "no_data", "request_too_large", "source_unavailable", "source_down",
             "credential_invalid", "unsupported_shape", "internal_error", "model_failure",
-            "budget_exhausted", "cancelled",
+            "budget_exhausted", "cancelled", "input_evicted",
         })
 
 
