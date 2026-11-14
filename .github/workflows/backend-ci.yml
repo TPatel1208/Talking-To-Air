@@ -33,6 +33,21 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
+      # The harness's storage tests run against a real Postgres, each in its
+      # own throwaway schema (Backend/tests/postgres_helpers.py). Same image
+      # as compose's; the port matches the helper's default URL.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: tta_test
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d tta_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
 
     defaults:
       run:
@@ -100,14 +115,16 @@ jobs:
       # This is also the runner CLAUDE.md documents for the local gate, so CI and
       # `docker compose --profile test run backend-test` now check the same suite.
       #
-      # TTA_REQUIRE_REDIS makes an unreachable Redis a collection error rather
-      # than a skip; the suite reaches the service above at its default
-      # redis://127.0.0.1:6379/15. `-rs` lists every remaining skip and its
+      # TTA_REQUIRE_REDIS and TTA_REQUIRE_POSTGRES make an unreachable service
+      # a collection error rather than a skip; the suite reaches the services
+      # above at its defaults, redis://127.0.0.1:6379/15 and the Postgres at
+      # 127.0.0.1:55432/tta_test. `-rs` lists every remaining skip and its
       # reason in the log.
       - name: Run unit and integration tests with coverage
         env:
           PYTHONPATH: Backend
           TTA_REQUIRE_REDIS: "1"
+          TTA_REQUIRE_POSTGRES: "1"
         run: coverage run -m pytest Backend/tests -rs
 
       - name: Coverage report

@@ -222,6 +222,23 @@ services:
       retries: 3
       start_period: 20s
 
+  # ── Throwaway Postgres for the backend tests ───────────────────────────────
+  #  Separate from `db`: tmpfs data, no volume, gone when the profile stops.
+  test-db:
+    image: postgres:16
+    profiles: ["test"]
+    environment:
+      POSTGRES_DB: tta_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: test
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d tta_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   # ── Backend tests (pytest + coverage) ───────────────────────────────────────
   #  Run with: docker compose --profile test run --rm backend-test
   backend-test:
@@ -255,8 +272,14 @@ services:
       REDIS_URL: "redis://redis:6379/15"
       # A Redis is provisioned here, so its absence must fail the run, not skip.
       TTA_REQUIRE_REDIS: "1"
+      # The storage tests run against this throwaway Postgres, each in its own
+      # schema; its absence must fail the run, not skip.
+      TTA_TEST_DATABASE_URL: "postgresql://postgres:test@test-db:5432/tta_test"
+      TTA_REQUIRE_POSTGRES: "1"
     depends_on:
       redis:
+        condition: service_healthy
+      test-db:
         condition: service_healthy
     volumes:
       # test_chart_repository.py's / test_artifact_repository.py's schema-contract

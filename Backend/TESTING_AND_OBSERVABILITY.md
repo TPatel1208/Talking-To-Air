@@ -61,6 +61,8 @@ Backend/.venv/bin/coverage report
 
 Coverage is measured over all of `tta_backend` and CI requires at least 87% (`.coveragerc`). The Redis-backed turn tests skip on a host with no Redis; set `TTA_REQUIRE_REDIS=1` to make that a failure, as CI and the `backend-test` compose profile do.
 
+The Postgres-backed tests (`tests/postgres_helpers.py`) run against a real database, each inside its own throwaway schema that is dropped afterwards, so they never touch `public` or another test's tables. The default URL is `postgresql://postgres:test@127.0.0.1:55432/tta_test`; override it with `TTA_TEST_DATABASE_URL`. Start one locally with `docker run -d --rm --name tta-test-pg -e POSTGRES_PASSWORD=test -e POSTGRES_DB=tta_test -p 55432:5432 postgres:16`. They skip when it is unreachable; `TTA_REQUIRE_POSTGRES=1` makes that a failure, as CI and the `backend-test` profile (which starts a `test-db` service) do.
+
 ## The benchmark as a required gate
 
 `Backend/benchmark/` holds 20 benchmark cases, each a question, the data the
