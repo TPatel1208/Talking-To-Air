@@ -77,7 +77,7 @@ where = ["."]
 # One namespaced root, so `pip install -e Backend` exposes the WHOLE backend --
 # including api and earthdata_mcp, which the old flat include list silently
 # omitted, leaving them importable only via a sys.path hack.
-include = ["tta_backend*"]
+include = ["tta_backend*", "benchmark*"]
 
 [tool.setuptools.package-data]
 "tta_backend.datasets" = ["*.yaml", "*.geojson"]
@@ -85,6 +85,6 @@ include = ["tta_backend*"]
 [tool.pytest.ini_options]
 addopts = "-m \"not eval and not live_mcp\""
 markers = [
-    "eval: scripted agent-behavior eval (T04) — spends real model tokens, run explicitly with -m eval",
+    "eval: outcome-scored benchmark against the current system — spends real model tokens, run explicitly with -m eval",
     "live_mcp: live-smoke suite against the real earthdata-retrieval MCP (T17) — requires both Docker stacks up, run explicitly with -m live_mcp",
 ]

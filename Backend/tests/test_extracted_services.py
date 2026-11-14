@@ -474,6 +474,41 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["Body"][0]["station_name"], "Near")
         self.assertEqual(result["Body"][0]["monitor_name"], "Near")
 
+    async def test_no_monitor_near_a_point_is_reported_as_no_data_not_raised(self):
+        """A raised error escapes ToolNode and ends the ground turn as an
+        "internal error"; an empty search is an answer the model must relay."""
+        from tta_backend.tools.ground_sensor_tools import epa_aqs_tools
+
+        with patch(
+            "tta_backend.tools.ground_sensor_tools.epa_aqs_tools._fetch_active_monitors",
+            AsyncMock(return_value=[]),
+        ):
+            result = await epa_aqs_tools.find_closest_monitor_by_coords.ainvoke({
+                "latitude": "40.735", "longitude": "-74.172",
+                "bdate": "2024-01-01", "edate": "2024-01-31",
+            })
+
+        header = result["Header"][0]
+        self.assertEqual(header["status"], "no_data")
+        self.assertIn("No active 42602 monitors found near (40.735, -74.172)", header["note"])
+        self.assertEqual(result["Body"], [])
+
+    async def test_no_monitor_near_a_place_is_reported_as_no_data_not_raised(self):
+        from tta_backend.tools.ground_sensor_tools import epa_aqs_tools
+
+        geo = {"latitude": 40.7357, "longitude": -74.1724, "bbox": [40.67, 40.79, -74.25, -74.11]}
+        with patch(
+            "tta_backend.tools.ground_sensor_tools.epa_aqs_tools._fetch_active_monitors",
+            AsyncMock(return_value=[]),
+        ), patch.object(epa_aqs_tools.geocoding_service, "ageocode", AsyncMock(return_value=geo)):
+            result = await epa_aqs_tools.find_closest_monitor.ainvoke({
+                "location": "Newark, NJ", "bdate": "2024-01-01", "edate": "2024-01-31",
+            })
+
+        header = result["Header"][0]
+        self.assertEqual(header["status"], "no_data")
+        self.assertIn("near 'Newark, NJ'", header["note"])
+
     async def test_aqs_get_deduplicates_identical_requests(self):
         from tta_backend.tools.ground_sensor_tools import epa_aqs_tools
         from unittest.mock import MagicMock

@@ -515,7 +515,8 @@ def _no_data_response(message: str) -> Dict[str, Any]:
     monitor-fallback rules). Returning this dict keeps the message on the
     normal tool-result path the model actually sees.
 
-    Reserved for :class:`AqsNoDataError` — an actual empty result set. See
+    Reserved for an actual empty result set: :class:`AqsNoDataError`, or a
+    monitor search that found no active monitor. See
     :func:`_upstream_error_response` for the other half.
     """
     return {"Header": [{"status": "no_data", "note": message}], "Body": []}
@@ -652,7 +653,7 @@ async def find_closest_monitor(
 
     monitors = await _fetch_active_monitors(bbox, param_code, bdate_str, edate_str, k)
     if not monitors:
-        raise RuntimeError(
+        return _no_data_response(
             f"No active {param_code} monitors found near '{location}' "
             f"between {bdate_obj.isoformat()} and {edate_obj.isoformat()} "
             f"even after expanding the search area to ±{_BBOX_EXPANSIONS[-1]}°."
@@ -710,7 +711,7 @@ async def find_closest_monitor_by_coords(
     bbox = _bbox_from_point(latitude, longitude)
     monitors = await _fetch_active_monitors(bbox, param_code, bdate_str, edate_str, k)
     if not monitors:
-        raise RuntimeError(
+        return _no_data_response(
             f"No active {param_code} monitors found near ({latitude}, {longitude}) "
             f"between {bdate_obj.isoformat()} and {edate_obj.isoformat()} "
             f"even after expanding the search area to ±{_BBOX_EXPANSIONS[-1]}°."

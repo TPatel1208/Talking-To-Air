@@ -319,6 +319,47 @@ services:
     command: >
       sh -c "coverage run -m pytest tests/ -v --tb=short && coverage report"
 
+  # ── Live benchmark (real models, fake data services) ────────────────────────
+  #  Run with: docker compose --profile benchmark run --rm benchmark
+  #  Spends real model tokens. Runs the working tree, so no rebuild is needed
+  #  after a code change; rebuild only when dependencies change.
+  benchmark:
+    build:
+      context: ./Backend
+      dockerfile: Dockerfile
+      target: devtools
+    profiles: ["benchmark"]
+    working_dir: /app
+    # Model providers, model ids and their keys come from .env, as for the
+    # backend. Data comes from the in-process fakes, never the real MCP or EPA.
+    env_file: .env
+    environment:
+      # The supervisor checkpoints in the stack's Postgres; benchmark
+      # conversations land there under the user "benchmark-user".
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: talking_to_air_memory
+      DB_USER: postgres
+      # Never the live backend's Redis database, whatever .env says.
+      REDIS_URL: "redis://redis:6379/14"
+      # Keep Linux bytecode, pytest's cache and the stores out of the mounted
+      # host tree; the stores are scratch here and vanish with the container.
+      PYTHONDONTWRITEBYTECODE: "1"
+      CUBE_STORE_DIR: /tmp/benchmark/cube_store
+      OVERLAY_STORE_DIR: /tmp/benchmark/overlay_store/overlays
+      FRAME_STORE_DIR: /tmp/benchmark/frame_store
+    volumes:
+      - ./Backend:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # --show-capture=no keeps a failure from burying the table under the
+    # captured logs; the table and each case's details are also saved under
+    # Backend/benchmark-results/.
+    command: ["pytest", "tests/test_benchmark.py", "-v", "-s", "-m", "eval", "-p", "no:cacheprovider", "--show-capture=no"]
+
   # ── Frontend tests (Vitest) ───────────────────────────────────────────────────
   #  Run with: docker compose --profile test run --rm frontend-test
   frontend-test:

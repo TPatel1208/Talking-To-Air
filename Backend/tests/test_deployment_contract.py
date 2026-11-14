@@ -791,6 +791,18 @@ class TurnEventLogIsDeployedAndTestedTests(unittest.TestCase):
             "running backend uses for live turns.",
         )
 
+    def test_the_benchmark_does_not_share_a_keyspace_with_live_data(self):
+        """The benchmark reads .env, so its Redis must be overridden explicitly
+        or it inherits whatever database the live backend uses."""
+        compose = _load(_compose_path())["services"]
+        live = compose["backend"]["environment"]["REDIS_URL"]
+        benchmark = compose["benchmark"]["environment"]["REDIS_URL"]
+        self.assertNotEqual(
+            live, benchmark,
+            f"the benchmark writes to {benchmark}, the same Redis database the "
+            "running backend uses for live turns.",
+        )
+
     def test_redis_publishes_no_host_port(self):
         redis = _load(_compose_path())["services"]["redis"]
         published = _port_strings(redis)

@@ -108,7 +108,7 @@ Beyond a set of built-in presets (OMI, TROPOMI, TEMPO NO₂/O₃/HCHO), the sate
 
 ## Usage
 
-The empty chat screen shows six starter prompts pulled live from the backend (`config/starter_prompts.py`) — each is tied to a real eval task, so these are the questions most likely to work end-to-end:
+The empty chat screen shows six starter prompts pulled live from the backend (`config/starter_prompts.py`) — each is tied to a benchmark case, so these are the questions most likely to work end-to-end:
 
 ```
 What NASA datasets are available for NO2 column density over New Jersey?
