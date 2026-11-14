@@ -10,6 +10,7 @@
 Backend/data/
 Backend/overlay_store/
 Backend/cube_store/
+Backend/benchmark-results/
 
 # Python
 __pycache__/

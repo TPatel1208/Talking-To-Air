@@ -1,0 +1,544 @@
+"""
+In-process fake earthdata-retrieval MCP server, for tests and the benchmark.
+
+Runs a real FastMCP server over streamable HTTP on a background uvicorn
+thread, on a free local port, so the real MultiServerMCPClient (and the
+langchain-mcp-adapters conversion code) connects to it over the wire exactly
+as it would to the production harmony-retrieval-mcp stack. Nothing here
+mocks the adapter library's internals — only the MCP server's tool handlers
+are fake. Tool signatures mirror the real earthdata-retrieval MCP's schemas.
+"""
+from __future__ import annotations
+
+import asyncio
+import pathlib
+import socket
+import threading
+import time
+from typing import Any, Awaitable, Callable
+
+import uvicorn
+from fastmcp import FastMCP
+
+from benchmark.outcome import BoundaryCall
+
+# The curated raw tools the model-facing toolset should include.
+CURATED_RAW_TOOL_NAMES = (
+    "search_datasets",
+    "describe_dataset",
+    "preview_dataset",
+    "define_area_of_interest",
+    "check_availability",
+    "check_coverage",
+)
+# Used internally by the composites but never exposed to the model directly.
+INTERNAL_RAW_TOOL_NAMES = (
+    "retrieve_subset",
+    "estimate_retrieval_size",
+    "export_result",
+    "rematerialize",
+    "list_workspace",
+    "cancel_retrieval",
+    "align",
+    "convert_format",
+    "get_retrieval_status",
+    "retrieve_timeseries",
+    "cite_dataset",
+    "get_provenance",
+    "inspect_granules",
+)
+# Representative sample of raw tools that must never reach the model,
+# (transforms / format / inspection plumbing) — enough to prove filtering,
+# not the full real-server surface. summarize_dataset is real (the MCP still
+# serves it) but this backend has no consumer for it.
+HIDDEN_RAW_TOOL_NAMES = (
+    "retrieve_data",
+    "summarize_dataset",
+)
+ALL_RAW_TOOL_NAMES = CURATED_RAW_TOOL_NAMES + INTERNAL_RAW_TOOL_NAMES + HIDDEN_RAW_TOOL_NAMES
+
+Handler = Callable[..., Awaitable[dict]]
+
+
+def _default_handler(name: str) -> Handler:
+    async def _handler(**kwargs: Any) -> dict:
+        return {"tool": name, "echo": kwargs}
+
+    return _handler
+
+
+def build_fake_mcp(
+    handlers: dict[str, Handler] | None = None,
+    exclude: tuple[str, ...] = (),
+    recorder: list[BoundaryCall] | None = None,
+) -> FastMCP:
+    """Build a FastMCP instance exposing every raw tool name with a canned handler.
+
+    ``handlers`` maps tool name -> an async callable receiving that tool's
+    keyword arguments (workspace_id included) and returning a JSON-
+    serializable dict. Tools not named in ``handlers`` fall back to a
+    trivial echo handler. ``exclude`` drops named tools entirely, to
+    simulate an MCP server that's missing a tool this backend requires.
+    ``recorder``, if given, gets a BoundaryCall appended for every call that
+    reaches a handler, with the arguments received and the result returned.
+    """
+    handlers = handlers or {}
+    mcp = FastMCP("fake-earthdata")
+
+    def h(name: str) -> Handler:
+        handler = handlers.get(name, _default_handler(name))
+        if recorder is None:
+            return handler
+
+        async def recording(**kwargs: Any) -> dict:
+            try:
+                result = await handler(**kwargs)
+            except Exception as exc:
+                recorder.append(BoundaryCall(name, dict(kwargs), {"error": f"{type(exc).__name__}: {exc}"}))
+                raise
+            recorder.append(BoundaryCall(name, dict(kwargs), result))
+            return result
+
+        return recording
+
+    @mcp.tool(name="search_datasets")
+    async def search_datasets(query: str, filters: dict | None = None, workspace_id: str = "default") -> dict:
+        return await h("search_datasets")(query=query, filters=filters, workspace_id=workspace_id)
+
+    @mcp.tool(name="describe_dataset")
+    async def describe_dataset(dataset_handle: str, detail: bool = False, workspace_id: str = "default") -> dict:
+        return await h("describe_dataset")(dataset_handle=dataset_handle, detail=detail, workspace_id=workspace_id)
+
+    @mcp.tool(name="preview_dataset")
+    async def preview_dataset(
+        dataset_handle: str,
+        aoi_handle: str | None = None,
+        time_range: str | None = None,
+        layer: str | None = None,
+        workspace_id: str = "default",
+    ) -> dict:
+        return await h("preview_dataset")(
+            dataset_handle=dataset_handle,
+            aoi_handle=aoi_handle,
+            time_range=time_range,
+            layer=layer,
+            workspace_id=workspace_id,
+        )
+
+    @mcp.tool(name="summarize_dataset")
+    async def summarize_dataset(handle: str, workspace_id: str = "default") -> dict:
+        return await h("summarize_dataset")(handle=handle, workspace_id=workspace_id)
+
+    @mcp.tool(name="define_area_of_interest")
+    async def define_area_of_interest(location: str, workspace_id: str = "default") -> dict:
+        return await h("define_area_of_interest")(location=location, workspace_id=workspace_id)
+
+    @mcp.tool(name="check_availability")
+    async def check_availability(
+        dataset_handle: str, aoi_handle: str, time_range: str, workspace_id: str = "default"
+    ) -> dict:
+        return await h("check_availability")(
+            dataset_handle=dataset_handle, aoi_handle=aoi_handle, time_range=time_range, workspace_id=workspace_id
+        )
+
+    @mcp.tool(name="check_coverage")
+    async def check_coverage(
+        dataset_handle: str, aoi_handle: str, time_range: str, workspace_id: str = "default"
+    ) -> dict:
+        return await h("check_coverage")(
+            dataset_handle=dataset_handle, aoi_handle=aoi_handle, time_range=time_range, workspace_id=workspace_id
+        )
+
+    @mcp.tool(name="inspect_granules")
+    async def inspect_granules(
+        dataset_handle: str,
+        aoi_handle: str,
+        time_range: str,
+        workspace_id: str = "default",
+        limit: int = 10,
+    ) -> dict:
+        return await h("inspect_granules")(
+            dataset_handle=dataset_handle,
+            aoi_handle=aoi_handle,
+            time_range=time_range,
+            workspace_id=workspace_id,
+            limit=limit,
+        )
+
+    @mcp.tool(name="get_retrieval_status")
+    async def get_retrieval_status(job_handle: str, workspace_id: str = "default") -> dict:
+        return await h("get_retrieval_status")(job_handle=job_handle, workspace_id=workspace_id)
+
+    @mcp.tool(name="retrieve_timeseries")
+    async def retrieve_timeseries(
+        dataset_handle: str,
+        time_range: str,
+        variables: list[str],
+        aoi_handle: str | None = None,
+        output_format: str | None = None,
+        point_sample: bool = False,
+        workspace_id: str = "default",
+    ) -> dict:
+        return await h("retrieve_timeseries")(
+            dataset_handle=dataset_handle,
+            time_range=time_range,
+            variables=variables,
+            aoi_handle=aoi_handle,
+            output_format=output_format,
+            point_sample=point_sample,
+            workspace_id=workspace_id,
+        )
+
+    @mcp.tool(name="cite_dataset")
+    async def cite_dataset(dataset_handle: str, workspace_id: str = "default") -> dict:
+        return await h("cite_dataset")(dataset_handle=dataset_handle, workspace_id=workspace_id)
+
+    @mcp.tool(name="get_provenance")
+    async def get_provenance(handle: str, workspace_id: str = "default") -> dict:
+        return await h("get_provenance")(handle=handle, workspace_id=workspace_id)
+
+    @mcp.tool(name="retrieve_subset")
+    async def retrieve_subset(
+        dataset_handle: str,
+        aoi_handle: str,
+        time_range: str,
+        variables: list[str],
+        output_format: str | None = None,
+        workspace_id: str = "default",
+    ) -> dict:
+        return await h("retrieve_subset")(
+            dataset_handle=dataset_handle,
+            aoi_handle=aoi_handle,
+            time_range=time_range,
+            variables=variables,
+            output_format=output_format,
+            workspace_id=workspace_id,
+        )
+
+    @mcp.tool(name="estimate_retrieval_size")
+    async def estimate_retrieval_size(
+        dataset_handle: str, aoi_handle: str, time_range: str, workspace_id: str = "default"
+    ) -> dict:
+        return await h("estimate_retrieval_size")(
+            dataset_handle=dataset_handle, aoi_handle=aoi_handle, time_range=time_range, workspace_id=workspace_id
+        )
+
+    @mcp.tool(name="export_result")
+    async def export_result(handle: str, workspace_id: str = "default") -> dict:
+        return await h("export_result")(handle=handle, workspace_id=workspace_id)
+
+    @mcp.tool(name="rematerialize")
+    async def rematerialize(handle: str, workspace_id: str = "default") -> dict:
+        return await h("rematerialize")(handle=handle, workspace_id=workspace_id)
+
+    @mcp.tool(name="retrieve_data")
+    async def retrieve_data(dataset_handle: str, workspace_id: str = "default") -> dict:
+        return await h("retrieve_data")(dataset_handle=dataset_handle, workspace_id=workspace_id)
+
+    @mcp.tool(name="align")
+    async def align(source_handles: list[str], method: str = "outer", workspace_id: str = "default") -> dict:
+        return await h("align")(source_handles=source_handles, method=method, workspace_id=workspace_id)
+
+    @mcp.tool(name="cancel_retrieval")
+    async def cancel_retrieval(job_handle: str, workspace_id: str = "default") -> dict:
+        return await h("cancel_retrieval")(job_handle=job_handle, workspace_id=workspace_id)
+
+    @mcp.tool(name="convert_format")
+    async def convert_format(source_handle: str, output_format: str, workspace_id: str = "default") -> dict:
+        return await h("convert_format")(source_handle=source_handle, output_format=output_format, workspace_id=workspace_id)
+
+    @mcp.tool(name="list_workspace")
+    async def list_workspace(workspace_id: str = "default") -> dict:
+        return await h("list_workspace")(workspace_id=workspace_id)
+
+    for name in exclude:
+        mcp.local_provider.remove_tool(name)
+
+    return mcp
+
+
+class HandleVolume:
+    """A tmp-dir volume of real small Zarr/Parquet fixtures for open_handle tests.
+
+    Models the export/eviction/rematerialize lifecycle against real files (no
+    mocked I/O): ``export_result`` reports "ready" with a file:// storage_uri
+    while the fixture exists on disk; ``evict`` deletes it to simulate LRU
+    eviction, after which export_result reports "expired" until
+    ``rematerialize`` regenerates it from the original factory and
+    get_retrieval_status reports the job ready.
+    """
+
+    def __init__(self, root):
+        self.root = pathlib.Path(root)
+        self._factories: dict[str, tuple[str, Callable[[], Any]]] = {}
+        self.rematerialize_calls: dict[str, int] = {}
+        self.export_calls: dict[str, int] = {}
+        # Handles with no entry here are *legacy* handles: their ready export
+        # carries no content_digest. That is the default on purpose — it keeps
+        # most tests on the verify-first ordering.
+        self._delivered: dict[str, dict] = {}
+
+    def _path(self, handle: str) -> pathlib.Path:
+        media_type, _ = self._factories[handle]
+        ext = {
+            "zarr": ".zarr",
+            "application/zarr": ".zarr.zip",
+            "parquet": ".parquet",
+            "netcdf": ".nc",
+            "application/netcdf-bundle+zip": ".nc.zip",
+        }[media_type]
+        return self.root / f"{handle}{ext}"
+
+    def _write_netcdf_groups(self, path: pathlib.Path, groups) -> None:
+        # groups is a dict of group name (None for root) -> Dataset factory,
+        # all written into one file -- models grouped providers like TEMPO
+        # (root empty, variables under /product).
+        first = True
+        for group_name, make_dataset in groups.items():
+            make_dataset().to_netcdf(path, group=group_name, mode="w" if first else "a")
+            first = False
+
+    def _write(self, handle: str) -> None:
+        media_type, factory = self._factories[handle]
+        path = self._path(handle)
+        if media_type == "netcdf" and callable(factory):
+            # add_hdf5: a raw writer for provider-native HDF5 layouts
+            # to_netcdf can't produce (e.g. GPM's scale-less datasets).
+            factory(str(path))
+        elif media_type == "zarr":
+            factory().to_zarr(path, mode="w")
+        elif media_type == "application/zarr":
+            # Written exactly the way the MCP's transform tools serialize a
+            # derived cube (harmony-retrieval-mcp tools/_dataio.py
+            # _zarr_zip_bytes): a Zarr directory tree, consolidated=False,
+            # zipped file-by-file with store-relative arcnames.
+            import tempfile
+            import zipfile
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                store_dir = pathlib.Path(tmpdir) / "store"
+                factory().to_zarr(store_dir, mode="w", consolidated=False)
+                with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for member in sorted(store_dir.rglob("*")):
+                        if member.is_file():
+                            zf.write(member, member.relative_to(store_dir))
+        elif media_type == "netcdf":
+            self._write_netcdf_groups(path, factory)
+        elif media_type == "application/netcdf-bundle+zip":
+            # factory is a dict of member filename -> per-group factory dict,
+            # all zipped into one archive -- models the MCP's netCDF bundle
+            # exports (every OPeNDAP subset and multi-granule Harmony result).
+            import tempfile
+            import zipfile
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                with zipfile.ZipFile(path, "w") as zf:
+                    for member_name, groups in factory.items():
+                        member_path = pathlib.Path(tmpdir) / member_name
+                        self._write_netcdf_groups(member_path, groups)
+                        zf.write(member_path, arcname=member_name)
+        else:
+            import pyarrow.parquet as pq
+
+            pq.write_table(factory(), path)
+
+    def add_zarr(self, handle: str, make_dataset: Callable[[], Any]) -> None:
+        self._factories[handle] = ("zarr", make_dataset)
+        self._write(handle)
+
+    def add_zarr_zip(self, handle: str, make_dataset: Callable[[], Any]) -> None:
+        """Register an ``application/zarr`` handle materialized as a *zipped*
+        Zarr store — the shape every MCP transform export (compare/regrid
+        cube.zarr.zip) arrives in, as opposed to add_zarr's directory store."""
+        self._factories[handle] = ("application/zarr", make_dataset)
+        self._write(handle)
+
+    def add_parquet(self, handle: str, make_table: Callable[[], Any]) -> None:
+        self._factories[handle] = ("parquet", make_table)
+        self._write(handle)
+
+    def add_hdf5(self, handle: str, write_file: Callable[[str], None]) -> None:
+        """Register a handle whose bytes ``write_file(path)`` lays down raw
+        (h5py-level control) — for provider-native HDF5 layouts to_netcdf
+        can't produce, e.g. GPM's dimension-scale-less datasets. Still
+        exported as media_type 'netcdf', exactly as the MCP reports them."""
+        self._factories[handle] = ("netcdf", write_file)
+        self._write(handle)
+
+    def add_netcdf(self, handle: str, groups: dict[str | None, Callable[[], Any]]) -> None:
+        """Register a NetCDF4 handle from one Dataset factory per HDF5
+        group (key ``None`` for the root group)."""
+        self._factories[handle] = ("netcdf", groups)
+        self._write(handle)
+
+    def add_netcdf_bundle(
+        self, handle: str, members: dict[str, dict[str | None, Callable[[], Any]]]
+    ) -> None:
+        """Register an ``application/netcdf-bundle+zip`` handle: a zip of
+        NetCDF members, each built from one Dataset factory per HDF5 group
+        (key ``None`` for the root group), keyed by member filename."""
+        self._factories[handle] = ("application/netcdf-bundle+zip", members)
+        self._write(handle)
+
+    def evict(self, handle: str) -> None:
+        import shutil
+
+        path = self._path(handle)
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+
+    def corrupt(self, handle: str, contents: bytes = b"<html><body>503 Service Unavailable</body></html>") -> None:
+        """Overwrite an exported file in place with a non-NetCDF body, while
+        leaving it present on disk so export_result still reports "ready".
+
+        Models the observed failure where the MCP hands back an error-
+        response body (or an incomplete/empty file) saved where the granule
+        should be: export_result sees a file and says "ready", but xarray
+        can't open it. rematerialize() regenerates good data from the
+        original factory, so a re-open after recovery succeeds."""
+        import shutil
+
+        path = self._path(handle)
+        if path.is_dir():
+            shutil.rmtree(path)
+        path.write_bytes(contents)
+
+    def set_delivered_content(self, handle: str, content_digest: str, *, partial: bool = False) -> None:
+        """Declare what the job behind ``handle`` actually delivered.
+
+        Calling this again with a different digest models real upstream drift —
+        a late-arriving NRT granule, an unpinned Harmony submit that picked a
+        different service chain, an OPeNDAP fallback on replay — all of which
+        leave the handle and its request spec identical while changing the
+        bytes."""
+        self._delivered[handle] = {"content_digest": content_digest, "partial": partial}
+
+    async def export_result(self, handle: str, workspace_id: str = "default") -> dict:
+        self.export_calls[handle] = self.export_calls.get(handle, 0) + 1
+        if handle not in self._factories:
+            return {"handle": handle, "status": "not_found", "message": f"Unknown handle '{handle}'."}
+        path = self._path(handle)
+        if not path.exists():
+            return {"handle": handle, "status": "expired", "message": f"Handle '{handle}' has been evicted."}
+        media_type, _ = self._factories[handle]
+        size = sum(f.stat().st_size for f in path.rglob("*") if f.is_file()) if path.is_dir() else path.stat().st_size
+        return {
+            "handle": handle,
+            "status": "ready",
+            "storage_uri": path.resolve().as_uri(),
+            "media_type": media_type,
+            "size_bytes": size,
+            "rematerialize_hint": None,
+            # Absent, not null, for a handle with no record — exactly as the
+            # real export_result omits the field rather than fabricating one.
+            **self._delivered.get(handle, {}),
+        }
+
+    async def rematerialize(self, handle: str, workspace_id: str = "default") -> dict:
+        if handle not in self._factories:
+            return {"handle": handle, "status": "not_found", "message": f"Unknown handle '{handle}'."}
+        self.rematerialize_calls[handle] = self.rematerialize_calls.get(handle, 0) + 1
+        self._write(handle)
+        return {"job_handle": f"job_{handle}", "obs_handle": handle, "status": "ready"}
+
+    async def get_retrieval_status(self, job_handle: str, workspace_id: str = "default") -> dict:
+        handle = job_handle[len("job_"):] if job_handle.startswith("job_") else job_handle
+        return {"job_handle": job_handle, "status": "ready", "obs_handle": handle}
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+class InitializeCountingMiddleware:
+    """ASGI middleware that counts MCP ``initialize`` requests reaching the
+    server — i.e. how many distinct streamable-HTTP sessions were opened.
+
+    One session opened and reused for N tool calls hits ``initialize`` once;
+    the per-call-reconnect path (``get_tools()``, ``session=None``) hits it
+    once per ``ainvoke``. Buffers each HTTP request body, peeks for the
+    ``initialize`` method, then replays the untouched body downstream so the
+    real FastMCP handling is unaffected. Non-HTTP scopes (lifespan) pass
+    straight through."""
+
+    def __init__(self, app):
+        self.app = app
+        self.initialize_count = 0
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        chunks = []
+        more = True
+        while more:
+            message = await receive()
+            if message["type"] == "http.request":
+                chunks.append(message.get("body", b""))
+                more = message.get("more_body", False)
+            else:
+                more = False
+        body = b"".join(chunks)
+        # The JSON-RPC initialize request carries ``"method":"initialize"``;
+        # notifications/initialized is a different token ("initialized") and
+        # never matches the quoted value here.
+        if b'"initialize"' in body:
+            self.initialize_count += 1
+
+        replayed = False
+
+        async def _replay():
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return await receive()
+
+        await self.app(scope, _replay, send)
+
+
+class FakeEarthdataMCPServer:
+    """Starts/stops a real FastMCP streamable-HTTP server in a background thread.
+
+    ``app_wrapper`` (optional) wraps the built ASGI app before serving — used
+    by the session-reuse regression test to slip an
+    ``InitializeCountingMiddleware`` in front of the real FastMCP handling."""
+
+    def __init__(self, mcp: FastMCP, app_wrapper: Callable[[Any], Any] | None = None):
+        self.mcp = mcp
+        self._app_wrapper = app_wrapper
+        self.port = _free_port()
+        self.url = f"http://127.0.0.1:{self.port}/mcp"
+        self._server: uvicorn.Server | None = None
+        self._thread: threading.Thread | None = None
+
+    def start(self, timeout: float = 5.0) -> None:
+        app = self.mcp.http_app(path="/mcp")
+        if self._app_wrapper is not None:
+            app = self._app_wrapper(app)
+        config = uvicorn.Config(app, host="127.0.0.1", port=self.port, log_level="warning", lifespan="on")
+        self._server = uvicorn.Server(config)
+
+        def _run() -> None:
+            asyncio.run(self._server.serve())
+
+        self._thread = threading.Thread(target=_run, daemon=True)
+        self._thread.start()
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self._server.started:
+                return
+            time.sleep(0.02)
+        raise RuntimeError("fake earthdata MCP server did not start in time")
+
+    def stop(self, timeout: float = 5.0) -> None:
+        if self._server is not None:
+            self._server.should_exit = True
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)

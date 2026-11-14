@@ -80,7 +80,7 @@ class WorkflowStageSequenceTests(unittest.IsolatedAsyncioTestCase):
         from tta_backend.services.retrieval_composites import await_retrieval, safe_retrieve
         from tta_backend.tools.satellite_tools.plot_tools import make_plot_singular
         from tta_backend.utils.streaming import stream_response
-        from eval_harness import contains_subsequence
+        from benchmark.checks import contains_subsequence
 
         plot_singular = make_plot_singular(self.tools)
 

@@ -1,17 +1,16 @@
 """
 starter_prompts.py
 -------------------
-The empty-chat's example questions — one backend-owned constant so the
-`/capabilities/starters` endpoint, the eval harness's task-coverage assertion,
-and the frontend's empty state can never drift apart.
+The empty-chat's example questions: one backend-owned constant so the
+`/capabilities/starters` endpoint, the benchmark's coverage check and the
+frontend's empty state cannot drift apart.
 
-Each entry's ``id`` must name a real eval task (direct-agent or e2e, see
-``tests/eval_harness.py``) — the load-bearing rule: a starter
-prompt with no matching eval task is a marketing claim the test suite cannot
-back up, so ``tests.eval_harness.starter_prompts_missing_eval_tasks`` fails
-the suite if one ever drifts. ``category`` spans the workflow types (map,
-trend, validation, comparison, ground lookup, discovery) so the
-breadth of the app is visible at a glance.
+Each entry's ``id`` must name a benchmark case (``benchmark/cases.py``). A
+starter prompt with no case is a claim the suite cannot back up, so
+``benchmark.runner.starter_prompts_missing_cases`` fails the suite if one
+drifts. ``category`` spans the workflow types (map, trend, validation,
+comparison, ground lookup, discovery) so the breadth of the app is visible at
+a glance.
 """
 from __future__ import annotations
 

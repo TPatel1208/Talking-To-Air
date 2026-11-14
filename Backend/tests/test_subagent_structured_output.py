@@ -3,18 +3,11 @@ fenced JSON (live 2026-11-05, Claude via Portkey) never become the answer."""
 import asyncio
 import importlib.util
 import json
-import os
-import sys
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 _HAS_LANGCHAIN = importlib.util.find_spec("langchain") is not None
-
-# eval_harness lives beside the tests, not in the package.
-TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
-if TESTS_DIR not in sys.path:
-    sys.path.insert(0, TESTS_DIR)
 
 
 def _envelope(**overrides):
@@ -252,13 +245,12 @@ class RunGroundStructuredAnswerTests(unittest.IsolatedAsyncioTestCase):
 
 
 @unittest.skipUnless(_HAS_LANGCHAIN, "langchain is not installed")
-class EvalHarnessStructuredAnswerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_scores_the_structured_answer_not_the_narration(self):
-        """The eval used to read only streamed text, so every envelope was None."""
-        import eval_harness
-
-        from tta_backend.agents import earthdata_agent
+class StreamedStructuredAnswerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_streams_the_structured_answer_not_the_narration(self):
+        """stream_response hands back the agent's typed answer, so a consumer
+        never has to read it out of the narrated text."""
         from tta_backend.models import SUB_AGENT_ENVELOPE_TOOL
+        from tta_backend.utils.streaming import stream_response
 
         envelope = _envelope()
 
@@ -266,36 +258,24 @@ class EvalHarnessStructuredAnswerTests(unittest.IsolatedAsyncioTestCase):
             async def astream(self, input_, config, stream_mode):
                 await asyncio.sleep(0)
                 yield "messages", (SimpleNamespace(content="Let me search.", type="ai", tool_calls=None), {})
-                # One parallel step, listed in the reverse of the expected order.
                 yield "updates", {"model": {"messages": [SimpleNamespace(tool_calls=[
-                    {"id": "t1", "name": "define_area_of_interest", "args": {}},
-                    {"id": "t2", "name": "search_datasets", "args": {}},
+                    {"id": "t1", "name": "search_datasets", "args": {}},
                 ], content="")]}}
                 yield "updates", {"tools": {"messages": [
-                    SimpleNamespace(name="define_area_of_interest", content="aoi_1", tool_calls=None),
                     SimpleNamespace(name="search_datasets", content="dataset_1", tool_calls=None),
                 ]}}
                 yield "updates", {"model": {
                     "messages": [SimpleNamespace(
-                        tool_calls=[{"id": "t3", "name": SUB_AGENT_ENVELOPE_TOOL, "args": envelope.model_dump()}],
+                        tool_calls=[{"id": "t2", "name": SUB_AGENT_ENVELOPE_TOOL, "args": envelope.model_dump()}],
                         content="",
                     )],
                     "structured_response": envelope,
                 }}
 
-        task = eval_harness.EvalTask(
-            name="structured_answer_offline", category="discovery", prompt="find TEMPO NO2",
-            handlers={}, expected_tool_calls=["search_datasets", "define_area_of_interest"],
-            outcome_check=lambda env, calls: env is not None and env.handles == ["obs_1"],
-        )
-        with patch("tta_backend.earthdata_mcp.client.load_raw_mcp_tools", AsyncMock(return_value={})), \
-             patch.object(earthdata_agent, "build_earthdata_agent", Mock(return_value=FakeSatelliteAgent())):
-            result = await eval_harness.run_eval_task(task)
+        events = [event async for event in stream_response(FakeSatelliteAgent(), "find TEMPO NO2", thread_id="structured-answer-offline")]
 
-        self.assertEqual(result.envelope, envelope)
-        self.assertEqual(result.tool_steps, [["define_area_of_interest", "search_datasets"]])
-        self.assertEqual(result.model_steps, 2)  # the parallel step, then the envelope call
-        self.assertTrue(result.passed)
+        self.assertEqual([data for event_type, data in events if event_type == "structured_response"], [envelope])
+        self.assertIn("search_datasets", [data["name"] for event_type, data in events if event_type == "tool_call"])
 
 
 if __name__ == "__main__":

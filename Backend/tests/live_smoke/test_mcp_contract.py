@@ -44,7 +44,7 @@ _POLL_INTERVAL_SECONDS = 3
 _POLL_MAX_ATTEMPTS = 60
 
 # TEMPO NO2 over Houston in June 2024 is the same dataset/location/date this
-# repo's scripted eval (tests/eval_harness.py) already exercises successfully
+# repo's benchmark (benchmark/cases.py) already exercises successfully
 # against the real MCP — a known-good small window, not a guess. The variable
 # name is the real product variable (confirmed live via describe_dataset
 # against the actual TEMPO NO2 collection) — not the model-facing short name
