@@ -29,12 +29,13 @@ from tta_backend.services import admission
 from tta_backend.config.workflow_stages import STAGE_RENDER
 from tta_backend.datasets.mask_info import col_info_for_variable
 from tta_backend.earthdata_mcp.results import CATEGORY_PROVIDER_UNAVAILABLE, MCPToolError, parse_tool_result
-from tta_backend.preprocessing.aggregation_service import (
+from tta_backend.domain.aggregation.aggregation_service import (
     AggregationService,
     VariableChoiceRequired,
     area_weighted_mean,
 )
 from tta_backend.preprocessing.variable_choice_builder import emit_variable_choice_payload
+from tta_backend.services import variable_choice_registry
 from tta_backend.services.open_handle import OpenHandleError, open_handle
 from tta_backend.tools.satellite_tools.plot_tools import (
     _da_to_heatmap_payload,
@@ -45,8 +46,8 @@ from tta_backend.tools.satellite_tools.plot_tools import (
     _save_chart,
     _time_range as _pt_time_range,
 )
-from tta_backend.utils.geo_utils import find_lat_coord, find_lon_coord
-from tta_backend.utils.plotting import _normalize_to_2d
+from tta_backend.domain.geo import find_lat_coord, find_lon_coord
+from tta_backend.domain.masking.dimensions import _normalize_to_2d
 from tta_backend.utils.streaming import emit_status
 
 logger = logging.getLogger(__name__)
@@ -471,7 +472,9 @@ async def _open_and_prepare_side(
         lon_coord = find_lon_coord(ds)
         if lon_coord:
             ds = _normalize_longitudes(ds, lon_coord)
-        da = _aggregation_service.to_dataarray(ds, handle=handle, variable=variable)
+        da = _aggregation_service.to_dataarray(
+            ds, recorded_variable=variable_choice_registry.get(handle), variable=variable,
+        )
         return ds, da, None, None
     except VariableChoiceRequired as e:
         # This side of the compare is ambiguous — deliver a
@@ -629,7 +632,9 @@ def make_compare(mcp_tools: dict[str, BaseTool]) -> BaseTool:
             # variable_name is already resolved from A/B above -- pass it
             # explicitly so the aligned (multi-source) dataset doesn't hit
             # its own ambiguous-variable error for a choice already made.
-            aligned_da = _aggregation_service.to_dataarray(aligned_ds, handle=aligned_handle, variable=variable_name)
+            aligned_da = _aggregation_service.to_dataarray(
+                aligned_ds, recorded_variable=variable_choice_registry.get(aligned_handle), variable=variable_name,
+            )
         except MCPToolError as e:
             return json.dumps({"error": e.to_dict()})
         except OpenHandleError as e:

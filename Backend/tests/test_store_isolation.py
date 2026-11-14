@@ -213,7 +213,7 @@ class OverlayStoreIsolationTests(StoreStateAssertions):
         import tempfile
         import unittest.mock
 
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
         from tta_backend.tools.satellite_tools import plot_tools
 
         with tempfile.TemporaryDirectory() as tmp:

@@ -74,7 +74,7 @@ class ConnectorsEndpointTests(unittest.IsolatedAsyncioTestCase):
         import httpx
         import tta_backend.api as api
         from cryptography.fernet import Fernet
-        from tta_backend.utils.connector_crypto import build_multi_fernet
+        from tta_backend.infrastructure.connector_crypto import build_multi_fernet
 
         self.httpx = httpx
         self.api = api
@@ -261,7 +261,7 @@ class ConnectorsEndpointTests(unittest.IsolatedAsyncioTestCase):
     async def test_set_aqs_credentials_stores_the_pair_encrypted_with_no_expiry(self):
         import json
 
-        from tta_backend.utils.connector_crypto import decrypt_secret
+        from tta_backend.infrastructure.connector_crypto import decrypt_secret
 
         patches = self._auth_patches() + self._repo_patches() + self._validator_patch()
         async with await self._client(patches) as client:

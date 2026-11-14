@@ -51,7 +51,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         ``CHAT_DETACHED_TURNS_ENABLED=0`` restores, and a rollback that
         restores something untested is not a rollback.
         """
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         self.enterContext(patch.dict(os.environ, {"CHAT_DETACHED_TURNS_ENABLED": "0"}))
         get_settings.cache_clear()
@@ -792,7 +792,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         """
         import tempfile
 
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
         from tta_backend.services.frame_store import store_frame_stack
         from tta_backend.services.open_handle import OPEN_PIPELINE_VERSION
 
@@ -889,7 +889,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         payload, _stack = self._frame_chart()
         import shutil
 
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         shutil.rmtree(get_settings().frame_store_dir)
 
@@ -1050,7 +1050,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         """
         import shutil
 
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         payload, _stack = self._frame_chart(planes=True)
         evicted = payload["frames"]["planes"]["max"]["_key"]

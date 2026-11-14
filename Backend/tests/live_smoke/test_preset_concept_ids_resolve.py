@@ -40,7 +40,7 @@ pytestmark = [
 
 @pytest_asyncio.fixture
 async def invoke():
-    from tta_backend.config.settings import Settings
+    from tta_backend.infrastructure.settings import Settings
     from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
     from tta_backend.earthdata_mcp.results import parse_tool_result
 

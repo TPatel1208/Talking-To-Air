@@ -1,6 +1,6 @@
 """
-preprocessing/level_resolver.py
-=================================
+domain/aggregation/level_resolver.py
+====================================
 Turning "300 hPa" into a layer index, and saying how much of an approximation
 that was.
 
@@ -21,13 +21,13 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from tta_backend.utils import xarray_ops
-from tta_backend.utils.geo_utils import vertical_axis_kind
+from tta_backend.domain import xarray_ops
+from tta_backend.domain.geo import vertical_axis_kind
 
 if TYPE_CHECKING:
     import xarray as xr
 
-    from tta_backend.earthdata_mcp.results import MCPToolError
+    from tta_backend.domain.errors import MCPToolError
 
 
 @dataclass(frozen=True)
@@ -142,7 +142,7 @@ def resolve_level(
     auxiliary coordinate is still resolvable (``narrowed.coords`` alone
     would miss it).
     """
-    from tta_backend.preprocessing.regional_reduction import reduce_keeping_axes
+    from tta_backend.domain.aggregation.regional_reduction import reduce_keeping_axes
 
     axes = _axis_candidates(narrowed, dim, dataset)
     available = {kind: str(var.attrs.get("units", "")).strip() for kind, (_, var) in axes.items()}
@@ -215,7 +215,7 @@ def _axis_candidates(narrowed: xr.DataArray, dim: str, dataset: xr.Dataset | Non
     here rather than read as-is -- reading it straight would report an axis
     averaged over a continent as if it described the region.
     """
-    from tta_backend.utils.geo_utils import vertical_axes_for_dim
+    from tta_backend.domain.geo import vertical_axes_for_dim
 
     found = {kind: (name, narrowed[name]) for kind, name in vertical_axes_for_dim(narrowed, dim).items()}
     if dataset is None or getattr(dataset, "data_vars", None) is None:
@@ -302,7 +302,7 @@ def _layer_spread(axis: xr.DataArray, dim: str, index: int) -> float:
 
 
 # Conversion factors into each kind's canonical unit (hPa, km), keyed by the
-# same lowercase spellings ``geo_utils`` recognizes -- one vocabulary, so a unit
+# same lowercase spellings ``domain.geo`` recognizes -- one vocabulary, so a unit
 # the parser accepts is always a unit the resolver can convert.
 _TO_CANONICAL = {
     "pressure": {
@@ -343,7 +343,7 @@ def _convert(value: float, from_units: str, to_units: str, kind: str) -> float:
 
 
 def _unconvertible_axis_error(from_units: str, to_units: str, kind: str) -> MCPToolError:
-    from tta_backend.earthdata_mcp.results import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
+    from tta_backend.domain.errors import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
 
     known = ", ".join(sorted(_TO_CANONICAL[kind]))
     return MCPToolError(
@@ -367,7 +367,7 @@ def _refuse_if_outside_the_axis(requested: float, values: np.ndarray, axis_units
     dimensions, and for the same reason: an edge snap turns a units mismatch or
     a wrong-product request into an ordinary-looking map of the wrong altitude.
     """
-    from tta_backend.earthdata_mcp.results import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
+    from tta_backend.domain.errors import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
 
     finite = values[np.isfinite(values)]
     if finite.size == 0:
@@ -399,7 +399,7 @@ def _within(value: float, low: float, high: float) -> bool:
 
 
 def _axis_units_unknown_error(request: LevelRequest, axis_name: str) -> MCPToolError:
-    from tta_backend.earthdata_mcp.results import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
+    from tta_backend.domain.errors import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
 
     return MCPToolError(
         CATEGORY_DIMENSION_CHOICE_REQUIRED,
@@ -412,7 +412,7 @@ def _axis_units_unknown_error(request: LevelRequest, axis_name: str) -> MCPToolE
 
 
 def _no_usable_column_error(request: LevelRequest) -> MCPToolError:
-    from tta_backend.earthdata_mcp.results import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
+    from tta_backend.domain.errors import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
 
     return MCPToolError(
         CATEGORY_DIMENSION_CHOICE_REQUIRED,
@@ -423,7 +423,7 @@ def _no_usable_column_error(request: LevelRequest) -> MCPToolError:
 
 
 def _unselectable_dimension_error(request: LevelRequest, problem: str) -> MCPToolError:
-    from tta_backend.earthdata_mcp.results import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
+    from tta_backend.domain.errors import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
 
     return MCPToolError(
         CATEGORY_DIMENSION_CHOICE_REQUIRED,
@@ -434,7 +434,7 @@ def _unselectable_dimension_error(request: LevelRequest, problem: str) -> MCPToo
 
 
 def _axis_not_published_error(request: LevelRequest, available: dict[str, Any]) -> MCPToolError:
-    from tta_backend.earthdata_mcp.results import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
+    from tta_backend.domain.errors import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
 
     return MCPToolError(
         CATEGORY_DIMENSION_CHOICE_REQUIRED,
@@ -463,7 +463,7 @@ def _per_pixel_agreement(axis: xr.DataArray, dim: str, requested: float) -> dict
     "50%", and the number sits next to a regional mean that weighted them
     differently.
     """
-    from tta_backend.preprocessing.aggregation_service import cos_lat_weights
+    from tta_backend.domain.aggregation.aggregation_service import cos_lat_weights
 
     ordered = axis.transpose(dim, ...)
     columns = np.asarray(ordered.values, dtype="float64").reshape(ordered.sizes[dim], -1)
@@ -551,7 +551,7 @@ def _refuse_if_not_honestly_one_layer(
     agreement: dict[str, Any], values: np.ndarray,
 ) -> None:
     """Refuse when a single index cannot honestly stand for the request."""
-    from tta_backend.earthdata_mcp.results import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
+    from tta_backend.domain.errors import CATEGORY_DIMENSION_CHOICE_REQUIRED, MCPToolError
 
     fraction = agreement["dominant_fraction"]
     n_pixels = agreement["n_pixels"]
@@ -614,7 +614,7 @@ def _refuse_if_not_honestly_one_layer(
 
 
 def _unparseable_level_error(raw: str, available: dict[str, Any] | None) -> MCPToolError:
-    from tta_backend.earthdata_mcp.results import CATEGORY_USER_INPUT, MCPToolError
+    from tta_backend.domain.errors import CATEGORY_USER_INPUT, MCPToolError
 
     return MCPToolError(
         CATEGORY_USER_INPUT,
@@ -629,7 +629,7 @@ class _UnitsOnly:
     """A units string in the shape ``vertical_axis_kind`` reads.
 
     The request's unit is classified by the SAME function that classifies a
-    granule's axis (``geo_utils.vertical_axis_kind``) rather than by a second
+    granule's axis (``domain.geo.vertical_axis_kind``) rather than by a second
     vocabulary. Two lists would drift, and the drift would be silent in the
     worst direction: a unit the request accepts but no axis is ever classified
     as would resolve against nothing, or -- worse -- against the wrong axis.

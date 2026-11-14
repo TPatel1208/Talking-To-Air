@@ -28,7 +28,7 @@ def _load_epa_module():
         "langchain": MagicMock(),
         "langchain.tools": MagicMock(tool=lambda f: f),
         "tta_backend.config": MagicMock(),
-        "tta_backend.config.settings": MagicMock(get_settings=MagicMock(return_value=fake_settings)),
+        "tta_backend.infrastructure.settings": MagicMock(get_settings=MagicMock(return_value=fake_settings)),
         "tta_backend.services": MagicMock(),
         "tta_backend.services.artifact_store": MagicMock(artifact_store=fake_artifact_store),
         "tta_backend.services.connector_credential_service": MagicMock(),

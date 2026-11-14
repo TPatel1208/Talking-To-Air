@@ -23,7 +23,7 @@ class EarthdataToolsetTests(unittest.IsolatedAsyncioTestCase):
         self.server.start()
         self.addCleanup(self.server.stop)
 
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         self.settings = Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None)
 
@@ -116,7 +116,7 @@ class DescribeDatasetModelViewTests(unittest.IsolatedAsyncioTestCase):
         self.server.start()
         self.addCleanup(self.server.stop)
 
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         self.settings = Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None)
 

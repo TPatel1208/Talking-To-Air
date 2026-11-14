@@ -143,7 +143,7 @@ class HandleIndexReorderTests(unittest.IsolatedAsyncioTestCase):
     ``export_result`` was called at all."""
 
     async def asyncSetUp(self):
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
         from fake_earthdata_mcp import FakeEarthdataMCPServer, HandleVolume, build_fake_mcp
         from test_cube_cache import StoreTestCase

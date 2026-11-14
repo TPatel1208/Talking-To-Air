@@ -28,7 +28,7 @@ class DiscoveryEndpointTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTest
         import tta_backend.api as api
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
         from tta_backend.earthdata_mcp.toolset import load_earthdata_tools
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.utils.streaming import current_user_id
 
         self.httpx = httpx

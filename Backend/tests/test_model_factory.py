@@ -4,7 +4,7 @@ import unittest
 class ModelFactoryTests(unittest.TestCase):
     def test_groq_provider_yields_a_model_bound_to_the_groq_api(self):
         from tta_backend.config.model_factory import build_chat_model
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from langchain_groq import ChatGroq
 
         settings = Settings(groq_api_key="groq-secret")
@@ -16,7 +16,7 @@ class ModelFactoryTests(unittest.TestCase):
 
     def test_google_provider_yields_a_model_bound_to_gemini(self):
         from tta_backend.config.model_factory import build_chat_model
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from langchain_google_genai import ChatGoogleGenerativeAI
 
         settings = Settings(google_api_key="google-secret")
@@ -28,7 +28,7 @@ class ModelFactoryTests(unittest.TestCase):
 
     def test_unknown_provider_raises_configuration_error_at_construction(self):
         from tta_backend.config.model_factory import build_chat_model
-        from tta_backend.config.settings import ConfigurationError, Settings
+        from tta_backend.infrastructure.settings import ConfigurationError, Settings
 
         settings = Settings()
         with self.assertRaisesRegex(ConfigurationError, "openai"):
@@ -123,7 +123,7 @@ class RetryCeilingTests(unittest.TestCase):
 
     def test_groq_model_caps_retries_at_the_configured_ceiling(self):
         from tta_backend.config.model_factory import build_chat_model
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         settings = Settings(groq_api_key="groq-secret", llm_max_retries=3)
         model = build_chat_model("groq", "openai/gpt-oss-120b", settings)
@@ -132,7 +132,7 @@ class RetryCeilingTests(unittest.TestCase):
 
     def test_google_model_caps_retries_at_the_configured_ceiling(self):
         from tta_backend.config.model_factory import build_chat_model
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         settings = Settings(google_api_key="google-secret", llm_max_retries=3)
         model = build_chat_model("google", "gemini-2.5-flash", settings)
@@ -142,7 +142,7 @@ class RetryCeilingTests(unittest.TestCase):
     def test_the_default_ceiling_is_lower_than_the_sdk_default_of_six(self):
         """Pin the value, not just that it is passed through: raising it back
         to the SDK default should fail here."""
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         self.assertEqual(Settings().llm_max_retries, 2)
 
@@ -150,7 +150,7 @@ class RetryCeilingTests(unittest.TestCase):
         import os
         from unittest.mock import patch
 
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         with patch.dict(os.environ, {"LLM_MAX_RETRIES": "4"}):
             self.assertEqual(Settings().llm_max_retries, 4)
@@ -161,7 +161,7 @@ class RetryCeilingTests(unittest.TestCase):
         import os
         from unittest.mock import patch
 
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         with patch.dict(os.environ, {"LLM_MAX_RETRIES": "-1"}):
             self.assertEqual(Settings().llm_max_retries, 0)
@@ -177,7 +177,7 @@ class GeminiNativeToolSchemaTests(unittest.TestCase):
         from langchain_core.messages import HumanMessage
 
         from tta_backend.config.model_factory import build_chat_model
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         model = build_chat_model("google", "gemini-3.5-flash-lite", Settings(google_api_key="offline"))
         bound = model.bind_tools(tools, tool_choice=None)
@@ -235,7 +235,7 @@ class GeminiNativeToolSchemaTests(unittest.TestCase):
         from langchain_core.tools import StructuredTool
 
         from tta_backend.config.model_factory import NATIVE_JSON_SCHEMA, build_chat_model
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.models.agent_request import DispatchArgs, dispatch_json_schema
 
         async def _noop(**_):
@@ -259,7 +259,7 @@ class GeminiNativeToolSchemaTests(unittest.TestCase):
         from langchain_core.tools import StructuredTool, tool
 
         from tta_backend.config.model_factory import NATIVE_JSON_SCHEMA, build_chat_model
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.models.agent_request import DispatchArgs, dispatch_json_schema
 
         async def _noop(**_):
@@ -287,7 +287,7 @@ class PortkeyProviderTests(unittest.TestCase):
     """Dispatch must use the native schema, where ``agent`` is required."""
 
     def _settings(self, **overrides):
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         return Settings(portkey_api_key="pk-offline", **overrides)
 
@@ -343,7 +343,7 @@ class PortkeyProviderTests(unittest.TestCase):
         import os
         from unittest.mock import patch
 
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(Settings().portkey_base_url, "https://api.portkey.ai/v1")
@@ -374,7 +374,7 @@ class CacheableSystemPromptTests(unittest.TestCase):
         from langchain_core.messages import HumanMessage
 
         from tta_backend.config.model_factory import build_chat_model, cacheable_system_prompt
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         model = build_chat_model("portkey", "@x/claude", Settings(portkey_api_key="offline"))
         system = cacheable_system_prompt("SYSTEM", "portkey", "@x/claude")

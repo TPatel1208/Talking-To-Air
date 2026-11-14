@@ -101,7 +101,7 @@ class GpmDimensionNamesTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from fake_earthdata_mcp import HandleVolume, build_fake_mcp, FakeEarthdataMCPServer
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
@@ -130,7 +130,7 @@ class GpmDimensionNamesTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_open_handle_recovers_real_dim_names_from_dimension_names_attrs(self):
         from tta_backend.services.open_handle import open_handle
-        from tta_backend.utils.geo_utils import find_lat_coord, find_lon_coord
+        from tta_backend.domain.geo import find_lat_coord, find_lon_coord
 
         self.volume.add_hdf5("obs_gpm", _write_gpm_granule)
 

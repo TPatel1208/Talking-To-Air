@@ -117,7 +117,7 @@ class NarrowingWorksOnAFieldThatHasAVerticalAxisTests(unittest.TestCase):
         import numpy as np
         from shapely.geometry import box
 
-        from tta_backend.utils.plotting import mask_data_by_geometry
+        from tta_backend.domain.masking.geometry import mask_data_by_geometry
 
         field = self._field()
         narrowed = mask_data_by_geometry(field, box(-75.4, 39.6, -74.6, 41.4))
@@ -141,7 +141,7 @@ class NarrowingWorksOnAFieldThatHasAVerticalAxisTests(unittest.TestCase):
         import numpy as np
         from shapely.geometry import box
 
-        from tta_backend.utils.plotting import mask_data_by_geometry
+        from tta_backend.domain.masking.geometry import mask_data_by_geometry
 
         field = self._field()
         field = field.assign_coords(
@@ -182,7 +182,7 @@ class ReducingOverTheAnalyzedRegionKeepsOneNamedAxisTests(unittest.TestCase):
         line agree with the statistics tool for the identical region."""
         import math
 
-        from tta_backend.preprocessing.regional_reduction import reduce_keeping_axes
+        from tta_backend.domain.aggregation.regional_reduction import reduce_keeping_axes
 
         field = self._field([[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]])
         reduced = reduce_keeping_axes(field, keep=("time",), stat="mean")
@@ -202,7 +202,7 @@ class ReducingOverTheAnalyzedRegionKeepsOneNamedAxisTests(unittest.TestCase):
         densely-sampled hour as heavily as a whole cadence bucket."""
         import math
 
-        from tta_backend.preprocessing.regional_reduction import reduce_keeping_axes
+        from tta_backend.domain.aggregation.regional_reduction import reduce_keeping_axes
 
         # (time=2, layer=2, lat=2, lon=1)
         field = self._field(
@@ -230,7 +230,7 @@ class ReducingOverTheAnalyzedRegionKeepsOneNamedAxisTests(unittest.TestCase):
         real, very clean measurement."""
         import numpy as np
 
-        from tta_backend.preprocessing.regional_reduction import reduce_keeping_axes
+        from tta_backend.domain.aggregation.regional_reduction import reduce_keeping_axes
 
         field = self._field([[[1.0, 2.0], [3.0, 4.0]],
                              [[np.nan, np.nan], [np.nan, np.nan]]])
@@ -243,7 +243,7 @@ class ReducingOverTheAnalyzedRegionKeepsOneNamedAxisTests(unittest.TestCase):
         """max/min/median/std describe the cells themselves, not an area, so
         they are deliberately NOT area-weighted -- the same split
         ``conduct_temporal_statistic`` has always made."""
-        from tta_backend.preprocessing.regional_reduction import reduce_keeping_axes
+        from tta_backend.domain.aggregation.regional_reduction import reduce_keeping_axes
 
         field = self._field([[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]])
 
@@ -298,7 +298,7 @@ class VerticalProfileToolTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from fake_earthdata_mcp import HandleVolume, build_fake_mcp, FakeEarthdataMCPServer
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
@@ -555,7 +555,7 @@ class VerticalAxisIdentificationTests(unittest.TestCase):
         return xr.DataArray(np.zeros(3), dims=("layer",), attrs=attrs)
 
     def test_pressure_and_altitude_units_are_recognized(self):
-        from tta_backend.utils.geo_utils import vertical_axis_kind
+        from tta_backend.domain.geo import vertical_axis_kind
 
         self.assertEqual(vertical_axis_kind(self._var(units="hPa")), "pressure")
         self.assertEqual(vertical_axis_kind(self._var(units="Pa")), "pressure")
@@ -567,7 +567,7 @@ class VerticalAxisIdentificationTests(unittest.TestCase):
         easting on a projected grid. A variable carrying a standard_name has
         already said which; believing its units over its own declaration would
         plot a map projection as an atmosphere."""
-        from tta_backend.utils.geo_utils import vertical_axis_kind
+        from tta_backend.domain.geo import vertical_axis_kind
 
         self.assertIsNone(
             vertical_axis_kind(self._var(units="m", standard_name="projection_y_coordinate")),
@@ -584,7 +584,7 @@ class VerticalAxisIdentificationTests(unittest.TestCase):
         which reads to the caller as "this product has no pressure axis".
 
         Fails safe rather than wrong, but it fails on a real file."""
-        from tta_backend.utils.geo_utils import vertical_axis_kind
+        from tta_backend.domain.geo import vertical_axis_kind
 
         for placeholder in ("none", "None", "N/A", "n/a", "NA", "unknown", "unset", "-", "   "):
             with self.subTest(standard_name=placeholder):
@@ -603,13 +603,13 @@ class VerticalAxisIdentificationTests(unittest.TestCase):
         nothing was declared must not start reading every metre-valued variable
         as an altitude. A variable with a placeholder AND non-vertical units is
         still not an axis."""
-        from tta_backend.utils.geo_utils import vertical_axis_kind
+        from tta_backend.domain.geo import vertical_axis_kind
 
         self.assertIsNone(vertical_axis_kind(self._var(units="degrees", standard_name="none")))
         self.assertIsNone(vertical_axis_kind(self._var(units="DU", standard_name="N/A")))
 
     def test_an_unlabelled_axis_is_not_guessed_to_be_vertical(self):
-        from tta_backend.utils.geo_utils import vertical_axis_kind
+        from tta_backend.domain.geo import vertical_axis_kind
 
         self.assertIsNone(vertical_axis_kind(self._var()))
         self.assertIsNone(vertical_axis_kind(self._var(units="nm")))
@@ -639,7 +639,7 @@ class VerticalAxisIdentificationTests(unittest.TestCase):
         import numpy as np
         import xarray as xr
 
-        from tta_backend.utils.geo_utils import is_vertical_dim, vertical_axes_for_dim
+        from tta_backend.domain.geo import is_vertical_dim, vertical_axes_for_dim
 
         def field(axis_attrs):
             da = xr.DataArray(
@@ -674,7 +674,7 @@ class ProfileDescribesTheRegionAndNothingElseTests(unittest.IsolatedAsyncioTestC
     async def asyncSetUp(self):
         from fake_earthdata_mcp import HandleVolume, build_fake_mcp, FakeEarthdataMCPServer
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
@@ -959,7 +959,7 @@ class ProfileIsReachableFromWhereResearchersAlreadyAreTests(unittest.TestCase):
         import numpy as np
         import xarray as xr
 
-        from tta_backend.utils.plotting import _dimension_choice_error
+        from tta_backend.domain.masking.dimensions import _dimension_choice_error
 
         da = xr.DataArray(
             np.zeros((2, 2, 3)),
@@ -982,7 +982,7 @@ class ProfileIsReachableFromWhereResearchersAlreadyAreTests(unittest.TestCase):
         import numpy as np
         import xarray as xr
 
-        from tta_backend.utils.plotting import _dimension_choice_error
+        from tta_backend.domain.masking.dimensions import _dimension_choice_error
 
         da = xr.DataArray(
             np.zeros((2, 2, 3)),

@@ -35,7 +35,7 @@ class StoreTestCase(unittest.TestCase):
 
     def setUp(self):
         import tta_backend.services.cube_cache as cube_cache
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         self.cube_cache = cube_cache
         # ignore_cleanup_errors because a cube write is deliberately
@@ -66,7 +66,7 @@ class StoreTestCase(unittest.TestCase):
         self.addCleanup(cube_cache.reset_for_test)
 
     def set_limits(self, **env):
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         patcher = unittest.mock.patch.dict(os.environ, {k: str(v) for k, v in env.items()})
         patcher.start()
@@ -207,7 +207,7 @@ class RoundTripTests(StoreTestCase):
         import numpy as np
         import xarray as xr
 
-        from tta_backend.preprocessing.aggregation_service import AggregationService
+        from tta_backend.domain.aggregation.aggregation_service import AggregationService
 
         # scale_factor 2e13, valid_range packed [0, 30000] -> physical [0, 6e17].
         ds = xr.Dataset(
@@ -281,7 +281,7 @@ class RoundTripTests(StoreTestCase):
         import numpy as np
         import xarray as xr
 
-        from tta_backend.preprocessing.aggregation_service import AggregationService
+        from tta_backend.domain.aggregation.aggregation_service import AggregationService
 
         ds = xr.Dataset(
             {
@@ -665,7 +665,7 @@ class EvictionTests(StoreTestCase):
         peaks at 81.6 MiB now, in the background — and the two caps measure
         different things anyway (one disk, one memory), so comparing them was
         never meaningful. What matters is that a cube leaves room for another."""
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.services.cube_cache import per_cube_disk_limit
 
         settings = Settings()
@@ -910,7 +910,7 @@ class OpenHandleCubeIntegrationTests(unittest.IsolatedAsyncioTestCase):
     set_limits = StoreTestCase.set_limits
 
     async def asyncSetUp(self):
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
         from fake_earthdata_mcp import FakeEarthdataMCPServer, HandleVolume, build_fake_mcp
 

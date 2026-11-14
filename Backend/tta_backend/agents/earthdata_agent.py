@@ -18,7 +18,7 @@ from langgraph.graph.state import CompiledStateGraph
 from tta_backend.agents.subagent_output import subagent_response_format
 from tta_backend.agents.subagent_trim import build_subagent_trim_middleware
 from tta_backend.config.model_factory import build_chat_model, cacheable_system_prompt
-from tta_backend.config.settings import get_settings
+from tta_backend.infrastructure.settings import get_settings
 from tta_backend.config.earthdata_agent_prompt import get_earthdata_agent_prompt
 from tta_backend.tools.satellite_tools.factory import build_satellite_tools
 from tta_backend.utils.streaming import stream_response

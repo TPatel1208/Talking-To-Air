@@ -28,7 +28,7 @@ os.environ["LANGCHAIN_TRACING_V2"] = "false"
 from tta_backend.agents.earthdata_agent import build_earthdata_agent
 from tta_backend.agents.ground_sensor_agent import build_ground_agent
 from tta_backend.agents.supervisor_agent import build_agent
-from tta_backend.config.settings import get_settings
+from tta_backend.infrastructure.settings import get_settings
 from tta_backend.earthdata_mcp.client import open_earthdata_session
 from tta_backend.repositories.session_metadata_repository import (
     ensure_session_metadata_table,

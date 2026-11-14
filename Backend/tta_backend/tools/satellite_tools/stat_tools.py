@@ -9,12 +9,15 @@ from tta_backend.services import admission
 from tta_backend.config.workflow_stages import STAGE_RENDER
 from tta_backend.datasets.mask_info import col_info_for_variable
 from tta_backend.earthdata_mcp.results import MCPToolError
+from tta_backend.services import variable_choice_registry
 from tta_backend.services.open_handle import OpenHandleError, open_handle
 from tta_backend.tools.satellite_tools.plot_tools import _normalize_longitudes
-from tta_backend.utils.geo_utils import find_lat_coord, find_lon_coord
-from tta_backend.utils.plotting import _normalize_to_2d, apply_mask_region_type, mask_data_by_geometry, RegionResolver
+from tta_backend.domain.geo import find_lat_coord, find_lon_coord
+from tta_backend.domain.masking.dimensions import _normalize_to_2d
+from tta_backend.domain.masking.geometry import apply_mask_region_type, mask_data_by_geometry
+from tta_backend.utils.plotting import RegionResolver
 from tta_backend.utils.streaming import emit_status
-from tta_backend.preprocessing.aggregation_service import (
+from tta_backend.domain.aggregation.aggregation_service import (
     VARIABLE_RESOLUTION_ATTR,
     AggregationService,
     VariableChoiceRequired,
@@ -80,7 +83,9 @@ def make_compute_statistic_tool(mcp_tools: dict[str, BaseTool]) -> BaseTool:
             ds_lon_coord = find_lon_coord(ds)
             if ds_lon_coord:
                 ds = _normalize_longitudes(ds, ds_lon_coord)
-            da = _aggregation_service.to_dataarray(ds, handle=handle, variable=variable)
+            da = _aggregation_service.to_dataarray(
+                ds, recorded_variable=variable_choice_registry.get(handle), variable=variable,
+            )
         except VariableChoiceRequired as e:
             emit_variable_choice_payload(e.resolution, ds)
             emit_status("Waiting for a variable choice.", stage=STAGE_RENDER)
@@ -244,7 +249,9 @@ def make_find_daily_peak(mcp_tools: dict[str, BaseTool]) -> BaseTool:
             ds_lon_coord = find_lon_coord(ds)
             if ds_lon_coord:
                 ds = _normalize_longitudes(ds, ds_lon_coord)
-            da = _aggregation_service.to_dataarray(ds, handle=handle, variable=variable)
+            da = _aggregation_service.to_dataarray(
+                ds, recorded_variable=variable_choice_registry.get(handle), variable=variable,
+            )
         except VariableChoiceRequired as e:
             emit_variable_choice_payload(e.resolution, ds)
             emit_status("Waiting for a variable choice.", stage=STAGE_RENDER)

@@ -19,12 +19,12 @@ from tta_backend.datasets.qa_flags import (
     resolve_qa_info,
 )
 from tta_backend.datasets.registry import load_registry
-from tta_backend.earthdata_mcp.results import CATEGORY_NO_DATA, CATEGORY_VARIABLE_CHOICE_REQUIRED, MCPToolError
-from tta_backend.preprocessing.variable_resolver import Resolution, resolve
-from tta_backend.services import variable_choice_registry
-from tta_backend.utils import xarray_ops
-from tta_backend.utils.geo_utils import identify_time
-from tta_backend.utils.phase_timing import phase_timer
+from tta_backend.domain.errors import CATEGORY_NO_DATA, CATEGORY_VARIABLE_CHOICE_REQUIRED, MCPToolError
+from tta_backend.domain.aggregation.variable_choice import build_variable_choice
+from tta_backend.domain.aggregation.variable_resolver import Resolution, resolve
+from tta_backend.domain import xarray_ops
+from tta_backend.domain.geo import identify_time
+from tta_backend.infrastructure.phase_timing import phase_timer
 
 logger = logging.getLogger(__name__)
 
@@ -210,7 +210,7 @@ def cos_lat_weights(da: xr.DataArray) -> xr.DataArray | None:
     summed -- the same region answered ~5e-7 differently from a continental
     granule than from a tight crop of it.
     """
-    from tta_backend.utils.geo_utils import find_lat_coord
+    from tta_backend.domain.geo import find_lat_coord
 
     lat_name = find_lat_coord(da)
     if lat_name is None or lat_name not in da.dims:
@@ -510,7 +510,7 @@ class AggregationService:
         col_info: dict[str, Any] | None = None,
         umm_var_facts: Any = None,
         keep_time: bool = False,
-        handle: str | None = None,
+        recorded_variable: str | None = None,
         qa_good_tokens: list[str] | None = None,
         source_ds: xr.Dataset | None = None,
     ) -> AggregatedResult:
@@ -540,7 +540,7 @@ class AggregationService:
                 col_info=col_info,
                 umm_var_facts=umm_var_facts,
                 keep_time=keep_time,
-                handle=handle,
+                recorded_variable=recorded_variable,
                 qa_good_tokens=qa_good_tokens,
                 source_ds=source_ds,
             )
@@ -555,11 +555,11 @@ class AggregationService:
         col_info: dict[str, Any] | None = None,
         umm_var_facts: Any = None,
         keep_time: bool = False,
-        handle: str | None = None,
+        recorded_variable: str | None = None,
         qa_good_tokens: list[str] | None = None,
         source_ds: xr.Dataset | None = None,
     ) -> AggregatedResult:
-        da = self.to_dataarray(data, variable=variable, handle=handle)
+        da = self.to_dataarray(data, variable=variable, recorded_variable=recorded_variable)
 
         # When to_dataarray resolved the variable itself (a wide,
         # unregistered, multi-product file), it stashed the chosen name + a
@@ -823,15 +823,15 @@ class AggregationService:
         data: xr.Dataset | xr.DataArray,
         *,
         variable: str | None = None,
-        handle: str | None = None,
+        recorded_variable: str | None = None,
         collection_id: str | None = None,
         col_info: dict[str, Any] | None = None,
     ) -> xr.DataArray:
         """Resolve ``data`` to a single science-variable DataArray.
 
         The exact intent/curation tiers come first and are unchanged: explicit
-        ``variable`` -> the choice recorded for ``handle`` at retrieval time
-        (services.variable_choice_registry) -> the file's only data
+        ``variable`` -> ``recorded_variable``, the choice the caller remembered
+        for this data at retrieval time -> the file's only data
         variable -> the collection's pinned ``primary_var`` (collections.yaml,
         matched via the file's ``short_name`` attr -- a curated choice, not a
         guess). Never silently picks the first variable.
@@ -865,8 +865,8 @@ class AggregationService:
 
         data_vars = [str(k) for k in data.data_vars]
         name = self._match_var(variable, data_vars)
-        if name is None and handle:
-            name = self._match_var(variable_choice_registry.get(handle), data_vars)
+        if name is None:
+            name = self._match_var(recorded_variable, data_vars)
         resolution: Resolution | None = None
         if name is None:
             if len(data_vars) == 1:
@@ -930,8 +930,6 @@ class AggregationService:
             ][:_MAX_LISTED_CANDIDATES],
         }
         if resolution.resolution_confidence == "medium":
-            from tta_backend.preprocessing.variable_choice_builder import build_variable_choice
-
             facts["variable_choice"] = build_variable_choice(resolution, ds).model_dump()
         return facts
 

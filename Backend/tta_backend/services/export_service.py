@@ -499,13 +499,14 @@ class ExportService:
         """The synchronous half of :meth:`_export_data_array`. Runs on a
         worker thread; raises exactly what it raised on the loop, since
         ``to_thread`` re-raises into the awaiting caller unchanged."""
-        from tta_backend.preprocessing.aggregation_service import AggregationService, VariableChoiceRequired
+        from tta_backend.domain.aggregation.aggregation_service import AggregationService, VariableChoiceRequired
+        from tta_backend.services import variable_choice_registry
         from tta_backend.tools.satellite_tools.plot_tools import _normalize_longitudes
-        from tta_backend.utils.plotting import mask_data_by_geometry, sel_bounds
+        from tta_backend.domain.masking.geometry import mask_data_by_geometry, sel_bounds
 
         from tta_backend.earthdata_mcp.results import MCPToolError
 
-        # Pass the source handle so a stored payload whose ``variable`` wasn't
+        # Pass the choice recorded for the source handle so a stored payload whose ``variable`` wasn't
         # persisted (or was persisted as None) still inherits the science
         # variable recorded for this handle at retrieval time. If it
         # can't be resolved -- a genuinely multi-science-variable file with no
@@ -514,7 +515,9 @@ class ExportService:
         # mid-stream on the CSV path, where the response has already started
         # and no handler can turn it into a proper error response.
         try:
-            da = AggregationService().to_dataarray(ds, variable=export.get("variable"), handle=handle)
+            da = AggregationService().to_dataarray(
+                ds, variable=export.get("variable"), recorded_variable=variable_choice_registry.get(handle),
+            )
         except VariableChoiceRequired as exc:
             # A download has no chat to show the variable picker in, so
             # return the refusal as a 422.
@@ -657,7 +660,7 @@ class ExportService:
         self, da: xr.DataArray, export: dict[str, Any], meta: dict[str, Any], granule_cap: int,
     ) -> tuple[_HeatmapGrid, np.ndarray]:
         import numpy as np
-        from tta_backend.preprocessing.aggregation_service import AggregationService
+        from tta_backend.domain.aggregation.aggregation_service import AggregationService
 
         aggregation = AggregationService().aggregate(
             da,
@@ -717,7 +720,7 @@ class ExportService:
         if export.get("aggregation") == "point sample":
             return await self._point_sample_timeseries_rows(export, tools)
 
-        from tta_backend.preprocessing.aggregation_service import AggregationService
+        from tta_backend.domain.aggregation.aggregation_service import AggregationService
 
         da = await self._export_data_array(export, tools, collapse_to_2d=False)
         if "time" not in da.dims:
@@ -735,7 +738,7 @@ class ExportService:
     def _reduce_timeseries_rows(self, da: xr.DataArray, export: dict[str, Any], stat: str) -> list[CsvRow]:
         import numpy as np
         import pandas as pd
-        from tta_backend.preprocessing.aggregation_service import AggregationService
+        from tta_backend.domain.aggregation.aggregation_service import AggregationService
 
         service = AggregationService()
         rows: list[CsvRow] = []

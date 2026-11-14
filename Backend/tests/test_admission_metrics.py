@@ -97,7 +97,7 @@ class AdmissionPublishesItsOccupancyTests(ProcessCacheIsolation, unittest.Isolat
         self.addCleanup(admission.reset_admission)
 
     async def test_the_in_flight_gauge_follows_the_section(self):
-        from tta_backend.utils.metrics import ADMISSION_IN_FLIGHT
+        from tta_backend.infrastructure.metrics import ADMISSION_IN_FLIGHT
 
         occupant = _Occupant()
         task = asyncio.create_task(occupant.run())
@@ -121,7 +121,7 @@ class AdmissionPublishesItsOccupancyTests(ProcessCacheIsolation, unittest.Isolat
         )
 
     async def test_the_queue_gauge_follows_the_waiters(self):
-        from tta_backend.utils.metrics import ADMISSION_QUEUED
+        from tta_backend.infrastructure.metrics import ADMISSION_QUEUED
 
         occupants = [_Occupant() for _ in range(4)]  # 2 admitted, 2 waiting
         tasks = [asyncio.create_task(o.run()) for o in occupants]
@@ -148,7 +148,7 @@ class AdmissionRecordsWhatItRefusedTests(ProcessCacheIsolation, unittest.Isolate
         self.addCleanup(admission.reset_admission)
 
     async def test_a_shed_is_counted(self):
-        from tta_backend.utils.metrics import ADMISSION_SHED_TOTAL
+        from tta_backend.infrastructure.metrics import ADMISSION_SHED_TOTAL
 
         before = _counter_total(ADMISSION_SHED_TOTAL, surface="unspecified")
 
@@ -172,7 +172,7 @@ class AdmissionRecordsWhatItRefusedTests(ProcessCacheIsolation, unittest.Isolate
         """A shed export is a retry; a shed chat turn is a lost turn that has
         already spent its LLM tokens. One number covering both cannot tell an
         operator which is happening, and they carry very different urgency."""
-        from tta_backend.utils.metrics import ADMISSION_SHED_TOTAL
+        from tta_backend.infrastructure.metrics import ADMISSION_SHED_TOTAL
 
         before = _counter_total(ADMISSION_SHED_TOTAL, surface="chat")
 
@@ -203,7 +203,7 @@ class AdmissionMeasuresWaitingAndWeightTests(ProcessCacheIsolation, unittest.Iso
         self.addCleanup(admission.reset_admission)
 
     async def test_every_admission_observes_its_wait(self):
-        from tta_backend.utils.metrics import ADMISSION_WAIT_SECONDS
+        from tta_backend.infrastructure.metrics import ADMISSION_WAIT_SECONDS
 
         before = _histogram_count(ADMISSION_WAIT_SECONDS)
         async with self.admission.admit():
@@ -220,7 +220,7 @@ class AdmissionMeasuresWaitingAndWeightTests(ProcessCacheIsolation, unittest.Iso
         """Not at scrape time. A reduction that climbs to 1.3 GB and releases
         between two Prometheus scrapes is invisible to the process gauge, and
         those are exactly the peaks that cause the OOM."""
-        from tta_backend.utils.metrics import ADMISSION_RSS_BYTES
+        from tta_backend.infrastructure.metrics import ADMISSION_RSS_BYTES
 
         before = _histogram_count(ADMISSION_RSS_BYTES)
         async with self.admission.admit():
@@ -261,7 +261,7 @@ class TelemetryNeverBreaksAdmissionTests(ProcessCacheIsolation, unittest.Isolate
         # pass or fail for reasons unrelated to the contract.
         boom = unittest.mock.Mock(side_effect=RuntimeError("collector unavailable"))
         with unittest.mock.patch.multiple(
-            "tta_backend.utils.metrics",
+            "tta_backend.infrastructure.metrics",
             set_admission_occupancy=boom,
             observe_admission_wait=boom,
             observe_admission_rss=boom,

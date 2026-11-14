@@ -28,7 +28,7 @@ class HandleBasedToolsSurfaceClassifiedErrorsTests(unittest.IsolatedAsyncioTestC
     async def asyncSetUp(self):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         # A tool-raised error unrecognized by the classifier's known
         # prefixes — pins the contract fallback, not a hand-picked category,
@@ -87,7 +87,7 @@ class HandleBasedToolsSurfaceClassifiedErrorsTests(unittest.IsolatedAsyncioTestC
 
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         server = FakeEarthdataMCPServer(build_fake_mcp({"get_retrieval_status": get_retrieval_status}))
         server.start()

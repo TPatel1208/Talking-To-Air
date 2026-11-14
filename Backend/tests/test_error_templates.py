@@ -191,7 +191,7 @@ class RenderScopeNoteTests(unittest.TestCase):
         """A high-ambiguity auto-pick discloses the chosen product AND the
         ranked alternatives, deterministically (no model prose), so a sensor
         fork is transparent and redirectable."""
-        from tta_backend.config.error_templates import render_variable_note
+        from tta_backend.domain.aggregation.variable_resolver import render_variable_note
 
         note = render_variable_note(
             "Terra MODIS Dark Target AOD 550",
@@ -206,7 +206,7 @@ class RenderScopeNoteTests(unittest.TestCase):
     def test_variable_note_is_a_brief_note_without_alternatives(self):
         """A medium-confidence lone pick gets a brief note naming only the
         chosen field -- no fork to list."""
-        from tta_backend.config.error_templates import render_variable_note
+        from tta_backend.domain.aggregation.variable_resolver import render_variable_note
 
         note = render_variable_note("Aerosol Optical Depth", [], ambiguous=False)
 
@@ -215,7 +215,7 @@ class RenderScopeNoteTests(unittest.TestCase):
         self.assertNotIn("Other products available", note)
 
     def test_variable_note_is_none_without_a_chosen_label(self):
-        from tta_backend.config.error_templates import render_variable_note
+        from tta_backend.domain.aggregation.variable_resolver import render_variable_note
 
         self.assertIsNone(render_variable_note(None, ["a", "b"]))
 

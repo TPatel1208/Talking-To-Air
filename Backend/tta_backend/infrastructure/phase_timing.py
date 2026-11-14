@@ -41,7 +41,7 @@ def record_phase(phase: str, duration_seconds: float, /, **context: Any) -> None
     call) is inside the guard.
     """
     try:
-        from tta_backend.utils.metrics import observe_phase_duration
+        from tta_backend.infrastructure.metrics import observe_phase_duration
 
         observe_phase_duration(phase, duration_seconds)
         extra = {
@@ -106,7 +106,7 @@ class _PhaseTimer:
 def phase_timer(phase: str, **context: Any) -> _PhaseTimer:
     """Time ``phase``, recording to the histogram and the ``phase_timing`` log.
 
-    ``phase`` should be one of :data:`utils.metrics.PIPELINE_PHASES` (those
+    ``phase`` should be one of :data:`infrastructure.metrics.PIPELINE_PHASES` (those
     labels are pre-declared at zero so the series exists before any traffic).
     ``context`` is cheap size/identity detail -- cells in, cells out, bytes
     read, member count -- logged with a leading underscore so the JSON

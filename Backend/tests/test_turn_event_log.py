@@ -287,7 +287,7 @@ class TurnEventLogTests(unittest.IsolatedAsyncioTestCase):
         underneath it while it is still running; absent and every abandoned
         turn's narration stays resident forever.
         """
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         await self.log.append(self.turn_id, 'event: status\ndata: {}\n\n')
 

@@ -21,7 +21,7 @@ from benchmark.outcome import BoundaryCall, Outcome, handles_from_calls
 
 _USER_ID = "benchmark-user"
 _AQS_GET_TARGET = "tta_backend.tools.ground_sensor_tools.epa_aqs_tools._aqs_get"
-_TOKEN_RECORDER_TARGET = "tta_backend.utils.metrics.record_llm_tokens"
+_TOKEN_RECORDER_TARGET = "tta_backend.infrastructure.metrics.record_llm_tokens"
 _EMPTY_AQS_RESPONSE = {"Header": [{"status": "success"}], "Data": []}
 _SOURCES_HEADER = re.compile(r"\A\s*Data sources:[ \t]*([^\n]+)")
 
@@ -125,13 +125,13 @@ class CurrentSystemAdapter:
         from tta_backend.agents.earthdata_agent import build_earthdata_agent
         from tta_backend.agents.ground_sensor_agent import build_ground_agent
         from tta_backend.agents.supervisor_agent import build_agent as build_supervisor_agent
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.earthdata_mcp.toolset import load_earthdata_tools
         from tta_backend.services.chart_service import ChartService
         from tta_backend.services.chat_stream_service import ChatStreamService
         from tta_backend.earthdata_mcp.tool_cache import clear_tool_cache
         from tta_backend.services.jobs_service import clear_terminal_status_cache
-        from tta_backend.utils import metrics
+        from tta_backend.infrastructure import metrics
         from tta_backend.utils.streaming import get_call_budget
 
         # Cases run back to back in one process. The call budget, the tool

@@ -30,7 +30,7 @@ class FrameStoreTestCase(unittest.TestCase):
     """Points the frame store at a throwaway directory for each test."""
 
     def setUp(self):
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         self._store = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self._store.cleanup)
@@ -40,7 +40,7 @@ class FrameStoreTestCase(unittest.TestCase):
         self.addCleanup(get_settings.cache_clear)
 
     def set_env(self, **env):
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         patcher = unittest.mock.patch.dict(
             os.environ, {k: str(v) for k, v in env.items()}
@@ -58,7 +58,7 @@ def make_frame_stack(n_frames: int = 24, ny: int = 60, nx: int = 80):
     interval among the populated ones, and a NaN-heavy float32 array."""
     import numpy as np
 
-    from tta_backend.preprocessing.frame_stack import (
+    from tta_backend.domain.aggregation.frame_stack import (
         CADENCE_TIER, FRAME_GRID_DELTA_BASIS, Frame, FrameStack,
     )
 
@@ -125,7 +125,7 @@ def with_planes(stack, statistics=("max", "min")):
     """
     from dataclasses import replace
 
-    from tta_backend.preprocessing.frame_stack import (
+    from tta_backend.domain.aggregation.frame_stack import (
         EXTENT_OVERSTATEMENT_BASIS, PLANE_AGREEMENT_BASIS, StatisticPlane,
     )
 
@@ -257,7 +257,7 @@ class ChartRowCarriesTheAxisTests(FrameStoreTestCase):
         # The scale explains itself wherever the payload goes (like
         # QA_PASS_RATE_BASIS): how it was pooled can't be inferred from two
         # numbers, and it is not the Map tab's scale.
-        from tta_backend.preprocessing.frame_stack import POOLED_SCALE_BASIS
+        from tta_backend.domain.aggregation.frame_stack import POOLED_SCALE_BASIS
 
         self.assertEqual(block["scale_basis"], POOLED_SCALE_BASIS)
 
@@ -587,7 +587,7 @@ class StatisticGuardTests(FrameStoreTestCase):
         can drift is worse than the import it avoids, so it is pinned here —
         where importing the reduction costs nothing.
         """
-        from tta_backend.preprocessing.frame_stack import PLANE_STATISTICS
+        from tta_backend.domain.aggregation.frame_stack import PLANE_STATISTICS
         from tta_backend.services.frame_store import MEAN_STATISTIC, STORABLE_STATISTICS
 
         self.assertEqual(tuple(STORABLE_STATISTICS), tuple(PLANE_STATISTICS))
@@ -653,7 +653,7 @@ class EvictionTests(FrameStoreTestCase):
         Asserted through eviction rather than by reading the setting back: a
         cap nothing enforces is a comment.
         """
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
         from tta_backend.services.frame_store import store_size_bytes, write_frames
 
         self.assertEqual(get_settings().frame_store_max_bytes, 1024 ** 3)

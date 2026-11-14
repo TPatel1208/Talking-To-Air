@@ -44,7 +44,7 @@ class FirstFrameStampTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         import httpx
         import tta_backend.api as api
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
         from tta_backend.services.turn_event_log import TurnEventLog
         from tta_backend.services.turn_registry import TurnRegistry
 
@@ -236,7 +236,7 @@ class FirstFrameStampTests(unittest.IsolatedAsyncioTestCase):
         registry never sees it. Rolling back must not stop new threads
         appearing in the sidebar -- a regression nobody would connect to the
         flag they changed."""
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         async def produce():
             yield 'event: text\ndata: {"content": "hello"}\n\n'

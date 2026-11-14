@@ -20,13 +20,13 @@ from datetime import datetime, timezone
 from functools import cache
 from typing import Any
 
-from tta_backend.config.settings import Settings, get_settings
+from tta_backend.infrastructure.settings import Settings, get_settings
 from tta_backend.repositories.user_connector_repository import (
     get_connector_secret_row,
     set_connector_status,
     touch_last_used_at,
 )
-from tta_backend.utils.connector_crypto import decrypt_secret, get_connector_cipher
+from tta_backend.infrastructure.connector_crypto import decrypt_secret, get_connector_cipher
 from tta_backend.utils.streaming import get_call_budget
 
 logger = logging.getLogger(__name__)

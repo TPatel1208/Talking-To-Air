@@ -25,7 +25,7 @@ REQUIRED_MODULES = [
 def _phase_samples(phase: str) -> tuple[float, float]:
     """(count, sum) currently recorded for ``phase``. Histograms are
     process-wide state, so every test below asserts on a delta."""
-    from tta_backend.utils.metrics import PIPELINE_PHASE_DURATION_SECONDS
+    from tta_backend.infrastructure.metrics import PIPELINE_PHASE_DURATION_SECONDS
 
     count = total = 0.0
     for metric in PIPELINE_PHASE_DURATION_SECONDS.collect():
@@ -90,7 +90,7 @@ class EvidencePhaseTests(unittest.TestCase):
         from tta_backend.tools.satellite_tools.plot_tools import _evidence
 
         ds = _tempo_shaped_dataset(xr)
-        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as captured:
+        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as captured:
             facts = _evidence(ds, ds["column_amount_o3"], _COL_INFO, _global_region())
 
         record = next(r for r in captured.records if r._phase == "evidence")
@@ -106,7 +106,7 @@ class EvidencePhaseTests(unittest.TestCase):
         from tta_backend.tools.satellite_tools.plot_tools import _evidence
 
         ds = _tempo_shaped_dataset(xr)
-        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as captured:
+        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as captured:
             _evidence(ds, ds["column_amount_o3"], _COL_INFO, _global_region())
 
         record = next(r for r in captured.records if r._phase == "evidence")
@@ -180,7 +180,7 @@ class DeferredScienceMeanTests(unittest.TestCase):
         """Wraps the real function, counting calls. The waste being fixed is
         measured in *passes over a lazy array*, so calls are the honest unit --
         a wall-clock assertion here would just measure the machine."""
-        from tta_backend.preprocessing import aggregation_service
+        from tta_backend.domain.aggregation import aggregation_service
 
         real = aggregation_service.area_weighted_mean
         calls = []
@@ -218,7 +218,7 @@ class DeferredScienceMeanTests(unittest.TestCase):
         from tta_backend.tools.satellite_tools.plot_tools import _evidence
 
         ds = _tempo_shaped_dataset(xr)
-        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as captured:
+        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as captured:
             _evidence(ds, ds["column_amount_o3"], _COL_INFO, _global_region())
 
         record = next(r for r in captured.records if r._phase == "evidence")
@@ -344,9 +344,9 @@ class RelatedVariablesPhaseTests(unittest.TestCase):
         from tta_backend.tools.satellite_tools.plot_tools import _related_variables
 
         ds = _tempo_shaped_dataset(xr)
-        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as from_ds:
+        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as from_ds:
             _related_variables(ds["column_amount_o3"], _COL_INFO, ds=ds)
-        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as from_registry:
+        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as from_registry:
             _related_variables(ds["column_amount_o3"], _COL_INFO, ds=None)
 
         opened = next(r for r in from_ds.records if r._phase == "related_variables")
@@ -415,7 +415,7 @@ class ProvenancePhaseTests(unittest.TestCase):
 
 class PhaseVocabularyTests(unittest.TestCase):
     def test_the_provenance_phases_are_pre_declared_at_zero(self):
-        from tta_backend.utils.metrics import render_prometheus_metrics
+        from tta_backend.infrastructure.metrics import render_prometheus_metrics
 
         rendered = render_prometheus_metrics().decode()
 

@@ -36,9 +36,9 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from tta_backend.preprocessing.aggregation_service import AggregationService, cos_lat_weights
+from tta_backend.domain.aggregation.aggregation_service import AggregationService, cos_lat_weights
 from tta_backend.services.open_handle import _open_netcdf_bundle
-from tta_backend.utils.geo_utils import identify_time
+from tta_backend.domain.geo import identify_time
 
 SVC = AggregationService()
 
@@ -164,7 +164,7 @@ def run(path: str, *, apply_qa: bool, bbox: tuple | None, col_info: dict) -> Non
     print(f"variable: {da.name}   dims: {dict(da.sizes)}   time_dim: {time_dim}")
 
     if bbox is not None:
-        from tta_backend.utils.geo_utils import find_lat_coord, find_lon_coord
+        from tta_backend.domain.geo import find_lat_coord, find_lon_coord
 
         lat, lon = find_lat_coord(da), find_lon_coord(da)
         minx, miny, maxx, maxy = bbox

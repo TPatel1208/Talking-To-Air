@@ -29,7 +29,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from tta_backend.config.settings import get_settings
+from tta_backend.infrastructure.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -535,7 +535,7 @@ def _axis_block(stack: Any, *, pipeline_version: str) -> dict[str, Any]:
     # imports this module at module scope — so a top-level import here would
     # pull the whole scientific stack into API startup, which is exactly the
     # cost ``warmup.warm_render_path`` exists to schedule deliberately.
-    from tta_backend.preprocessing.frame_stack import POOLED_SCALE_BASIS
+    from tta_backend.domain.aggregation.frame_stack import POOLED_SCALE_BASIS
 
     block = {
         "frames": [

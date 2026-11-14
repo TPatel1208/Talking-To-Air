@@ -14,7 +14,7 @@ from typing import Callable
 
 from langchain_core.tools import BaseTool
 
-from tta_backend.config.settings import Settings
+from tta_backend.infrastructure.settings import Settings
 
 from .client import CURATED_TOOL_NAMES, load_raw_mcp_tools
 from .workspace import EdlCredentialInjector, bind_workspace, model_view_describe_dataset

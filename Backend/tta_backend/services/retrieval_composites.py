@@ -16,7 +16,7 @@ from typing import Any
 
 from langchain_core.tools import BaseTool
 
-from tta_backend.config.settings import Settings, get_settings
+from tta_backend.infrastructure.settings import Settings, get_settings
 from tta_backend.config.workflow_stages import STAGE_ESTIMATE, STAGE_PROGRESS, STAGE_SUBMIT
 from tta_backend.datasets.registry import known_quality_flag_vars, load_registry
 from tta_backend.earthdata_mcp.results import (
@@ -26,8 +26,9 @@ from tta_backend.earthdata_mcp.results import (
     MCPToolError,
     parse_tool_result,
 )
-from tta_backend.services import retrieval_narration, scope_registry, variable_choice_registry
-from tta_backend.utils.metrics import observe_harmony_fetch
+from tta_backend.services import retrieval_narration, scope_registry
+from tta_backend.services import variable_choice_registry
+from tta_backend.infrastructure.metrics import observe_harmony_fetch
 from tta_backend.utils.streaming import emit_job_progress, emit_status
 
 logger = logging.getLogger(__name__)

@@ -18,7 +18,7 @@ from typing import cast
 from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse, wrap_model_call
 from langchain_core.messages import AnyMessage, trim_messages
 
-from tta_backend.config.settings import get_settings
+from tta_backend.infrastructure.settings import get_settings
 
 logger = logging.getLogger(__name__)
 

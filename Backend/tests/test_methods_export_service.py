@@ -35,7 +35,7 @@ def _cadence_tier_chart(**overrides) -> dict:
     lands in (~352k native cells), and the regime in which "the map
     is the mean of the frames" stops being true of the arrays themselves.
     """
-    from tta_backend.preprocessing.frame_stack import FRAME_GRID_DELTA_BASIS
+    from tta_backend.domain.aggregation.frame_stack import FRAME_GRID_DELTA_BASIS
 
     render = {
         "cadence": "hourly",
@@ -99,7 +99,7 @@ def _coarsened_tier_chart(
     The defaults come from a real chart where the native delta (3.74%) and the
     shipped-array one (3.28%) differ: neither bounds the other.
     """
-    from tta_backend.preprocessing.frame_stack import (
+    from tta_backend.domain.aggregation.frame_stack import (
         DELTA_BASIS, FRAME_GRID_DELTA_BASIS,
     )
 
@@ -135,7 +135,7 @@ def _planes_chart(*, statistics=("mean", "max", "min"), planes=None, **overrides
     identities bit-exact (``0.0``), and the max plane's spatial overstatement at
     24.7x pooled with a worst frame of 24.9x.
     """
-    from tta_backend.preprocessing.frame_stack import (
+    from tta_backend.domain.aggregation.frame_stack import (
         EXTENT_OVERSTATEMENT_BASIS, PLANE_AGREEMENT_BASIS,
     )
 
@@ -421,7 +421,7 @@ class BrowsableStatisticsTests(unittest.TestCase):
         document must branch on the same fact rather than on the operation's
         name.
         """
-        from tta_backend.preprocessing.frame_stack import PLANE_AGREEMENT_BASIS
+        from tta_backend.domain.aggregation.frame_stack import PLANE_AGREEMENT_BASIS
 
         chart = _planes_chart()
         chart["frames"]["planes"]["max"]["frame_grid_delta"] = {
@@ -455,7 +455,7 @@ class BrowsableStatisticsTests(unittest.TestCase):
         would be large under the mean's, so the printed value would not even
         hint at the mismatch.
         """
-        from tta_backend.preprocessing.frame_stack import (
+        from tta_backend.domain.aggregation.frame_stack import (
             FRAME_GRID_DELTA_BASIS, PLANE_AGREEMENT_BASIS,
         )
 
@@ -497,7 +497,7 @@ class BrowsableStatisticsTests(unittest.TestCase):
         one a reader who screenshotted a peak into a slide has no other way to
         learn. ``EXTENT_OVERSTATEMENT_BASIS`` is printed with it.
         """
-        from tta_backend.preprocessing.frame_stack import EXTENT_OVERSTATEMENT_BASIS
+        from tta_backend.domain.aggregation.frame_stack import EXTENT_OVERSTATEMENT_BASIS
 
         section = _section(_markdown_for(_planes_chart()), "Browsable statistics")
 
@@ -731,7 +731,7 @@ class BrowsableStatisticsTests(unittest.TestCase):
         line of this is prose a stranger reads a year from now, and a
         by-fragment test lets two of them drift into contradicting each
         other."""
-        from tta_backend.preprocessing.frame_stack import (
+        from tta_backend.domain.aggregation.frame_stack import (
             EXTENT_OVERSTATEMENT_BASIS, PLANE_AGREEMENT_BASIS,
         )
 
@@ -783,7 +783,7 @@ class BrowsableStatisticsTests(unittest.TestCase):
         Failing here is the intended outcome of adding one: the new plane needs
         a sentence someone has decided is true of it.
         """
-        from tta_backend.preprocessing.frame_stack import PLANE_STATISTICS
+        from tta_backend.domain.aggregation.frame_stack import PLANE_STATISTICS
         from tta_backend.services.methods_export_service import (
             _SELECTION_NOUNS, _SELECTION_VERBS,
         )
@@ -1062,7 +1062,7 @@ class FrameMapAgreementTests(unittest.TestCase):
     def test_a_double_digit_delta_leads_the_section_in_bold_above_the_references(self):
         # job_52a95bb4cb79e2ee, measured 2026-08-10: headline 22.27%,
         # max|F-M| 9.58e16 molecules/cm², at 5 hourly buckets per frame.
-        from tta_backend.preprocessing.frame_stack import (
+        from tta_backend.domain.aggregation.frame_stack import (
             DELTA_BASIS, FRAME_GRID_DELTA_BASIS,
         )
 
@@ -1101,7 +1101,7 @@ class FrameMapAgreementTests(unittest.TestCase):
     def test_the_shipped_figure_is_never_labelled_with_the_native_basis(self):
         """Tier two's native delta and the on-screen arrays' disagreement are
         different quantities, so each needs its own basis line."""
-        from tta_backend.preprocessing.frame_stack import (
+        from tta_backend.domain.aggregation.frame_stack import (
             DELTA_BASIS, FRAME_GRID_DELTA_BASIS,
         )
 
@@ -1202,7 +1202,7 @@ class FrameMapAgreementTests(unittest.TestCase):
         uneven. On the chart this fixture is taken from that is 1.9%, with a
         worst pixel most of the way across the map's own colour ramp.
         """
-        from tta_backend.preprocessing.frame_stack import FRAME_GRID_DELTA_BASIS
+        from tta_backend.domain.aggregation.frame_stack import FRAME_GRID_DELTA_BASIS
 
         markdown = _markdown_for(_cadence_tier_chart())
 

@@ -19,7 +19,7 @@ from langchain.agents.middleware import wrap_model_call, ModelRequest, ModelResp
 from collections.abc import Awaitable, Callable
 
 from tta_backend.config.model_factory import NATIVE_JSON_SCHEMA, build_chat_model, cacheable_system_prompt
-from tta_backend.config.settings import get_settings
+from tta_backend.infrastructure.settings import get_settings
 from tta_backend.config.supervisor_prompt import SUPERVISOR_PROMPT
 from tta_backend.models import (
     AgentRequest,

@@ -47,7 +47,7 @@ class AreaWeightedMeanTests(unittest.TestCase):
 
     def test_weights_cells_by_cosine_of_latitude(self):
         import xarray as xr
-        from tta_backend.preprocessing.aggregation_service import area_weighted_mean
+        from tta_backend.domain.aggregation.aggregation_service import area_weighted_mean
 
         # Two lat rows: value 0.0 at the equator (weight 1.0), 1.0 at 60°N
         # (weight 0.5) -> weighted mean 1/3, where the unweighted mean is 0.5.
@@ -62,7 +62,7 @@ class AreaWeightedMeanTests(unittest.TestCase):
     def test_nan_cells_are_excluded_not_zero_filled(self):
         import numpy as np
         import xarray as xr
-        from tta_backend.preprocessing.aggregation_service import area_weighted_mean
+        from tta_backend.domain.aggregation.aggregation_service import area_weighted_mean
 
         da = xr.DataArray(
             [[np.nan, np.nan], [1.0, 3.0]],
@@ -82,7 +82,7 @@ class AreaWeightedMeanTests(unittest.TestCase):
         zero-weight cells summed -- 5e-7 on a real TEMPO New Jersey mean."""
         import numpy as np
         import xarray as xr
-        from tta_backend.preprocessing.aggregation_service import area_weighted_mean
+        from tta_backend.domain.aggregation.aggregation_service import area_weighted_mean
 
         lats = np.arange(38.79, 41.35, 0.02).astype(np.float32)
         lons = np.arange(-75.57, -73.88, 0.02).astype(np.float32)
@@ -105,7 +105,7 @@ class AreaWeightedMeanTests(unittest.TestCase):
 
     def test_falls_back_to_unweighted_mean_without_a_latitude_axis(self):
         import xarray as xr
-        from tta_backend.preprocessing.aggregation_service import area_weighted_mean
+        from tta_backend.domain.aggregation.aggregation_service import area_weighted_mean
 
         da = xr.DataArray([1.0, 2.0, 3.0], dims=("x",))
 
@@ -114,7 +114,7 @@ class AreaWeightedMeanTests(unittest.TestCase):
     def test_raises_when_no_finite_values_remain(self):
         import numpy as np
         import xarray as xr
-        from tta_backend.preprocessing.aggregation_service import area_weighted_mean
+        from tta_backend.domain.aggregation.aggregation_service import area_weighted_mean
 
         da = xr.DataArray(
             [[np.nan], [np.nan]],
@@ -134,7 +134,7 @@ class StatToolsTimeCompositionTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from fake_earthdata_mcp import HandleVolume, build_fake_mcp, FakeEarthdataMCPServer
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)

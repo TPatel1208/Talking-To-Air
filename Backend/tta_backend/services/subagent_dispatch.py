@@ -53,7 +53,7 @@ from tta_backend.repositories.session_metadata_repository import (
 from tta_backend.tools import GROUND_TOOLS
 from tta_backend.tools.satellite_tools.factory import sanctioned_tool_names
 from tta_backend.utils.message_utils import extract_last_text, truncate_text
-from tta_backend.utils.metrics import record_agent_request, record_envelope_salvaged
+from tta_backend.infrastructure.metrics import record_agent_request, record_envelope_salvaged
 from tta_backend.utils.streaming import stream_response
 
 logger = logging.getLogger(__name__)

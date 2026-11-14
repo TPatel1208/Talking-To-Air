@@ -68,7 +68,7 @@ def _warm_dask_reduction() -> None:
     import numpy as np
     import xarray as xr
 
-    from tta_backend.preprocessing.aggregation_service import area_weighted_mean
+    from tta_backend.domain.aggregation.aggregation_service import area_weighted_mean
 
     da = xr.DataArray(
         np.ones((4, 4), dtype="float64"),

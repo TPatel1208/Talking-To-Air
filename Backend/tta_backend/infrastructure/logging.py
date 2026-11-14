@@ -6,7 +6,7 @@ import logging
 import re
 from datetime import datetime, timezone
 
-from tta_backend.config.settings import Settings, get_settings
+from tta_backend.infrastructure.settings import Settings, get_settings
 
 # EPA AQS authenticates with email= and key= query parameters, so every AQS
 # request URL carries the credential -- in httpx's INFO request line, in the

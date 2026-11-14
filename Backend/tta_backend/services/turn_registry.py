@@ -16,7 +16,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable
 
 from redis import asyncio as aioredis
 
-from tta_backend.config.settings import get_settings
+from tta_backend.infrastructure.settings import get_settings
 from tta_backend.services.retrieval_composites import TERMINAL_STATUSES
 from tta_backend.services.turn_event_log import (
     START_CURSOR,

@@ -14,7 +14,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
-from tta_backend.config.settings import get_settings
+from tta_backend.infrastructure.settings import get_settings
 from tta_backend.config.workflow_stages import STAGE_FINISHED, STAGE_QUEUED, STAGE_RUNNING
 from tta_backend.models import (
     AgentRequest,

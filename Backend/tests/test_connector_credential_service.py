@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, patch
 
 
 def _settings_with_key():
-    from tta_backend.config.settings import Settings
+    from tta_backend.infrastructure.settings import Settings
     from cryptography.fernet import Fernet
 
     return Settings(connector_encryption_key=Fernet.generate_key().decode())
@@ -32,7 +32,7 @@ def _connected_row(*, expires_in=timedelta(days=1), encrypted_secret="x", status
 
 class ResolveTests(unittest.IsolatedAsyncioTestCase):
     async def test_returns_none_when_the_encryption_key_is_unconfigured(self):
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.services.connector_credential_service import EdlCredentialInjector
 
         injector = EdlCredentialInjector(Settings(connector_encryption_key=None))
@@ -64,7 +64,7 @@ class ResolveTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_returns_the_decrypted_token_when_connected_and_unexpired(self):
         from tta_backend.services.connector_credential_service import EdlCredentialInjector
-        from tta_backend.utils.connector_crypto import encrypt_secret, get_connector_cipher
+        from tta_backend.infrastructure.connector_crypto import encrypt_secret, get_connector_cipher
 
         settings = _settings_with_key()
         encrypted = encrypt_secret(get_connector_cipher(settings), "raw-edl-token")
@@ -198,7 +198,7 @@ class MarkUsedAcrossConnectorTypesTests(unittest.IsolatedAsyncioTestCase):
 
 
 def _aqs_row(settings, *, secret, status="connected", expires_at=None):
-    from tta_backend.utils.connector_crypto import encrypt_secret, get_connector_cipher
+    from tta_backend.infrastructure.connector_crypto import encrypt_secret, get_connector_cipher
 
     return {
         "encrypted_secret": encrypt_secret(get_connector_cipher(settings), secret),

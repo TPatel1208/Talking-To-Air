@@ -15,7 +15,7 @@ from tta_backend.config.error_templates import (
     render_overloaded_answer,
     render_turn_timeout_answer,
 )
-from tta_backend.config.settings import get_settings
+from tta_backend.infrastructure.settings import get_settings
 from tta_backend.config.workflow_stages import STAGE_WORKING
 from tta_backend.earthdata_mcp.results import CATEGORY_CONTRACT
 from tta_backend.models import (

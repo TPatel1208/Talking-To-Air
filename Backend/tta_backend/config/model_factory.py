@@ -9,7 +9,7 @@ from __future__ import annotations
 from functools import cache
 from typing import Any
 
-from tta_backend.config.settings import ConfigurationError, Settings
+from tta_backend.infrastructure.settings import ConfigurationError, Settings
 
 _PROVIDERS = ("groq", "google", "portkey")
 
@@ -28,7 +28,7 @@ def build_chat_model(
     place a chat model is constructed, so an agent added later is attributed
     without its author having to remember to ask -- the same argument that
     put the timing callback here. Use the vocabulary
-    ``utils.metrics.AGENT_REQUESTS_TOTAL`` already uses ("satellite",
+    ``infrastructure.metrics.AGENT_REQUESTS_TOTAL`` already uses ("satellite",
     "ground_sensor"), plus "supervisor", so the two metrics join.
 
     Raises ``ConfigurationError`` for any provider name outside the

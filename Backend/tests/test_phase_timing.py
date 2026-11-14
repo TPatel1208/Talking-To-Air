@@ -21,7 +21,7 @@ if TESTS_DIR not in sys.path:
 def _phase_samples(phase: str) -> tuple[float, float]:
     """(count, sum) currently recorded for ``phase``. Histograms are
     process-wide state, so every test below asserts on a delta."""
-    from tta_backend.utils.metrics import PIPELINE_PHASE_DURATION_SECONDS
+    from tta_backend.infrastructure.metrics import PIPELINE_PHASE_DURATION_SECONDS
 
     count = total = 0.0
     for metric in PIPELINE_PHASE_DURATION_SECONDS.collect():
@@ -39,7 +39,7 @@ class PhaseTimerTests(unittest.TestCase):
     def test_a_phase_of_known_duration_is_recorded_to_the_histogram(self):
         import time
 
-        from tta_backend.utils.phase_timing import phase_timer
+        from tta_backend.infrastructure.phase_timing import phase_timer
 
         before_count, before_sum = _phase_samples("crop")
         with phase_timer("crop"):
@@ -60,8 +60,8 @@ class PhaseTimerTests(unittest.TestCase):
         as 15 ms on a 15.6 ms-tick Windows clock and failed this test."""
         from unittest.mock import patch
 
-        from tta_backend.utils import phase_timing
-        from tta_backend.utils.phase_timing import phase_timer
+        from tta_backend.infrastructure import phase_timing
+        from tta_backend.infrastructure.phase_timing import phase_timer
 
         now = [100.0]
         outer_before = _phase_samples("open")
@@ -83,7 +83,7 @@ class PhaseTimerTests(unittest.TestCase):
         """A slow phase that then failed is exactly what a "why was that turn
         slow" investigation needs; swallowing either the timing or the
         exception would lose it."""
-        from tta_backend.utils.phase_timing import phase_timer
+        from tta_backend.infrastructure.phase_timing import phase_timer
 
         before = _phase_samples("mask")
         with self.assertRaises(ValueError):
@@ -94,9 +94,9 @@ class PhaseTimerTests(unittest.TestCase):
         self.assertEqual(after[0] - before[0], 1)
 
     def test_context_recorded_inside_the_block_reaches_the_log_event(self):
-        from tta_backend.utils.phase_timing import phase_timer
+        from tta_backend.infrastructure.phase_timing import phase_timer
 
-        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as captured:
+        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as captured:
             with phase_timer("crop", cells_in=1000) as ctx:
                 ctx["cells_out"] = 40
 
@@ -113,14 +113,14 @@ class PhaseTimerTests(unittest.TestCase):
         reason a turn fails."""
         from unittest.mock import patch
 
-        from tta_backend.utils.phase_timing import phase_timer
+        from tta_backend.infrastructure.phase_timing import phase_timer
 
-        with patch("tta_backend.utils.metrics.observe_phase_duration", side_effect=RuntimeError("registry down")):
+        with patch("tta_backend.infrastructure.metrics.observe_phase_duration", side_effect=RuntimeError("registry down")):
             with phase_timer("aggregate"):
                 pass  # must not raise
 
     def test_an_unserializable_context_value_does_not_break_the_phase(self):
-        from tta_backend.utils.phase_timing import phase_timer
+        from tta_backend.infrastructure.phase_timing import phase_timer
 
         class Hostile:
             def __repr__(self):
@@ -138,7 +138,7 @@ class PhaseTimerAsyncTests(unittest.IsolatedAsyncioTestCase):
         import asyncio
         import time
 
-        from tta_backend.utils.phase_timing import phase_timer
+        from tta_backend.infrastructure.phase_timing import phase_timer
 
         before = _phase_samples("open")
         async with phase_timer("open"):
@@ -154,7 +154,7 @@ class PhaseLabelsetTests(unittest.TestCase):
         """Prometheus pulls: a phase that has not run yet must still exist as
         a series, or a dashboard reads "no data" and cannot tell a phase that
         was never exercised from one that was removed."""
-        from tta_backend.utils.metrics import PIPELINE_PHASES, render_prometheus_metrics
+        from tta_backend.infrastructure.metrics import PIPELINE_PHASES, render_prometheus_metrics
 
         rendered = render_prometheus_metrics().decode()
 
@@ -167,7 +167,7 @@ class PhaseLabelsetTests(unittest.TestCase):
             )
 
     def test_the_phase_vocabulary_covers_the_instrumented_pipeline(self):
-        from tta_backend.utils.metrics import PIPELINE_PHASES
+        from tta_backend.infrastructure.metrics import PIPELINE_PHASES
 
         self.assertEqual(
             set(PIPELINE_PHASES),
@@ -223,7 +223,7 @@ class InstrumentedPipelineTests(unittest.TestCase):
     def test_masking_records_a_crop_and_a_mask_phase(self):
         from shapely.geometry import box
 
-        from tta_backend.utils.plotting import mask_data_by_geometry
+        from tta_backend.domain.masking.geometry import mask_data_by_geometry
 
         crop_before = _phase_samples("crop")
         mask_before = _phase_samples("mask")
@@ -237,9 +237,9 @@ class InstrumentedPipelineTests(unittest.TestCase):
         one; cells in/out is the cheap size context that can (story 3)."""
         from shapely.geometry import box
 
-        from tta_backend.utils.plotting import mask_data_by_geometry
+        from tta_backend.domain.masking.geometry import mask_data_by_geometry
 
-        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as captured:
+        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as captured:
             mask_data_by_geometry(self._small_grid(), box(-74.9, 39.1, -73.1, 40.9))
 
         crop = next(r for r in captured.records if r._phase == "crop")
@@ -250,7 +250,7 @@ class InstrumentedPipelineTests(unittest.TestCase):
         measurable, or the A/B has nothing to compare."""
         from shapely.geometry import box
 
-        from tta_backend.utils.plotting import mask_data_by_geometry
+        from tta_backend.domain.masking.geometry import mask_data_by_geometry
 
         before = _phase_samples("mask")
         mask_data_by_geometry(self._small_grid(), box(-74.9, 39.1, -73.1, 40.9), crop=False)
@@ -268,7 +268,7 @@ class InstrumentedPipelineTests(unittest.TestCase):
         self.assertEqual(_phase_samples("render")[0] - before[0], 1)
 
     def test_aggregation_records_an_aggregate_phase(self):
-        from tta_backend.preprocessing.aggregation_service import AggregationService
+        from tta_backend.domain.aggregation.aggregation_service import AggregationService
 
         before = _phase_samples("aggregate")
         AggregationService().aggregate(self._small_grid().to_dataset(), variable="no2", stat="mean")
@@ -289,7 +289,7 @@ class MetricsEndpointExposesPhaseHistogramTests(unittest.IsolatedAsyncioTestCase
         import httpx
 
         import tta_backend.api as api
-        from tta_backend.utils.metrics import PIPELINE_PHASES
+        from tta_backend.infrastructure.metrics import PIPELINE_PHASES
 
         transport = httpx.ASGITransport(app=api.app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -315,7 +315,7 @@ class InstrumentedOpenHandleTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         import tempfile
 
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
         from fake_earthdata_mcp import FakeEarthdataMCPServer, HandleVolume, build_fake_mcp
 
@@ -377,9 +377,9 @@ class InstrumentedOpenHandleTests(unittest.IsolatedAsyncioTestCase):
 
         self._add_bundle("obs_cached")
 
-        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as first:
+        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as first:
             await open_handle("obs_cached", self.tools)
-        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as second:
+        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as second:
             await open_handle("obs_cached", self.tools)
 
         miss = next(r for r in first.records if r._phase == "extract")
@@ -394,7 +394,7 @@ class InstrumentedOpenHandleTests(unittest.IsolatedAsyncioTestCase):
 
         self._add_bundle("obs_members", members=3)
 
-        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as captured:
+        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as captured:
             await open_handle("obs_members", self.tools)
 
         opened = next(r for r in captured.records if r._phase == "open")

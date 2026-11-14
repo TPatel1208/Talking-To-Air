@@ -70,7 +70,7 @@ class SessionReuseTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.server.stop)
 
     def _settings(self):
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         return Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None)
 

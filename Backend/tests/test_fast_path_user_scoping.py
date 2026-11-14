@@ -46,7 +46,7 @@ class FastPathUserScopingTests(unittest.IsolatedAsyncioTestCase):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
         from tta_backend.earthdata_mcp.workspace import bind_workspace
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.utils.streaming import current_user_id
 
         self.received_workspace_ids = []

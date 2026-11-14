@@ -23,7 +23,7 @@ import uuid
 from collections.abc import Iterable
 from typing import Any
 
-from tta_backend.config.settings import get_settings
+from tta_backend.infrastructure.settings import get_settings
 
 logger = logging.getLogger(__name__)
 

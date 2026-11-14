@@ -2,7 +2,7 @@
 import unittest
 from datetime import date
 
-from tta_backend.services.hms_service import (
+from tta_backend.domain.smoke.hms import (
     HMSError,
     download_url,
     parse_archive,

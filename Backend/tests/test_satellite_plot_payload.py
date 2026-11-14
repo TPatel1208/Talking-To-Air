@@ -14,7 +14,7 @@ class SatellitePlotPayloadTests(unittest.TestCase):
         import numpy as np
         import xarray as xr
         from shapely.geometry import box
-        from tta_backend.utils.plotting import mask_data_by_geometry
+        from tta_backend.domain.masking.geometry import mask_data_by_geometry
 
         da = xr.DataArray(
             np.ones((1, 5, 4)),

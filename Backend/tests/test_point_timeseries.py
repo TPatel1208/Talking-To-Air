@@ -47,7 +47,7 @@ class PointTimeseriesToolTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from fake_earthdata_mcp import HandleVolume, build_fake_mcp, FakeEarthdataMCPServer
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
@@ -173,7 +173,7 @@ class PointTimeseriesToolTests(unittest.IsolatedAsyncioTestCase):
     async def _build_tool_with(self, *, define_area_of_interest, retrieve_timeseries):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.tools.satellite_tools.factory import build_satellite_tools
 
         server = FakeEarthdataMCPServer(build_fake_mcp({
@@ -253,7 +253,7 @@ class PointTimeseriesToolTests(unittest.IsolatedAsyncioTestCase):
 
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         async def define_area_of_interest(location, workspace_id):
             return {"handle": "aoi_1", "location": location}

@@ -59,7 +59,7 @@ class ToolCacheAllowlistTests(unittest.IsolatedAsyncioTestCase):
         self.server.start()
         self.addCleanup(self.server.stop)
 
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
 
         self.tools = await load_raw_mcp_tools(
@@ -230,7 +230,7 @@ class ToolCacheNeverStoresErrorsTests(unittest.IsolatedAsyncioTestCase):
         self.server.start()
         self.addCleanup(self.server.stop)
 
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
 
         self.tools = await load_raw_mcp_tools(
@@ -280,7 +280,7 @@ class ToolCacheCredentialHygieneTests(unittest.IsolatedAsyncioTestCase):
         self.server.start()
         self.addCleanup(self.server.stop)
 
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
 
         self.tools = await load_raw_mcp_tools(
@@ -383,7 +383,7 @@ class ToolCacheTtlAndBoundTests(unittest.TestCase):
             self.assertEqual(lookup(3), "three")
 
     def _reload_settings(self):
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         get_settings.cache_clear()
         self.addCleanup(get_settings.cache_clear)

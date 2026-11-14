@@ -25,7 +25,7 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
         import tta_backend.api as api
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
         from tta_backend.earthdata_mcp.toolset import load_earthdata_tools
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.services.jobs_service import clear_terminal_status_cache
         from tta_backend.utils.streaming import current_user_id
 
@@ -170,7 +170,7 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
         app.state for the duration of the call."""
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
         from tta_backend.earthdata_mcp.toolset import load_earthdata_tools
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.utils.streaming import current_user_id
 
         cancel_calls = []
@@ -212,7 +212,7 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
         of the honest, refetchable not-found row."""
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
         from tta_backend.earthdata_mcp.toolset import load_earthdata_tools
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.utils.streaming import current_user_id
 
         async def cancel_retrieval(job_handle, workspace_id):
@@ -247,7 +247,7 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
         200 — the normalization must not mangle it into something else."""
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
         from tta_backend.earthdata_mcp.toolset import load_earthdata_tools
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.utils.streaming import current_user_id
 
         async def cancel_retrieval(job_handle, workspace_id):

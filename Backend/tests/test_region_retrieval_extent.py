@@ -45,7 +45,7 @@ class RetrievalExtentTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCa
         self.server.start()
         self.addCleanup(self.server.stop)
 
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
 
         raw = await load_raw_mcp_tools(

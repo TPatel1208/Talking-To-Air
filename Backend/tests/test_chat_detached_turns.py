@@ -40,7 +40,7 @@ class DetachedChatTurnTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         import httpx
         import tta_backend.api as api
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
         from tta_backend.services.turn_event_log import TurnEventLog
         from tta_backend.services.turn_registry import TurnRegistry
 
@@ -345,7 +345,7 @@ class DetachedChatTurnTests(unittest.IsolatedAsyncioTestCase):
         switch that decides, and it stays off until the frontend speaks the
         202-then-GET protocol.
         """
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         verifier, save, metadata, owns, stream = self.serving(("text", "hello"))
         with patch.dict(os.environ, {"CHAT_DETACHED_TURNS_ENABLED": "0"}):
@@ -369,7 +369,7 @@ class DetachedChatTurnTests(unittest.IsolatedAsyncioTestCase):
         branches on the response rather than on a flag of its own, so turning
         this off is a backend restart with no image rebuild behind it.
         """
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         for value, expected in [(None, True), ("0", False), ("1", True)]:
             with self.subTest(value=value):

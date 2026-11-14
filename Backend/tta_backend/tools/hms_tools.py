@@ -9,7 +9,7 @@ from shapely.geometry import box
 
 from tta_backend.models import AgentResult, ChartPayload, agent_result_to_json
 from tta_backend.services.artifact_registry import build_artifact_reference
-from tta_backend.services.hms_service import CAVEAT, HMSError, download_archive, parse_archive, product_date
+from tta_backend.domain.smoke.hms import CAVEAT, HMSError, download_archive, parse_archive, product_date
 from tta_backend.utils.streaming import emit_chart, emit_status
 
 logger = logging.getLogger(__name__)

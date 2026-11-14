@@ -447,7 +447,7 @@ class EvidenceComputationTests(unittest.TestCase):
         single rasterize call instead of rasterizing an all-ones twin."""
         import xarray as xr
         from shapely.geometry import box
-        from tta_backend.utils.plotting import geometry_mask, mask_data_by_geometry
+        from tta_backend.domain.masking.geometry import geometry_mask, mask_data_by_geometry
 
         ds = _dataset(xr, {
             "column_amount_o3": (("lat", "lon"), [[300.0, 310.0], [320.0, 330.0]], {"units": "DU"}),

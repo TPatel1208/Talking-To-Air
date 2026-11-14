@@ -50,7 +50,7 @@ class StreamingRequestMetricsTests(unittest.IsolatedAsyncioTestCase):
         test_chat_detached_turns.py. This one keeps the property pinned for
         ``CHAT_DETACHED_TURNS_ENABLED=0``, where the POST streams again.
         """
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         self.enterContext(patch.dict(os.environ, {"CHAT_DETACHED_TURNS_ENABLED": "0"}))
         get_settings.cache_clear()

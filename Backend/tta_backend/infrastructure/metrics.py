@@ -155,7 +155,7 @@ CUBE_INDEX_INVALIDATIONS_TOTAL = Counter(
 # double-counting the cached tokens.
 #
 # Deliberately NOT pre-declared in initialize_labelsets() like every other
-# labelset here: the model label is configuration (config/settings.py resolves
+# labelset here: the model label is configuration (infrastructure/settings.py resolves
 # it from the environment per agent), not a closed vocabulary, so hardcoding
 # ids here would duplicate _VETTED_MODELS and go stale the first time one is
 # swapped. A model with no series has genuinely never been called.
@@ -185,7 +185,7 @@ PIPELINE_PHASE_DURATION_SECONDS = Histogram(
     ["phase"],
 )
 
-# The closed vocabulary of phases, kept here (not in utils.phase_timing) with
+# The closed vocabulary of phases, kept here (not in infrastructure.phase_timing) with
 # the other labelsets this module pre-declares. Deliberately NOT the same
 # vocabulary as config.workflow_stages.ALL_STAGES: that one is a user-facing
 # narration contract the frontend's workflow strip and the eval's stage-
@@ -503,38 +503,6 @@ def _current_process_rss_bytes() -> int | None:
         if rss is not None and rss > 0:
             return rss
     return None
-
-
-def refresh_process_gauges() -> None:
-    """Refresh the process-health gauges (RSS, bundle extract-cache size,
-    cube-store size) -- called on each /metrics scrape rather than a timer,
-    so idle time costs nothing and every scrape is current as of itself.
-    Each source is best-effort: a missing/uninstalled dependency skips that
-    one gauge rather than failing the whole scrape.
-
-    There is deliberately no open-figure gauge: figures are built with the
-    object-oriented API (``Figure`` + ``FigureCanvasAgg``), never pyplot, so
-    it would always read 0, and reading it would import pyplot here. That's
-    enforced in CI by
-    ``test_export_event_loop_offload.NoProductionModuleImportsPyplotTests``.
-    """
-    rss = _current_process_rss_bytes()
-    if rss is not None:
-        PROCESS_RSS_BYTES.set(rss)
-
-    try:
-        from tta_backend.services.open_handle import extract_cache_size_bytes
-
-        BUNDLE_EXTRACT_CACHE_BYTES.set(extract_cache_size_bytes())
-    except ImportError:
-        pass
-
-    try:
-        from tta_backend.services.cube_cache import store_size_bytes
-
-        CUBE_STORE_BYTES.set(store_size_bytes())
-    except ImportError:
-        pass
 
 
 def initialize_labelsets() -> None:

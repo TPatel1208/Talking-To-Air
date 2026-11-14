@@ -11,7 +11,7 @@ from typing import Dict, Any, List, Optional, Union
 import math
 from datetime import date, timedelta
 
-from tta_backend.config.settings import get_settings
+from tta_backend.infrastructure.settings import get_settings
 from tta_backend.services.artifact_store import artifact_store
 from tta_backend.services.connector_credential_service import get_aqs_credential_injector
 from tta_backend.utils.plotting import get_geocoding_service

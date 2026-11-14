@@ -62,7 +62,7 @@ def _mcp_url() -> str | None:
 @unittest.skipUnless(_mcp_url(), "EARTHDATA_MCP_URL is not set — skipping the live MCP smoke suite")
 class LiveMCPContractTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
         from tta_backend.earthdata_mcp.results import parse_tool_result
 
@@ -127,8 +127,8 @@ class LiveMCPContractTests(unittest.IsolatedAsyncioTestCase):
         # what we synthesize and what the MCP actually exports (the gap that
         # let the original empty-coords crash ship) fails loudly here.
         from tta_backend.services.open_handle import _open
-        from tta_backend.preprocessing.aggregation_service import AggregationService
-        from tta_backend.utils.geo_utils import find_lat_coord, find_lon_coord
+        from tta_backend.domain.aggregation.aggregation_service import AggregationService
+        from tta_backend.domain.geo import find_lat_coord, find_lon_coord
 
         ds = _open(export_result["storage_uri"], export_result.get("media_type", "netcdf"))
         da = AggregationService().to_dataarray(ds)

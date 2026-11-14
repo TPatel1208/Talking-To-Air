@@ -14,7 +14,7 @@ REQUIRED_MODULES = ["langchain_mcp_adapters", "fastmcp", "uvicorn"]
 def _harmony_fetch_count() -> float:
     """Observations currently recorded on the harmony_fetch_duration_seconds
     histogram. Process-wide state, so callers assert on a delta."""
-    from tta_backend.utils.metrics import HARMONY_FETCH_DURATION_SECONDS
+    from tta_backend.infrastructure.metrics import HARMONY_FETCH_DURATION_SECONDS
 
     for metric in HARMONY_FETCH_DURATION_SECONDS.collect():
         for sample in metric.samples:
@@ -31,7 +31,7 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
     async def _tools(self, handlers):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         server = FakeEarthdataMCPServer(build_fake_mcp(handlers))
         server.start()
@@ -403,7 +403,7 @@ class AwaitRetrievalTests(unittest.IsolatedAsyncioTestCase):
         import os
         from unittest import mock
 
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         with mock.patch.dict(os.environ):
             os.environ.pop("AWAIT_RETRIEVAL_POLL_MAX_SECONDS", None)
@@ -604,7 +604,7 @@ class SafeRetrieveTests(unittest.IsolatedAsyncioTestCase):
     async def _tools_and_settings(self, estimated_bytes, retrieve_subset=None):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         calls = {"retrieve_subset": 0}
 
@@ -1067,7 +1067,7 @@ class PointTimeseriesTests(unittest.IsolatedAsyncioTestCase):
     async def _tools_and_settings(self, handlers, **settings_kwargs):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from dataclasses import replace
 
         server = FakeEarthdataMCPServer(build_fake_mcp(handlers))

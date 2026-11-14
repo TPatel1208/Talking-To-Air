@@ -165,7 +165,7 @@ class DeleteSessionOverlayTests(unittest.IsolatedAsyncioTestCase):
         import os
         import tempfile
 
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         store = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(store.cleanup)

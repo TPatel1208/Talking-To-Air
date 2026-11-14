@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from cryptography.fernet import Fernet, MultiFernet
 
 if TYPE_CHECKING:
-    from tta_backend.config.settings import Settings
+    from tta_backend.infrastructure.settings import Settings
 
 
 class ConnectorCryptoError(ValueError):

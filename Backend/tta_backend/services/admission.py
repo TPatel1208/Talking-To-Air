@@ -107,7 +107,7 @@ logger = logging.getLogger(__name__)
 # included ``MEMORY_CACHE_MAX_BYTES`` (500 MB), which was declared in settings
 # and read by nothing. That setting has since been deleted rather than left to
 # imply a reserve the process never holds -- see the note on
-# ``open_max_chunk_bytes`` in config/settings.py, which now records the
+# ``open_max_chunk_bytes`` in infrastructure/settings.py, which now records the
 # measured warm RSS so this estimate does not have to be made twice.
 _RESERVE_MB = 450
 
@@ -187,7 +187,7 @@ def _derive_limit() -> int:
     behaviour to the arithmetic would make every one of them fail the day a
     measurement moves.
     """
-    from tta_backend.config.settings import get_settings
+    from tta_backend.infrastructure.settings import get_settings
 
     settings = get_settings()
     explicit = getattr(settings, "heavy_admission_limit", 0)
@@ -253,7 +253,7 @@ def _publish_occupancy(limiter: _Limiter) -> None:
     heavy request, which is far worse than a gap in a graph.
     """
     try:
-        from tta_backend.utils.metrics import set_admission_occupancy
+        from tta_backend.infrastructure.metrics import set_admission_occupancy
 
         set_admission_occupancy(limiter.in_flight, limiter.queued)
     except Exception:  # noqa: BLE001 - telemetry is never worth a permit
@@ -274,7 +274,7 @@ def _observe_section(waited_seconds: float) -> None:
     Best-effort for the same reason as :func:`_publish_occupancy`.
     """
     try:
-        from tta_backend.utils.metrics import (
+        from tta_backend.infrastructure.metrics import (
             current_process_rss_bytes,
             observe_admission_rss,
             observe_admission_wait,
@@ -290,7 +290,7 @@ def _observe_section(waited_seconds: float) -> None:
 
 def _record_shed(surface: str) -> None:
     try:
-        from tta_backend.utils.metrics import record_admission_shed
+        from tta_backend.infrastructure.metrics import record_admission_shed
 
         record_admission_shed(surface)
     except Exception:  # noqa: BLE001 - telemetry is never worth a permit
@@ -299,7 +299,7 @@ def _record_shed(surface: str) -> None:
 
 def _record_orphan(surface: str) -> None:
     try:
-        from tta_backend.utils.metrics import record_admission_orphaned
+        from tta_backend.infrastructure.metrics import record_admission_orphaned
 
         record_admission_orphaned(surface)
     except Exception:  # noqa: BLE001 - telemetry is never worth a permit
@@ -527,7 +527,7 @@ def reset_admission() -> None:
     # or HEAVY_ADMISSION_LIMIT would otherwise rebuild the limiter from the
     # values read before the patch -- and pass or fail on the wrong number.
     try:
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         get_settings.cache_clear()
     except Exception:  # noqa: BLE001 - isolation must not gate collection

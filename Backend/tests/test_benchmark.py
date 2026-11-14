@@ -872,7 +872,7 @@ _PLACEHOLDER_KEYS = {"test", "your_google_key", "your_groq_key", "your_portkey_k
 
 def _missing_model_keys() -> list[str]:
     """API keys missing for the providers the three agents are configured to use."""
-    from tta_backend.config.settings import get_settings
+    from tta_backend.infrastructure.settings import get_settings
 
     settings = get_settings()
     providers = {

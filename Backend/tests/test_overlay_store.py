@@ -25,7 +25,7 @@ class OverlayStoreTestCase(unittest.TestCase):
     """Points the overlay store at a throwaway directory for each test."""
 
     def setUp(self):
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         self._store = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self._store.cleanup)
@@ -35,7 +35,7 @@ class OverlayStoreTestCase(unittest.TestCase):
         self.addCleanup(get_settings.cache_clear)
 
     def set_env(self, **env):
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         patcher = unittest.mock.patch.dict(
             os.environ, {k: str(v) for k, v in env.items()}
@@ -148,7 +148,7 @@ class EvictionTests(OverlayStoreTestCase):
         """A fixed byte count, never a share of free space, which would expand
         to fill whatever disk the volume is on. Checked through eviction as
         well as the setting, since a cap nothing enforces is only a comment."""
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
         from tta_backend.services.overlay_store import store_size_bytes, write_overlay
 
         self.assertEqual(get_settings().overlay_store_max_bytes, 1024 ** 3)

@@ -21,7 +21,7 @@ from typing import Any, Callable, Optional
 
 from tta_backend.config.workflow_stages import STAGE_WORKING
 from tta_backend.utils.message_utils import flatten_text_content
-from tta_backend.utils.phase_timing import record_phase
+from tta_backend.infrastructure.phase_timing import record_phase
 
 logger = logging.getLogger(__name__)
 
@@ -309,7 +309,7 @@ async def stream_response(
     # default) so the graph's superstep budget is an intentional, tunable
     # ceiling — a runaway ReAct loop stops here rather than silently at
     # whatever the library's default happens to be (storm diagnosis 2026-07-20).
-    from tta_backend.config.settings import get_settings
+    from tta_backend.infrastructure.settings import get_settings
 
     config = {
         "configurable": {"thread_id": thread_id},

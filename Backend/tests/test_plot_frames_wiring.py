@@ -61,7 +61,7 @@ class FrameGateTests(unittest.TestCase):
         never published."""
         import numpy as np
         import xarray as xr
-        from tta_backend.preprocessing.frame_stack import frame_gate
+        from tta_backend.domain.aggregation.frame_stack import frame_gate
 
         field = _field(xr, np, ["2024-01-01T00:00", "2024-01-01T01:00"])
 
@@ -79,7 +79,7 @@ class FrameGateTests(unittest.TestCase):
         full extra pass over the bundle for it."""
         import numpy as np
         import xarray as xr
-        from tta_backend.preprocessing.frame_stack import frame_gate
+        from tta_backend.domain.aggregation.frame_stack import frame_gate
 
         field = _field(
             xr, np,
@@ -97,7 +97,7 @@ class FrameGateTests(unittest.TestCase):
         bucketing happens."""
         import numpy as np
         import xarray as xr
-        from tta_backend.preprocessing.frame_stack import frame_gate
+        from tta_backend.domain.aggregation.frame_stack import frame_gate
 
         field = xr.DataArray(
             np.ones((4, 4)),
@@ -120,7 +120,7 @@ class FrameGateTests(unittest.TestCase):
         out of a gate whose entire job is to not let that happen."""
         import numpy as np
         import xarray as xr
-        from tta_backend.preprocessing.frame_stack import frame_gate
+        from tta_backend.domain.aggregation.frame_stack import frame_gate
 
         field = xr.DataArray(
             np.ones((3, 4, 4)),
@@ -140,7 +140,7 @@ class FrameGateTests(unittest.TestCase):
         case unnoticed."""
         import numpy as np
         import xarray as xr
-        from tta_backend.preprocessing.frame_stack import frame_gate
+        from tta_backend.domain.aggregation.frame_stack import frame_gate
 
         field = _field(xr, np, ["2024-01-01T09:30", "2024-01-01T10:30"])
 
@@ -152,7 +152,7 @@ class FrameGateTests(unittest.TestCase):
         reshapes to something plausible and renders as the wrong layer."""
         import numpy as np
         import xarray as xr
-        from tta_backend.preprocessing.frame_stack import frame_gate
+        from tta_backend.domain.aggregation.frame_stack import frame_gate
 
         field = xr.DataArray(
             np.ones((2, 3, 4, 4)),
@@ -180,7 +180,7 @@ class FrameGateTests(unittest.TestCase):
         deliberate, disclosed trade."""
         import numpy as np
         import xarray as xr
-        from tta_backend.preprocessing.frame_stack import MAX_FRAME_NATIVE_CELLS, frame_gate
+        from tta_backend.domain.aggregation.frame_stack import MAX_FRAME_NATIVE_CELLS, frame_gate
 
         # The full TEMPO domain's shape, without its bytes: the gate reads the
         # sizes, never the values.
@@ -205,7 +205,7 @@ class FrameGateTests(unittest.TestCase):
         works."""
         import numpy as np
         import xarray as xr
-        from tta_backend.preprocessing.frame_stack import frame_gate
+        from tta_backend.domain.aggregation.frame_stack import frame_gate
 
         field = _field(
             xr, np, ["2024-01-01T09:30", "2024-01-01T10:30"], ny=2, nx=2,
@@ -228,7 +228,7 @@ class FrameGateTests(unittest.TestCase):
         capability for a new one."""
         import numpy as np
         import xarray as xr
-        from tta_backend.preprocessing.frame_stack import (
+        from tta_backend.domain.aggregation.frame_stack import (
             MAX_FRAME_NATIVE_CELLS,
             MAX_PLANE_NATIVE_CELLS,
             frame_gate,
@@ -261,7 +261,7 @@ class FrameGateTests(unittest.TestCase):
         planes from every chart anyone actually plots."""
         import numpy as np
         import xarray as xr
-        from tta_backend.preprocessing.frame_stack import plane_gate
+        from tta_backend.domain.aggregation.frame_stack import plane_gate
 
         field = _field(
             xr, np, ["2024-01-01T09:30", "2024-01-01T10:30"], ny=2, nx=2,
@@ -281,7 +281,7 @@ class FrameGateTests(unittest.TestCase):
         interval anyone asked for."""
         import numpy as np
         import xarray as xr
-        from tta_backend.preprocessing.frame_stack import MAX_SPAN_BUCKETS, frame_gate
+        from tta_backend.domain.aggregation.frame_stack import MAX_SPAN_BUCKETS, frame_gate
 
         field = _field(xr, np, ["2024-01-01T00:00", "2025-01-01T00:00"])
 
@@ -297,7 +297,7 @@ class FrameGateTests(unittest.TestCase):
         frames rather than be refused, or the scrubber would cap at ~2.5 days."""
         import numpy as np
         import xarray as xr
-        from tta_backend.preprocessing.frame_stack import frame_gate
+        from tta_backend.domain.aggregation.frame_stack import frame_gate
 
         field = _field(xr, np, ["2024-01-01T00:00", "2024-01-31T00:00"])
 
@@ -315,7 +315,7 @@ class _PlotHarness:
 
     async def asyncSetUp(self):
         from fake_earthdata_mcp import HandleVolume, build_fake_mcp, FakeEarthdataMCPServer
-        from tta_backend.config.settings import Settings, get_settings
+        from tta_backend.infrastructure.settings import Settings, get_settings
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
 
         self._tmpdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
@@ -559,7 +559,7 @@ class PlotSingularFrameWiringTests(_PlotHarness, unittest.IsolatedAsyncioTestCas
         The ceiling is patched rather than met, so this tests the wiring, not a
         million-cell reduction; the real constant is pinned in
         ``FrameGateTests``."""
-        import tta_backend.preprocessing.frame_stack as frame_stack_module
+        import tta_backend.domain.aggregation.frame_stack as frame_stack_module
 
         self.add_bundle()
 
@@ -732,7 +732,7 @@ class PlotSingularFrameWiringTests(_PlotHarness, unittest.IsolatedAsyncioTestCas
         be scrubbed and cannot be toggled, and the agent relaying "narrow the
         region and you get max and min" is only possible if it is told which
         limit was hit."""
-        import tta_backend.preprocessing.frame_stack as frame_stack_module
+        import tta_backend.domain.aggregation.frame_stack as frame_stack_module
 
         self.add_bundle()
 
@@ -805,7 +805,7 @@ class PlotSingularFrameWiringTests(_PlotHarness, unittest.IsolatedAsyncioTestCas
         forced to fail, and requiring everything a consumer reads to be
         identical. A new render type would have needed a new artifact prefix, a
         new ``ArtifactMetadata`` model and new export semantics, for zero gain."""
-        import tta_backend.preprocessing.frame_stack as frame_stack_module
+        import tta_backend.domain.aggregation.frame_stack as frame_stack_module
 
         self.add_bundle()
         _summary, framed = await self.plot()
@@ -831,7 +831,7 @@ class PlotSingularFrameWiringTests(_PlotHarness, unittest.IsolatedAsyncioTestCas
         """``_render_and_store_overlay``'s posture, applied here: a frame stack
         is a rendering convenience, and nothing about building one may cost a
         researcher the map they actually asked for."""
-        import tta_backend.preprocessing.frame_stack as frame_stack_module
+        import tta_backend.domain.aggregation.frame_stack as frame_stack_module
 
         self.add_bundle()
 
@@ -882,7 +882,7 @@ class PlotSingularFrameWiringTests(_PlotHarness, unittest.IsolatedAsyncioTestCas
         invisible exactly where a test would most like to see it. The QA
         counters ride the same check: re-deriving either is a second full I/O
         pass over a lazily-opened bundle, with nothing saying so."""
-        import tta_backend.preprocessing.frame_stack as frame_stack_module
+        import tta_backend.domain.aggregation.frame_stack as frame_stack_module
 
         self.add_bundle()
 
@@ -963,7 +963,7 @@ class PlotSingularFrameWiringTests(_PlotHarness, unittest.IsolatedAsyncioTestCas
         """The same rule the agent summary follows, in the durable row: a spec
         naming a plane the row does not hold would describe a stack nobody can
         reproduce from it."""
-        import tta_backend.preprocessing.frame_stack as frame_stack_module
+        import tta_backend.domain.aggregation.frame_stack as frame_stack_module
 
         self.add_bundle()
 
@@ -1218,7 +1218,7 @@ class PlotSingularFrameWiringTests(_PlotHarness, unittest.IsolatedAsyncioTestCas
         self.add_bundle()
 
         with patch(
-            "tta_backend.utils.phase_timing.record_phase",
+            "tta_backend.infrastructure.phase_timing.record_phase",
             lambda phase, seconds, **context: events.append(phase),
         ):
             _summary, payload = await self.plot()
@@ -1415,7 +1415,7 @@ class PlotToPlaneEndpointTests(_PlotHarness, unittest.IsolatedAsyncioTestCase):
         the toggle, rather than the frontend having to infer which it is from a
         broken render. Every unavailable statistic is one answer -- offer the
         ones that are there."""
-        import tta_backend.preprocessing.frame_stack as frame_stack_module
+        import tta_backend.domain.aggregation.frame_stack as frame_stack_module
 
         self.add_bundle()
 

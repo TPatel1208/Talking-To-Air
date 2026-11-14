@@ -21,11 +21,11 @@ from urllib.request import url2pathname
 
 from langchain_core.tools import BaseTool
 
-from tta_backend.config.settings import get_settings
+from tta_backend.infrastructure.settings import get_settings
 from tta_backend.config.workflow_stages import STAGE_OPEN
 from tta_backend.earthdata_mcp.results import CATEGORY_TOO_LARGE, MCPToolError, parse_tool_result
 from tta_backend.services.retrieval_composites import await_retrieval
-from tta_backend.utils.phase_timing import phase_timer
+from tta_backend.infrastructure.phase_timing import phase_timer
 from tta_backend.utils.streaming import emit_status
 
 logger = logging.getLogger(__name__)
@@ -338,7 +338,7 @@ def _serve_from_cube_or_open(export: dict[str, Any], timing: dict[str, Any] | No
     plumbing changes don't spuriously invalidate every cube.
     """
     from tta_backend.services.cube_cache import lookup, note_handle, reconcile_handle
-    from tta_backend.utils.metrics import record_cache_hit, record_cache_miss
+    from tta_backend.infrastructure.metrics import record_cache_hit, record_cache_miss
 
     identity = _cube_identity(export)
     if identity is None:
@@ -1136,7 +1136,7 @@ def _strip_concat_unsafe_coord_attrs(ds: Any) -> Any:
     nothing else. Applied to EVERY coordinate — as it was until 2026-08-08 —
     it took ``hPa`` off TEMPO_O3PROF's pressure axis and ``km`` off its
     altitude axis. Units are precisely how a vertical axis is identified
-    (``geo_utils.vertical_axis_kind``), so the profile came back with 24 values
+    (``domain.geo.vertical_axis_kind``), so the profile came back with 24 values
     and nothing to plot them against: no error, no empty result, just a missing
     axis. And only on a multi-granule bundle, since a single-member bundle
     returns before this runs — which is why it survived a full synthetic suite
@@ -1292,7 +1292,7 @@ def _promote_lat_lon_coords(ds: Any) -> Any:
 
     Identifies lat/lon by CF metadata (standard_name/units) first, so
     unusual variable names are still promoted."""
-    from tta_backend.utils.geo_utils import identify_lat, identify_lon
+    from tta_backend.domain.geo import identify_lat, identify_lon
 
     identified = [identify_lat(ds), identify_lon(ds)]
     to_promote = [name for name in identified if name in ds.data_vars]
@@ -1332,4 +1332,4 @@ _PIPELINE_SOURCE_FUNCTIONS = (
 #
 # Cache wiring lives outside these functions (in _open_by_media_type) so
 # plumbing changes don't move this hash.
-OPEN_PIPELINE_SOURCE_FINGERPRINT = "2f9c99359e6db402366e0923d5e33389da58b03a59c0a86ccb7f51cc02b38ecc"
+OPEN_PIPELINE_SOURCE_FINGERPRINT = "5403d94e3685946d2085933b10ed460727f9baa6b8fd45cf1abb60e0798c6eaf"

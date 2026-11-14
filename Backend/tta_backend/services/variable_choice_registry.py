@@ -50,9 +50,11 @@ def finalize(job_handle: str, handle: str | None) -> None:
     _choices[handle] = (variable, expires_at)
 
 
-def get(handle: str) -> str | None:
-    """Return the recorded variable choice for ``handle``, or None if none
-    was recorded or it has expired."""
+def get(handle: str | None) -> str | None:
+    """Return the recorded variable choice for ``handle``, or None if
+    ``handle`` is falsy, none was recorded, or it has expired."""
+    if not handle:
+        return None
     entry = _choices.get(handle)
     if entry is None:
         return None

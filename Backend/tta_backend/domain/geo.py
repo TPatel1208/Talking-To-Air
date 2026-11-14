@@ -350,7 +350,7 @@ def ensure_supported_grid(obj: Any) -> None:
     kind = _grid_kind(obj)
     if kind not in ("curvilinear", "projected", "irregular"):
         return
-    from tta_backend.earthdata_mcp.results import CATEGORY_UNSUPPORTED_GRID, MCPToolError
+    from tta_backend.domain.errors import CATEGORY_UNSUPPORTED_GRID, MCPToolError
 
     if kind == "irregular":
         raise MCPToolError(

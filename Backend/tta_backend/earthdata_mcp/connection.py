@@ -42,7 +42,7 @@ nothing.
 
 Boot-time misconfiguration (a malformed URL, a missing required setting) is
 not this module's concern — that still fails loudly from
-config.settings.Settings.validate_startup before the manager ever starts.
+infrastructure.settings.Settings.validate_startup before the manager ever starts.
 """
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable
 
 from langchain_core.tools import BaseTool
 
-from tta_backend.config.settings import Settings
+from tta_backend.infrastructure.settings import Settings
 from tta_backend.earthdata_mcp.client import (
     REQUIRED_TOOL_PARAMS,
     EarthdataMCPUnavailableError,

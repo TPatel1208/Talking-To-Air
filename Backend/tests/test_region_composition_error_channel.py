@@ -42,7 +42,7 @@ class ToolsSurfaceTheNamedTokenTests(unittest.IsolatedAsyncioTestCase):
         from fake_earthdata_mcp import HandleVolume, build_fake_mcp, FakeEarthdataMCPServer
         from test_satellite_tools_masking_execution import _tempo_no2_dataset
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         import xarray as xr
 
         self._tmpdir = tempfile.TemporaryDirectory()

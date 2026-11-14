@@ -1,6 +1,6 @@
 """
-preprocessing/frame_stack.py
-============================
+domain/aggregation/frame_stack.py
+=================================
 The bucketed reduction: one field per interval of the requested span, instead
 of one field for the whole of it.
 
@@ -32,8 +32,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from tta_backend.utils import xarray_ops
-from tta_backend.utils.geo_utils import find_lat_coord, find_lon_coord
+from tta_backend.domain import xarray_ops
+from tta_backend.domain.geo import find_lat_coord, find_lon_coord
 
 # Cell ceiling per frame. A CEILING, not a target: ``k`` below is an integer, so a
 # real grid lands at 70-96% of it (14,124 measured on a 535x658 regional grid,
@@ -571,7 +571,7 @@ def build_frame_stack(
     # a second cos(lat) here would make the two deltas incomparable by
     # construction. Imported locally for the reason every other call site in
     # this module does: ``aggregation_service`` reaches back this way.
-    from tta_backend.preprocessing.aggregation_service import cos_lat_weights
+    from tta_backend.domain.aggregation.aggregation_service import cos_lat_weights
 
     frame_weights = cos_lat_weights(values)
     weights = None if frame_weights is None else np.asarray(frame_weights.values)
@@ -942,7 +942,7 @@ def _overstatement_terms(
     """
     if (k_lat, k_lon) == (1, 1):
         return {}
-    from tta_backend.preprocessing.aggregation_service import cos_lat_weights
+    from tta_backend.domain.aggregation.aggregation_service import cos_lat_weights
 
     window = {
         lat_dim: ("plane_block_lat", "plane_cell_lat"),
@@ -1060,7 +1060,7 @@ def _observed_area(native: xr.DataArray, spatial: tuple[str, str]) -> xr.DataArr
     truth is 94.7% (measured), and the inflation grows as the cell budget
     shrinks. Lazy -- it rides the frames' own graph walk.
     """
-    from tta_backend.preprocessing.aggregation_service import cos_lat_weights
+    from tta_backend.domain.aggregation.aggregation_service import cos_lat_weights
 
     weights = cos_lat_weights(native)
     finite = xarray_ops.isfinite(native)
@@ -1080,7 +1080,7 @@ def _region_area(
     retrieval over the continental US read 60% covered that way, because the
     Atlantic counted as missing observations.
     """
-    from tta_backend.preprocessing.aggregation_service import cos_lat_weights
+    from tta_backend.domain.aggregation.aggregation_service import cos_lat_weights
 
     if region_area and region_area > 0:
         return float(region_area)
@@ -1126,7 +1126,7 @@ def _delta_terms(
     """
     if group == 1:
         return {}
-    from tta_backend.preprocessing.aggregation_service import cos_lat_weights
+    from tta_backend.domain.aggregation.aggregation_service import cos_lat_weights
 
     frames_period = frames_native.mean(dim="bucket", skipna=True)
     both = xarray_ops.isfinite(frames_period) & xarray_ops.isfinite(period_native)
@@ -1385,7 +1385,7 @@ def _native_statistics(
 
     Lazy: these ride the same graph walk the frames do.
     """
-    from tta_backend.preprocessing.regional_reduction import reduce_keeping_axes
+    from tta_backend.domain.aggregation.regional_reduction import reduce_keeping_axes
 
     stats = {
         f"stat_{name}": reduce_keeping_axes(native, keep=("bucket",), stat=name)

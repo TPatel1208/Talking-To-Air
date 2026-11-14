@@ -319,7 +319,7 @@ class ExtentGateTests(unittest.TestCase):
         *actually fired* -- a message quoting a number no code compared
         against is how a refusal misleads."""
         from tta_backend.earthdata_mcp.results import CATEGORY_TOO_LARGE, MCPToolError
-        from tta_backend.preprocessing.frame_stack import MAX_FRAME_NATIVE_CELLS
+        from tta_backend.domain.aggregation.frame_stack import MAX_FRAME_NATIVE_CELLS
 
         resolver = self._resolver()
         with patch.object(resolver.geocoding_service, "geocode") as geocode:
@@ -357,7 +357,7 @@ class ExtentGateTests(unittest.TestCase):
 
         This test fails if someone hard-codes the derived value, which is the
         drift it exists to prevent."""
-        from tta_backend.preprocessing.frame_stack import MAX_FRAME_NATIVE_CELLS
+        from tta_backend.domain.aggregation.frame_stack import MAX_FRAME_NATIVE_CELLS
         from tta_backend.utils import region_composition
 
         self.assertAlmostEqual(
@@ -397,8 +397,10 @@ class ShapeProvenanceTests(unittest.TestCase):
         )
 
     def test_a_composite_survives_a_boundary_cells_self_heal_with_its_origin(self):
-        from tta_backend.utils.plotting import (
-            RegionResolver, apply_mask_region_type, mask_data_by_geometry,
+        from tta_backend.utils.plotting import RegionResolver
+        from tta_backend.domain.masking.geometry import (
+            apply_mask_region_type,
+            mask_data_by_geometry,
         )
 
         resolver = RegionResolver()
@@ -425,8 +427,10 @@ class ShapeProvenanceTests(unittest.TestCase):
         where the preservation lives rather than the composite constructor:
         ``buffer`` needs exactly this and shouldn't have to remember to opt
         in."""
-        from tta_backend.utils.plotting import (
-            RegionResolver, apply_mask_region_type, mask_data_by_geometry,
+        from tta_backend.utils.plotting import RegionResolver
+        from tta_backend.domain.masking.geometry import (
+            apply_mask_region_type,
+            mask_data_by_geometry,
         )
 
         resolver = RegionResolver()

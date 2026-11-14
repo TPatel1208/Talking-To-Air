@@ -2,7 +2,7 @@
 
 ## Configuration
 
-Backend configuration is centralized in `config/settings.py`.
+Backend configuration is centralized in `infrastructure/settings.py`.
 
 Use `get_settings()` instead of reading environment variables directly in runtime code. The settings object loads `.env` once, normalizes known option sets, and exposes typed values for model names, database settings, CORS origins, fetch routing, logging, and external service credentials.
 
@@ -23,7 +23,7 @@ Useful operational values:
 
 ## Logging
 
-Logging is configured by `utils/logging.py`.
+Logging is configured by `infrastructure/logging.py`.
 
 Set `LOG_FORMAT=json` for production-style JSON logs:
 

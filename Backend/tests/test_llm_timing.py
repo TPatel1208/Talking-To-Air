@@ -29,7 +29,7 @@ if TESTS_DIR not in sys.path:
 def _phase_samples(phase: str) -> tuple[float, float]:
     """(count, sum) currently recorded for ``phase``. Histograms are
     process-wide state, so every test below asserts on a delta."""
-    from tta_backend.utils.metrics import PIPELINE_PHASE_DURATION_SECONDS
+    from tta_backend.infrastructure.metrics import PIPELINE_PHASE_DURATION_SECONDS
 
     count = total = 0.0
     for metric in PIPELINE_PHASE_DURATION_SECONDS.collect():
@@ -46,7 +46,7 @@ def _phase_samples(phase: str) -> tuple[float, float]:
 def _token_total(model: str, kind: str, agent_type: str = "unknown") -> float:
     """Tokens currently counted for this model/agent_type/kind. Counters are
     process-wide state, so every test below asserts on a delta."""
-    from tta_backend.utils.metrics import LLM_TOKENS_TOTAL
+    from tta_backend.infrastructure.metrics import LLM_TOKENS_TOTAL
 
     want = {"model": model, "agent_type": agent_type, "kind": kind}
     for metric in LLM_TOKENS_TOTAL.collect():
@@ -78,7 +78,7 @@ class RecordPhaseTests(unittest.TestCase):
     two separate events, which the context manager cannot express."""
 
     def test_a_measured_span_reaches_the_histogram(self):
-        from tta_backend.utils.phase_timing import record_phase
+        from tta_backend.infrastructure.phase_timing import record_phase
 
         before = _phase_samples("llm_call")
         record_phase("llm_call", 2.5)
@@ -88,9 +88,9 @@ class RecordPhaseTests(unittest.TestCase):
         self.assertAlmostEqual(after[1] - before[1], 2.5, places=5)
 
     def test_context_reaches_the_log_event(self):
-        from tta_backend.utils.phase_timing import record_phase
+        from tta_backend.infrastructure.phase_timing import record_phase
 
-        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as captured:
+        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as captured:
             record_phase("llm_call", 1.0, model="gemma-4-31b-it", outcome="success")
 
         record = captured.records[-1]
@@ -102,17 +102,17 @@ class RecordPhaseTests(unittest.TestCase):
     def test_a_context_key_may_be_named_like_a_parameter(self):
         """phase/duration_seconds are positional-only precisely so a call
         site is never forced to rename its own context field."""
-        from tta_backend.utils.phase_timing import record_phase
+        from tta_backend.infrastructure.phase_timing import record_phase
 
         record_phase("llm_call", 1.0, phase="model", duration_seconds=3)  # must not raise
 
     def test_a_broken_metrics_backend_degrades_to_a_no_op(self):
         from unittest.mock import patch
 
-        from tta_backend.utils.phase_timing import record_phase
+        from tta_backend.infrastructure.phase_timing import record_phase
 
         with patch(
-            "tta_backend.utils.metrics.observe_phase_duration",
+            "tta_backend.infrastructure.metrics.observe_phase_duration",
             side_effect=RuntimeError("registry down"),
         ):
             record_phase("llm_call", 1.0)  # must not raise
@@ -122,10 +122,10 @@ class RecordPhaseTests(unittest.TestCase):
         that refactor must not have changed what the timer emits."""
         import time
 
-        from tta_backend.utils.phase_timing import phase_timer
+        from tta_backend.infrastructure.phase_timing import phase_timer
 
         before = _phase_samples("crop")
-        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as captured:
+        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as captured:
             with phase_timer("crop", cells_in=10) as ctx:
                 ctx["cells_out"] = 4
                 time.sleep(0.02)
@@ -183,7 +183,7 @@ class LlmTimingCallbackTests(unittest.TestCase):
 
         before = _phase_samples("llm_call")
         callback.on_chat_model_start({}, [], run_id=run_id)
-        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as captured:
+        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as captured:
             callback.on_llm_error(ValueError("429 quota"), run_id=run_id)
 
         self.assertEqual(_phase_samples("llm_call")[0] - before[0], 1)
@@ -200,7 +200,7 @@ class LlmTimingCallbackTests(unittest.TestCase):
         callback.on_chat_model_start(
             {}, [], run_id=run_id, invocation_params={"model": "gemini-3.1-flash-lite"}
         )
-        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as captured:
+        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as captured:
             callback.on_llm_end(None, run_id=run_id)
 
         self.assertEqual(captured.records[-1]._model, "gemini-3.1-flash-lite")
@@ -210,7 +210,7 @@ class LlmTimingCallbackTests(unittest.TestCase):
         run_id = uuid4()
 
         callback.on_chat_model_start(None, [], run_id=run_id)
-        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as captured:
+        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as captured:
             callback.on_llm_end(None, run_id=run_id)
 
         self.assertEqual(captured.records[-1]._model, "unknown")
@@ -232,11 +232,11 @@ class LlmTimingCallbackTests(unittest.TestCase):
 
         callback.on_chat_model_start({}, [], run_id=slow)  # t=100.00
         callback.on_chat_model_start({}, [], run_id=fast)  # t=100.06
-        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as captured:
+        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as captured:
             callback.on_llm_end(None, run_id=fast)  # t=100.09
         fast_seconds = captured.records[-1]._duration_seconds
 
-        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as captured:
+        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as captured:
             callback.on_llm_end(None, run_id=slow)  # t=100.20
         slow_seconds = captured.records[-1]._duration_seconds
 
@@ -256,7 +256,7 @@ class LlmTimingCallbackTests(unittest.TestCase):
 
         callback.on_chat_model_start({}, [], run_id=run_id)
         time.sleep(0.02)
-        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as captured:
+        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as captured:
             callback.on_llm_end(None, run_id=run_id)
 
         # A lower bound only: delays can only push this up, never below.
@@ -306,7 +306,7 @@ class LlmTimingCallbackTests(unittest.TestCase):
         run_id = uuid4()
 
         before = _phase_samples("llm_retry_sleep")
-        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as captured:
+        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as captured:
             callback.on_retry(FakeRetryState(), run_id=run_id)
         after = _phase_samples("llm_retry_sleep")
 
@@ -324,7 +324,7 @@ class LlmTimingCallbackTests(unittest.TestCase):
 
         callback.on_chat_model_start({}, [], run_id=run_id)
         callback.on_retry(FakeRetryState(), run_id=run_id)
-        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as captured:
+        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as captured:
             callback.on_llm_end(None, run_id=run_id)
 
         record = next(r for r in captured.records if r._phase == "llm_call")
@@ -345,7 +345,7 @@ class ModelFactoryWiringTests(unittest.TestCase):
     build_chat_model is the one seam that guarantees every agent gets it."""
 
     def test_a_constructed_google_model_carries_the_timing_callback(self):
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.config.model_factory import build_chat_model
         from tta_backend.utils.llm_timing import LlmTimingCallback
 
@@ -390,7 +390,7 @@ class AgentStepTimingTests(unittest.IsolatedAsyncioTestCase):
         slow' is not actionable, 'the model node was slow' is."""
         agent = self._agent([("updates", {"model": {"messages": []}})])
 
-        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as captured:
+        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as captured:
             await self._drain(agent)
 
         record = next(r for r in captured.records if r._phase == "agent_step")
@@ -411,7 +411,7 @@ class AgentStepTimingTests(unittest.IsolatedAsyncioTestCase):
             ]
         )
 
-        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as captured:
+        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as captured:
             await self._drain(agent)
 
         steps = [r for r in captured.records if r._phase == "agent_step"]
@@ -428,7 +428,7 @@ class AgentStepTimingTests(unittest.IsolatedAsyncioTestCase):
         )
 
         before = _phase_samples("agent_step")
-        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as captured:
+        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as captured:
             await self._drain(agent)
 
         self.assertEqual(_phase_samples("agent_step")[0] - before[0], 1)
@@ -440,7 +440,7 @@ class PhaseVocabularyTests(unittest.TestCase):
     def test_the_new_phases_are_pre_declared_at_zero(self):
         """Prometheus pulls: a phase that has not run yet must still exist as
         a series, or a dashboard cannot tell "never exercised" from "removed"."""
-        from tta_backend.utils.metrics import render_prometheus_metrics
+        from tta_backend.infrastructure.metrics import render_prometheus_metrics
 
         rendered = render_prometheus_metrics().decode()
 
@@ -469,7 +469,7 @@ class TokenAccountingTests(unittest.TestCase):
         """Run one start/end pair and return the phase_timing log record."""
         run_id = uuid4()
         callback.on_chat_model_start({}, [], run_id=run_id, invocation_params={"model": model})
-        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as captured:
+        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as captured:
             callback.on_llm_end(response, run_id=run_id)
         return captured.records[-1]
 
@@ -629,7 +629,7 @@ class AgentAttributionTests(unittest.TestCase):
     def _finish(self, callback, response, *, model):
         run_id = uuid4()
         callback.on_chat_model_start({}, [], run_id=run_id, invocation_params={"model": model})
-        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as captured:
+        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as captured:
             callback.on_llm_end(response, run_id=run_id)
         return captured.records[-1]
 
@@ -689,7 +689,7 @@ class AgentAttributionTests(unittest.TestCase):
         b.on_chat_model_start({}, [], run_id=run, invocation_params={"model": "m"})
 
         before = _phase_samples("llm_call")
-        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as captured:
+        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as captured:
             b.on_llm_end(None, run_id=run)
             a.on_llm_end(None, run_id=run)
         spans = [r._duration_seconds for r in captured.records if r._phase == "llm_call"]
@@ -718,7 +718,7 @@ class AgentTypeWiringTests(unittest.TestCase):
 
     def test_build_chat_model_forwards_the_declared_agent_type(self):
         from tta_backend.config.model_factory import build_chat_model
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         model = build_chat_model(
             "google", "gemini-3.1-flash-lite", Settings(google_api_key="k"), agent_type="satellite"

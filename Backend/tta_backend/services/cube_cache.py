@@ -21,7 +21,7 @@ import shutil
 import tempfile
 from typing import Any, Iterator
 
-from tta_backend.config.settings import get_settings
+from tta_backend.infrastructure.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -618,7 +618,7 @@ def lookup_by_handle(handle: str) -> Any | None:
     Only cubes with a content identity qualify (:func:`is_content_identity`).
     The usual integrity check still runs, via :func:`lookup`.
     """
-    from tta_backend.utils.metrics import record_cache_hit, record_cube_index_hit, record_cube_index_miss
+    from tta_backend.infrastructure.metrics import record_cache_hit, record_cube_index_hit, record_cube_index_miss
 
     if not handle or not get_settings().cube_skip_export_verify:
         return None
@@ -672,7 +672,7 @@ def reconcile_handle(handle: str, key: str) -> None:
     back; ``--workers 1`` and per-workspace handles make that narrow today, and
     ``CUBE_SKIP_EXPORT_VERIFY=0`` is the escape hatch if it ever stops being.
     """
-    from tta_backend.utils.metrics import record_cube_index_invalidation
+    from tta_backend.infrastructure.metrics import record_cube_index_invalidation
 
     if not handle or not key:
         return
@@ -830,7 +830,7 @@ def evict_to_fit(incoming_bytes: int) -> int:
     be evicted at one hour, and its sweep only fires on new extractions, so a
     cache that stops growing never prunes at all.
     """
-    from tta_backend.utils.metrics import record_cube_eviction
+    from tta_backend.infrastructure.metrics import record_cube_eviction
 
     limit = get_settings().cube_store_max_bytes
     entries = sorted(_entries())  # oldest access first

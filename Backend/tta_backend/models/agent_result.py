@@ -4,6 +4,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+# The picker models live in the domain; re-exported here for app imports.
+from tta_backend.domain.aggregation.variable_choice import VariableChoice as VariableChoice
+from tta_backend.domain.aggregation.variable_choice import VariableChoiceOption as VariableChoiceOption
+
 from .artifact import ArtifactReference
 
 
@@ -11,32 +15,6 @@ class ChartPayload(BaseModel, extra="allow"):
     type: str
     title: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class VariableChoiceOption(BaseModel):
-    """One candidate the researcher may pick when the variable resolver
-    couldn't confidently choose. Every field is a fact the resolver computed
-    (name/category/units/valid_fraction/reasons) plus the pre-composed
-    ``prompt`` the dispatch layer builds by templating the original request
-    with this variable substituted in — clicking it auto-sends that prompt."""
-
-    name: str
-    category: str
-    units: str | None = None
-    valid_fraction: float | None = None
-    reasons: list[str] = Field(default_factory=list)
-    prompt: str
-
-
-class VariableChoice(BaseModel):
-    """The deterministic, LLM-free picker payload for a variable-choice
-    turn. ``message`` is a template filled only from resolver facts (candidate
-    count, excluded-empty count); ``candidates`` is the resolver's own ranked
-    list, never capped and never paraphrased by the model. Rendered as inline
-    chips (<=6) or a searchable, grouped modal (>6) by the frontend."""
-
-    message: str
-    candidates: list[VariableChoiceOption] = Field(default_factory=list)
 
 
 class AgentResult(BaseModel):

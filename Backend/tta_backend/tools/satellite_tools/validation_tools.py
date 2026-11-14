@@ -29,11 +29,12 @@ from tta_backend.services import admission
 from tta_backend.config.workflow_stages import STAGE_RENDER
 from tta_backend.datasets.mask_info import col_info_for_variable
 from tta_backend.earthdata_mcp.results import MCPToolError
-from tta_backend.preprocessing.aggregation_service import AggregationService
+from tta_backend.domain.aggregation.aggregation_service import AggregationService
 from tta_backend.services.artifact_registry import build_artifact_reference
+from tta_backend.services import variable_choice_registry
 from tta_backend.services.open_handle import OpenHandleError, open_handle
 from tta_backend.tools.ground_sensor_tools import epa_aqs_tools as aqs
-from tta_backend.utils.geo_utils import find_lat_coord, find_lon_coord
+from tta_backend.domain.geo import find_lat_coord, find_lon_coord
 from tta_backend.utils.plotting import RegionResolver
 from tta_backend.utils.streaming import emit_status, ground_validation_allowed
 
@@ -278,7 +279,7 @@ def make_validate_against_ground(mcp_tools: dict[str, BaseTool]) -> BaseTool:
             return out_of_scope
         try:
             ds = await open_handle(handle, mcp_tools)
-            da = _aggregation_service.to_dataarray(ds, handle=handle)
+            da = _aggregation_service.to_dataarray(ds, recorded_variable=variable_choice_registry.get(handle))
         except MCPToolError as e:
             return json.dumps({"error": e.to_dict()})
         except OpenHandleError as e:
@@ -469,7 +470,7 @@ def make_exceedance_overlay(mcp_tools: dict[str, BaseTool]) -> BaseTool:
             return out_of_scope
         try:
             ds = await open_handle(handle, mcp_tools)
-            da = _aggregation_service.to_dataarray(ds, handle=handle)
+            da = _aggregation_service.to_dataarray(ds, recorded_variable=variable_choice_registry.get(handle))
         except MCPToolError as e:
             return json.dumps({"error": e.to_dict()})
         except OpenHandleError as e:

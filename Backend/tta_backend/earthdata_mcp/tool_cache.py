@@ -18,8 +18,8 @@ import time
 from collections import OrderedDict
 from typing import Any
 
-from tta_backend.config.settings import get_settings
-from tta_backend.utils.metrics import record_cache_hit, record_cache_miss
+from tta_backend.infrastructure.settings import get_settings
+from tta_backend.infrastructure.metrics import record_cache_hit, record_cache_miss
 
 logger = logging.getLogger(__name__)
 

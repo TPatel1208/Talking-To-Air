@@ -22,7 +22,7 @@ class OpenHandleZarrTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from fake_earthdata_mcp import HandleVolume, build_fake_mcp, FakeEarthdataMCPServer
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
@@ -241,7 +241,7 @@ class OpenHandleRecoveryExhaustedTests(unittest.IsolatedAsyncioTestCase):
     async def test_open_handle_surfaces_mcp_error_verbatim_after_one_failed_rematerialize(self):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.services.open_handle import OpenHandleError, open_handle
 
         calls = {"rematerialize": 0}
@@ -292,7 +292,7 @@ class OpenHandleClassifiedErrorTests(unittest.IsolatedAsyncioTestCase):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
         from tta_backend.earthdata_mcp.results import MCPToolError
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.services.open_handle import OpenHandleError, open_handle
 
         async def export_result(handle, workspace_id="default"):
@@ -326,7 +326,7 @@ class OpenHandleGroupedNetcdfTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from fake_earthdata_mcp import HandleVolume, build_fake_mcp, FakeEarthdataMCPServer
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
@@ -434,7 +434,7 @@ class OpenHandleGroupedNetcdfTests(unittest.IsolatedAsyncioTestCase):
         refused with candidates, never guessed."""
         import xarray as xr
 
-        from tta_backend.preprocessing.aggregation_service import AggregationService, VariableChoiceRequired
+        from tta_backend.domain.aggregation.aggregation_service import AggregationService, VariableChoiceRequired
         from tta_backend.services.open_handle import open_handle
 
         def make_root():
@@ -502,8 +502,8 @@ class OpenHandleGroupedNetcdfTests(unittest.IsolatedAsyncioTestCase):
         import xarray as xr
 
         from tta_backend.services.open_handle import open_handle
-        from tta_backend.preprocessing.aggregation_service import AggregationService
-        from tta_backend.utils.geo_utils import find_lat_coord, find_lon_coord
+        from tta_backend.domain.aggregation.aggregation_service import AggregationService
+        from tta_backend.domain.geo import find_lat_coord, find_lon_coord
 
         def make_root():
             return xr.Dataset()
@@ -546,8 +546,8 @@ class OpenHandleGroupedNetcdfTests(unittest.IsolatedAsyncioTestCase):
         import xarray as xr
 
         from tta_backend.services.open_handle import open_handle
-        from tta_backend.preprocessing.aggregation_service import AggregationService
-        from tta_backend.utils.geo_utils import find_lat_coord, find_lon_coord
+        from tta_backend.domain.aggregation.aggregation_service import AggregationService
+        from tta_backend.domain.geo import find_lat_coord, find_lon_coord
 
         def make_root():
             return xr.Dataset()
@@ -594,8 +594,8 @@ class OpenHandleGroupedNetcdfTests(unittest.IsolatedAsyncioTestCase):
         import xarray as xr
 
         from tta_backend.services.open_handle import open_handle
-        from tta_backend.preprocessing.aggregation_service import AggregationService
-        from tta_backend.utils.geo_utils import find_lat_coord, find_lon_coord
+        from tta_backend.domain.aggregation.aggregation_service import AggregationService
+        from tta_backend.domain.geo import find_lat_coord, find_lon_coord
 
         def make_root():
             # coord-only root: lat/lon/time as coordinate variables, no data_vars
@@ -638,7 +638,7 @@ class OpenHandleGroupedNetcdfTests(unittest.IsolatedAsyncioTestCase):
 
         Stripping them all took ``hPa`` off TEMPO_O3PROF's pressure axis and
         ``km`` off its altitude axis, and units are exactly how a vertical axis
-        is IDENTIFIED (geo_utils.vertical_axis_kind). The profile then rendered
+        is IDENTIFIED (domain.geo.vertical_axis_kind). The profile then rendered
         with values and no axis to plot them against -- silently, and only on a
         multi-granule bundle, because a single-member bundle returns before the
         concat ever happens. Found live on a 3-granule TEMPO_O3PROF retrieval,
@@ -759,7 +759,7 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from fake_earthdata_mcp import HandleVolume, build_fake_mcp, FakeEarthdataMCPServer
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
@@ -841,7 +841,7 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
 
         from unittest.mock import patch
 
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.services.open_handle import open_handle
 
         # 64x64 float64 = 32 KiB per member, written contiguously.
@@ -871,7 +871,7 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
 
         from unittest.mock import patch
 
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.services.open_handle import open_handle
 
         # 16x16 float64 = 2 KiB per HDF5 chunk, comfortably under the budget.
@@ -912,7 +912,7 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
         import tracemalloc
         from unittest.mock import patch
 
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.services.open_handle import open_handle
 
         members, size = 8, 1024
@@ -953,7 +953,7 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
 
         from unittest.mock import patch
 
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.services.open_handle import open_handle
 
         self.volume.add_netcdf("obs_single_wide", {None: self._make_wide_granule(9, encoding={})})
@@ -1045,7 +1045,7 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
         import xarray as xr
         from unittest.mock import patch
 
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.services.open_handle import open_handle
 
         def granule(encoding, dtype):
@@ -1234,7 +1234,7 @@ class OpenHandleNetcdfBundleTests(unittest.IsolatedAsyncioTestCase):
         2026-07-12, full-day TEMPO NO2)."""
         from unittest.mock import patch
 
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.earthdata_mcp.results import CATEGORY_TOO_LARGE, MCPToolError
         from tta_backend.services.open_handle import open_handle
 
@@ -1553,7 +1553,7 @@ class BundleExtractionConcurrencyTests(unittest.TestCase):
         import time
         from unittest.mock import patch
 
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.services.open_handle import _extract_members_concurrently
 
         calls = []
@@ -1579,7 +1579,7 @@ class BundleExtractionConcurrencyTests(unittest.TestCase):
         import time
         from unittest.mock import patch
 
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.services.open_handle import _extract_members_concurrently
 
         class FakeZip:
@@ -1606,7 +1606,7 @@ class BundleExtractionConcurrencyTests(unittest.TestCase):
         import time
         from unittest.mock import patch
 
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.services.open_handle import _extract_members_concurrently
 
         calls: list[str] = []
@@ -1651,7 +1651,7 @@ class BundleMemberOpenConcurrencyTests(unittest.TestCase):
         import time
         from unittest.mock import patch
 
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         import tta_backend.services.open_handle as open_handle_module
         from tta_backend.services.open_handle import _open_bundle_members_concurrently
 
@@ -1680,7 +1680,7 @@ class BundleMemberOpenConcurrencyTests(unittest.TestCase):
         import time
         from unittest.mock import patch
 
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         import tta_backend.services.open_handle as open_handle_module
         from tta_backend.services.open_handle import _open_bundle_members_concurrently
 
@@ -1716,7 +1716,7 @@ class BundleMemberOpenConcurrencyTests(unittest.TestCase):
         import time
         from unittest.mock import patch
 
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         import tta_backend.services.open_handle as open_handle_module
         from tta_backend.services.open_handle import _open_bundle_members_concurrently
 
@@ -1750,7 +1750,7 @@ class BundleMemberOpenConcurrencyTests(unittest.TestCase):
         import time
         from unittest.mock import patch
 
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         import tta_backend.services.open_handle as open_handle_module
         from tta_backend.services.open_handle import _open_bundle_members_concurrently
 
@@ -1893,7 +1893,7 @@ class OpenNetcdfLazyVsEagerEquivalenceTests(unittest.TestCase):
         }
 
     def test_eager_and_dask_backed_opens_aggregate_identically(self):
-        from tta_backend.preprocessing.aggregation_service import AggregationService
+        from tta_backend.domain.aggregation.aggregation_service import AggregationService
         from tta_backend.services.open_handle import _open_netcdf
 
         eager_ds = _open_netcdf(self.path)

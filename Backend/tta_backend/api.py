@@ -28,7 +28,7 @@ from tta_backend.agents.earthdata_agent import LazySatelliteAgent, build_earthda
 from tta_backend.agents.ground_sensor_agent import build_ground_agent
 from tta_backend.agents.supervisor_agent import build_agent
 from tta_backend.config.connectors import CONNECTOR_REGISTRY, CONNECTOR_REGISTRY_BY_TYPE
-from tta_backend.config.settings import get_settings
+from tta_backend.infrastructure.settings import get_settings
 from tta_backend.config.starter_prompts import STARTER_PROMPTS, StarterPrompt
 from tta_backend.earthdata_mcp.connection import STATE_CONNECTING, STATE_READY, EarthdataMCPConnectionManager
 from tta_backend.earthdata_mcp.results import (
@@ -94,16 +94,16 @@ from tta_backend.services.methods_export_service import build_methods_markdown
 from tta_backend.services.provenance_service import get_citations, get_lineage
 from cryptography.fernet import MultiFernet
 
-from tta_backend.utils.connector_crypto import encrypt_secret, get_connector_cipher
+from tta_backend.infrastructure.connector_crypto import encrypt_secret, get_connector_cipher
 from tta_backend.utils.db import active_pool_connections, check_db_pool, close_db_pool, init_db_pool, validate_config
-from tta_backend.utils.logging import configure_logging
-from tta_backend.utils.metrics import (
+from tta_backend.infrastructure.logging import configure_logging
+from tta_backend.infrastructure.metrics import (
     observe_http_request,
     prometheus_content_type,
-    refresh_process_gauges,
     render_prometheus_metrics,
     set_db_pool_connections_active,
 )
+from tta_backend.utils.process_gauges import refresh_process_gauges
 from tta_backend.tools.ground_sensor_tools.epa_aqs_tools import (
     AqsCredentialsRejected,
     AqsUnavailable,

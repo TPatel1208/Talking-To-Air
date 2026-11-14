@@ -32,7 +32,8 @@ def _gauge_value(gauge) -> float:
 
 class ProcessMetricsTests(unittest.TestCase):
     def test_refresh_process_gauges_sets_a_positive_process_rss(self):
-        from tta_backend.utils.metrics import PROCESS_RSS_BYTES, refresh_process_gauges
+        from tta_backend.infrastructure.metrics import PROCESS_RSS_BYTES
+        from tta_backend.utils.process_gauges import refresh_process_gauges
 
         PROCESS_RSS_BYTES.set(0)
         refresh_process_gauges()
@@ -43,7 +44,8 @@ class ProcessMetricsTests(unittest.TestCase):
         self.assertGreater(_gauge_value(PROCESS_RSS_BYTES), 0)
 
     def test_refresh_process_gauges_reports_the_bundle_extract_cache_size(self):
-        from tta_backend.utils.metrics import BUNDLE_EXTRACT_CACHE_BYTES, refresh_process_gauges
+        from tta_backend.infrastructure.metrics import BUNDLE_EXTRACT_CACHE_BYTES
+        from tta_backend.utils.process_gauges import refresh_process_gauges
 
         with patch("tta_backend.services.open_handle.extract_cache_size_bytes", return_value=54321):
             refresh_process_gauges()
@@ -67,7 +69,7 @@ class ProcessRssReaderTests(unittest.TestCase):
         a Windows host (and vice versa). Naming the expected reader per platform
         is what makes this fail on the machine whose support actually broke.
         """
-        import tta_backend.utils.metrics as metrics
+        import tta_backend.infrastructure.metrics as metrics
 
         reader_name = _PLATFORM_READER.get(sys.platform)
         self.assertIsNotNone(
@@ -86,7 +88,7 @@ class ProcessRssReaderTests(unittest.TestCase):
         """The fallback chain walks every reader, so the ones that do not apply
         here must decline quietly. A reader that raised on the wrong OS would
         take down the whole /metrics scrape, not just its own gauge."""
-        import tta_backend.utils.metrics as metrics
+        import tta_backend.infrastructure.metrics as metrics
 
         for platform, reader_name in _PLATFORM_READER.items():
             if platform == sys.platform:
@@ -113,7 +115,7 @@ class ProcessRssReaderTests(unittest.TestCase):
         allocation involved, so a flake here is never the only thing standing
         between a swap to a peak counter and a green suite.
         """
-        from tta_backend.utils.metrics import _current_process_rss_bytes
+        from tta_backend.infrastructure.metrics import _current_process_rss_bytes
 
         blob_bytes = 128 * 1024 * 1024
         baseline = _current_process_rss_bytes()
@@ -149,7 +151,7 @@ class ProcessRssReaderTests(unittest.TestCase):
         the point being that the deployment platform's reader cannot rot
         unnoticed on a machine that never exercises it.
         """
-        import tta_backend.utils.metrics as metrics
+        import tta_backend.infrastructure.metrics as metrics
 
         status = (
             "Name:\tpython\n"
@@ -184,7 +186,7 @@ class ProcessRssReaderTests(unittest.TestCase):
         ``kernel32`` make the answer exact: no allocation, no allocator
         behaviour, no tolerance.
         """
-        import tta_backend.utils.metrics as metrics
+        import tta_backend.infrastructure.metrics as metrics
 
         working_set = 111 * 1024 * 1024
         peak = 999 * 1024 * 1024
@@ -223,7 +225,7 @@ class ProcessRssReaderTests(unittest.TestCase):
 
     def test_the_chain_falls_through_to_the_next_reader(self):
         """Ordering contract, asserted without depending on the host OS."""
-        import tta_backend.utils.metrics as metrics
+        import tta_backend.infrastructure.metrics as metrics
 
         with patch.object(metrics, "_linux_rss_bytes", return_value=None), patch.object(
             metrics, "_windows_rss_bytes", return_value=None
@@ -234,7 +236,7 @@ class ProcessRssReaderTests(unittest.TestCase):
         """Zero RSS is not a real reading for a live process, so it must not
         short-circuit the chain and publish a value that looks like the very
         bug this fixes."""
-        import tta_backend.utils.metrics as metrics
+        import tta_backend.infrastructure.metrics as metrics
 
         with patch.object(metrics, "_linux_rss_bytes", return_value=0), patch.object(
             metrics, "_windows_rss_bytes", return_value=None
@@ -246,11 +248,12 @@ class ProcessRssReaderTests(unittest.TestCase):
         indistinguishable from a process that really is using no memory, which is
         exactly how this bug hid; leaving the gauge stale-but-honest is the
         documented behaviour and Prometheus can spot a non-advancing series."""
-        import tta_backend.utils.metrics as metrics
+        import tta_backend.infrastructure.metrics as metrics
+        from tta_backend.utils import process_gauges
 
         metrics.PROCESS_RSS_BYTES.set(123456)
-        with patch.object(metrics, "_current_process_rss_bytes", return_value=None):
-            metrics.refresh_process_gauges()
+        with patch.object(process_gauges, "current_process_rss_bytes", return_value=None):
+            process_gauges.refresh_process_gauges()
 
         self.assertEqual(_gauge_value(metrics.PROCESS_RSS_BYTES), 123456)
 
@@ -272,7 +275,7 @@ class MetricsEndpointRefreshesProcessGaugesTests(unittest.IsolatedAsyncioTestCas
         self.api = api
 
     async def test_metrics_endpoint_reports_a_positive_process_rss(self):
-        from tta_backend.utils.metrics import PROCESS_RSS_BYTES
+        from tta_backend.infrastructure.metrics import PROCESS_RSS_BYTES
 
         # Zero it first: gauges are process-wide state, so without this the
         # test could pass on a stale value some earlier test happened to

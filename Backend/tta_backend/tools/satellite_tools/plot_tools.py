@@ -59,7 +59,7 @@ from pydantic import Field
 
 from tta_backend.services import admission
 from tta_backend.services import overlay_store
-from tta_backend.config.settings import get_settings
+from tta_backend.infrastructure.settings import get_settings
 from tta_backend.config.workflow_stages import STAGE_RENDER
 from tta_backend.datasets.mask_info import col_info_for_variable, resolve_mask_info
 from tta_backend.datasets.variable_roles import classify_inventory, related_variables
@@ -70,28 +70,29 @@ from tta_backend.earthdata_mcp.results import (
     MCPToolError,
 )
 from tta_backend.services import scope_registry
+from tta_backend.services import variable_choice_registry
 from tta_backend.services.artifact_registry import build_artifact_reference
 from tta_backend.services.open_handle import (
     OPEN_PIPELINE_VERSION,
     OpenHandleError,
     open_handle,
 )
-from tta_backend.utils.geo_utils import find_lat_coord, find_lon_coord, vertical_axis_kind
+from tta_backend.domain.geo import find_lat_coord, find_lon_coord, vertical_axis_kind
 from tta_backend.utils.colormaps import resolve as resolve_colormap
 from tta_backend.utils.overlay_render import render_overlay
-from tta_backend.utils import xarray_ops
-from tta_backend.utils.phase_timing import phase_timer
-from tta_backend.utils.plotting import (
-    _normalize_to_2d,
+from tta_backend.domain import xarray_ops
+from tta_backend.infrastructure.phase_timing import phase_timer
+from tta_backend.domain.masking.dimensions import _normalize_to_2d
+from tta_backend.domain.masking.geometry import (
     apply_mask_region_type,
     geometry_mask,
     half_cell as _half_cell,
     mask_data_by_geometry,
-    RegionResolver,
     sel_bounds as _sel_bounds,
 )
+from tta_backend.utils.plotting import RegionResolver
 from tta_backend.utils.streaming import emit_chart, emit_status
-from tta_backend.preprocessing.aggregation_service import (
+from tta_backend.domain.aggregation.aggregation_service import (
     VARIABLE_RESOLUTION_ATTR,
     AggregatedResult,
     AggregationService,
@@ -512,7 +513,7 @@ def _scrubbable_statistics(frames: dict[str, Any]) -> list[str]:
     not a ``planes`` key. Ordered by ``PLANE_STATISTICS`` for a stable
     vocabulary.
     """
-    from tta_backend.preprocessing.frame_stack import PLANE_STATISTICS
+    from tta_backend.domain.aggregation.frame_stack import PLANE_STATISTICS
 
     planes = frames.get("planes") or {}
     landed = {
@@ -597,13 +598,15 @@ def _open_dataarray(ds: xr.Dataset, handle: str | None = None, variable: str | N
     collection's pinned ``primary_var`` (via short_name attr) -> a structured
     candidate-listing error (AggregationService.to_dataarray).
     """
-    return _aggregation_service.to_dataarray(ds, handle=handle, variable=variable)
+    return _aggregation_service.to_dataarray(
+        ds, recorded_variable=variable_choice_registry.get(handle), variable=variable,
+    )
 
 
 def _build_dim_selector(dimension: str | None, dimension_value: float | None) -> dict[str, Any] | None:
     """A single-entry {dim_name: value} selector from a tool's optional
     ``dimension``/``dimension_value`` params, or None when no dimension was
-    named -- the shape utils.plotting._normalize_to_2d's dim_selector expects."""
+    named -- the shape domain.masking.dimensions._normalize_to_2d's dim_selector expects."""
     if dimension is None or dimension_value is None:
         return None
     return {dimension: dimension_value}
@@ -807,7 +810,7 @@ def _band_time_mean(band: xr.DataArray, resolved: dict[str, Any]) -> xr.DataArra
     is skipna, matching the science field's own ``reduce(mean, skipna)`` over
     valid timesteps. A no-op time collapse when the band carries no time
     dimension (every current L3-snapshot fixture)."""
-    from tta_backend.utils.geo_utils import identify_time
+    from tta_backend.domain.geo import identify_time
 
     fill = resolved.get("fill_value")
     valid_min = resolved.get("valid_min")
@@ -1202,8 +1205,8 @@ def _attach_frames(payload: dict[str, Any], result: AggregatedResult, masked: xr
     Never raises: a failed frame stack must never cost the user the chart
     (same as ``_render_and_store_overlay``).
     """
-    from tta_backend.preprocessing import frame_stack as frame_stack_module
-    from tta_backend.preprocessing.frame_stack import (
+    from tta_backend.domain.aggregation import frame_stack as frame_stack_module
+    from tta_backend.domain.aggregation.frame_stack import (
         FRAME_CELL_CEILING,
         MAX_FRAMES,
         PLANE_STATISTICS,
@@ -1211,7 +1214,7 @@ def _attach_frames(payload: dict[str, Any], result: AggregatedResult, masked: xr
         plane_gate,
     )
     from tta_backend.services import frame_store
-    from tta_backend.utils.geo_utils import identify_time
+    from tta_backend.domain.geo import identify_time
 
     field = getattr(result, "masked", None)
     if field is None:
@@ -1425,7 +1428,7 @@ def _profile_axis_block(axis_da: xr.DataArray, vertical_dim: str, kind: str, reg
     entirely on the region -- a box over the Rockies looks nothing like one over
     New Jersey -- so it is measured per request and disclosed, never assumed.
     """
-    from tta_backend.preprocessing.regional_reduction import reduce_keeping_axes
+    from tta_backend.domain.aggregation.regional_reduction import reduce_keeping_axes
 
     # Restricted to the cells the science variable actually kept. The axis rode
     # the crop but not the geometry ``.where`` (see _vertical_axis_candidates),
@@ -1497,8 +1500,8 @@ def _resolve_level_selector(
     """
     from dataclasses import asdict
 
-    from tta_backend.preprocessing.level_resolver import resolve_level
-    from tta_backend.utils.geo_utils import identify_time
+    from tta_backend.domain.aggregation.level_resolver import resolve_level
+    from tta_backend.domain.geo import identify_time
 
     time_dim = identify_time(masked)
     vertical_dim, candidates = _vertical_dim(masked, time_dim)
@@ -1969,8 +1972,8 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]) -> BaseTool:
             JSON string — time-series chart payload for the frontend to render interactively.
         """
         import pandas as pd
-        from tta_backend.preprocessing.regional_reduction import reduce_keeping_axes
-        from tta_backend.utils.geo_utils import identify_time
+        from tta_backend.domain.aggregation.regional_reduction import reduce_keeping_axes
+        from tta_backend.domain.geo import identify_time
 
         try:
             ds = await open_handle(handle, mcp_tools)
@@ -2034,7 +2037,7 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]) -> BaseTool:
                 # real coordinate, positional on a coordinate-less dim, and a
                 # structured refusal (never an xarray internals crash) on a
                 # bad value.
-                from tta_backend.utils.plotting import _select_dim_nearest
+                from tta_backend.domain.masking.dimensions import _select_dim_nearest
 
                 for dim_name, value in dim_selector.items():
                     if dim_name in masked.dims:
@@ -2044,7 +2047,7 @@ def make_conduct_temporal_statistic(mcp_tools: dict[str, BaseTool]) -> BaseTool:
                             return "dimension_choice_required", e.to_dict()
             extra_dims = [d for d in masked.dims if d not in (lat_coord, lon_coord, time_dim)]
             if extra_dims:
-                from tta_backend.utils.plotting import _dimension_choice_error
+                from tta_backend.domain.masking.dimensions import _dimension_choice_error
 
                 return "dimension_choice_required", _dimension_choice_error(masked, str(extra_dims[0])).to_dict()
 
@@ -2172,9 +2175,9 @@ def make_plot_vertical_profile(mcp_tools: dict[str, BaseTool]) -> BaseTool:
         Returns:
             JSON string — profile chart payload for the frontend to render.
         """
-        from tta_backend.preprocessing.regional_reduction import reduce_keeping_axes
-        from tta_backend.utils.geo_utils import identify_time
-        from tta_backend.utils.plotting import _dimension_choice_error
+        from tta_backend.domain.aggregation.regional_reduction import reduce_keeping_axes
+        from tta_backend.domain.geo import identify_time
+        from tta_backend.domain.masking.dimensions import _dimension_choice_error
 
         try:
             ds = await open_handle(handle, mcp_tools)

@@ -120,7 +120,7 @@ class AgentHelperTests(unittest.TestCase):
 
     def test_build_agent_defaults_the_supervisor_provider_from_settings(self):
         from tta_backend.agents import supervisor_agent
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         created = object()
         with patch.object(

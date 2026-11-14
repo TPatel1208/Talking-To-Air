@@ -10,7 +10,7 @@ from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 from dotenv import load_dotenv
 
-from tta_backend.utils.connector_crypto import ConnectorCryptoError, build_multi_fernet
+from tta_backend.infrastructure.connector_crypto import ConnectorCryptoError, build_multi_fernet
 
 _VALID_FETCH_MODES = {"auto", "harmony", "opendap", "s3"}
 
@@ -637,7 +637,7 @@ class Settings:
                 "Unvetted model id(s): "
                 + "; ".join(unvetted)
                 + ". Confirm each id exists on the provider and on the billing tier "
-                "being deployed, then add it to _VETTED_MODELS in config/settings.py."
+                "being deployed, then add it to _VETTED_MODELS in infrastructure/settings.py."
             )
 
         # A turn deadline that isn't comfortably above the retrieval

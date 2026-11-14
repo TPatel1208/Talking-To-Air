@@ -20,7 +20,22 @@ import re
 import time
 from typing import Any
 
-from tta_backend.config.settings import get_settings
+from tta_backend.domain.errors import (
+    CATEGORY_USER_INPUT as CATEGORY_USER_INPUT,
+    CATEGORY_NO_DATA as CATEGORY_NO_DATA,
+    CATEGORY_NOT_FOUND as CATEGORY_NOT_FOUND,
+    CATEGORY_TOO_LARGE as CATEGORY_TOO_LARGE,
+    CATEGORY_PROVIDER_UNAVAILABLE as CATEGORY_PROVIDER_UNAVAILABLE,
+    CATEGORY_CONTRACT as CATEGORY_CONTRACT,
+    CATEGORY_UNSUPPORTED_GRID as CATEGORY_UNSUPPORTED_GRID,
+    CATEGORY_VARIABLE_CHOICE_REQUIRED as CATEGORY_VARIABLE_CHOICE_REQUIRED,
+    CATEGORY_DIMENSION_CHOICE_REQUIRED as CATEGORY_DIMENSION_CHOICE_REQUIRED,
+    CATEGORY_TOKEN_INVALID as CATEGORY_TOKEN_INVALID,
+    CATEGORY_TOKEN_EXPIRED as CATEGORY_TOKEN_EXPIRED,
+    CATEGORY_EULA_NOT_ACCEPTED as CATEGORY_EULA_NOT_ACCEPTED,
+    MCPToolError as MCPToolError,
+)
+from tta_backend.infrastructure.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -39,32 +54,6 @@ def _monotonic() -> float:
 # inside this; a still-down one fails fast and re-arms the cooldown.
 _HALF_OPEN_PROBE_TIMEOUT_SECONDS = 15.0
 
-CATEGORY_USER_INPUT = "user_input"
-CATEGORY_NO_DATA = "no_data"
-CATEGORY_NOT_FOUND = "not_found"
-CATEGORY_TOO_LARGE = "too_large"
-CATEGORY_PROVIDER_UNAVAILABLE = "provider_unavailable"
-CATEGORY_CONTRACT = "contract"
-# A granule whose horizontal grid isn't a 1-D rectilinear lat/lon grid
-# (2-D curvilinear swath, or projected x/y+CRS) — a known, honest limitation
-# rather than a crash or a silently mis-masked result.
-CATEGORY_UNSUPPORTED_GRID = "unsupported_grid"
-# The backend refuses to invent a scientific choice it was never given.
-# CATEGORY_VARIABLE_CHOICE_REQUIRED — a multi-variable file with no explicit
-# variable and no recorded choice (AggregationService.to_dataarray).
-# CATEGORY_DIMENSION_CHOICE_REQUIRED — a surviving non-spatial, non-time
-# dimension (e.g. a MERRA-2 vertical level) with no selection
-# (_normalize_to_2d). Both name their
-# candidates in the message so a researcher (or the model) can pick
-# deliberately instead of receiving whichever value happened to be first.
-CATEGORY_VARIABLE_CHOICE_REQUIRED = "variable_choice_required"
-CATEGORY_DIMENSION_CHOICE_REQUIRED = "dimension_choice_required"
-# Per-user Earthdata credential errors the MCP raises against an injected
-# edl_token. _classify_dict handles them generically; they exist to drive the
-# actionable message templates below.
-CATEGORY_TOKEN_INVALID = "token_invalid"
-CATEGORY_TOKEN_EXPIRED = "token_expired"
-CATEGORY_EULA_NOT_ACCEPTED = "eula_not_accepted"
 
 # Fixed, actionable text for the credential errors, replacing whatever the
 # MCP sent. This is also secret hygiene: the MCP's prose could echo the
@@ -88,35 +77,6 @@ _TOKEN_ERROR_MESSAGES: dict[str, tuple[str, str]] = {
 # errors; passed through as plain dicts for each composite's existing
 # status-based branching (e.g. services/open_handle.py) to interpret.
 _STRUCTURED_PASSTHROUGH_STATUSES = {"not_found", "pending", "expired"}
-
-
-class MCPToolError(Exception):
-    """A classified MCP tool outcome: what happened (``category``), a human
-    ``message``, an optional actionable ``suggestion``, and a ``raw_preview``
-    of whatever the adapter actually returned (for the debug log line —
-    never shown to a researcher)."""
-
-    def __init__(self, category: str, message: str, *, suggestion: str | None = None, raw_preview: str | None = None):
-        super().__init__(message)
-        self.category = category
-        self.message = message
-        self.suggestion = suggestion
-        self.raw_preview = raw_preview
-
-    def to_dict(self) -> dict[str, Any]:
-        """``{"category", "message", "suggestion"}`` — the nested shape
-        every ``{"error": ...}`` envelope (tool JSON, pane 4xx/5xx bodies)
-        builds from, dropping ``suggestion`` when there isn't one."""
-        body: dict[str, Any] = {"category": self.category, "message": self.message}
-        if self.suggestion:
-            body["suggestion"] = self.suggestion
-        return body
-
-    def to_tool_json(self) -> str:
-        """Structured JSON tool result shape: what a model-facing tool
-        call returns instead of raising, and what a backend composite's own
-        ``parse_tool_result(raw)`` call recognizes and re-raises from."""
-        return json.dumps({"error": self.to_dict()})
 
 
 _VALIDATION_ERROR_RE = re.compile(r"^\s*\d+\s+validation error(s)?\s+for\b", re.IGNORECASE)

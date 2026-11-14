@@ -1,6 +1,6 @@
 """
-preprocessing/regional_reduction.py
-====================================
+domain/aggregation/regional_reduction.py
+========================================
 Collapsing an analyzed region down to one number per position on a retained
 axis — the shared middle of every chart that is not a map.
 
@@ -21,7 +21,7 @@ from typing import Any, Callable, Sequence
 import numpy as np
 import xarray as xr
 
-from tta_backend.preprocessing.aggregation_service import AggregationService, cos_lat_weights
+from tta_backend.domain.aggregation.aggregation_service import AggregationService, cos_lat_weights
 
 _STATS: dict[str, Callable[..., Any]] = AggregationService._STAT_FUNCS
 

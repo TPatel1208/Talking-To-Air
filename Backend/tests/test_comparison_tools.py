@@ -695,7 +695,7 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from fake_earthdata_mcp import HandleVolume, build_fake_mcp, FakeEarthdataMCPServer
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
@@ -1010,7 +1010,8 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
 
         import xarray as xr
         from tta_backend.earthdata_mcp.results import MCPToolError
-        from tta_backend.preprocessing.aggregation_service import VariableChoiceRequired
+        from tta_backend.domain.aggregation.aggregation_service import VariableChoiceRequired
+        from tta_backend.services import variable_choice_registry
         from tta_backend.services.open_handle import OpenHandleError
         from tta_backend.tools.satellite_tools import comparison_tools
 
@@ -1028,8 +1029,11 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
         fake_resolution = object()
         fake_mcp_error = MCPToolError("contract", "ambiguous variable")
 
-        def fake_to_dataarray(ds, *, handle=None, variable=None):
-            if handle == "obs_ambiguous":
+        variable_choice_registry._choices["obs_ambiguous"] = ("ambiguous", float("inf"))
+        self.addCleanup(variable_choice_registry._choices.pop, "obs_ambiguous", None)
+
+        def fake_to_dataarray(ds, *, recorded_variable=None, variable=None):
+            if recorded_variable == "ambiguous":
                 raise VariableChoiceRequired(fake_resolution, fake_mcp_error)
             return ds["no2"]
 
@@ -1063,7 +1067,8 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
 
         import xarray as xr
         from tta_backend.earthdata_mcp.results import MCPToolError
-        from tta_backend.preprocessing.aggregation_service import VariableChoiceRequired
+        from tta_backend.domain.aggregation.aggregation_service import VariableChoiceRequired
+        from tta_backend.services import variable_choice_registry
         from tta_backend.tools.satellite_tools import comparison_tools
 
         def make_ds():
@@ -1078,8 +1083,11 @@ class CompareToolTests(unittest.IsolatedAsyncioTestCase):
         fake_resolution = object()
         fake_mcp_error = MCPToolError("contract", "ambiguous variable")
 
-        def fake_to_dataarray(ds, *, handle=None, variable=None):
-            if handle == "obs_ambiguous":
+        variable_choice_registry._choices["obs_ambiguous"] = ("ambiguous", float("inf"))
+        self.addCleanup(variable_choice_registry._choices.pop, "obs_ambiguous", None)
+
+        def fake_to_dataarray(ds, *, recorded_variable=None, variable=None):
+            if recorded_variable == "ambiguous":
                 raise VariableChoiceRequired(fake_resolution, fake_mcp_error)
             return ds["no2"]
 
