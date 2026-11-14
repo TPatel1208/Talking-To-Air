@@ -21,6 +21,23 @@
 #   description: ""
 #   provider: ""                   # DAAC/agency, e.g. "NASA GES DISC" (T32 provenance display)
 #   instrument: ""                 # instrument/platform, e.g. "MODIS/Terra" (T32 provenance display)
+#
+# Product-choice facts (optional; the harness product resolver chooses by them.
+# An entry without quantity and coverage is never chosen from registry facts
+# alone, only when named, approved by a workflow or pinned):
+#   quantity: null                 # canonical lower_snake quantity, e.g. no2_tropospheric_column;
+#                                  # entries measuring the same thing share the exact string
+#   coverage: null                 # "global", or a {west, south, east, north} box in degrees
+#   record_start: null             # first day (UTC) with data
+#   record_end: null               # last day (UTC) with data; omit while the record is ongoing
+#   stream: null                   # standard | near_real_time
+#   latency_days: null             # whole days from observation to publication
+#                                  # (0 = today's data is already appearing, 1 = yesterday is complete)
+#   retention_days: null           # whole days of recent data a rolling archive keeps;
+#                                  # omit when everything since record_start is kept
+#   rank: null                     # order among entries sharing a quantity, 1 best, unique per quantity
+# These product facts (coverage, record dates, latency, retention) come from the NASA CMR
+# catalogue and provider documentation as checked on 2026-11-14.
 # ---------------------------------------------------------------------------
 
 # ── NO2 ─────────────────────────────────────────────────────────────────────
@@ -31,6 +48,13 @@ OMI_NO2:
   version: "1.1"
   description: OMI NO2 tropospheric column
   cadence: daily
+  quantity: no2_tropospheric_column
+  coverage: global
+  record_start: 2004-10-01
+  record_end: 2026-03-15
+  stream: standard
+  latency_days: 2
+  rank: 3
   provider: NASA GES DISC
   instrument: OMI/Aura
   primary_var: ColumnAmountNO2TropCloudScreened
@@ -53,6 +77,12 @@ TROPOMI_NO2:
   version: "2.4"
   description: Tropomi NO2 monthly mean
   cadence: monthly
+  quantity: no2_tropospheric_column
+  coverage: {west: -179.5, south: -60, east: 179.5, north: 75}
+  record_start: 2019-01-01
+  stream: standard
+  latency_days: 58
+  rank: 4
   provider: NASA GES DISC
   instrument: TROPOMI/Sentinel-5P
   primary_var: Tropospheric_NO2
@@ -73,6 +103,12 @@ TEMPO_NO2:
   version: V04
   description: TEMPO tropospheric NO2 vertical column
   cadence: hourly
+  quantity: no2_tropospheric_column
+  coverage: {west: -170, south: 10, east: -10, north: 80}
+  record_start: 2023-08-02
+  stream: standard
+  latency_days: 0
+  rank: 1
   provider: NASA LARC
   instrument: TEMPO
   primary_var: vertical_column_troposphere
@@ -114,6 +150,13 @@ TEMPO_NO2_NRT:
   version: V02
   description: TEMPO tropospheric NO2 vertical column (Near Real-Time, V02)
   cadence: hourly
+  quantity: no2_tropospheric_column
+  coverage: {west: -170, south: 10, east: -10, north: 80}
+  record_start: 2025-09-17
+  stream: near_real_time
+  latency_days: 0
+  retention_days: 14
+  rank: 2
   provider: NASA LARC
   instrument: TEMPO
   primary_var: vertical_column_troposphere
@@ -138,6 +181,12 @@ TEMPO_O3TOT:
   version: V04
   description: TEMPO Level 3 total ozone column
   cadence: hourly
+  quantity: o3_total_column
+  coverage: {west: -170, south: 10, east: -10, north: 80}
+  record_start: 2023-08-02
+  stream: standard
+  latency_days: 0
+  rank: 1
   provider: NASA LARC
   instrument: TEMPO
   primary_var: column_amount_o3
@@ -181,6 +230,12 @@ TEMPO_O3PROF:
   version: V04
   description: TEMPO Level 3 ozone vertical profile (24 layers, partial columns)
   cadence: hourly
+  quantity: o3_profile
+  coverage: {west: -170, south: 10, east: -10, north: 80}
+  record_start: 2023-08-02
+  stream: standard
+  latency_days: 0
+  rank: 1
   provider: NASA LARC
   instrument: TEMPO
   # CMR publishes this collection as "TEMPO gridded ozone profile V04 (BETA)".
@@ -222,6 +277,12 @@ OMI_O3:
   version: "003"
   description: OMI daily total ozone column
   cadence: daily
+  quantity: o3_total_column
+  coverage: global
+  record_start: 2004-10-01
+  stream: standard
+  latency_days: 2
+  rank: 2
   provider: NASA GES DISC
   instrument: OMI/Aura
   primary_var: ColumnAmountO3
@@ -242,6 +303,12 @@ TEMPO_HCHO:
   version: V04
   description: TEMPO formaldehyde (HCHO) vertical column
   cadence: hourly
+  quantity: hcho_total_column
+  coverage: {west: -170, south: 10, east: -10, north: 80}
+  record_start: 2023-08-02
+  stream: standard
+  latency_days: 0
+  rank: 1
   provider: NASA LARC
   instrument: TEMPO
   primary_var: vertical_column
@@ -269,6 +336,12 @@ TEMPO_HCHO_V03:
   version: V03
   description: TEMPO formaldehyde (HCHO) vertical column (V03)
   cadence: hourly
+  quantity: hcho_total_column
+  coverage: {west: -170, south: 10, east: -10, north: 80}
+  record_start: 2023-08-02
+  record_end: 2025-09-16
+  stream: standard
+  rank: 4
   provider: NASA LARC
   instrument: TEMPO
   primary_var: vertical_column
@@ -304,6 +377,13 @@ TEMPO_HCHO_NRT:
   version: V02
   description: TEMPO formaldehyde (HCHO) vertical column (Near Real-Time, V02)
   cadence: hourly
+  quantity: hcho_total_column
+  coverage: {west: -170, south: 10, east: -10, north: 80}
+  record_start: 2025-09-17
+  stream: near_real_time
+  latency_days: 0
+  retention_days: 14
+  rank: 2
   provider: NASA LARC
   instrument: TEMPO
   primary_var: vertical_column
@@ -329,6 +409,13 @@ OMI_HCHO:
   version: "003"
   description: OMI HCHO total column daily
   cadence: daily
+  quantity: hcho_total_column
+  coverage: global
+  record_start: 2004-10-01
+  record_end: 2026-03-16
+  stream: standard
+  latency_days: 1
+  rank: 3
   provider: NASA GES DISC
   instrument: OMI/Aura
   primary_var: column_amount
@@ -386,6 +473,12 @@ OMI_SO2:
   version: "004"
   description: OMI total column SO2 daily global L3 (PCA algorithm, best pixel)
   cadence: daily
+  quantity: so2_total_column
+  coverage: global
+  record_start: 2004-10-01
+  stream: standard
+  latency_days: 2
+  rank: 1
   provider: NASA GES DISC
   instrument: OMI/Aura
   primary_var: ColumnAmountSO2
@@ -408,6 +501,12 @@ MODIS_AOD_TERRA:
   version: "001"
   description: MODIS Terra AOD at 550nm combined Dark Target + Deep Blue
   cadence: daily
+  quantity: aod_550nm
+  coverage: global
+  record_start: 2000-02-24
+  stream: standard
+  latency_days: 61
+  rank: 1
   provider: NASA GES DISC
   instrument: MODIS/Terra
   primary_var: COMBINE_AOD_550_AVG
@@ -434,6 +533,12 @@ VIIRS_AOD_SNPP:
   version: "001"
   description: SNPP VIIRS AOD at 550nm combined Dark Target + Deep Blue
   cadence: daily
+  quantity: aod_550nm
+  coverage: global
+  record_start: 2012-03-04
+  stream: standard
+  latency_days: 61
+  rank: 3
   provider: NASA GES DISC
   instrument: VIIRS/SNPP
   primary_var: COMBINE_AOD_550_AVG
@@ -452,6 +557,12 @@ VIIRS_AOD_NOAA20:
   version: "001"
   description: NOAA-20 VIIRS AOD at 550nm combined Dark Target + Deep Blue
   cadence: daily
+  quantity: aod_550nm
+  coverage: global
+  record_start: 2018-02-17
+  stream: standard
+  latency_days: 61
+  rank: 4
   provider: NASA GES DISC
   instrument: VIIRS/NOAA-20
   primary_var: COMBINE_AOD_550_AVG
@@ -492,6 +603,13 @@ AERDA_AOD_NRT:
   version: "1"
   description: NRT VIIRS/MODIS combined AOD for data assimilation (24-hour, 1 degree)
   cadence: daily
+  quantity: aod_550nm
+  coverage: global
+  record_start: 2025-05-01
+  stream: near_real_time
+  latency_days: 1
+  retention_days: 14
+  rank: 5
   provider: NASA ASIPS
   instrument: VIIRS + MODIS
   primary_var: NOAA20_VIIRS_NASADeepBlue_AOD_550/Mean
@@ -529,6 +647,13 @@ AERDA_AOD_NRT_3H:
   version: "1"
   description: NRT VIIRS/MODIS combined AOD for data assimilation (3-hour, 1 degree)
   cadence: hourly
+  quantity: aod_550nm
+  coverage: global
+  record_start: 2025-05-01
+  stream: near_real_time
+  latency_days: 0
+  retention_days: 14
+  rank: 6
   provider: NASA ASIPS
   instrument: VIIRS + MODIS
   primary_var: NOAA20_VIIRS_NASADeepBlue_AOD_550/Mean
@@ -547,6 +672,12 @@ MODIS_AOD_AQUA:
   version: "001"
   description: MODIS Aqua AOD at 550nm combined Dark Target + Deep Blue
   cadence: daily
+  quantity: aod_550nm
+  coverage: global
+  record_start: 2002-07-04
+  stream: standard
+  latency_days: 61
+  rank: 2
   provider: NASA GES DISC
   instrument: MODIS/Aqua
   primary_var: COMBINE_AOD_550_AVG
