@@ -19,6 +19,8 @@ GROUP = Group(
         "input's quantity does not name it. "
         "timeseries puts one or several series handles on one chart, one line per series line; lines in a second "
         "unit get a second y axis, and three or more units are refused. "
+        "polygon_map draws polygons handles (such as smoke extent) when there is no grid; no polygons gives an "
+        "empty map with a disclosure, and points can be added as an overlay. "
         "profile draws the table operations.vertical_profile makes. "
         "table shows a table handle, cut to max_rows with a disclosure. "
         "Disclosures say what the chart data holds; repeat them to the user. "

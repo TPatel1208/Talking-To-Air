@@ -9,11 +9,14 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
+import pandas as pd
 from pydantic import JsonValue
 
 from tta_backend.domain.charts.summary import chart_model_summary
 from tta_backend.harness.capabilities.call import Call
 from tta_backend.harness.capabilities.common import period_json, refusal
+from tta_backend.harness.capabilities.shapes import points_frame
 from tta_backend.harness.handles.model import HandleRecord
 from tta_backend.harness.run_context import ArtifactRef
 from tta_backend.harness.trace import FailureCategory, StepFailure
@@ -86,3 +89,26 @@ async def store_and_emit(call: Call[Any], payload: dict[str, Any]) -> ArtifactRe
     ref = await context.artifacts.store_chart(payload)
     context.events.chart({**payload, "chart_id": ref.id})
     return ref
+
+
+MAX_OVERLAY_POINTS = 2_000
+
+
+def point_overlay(frame: pd.DataFrame) -> tuple[list[dict[str, Any]], int]:
+    """The first MAX_OVERLAY_POINTS points as overlay entries, and how many there were."""
+    frame = points_frame(frame)
+    total = len(frame)
+    kept = frame.head(MAX_OVERLAY_POINTS)
+    points: list[dict[str, Any]] = []
+    for record in kept.to_dict(orient="records"):
+        point: dict[str, Any] = {
+            "id": str(record["id"]),
+            "name": None if pd.isna(record.get("name")) else str(record["name"]),
+            "lat": float(record["lat"]),
+            "lon": float(record["lon"]),
+        }
+        if "value" in record:
+            value = record["value"]
+            point["value"] = float(value) if value is not None and np.isfinite(float(value)) else None
+        points.append(point)
+    return points, total

@@ -14,7 +14,6 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal
 
 import numpy as np
-import pandas as pd
 import xarray as xr
 from pydantic import Field, JsonValue
 
@@ -33,6 +32,7 @@ from tta_backend.harness.capabilities.definition import Capability, Params, hand
 from tta_backend.harness.capabilities.grids import open_grid_param
 from tta_backend.harness.capabilities.render.common import (
     chart_summary,
+    point_overlay,
     refuse,
     region_of,
     sources,
@@ -40,11 +40,10 @@ from tta_backend.harness.capabilities.render.common import (
 )
 from tta_backend.harness.capabilities.render.group import GROUP
 from tta_backend.harness.capabilities.result import CapabilityResult
-from tta_backend.harness.capabilities.shapes import points_frame, polygons_collection
+from tta_backend.harness.capabilities.shapes import polygons_collection
 
 __all__ = ["CAPABILITIES", "GROUP", "render_map"]
 
-MAX_OVERLAY_POINTS = 2_000
 # The colormap hint the current map payload carries.
 CMAP = "Spectral_r"
 
@@ -63,25 +62,6 @@ class MapParams(Params):
         default="sequential", description="diverging centres the colour scale on zero, for a difference.",
     )
     title: str | None = Field(default=None, max_length=200, description="Chart title; made from the variable and area when omitted.")
-
-
-def _point_overlay(frame: pd.DataFrame) -> tuple[list[dict[str, Any]], int]:
-    frame = points_frame(frame)
-    total = len(frame)
-    kept = frame.head(MAX_OVERLAY_POINTS)
-    points: list[dict[str, Any]] = []
-    for record in kept.to_dict(orient="records"):
-        point: dict[str, Any] = {
-            "id": str(record["id"]),
-            "name": None if pd.isna(record.get("name")) else str(record["name"]),
-            "lat": float(record["lat"]),
-            "lon": float(record["lon"]),
-        }
-        if "value" in record:
-            value = record["value"]
-            point["value"] = float(value) if value is not None and np.isfinite(float(value)) else None
-        points.append(point)
-    return points, total
 
 
 def _build(
@@ -158,7 +138,7 @@ async def _render_map(call: Call[MapParams]) -> CapabilityResult:
         disclosures.append(f"The map shows the time mean of the grid ({meta['aggregation_label']}).")
     overlays: dict[str, Any] = {}
     if p.points is not None:
-        points, total = _point_overlay(await call.open("points"))
+        points, total = point_overlay(await call.open("points"))
         overlays["points"] = {"handle": p.points, "points": points}
         held = f"the first {len(points)} of {total}" if total > len(points) else f"all {total}"
         disclosures.append(f"The chart data carries {held} points as an overlay (overlays.points).")
