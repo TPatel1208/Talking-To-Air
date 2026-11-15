@@ -1,11 +1,13 @@
 """The one path every capability call takes: validate, check, run, record.
 
 Each call writes one ``use`` trace entry, except a two-phase capability,
-which always writes two: ``begin`` writes a ``waiting`` entry holding the job
+which writes two: ``begin`` writes a ``waiting`` entry holding the job
 reference, then ``complete`` writes the outcome, its params carrying the job
 under ``_job`` so the two entries pair up. ``invoke`` on a two-phase
 capability runs ``begin`` then ``complete``, so the job reference is durable
-before the provider is asked for the result.
+before the provider is asked for the result. A ``begin`` that settles the call
+without submitting anything (a question for the user, or no data) returns a
+result instead of a job; that is its only entry and nothing is completed.
 """
 from __future__ import annotations
 
@@ -56,13 +58,16 @@ async def invoke(
     *,
     step: str | None = None,
     parent_seq: int | None = None,
+    attempt: int = 0,
 ) -> CapabilityResult:
     """Run a capability to its result; a two-phase one goes through ``begin`` then ``complete``.
 
-    Raises StepFailure, already recorded, when the call fails.
+    ``attempt`` is as for ``begin``. Raises StepFailure, already recorded, when the call fails.
     """
     if capability.two_phase:
-        job = await begin(env, capability, params, step=step, parent_seq=parent_seq)
+        job = await begin(env, capability, params, step=step, parent_seq=parent_seq, attempt=attempt)
+        if isinstance(job, CapabilityResult):
+            return job
         return await complete(env, capability, params, job, step=step, parent_seq=parent_seq)
     run = capability.run
     assert run is not None
@@ -71,7 +76,7 @@ async def invoke(
         return await _finish(call, scope, await run(call))
 
     try:
-        return await _step(env, capability, params, step, parent_seq, body)
+        return await _step(env, capability, params, step, parent_seq, body, attempt=attempt)
     except _Insufficient as stop:
         return stop.final
 
@@ -83,8 +88,15 @@ async def begin(
     *,
     step: str | None = None,
     parent_seq: int | None = None,
-) -> JobRef:
-    """Submit a two-phase capability's work and return the job reference, already saved.
+    attempt: int = 0,
+) -> JobRef | CapabilityResult:
+    """Submit a two-phase capability's work and return the job reference, already saved,
+    or the result when the capability settled the call without submitting.
+
+    Beginning the same step again with the same parameters and ``attempt``
+    submits nothing new: the session answers the repeated request. A larger
+    ``attempt`` is a deliberate resubmission, for a job that failed or that
+    the service no longer holds.
 
     Raises StepFailure, already recorded, when the call fails.
     """
@@ -92,8 +104,10 @@ async def begin(
         raise TypeError(f"{capability.name} is not two-phase")
     submit = capability.begin
 
-    async def body(call: Call[P], scope: StepScope) -> JobRef:
+    async def body(call: Call[P], scope: StepScope) -> JobRef | CapabilityResult:
         job = await submit(call)
+        if isinstance(job, CapabilityResult):
+            return await _finish(call, scope, job)
         refusal = _check_job(capability, job, call.recorded)
         if refusal is not None:
             raise refusal
@@ -102,7 +116,10 @@ async def begin(
         scope.result = {"job": job}
         return job
 
-    return await _step(env, capability, params, step, parent_seq, body)
+    try:
+        return await _step(env, capability, params, step, parent_seq, body, attempt=attempt)
+    except _Insufficient as stop:
+        return stop.final
 
 
 async def complete(
@@ -200,16 +217,17 @@ async def _prepare(
     recorded: dict[str, JsonValue],
     scope: StepScope,
     step: str | None,
+    attempt: int,
 ) -> Call[P]:
     resolved = await _resolve(env, capability, params)
     secret = None
     if capability.connector is not None:
-        secret = await env.context.credentials.secret(capability.connector)
-        if not secret:
+        secret = await env.context.credentials.secret(capability.connector) or None
+        if secret is None and capability.connector_required:
             raise failures.failure(failures.NOT_CONNECTED, name=capability.name, connector=capability.connector)
     return Call(
         capability=capability, params=params, recorded=recorded, env=env, resolved=resolved,
-        secret=secret, seq=scope.seq, step=step,
+        secret=secret, seq=scope.seq, step=step, attempt=attempt,
     )
 
 
@@ -269,6 +287,7 @@ async def _step(
     body: Callable[[Call[P], StepScope], Awaitable[T]],
     *,
     job: JobRef | None = None,
+    attempt: int = 0,
 ) -> T:
     params, recorded, refusal = _validate(capability, raw)
     entry_params, job_refusal = _entry_params(capability, recorded, job)
@@ -285,7 +304,7 @@ async def _step(
             assert params is not None
             failure: StepFailure | None = None
             try:
-                call = await _prepare(env, capability, params, recorded, scope, step)
+                call = await _prepare(env, capability, params, recorded, scope, step, attempt)
                 env.context.events.progress(capability.label, stage=capability.name)
                 outcome = await body(call, scope)
             except StepFailure as own:

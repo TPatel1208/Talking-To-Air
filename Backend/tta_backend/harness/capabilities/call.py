@@ -13,7 +13,8 @@ from tta_backend.harness.capabilities import failures
 from tta_backend.harness.capabilities.result import CapabilityResult, needs_choice
 from tta_backend.harness.handles.errors import HandleError
 from tta_backend.harness.handles.model import Descriptor, HandleKind, HandleRecord, ServicePayload
-from tta_backend.harness.run_context import EarthdataSession, Limits, RunEnv
+from tta_backend.harness.trace import StepFailure
+from tta_backend.harness.run_context import EarthdataSession, Limits, RunEnv, request_fingerprint
 
 if TYPE_CHECKING:
     from tta_backend.harness.capabilities.definition import Capability
@@ -50,6 +51,7 @@ class Call(Generic[P]):
         secret: str | None,
         seq: int,
         step: str | None = None,
+        attempt: int = 0,
     ) -> None:
         self.capability = capability
         self.params = params
@@ -60,15 +62,17 @@ class Call(Generic[P]):
         self._secret = secret
         self._seq = seq
         self._step = step
+        self._attempt = attempt
 
-    @property
-    def idempotency_key(self) -> str:
-        """A stable key for this step of this run, for a source to pass to a
-        provider so a repeated submission is recognised. Derived from the run
-        id and the step id, or the trace seq when the step has no id."""
+    def idempotency_key(self, tool: str, arguments: dict[str, Any]) -> str:
+        """The key a source passes with one submission, so a repeat of the
+        same request is recognised. It covers the run, the step id (or the
+        trace seq when the step has no id), the call's attempt, and a digest
+        of ``tool`` and ``arguments``: a different request never shares a key."""
         where = f"step:{self._step}" if self._step is not None else f"seq:{self._seq}"
-        digest = hashlib.sha256(f"{self.env.run_id}/{where}".encode()).hexdigest()
-        return f"tta-{digest[:32]}"
+        request = request_fingerprint(tool, arguments)
+        text = f"{self.env.run_id}/{where}/attempt:{self._attempt}/{request}"
+        return f"tta-{hashlib.sha256(text.encode()).hexdigest()[:32]}"
 
     @property
     def user_id(self) -> str:
@@ -78,8 +82,16 @@ class Call(Generic[P]):
     def today(self) -> datetime.date:
         return self.env.context.clock.today()
 
+    def _not_connected(self) -> StepFailure:
+        connector = str(self.capability.connector)
+        return failures.failure(failures.NOT_CONNECTED, name=self.capability.name, connector=connector)
+
     @property
     def earthdata(self) -> EarthdataSession:
+        """The earthdata session. Raises the not-connected failure when the
+        capability's connector is declared but not connected."""
+        if self.capability.connector is not None and self._secret is None:
+            raise self._not_connected()
         return self.env.earthdata
 
     @property
@@ -89,8 +101,10 @@ class Call(Generic[P]):
     @property
     def secret(self) -> str:
         """The declared connector's secret, resolved for this call; never store it."""
-        if self._secret is None:
+        if self.capability.connector is None:
             raise RuntimeError(f"{self.capability.name} declares no connector")
+        if self._secret is None:
+            raise self._not_connected()
         return self._secret
 
     def handle(self, name: str) -> HandleRecord:
@@ -114,15 +128,19 @@ class Call(Generic[P]):
 
     async def open(self, name: str) -> Any:
         """The data behind a single-handle parameter. Raises InputEvicted when
-        its data is no longer stored."""
+        its data is no longer stored. A grid is refused: read it through
+        ``grids.open_grid``, which masks it."""
         [data] = await self._open_records((self.handle(name),))
         return data
 
     async def open_each(self, name: str) -> list[Any]:
-        """The data behind each handle of a parameter; InputEvicted names every evicted one."""
+        """The data behind each handle of a parameter; InputEvicted names every evicted one. A grid is refused."""
         return await self._open_records(self.handles(name))
 
     async def _open_records(self, records: Iterable[HandleRecord]) -> list[Any]:
+        records = tuple(records)
+        if any(record.kind == "grid" for record in records):
+            raise failures.failure(failures.GRID_OUTSIDE_OPENER, name=self.capability.name)
         opened: list[Any] = []
         evicted: list[str] = []
         for record in records:

@@ -71,6 +71,10 @@ class OpenHandleError(RuntimeError):
     """Raised when a handle cannot be opened, even after one rematerialize attempt."""
 
 
+class HandleGoneError(OpenHandleError):
+    """Raised when a handle's data is gone and rematerializing it failed or was refused."""
+
+
 class UnreadableExportError(OpenHandleError):
     """Raised when an export reported "ready" but the file on disk isn't a
     readable NetCDF/HDF5 dataset — an error-response body or an incomplete/
@@ -233,17 +237,17 @@ async def _recover(handle: str, tools: dict[str, BaseTool]) -> dict[str, Any]:
     remat_raw = await tools["rematerialize"].ainvoke({"handle": handle})
     remat = parse_tool_result(remat_raw)
     if remat.get("status") == "not_found":
-        raise OpenHandleError(remat.get("message") or f"Handle '{handle}' not found and cannot be rematerialized.")
+        raise HandleGoneError(remat.get("message") or f"Handle '{handle}' not found and cannot be rematerialized.")
 
     job_handle = remat.get("job_handle")
     if job_handle:
         status = await await_retrieval(job_handle, tools)
         if status.get("status") != "ready":
-            raise OpenHandleError(status.get("message") or f"Rematerializing handle '{handle}' failed.")
+            raise HandleGoneError(status.get("message") or f"Rematerializing handle '{handle}' failed.")
 
     second_export = await _export(handle, tools)
     if second_export.get("status") != "ready":
-        raise OpenHandleError(
+        raise HandleGoneError(
             second_export.get("message") or f"Handle '{handle}' still not ready after rematerialize."
         )
     return second_export

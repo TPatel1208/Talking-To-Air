@@ -28,7 +28,7 @@ from tta_backend.harness.capabilities import (
 )
 from tta_backend.harness.capabilities.failures import NO_CONNECTOR_CATEGORIES, SOURCE_CATEGORIES
 from tta_backend.harness.handles import Descriptor, HandleError, HandleRecord, ScalarInput, ServicePayload
-from tta_backend.harness.run_context import Limits, RunEnv
+from tta_backend.harness.run_context import AnsweredRequests, IdempotencyKeyReused, Limits, RunEnv, request_fingerprint
 from tta_backend.harness.storage import memory_stores
 from tta_backend.harness.trace import MAX_JSON_BYTES, FailureCategory, StepFailure
 from tta_backend.harness.testing import (
@@ -295,6 +295,56 @@ class InvokeTests(_EnvCase):
         [entry] = await self.entries(env)
         self.assertEqual(entry.failure_category, FailureCategory.CREDENTIAL_INVALID)
 
+    async def test_an_optional_connector_fails_as_not_connected_only_when_reached(self):
+        async def maybe(call: Call[GetParams]) -> CapabilityResult:
+            if call.params.variable == "service":
+                await call.earthdata.call("submit", {})
+            return call.done()
+
+        optional = Capability(
+            name="explain.fake", description="Uses the service for some inputs.", params=GetParams,
+            output_kind=None, label="Explaining", method="Explained.", retrieves=False, retry_safe=True,
+            connector="earthdata", connector_required=False, run=maybe,
+        )
+        env = await self.make_env("user-c", credentials=StaticCredentials())
+        self.assertEqual((await invoke(env, optional, {"variable": "local"})).status, "done")
+        with self.assertRaises(StepFailure) as caught:
+            await invoke(env, optional, {"variable": "service"})
+        self.assertEqual(caught.exception.category, FailureCategory.CREDENTIAL_INVALID)
+        self.assertEqual(caught.exception.reason, "explain.fake needs the earthdata connector, which is not connected.")
+        self.assertEqual(self.earthdata.calls, [])
+        with self.assertRaises(ValueError):
+            Capability(
+                name="explain.bad", description="d", params=GetParams, output_kind=None, label="l",
+                method="m.", retrieves=False, retry_safe=True, connector_required=False, run=maybe,
+            )
+
+    async def test_a_grid_cannot_be_opened_outside_the_grid_opener(self):
+        class GridParams(Params):
+            grid: Annotated[str, handle_param("grid")]
+
+        async def peek(call: Call[GridParams]) -> CapabilityResult:
+            await call.open("grid")
+            return call.done()
+
+        async def peek_each(call: Call[GridParams]) -> CapabilityResult:
+            await call.open_each("grid")
+            return call.done()
+
+        grid = await self.stores.handles.record_retrieval(HandleRecord(
+            id="obs_grid", kind="grid", origin="retrieval", user_id="user-a", conversation_id="conv-1",
+            descriptor=Descriptor(summary="A grid"), created_at=NOW, payload=ServicePayload(),
+        ))
+        for run in (peek, peek_each):
+            capability = Capability(
+                name="operations.peek", description="Reads a grid directly.", params=GridParams, output_kind=None,
+                label="Peeking", method="Peeked.", retrieves=False, retry_safe=True, run=run,
+            )
+            with self.subTest(run.__name__):
+                failure = await self.failure(capability, {"grid": grid.id})
+                self.assertEqual(failure.category, FailureCategory.INTERNAL_ERROR)
+                self.assertIn("grids.open_grid", failure.reason)
+
     async def test_the_secret_reaches_the_call_but_nothing_durable(self):
         seen = []
 
@@ -558,22 +608,56 @@ class TwoPhaseTests(_EnvCase):
         [entry] = await self.entries()
         self.assertEqual(entry.params, {})
 
-    async def test_the_idempotency_key_is_stable_per_run_and_step(self):
+    async def test_the_idempotency_key_covers_run_step_attempt_and_request(self):
         keys: list[str] = []
 
         async def submit(call: Call[GetParams]) -> dict[str, Any]:
-            keys.append(call.idempotency_key)
+            keys.append(call.idempotency_key("submit", {"variable": call.params.variable, "days": [1, 2]}))
             return {"job_id": "job_1"}
 
         keyed = two_phase("sources.fake.keyed", submit)
         other = await self.make_env("user-a", credentials=StaticCredentials({"earthdata": SECRET}))
-        calls = ((self.env, "event"), (self.env, "event"), (other, "event"), (self.env, "baseline"), (self.env, None))
-        for env, step in calls:
-            await begin(env, keyed, {"variable": "no2"}, step=step)
-        first, again, other_run, other_step, unnamed = keys
+        calls = (
+            (self.env, "event", "no2", 0), (self.env, "event", "no2", 0), (other, "event", "no2", 0),
+            (self.env, "baseline", "no2", 0), (self.env, None, "no2", 0), (self.env, "event", "o3", 0),
+            (self.env, "event", "no2", 1),
+        )
+        for env, step, variable, attempt in calls:
+            await begin(env, keyed, {"variable": variable}, step=step, attempt=attempt)
+        first, again, other_run, other_step, unnamed, other_request, retry = keys
         self.assertEqual(first, again)
-        self.assertEqual(len({first, other_run, other_step, unnamed}), 4)
+        self.assertEqual(len({first, other_run, other_step, unnamed, other_request, retry}), 6)
         self.assertRegex(first, r"^tta-[0-9a-f]{32}$")
+
+    async def test_the_same_step_with_other_arguments_submits_again_and_gets_its_own_job(self):
+        jobs = iter(["job_1", "job_2"])
+        self.earthdata.tools["submit"] = lambda args: {"job_id": next(jobs)}
+
+        async def submit(call: Call[GetParams]) -> dict[str, Any]:
+            request = {"variable": call.params.variable}
+            reply = await call.earthdata.call("submit", request, idempotency_key=call.idempotency_key("submit", request))
+            return {"job_id": reply["job_id"]}
+
+        keyed = two_phase("sources.fake.keyed", submit)
+        first = await begin(self.env, keyed, {"variable": "no2"}, step="event")
+        again = await begin(self.env, keyed, {"variable": "no2"}, step="event")
+        changed = await begin(self.env, keyed, {"variable": "o3"}, step="event")
+        self.assertEqual((first, again, changed), ({"job_id": "job_1"}, {"job_id": "job_1"}, {"job_id": "job_2"}))
+        self.assertEqual([args for tool, args in self.earthdata.calls], [{"variable": "no2"}, {"variable": "o3"}])
+
+    async def test_a_new_attempt_resubmits_the_same_request(self):
+        jobs = iter(["job_dead", "job_2"])
+        self.earthdata.tools["submit"] = lambda args: {"job_id": next(jobs)}
+
+        async def submit(call: Call[GetParams]) -> dict[str, Any]:
+            request = {"variable": call.params.variable}
+            reply = await call.earthdata.call("submit", request, idempotency_key=call.idempotency_key("submit", request))
+            return {"job_id": reply["job_id"]}
+
+        keyed = two_phase("sources.fake.keyed", submit)
+        failed = await begin(self.env, keyed, {"variable": "no2"}, step="event")
+        retried = await begin(self.env, keyed, {"variable": "no2"}, step="event", attempt=1)
+        self.assertEqual((failed, retried), ({"job_id": "job_dead"}, {"job_id": "job_2"}))
 
     async def test_single_phase_capabilities_cannot_be_split(self):
         with self.assertRaises(TypeError):
@@ -592,6 +676,32 @@ class TwoPhaseTests(_EnvCase):
         with self.assertRaises(StepFailure) as caught:
             await begin(self.env, big, {"variable": "no2"})
         self.assertEqual(caught.exception.category, FailureCategory.INTERNAL_ERROR)
+
+
+class AnsweredRequestsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_key_presented_with_another_request_is_refused_as_a_contract_failure(self):
+        earthdata = FakeEarthdata({"submit": lambda args: {"job_id": f"job_{args['day']}"}})
+        first = await earthdata.call("submit", {"day": 1}, idempotency_key="tta-k")
+        again = await earthdata.call("submit", {"day": 1}, idempotency_key="tta-k")
+        self.assertEqual((first, again), ({"job_id": "job_1"}, {"job_id": "job_1"}))
+        with self.assertRaises(IdempotencyKeyReused) as caught:
+            await earthdata.call("submit", {"day": 2}, idempotency_key="tta-k")
+        self.assertEqual(caught.exception.category, "contract")
+        self.assertEqual(len(earthdata.calls), 1)
+
+    def test_the_memory_is_bounded_least_recently_used_first(self):
+        answered = AnsweredRequests(limit=2)
+        answered.put("a", "t", {}, {"n": 1})
+        answered.put("b", "t", {}, {"n": 2})
+        self.assertEqual(answered.get("a", "t", {}), {"n": 1})
+        answered.put("c", "t", {}, {"n": 3})
+        self.assertEqual(len(answered), 2)
+        self.assertIsNone(answered.get("b", "t", {}))
+        self.assertEqual(answered.get("a", "t", {}), {"n": 1})
+
+    def test_the_fingerprint_is_canonical(self):
+        self.assertEqual(request_fingerprint("t", {"a": 1, "b": [1, 2]}), request_fingerprint("t", {"b": [1, 2], "a": 1}))
+        self.assertNotEqual(request_fingerprint("t", {"a": 1}), request_fingerprint("u", {"a": 1}))
 
 
 class ResultTests(unittest.TestCase):

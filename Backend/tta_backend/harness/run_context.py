@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import datetime
+import hashlib
+import json
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -73,9 +76,88 @@ class RunContext:
 class EarthdataSession(Protocol):
     """The earthdata service, already bound to the run's user and their credential."""
 
-    async def call(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    async def call(
+        self, tool: str, arguments: dict[str, Any], *, idempotency_key: str | None = None
+    ) -> dict[str, Any]:
         """The tool's parsed result. A classified failure raises an exception
-        carrying a string ``category``."""
+        carrying a string ``category``.
+
+        A call given an ``idempotency_key`` it has already completed with the
+        same tool and arguments returns that call's result again instead of
+        repeating it at the provider. The same key with a different tool or
+        arguments is refused with category ``contract``. The session may
+        forget old keys, so a key protects repeats within a run."""
+        ...
+
+
+def request_fingerprint(tool: str, arguments: dict[str, Any]) -> str:
+    """A digest of the canonical JSON of ``tool`` and ``arguments``; equal for equal requests."""
+    canonical = json.dumps(
+        {"tool": tool, "arguments": arguments}, sort_keys=True, separators=(",", ":"), default=str,
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+class IdempotencyKeyReused(Exception):
+    """A key already answered was presented with a different request; a contract failure."""
+
+    category = "contract"
+
+    def __init__(self) -> None:
+        super().__init__("An idempotency key was reused for a different request.")
+
+
+class AnsweredRequests:
+    """What a session answered for each idempotency key, for at most ``limit``
+    keys, the least recently used forgotten first."""
+
+    def __init__(self, limit: int = 256) -> None:
+        if limit < 1:
+            raise ValueError("limit is at least 1")
+        self._limit = limit
+        self._answers: OrderedDict[str, tuple[str, dict[str, Any]]] = OrderedDict()
+
+    def __len__(self) -> int:
+        return len(self._answers)
+
+    def get(self, key: str, tool: str, arguments: dict[str, Any]) -> dict[str, Any] | None:
+        """The answer already given for ``key``, or None. Raises
+        IdempotencyKeyReused when ``key`` was answered for another request."""
+        held = self._answers.get(key)
+        if held is None:
+            return None
+        fingerprint, answer = held
+        if fingerprint != request_fingerprint(tool, arguments):
+            raise IdempotencyKeyReused()
+        self._answers.move_to_end(key)
+        return answer
+
+    def put(self, key: str, tool: str, arguments: dict[str, Any], answer: dict[str, Any]) -> None:
+        self._answers[key] = (request_fingerprint(tool, arguments), answer)
+        self._answers.move_to_end(key)
+        while len(self._answers) > self._limit:
+            self._answers.popitem(last=False)
+
+
+@dataclass(frozen=True)
+class Region:
+    """A place resolved to a footprint: its name, (west, south, east, north)
+    bounds and GeoJSON geometry. ``region_type`` says what kind of footprint
+    it is, such as polygon, bounding_box or point_buffer."""
+
+    name: str
+    bounds: tuple[float, float, float, float]
+    geometry: dict[str, Any]
+    region_type: str | None = None
+
+
+class Places(Protocol):
+    """Resolves a place in the user's words to a region."""
+
+    async def resolve(self, wording: str) -> Region | None:
+        """The region ``wording`` names, or None when it names none. A request
+        that is malformed, not merely unknown, raises an exception carrying a
+        string ``category`` of ``user_input``."""
         ...
 
 
@@ -117,6 +199,7 @@ class RunEnv:
     earthdata: EarthdataSession
     compute: Compute
     limits: Limits
+    places: Places
 
 
 def run_env(
@@ -128,6 +211,7 @@ def run_env(
     earthdata: EarthdataSession,
     compute: Compute,
     limits: Limits,
+    places: Places,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> RunEnv:
     """The environment for a run already started in ``context.storage.traces``."""
@@ -144,4 +228,5 @@ def run_env(
         earthdata=earthdata,
         compute=compute,
         limits=limits,
+        places=places,
     )

@@ -95,6 +95,11 @@ class Capability(Generic[P]):
     Give ``run`` for a single call, or ``begin`` and ``complete`` for a
     retrieval whose job reference is saved between submitting and finishing.
     ``method`` is one sentence filled from the parameters and the result.
+
+    A declared ``connector`` must be connected before the call runs. With
+    ``connector_required=False`` the call runs without it, and only reaching
+    for it (``call.earthdata`` or ``call.secret``) fails as not connected; for
+    a capability that needs the connector for some inputs only.
     """
 
     name: str
@@ -106,8 +111,10 @@ class Capability(Generic[P]):
     retrieves: bool
     retry_safe: bool
     connector: str | None = None
+    connector_required: bool = True
     run: Callable[[Call[P]], Awaitable[CapabilityResult]] | None = None
-    begin: Callable[[Call[P]], Awaitable[JobRef]] | None = None
+    # Returns the job reference, or a result when it settles the call without submitting.
+    begin: Callable[[Call[P]], Awaitable[JobRef | CapabilityResult]] | None = None
     complete: Callable[[Call[P], JobRef], Awaitable[CapabilityResult]] | None = None
     handle_params: Mapping[str, tuple[HandleKind, ...]] = field(init=False, repr=False)
 
@@ -122,6 +129,8 @@ class Capability(Generic[P]):
             raise ValueError(f"output_kind is one of {KINDS} or None")
         if self.connector is not None and not self.connector.strip():
             raise ValueError("connector is a name or None")
+        if self.connector is None and not self.connector_required:
+            raise ValueError("connector_required=False needs a connector")
         if not (isinstance(self.params, type) and issubclass(self.params, BaseModel)):
             raise ValueError("params is a pydantic model")
         _check_template(self.method)

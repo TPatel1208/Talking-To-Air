@@ -12,6 +12,7 @@ from tta_backend.harness.handles.payloads import PayloadStore
 from tta_backend.harness.handles.resolver import OpenRetrieval
 from tta_backend.harness.results import Mode
 from tta_backend.harness.run_context import (
+    AnsweredRequests,
     ArtifactRef,
     Artifacts,
     Clock,
@@ -21,6 +22,8 @@ from tta_backend.harness.run_context import (
     Events,
     Identity,
     Limits,
+    Places,
+    Region,
     RunContext,
     RunEnv,
     run_env,
@@ -101,17 +104,55 @@ class FakeToolError(Exception):
 
 
 class FakeEarthdata:
-    """Scripted earthdata tools: each maps arguments to a result, or raises."""
+    """Scripted earthdata tools: each maps arguments to a result, or raises.
+
+    Keyed calls behave as the host's session does: a repeat of an answered
+    key and request returns the first answer without running the tool again,
+    and the same key with a different request is refused as a contract failure.
+    """
 
     def __init__(self, tools: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] | None = None) -> None:
         self.tools = dict(tools or {})
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.keys: list[str | None] = []
+        self.answered = AnsweredRequests()
 
-    async def call(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    async def call(
+        self, tool: str, arguments: dict[str, Any], *, idempotency_key: str | None = None
+    ) -> dict[str, Any]:
+        if idempotency_key is not None:
+            answer = self.answered.get(idempotency_key, tool, arguments)
+            if answer is not None:
+                return answer
         self.calls.append((tool, dict(arguments)))
+        self.keys.append(idempotency_key)
         if tool not in self.tools:
             raise FakeToolError("contract", f"unscripted tool {tool}")
-        return self.tools[tool](arguments)
+        result = self.tools[tool](arguments)
+        if idempotency_key is not None:
+            self.answered.put(idempotency_key, tool, arguments, result)
+        return result
+
+
+class FakePlaces:
+    """Resolves the places it was given, matched case-insensitively; any other wording resolves to nothing."""
+
+    def __init__(self, regions: dict[str, Region] | None = None) -> None:
+        self.regions = {name.lower(): region for name, region in (regions or {}).items()}
+        self.asked: list[str] = []
+
+    async def resolve(self, wording: str) -> Region | None:
+        self.asked.append(wording)
+        return self.regions.get(" ".join(wording.lower().split()))
+
+
+def box_region(name: str, west: float, south: float, east: float, north: float, **kw: Any) -> Region:
+    """A rectangular region, for tests."""
+    ring = [[west, south], [east, south], [east, north], [west, north], [west, south]]
+    return Region(
+        name=name, bounds=(west, south, east, north),
+        geometry={"type": "Polygon", "coordinates": [ring]}, **kw,
+    )
 
 
 class InlineCompute:
@@ -147,6 +188,7 @@ async def make_run_env(
     compute: Compute | None = None,
     limits: Limits | None = None,
     open_retrieval: OpenRetrieval | None = None,
+    places: Places | None = None,
     mode: Mode | None = None,
 ) -> RunEnv:
     """A run started in the context's trace store, with an environment on fakes."""
@@ -167,6 +209,7 @@ async def make_run_env(
         earthdata=earthdata or FakeEarthdata(),
         compute=compute or InlineCompute(),
         limits=limits or TEST_LIMITS,
+        places=places or FakePlaces(),
     )
 
 

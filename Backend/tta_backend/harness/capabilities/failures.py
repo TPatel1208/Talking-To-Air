@@ -6,7 +6,8 @@ is never used, since it can carry URLs, queries or secrets.
 """
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
+from typing import Any
 
 from tta_backend.harness.handles.errors import HandleError
 from tta_backend.harness.trace import FailureCategory, StepFailure
@@ -59,6 +60,10 @@ UNRECORDABLE_PARAMS = (_F.BAD_INPUT, "The parameters for {name} are too large to
 NOT_CONNECTED = (_F.CREDENTIAL_INVALID, "{name} needs the {connector} connector, which is not connected.")
 BAD_RESULT = (_F.INTERNAL_ERROR, "{name} returned a result that does not match its declaration.")
 SECRET_IN_OUTPUT = (_F.INTERNAL_ERROR, "{name} produced output holding its connector secret, so it was not stored.")
+GRID_OUTSIDE_OPENER = (
+    _F.INTERNAL_ERROR,
+    "{name} tried to read a grid directly; a grid is read only through the grid opener (grids.open_grid).",
+)
 UNRECORDABLE_JOB = (_F.INTERNAL_ERROR, "{name} returned a job reference too large or not plain enough to record.")
 
 
@@ -73,6 +78,26 @@ class InputEvicted(StepFailure):
         category, wording = EVICTED
         super().__init__(category, wording.format(name=name), result={"evicted": list(ids)})
         self.handle_ids = ids
+
+
+class JobStillRunning(StepFailure):
+    """A two-phase capability's job was still running when ``complete`` stopped waiting.
+
+    Nothing was lost: the job keeps running at the provider. The runner keeps
+    the job reference it saved from ``begin`` and calls ``complete`` again
+    later with it; ``complete`` never submits. The entry is recorded as a
+    retryable ``source_unavailable`` failure holding ``{"job": ..., "still_running": [...]}``.
+    """
+
+    def __init__(self, name: str, job: Mapping[str, Any], running: Iterable[str]) -> None:
+        pending = list(dict.fromkeys(running))
+        super().__init__(
+            FailureCategory.SOURCE_UNAVAILABLE,
+            f"{name} is still waiting for its retrieval; complete it again later with the saved job.",
+            result={"job": dict(job), "still_running": pending},
+        )
+        self.job = dict(job)
+        self.still_running = tuple(pending)
 
 
 def failure(rule: tuple[FailureCategory, str], **facts: str) -> StepFailure:
