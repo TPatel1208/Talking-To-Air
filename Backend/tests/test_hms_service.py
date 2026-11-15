@@ -2,6 +2,9 @@
 import unittest
 from datetime import date
 
+from shapely.geometry import box
+
+from tests.test_harness_sources_smoke import smoke_archive
 from tta_backend.domain.smoke.hms import (
     HMSError,
     download_url,
@@ -28,6 +31,16 @@ class HMSServiceTests(unittest.TestCase):
         self.assertTrue(
             result.endswith("/2026/01/hms_smoke20260101.zip")
         )
+
+    def test_a_plume_sharing_an_edge_with_the_region_keeps_its_area(self):
+        # The first plume spans 35..40 north; the region shares its top edge as well as overlapping it.
+        region = box(-120, 35, -115, 40).union(box(-120, 40, -110, 41))
+
+        parsed = parse_archive(smoke_archive(), "2026-01-01", region)
+
+        [feature] = parsed["geojson"]["features"]
+        self.assertEqual(feature["geometry"]["type"], "Polygon")
+        self.assertEqual(parsed["provenance"]["skipped_records"], 0)
 
     def test_invalid_zip(self):
         with self.assertRaises(HMSError) as ctx:

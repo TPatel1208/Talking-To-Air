@@ -225,6 +225,28 @@ class StatToolsTimeCompositionTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(result["peak_lat"], 20.0)
         self.assertAlmostEqual(result["peak_lon"], 40.0)
 
+    async def test_find_daily_peak_reports_only_a_failed_coordinate_read(self):
+        """A failure reading the peak's coordinates is reported; an IndexError
+        or TypeError anywhere else in the peak search propagates."""
+        from unittest import mock
+
+        from tta_backend.domain.analysis.statistics import PeakCoordinatesUnreadable
+        from tta_backend.tools.satellite_tools import stat_tools
+
+        self._add_two_day_dataset("obs_peak_err", [[[1.0, 2.0], [3.0, 4.0]]])
+        find_daily_peak = stat_tools.make_find_daily_peak(self.mcp_tools)
+        args = {"handle": "obs_peak_err", "location": "global"}
+
+        with mock.patch.object(stat_tools, "peak_cell", side_effect=PeakCoordinatesUnreadable("index 5 is out of bounds")):
+            result = json.loads(await find_daily_peak.ainvoke(args))
+        self.assertEqual(result, {"error": "Failed to extract peak coordinates: index 5 is out of bounds"})
+
+        for error in (IndexError("elsewhere"), TypeError("elsewhere")):
+            with self.subTest(error=type(error).__name__):
+                with mock.patch.object(stat_tools, "peak_cell", side_effect=error):
+                    with self.assertRaises(type(error)):
+                        await find_daily_peak.ainvoke(args)
+
 
 if __name__ == "__main__":
     unittest.main()

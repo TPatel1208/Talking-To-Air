@@ -142,6 +142,27 @@ def load_standards(path: str | None = None) -> dict[str, PollutantStandards]:
     return standards
 
 
+def truncate_to_reporting_precision(pollutant: str, concentration: float) -> float:
+    """
+    ``concentration`` truncated to the pollutant's reporting precision
+    (``decimals``), toward zero, as EPA truncates before comparing with a
+    breakpoint or a standard level. Ozone 0.0705 ppm becomes 0.070.
+
+    The concentration is in the pollutant's breakpoint unit. A non-finite
+    value is returned unchanged.
+
+    Raises ValueError for an unknown pollutant.
+    """
+    try:
+        info = load_standards()[pollutant]
+    except KeyError:
+        raise ValueError(f"unknown pollutant {pollutant!r}") from None
+    if not math.isfinite(concentration):
+        return concentration
+    scale = 10 ** info.decimals
+    return math.copysign(math.floor(abs(concentration) * scale + 1e-9) / scale, concentration)
+
+
 def aqi_category(
     pollutant: str,
     concentration: float,
@@ -175,8 +196,7 @@ def aqi_category(
     if not math.isfinite(concentration):
         raise ValueError(f"concentration must be finite, got {concentration}")
 
-    scale = 10 ** info.decimals
-    value = math.floor(max(concentration, 0.0) * scale + 1e-9) / scale
+    value = truncate_to_reporting_precision(pollutant, max(concentration, 0.0))
     if value > rows[-1].concentration_high:
         return OutOfTable.BEYOND
     found: AqiBreakpoint | OutOfTable = OutOfTable.BELOW

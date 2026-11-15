@@ -10,15 +10,24 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
-from datetime import datetime, timedelta
 from typing import Any
 
 from langchain_core.tools import BaseTool
 
 from tta_backend.infrastructure.settings import Settings, get_settings
 from tta_backend.config.workflow_stages import STAGE_ESTIMATE, STAGE_PROGRESS, STAGE_SUBMIT
-from tta_backend.datasets.registry import known_quality_flag_vars, load_registry
+from tta_backend.datasets.registry import known_quality_flag_vars
+from tta_backend.domain.earthdata.retrieval import (
+    PAUSED_NOTE,
+    PAUSED_STATUS,
+    POLL_TRANSIENT_FAILURE_LIMIT,
+    TERMINAL_STATUSES,
+    annotate_paused,
+)
+from tta_backend.domain.earthdata.retrieval import normalize_time_range as _normalize_time_range
+from tta_backend.domain.earthdata.retrieval import pinned_companion_variables as _pinned_companion_variables
+from tta_backend.domain.earthdata.retrieval import supports_variable_subsetting as _supports_variable_subsetting
+from tta_backend.domain.earthdata.retrieval import time_span_days as _parse_time_span_days
 from tta_backend.earthdata_mcp.results import (
     CATEGORY_CONTRACT,
     CATEGORY_PROVIDER_UNAVAILABLE,
@@ -33,170 +42,19 @@ from tta_backend.utils.streaming import emit_job_progress, emit_status
 
 logger = logging.getLogger(__name__)
 
-# "not_found" is a dead handle list_workspace still lists after the MCP has
-# evicted the job (get_retrieval_status has no record of it) -- terminal
-# because it never changes again and there's no live job a cancel could
-# reach. On a long-lived workspace these can vastly outnumber real jobs
-# (live repro: 134 not_found vs 46 real jobs); leaving it out sorted every
-# dead row into the "active" group ahead of genuinely current tasks (see
-# list_jobs' sort below and jobs_service._CACHEABLE_STATUSES, which already
-# treated it as immutable).
-TERMINAL_STATUSES = {"ready", "failed", "expired", "cancelled", "not_found"}
-
-# await_retrieval keeps polling through this many CONSECUTIVE transient
-# (provider_unavailable) status-poll failures before surfacing the error. A
-# single network blip during a 15-minute Harmony job used to abandon the
-# whole await — the agent reported failure while the job completed
-# unobserved at the provider. One successful poll resets the count.
-POLL_TRANSIENT_FAILURE_LIMIT = 3
-
-# Harmony auto-pauses jobs it considers too large to run unattended (its
-# previewing -> paused flow). The MCP's status mapper reports a paused job as
-# status "running" (harmony-retrieval-mcp providers/harmony.py maps "paused"
-# -> RUNNING), so the only paused signal that reaches this backend is the
-# provider's own status text relayed in ``message`` ("The job is paused and
-# may be resumed using the provided link", live-observed 2026-07-16 on
-# job_142cbb2faa6aecc0). Without this detection a paused job polls as
-# "running" until the await timeout — an ever-climbing chat timer over a job
-# that will never finish on its own, and a jobs-panel row stuck at
-# "Processing" forever.
-PAUSED_STATUS = "paused"
-
-_PAUSED_MESSAGE_RE = re.compile(r"\bpaused\b", re.IGNORECASE)
-
-PAUSED_NOTE = (
-    "The data provider paused this job — usually because the request was too "
-    "large to process automatically. It will not finish on its own: cancel "
-    "it, then narrow the time range or area and try again."
-)
-
-
-def annotate_paused(status_data: dict[str, Any]) -> dict[str, Any]:
-    """Surface a provider-paused job honestly: a non-terminal status whose
-    provider message says the job is paused becomes status ``"paused"`` (with
-    a ``"paused at provider"`` phase and a plain-language ``note``) instead of
-    masquerading as running forever. Terminal statuses and messages that never
-    mention pausing pass through untouched."""
-    status = status_data.get("status", "")
-    message = status_data.get("message") or ""
-    if status in TERMINAL_STATUSES or not _PAUSED_MESSAGE_RE.search(message):
-        return status_data
-    return {
-        **status_data,
-        "status": PAUSED_STATUS,
-        "phase": "paused at provider",
-        "note": PAUSED_NOTE,
-    }
-
-
-def _supports_variable_subsetting(variables: list[str]) -> bool:
-    """Best-effort registry check: False only when every requested variable
-    resolves to a collection explicitly marked ``supports_variable_subsetting:
-    false`` (a Harmony capability flag captured by
-    scripts/generate_collection.py). ``safe_retrieve`` only ever sees an
-    opaque ``dataset_handle``, not a collection id, so this matches by
-    variable short name instead -- a name that collides across registry
-    entries always agrees on this flag in practice, and an unregistered
-    name defaults to True (today's send-it-and-see behavior) rather than
-    guessing.
-    """
-    index: dict[str, bool] = {}
-    for cfg in load_registry().values():
-        names = {cfg.primary_var}
-        if cfg.quality_flag_var:
-            names.add(cfg.quality_flag_var)
-        names.update(v.rsplit("/", 1)[-1] for v in cfg.variables)
-        for name in names:
-            index[name] = cfg.supports_variable_subsetting or index.get(name, False)
-
-    resolved = [index[v] for v in variables if v in index]
-    return all(resolved) if resolved else True
-
-
-def _leaf(name: str | None) -> str:
-    return str(name or "").rsplit("/", 1)[-1]
-
-
-def _pinned_companion_variables(variables: list[str]) -> list[str]:
-    """The companions each requested science variable cannot be honestly
-    interpreted without, in the spelling the registry itself uses.
-
-    Two kinds, one doctrine. A subset that drops the **quality flag** cannot be
-    masked at all: provenance degrades to "not applied — semantics unknown" and
-    every not-normal pixel is plotted as if it were good (measured 2026-08-01:
-    26.6% of a real TEMPO NO2 L3 scene). A subset that drops a layered
-    product's **vertical axes** yields values with nothing to plot them against
-    (measured 2026-08-08: the agent requested ``product/ozone_profile`` alone,
-    Harmony obliged, and the profile rendered against a bare layer index --
-    upside down, since layer 0 is the top of the atmosphere).
-
-    Both are part of requesting the science variable, not separate decisions --
-    and not ones left to the agent. The flag guard exists because the previous
-    "a standard TEMPO retrieval always requests both" comment assumed without
-    enforcing; the axes were registered in ``collections.yaml`` and made
-    exactly the same assumption until the same thing happened again.
-
-    Matched by bare leaf name, since the caller's spelling may be
-    group-qualified (``product/vertical_column_troposphere``) or bare. The
-    addition is emitted in whichever spelling the matching request used:
-    handing the provider one variable list addressed two different ways is a
-    request no collection's variable list ever looks like. A companion that
-    lives in a *different* group from the science variable (the axes are in
-    ``support_data``) keeps the registry's own qualified spelling, which is the
-    only one that resolves.
-    """
-    requested = {_leaf(v) for v in variables}
-    by_leaf = {_leaf(v): v for v in variables}
-    additions: list[str] = []
-    for cfg in load_registry().values():
-        companions: list[str] = [c for c in (cfg.quality_flag_var, *cfg.vertical_axis_vars) if c]
-        if not companions:
-            continue
-        collection_leaves = {_leaf(cfg.primary_var)} | {_leaf(v) for v in cfg.variables}
-        matched = requested & collection_leaves
-        if not matched:
-            continue
-        science_as_asked = by_leaf[sorted(matched)[0]]
-        for companion in companions:
-            companion_leaf = _leaf(companion)
-            if companion_leaf in requested:
-                continue                  # the caller already asked for it
-            if "/" not in science_as_asked and "/" not in companion:
-                spelling = companion_leaf
-            else:
-                # Prefer the registry's own qualified spelling; fall back to the
-                # group the caller addressed the science variable through.
-                spelling = next(
-                    (v for v in cfg.variables if _leaf(v) == companion_leaf and "/" in v),
-                    f"{science_as_asked.rsplit('/', 1)[0]}/{companion_leaf}"
-                    if "/" in science_as_asked else companion_leaf,
-                )
-            if spelling not in additions:
-                additions.append(spelling)
-    return additions
-
-
-def _normalize_time_range(time_range: str) -> str:
-    """Widen a degenerate ``start/end`` interval where start == end — the
-    shape a single-date request ("June 15, 2024" → '2024-06-15/2024-06-15')
-    naturally produces — into a real span before any provider sees it.
-    Harmony rejects start >= stop outright (live 2026-07-11: six jobs failed
-    with "The temporal range's start must be earlier than its stop datetime",
-    surviving only when the OPeNDAP fallback happened to work). A date-only
-    pair means "that whole day"; a timestamped pair gets one second of width.
-    Anything unparseable is returned unchanged for the MCP's own time_range
-    validation to reject with its more specific message."""
-    parts = time_range.split("/", 1)
-    if len(parts) != 2 or parts[0] != parts[1]:
-        return time_range
-    start = parts[0].strip()
-    try:
-        parsed = datetime.fromisoformat(start)
-    except ValueError:
-        return time_range
-    if "T" not in start:
-        return f"{start}T00:00:00/{start}T23:59:59"
-    return f"{start}/{(parsed + timedelta(seconds=1)).isoformat()}"
+__all__ = [
+    "PAUSED_NOTE",
+    "PAUSED_STATUS",
+    "POLL_TRANSIENT_FAILURE_LIMIT",
+    "TERMINAL_STATUSES",
+    "RetrievalError",
+    "RetrievalTimeoutError",
+    "_pinned_companion_variables",
+    "annotate_paused",
+    "await_retrieval",
+    "point_timeseries",
+    "safe_retrieve",
+]
 
 
 class RetrievalError(RuntimeError):
@@ -442,18 +300,6 @@ async def safe_retrieve(
     )
 
     return {"status": "submitted", "estimated_bytes": estimated_bytes, **subset}
-
-
-def _parse_time_span_days(time_range: str) -> int | None:
-    """Days between an ISO 8601 'start/end' interval's two ends, or None if
-    ``time_range`` isn't in that shape. An unparseable range is left for the
-    MCP's own time_range validation to reject rather than folded into the
-    too_large gate below."""
-    try:
-        start_str, end_str = time_range.split("/", 1)
-        return (datetime.fromisoformat(end_str) - datetime.fromisoformat(start_str)).days
-    except (ValueError, AttributeError):
-        return None
 
 
 async def point_timeseries(

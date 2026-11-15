@@ -527,7 +527,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         epa_aqs_tools._reset_aqs_request_state()
         self.addCleanup(epa_aqs_tools._reset_aqs_request_state)
 
-        with patch("tta_backend.tools.ground_sensor_tools.epa_aqs_tools.httpx.AsyncClient") as mock_client_cls:
+        with patch("tta_backend.domain.monitors.aqs.httpx.AsyncClient") as mock_client_cls:
             mock_client = MagicMock()
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock(return_value=False)
@@ -563,7 +563,7 @@ class ExtractedServiceTests(unittest.IsolatedAsyncioTestCase):
         epa_aqs_tools._reset_aqs_request_state()
         self.addCleanup(epa_aqs_tools._reset_aqs_request_state)
 
-        with patch("tta_backend.tools.ground_sensor_tools.epa_aqs_tools.httpx.AsyncClient") as mock_client_cls:
+        with patch("tta_backend.domain.monitors.aqs.httpx.AsyncClient") as mock_client_cls:
             mock_client = MagicMock()
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock(return_value=False)

@@ -197,11 +197,12 @@ class DeferredScienceMeanTests(unittest.TestCase):
         from unittest.mock import patch
 
         import xarray as xr
+        from tta_backend.domain.charts import provenance
         from tta_backend.tools.satellite_tools import plot_tools
 
         ds = _tempo_shaped_dataset(xr)
         counting, calls = self._counting_area_weighted_mean()
-        with patch.object(plot_tools, "area_weighted_mean", counting):
+        with patch.object(provenance, "area_weighted_mean", counting):
             plot_tools._evidence(ds, ds["column_amount_o3"], _COL_INFO, _global_region())
 
         # The context bands legitimately take their own means -- that is the
@@ -312,7 +313,7 @@ class DeferredScienceMeanTests(unittest.TestCase):
             return 2.5
 
         deferred = _DeferredScienceMean(da)
-        import tta_backend.tools.satellite_tools.plot_tools as pt
+        import tta_backend.domain.charts.provenance as pt
         from unittest.mock import patch
 
         with patch.object(pt, "area_weighted_mean", spy):

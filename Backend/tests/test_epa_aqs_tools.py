@@ -65,6 +65,8 @@ def _load_epa_module():
 
 
 _epa = _load_epa_module()
+# The HTTP client, its cache and its rate limiters live in the domain layer.
+from tta_backend.domain.monitors import aqs as _aqs_client  # noqa: E402
 _normalise_numeric_filter = _epa._normalise_numeric_filter
 _normalise_site_filter = _epa._normalise_site_filter
 _resolve_filter = _epa._resolve_filter
@@ -447,7 +449,7 @@ class AqsRequestCacheTests(unittest.IsolatedAsyncioTestCase):
         http = _RecordingHttp()
         params = {"param": "88101", "bdate": "20200101", "edate": "20200107"}
 
-        with unittest.mock.patch.object(_epa.httpx, "AsyncClient", http):
+        with unittest.mock.patch.object(_aqs_client.httpx, "AsyncClient", http):
             await asyncio.gather(_epa._aqs_get("dailyData/bySite", dict(params)))
             await asyncio.gather(_epa._aqs_get("dailyData/bySite", dict(params)))
 
@@ -456,7 +458,7 @@ class AqsRequestCacheTests(unittest.IsolatedAsyncioTestCase):
     async def test_different_params_are_fetched_separately(self):
         http = _RecordingHttp()
 
-        with unittest.mock.patch.object(_epa.httpx, "AsyncClient", http):
+        with unittest.mock.patch.object(_aqs_client.httpx, "AsyncClient", http):
             await _epa._aqs_get("dailyData/bySite", {"param": "88101", "edate": "20200107"})
             await _epa._aqs_get("dailyData/bySite", {"param": "42602", "edate": "20200107"})
 
@@ -470,7 +472,7 @@ class AqsRequestCacheTests(unittest.IsolatedAsyncioTestCase):
         http = _RecordingHttp()
         params = {"param": "88101", "bdate": "20200101", "edate": "20200107"}
 
-        with unittest.mock.patch.object(_epa.httpx, "AsyncClient", http):
+        with unittest.mock.patch.object(_aqs_client.httpx, "AsyncClient", http):
             with unittest.mock.patch.object(_epa, "AQS_EMAIL", "first@example.com"):
                 await _epa._aqs_get("dailyData/bySite", dict(params))
             with unittest.mock.patch.object(_epa, "AQS_EMAIL", "second@example.com"):
@@ -489,8 +491,8 @@ class AqsRequestCacheTests(unittest.IsolatedAsyncioTestCase):
         today = date.today().strftime("%Y%m%d")
         clock = [1000.0]
 
-        with unittest.mock.patch.object(_epa, "_now", lambda: clock[0]):
-            with unittest.mock.patch.object(_epa.httpx, "AsyncClient", http):
+        with unittest.mock.patch.object(_aqs_client, "_now", lambda: clock[0]):
+            with unittest.mock.patch.object(_aqs_client.httpx, "AsyncClient", http):
                 await _epa._aqs_get("dailyData/bySite", {"param": "88101", "edate": today})
                 clock[0] += 3600.0
                 await _epa._aqs_get("dailyData/bySite", {"param": "88101", "edate": today})
@@ -504,8 +506,8 @@ class AqsRequestCacheTests(unittest.IsolatedAsyncioTestCase):
         http = _RecordingHttp()
         clock = [1000.0]
 
-        with unittest.mock.patch.object(_epa, "_now", lambda: clock[0]):
-            with unittest.mock.patch.object(_epa.httpx, "AsyncClient", http):
+        with unittest.mock.patch.object(_aqs_client, "_now", lambda: clock[0]):
+            with unittest.mock.patch.object(_aqs_client.httpx, "AsyncClient", http):
                 await _epa._aqs_get("dailyData/bySite", {"param": "88101", "edate": "20200107"})
                 clock[0] += 6 * 60 * 60
                 await _epa._aqs_get("dailyData/bySite", {"param": "88101", "edate": "20200107"})
@@ -520,8 +522,8 @@ class AqsRequestCacheTests(unittest.IsolatedAsyncioTestCase):
         params = {"param": "88101", "bdate": "20200101", "edate": "20200107"}
         clock = [1000.0]
 
-        with unittest.mock.patch.object(_epa, "_now", lambda: clock[0]):
-            with unittest.mock.patch.object(_epa.httpx, "AsyncClient", http):
+        with unittest.mock.patch.object(_aqs_client, "_now", lambda: clock[0]):
+            with unittest.mock.patch.object(_aqs_client.httpx, "AsyncClient", http):
                 for _ in range(20):
                     await _epa._aqs_get("dailyData/bySite", dict(params))
             clock[0] += 2.0
@@ -539,8 +541,8 @@ class AqsRequestCacheTests(unittest.IsolatedAsyncioTestCase):
         # These are all cache misses, so the limiter legitimately paces them.
         # This test is about the cache's ceiling, not pacing, so the waiting
         # is stubbed out rather than actually served.
-        with unittest.mock.patch.object(_epa.asyncio, "sleep", unittest.mock.AsyncMock()):
-            with unittest.mock.patch.object(_epa.httpx, "AsyncClient", http):
+        with unittest.mock.patch.object(_aqs_client.asyncio, "sleep", unittest.mock.AsyncMock()):
+            with unittest.mock.patch.object(_aqs_client.httpx, "AsyncClient", http):
                 for i in range(_epa._MAX_CACHE_ENTRIES + 25):
                     await _epa._aqs_get("dailyData/bySite", {"param": "88101", "site": str(i)})
 
@@ -562,7 +564,7 @@ class AqsRateLimitTests(unittest.TestCase):
 
     def test_a_single_researchers_calls_are_not_delayed(self):
         clock = [1000.0]
-        with unittest.mock.patch.object(_epa, "_now", lambda: clock[0]):
+        with unittest.mock.patch.object(_aqs_client, "_now", lambda: clock[0]):
             limiter = _epa._limiter_for("shared-key")
             waits = []
             for _ in range(4):
@@ -575,7 +577,7 @@ class AqsRateLimitTests(unittest.TestCase):
         """Nine simultaneous requests fill EPA's minute; the tenth cannot go
         out until the first has aged out of the window."""
         clock = [1000.0]
-        with unittest.mock.patch.object(_epa, "_now", lambda: clock[0]):
+        with unittest.mock.patch.object(_aqs_client, "_now", lambda: clock[0]):
             limiter = _epa._limiter_for("shared-key")
             waits = [limiter.reserve() for _ in range(10)]
 
@@ -587,7 +589,7 @@ class AqsRateLimitTests(unittest.TestCase):
 
     def test_slots_free_again_once_the_window_slides_past_them(self):
         clock = [1000.0]
-        with unittest.mock.patch.object(_epa, "_now", lambda: clock[0]):
+        with unittest.mock.patch.object(_aqs_client, "_now", lambda: clock[0]):
             limiter = _epa._limiter_for("shared-key")
             for _ in range(_epa._AQS_MAX_REQUESTS_PER_WINDOW):
                 limiter.reserve()
@@ -601,7 +603,7 @@ class AqsRateLimitTests(unittest.TestCase):
         it has to buy them their own budget — queueing them behind everyone
         on the shared key would make bringing a key pointless."""
         clock = [1000.0]
-        with unittest.mock.patch.object(_epa, "_now", lambda: clock[0]):
+        with unittest.mock.patch.object(_aqs_client, "_now", lambda: clock[0]):
             shared = _epa._limiter_for("shared-key")
             for _ in range(_epa._AQS_MAX_REQUESTS_PER_WINDOW + 1):
                 shared.reserve()
@@ -773,7 +775,7 @@ class AqsPerUserCredentialTests(unittest.IsolatedAsyncioTestCase):
         ]
 
     async def _get(self, http, patches, endpoint="dailyData/bySite", params=None):
-        with unittest.mock.patch.object(_epa.httpx, "AsyncClient", http):
+        with unittest.mock.patch.object(_aqs_client.httpx, "AsyncClient", http):
             for p in patches:
                 p.start()
             try:
@@ -846,7 +848,7 @@ class AqsPerUserCredentialTests(unittest.IsolatedAsyncioTestCase):
 
         await self._get(http, self._as_user("user-1", injector))
 
-        self.assertEqual(set(_epa._rate_limiters), {"my-key"})
+        self.assertEqual(set(_epa._rate_limiters), {_aqs_client.credential_digest("my-key")})
 
     async def test_a_cache_hit_never_looks_up_credentials(self):
         """Cached public data needs no credential, so a hit must not cost a
@@ -864,7 +866,7 @@ class AqsPerUserCredentialTests(unittest.IsolatedAsyncioTestCase):
         http = _KeyAwareHttp(rejected_keys={"my-key"})
         injector = _FakeAqsInjector({"user-1": _personal()})
 
-        with self.assertLogs(_epa.logger, level="DEBUG") as logs:
+        with self.assertLogs(level="DEBUG") as logs:
             await self._get(http, self._as_user("user-1", injector))
             await self._get(http, self._as_user(None, injector), params={"param": "42602", "edate": "20200107"})
 
@@ -882,7 +884,7 @@ class AqsPerUserCredentialTests(unittest.IsolatedAsyncioTestCase):
         http = _KeyAwareHttp(failed_with_200=True)
         injector = _FakeAqsInjector({"user-1": _personal()})
 
-        with self.assertLogs(_epa.logger, level="DEBUG") as logs:
+        with self.assertLogs(level="DEBUG") as logs:
             with self.assertRaises(RuntimeError) as ctx:
                 await self._get(http, self._as_user("user-1", injector))
 
@@ -902,7 +904,7 @@ class ValidateAqsCredentialsTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_pair_epa_accepts_validates_against_that_pair(self):
         http = _KeyAwareHttp()
 
-        with unittest.mock.patch.object(_epa.httpx, "AsyncClient", http):
+        with unittest.mock.patch.object(_aqs_client.httpx, "AsyncClient", http):
             await _epa.validate_aqs_credentials("me@lab.edu", "my-key")
 
         url, sent = http.calls[0]
@@ -912,14 +914,14 @@ class ValidateAqsCredentialsTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_pair_epa_rejects_raises_credentials_rejected(self):
         http = _KeyAwareHttp(rejected_keys={"my-key"})
 
-        with unittest.mock.patch.object(_epa.httpx, "AsyncClient", http):
+        with unittest.mock.patch.object(_aqs_client.httpx, "AsyncClient", http):
             with self.assertRaises(_epa.AqsCredentialsRejected):
                 await _epa.validate_aqs_credentials("me@lab.edu", "my-key")
 
     async def test_epa_being_unreachable_is_not_reported_as_a_bad_key(self):
-        http = _KeyAwareHttp(raise_error=_epa.httpx.ConnectError("boom"))
+        http = _KeyAwareHttp(raise_error=_aqs_client.httpx.ConnectError("boom"))
 
-        with unittest.mock.patch.object(_epa.httpx, "AsyncClient", http):
+        with unittest.mock.patch.object(_aqs_client.httpx, "AsyncClient", http):
             with self.assertRaises(_epa.AqsUnavailable):
                 await _epa.validate_aqs_credentials("me@lab.edu", "my-key")
 
@@ -928,7 +930,7 @@ class ValidateAqsCredentialsTests(unittest.IsolatedAsyncioTestCase):
         from the shared key would otherwise vouch for any pasted key."""
         http = _KeyAwareHttp(rejected_keys={"bad-key"})
 
-        with unittest.mock.patch.object(_epa.httpx, "AsyncClient", http):
+        with unittest.mock.patch.object(_aqs_client.httpx, "AsyncClient", http):
             await _epa._aqs_get("list/states", {})
             with self.assertRaises(_epa.AqsCredentialsRejected):
                 await _epa.validate_aqs_credentials("me@lab.edu", "bad-key")

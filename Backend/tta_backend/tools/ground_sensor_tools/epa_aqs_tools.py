@@ -1,16 +1,18 @@
-import asyncio
 import logging
-import threading
-import time
-from collections import deque
 from dataclasses import dataclass
 
 from langchain.tools import tool
-import httpx
 from typing import Dict, Any, List, Optional, Union
-import math
 from datetime import date, timedelta
 
+from tta_backend.domain.monitors import aqs as aqs_client
+from tta_backend.domain.monitors import parsing, queries
+from tta_backend.domain.monitors.aqs import (
+    AqsCredential,
+    AqsCredentialsRejected as AqsCredentialsRejected,
+    AqsNoDataError as AqsNoDataError,
+    AqsUnavailable as AqsUnavailable,
+)
 from tta_backend.infrastructure.settings import get_settings
 from tta_backend.services.artifact_store import artifact_store
 from tta_backend.services.connector_credential_service import get_aqs_credential_injector
@@ -26,227 +28,47 @@ geocoding_service = get_geocoding_service()
 
 settings = get_settings()
 
-AQS_BASE_URL = "https://aqs.epa.gov/data/api"
 AQS_EMAIL = settings.aqs_api_email
 AQS_KEY = settings.aqs_api_key
 DEFAULT_PARAM_CODE = "42602"  # NO2
 
-# Response cache — keyed by (endpoint, sorted-params-tuple), credentials
-# excluded (see _cache_key).
-#
-# This was a ContextVar holding a per-task dict, which did not do what its
-# docstring claimed: LangGraph's ToolNode runs each tool call inside a Task
-# created by asyncio.gather, and a Task gets a *copy* of the context, so the
-# dict a call created was discarded when that call finished. Every request
-# therefore started with an empty cache and re-fetched — live logs showed
-# identical monitors/byBox params hitting EPA twice within a single turn.
-# A module-global dict is what actually spans the tool calls of a turn (and
-# of later turns, which is the point: see _cache_ttl_seconds).
-# Values are (expires_at, payload).
-# cache key -> (expires_at, response payload)
-_response_cache: dict[tuple[Any, ...], tuple[float, Dict[str, Any]]] = {}
+# The client's request state, cache and rate limiters live in
+# domain.monitors.aqs; these names are kept for callers of this module.
+_response_cache = aqs_client._response_cache
+_rate_limiters = aqs_client._rate_limiters
+_limiter_for = aqs_client._limiter_for
+_reset_aqs_request_state = aqs_client.reset_request_state
+_MAX_CACHE_ENTRIES = aqs_client._MAX_CACHE_ENTRIES
+_AQS_MAX_REQUESTS_PER_WINDOW = aqs_client._AQS_MAX_REQUESTS_PER_WINDOW
+_AQS_WINDOW_SECONDS = aqs_client._AQS_WINDOW_SECONDS
 
-# Settled measurements never change, so the only bound on reuse is process
-# lifetime; unsettled ones must lapse soon enough that a researcher asking
-# again after EPA publishes gets the real rows.
-_SETTLED_TTL_SECONDS = 7 * 24 * 60 * 60
-_UNSETTLED_TTL_SECONDS = 15 * 60
-
-# Entries hold whole AQS result sets and live for days, so the cache needs a
-# ceiling as well as a clock — otherwise one entry per distinct query
-# accumulates for the life of the process. Oldest-first eviction suits the
-# access pattern: researchers revisit a region across a conversation, then
-# move on.
-_MAX_CACHE_ENTRIES = 256
-
-# EPA AQS states "do not make more than 10 requests per minute" and reserves
-# the right to disable an account without notice for violating its terms
-# (https://aqs.epa.gov/aqsweb/documents/data_api.html). Nine leaves a slot of
-# margin, since EPA counts arrivals on its own clock rather than ours.
-_AQS_MAX_REQUESTS_PER_WINDOW = 9
-_AQS_WINDOW_SECONDS = 60.0
-# EPA also *asks* for a pause between requests. Enforcing their suggested 5s
-# as a hard floor would serialise every turn — a 4-call question would spend
-# 15s waiting — while the limit they actually enforce is the per-minute one.
-# A second of spacing keeps us from opening nine sockets at once without
-# taxing the sequential case, where the agent's own model latency (seconds
-# per step) already exceeds it and this never binds.
-_AQS_MIN_SPACING_SECONDS = 1.0
-
-
-class _SlidingWindowLimiter:
-    """Paces requests to at most ``max_requests`` per ``window_seconds``.
-
-    A strict "one request every 6.5s" serialiser also satisfies EPA's cap,
-    but it charges the common case for the rare one: a lone researcher's
-    four-call question would wait ~20s to protect against a concurrency
-    level that mostly does not happen. This tracks the times it has handed
-    out instead, so callers are delayed only once the window is genuinely
-    full — which is exactly the condition EPA's limit describes.
-    """
-
-    def __init__(self, max_requests: int, window_seconds: float, min_spacing_seconds: float):
-        self._max_requests = max_requests
-        self._window_seconds = window_seconds
-        self._min_spacing_seconds = min_spacing_seconds
-        # threading.Lock, not asyncio.Lock: the critical section is pure
-        # arithmetic held for microseconds and the caller does its waiting
-        # after release, so the event loop is never blocked on contention.
-        # Mirrors GeocodingService._reserve_throttle_slot (utils/plotting.py).
-        self._lock = threading.Lock()
-        self._reserved: deque[float] = deque()
-
-    def reserve(self) -> float:
-        """Claim the next send slot and return how long the caller must wait
-        for it. Reserving (rather than checking-then-sending) is what keeps
-        concurrent callers from all reading the same free window and firing
-        together."""
-        with self._lock:
-            now = _now()
-            horizon = now - self._window_seconds
-            while self._reserved and self._reserved[0] <= horizon:
-                self._reserved.popleft()
-
-            send_at = now
-            if self._reserved:
-                send_at = max(send_at, self._reserved[-1] + self._min_spacing_seconds)
-            if len(self._reserved) >= self._max_requests:
-                # The oldest in-window slot has to age out before this one.
-                send_at = max(send_at, self._reserved[-self._max_requests] + self._window_seconds)
-
-            self._reserved.append(send_at)
-            return max(0.0, send_at - now)
-
-
-# One limiter per credential. EPA's cap is per-credential, so keying it this
-# way is what lets researchers with their own epa_aqs connector key buy
-# independent budgets instead of queueing behind the shared app key.
-_rate_limiters: dict[str, _SlidingWindowLimiter] = {}
-_rate_limiter_registry_lock = threading.Lock()
-
-
-def _limiter_for(credential: str) -> _SlidingWindowLimiter:
-    with _rate_limiter_registry_lock:
-        limiter = _rate_limiters.get(credential)
-        if limiter is None:
-            limiter = _SlidingWindowLimiter(
-                _AQS_MAX_REQUESTS_PER_WINDOW,
-                _AQS_WINDOW_SECONDS,
-                _AQS_MIN_SPACING_SECONDS,
-            )
-            _rate_limiters[credential] = limiter
-        return limiter
-
-# Initial bbox half-width for street-level addresses (degrees, ~17 miles).
-# Nominatim returns a ~10m box for a street address which AQS returns empty for;
-# we clamp to this minimum before the expansion ladder runs.
-_MIN_BBOX_HALF = 0.25
-
-# Expansion steps added on top of the initial box when no monitors are found
-_BBOX_EXPANSIONS = [0.0, 0.5, 1.5, 3.0, 5.0]
-_SUMMARY_SITE_CAP = 25
+_BBOX_EXPANSIONS = parsing.BBOX_EXPANSIONS
+_SUMMARY_SITE_CAP = parsing.SUMMARY_SITE_CAP
 _DAILY_DETAIL_DAY_CAP = 31
-_PLACEHOLDER_FILTER_VALUES = {
-    "",
-    "site",
-    "site_id",
-    "site_number",
-    "station_id",
-    "monitor",
-    "monitor_id",
-    "unknown",
-    "n/a",
-    "na",
-    "??",
-}
+
+_enforce_min_bbox = parsing.enforce_min_bbox
+_bbox_from_point = parsing.bbox_from_point
+_positive_int = parsing.positive_int
+_resolve_dates = parsing.resolve_dates
+_no_data_message = parsing.no_data_message
+_nearest_k = parsing.nearest_k
+_build_body = parsing.build_body
+_resolve_filter = parsing.resolve_filter
+_normalise_numeric_filter = parsing.normalise_numeric_filter
+_normalise_site_filter = parsing.normalise_site_filter
+_site_id = parsing.site_id
+_aggregate_summary_records = parsing.aggregate_summary_records
 
 
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
 
-def _now() -> float:
-    """Monotonic clock seam — one place for the cache and the rate limiter to
-    read time, and the point tests substitute a controllable clock."""
-    return time.monotonic()
-
-
-def _cache_ttl_seconds(params: Dict[str, Any]) -> float:
-    """How long a response for ``params`` may be reused.
-
-    EPA publishes on a lag of roughly two months, so a query whose end date
-    is already outside that window describes measurements that will never
-    change again — those are cacheable for as long as the process lives.
-    A query reaching into the unpublished window is the opposite: it returns
-    empty today and real rows once EPA catches up, so its entry has to expire
-    or the researcher keeps being told "no data" after the data arrived.
-    Requests with no end date at all (list/states and friends) are reference
-    lookups, settled by nature.
-    """
-    edate = str(params.get("edate") or "").strip()
-    if not edate:
-        return _SETTLED_TTL_SECONDS
-    try:
-        edate_obj = date(int(edate[0:4]), int(edate[4:6]), int(edate[6:8]))
-    except (ValueError, IndexError):
-        return _UNSETTLED_TTL_SECONDS
-    if edate_obj < date.today() - timedelta(days=_RECENT_DATA_WINDOW_DAYS):
-        return _SETTLED_TTL_SECONDS
-    return _UNSETTLED_TTL_SECONDS
-
-
-def _cache_key(endpoint: str, params: Dict[str, Any]) -> tuple[Any, ...]:
-    """Cache identity for a request, excluding credentials.
-
-    AQS serves public measurements: the bytes EPA returns for a given
-    (endpoint, query) are the same no matter whose email+key fetched them.
-    Keying on the credential would mean a second researcher re-fetches data
-    the first already paid a rate-limit slot for — and would silently undo
-    this cache the moment per-user keys land.
-    """
-    return (endpoint, tuple(sorted((k, str(v)) for k, v in params.items())))
-
-
-def _remember_response(cache_key: tuple[Any, ...], data: Dict[str, Any], ttl_seconds: float) -> None:
-    """Store a response, dropping whatever has expired and then the oldest
-    entries if the cache is still over its ceiling."""
-    now = _now()
-    if len(_response_cache) >= _MAX_CACHE_ENTRIES:
-        for key in [k for k, (expires_at, _) in _response_cache.items() if expires_at <= now]:
-            del _response_cache[key]
-        # dicts preserve insertion order, so this evicts oldest-first.
-        while len(_response_cache) >= _MAX_CACHE_ENTRIES:
-            del _response_cache[next(iter(_response_cache))]
-    _response_cache[cache_key] = (now + ttl_seconds, data)
-
-
-def _reset_aqs_request_state() -> None:
-    """Drop cached responses and rate-limit history.
-
-    A module-global cache outlives the test that filled it, so tests reset
-    here rather than starving each other with one another's entries.
-    """
-    _response_cache.clear()
-    with _rate_limiter_registry_lock:
-        _rate_limiters.clear()
-
-
 @dataclass(frozen=True)
-class _AqsCredential:
-    email: str
-    key: str
+class _AqsCredential(AqsCredential):
     # The researcher whose epa_aqs connector supplied this pair; None for
     # the shared app credential.
     user_id: Optional[str] = None
-
-
-class AqsCredentialsRejected(RuntimeError):
-    """EPA answered that the email/key pair is not valid."""
-
-
-class AqsUnavailable(RuntimeError):
-    """EPA could not be reached or answered with something other than a
-    verdict on the credentials."""
 
 
 def _shared_credential() -> _AqsCredential:
@@ -270,74 +92,6 @@ async def _resolve_credential() -> _AqsCredential:
     return _AqsCredential(personal.email, personal.key, user_id)
 
 
-def _scrub(text: str, credential: _AqsCredential) -> str:
-    """EPA echoes the request URL, email and key included, in its Header."""
-    for secret in (credential.key, credential.email):
-        if secret:
-            text = text.replace(secret, "REDACTED")
-    return text
-
-
-def _header_error_text(header: Dict[str, Any]) -> str:
-    detail = header.get("error") or header.get("status") or ""
-    if isinstance(detail, (list, tuple)):
-        detail = "; ".join(str(item) for item in detail)
-    return str(detail)
-
-
-def _is_credential_rejection(detail: str) -> bool:
-    # EPA's wording for a bad pair, observed live: "Email and/or key are invalid."
-    return "email and/or key" in detail.lower()
-
-
-async def _aqs_request(endpoint: str, params: Dict[str, Any], credential: _AqsCredential) -> Dict[str, Any]:
-    """One uncached GET with ``credential``, paced by that credential's own
-    rate limiter. Raises AqsCredentialsRejected when EPA refuses the pair."""
-    full_params = {**params, "email": credential.email, "key": credential.key}
-    wait_seconds = _limiter_for(credential.key).reserve()
-    if wait_seconds > 0:
-        await asyncio.sleep(wait_seconds)
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(f"{AQS_BASE_URL}/{endpoint}", params=full_params)
-    if resp.status_code >= 400:
-        try:
-            body = resp.json()
-            aqs_header = body.get("Header", [{}])
-            aqs_msg = _header_error_text(aqs_header[0])
-        except (ValueError, KeyError, IndexError, AttributeError):
-            resp.raise_for_status()
-            raise
-        if _is_credential_rejection(aqs_msg):
-            raise AqsCredentialsRejected(f"AQS HTTP {resp.status_code} on {endpoint}: {aqs_msg}")
-        raise RuntimeError(
-            f"AQS HTTP {resp.status_code} on {endpoint}: {_scrub(aqs_msg or resp.text[:300], credential)}"
-        )
-    data: Dict[str, Any] = resp.json()
-    header = data.get("Header", [{}])
-    status = header[0].get("status", "").lower()
-    rows = len(data.get("Data", data.get("Body", [])))
-    # The query itself is in httpx's request line, which configure_logging
-    # redacts; this line carries only what httpx cannot see.
-    logger.debug(
-        "EPA response endpoint=%s http=%s header_status=%r rows=%s",
-        endpoint,
-        resp.status_code,
-        header[0].get("status", ""),
-        rows,
-    )
-    # "No data matched your selection" is a valid empty result, not an error
-    if status not in ("success", "no data matched your selection", ""):
-        # Surface only AQS's own human-readable error text — the full header
-        # dict is an internal dump that a model would relay verbatim.
-        detail = _header_error_text(header[0]) or "unexpected response"
-        logged_header = {k: v for k, v in header[0].items() if k != "url"}
-        logger.warning("aqs_error endpoint=%s header=%r", endpoint, logged_header)
-        if _is_credential_rejection(detail):
-            raise AqsCredentialsRejected(f"EPA AQS request failed: {detail}")
-        raise RuntimeError(f"EPA AQS request failed: {_scrub(detail, credential)}")
-    return data
-
-
 async def _aqs_get(endpoint: str, params: Dict[str, Any]) -> Dict[str, Any]:
     """GET request to the AQS API; raises on HTTP errors or unexpected statuses.
 
@@ -351,27 +105,28 @@ async def _aqs_get(endpoint: str, params: Dict[str, Any]) -> Dict[str, Any]:
     tab shows the error, and the call is retried once on the shared app
     credential.
     """
-    cache_key = _cache_key(endpoint, params)
-    cached = _response_cache.get(cache_key)
+    cached = aqs_client.cached_response(endpoint, params)
     if cached is not None:
-        expires_at, payload = cached
-        if _now() < expires_at:
-            return payload
-        del _response_cache[cache_key]
+        return cached
     credential = await _resolve_credential()
     try:
-        data = await _aqs_request(endpoint, params, credential)
+        data = await aqs_client.request(endpoint, params, credential)
     except AqsCredentialsRejected:
         if credential.user_id is None:
             raise
         logger.warning("aqs_personal_key_rejected", extra={"_event": "aqs_personal_key_rejected"})
         await get_aqs_credential_injector().mark_invalid(credential.user_id)
-        data = await _aqs_request(endpoint, params, _shared_credential())
+        data = await aqs_client.request(endpoint, params, _shared_credential())
     else:
         if credential.user_id is not None:
             get_aqs_credential_injector().mark_used(credential.user_id)
-    _remember_response(cache_key, data, _cache_ttl_seconds(params))
+    aqs_client.remember_response(endpoint, params, data)
     return data
+
+
+async def _app_fetch(endpoint: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    # Looks _aqs_get up at call time, so patching it reaches every query.
+    return await _aqs_get(endpoint, params)
 
 
 async def validate_aqs_credentials(email: str, key: str) -> None:
@@ -379,127 +134,7 @@ async def validate_aqs_credentials(email: str, key: str) -> None:
     answered from the response cache (which is keyed without credentials).
     Raises AqsCredentialsRejected for a bad pair, AqsUnavailable when EPA
     gives no verdict."""
-    try:
-        await _aqs_request("list/states", {}, _AqsCredential(email, key))
-    except AqsCredentialsRejected:
-        raise
-    except (httpx.HTTPError, RuntimeError, ValueError) as exc:
-        raise AqsUnavailable("EPA AQS did not answer the credential check") from exc
-
-
-def _haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Great-circle distance in miles between two (lat, lon) degree points."""
-    R = 3958.8
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
-    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
-    return 2 * R * math.asin(math.sqrt(a))
-
-
-def _enforce_min_bbox(bbox: List[float]) -> List[float]:
-    """
-    Ensure a [south, north, west, east] bbox is at least _MIN_BBOX_HALF degrees
-    in each direction from its centre. Street-level Nominatim results are often
-    only ~10m wide, which AQS returns nothing for.
-    """
-    south, north, west, east = bbox
-    lat_c = (south + north) / 2
-    lon_c = (west + east) / 2
-    half_lat = max((north - south) / 2, _MIN_BBOX_HALF)
-    half_lon = max((east - west) / 2, _MIN_BBOX_HALF)
-    return [lat_c - half_lat, lat_c + half_lat, lon_c - half_lon, lon_c + half_lon]
-
-
-def _expand_bbox(bbox: List[float], degrees: float) -> List[float]:
-    """Expand [south, north, west, east] bbox outward by `degrees` on all sides."""
-    south, north, west, east = bbox
-    return [south - degrees, north + degrees, west - degrees, east + degrees]
-
-
-def _bbox_from_point(lat: float, lon: float) -> List[float]:
-    """Return a minimum-sized [south, north, west, east] bbox centred on a point."""
-    return [lat - _MIN_BBOX_HALF, lat + _MIN_BBOX_HALF,
-            lon - _MIN_BBOX_HALF, lon + _MIN_BBOX_HALF]
-
-
-def _positive_int(value: Union[int, str], name: str) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"Invalid {name}: '{value}' must be an integer or castable to integer.") from exc
-    if parsed < 1:
-        raise ValueError(f"Invalid {name}: {parsed} must be >= 1.")
-    return parsed
-
-
-def _resolve_dates(bdate: Optional[str], edate: Optional[str]) -> tuple[date, date, str, str]:
-    """
-    Parse and validate bdate/edate strings (YYYY-MM-DD).
-    Defaults: bdate = 1 year ago, edate = bdate.
-    Returns (bdate_obj, edate_obj, bdate_str_YYYYMMDD, edate_str_YYYYMMDD).
-    """
-    default_date = date.today() - timedelta(days=365)
-    bdate_obj = date.fromisoformat(bdate) if bdate else default_date
-    edate_obj = date.fromisoformat(edate) if edate else bdate_obj
-    if bdate_obj > edate_obj:
-        raise ValueError(f"bdate ({bdate_obj}) must be <= edate ({edate_obj})")
-    return bdate_obj, edate_obj, bdate_obj.strftime("%Y%m%d"), edate_obj.strftime("%Y%m%d")
-
-
-# An empty result whose window ends within this many days of today is almost
-# always "EPA hasn't published it yet" (AQS releases data with a lag of
-# roughly two months), not "no monitor measured it" — wide enough to cover
-# the lag's real-world variance.
-_RECENT_DATA_WINDOW_DAYS = 90
-
-# API endpoint prefix -> the plain-English name a researcher should read.
-_SUMMARY_KINDS = {
-    "dailyData": "daily summary",
-    "quarterlyData": "quarterly summary",
-    "annualData": "annual summary",
-}
-
-
-def _no_data_message(kind: str, param_code: str, bdate_obj: date, edate_obj: date) -> str:
-    """Plain-language empty-result explanation for a researcher.
-
-    Never an internal endpoint/params dump — those go to the log, not the
-    chat (live 2026-07-16: "No dailyData data found for param 42602 ...
-    using dailyData/bySite with {'state': '34', ...}" surfaced verbatim for
-    a yesterday-dated query EPA simply hadn't published yet).
-    """
-    window = (
-        bdate_obj.isoformat()
-        if bdate_obj == edate_obj
-        else f"{bdate_obj.isoformat()} to {edate_obj.isoformat()}"
-    )
-    if edate_obj >= date.today() - timedelta(days=_RECENT_DATA_WINDOW_DAYS):
-        return (
-            f"EPA has not published {kind} data for {window} yet — AQS "
-            "measurements are typically released with a lag of about two "
-            "months. Try a date at least three months in the past."
-        )
-    return (
-        f"No EPA {kind} measurements were found for parameter {param_code} "
-        f"for {window} in the requested area. Try a wider area, a "
-        "different date range, or a different pollutant."
-    )
-
-
-class AqsNoDataError(RuntimeError):
-    """EPA answered, and has no rows matching the query.
-
-    A distinct type because the summary tools have to tell this apart from
-    ``_aqs_get``'s failures, which are also RuntimeError: "EPA has nothing for
-    those dates" and "EPA did not answer" are opposite facts, and reporting
-    the second as the first tells a researcher no measurements exist when the
-    service was merely down.
-
-    Subclasses RuntimeError so existing handlers that catch the broad type --
-    validation_tools' ground-fetch fallbacks, which want either -- keep
-    working unchanged.
-    """
+    await aqs_client.validate_credentials(AqsCredential(email, key))
 
 
 def _no_data_response(message: str) -> Dict[str, Any]:
@@ -540,62 +175,7 @@ def _upstream_error_response(message: str) -> Dict[str, Any]:
 async def _fetch_active_monitors(
     bbox: List[float], param_code: str, bdate_str: str, edate_str: str, k: int = 1,
 ) -> List[Dict[str, Any]]:
-    best: List[Dict[str, Any]] = []
-    for expansion in _BBOX_EXPANSIONS:
-        south, north, west, east = _expand_bbox(bbox, expansion)
-        data = await _aqs_get(
-            "monitors/byBox",
-            {
-                "param": param_code,
-                "bdate": bdate_str,
-                "edate": edate_str,
-                "minlat": south,
-                "maxlat": north,
-                "minlon": west,
-                "maxlon": east,
-            },
-        )
-        monitors = data.get("Data", data.get("Body", []))
-        if len(monitors) > len(best):
-            best = monitors
-        if len(best) >= k:
-            return best
-
-    return best
-
-
-def _nearest_k(monitors: List[Dict[str, Any]], lat_q: float, lon_q: float, k: int) -> List[Dict[str, Any]]:
-    """Linear haversine scan — correct and fast for the small byBox result sets."""
-    for m in monitors:
-        m["_dist"] = _haversine_miles(lat_q, lon_q, float(m["latitude"]), float(m["longitude"]))
-    monitors.sort(key=lambda m: m["_dist"])
-    return monitors[: min(k, len(monitors))]
-
-
-def _build_body(nearest: List[Dict[str, Any]], param_code: str) -> List[Dict[str, Any]]:
-    """Format monitor dicts into the standard response Body shape."""
-    body = []
-    for m in nearest:
-        station_id = "-".join(
-            str(m.get(key, "??")) for key in ("state_code", "county_code", "site_number")
-        )
-        station_name = m.get("local_site_name") or m.get("address", "N/A")
-        body.append({
-            "station_id": station_id,
-            "station_name": station_name,
-            "monitor_name": station_name,
-            "latitude": float(m["latitude"]),
-            "longitude": float(m["longitude"]),
-            "distance_miles": round(m["_dist"], 3),
-            "state_code": m.get("state_code"),
-            "county_code": m.get("county_code"),
-            "site_number": m.get("site_number"),
-            "city_name": m.get("city_name"),
-            "county_name": m.get("county_name"),
-            "state_name": m.get("state_name"),
-            "param_code": param_code,
-        })
-    return body
+    return await queries.fetch_active_monitors(_app_fetch, bbox, param_code, bdate_str, edate_str, k)
 
 
 # ---------------------------------------------------------------------------
@@ -736,72 +316,6 @@ async def find_closest_monitor_by_coords(
 # Shared summary helper (daily / quarterly / annual share identical structure)
 # ---------------------------------------------------------------------------
 
-def _resolve_filter(
-    prefix: str,
-    state_code: Optional[str], county_code: Optional[str], site_number: Optional[str],
-    cbsa_code: Optional[str], minlat: Optional[Union[float, str]], maxlat: Optional[Union[float, str]], minlon: Optional[Union[float, str]], maxlon: Optional[Union[float, str]],
-) -> tuple[str, Dict[str, Any]]:
-    """Return (endpoint, filter_params) for a given data prefix and filter inputs."""
-    if site_number and ((county_code and state_code) or "-" in str(site_number)):
-        state_code, county_code, site_number = _normalise_site_filter(
-            state_code, county_code, site_number
-        )
-        return f"{prefix}/bySite", {"state": state_code, "county": county_code, "site": site_number}
-    elif county_code and state_code:
-        state_code = _normalise_numeric_filter("state_code", state_code, min_width=2)
-        county_code = _normalise_numeric_filter("county_code", county_code, min_width=3)
-        return f"{prefix}/byCounty", {"state": state_code, "county": county_code}
-    elif state_code:
-        state_code = _normalise_numeric_filter("state_code", state_code, min_width=2)
-        return f"{prefix}/byState", {"state": state_code}
-    elif cbsa_code:
-        cbsa_code = _normalise_numeric_filter("cbsa_code", cbsa_code)
-        return f"{prefix}/byCBSA", {"cbsa": cbsa_code}
-    elif minlat is not None and maxlat is not None and minlon is not None and maxlon is not None:
-        minlat, maxlat = float(minlat), float(maxlat)
-        minlon, maxlon = float(minlon), float(maxlon)
-        return f"{prefix}/byBox", {"minlat": minlat, "maxlat": maxlat, "minlon": minlon, "maxlon": maxlon}
-    else:
-        raise ValueError(
-            "Must provide one of: (state_code + county_code + site_number), "
-            "(state_code + county_code), state_code, cbsa_code, or "
-            "(minlat + maxlat + minlon + maxlon)."
-        )
-
-
-def _normalise_numeric_filter(name: str, value: Any, *, min_width: int = 0) -> str:
-    text = str(value).strip()
-    if text.lower() in _PLACEHOLDER_FILTER_VALUES:
-        raise ValueError(
-            f"Invalid {name}: received placeholder {value!r}. "
-            "Use the actual numeric code returned by the monitor lookup tool."
-        )
-    if not text.isdigit():
-        raise ValueError(f"Invalid {name}: {value!r} must contain digits only.")
-    return text.zfill(min_width) if min_width else text
-
-
-def _normalise_site_filter(state_code: Optional[str], county_code: Optional[str], site_number: Optional[str]) -> tuple[str, str, str]:
-    site_text = str(site_number).strip()
-    if "-" in site_text:
-        parts = site_text.split("-")
-        if len(parts) != 3:
-            raise ValueError(
-                f"Invalid site_number/station_id: {site_number!r}. "
-                "Expected station_id format state-county-site, e.g. '34-019-0007'."
-            )
-        state_code, county_code, site_number = parts
-
-    # EPA requires zero-padded codes: state=2 digits, county=3, site=4.
-    # The LLM may pass these as integers (e.g. 52 instead of "0052"), so we
-    # pad after normalising rather than rejecting the stripped form.
-    return (
-        _normalise_numeric_filter("state_code", state_code, min_width=2),
-        _normalise_numeric_filter("county_code", county_code, min_width=3),
-        _normalise_numeric_filter("site_number", site_number, min_width=4),
-    )
-
-
 async def _fetch_summary(
     prefix: str,
     param_code: str,
@@ -814,33 +328,11 @@ async def _fetch_summary(
     Shared fetch + filter logic for daily, quarterly, and annual summaries.
     Returns (records, endpoint, filter_params).
     """
-    endpoint, filter_params = _resolve_filter(
-        prefix, state_code, county_code, site_number,
-        cbsa_code, minlat, maxlat, minlon, maxlon,
+    return await queries.fetch_summary(
+        _app_fetch, prefix, param_code, bdate_obj, edate_obj, bdate_str, edate_str,
+        state_code, county_code, site_number, cbsa_code, minlat, maxlat, minlon, maxlon,
+        cbdate, cedate, pollutant_standard,
     )
-    params = {"param": param_code, "bdate": bdate_str, "edate": edate_str, **filter_params}
-    if cbdate:
-        params["cbdate"] = date.fromisoformat(cbdate).strftime("%Y%m%d")
-    if cedate:
-        params["cedate"] = date.fromisoformat(cedate).strftime("%Y%m%d")
-
-    data = await _aqs_get(endpoint, params)
-    records = data.get("Data", data.get("Body", []))
-
-    if pollutant_standard:
-        records = [r for r in records if r.get("pollutant_standard") == pollutant_standard]
-
-    if not records:
-        # Internals (endpoint, filter params) belong in the log, never in the
-        # chat-facing error text a model will relay verbatim.
-        logger.info(
-            "aqs_no_data endpoint=%s params=%r pollutant_standard=%r",
-            endpoint, filter_params, pollutant_standard,
-        )
-        raise AqsNoDataError(
-            _no_data_message(_SUMMARY_KINDS.get(prefix, prefix), param_code, bdate_obj, edate_obj)
-        )
-    return records, endpoint, filter_params
 
 
 def _build_summary_header(
@@ -902,151 +394,6 @@ def _artifact_table_response(
         "Body": body,
         "_artifact_refs": [artifact_ref.model_dump(exclude_none=True)],
     }
-
-
-def _site_id(r: Dict[str, Any]) -> str:
-    return "-".join([r.get("state_code", "??"), r.get("county_code", "??"), r.get("site_number", "??")])
-
-
-def _float_or_none(value: Any) -> Optional[float]:
-    if value is None or value == "":
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _mean(values: List[float]) -> Optional[float]:
-    return round(sum(values) / len(values), 6) if values else None
-
-
-def _period_key(record: Dict[str, Any], period: str) -> str:
-    if period == "daily":
-        return str(record.get("date_local") or "")
-    if period == "quarterly":
-        return f"{record.get('year', '')}-Q{record.get('quarter', '')}"
-    return str(record.get("year") or "")
-
-
-def _period_fields(record: Dict[str, Any], period: str) -> Dict[str, Any]:
-    if period == "daily":
-        return {"period": _period_key(record, period), "date": record.get("date_local")}
-    if period == "quarterly":
-        return {
-            "period": _period_key(record, period),
-            "year": record.get("year"),
-            "quarter": record.get("quarter"),
-        }
-    return {"period": _period_key(record, period), "year": record.get("year")}
-
-
-def _aggregate_summary_records(
-    records: List[Dict[str, Any]],
-    period: str,
-) -> tuple[List[Dict[str, Any]], int, int]:
-    site_period_records: Dict[tuple[str, str], List[Dict[str, Any]]] = {}
-    site_ids = set()
-    for record in records:
-        site_id = _site_id(record)
-        site_ids.add(site_id)
-        site_period_records.setdefault((site_id, _period_key(record, period)), []).append(record)
-
-    body = []
-    selected_sites = set(sorted(site_ids)[:_SUMMARY_SITE_CAP])
-    for site_id, period_id in sorted(site_period_records):
-        if site_id not in selected_sites:
-            continue
-
-        site_records = site_period_records[(site_id, period_id)]
-        first = site_records[0]
-        means = [v for v in (_float_or_none(r.get("arithmetic_mean")) for r in site_records) if v is not None]
-        # min/max must come from real API statistics — never fall back to the
-        # arithmetic_mean, which fabricates min == max == mean. The dailyData
-        # endpoint supplies no minimum_value/maximum_value at all; its
-        # first_max_value IS the period's highest sample (per AQS docs), so it
-        # is a genuine max fallback. There is no minimum counterpart: when the
-        # API only supplies a mean, min (or max) stays null.
-        minima = [
-            v
-            for v in (_float_or_none(r.get("minimum_value")) for r in site_records)
-            if v is not None
-        ]
-        maxima = [
-            v
-            for v in (
-                _float_or_none(r.get("maximum_value"))
-                if r.get("maximum_value") is not None
-                else _float_or_none(r.get("first_max_value"))
-                for r in site_records
-            )
-            if v is not None
-        ]
-
-        peak_record = None
-        peak_value = None
-        for record in site_records:
-            value = _float_or_none(record.get("first_max_value")) if period == "daily" else None
-            if value is None:
-                value = _float_or_none(record.get("maximum_value"))
-            if value is None:
-                value = _float_or_none(record.get("arithmetic_mean"))
-            if value is not None and (peak_value is None or value > peak_value):
-                peak_record = record
-                peak_value = value
-
-        peak = {"value": peak_value}
-        if peak_record:
-            if period == "daily":
-                peak["date"] = peak_record.get("date_local")
-                if peak_record.get("first_max_hour") is not None:
-                    peak["first_max_hour"] = peak_record.get("first_max_hour")
-            elif period == "quarterly":
-                peak["year"] = peak_record.get("year")
-                peak["quarter"] = peak_record.get("quarter")
-            else:
-                peak["year"] = peak_record.get("year")
-
-        observation_counts = [
-            v for v in (_float_or_none(r.get("observation_count")) for r in site_records) if v is not None
-        ]
-        observation_percents = [
-            v for v in (_float_or_none(r.get("observation_percent")) for r in site_records) if v is not None
-        ]
-
-        item = {
-            "site_id": site_id,
-            **_period_fields(first, period),
-            "local_site_name": first.get("local_site_name"),
-            "longitude": _float_or_none(first.get("longitude")),
-            "latitude": _float_or_none(first.get("latitude")),
-            "monitor_name": first.get("monitor_name") or first.get("local_site_name"),
-            "units": first.get("units_of_measure"),
-            "pollutant_standard": first.get("pollutant_standard"),
-            "sample_duration": first.get("sample_duration"),
-            "n_periods": len(site_records),
-            "mean": _mean(means),
-            "min": min(minima) if minima else None,
-            "max": max(maxima) if maxima else None,
-            "peak": peak,
-        }
-        if observation_counts:
-            item["observation_count"] = int(sum(observation_counts))
-        if observation_percents:
-            item["observation_percent"] = _mean(observation_percents)
-        valid_day_counts = [
-            v for v in (_float_or_none(r.get("valid_day_count")) for r in site_records) if v is not None
-        ]
-        required_day_counts = [
-            v for v in (_float_or_none(r.get("required_day_count")) for r in site_records) if v is not None
-        ]
-        if valid_day_counts:
-            item["valid_day_count"] = int(sum(valid_day_counts))
-        if required_day_counts:
-            item["required_day_count"] = int(sum(required_day_counts))
-        body.append(item)
-
-    return body, len(site_ids), len(site_period_records)
 
 
 # ---------------------------------------------------------------------------
@@ -1306,46 +653,9 @@ async def find_exceedance_days(
     except RuntimeError as exc:
         return _upstream_error_response(str(exc))
 
-    # Extract the measurement value for each day
-    def _val(r: Dict[str, Any]) -> Optional[float]:
-        v = r.get(measurement_field)
-        return float(v) if v is not None else None
-
-    values = [_val(r) for r in records]
-    valid_values = [v for v in values if v is not None]
-
-    # Compute percentile cutoff if requested
-    percentile_cutoff = None
-    if percentile_threshold is not None:
-        if not (0 <= percentile_threshold <= 100):
-            raise ValueError("percentile_threshold must be between 0 and 100.")
-        sorted_vals = sorted(valid_values)
-        idx = min(int(len(sorted_vals) * percentile_threshold / 100), len(sorted_vals) - 1)
-        percentile_cutoff = sorted_vals[idx]
-
-    # Flag days
-    body: List[Dict[str, Any]] = []
-    for r, v in zip(records, values, strict=True):
-        if v is None:
-            continue
-        triggered = []
-        if effective_hard is not None and v > effective_hard:
-            triggered.append("hard")
-        if percentile_cutoff is not None and v >= percentile_cutoff:
-            triggered.append("percentile")
-        if not triggered:
-            continue
-        body.append({
-            "date": r.get("date_local"),
-            "site_id": _site_id(r),
-            "value": v,
-            "aqi": r.get("aqi"),
-            "triggered": triggered,
-            "local_site_name": r.get("local_site_name"),
-        })
-
-    # A record with no date_local sorts first rather than raising on None < str.
-    body.sort(key=lambda x: x["date"] or "")
+    body, percentile_cutoff = parsing.flag_exceedances(
+        records, measurement_field, effective_hard, percentile_threshold
+    )
 
     header = [{
             "status": "success",
@@ -1402,20 +712,10 @@ async def get_sample_data(
     """
     bdate_obj, edate_obj, bdate_str, edate_str = _resolve_dates(bdate, edate)
 
-    endpoint, filter_params = _resolve_filter(
-        "sampleData", state_code, county_code, site_number,
-        cbsa_code, minlat, maxlat, minlon, maxlon,
+    records, endpoint, filter_params = await queries.fetch_samples(
+        _app_fetch, param_code, bdate_str, edate_str,
+        state_code, county_code, site_number, cbsa_code, minlat, maxlat, minlon, maxlon,
     )
-
-    params = {
-        "param": param_code,
-        "bdate": bdate_str,
-        "edate": edate_str,
-        **filter_params,
-    }
-
-    data = await _aqs_get(endpoint, params)
-    records = data.get("Data", data.get("Body", []))
 
     if not records:
         logger.info("aqs_no_data endpoint=%s params=%r", endpoint, filter_params)
@@ -1423,24 +723,7 @@ async def get_sample_data(
             _no_data_message("hourly sample", param_code, bdate_obj, edate_obj)
         )
 
-    body = [
-        {
-            "site_id": _site_id(r),
-            "datetime_local": r.get("date_local", "") + " " + r.get("time_local", ""),
-            "date": r.get("date_local"),
-            "hour": int(r["time_local"].split(":")[0]) if r.get("time_local") else None,
-            "value": r.get("sample_measurement"),
-            "units": r.get("units_of_measure"),
-            "sample_duration": r.get("sample_duration"),
-            "qualifier": r.get("qualifier"),
-            "method": r.get("method"),
-            "local_site_name": r.get("local_site_name"),
-        }
-        for r in records
-    ]
-
-    # Sort by site then datetime
-    body.sort(key=lambda x: (x["site_id"], x["datetime_local"]))
+    body = parsing.sample_rows(records)
 
     return {
         "Header": [{

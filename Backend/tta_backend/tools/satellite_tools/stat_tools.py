@@ -11,8 +11,8 @@ from tta_backend.datasets.mask_info import col_info_for_variable
 from tta_backend.earthdata_mcp.results import MCPToolError
 from tta_backend.services import variable_choice_registry
 from tta_backend.services.open_handle import OpenHandleError, open_handle
-from tta_backend.tools.satellite_tools.plot_tools import _normalize_longitudes
-from tta_backend.domain.geo import find_lat_coord, find_lon_coord
+from tta_backend.domain.earthdata.opening import normalize_longitudes as _normalize_longitudes
+from tta_backend.domain.geo import find_lon_coord
 from tta_backend.domain.masking.dimensions import _normalize_to_2d
 from tta_backend.domain.masking.geometry import apply_mask_region_type, mask_data_by_geometry
 from tta_backend.utils.plotting import RegionResolver
@@ -21,14 +21,18 @@ from tta_backend.domain.aggregation.aggregation_service import (
     VARIABLE_RESOLUTION_ATTR,
     AggregationService,
     VariableChoiceRequired,
-    area_weighted_mean,
+)
+from tta_backend.domain.analysis.statistics import (
+    VALID_STATS,
+    LatLonNotFound,
+    PeakCoordinatesUnreadable,
+    basis_statistic,
+    peak_cell,
 )
 from tta_backend.preprocessing.variable_choice_builder import emit_variable_choice_payload
 
 _resolver = RegionResolver()
 _aggregation_service = AggregationService()
-
-VALID_STATS = {"mean", "median", "max", "min", "std"}
 
 
 def _build_dim_selector(dimension: str | None, dimension_value: float | None) -> dict[str, Any] | None:
@@ -177,19 +181,8 @@ def make_compute_statistic_tool(mcp_tools: dict[str, BaseTool]) -> BaseTool:
                 #     over the temporal-mean field and say so.
                 stat_basis: dict[str, str] = {}
                 for s in stats:
-                    if s in ("max", "min"):
-                        _, extremum_field = _reduced_field(s)
-                        field_values = extremum_field.values
-                        result[s] = _aggregation_service.compute_values_stat(
-                            field_values[np.isfinite(field_values)], s,
-                        )
-                        stat_basis[s] = f"{s} over every valid observation (all timesteps)"
-                    elif s == "mean":
-                        result[s] = area_weighted_mean(mean_field)
-                        stat_basis[s] = "cos(latitude) area-weighted spatial mean of the temporal-mean field"
-                    else:
-                        result[s] = _aggregation_service.compute_values_stat(valid, s)
-                        stat_basis[s] = f"{s} of the temporal-mean field (per-cell mean over time first)"
+                    extremum_field = _reduced_field(s)[1] if s in ("max", "min") else None
+                    result[s], stat_basis[s] = basis_statistic(s, mean_field, extremum_field)
                 result["stat_basis"] = stat_basis
             except ValueError as e:
                 return "error", str(e)
@@ -309,55 +302,22 @@ def make_find_daily_peak(mcp_tools: dict[str, BaseTool]) -> BaseTool:
             if da.attrs.get(VARIABLE_RESOLUTION_ATTR):
                 aggregation.meta["variable_resolution"] = da.attrs[VARIABLE_RESOLUTION_ATTR]
 
-            # Resolve dim names via the canonical CF-metadata identifier, so an axis named 'row'/'y' is found by its metadata, not
-            # a hardcoded name list. On a rectilinear grid the lat/lon coord
-            # names are also dimension names.
-            lat_name = find_lat_coord(reduced)
-            lon_name = find_lon_coord(reduced)
-            lat_dim = lat_name if lat_name in reduced.dims else None
-            lon_dim = lon_name if lon_name in reduced.dims else None
-
-            if lat_dim is None or lon_dim is None:
-                return "error", f"Could not find lat/lon dimensions. Available dims: {list(reduced.dims)}"
-
-            lat_array = reduced[lat_dim].values
-            lon_array = reduced[lon_dim].values
-
-            # Filter
-            values     = reduced.values
-            valid_mask = np.isfinite(values)
-
-            if not np.any(valid_mask):
-                return "error", f"No valid data found for '{location}'. The region may be outside the data bbox."
-
-            # Find peak
-            masked_values = np.where(valid_mask, values, np.nan)
-            flat_idx      = np.nanargmax(masked_values)
-            dim0_idx, dim1_idx = np.unravel_index(flat_idx, masked_values.shape)
-
-            # Determine which axis corresponds to lat and lon
-            dims    = list(reduced.dims)
-            lat_pos = dims.index(lat_dim)
-            lon_pos = dims.index(lon_dim)
-            indices = [dim0_idx, dim1_idx]
-            lat_idx = indices[lat_pos]
-            lon_idx = indices[lon_pos]
-
             try:
-                peak_lat = float(lat_array[lat_idx] if lat_array.ndim == 1 else lat_array[lat_idx, lon_idx])
-                peak_lon = float(lon_array[lon_idx] if lon_array.ndim == 1 else lon_array[lat_idx, lon_idx])
-            except (IndexError, TypeError) as e:
+                peak = peak_cell(reduced)
+            except LatLonNotFound:
+                return "error", f"Could not find lat/lon dimensions. Available dims: {list(reduced.dims)}"
+            except PeakCoordinatesUnreadable as e:
                 return "error", f"Failed to extract peak coordinates: {e}"
-
-            peak_val = float(masked_values[dim0_idx, dim1_idx])
+            if peak is None:
+                return "error", f"No valid data found for '{location}'. The region may be outside the data bbox."
 
             return None, {
                 "location":   location,
                 "variable":   reduced.name or "",
                 "units":      reduced.attrs.get("units", ""),
-                "peak_value": peak_val,
-                "peak_lat":   peak_lat,
-                "peak_lon":   peak_lon,
+                "peak_value": peak.value,
+                "peak_lat":   peak.lat,
+                "peak_lon":   peak.lon,
                 "aggregation_meta": aggregation.meta,
                 "source_handles": [handle],
                 # Region fidelity: the region we actually masked.

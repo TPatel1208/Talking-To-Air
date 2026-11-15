@@ -118,7 +118,7 @@ class UnitsMismatchTests(unittest.TestCase):
 class DifferenceTests(unittest.TestCase):
     def test_difference_is_period_b_minus_period_a(self):
         import xarray as xr
-        from tta_backend.tools.satellite_tools.comparison_tools import _difference
+        from tta_backend.domain.analysis.comparison import difference as _difference
 
         da_a = xr.DataArray([[1.0, 2.0], [3.0, 4.0]], dims=("lat", "lon"))
         da_b = xr.DataArray([[5.0, 5.0], [5.0, 5.0]], dims=("lat", "lon"))
@@ -130,7 +130,7 @@ class DifferenceTests(unittest.TestCase):
     def test_a_cell_missing_on_either_side_is_excluded_from_the_difference(self):
         import numpy as np
         import xarray as xr
-        from tta_backend.tools.satellite_tools.comparison_tools import _difference
+        from tta_backend.domain.analysis.comparison import difference as _difference
 
         da_a = xr.DataArray([1.0, np.nan, 3.0], dims=("x",))
         da_b = xr.DataArray([10.0, 20.0, np.nan], dims=("x",))
@@ -149,7 +149,7 @@ class DifferenceTests(unittest.TestCase):
 class AnomalyStatsTests(unittest.TestCase):
     def test_mean_difference_and_percent_change_match_hand_computed_values(self):
         import xarray as xr
-        from tta_backend.tools.satellite_tools.comparison_tools import _anomaly_stats, _difference
+        from tta_backend.domain.analysis.comparison import anomaly_stats as _anomaly_stats, difference as _difference
 
         # a: mean 2.0 -> b: mean 3.0. diff mean = 1.0, percent change = 50%.
         da_a = xr.DataArray([1.0, 2.0, 3.0], dims=("x",))
@@ -166,7 +166,7 @@ class AnomalyStatsTests(unittest.TestCase):
     def test_cells_missing_on_either_side_are_excluded_from_stats(self):
         import numpy as np
         import xarray as xr
-        from tta_backend.tools.satellite_tools.comparison_tools import _anomaly_stats, _difference
+        from tta_backend.domain.analysis.comparison import anomaly_stats as _anomaly_stats, difference as _difference
 
         da_a = xr.DataArray([1.0, np.nan], dims=("x",))
         da_b = xr.DataArray([2.0, 5.0], dims=("x",))
@@ -179,7 +179,7 @@ class AnomalyStatsTests(unittest.TestCase):
 
     def test_area_exceeding_threshold_counts_cells_at_or_above_the_magnitude(self):
         import xarray as xr
-        from tta_backend.tools.satellite_tools.comparison_tools import _anomaly_stats, _difference
+        from tta_backend.domain.analysis.comparison import anomaly_stats as _anomaly_stats, difference as _difference
 
         da_a = xr.DataArray([0.0, 0.0, 0.0, 0.0], dims=("x",))
         da_b = xr.DataArray([1.0, 2.0, 5.0, 10.0], dims=("x",))
@@ -194,10 +194,10 @@ class AnomalyStatsTests(unittest.TestCase):
     def test_percent_change_is_reported_when_the_baseline_clears_the_floor(self):
         import numpy as np
         import xarray as xr
-        from tta_backend.tools.satellite_tools.comparison_tools import (
-            _PERCENT_CHANGE_FLOOR_FRACTION,
-            _anomaly_stats,
-            _difference,
+        from tta_backend.domain.analysis.comparison import (
+            PERCENT_CHANGE_FLOOR_FRACTION as _PERCENT_CHANGE_FLOOR_FRACTION,
+            anomaly_stats as _anomaly_stats,
+            difference as _difference,
         )
 
         # A spans 1..101 (mean ~51); its own 2–98th-percentile range is wide,
@@ -219,10 +219,10 @@ class AnomalyStatsTests(unittest.TestCase):
     def test_percent_change_is_withheld_with_a_note_when_the_baseline_is_below_the_floor(self):
         import numpy as np
         import xarray as xr
-        from tta_backend.tools.satellite_tools.comparison_tools import (
-            _PERCENT_CHANGE_FLOOR_FRACTION,
-            _anomaly_stats,
-            _difference,
+        from tta_backend.domain.analysis.comparison import (
+            PERCENT_CHANGE_FLOOR_FRACTION as _PERCENT_CHANGE_FLOOR_FRACTION,
+            anomaly_stats as _anomaly_stats,
+            difference as _difference,
         )
 
         # A is ~symmetric about zero (mean a hair above zero) but has a wide
@@ -254,7 +254,7 @@ class AnomalyStatsTests(unittest.TestCase):
 class SplitAlignedTests(unittest.TestCase):
     def test_splits_a_two_source_aligned_cube_into_its_two_arrays_in_order(self):
         import xarray as xr
-        from tta_backend.tools.satellite_tools.comparison_tools import _split_aligned
+        from tta_backend.domain.analysis.comparison import split_aligned as _split_aligned
 
         da = xr.DataArray(
             [[[1.0, 2.0]], [[10.0, 20.0]]],
@@ -269,7 +269,7 @@ class SplitAlignedTests(unittest.TestCase):
 
     def test_prefers_explicit_source_labels_over_position_so_a_reorder_cannot_flip_sign(self):
         import xarray as xr
-        from tta_backend.tools.satellite_tools.comparison_tools import _split_aligned
+        from tta_backend.domain.analysis.comparison import split_aligned as _split_aligned
 
         # The MCP stamps the source handles as the `source` coordinate, but in
         # the *opposite* order from how they were passed. Label selection must
@@ -287,7 +287,7 @@ class SplitAlignedTests(unittest.TestCase):
 
     def test_falls_back_to_positional_order_when_sources_carry_no_handle_labels(self):
         import xarray as xr
-        from tta_backend.tools.satellite_tools.comparison_tools import _split_aligned
+        from tta_backend.domain.analysis.comparison import split_aligned as _split_aligned
 
         # Integer source coords (no handle names) -> the MCP input-order
         # convention: position 0 is A, position 1 is B.
@@ -304,7 +304,7 @@ class SplitAlignedTests(unittest.TestCase):
 
     def test_rejects_an_aligned_result_without_a_source_dimension(self):
         import xarray as xr
-        from tta_backend.tools.satellite_tools.comparison_tools import _split_aligned
+        from tta_backend.domain.analysis.comparison import split_aligned as _split_aligned
 
         da = xr.DataArray([[1.0, 2.0]], dims=("lat", "lon"), coords={"lat": [10.0], "lon": [30.0, 40.0]})
 
@@ -313,7 +313,7 @@ class SplitAlignedTests(unittest.TestCase):
 
     def test_rejects_an_aligned_result_with_the_wrong_number_of_sources(self):
         import xarray as xr
-        from tta_backend.tools.satellite_tools.comparison_tools import _split_aligned
+        from tta_backend.domain.analysis.comparison import split_aligned as _split_aligned
 
         da = xr.DataArray(
             [[[1.0]], [[2.0]], [[3.0]]],
@@ -332,7 +332,7 @@ class SplitAlignedTests(unittest.TestCase):
 class RegionStatsTests(unittest.TestCase):
     def test_computes_basic_stats_over_valid_cells(self):
         import xarray as xr
-        from tta_backend.tools.satellite_tools.comparison_tools import _region_stats
+        from tta_backend.domain.analysis.comparison import region_stats as _region_stats
 
         da = xr.DataArray([[1.0, 2.0], [3.0, 4.0]], dims=("lat", "lon"))
 
@@ -346,7 +346,7 @@ class RegionStatsTests(unittest.TestCase):
     def test_returns_none_when_no_valid_cells(self):
         import numpy as np
         import xarray as xr
-        from tta_backend.tools.satellite_tools.comparison_tools import _region_stats
+        from tta_backend.domain.analysis.comparison import region_stats as _region_stats
 
         da = xr.DataArray([np.nan, np.nan], dims=("x",))
 
@@ -359,7 +359,7 @@ class RegionStatsTests(unittest.TestCase):
         them as the true peak/trough. When the caller names the field basis, the
         stats disclose it so the label can be qualified rather than bare."""
         import xarray as xr
-        from tta_backend.tools.satellite_tools.comparison_tools import _region_stats
+        from tta_backend.domain.analysis.comparison import region_stats as _region_stats
 
         da = xr.DataArray([[1.0, 2.0], [3.0, 4.0]], dims=("lat", "lon"))
 
@@ -374,7 +374,7 @@ class RegionStatsTests(unittest.TestCase):
         """Regression: the disclosure is additive — a caller that doesn't name
         a field basis (a plain snapshot) gets the original stats shape."""
         import xarray as xr
-        from tta_backend.tools.satellite_tools.comparison_tools import _region_stats
+        from tta_backend.domain.analysis.comparison import region_stats as _region_stats
 
         stats = _region_stats(xr.DataArray([[1.0, 2.0], [3.0, 4.0]], dims=("lat", "lon")))
 

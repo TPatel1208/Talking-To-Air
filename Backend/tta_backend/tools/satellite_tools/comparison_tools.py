@@ -29,23 +29,33 @@ from tta_backend.services import admission
 from tta_backend.config.workflow_stages import STAGE_RENDER
 from tta_backend.datasets.mask_info import col_info_for_variable
 from tta_backend.earthdata_mcp.results import CATEGORY_PROVIDER_UNAVAILABLE, MCPToolError, parse_tool_result
-from tta_backend.domain.aggregation.aggregation_service import (
-    AggregationService,
-    VariableChoiceRequired,
-    area_weighted_mean,
+from tta_backend.domain.aggregation.aggregation_service import AggregationService, VariableChoiceRequired
+from tta_backend.domain.analysis.checks import (
+    disjoint_periods,
+    has_valid_data,
+    time_range,
+    units_mismatch,
+    variable_mismatch,
+)
+from tta_backend.domain.analysis.comparison import (
+    aligned_source_order,
+    anomaly_stats,
+    apply_source_selector,
+    difference,
+    region_stats,
+    split_aligned,
 )
 from tta_backend.preprocessing.variable_choice_builder import emit_variable_choice_payload
 from tta_backend.services import variable_choice_registry
 from tta_backend.services.open_handle import OpenHandleError, open_handle
-from tta_backend.tools.satellite_tools.plot_tools import (
-    _da_to_heatmap_payload,
-    _delivered_scope,
-    _normalize_longitudes,
-    _percentile_bounds,
-    _requested_scope,
-    _save_chart,
-    _time_range as _pt_time_range,
+from tta_backend.domain.charts.heatmap import (
+    DIVERGING_SCALE_DISCLOSURE,
+    diverging_bounds,
+    percentile_bounds as _percentile_bounds,
 )
+from tta_backend.domain.charts.provenance import delivered_scope as _delivered_scope, time_range as _pt_time_range
+from tta_backend.domain.earthdata.opening import normalize_longitudes as _normalize_longitudes
+from tta_backend.tools.satellite_tools.plot_tools import _da_to_heatmap_payload, _requested_scope, _save_chart
 from tta_backend.domain.geo import find_lat_coord, find_lon_coord
 from tta_backend.domain.masking.dimensions import _normalize_to_2d
 from tta_backend.utils.streaming import emit_status
@@ -67,10 +77,6 @@ _TRANSIENT_RETRY_BASE_DELAY_SECONDS = 1.5
 _TRANSIENT_RETRY_MAX_DELAY_SECONDS = 10.0
 
 _T = TypeVar("_T")
-# An aligned retrieval arrives as either; selection keeps whichever it was.
-_XrT = TypeVar("_XrT", xr.DataArray, xr.Dataset)
-# How one side is picked out of an aligned object: ("sel", label) or ("isel", position).
-SourceSelector = tuple[str, Any]
 
 
 async def _retry_transient(op: Callable[[], Awaitable[_T]], *, label: str) -> _T:
@@ -100,264 +106,54 @@ async def _retry_transient(op: Callable[[], Awaitable[_T]], *, label: str) -> _T
             delay = min(delay * 2, _TRANSIENT_RETRY_MAX_DELAY_SECONDS)
     raise AssertionError("unreachable: retry loop exited without returning or raising")
 
-# Percent change is suppressed when period A's mean is smaller than this
-# fraction of A's own 2–98th-percentile magnitude range — i.e. the baseline is
-# too small, relative to the data's own scale, to normalize by without the
-# percentage exploding. A fraction of the field's own spread (not an absolute
-# constant) keeps the guard scale-free across variables of wildly different
-# magnitudes.
-_PERCENT_CHANGE_FLOOR_FRACTION = 0.05
-
-
-def _difference(da_a: xr.DataArray, da_b: xr.DataArray) -> xr.DataArray:
-    """period B minus period A, cell-by-cell.
-
-    xarray subtraction already propagates NaN — a cell missing (fill-masked)
-    on either side becomes NaN in the difference, i.e. excluded from both
-    the rendered map and any stat computed over it, never a fabricated 0.
-    """
-    return da_b - da_a
-
-
-def _source_labels(aligned: xr.DataArray | xr.Dataset) -> list[str] | None:
-    """String values of the ``source`` coordinate, if it carries them — the
-    handles the MCP stamped for each aligned slice. None when there is no
-    ``source`` coordinate to read labels from."""
-    if "source" not in getattr(aligned, "coords", {}):
+def _variable_mismatch_error(da_a: xr.DataArray, da_b: xr.DataArray) -> str | None:
+    """Return an error message if da_a/da_b are different variables, else None."""
+    mismatch = variable_mismatch(da_a.name, da_b.name)
+    if mismatch is None:
         return None
-    return [str(v) for v in np.atleast_1d(aligned["source"].values)]
+    return (
+        f"Cannot compare different variables: '{mismatch.facts['a']}' (A) vs '{mismatch.facts['b']}' (B). "
+        "compare only supports comparing the same variable across two regions or periods."
+    )
 
 
-def _aligned_source_order(
-    aligned: xr.DataArray | xr.Dataset, handle_a: str | None, handle_b: str | None,
-) -> tuple[SourceSelector, SourceSelector]:
-    """The (A, B) selectors for pulling the two sources out of the aligned
-    cube. Prefers *label* selection when the ``source`` coordinate stamps both
-    handles (an MCP-side reorder then can't flip which slice is A); falls back
-    to positional order otherwise. Each selector is ``("sel", handle)`` or
-    ``("isel", index)``, applied by ``_apply_source_selector`` — shared by the
-    science DataArray split and the sibling-Dataset split so their per-source
-    pairing can never diverge."""
-    labels = _source_labels(aligned)
-    if handle_a and handle_b and labels is not None and handle_a in labels and handle_b in labels:
-        return ("sel", handle_a), ("sel", handle_b)
-    return ("isel", 0), ("isel", 1)
-
-
-def _apply_source_selector(obj: _XrT, selector: SourceSelector) -> _XrT:
-    kind, key = selector
-    return obj.sel(source=key) if kind == "sel" else obj.isel(source=key)
-
-
-def _split_aligned(aligned: _XrT, handle_a: str | None = None, handle_b: str | None = None) -> tuple[_XrT, _XrT]:
-    """Split the MCP `align` transform's output into its two source arrays.
-
-    ``align(source_handles=[a, b])`` grid-aligns >=2 gridded inputs into one
-    cube_ handle with a leading ``source`` dimension of length 2. Which slice
-    is A vs B is resolved by *label* when the aligned cube stamps the source
-    handles on the ``source`` coordinate —
-    passing ``handle_a``/``handle_b`` then selects by name, so an MCP-side
-    reorder of the ``source`` dim cannot silently flip every difference sign
-    (the worst wrong answer: the map still looks right).
-
-    Without stamped labels (or without the handles) it falls back to positional
-    order — ``isel(source=0)`` is A, ``isel(source=1)`` is B — which relies on
-    the MCP preserving input order in ``source``. That assumption is pinned by
-    a contract test in the harmony-retrieval-mcp repo
-    (``test_align_preserves_source_order``); this docstring is its TTA-side
-    anchor. Until the MCP stamps labels, positional order is the live path.
-    """
-    if "source" not in aligned.dims:
-        raise ValueError(f"Aligned result has no 'source' dimension: dims={list(aligned.dims)}")
-    n_sources = aligned.sizes["source"]
-    if n_sources != 2:
-        raise ValueError(f"Expected an aligned result with 2 sources, found {n_sources}.")
-    sel_a, sel_b = _aligned_source_order(aligned, handle_a, handle_b)
-    return _apply_source_selector(aligned, sel_a), _apply_source_selector(aligned, sel_b)
-
-
-def _percent_change_floor(a_paired_vals: np.ndarray) -> float | None:
-    """The smallest period-A mean magnitude a percent change may be normalized
-    by: ``_PERCENT_CHANGE_FLOOR_FRACTION`` of |A|'s own 2–98th-percentile
-    range over the paired-valid cells. Returns None when A has no valid cells
-    (nothing to scale against)."""
-    valid = np.abs(a_paired_vals[np.isfinite(a_paired_vals)])
-    if valid.size == 0:
+def _units_mismatch_error(da_a: xr.DataArray, da_b: xr.DataArray) -> str | None:
+    """Return an error message if da_a/da_b carry different units, or units on
+    only one side, else None. No unit conversion is attempted."""
+    mismatch = units_mismatch(da_a.attrs.get("units", ""), da_b.attrs.get("units", ""))
+    if mismatch is None:
         return None
-    spread = float(np.percentile(valid, 98) - np.percentile(valid, 2))
-    return _PERCENT_CHANGE_FLOOR_FRACTION * spread
-
-
-def _anomaly_stats(da_a: xr.DataArray, da_b: xr.DataArray, diff: xr.DataArray, threshold: float | None) -> dict[str, Any]:
-    """Mean difference, percent change (relative to period A's mean), and
-    optionally the area exceeding a threshold change magnitude.
-
-    All computed only over cells valid on both sides (``diff`` already
-    carries NaN wherever either side was missing — see ``_difference``).
-    Means are cos(latitude) area-weighted (``area_weighted_mean``) — on a
-    lat/lon grid an unweighted cell mean over-weights high latitudes, and a
-    percent change built from two such means inherits the bias.
-
-    Percent change is withheld (``percent_change=None`` with a
-    ``percent_change_note`` explaining why) when period A's mean is too small,
-    relative to the field's own dynamic range, to normalize by — see
-    ``_percent_change_floor``. Near-zero baselines are routine for anomaly-like
-    fields, and dividing by one yields an absurd "+48,000%" with full
-    confidence. The absolute ``mean_difference`` is always reported regardless.
-    """
-    diff_vals = np.asarray(diff.values, dtype=float)
-    valid_diff = diff_vals[np.isfinite(diff_vals)]
-
-    # Period A restricted to the same paired (valid-on-both-sides) cells,
-    # kept as a DataArray so the weighted mean still sees the latitude axis.
-    a_paired = da_a.where(diff.notnull())
-    a_paired_vals = np.asarray(a_paired.values, dtype=float)
-
-    mean_difference = area_weighted_mean(diff) if valid_diff.size else None
-    mean_a = area_weighted_mean(a_paired) if np.isfinite(a_paired_vals).any() else None
-
-    percent_change = None
-    percent_change_note = None
-    if mean_difference is not None and mean_a is not None:
-        floor = _percent_change_floor(a_paired_vals)
-        if mean_a == 0.0 or (floor is not None and abs(mean_a) < floor):
-            percent_change_note = (
-                "Percent change withheld — baseline too small to normalize by: period A's "
-                f"area-weighted mean ({mean_a:.3g}) is under {_PERCENT_CHANGE_FLOOR_FRACTION:.0%} of "
-                "the field's own 2–98th-percentile range, where a percentage would explode. "
-                "The absolute mean difference is reported instead."
-            )
-        else:
-            percent_change = (mean_difference / mean_a) * 100.0
-
-    stats: dict[str, Any] = {
-        "n_cells": int(valid_diff.size),
-        "mean_difference": mean_difference,
-        "percent_change": percent_change,
-    }
-    if percent_change_note is not None:
-        stats["percent_change_note"] = percent_change_note
-
-    if threshold is not None:
-        exceeding = valid_diff[np.abs(valid_diff) >= threshold]
-        stats["area_exceeding_threshold"] = {
-            "threshold": threshold,
-            "n_cells": int(exceeding.size),
-            "fraction": (exceeding.size / valid_diff.size) if valid_diff.size else 0.0,
-        }
-
-    return stats
-
-
-def _region_stats(da: xr.DataArray, *, basis: str | None = None) -> dict[str, Any] | None:
-    """Basic descriptive stats over da's valid cells, or None if none are
-    valid. The mean is cos(latitude) area-weighted (``area_weighted_mean``);
-    median/max/min are order statistics, which weighting doesn't move enough
-    to justify a weighted-quantile dependency.
-
-    ``basis`` names the field these stats summarize. Compare
-    always time-means each side, so max/min are the extremes of the
-    *period-mean* map — below the instantaneous peak/trough. Disclosing the
-    basis lets the label read "Max (period-mean)" instead of a bare "Max" that
-    invites reading it as the true peak. Omitted (no key) when unnamed, so the
-    stats shape is unchanged for callers summarizing a plain snapshot."""
-    values = np.asarray(da.values, dtype=float)
-    valid = values[np.isfinite(values)]
-    if valid.size == 0:
-        return None
-    stats: dict[str, Any] = {
-        "mean": area_weighted_mean(da),
-        "median": float(np.median(valid)),
-        "max": float(np.max(valid)),
-        "min": float(np.min(valid)),
-        "n_pixels": int(valid.size),
-    }
-    if basis:
-        stats["basis"] = basis
-    return stats
+    if mismatch.reason == "unit_mismatch":
+        return (
+            f"Cannot compare values in different units: '{mismatch.facts['a']}' (A) vs '{mismatch.facts['b']}' (B). "
+            "compare does not convert units — retrieve both sides in the same units to difference them."
+        )
+    return (
+        f"Cannot compare: one side declares units ('{mismatch.facts['declared']}') and the other ({mismatch.facts['missing_side']}) "
+        "has none, so the two cannot be confirmed commensurable before differencing. "
+        "Retrieve both sides with matching units to difference them."
+    )
 
 
 def _empty_overlap_error(da: xr.DataArray, label: str) -> str | None:
     """Reject a side with no valid data at all — no overlap with its requested window."""
-    values = np.asarray(da.values, dtype=float)
-    if not np.isfinite(values).any():
+    if not has_valid_data(da):
         return f"No valid data found for {label} — its retrieval has no overlap with the requested window."
     return None
 
 
-def _time_range(da: xr.DataArray) -> tuple[str, str] | tuple[None, None]:
-    if "time" not in da.coords:
-        return None, None
-    times = sorted(str(t) for t in np.atleast_1d(da["time"].values))
-    if not times:
-        return None, None
-    return times[0], times[-1]
-
-
 def _disjoint_periods_error(da_a: xr.DataArray, da_b: xr.DataArray) -> str | None:
-    """Region mode compares two AOIs over what should be the same period —
-    reject if their time windows don't even overlap (a plain-language guard,
-    not a proxy for period-mode's own aligned differencing)."""
-    start_a, end_a = _time_range(da_a)
-    start_b, end_b = _time_range(da_b)
-    if start_a is None or end_a is None or start_b is None or end_b is None:
+    """Region mode compares two AOIs over what should be the same period;
+    reject when their time windows do not overlap at all."""
+    mismatch = disjoint_periods(time_range(da_a), time_range(da_b))
+    if mismatch is None:
         return None
-    if end_a < start_b or end_b < start_a:
-        return (
-            f"The two retrievals cover disjoint time periods ({start_a[:10]}..{end_a[:10]} vs "
-            f"{start_b[:10]}..{end_b[:10]}) — region mode compares two areas over the same "
-            "period; use mode=\"period\" to compare two periods instead."
-        )
-    return None
-
-
-def _variable_mismatch_error(da_a: xr.DataArray, da_b: xr.DataArray) -> str | None:
-    """Return an error message if da_a/da_b are different variables, else None."""
-    name_a = str(da_a.name or "").strip()
-    name_b = str(da_b.name or "").strip()
-    if name_a and name_b and name_a != name_b:
-        return (
-            f"Cannot compare different variables: '{name_a}' (A) vs '{name_b}' (B). "
-            "compare only supports comparing the same variable across two regions or periods."
-        )
-    return None
-
-
-def _units_mismatch_error(da_a: xr.DataArray, da_b: xr.DataArray) -> str | None:
-    """Return an error message if da_a/da_b carry different (non-empty) units,
-    else None.
-
-    ``compare`` differences raw numbers cell-by-cell; two products both naming
-    their column ``vertical_column_troposphere`` but storing it in molec/cm^2
-    vs mol/m^2 would otherwise be differenced as if commensurable, under a
-    single (wrong) unit label. No unit conversion is attempted here (out of
-    scope) -- naming both units is the actionable answer, mirroring
-    ``_variable_mismatch_error``.
-
-    Absent units on ONLY ONE side is the more dangerous case, not a safe one:
-    the difference would still be differenced and stamped with the side that
-    *does* declare units (see the caller's ``units = da_a.attrs...`` label),
-    presenting an unverifiable-commensurability comparison as a real number
-    under a confident label -- so it is a hard stop too. Only when *neither*
-    side declares units is there nothing to mislabel (same variable, no unit
-    label emitted), and the comparison proceeds."""
-    units_a = str(da_a.attrs.get("units", "") or "").strip()
-    units_b = str(da_b.attrs.get("units", "") or "").strip()
-    if units_a and units_b:
-        if units_a != units_b:
-            return (
-                f"Cannot compare values in different units: '{units_a}' (A) vs '{units_b}' (B). "
-                "compare does not convert units — retrieve both sides in the same units to difference them."
-            )
-        return None
-    if units_a or units_b:
-        declared, missing_side = (units_a, "B") if units_a else (units_b, "A")
-        return (
-            f"Cannot compare: one side declares units ('{declared}') and the other ({missing_side}) "
-            "has none, so the two cannot be confirmed commensurable before differencing. "
-            "Retrieve both sides with matching units to difference them."
-        )
-    return None
+    f = mismatch.facts
+    return (
+        f"The two retrievals cover disjoint time periods ({f['start_a']}..{f['end_a']} vs "
+        f"{f['start_b']}..{f['end_b']}) — region mode compares two areas over the same "
+        "period; use mode=\"period\" to compare two periods instead."
+    )
 
 
 def _prepare_2d(da: xr.DataArray, variable_name: str, source_ds: xr.Dataset | None = None) -> tuple[xr.DataArray, dict[str, Any]]:
@@ -415,12 +211,11 @@ def _bbox_from_da(da: xr.DataArray) -> list[float]:
     return [float(np.nanmin(lons)), float(np.nanmin(lats)), float(np.nanmax(lons)), float(np.nanmax(lats))]
 
 
-# How each comparison scale was derived, disclosed to the frontend legend so
-# its saturation warning fires for compare maps exactly as it does for
-# single maps. A shared scale is a plain 2/98 percentile clip of the combined
-# panels; a diverging scale clips at the diff's 98th-percentile magnitude.
+# How the shared comparison scale was derived, disclosed to the frontend legend
+# so its saturation warning fires for compare maps exactly as it does for
+# single maps: a plain 2/98 percentile clip of the combined panels. The
+# difference map's diverging scale is domain.charts.heatmap's.
 _SHARED_SCALE_DISCLOSURE = {"method": "percentile", "p": [2, 98]}
-_DIVERGING_SCALE_DISCLOSURE = {"method": "percentile_magnitude", "p": 98}
 
 
 def _shared_bounds(da_a: xr.DataArray, da_b: xr.DataArray) -> tuple[float, float]:
@@ -429,18 +224,6 @@ def _shared_bounds(da_a: xr.DataArray, da_b: xr.DataArray) -> tuple[float, float
         np.asarray(da_b.values, dtype=float).ravel(),
     ])
     return _percentile_bounds(combined)
-
-
-def _diverging_bounds(diff_da: xr.DataArray) -> tuple[float, float]:
-    """Symmetric, zero-centered scale sized to the diff's 98th-percentile magnitude."""
-    vals = np.asarray(diff_da.values, dtype=float)
-    valid = vals[np.isfinite(vals)]
-    if valid.size == 0:
-        return -1.0, 1.0
-    max_abs = float(np.percentile(np.abs(valid), 98))
-    if not np.isfinite(max_abs) or max_abs == 0:
-        max_abs = 1.0
-    return -max_abs, max_abs
 
 
 async def _open_and_prepare_side(
@@ -641,19 +424,19 @@ def make_compare(mcp_tools: dict[str, BaseTool]) -> BaseTool:
             return json.dumps({"error": f"Failed to open the aligned result '{aligned_handle}': {e}"})
 
         try:
-            aligned_a, aligned_b = _split_aligned(aligned_da, handle_a, handle_b)
+            aligned_a, aligned_b = split_aligned(aligned_da, handle_a, handle_b)
         except ValueError as e:
             return json.dumps({"error": f"Grid alignment produced an unusable result: {e}"})
 
         # Split the whole aligned Dataset per-source too (mirroring
-        # _split_aligned's own isel), so each side's QA-flag sibling -- if
+        # split_aligned's own isel), so each side's QA-flag sibling -- if
         # `align` preserved one -- stays reachable through the matching
         # source_ds instead of one carrying an extra 'source' dim the
         # already-sliced science DataArray doesn't have.
         if "source" in aligned_ds.dims:
-            sel_a, sel_b = _aligned_source_order(aligned_da, handle_a, handle_b)
-            aligned_ds_a = _apply_source_selector(aligned_ds, sel_a)
-            aligned_ds_b = _apply_source_selector(aligned_ds, sel_b)
+            sel_a, sel_b = aligned_source_order(aligned_da, handle_a, handle_b)
+            aligned_ds_a = apply_source_selector(aligned_ds, sel_a)
+            aligned_ds_b = apply_source_selector(aligned_ds, sel_b)
         else:
             aligned_ds_a = aligned_ds_b = aligned_ds
 
@@ -687,8 +470,8 @@ def _build_region_comparison(
     # Both sides are period-mean maps (``_prepare_2d`` time-means), so disclose
     # that basis on the extremes: a compare "Max" is the max of
     # the averaged field, not the instantaneous peak.
-    stats_a = _region_stats(da_a_2d, basis="period-mean")
-    stats_b = _region_stats(da_b_2d, basis="period-mean")
+    stats_a = region_stats(da_a_2d, basis="period-mean")
+    stats_b = region_stats(da_b_2d, basis="period-mean")
 
     payload = {
         "type": "heatmap_multi",
@@ -711,13 +494,13 @@ def _build_period_comparison(
 ) -> str:
     da_a_2d, meta_a = _prepare_2d(aligned_a, variable_name, source_ds=aligned_ds_a)
     da_b_2d, meta_b = _prepare_2d(aligned_b, variable_name, source_ds=aligned_ds_b)
-    diff = _difference(da_a_2d, da_b_2d)
-    stats = _anomaly_stats(da_a_2d, da_b_2d, diff, threshold)
+    diff = difference(da_a_2d, da_b_2d)
+    stats = anomaly_stats(da_a_2d, da_b_2d, diff, threshold)
 
-    vmin, vmax = _diverging_bounds(diff)
+    vmin, vmax = diverging_bounds(np.asarray(diff.values))
     diff_payload = _da_to_heatmap_payload(
         diff, f"{variable_name}: {label_b} - {label_a}", variable_name, units, diverging=True,
-        render_overlay=True, value_range=(vmin, vmax), scale_disclosure=_DIVERGING_SCALE_DISCLOSURE,
+        render_overlay=True, value_range=(vmin, vmax), scale_disclosure=DIVERGING_SCALE_DISCLOSURE,
     )
     diff_payload["bounds"] = _bbox_from_da(diff)
 

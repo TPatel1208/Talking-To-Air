@@ -18,8 +18,9 @@ import httpx
 import shapefile
 from pyproj import CRS, Transformer
 from shapely import make_valid
-from shapely.geometry import mapping, shape
-from shapely.ops import transform
+from shapely.geometry import GeometryCollection, mapping, shape
+from shapely.geometry.base import BaseGeometry
+from shapely.ops import transform, unary_union
 
 # Silence pyshp's per-polygon warnings for counter-clockwise HMS outlines.
 shapefile.VERBOSE = False
@@ -90,6 +91,15 @@ def _time(value: str) -> str:
         return parsed.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
     except ValueError:
         raise HMSError("invalid_data", f"Invalid HMS observation time: {value!r}.") from None
+
+
+def _polygonal(geom: BaseGeometry) -> BaseGeometry:
+    """The polygon parts of a clipped plume; a plume sharing an edge with the
+    region also yields lines and points, which carry no area."""
+    if geom.geom_type != "GeometryCollection":
+        return geom
+    parts = [g for g in getattr(geom, "geoms", ()) if g.geom_type in ("Polygon", "MultiPolygon")]
+    return unary_union(parts) if parts else GeometryCollection()
 
 
 def parse_archive(content: bytes, value: str, region: Any = None) -> dict[str, Any]:
@@ -165,7 +175,7 @@ def _parse_archive(content: bytes, value: str, region: Any) -> dict[str, Any]:
                 if region is not None:
                     if not geom.intersects(region):
                         continue
-                    geom = geom.intersection(region)
+                    geom = _polygonal(geom.intersection(region))
                     if geom.is_empty or geom.area == 0:
                         continue
                     if geom.geom_type not in ("Polygon", "MultiPolygon"):

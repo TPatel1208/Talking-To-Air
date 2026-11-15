@@ -17,8 +17,6 @@ import json
 import uuid
 from typing import TYPE_CHECKING, Any, Optional
 
-import numpy as np
-import pandas as pd
 from langchain.tools import tool
 from langchain_core.tools import BaseTool
 
@@ -30,11 +28,13 @@ from tta_backend.config.workflow_stages import STAGE_RENDER
 from tta_backend.datasets.mask_info import col_info_for_variable
 from tta_backend.earthdata_mcp.results import MCPToolError
 from tta_backend.domain.aggregation.aggregation_service import AggregationService
+from tta_backend.domain.analysis.checks import time_range
+from tta_backend.domain.analysis.pairing import correlation_stats, extract_monitor_series, pair_daily
+from tta_backend.domain.analysis.thresholds import exceedance_days
 from tta_backend.services.artifact_registry import build_artifact_reference
 from tta_backend.services import variable_choice_registry
 from tta_backend.services.open_handle import OpenHandleError, open_handle
 from tta_backend.tools.ground_sensor_tools import epa_aqs_tools as aqs
-from tta_backend.domain.geo import find_lat_coord, find_lon_coord
 from tta_backend.utils.plotting import RegionResolver
 from tta_backend.utils.streaming import emit_status, ground_validation_allowed
 
@@ -56,187 +56,13 @@ def _out_of_scope_error() -> str | None:
     )})
 
 
-def _nearest_cell_series(da: xr.DataArray, lat: float, lon: float) -> xr.DataArray:
-    """Select the nearest grid cell to (lat, lon) from a lat/lon-indexed DataArray."""
-    lat_coord = find_lat_coord(da)
-    lon_coord = find_lon_coord(da)
-    return da.sel({lat_coord: lat, lon_coord: lon}, method="nearest")
-
-
-def _nearest_cell_dataset(ds: xr.Dataset | None, da: xr.DataArray, lat: float, lon: float) -> xr.Dataset | None:
-    """Narrow ``ds`` to the same cell ``_nearest_cell_series`` takes from ``da``.
-
-    The sibling QA-flag variable has to be narrowed alongside the science
-    variable, not left at full grid: ``.sel`` leaves lat/lon as scalar coords
-    rather than dims, so a full-grid flag condition would broadcast the single
-    cell back up to the whole grid at ``.where()`` instead of aligning against
-    it. Falls back to ``ds`` untouched when it does not carry the science
-    array's horizontal coords at all -- there is nothing to narrow against.
-    """
-    if ds is None:
-        return None
-    selection = {
-        name: value
-        for name, value in ((find_lat_coord(da), lat), (find_lon_coord(da), lon))
-        if name and name in ds.coords
-    }
-    return ds.sel(selection, method="nearest") if selection else ds
-
-
-def _extract_monitor_series(
-    da: xr.DataArray, lat: float, lon: float, col_info: dict[str, Any] | None = None,
-    source_ds: xr.Dataset | None = None,
-) -> tuple[list[str], list[float], dict[str, Any], dict[str, Any]]:
-    """Extract the satellite time series at the nearest cell to (lat, lon).
-
-    Fill values, out-of-range cells, and QA-flagged cells are excluded from
-    the returned series and counted toward coverage stats — never silently
-    included as valid readings. Routed through AggregationService.
-    resolve_and_mask, the same masking-resolution path plot_tools' aggregate/
-    conduct_temporal_statistic use, so QA-flag masking is actually applied
-    and disclosed.
-
-    Narrowed to the monitor cell BEFORE masking, never after. The provenance
-    riding out beside this series reports a QA pass rate whose documented
-    basis (``QA_PASS_RATE_BASIS``) is "pixels in the analyzed region", and for
-    a monitor comparison that region is one cell -- masking the full grid
-    first would count every other cell's QA outcome. This is the same crop-before-mask ordering both
-    plot paths already follow, so the counters mean the same thing on a
-    heatmap, a timeseries, and here.
-
-    Returns (times: list[ISO str], values: list[float], coverage: dict,
-    masking: dict) where coverage = {n_total, n_valid, n_excluded,
-    coverage_fraction} and masking is the honest QA-masking provenance dict.
-    """
-    series, masking = _aggregation_service.resolve_and_mask(
-        _nearest_cell_series(da, lat, lon),
-        col_info=col_info,
-        source_ds=_nearest_cell_dataset(source_ds, da, lat, lon),
-    )
-
-    n_total = series.sizes.get("time", 1)
-    raw_values = np.atleast_1d(series.values)
-    raw_times = np.atleast_1d(series["time"].values) if "time" in series.coords else [None] * n_total
-
-    times, values = [], []
-    for t, v in zip(raw_times, raw_values, strict=True):
-        # An untimed reading cannot be paired with a ground day.
-        if not np.isfinite(v) or t is None:
-            continue
-        times.append(pd.Timestamp(t).isoformat())
-        values.append(float(v))
-
-    n_valid = len(values)
-    coverage = {
-        "n_total": int(n_total),
-        "n_valid": n_valid,
-        "n_excluded": int(n_total) - n_valid,
-        "coverage_fraction": (n_valid / n_total) if n_total else 0.0,
-    }
-    return times, values, coverage, masking
-
-
-def _pair_daily(times: list[str], values: list[float], ground_daily: dict[str, float]) -> list[dict[str, Any]]:
-    """Aggregate a (possibly sub-daily) satellite series to daily means and pair
-    with ground daily values by date.
-
-    ``ground_daily`` maps an ISO date string ("YYYY-MM-DD") to a ground value.
-    Dates present on only one side are dropped — pairing is honest about
-    temporal mismatch rather than inventing a value for a missing side.
-    Returns records sorted by date: {date, satellite, ground}.
-    """
-    daily_sat: dict[str, list[float]] = {}
-    for t, v in zip(times, values, strict=True):
-        date = t[:10]
-        daily_sat.setdefault(date, []).append(v)
-
-    paired = []
-    for date in sorted(daily_sat):
-        if date not in ground_daily:
-            continue
-        paired.append({
-            "date": date,
-            "satellite": float(np.mean(daily_sat[date])),
-            "ground": ground_daily[date],
-        })
-    return paired
-
-
-def _correlation_stats(paired: list[dict[str, Any]], total_ground_days: int | None = None) -> dict[str, Any]:
-    """Compute Pearson r, N, and coverage fraction for a list of paired
-    {satellite, ground} records (as produced by ``_pair_daily``, one
-    monitor's worth or a pooled concatenation across monitors).
-
-    ``coverage_fraction`` is the paired-day count over ``total_ground_days``
-    (defaults to the paired count itself, i.e. full coverage, when the
-    caller doesn't know the ground record's total day count).
-    r is None when fewer than 2 points or either side is constant (undefined).
-    """
-    n = len(paired)
-    r = None
-    if n >= 2:
-        sat = np.array([p["satellite"] for p in paired])
-        grd = np.array([p["ground"] for p in paired])
-        if np.std(sat) > 0 and np.std(grd) > 0:
-            r = float(np.corrcoef(sat, grd)[0, 1])
-
-    total = total_ground_days if total_ground_days is not None else n
-    return {
-        "r": r,
-        "n": n,
-        "coverage_fraction": (n / total) if total else 0.0,
-    }
-
-
 def _time_range(da: xr.DataArray) -> tuple[str, str]:
-    if "time" not in da.coords:
-        return "", ""
-    times = sorted(str(t) for t in np.atleast_1d(da["time"].values))
-    if not times:
-        return "", ""
-    return times[0], times[-1]
+    start, end = time_range(da)
+    return start or "", end or ""
 
 
 def _station_id(monitor: dict[str, Any]) -> str:
     return "-".join(str(monitor.get(k, "??")) for k in ("state_code", "county_code", "site_number"))
-
-
-def _exceedance_days(
-    records: list[dict[str, Any]],
-    measurement_field: str,
-    hard_threshold: float | None,
-    percentile_threshold: float | None,
-) -> set[str]:
-    """Return the set of ``date_local`` values whose ``measurement_field``
-    exceeds ``hard_threshold`` and/or falls at/above the ``percentile_threshold``
-    cutoff (top N%, e.g. 90.0 = top 10%). Mirrors find_exceedance_days'
-    flagging logic (epa_aqs_tools.py) so both tools agree on what "exceeded"
-    means; records with no value for the field are ignored, not flagged.
-    """
-    valid = [
-        float(r[measurement_field])
-        for r in records
-        if r.get(measurement_field) is not None
-    ]
-    percentile_cutoff = None
-    if percentile_threshold is not None and valid:
-        sorted_vals = sorted(valid)
-        idx = min(int(len(sorted_vals) * percentile_threshold / 100), len(sorted_vals) - 1)
-        percentile_cutoff = sorted_vals[idx]
-
-    exceeded: set[str] = set()
-    for r in records:
-        raw = r.get(measurement_field)
-        date = r.get("date_local")
-        # An undated record cannot name an exceedance day.
-        if raw is None or date is None:
-            continue
-        v = float(raw)
-        if hard_threshold is not None and v > hard_threshold:
-            exceeded.add(date)
-        elif percentile_cutoff is not None and v >= percentile_cutoff:
-            exceeded.add(date)
-    return exceeded
 
 
 def make_validate_against_ground(mcp_tools: dict[str, BaseTool]) -> BaseTool:
@@ -346,14 +172,14 @@ def make_validate_against_ground(mcp_tools: dict[str, BaseTool]) -> BaseTool:
                     continue
 
                 lat, lon = float(monitor["latitude"]), float(monitor["longitude"])
-                times, values, coverage, masking = _extract_monitor_series(
+                times, values, coverage, masking = extract_monitor_series(
                     da, lat, lon, col_info, source_ds=ds,
                 )
-                paired = _pair_daily(times, values, ground_daily)
+                paired = pair_daily(times, values, ground_daily)
                 if not paired:
                     continue
 
-                stats = _correlation_stats(paired, total_ground_days=len(ground_daily))
+                stats = correlation_stats(paired, total_ground_days=len(ground_daily))
                 pooled_paired.extend(paired)
                 monitor_ids.append(station_id)
 
@@ -413,7 +239,7 @@ def make_validate_against_ground(mcp_tools: dict[str, BaseTool]) -> BaseTool:
                 )
             })
 
-        pooled_stats = _correlation_stats(pooled_paired)
+        pooled_stats = correlation_stats(pooled_paired)
 
         return json.dumps({
             "location": region.get("name", location),
@@ -540,14 +366,14 @@ def make_exceedance_overlay(mcp_tools: dict[str, BaseTool]) -> BaseTool:
                 if not site_records:
                     continue
 
-                exceeded_dates = _exceedance_days(
+                exceeded_dates = exceedance_days(
                     site_records, measurement_field, effective_hard, percentile_threshold
                 )
                 if not exceeded_dates:
                     continue
 
                 lat, lon = float(monitor["latitude"]), float(monitor["longitude"])
-                times, values, coverage, masking = _extract_monitor_series(
+                times, values, coverage, masking = extract_monitor_series(
                     da, lat, lon, col_info, source_ds=ds,
                 )
 
