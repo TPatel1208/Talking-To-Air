@@ -7,6 +7,7 @@ from typing import Annotated, Any
 from tta_backend.harness.capabilities import Call, Capability, CapabilityRegistry, CapabilityResult, InputEvicted, Params, handle_param, invoke
 from tta_backend.harness.capabilities.sources import areas
 from tta_backend.harness.handles import Descriptor
+from tta_backend.harness.run_context import PLACE_REFUSAL_CODES, MAX_FACT_CHARS, PlaceRefused
 from tta_backend.harness.testing import FakePlaces, FakeToolError, box_region, make_run_context, make_run_env
 from tta_backend.harness.trace import FailureCategory, StepFailure
 
@@ -40,6 +41,82 @@ READER = Capability(
 class RaisingPlaces:
     async def resolve(self, wording: str) -> None:
         raise FakeToolError("user_input", "bad composite token ' + '")
+
+
+# Each refusal code: the wording, the facts, and phrases its question must contain.
+REFUSALS: list[tuple[str, str, dict[str, str], tuple[str, ...]]] = [
+    ("member_not_found", "NY + Wakanda", {"member": "Wakanda"},
+     ("'Wakanda' in 'NY + Wakanda' could not be found as a U.S. state or a country", "nothing was substituted")),
+    ("member_ambiguous", "Georgia + France", {"member": "Georgia", "state_form": "GA", "country_form": "Georgia (country)"},
+     ("names both a U.S. state and a country", "'GA' for the state", "'Georgia (country)' for the country")),
+    ("member_too_large", "France + Germany", {"member": "France", "name": "France", "cells": "15,866,824", "max_cells": "4,000,000"},
+     ("'France' (France) covers about 15,866,824 data cells", "above the 4,000,000-cell limit")),
+    ("combined_too_large", "Brazil + Japan", {"cells": "32,433,586", "max_cells": "4,000,000"},
+     ("The parts of 'Brazil + Japan' are far apart", "32,433,586", "4,000,000-cell limit")),
+    ("empty_member", "NY +", {}, ("'NY +' has an empty part",)),
+    ("distance_unreadable", "within lots of NYC", {}, ("the distance could not be read",)),
+    ("distance_unit_missing", "within 50 of NYC", {"amount": "50"},
+     ("does not say whether 50 means miles or kilometres", "'within 50 miles of ...'")),
+    ("distance_unit_unknown", "within 50 furlongs of NYC", {"unit": "furlongs"}, ("'furlongs' in 'within 50 furlongs of NYC'",)),
+    ("centre_is_region", "within 50 km of New Jersey", {"centre": "New Jersey", "radius": "50 km"},
+     ("'New Jersey' names a region, not a point", "within 50 km of it")),
+    ("centre_not_found", "within 50 km of Atlantis", {"centre": "Atlantis", "radius": "50 km"},
+     ("'Atlantis' could not be found as a place", "measure 50 km from", "nothing was substituted")),
+    ("reaches_pole", "within 900 km of Alert", {"radius": "900 km", "centre": "Alert, Nunavut", "pole": "North Pole", "pole_km": "838"},
+     ("within 900 km of Alert, Nunavut would reach the North Pole, 838 km away", "radius under 838 km")),
+    ("crosses_antimeridian", "within 500 km of Suva", {"radius": "500 km", "centre": "Suva, Fiji"},
+     ("within 500 km of Suva, Fiji crosses the 180th meridian",)),
+    ("distance_too_large", "within 3000 miles of NYC",
+     {"radius": "3000 miles", "centre": "New York, United States", "cells": "20,979,073", "max_cells": "4,000,000"},
+     ("The area within 3000 miles of New York, United States covers about 20,979,073 data cells",
+      "above the 4,000,000-cell limit", "smaller radius")),
+]
+
+
+class RefusalTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.places = FakePlaces(refusals={w: PlaceRefused(code, facts) for code, w, facts, _ in REFUSALS})  # type: ignore[arg-type]
+        self.env = await make_run_env(self._tmp.name, context=make_run_context(), places=self.places)
+
+    def test_every_code_has_a_case_and_a_prompt(self):
+        self.assertEqual({code for code, *_ in REFUSALS}, PLACE_REFUSAL_CODES)
+        self.assertEqual(set(areas.REFUSAL_PROMPTS), PLACE_REFUSAL_CODES)
+
+    async def test_a_refused_place_is_a_question_naming_what_was_wrong(self):
+        for code, wording, _, phrases in REFUSALS:
+            with self.subTest(code=code):
+                result = await invoke(self.env, areas.resolve, {"place": wording}, step="area")
+                self.assertEqual(result.status, "needs_input")
+                assert result.question is not None
+                self.assertEqual(result.question.kind, "text")
+                self.assertEqual(result.values, {"refusal": code})
+                for phrase in phrases:
+                    self.assertIn(phrase, result.question.prompt)
+                self.assertNotIn("{", result.question.prompt)
+                self.assertIsNone(result.handle)
+
+    async def test_a_refusal_whose_facts_do_not_fill_its_prompt_is_the_generic_bad_input(self):
+        self.places.refusals["ny + nowhere"] = PlaceRefused("member_not_found", {})
+        with self.assertRaises(StepFailure) as caught:
+            await invoke(self.env, areas.resolve, {"place": "NY + nowhere"})
+        self.assertEqual(caught.exception.category, FailureCategory.BAD_INPUT)
+        self.assertEqual(caught.exception.reason, "sources.areas.resolve could not use the request as given.")
+
+    def test_a_refusal_has_a_known_code_and_short_facts(self):
+        with self.assertRaises(ValueError):
+            PlaceRefused("no_such_code")  # type: ignore[arg-type]
+        refused = PlaceRefused("member_not_found", {"member": "x" * 500 + " \n  y"})
+        self.assertEqual(len(refused.facts["member"]), MAX_FACT_CHARS)
+        self.assertNotIn("x" * 200, str(refused))
+
+    async def test_a_long_member_is_quoted_short(self):
+        self.places.refusals["ny + " + "z" * 300] = PlaceRefused("member_not_found", {"member": "z" * 300})
+        result = await invoke(self.env, areas.resolve, {"place": "NY + " + "z" * 300})
+        assert result.question is not None
+        self.assertLessEqual(len(result.question.prompt), 500)
+        self.assertNotIn("z" * 121, result.question.prompt)
 
 
 class AreasTests(unittest.IsolatedAsyncioTestCase):

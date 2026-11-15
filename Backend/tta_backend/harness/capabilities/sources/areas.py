@@ -23,7 +23,7 @@ from tta_backend.harness.capabilities.registry import Group
 from tta_backend.harness.capabilities.result import CapabilityResult, Question
 from tta_backend.harness.handles.errors import HandleError
 from tta_backend.harness.handles.model import Descriptor, HandleRecord
-from tta_backend.harness.run_context import Region
+from tta_backend.harness.run_context import PlaceRefused, Region
 from tta_backend.harness.trace import FailureCategory, StepFailure
 
 GROUP = Group(
@@ -38,6 +38,63 @@ GROUP = Group(
 )
 
 _QUOTED_CHARS = 120
+
+# The question for each refusal, filled from its facts and ``wording``, the user's own text.
+REFUSAL_PROMPTS: dict[str, str] = {
+    "member_not_found": (
+        "'{member}' in '{wording}' could not be found as a U.S. state or a country, so the combined area "
+        "was not built and nothing was substituted. Name each part as a state, such as NY or New York, "
+        "or a country, such as France."
+    ),
+    "member_ambiguous": (
+        "'{member}' in '{wording}' names both a U.S. state and a country, so it was not guessed. "
+        "Write '{state_form}' for the state or '{country_form}' for the country."
+    ),
+    "member_too_large": (
+        "'{member}' ({name}) covers about {cells} data cells on its own, above the {max_cells}-cell limit, "
+        "because its boundary includes distant territory. Name a smaller area, such as the states or "
+        "provinces you mean."
+    ),
+    "combined_too_large": (
+        "The parts of '{wording}' are far apart: together they cover about {cells} data cells, above the "
+        "{max_cells}-cell limit. Ask for fewer or nearer parts."
+    ),
+    "empty_member": (
+        "'{wording}' has an empty part between its '+' signs. Write each part between the signs, as in NY + NJ."
+    ),
+    "distance_unreadable": (
+        "'{wording}' looks like a distance around a place, but the distance could not be read. "
+        "Write it as 'within 50 miles of Boston' or 'within 50 km of Boston'."
+    ),
+    "distance_unit_missing": (
+        "'{wording}' does not say whether {amount} means miles or kilometres, and nothing was assumed. "
+        "Write 'within {amount} miles of ...' or 'within {amount} km of ...'."
+    ),
+    "distance_unit_unknown": (
+        "'{unit}' in '{wording}' is not a distance unit that can be used. Use miles or km."
+    ),
+    "centre_is_region": (
+        "'{centre}' names a region, not a point, so an area within {radius} of it cannot be built. "
+        "Name a town or city to centre it on, or ask for '{centre}' on its own."
+    ),
+    "centre_not_found": (
+        "'{centre}' could not be found as a place, so there is no point to measure {radius} from, "
+        "and nothing was substituted. Check the spelling, or name a nearby town or city."
+    ),
+    "reaches_pole": (
+        "The area within {radius} of {centre} would reach the {pole}, {pole_km} km away, and an area holding a "
+        "pole cannot be drawn on a latitude-longitude grid. Ask for a radius under {pole_km} km."
+    ),
+    "crosses_antimeridian": (
+        "The area within {radius} of {centre} crosses the 180th meridian, where it cannot be drawn as one "
+        "latitude-longitude area. Ask for a smaller radius or another centre."
+    ),
+    "distance_too_large": (
+        "The area within {radius} of {centre} covers about {cells} data cells, above the {max_cells}-cell limit "
+        "that can be processed, so nothing was retrieved. Ask for a smaller radius."
+    ),
+}
+_PROMPT_CHARS = 500
 
 
 class ResolveParams(Params):
@@ -168,9 +225,30 @@ async def area_geometry_of(call: Call[Any], area_id: str) -> tuple[AreaFacts, di
     return facts, geometry
 
 
+def refusal_prompt(refused: PlaceRefused, wording: str) -> str | None:
+    """The question for a refusal, or None when its code or facts do not fill a prompt."""
+    template = REFUSAL_PROMPTS.get(refused.code)
+    if template is None:
+        return None
+    facts = {key: _quoted(value) for key, value in refused.facts.items()}
+    try:
+        text = template.format(**facts, wording=_quoted(wording))
+    except (KeyError, IndexError, ValueError):
+        return None
+    return text if len(text) <= _PROMPT_CHARS else text[: _PROMPT_CHARS - 1] + "…"
+
+
 async def _resolve(call: Call[ResolveParams]) -> CapabilityResult:
     place = call.params.place
-    region = await call.env.places.resolve(place)
+    try:
+        region = await call.env.places.resolve(place)
+    except PlaceRefused as refused:
+        prompt = refusal_prompt(refused, place)
+        if prompt is None:
+            raise failures.failure(failures.SOURCE_CATEGORIES["user_input"], name=call.capability.name) from None
+        return CapabilityResult(
+            status="needs_input", question=Question(kind="text", prompt=prompt), values={"refusal": refused.code},
+        )
     if region is None:
         return CapabilityResult(status="needs_input", question=Question(
             kind="text",

@@ -6,9 +6,9 @@ import hashlib
 import json
 import time
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol, get_args
 
 from tta_backend.harness.handles.payloads import PayloadStore
 from tta_backend.harness.handles.resolver import HandleResolver, OpenRetrieval
@@ -151,13 +151,59 @@ class Region:
     region_type: str | None = None
 
 
+PlaceRefusalCode = Literal[
+    # A combined area, such as "NY + NJ".
+    "member_not_found",  # facts: member
+    "member_ambiguous",  # facts: member, state_form, country_form
+    "member_too_large",  # facts: member, name, cells, max_cells
+    "combined_too_large",  # facts: cells, max_cells
+    "empty_member",
+    # A distance around a place, such as "within 50 km of Boston".
+    "distance_unreadable",
+    "distance_unit_missing",  # facts: amount
+    "distance_unit_unknown",  # facts: unit
+    "centre_is_region",  # facts: centre, radius
+    "centre_not_found",  # facts: centre, radius
+    "reaches_pole",  # facts: radius, centre, pole, pole_km
+    "crosses_antimeridian",  # facts: radius, centre
+    "distance_too_large",  # facts: radius, centre, cells, max_cells
+]
+PLACE_REFUSAL_CODES: frozenset[str] = frozenset(get_args(PlaceRefusalCode))
+MAX_FACT_CHARS = 120
+
+
+class PlaceRefused(Exception):
+    """A place request the host understood but refuses, such as a combined area
+    with a member it cannot find or a distance too large to process.
+
+    ``facts`` are short strings the host computed or cut from the user's own
+    wording, never exception text; each is cut to ``MAX_FACT_CHARS``. An
+    unexpected refusal is a plain ``user_input`` failure, so ``category`` is
+    kept for that path.
+    """
+
+    category = "user_input"
+
+    def __init__(self, code: PlaceRefusalCode, facts: Mapping[str, str] | None = None) -> None:
+        if code not in PLACE_REFUSAL_CODES:
+            raise ValueError(f"unknown place refusal code {code!r}")
+        super().__init__(f"the place request was refused: {code}")
+        self.code = code
+        self.facts = {
+            str(key): " ".join(str(value).split())[:MAX_FACT_CHARS] for key, value in (facts or {}).items()
+        }
+
+
 class Places(Protocol):
     """Resolves a place in the user's words to a region."""
 
     async def resolve(self, wording: str) -> Region | None:
-        """The region ``wording`` names, or None when it names none. A request
-        that is malformed, not merely unknown, raises an exception carrying a
-        string ``category`` of ``user_input``."""
+        """The region ``wording`` names, or None when it names none.
+
+        A request the host understood but refuses raises PlaceRefused with
+        its code and facts. Any other malformed request raises an exception
+        carrying a string ``category`` of ``user_input``.
+        """
         ...
 
 

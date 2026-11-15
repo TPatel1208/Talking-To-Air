@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import datetime
 import os
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from tta_backend.harness.handles.errors import HandleError
@@ -22,6 +22,7 @@ from tta_backend.harness.run_context import (
     Events,
     Identity,
     Limits,
+    PlaceRefused,
     Places,
     Region,
     RunContext,
@@ -135,15 +136,24 @@ class FakeEarthdata:
 
 
 class FakePlaces:
-    """Resolves the places it was given, matched case-insensitively; any other wording resolves to nothing."""
+    """Resolves the places it was given, matched case-insensitively; any other wording resolves to nothing.
 
-    def __init__(self, regions: dict[str, Region] | None = None) -> None:
+    Wording listed in ``refusals`` raises that PlaceRefused instead.
+    """
+
+    def __init__(
+        self, regions: dict[str, Region] | None = None, refusals: dict[str, PlaceRefused] | None = None
+    ) -> None:
         self.regions = {name.lower(): region for name, region in (regions or {}).items()}
+        self.refusals = {name.lower(): refused for name, refused in (refusals or {}).items()}
         self.asked: list[str] = []
 
     async def resolve(self, wording: str) -> Region | None:
         self.asked.append(wording)
-        return self.regions.get(" ".join(wording.lower().split()))
+        key = " ".join(wording.lower().split())
+        if key in self.refusals:
+            raise self.refusals[key]
+        return self.regions.get(key)
 
 
 def box_region(name: str, west: float, south: float, east: float, north: float, **kw: Any) -> Region:
@@ -211,6 +221,35 @@ async def make_run_env(
         limits=limits or TEST_LIMITS,
         places=places or FakePlaces(),
     )
+
+
+def env_factory(
+    payload_root: str | os.PathLike[str],
+    *,
+    earthdata: EarthdataSession | None = None,
+    compute: Compute | None = None,
+    limits: Limits | None = None,
+    open_retrieval: OpenRetrieval | None = None,
+    places: Places | None = None,
+) -> Callable[[RunContext, str], Awaitable[RunEnv]]:
+    """Builds the environment for a run already started, as a workflow runner asks for it."""
+    shared_earthdata = earthdata or FakeEarthdata()
+    shared_compute = compute or InlineCompute()
+    shared_places = places or FakePlaces()
+
+    async def build(context: RunContext, run_id: str) -> RunEnv:
+        return run_env(
+            context,
+            run_id=run_id,
+            payloads=PayloadStore(payload_root),
+            open_retrieval=open_retrieval or _no_retrievals,
+            earthdata=shared_earthdata,
+            compute=shared_compute,
+            limits=limits or TEST_LIMITS,
+            places=shared_places,
+        )
+
+    return build
 
 
 def make_run_context(

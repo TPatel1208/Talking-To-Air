@@ -6,6 +6,7 @@ import unittest
 from typing import Any
 from unittest import mock
 
+from tests.test_harness_areas import REFUSALS
 from tests.test_harness_grids import granule
 from tests.fake_earthdata_mcp import FakeEarthdataMCPServer, HandleVolume, build_fake_mcp
 from tta_backend.datasets.qa_flags import QA_VERIFIED
@@ -15,7 +16,7 @@ from tta_backend.harness.capabilities import invoke
 from tta_backend.harness.capabilities.sources import areas, satellite
 from tta_backend.harness.handles import Descriptor, HandleError, HandleRecord, ServicePayload
 from tta_backend.datasets.registry import load_registry
-from tta_backend.harness.run_context import IdempotencyKeyReused
+from tta_backend.harness.run_context import IdempotencyKeyReused, PlaceRefused
 from tta_backend.harness.testing import FixedClock, StaticCredentials, make_run_context, make_run_env
 from tta_backend.infrastructure.settings import Settings, get_settings
 from tta_backend.services.harness_host import (
@@ -39,6 +40,33 @@ class NoGeocoder:
 
     async def ageocode(self, location_name: str) -> None:
         return None
+
+
+class StubGeocoder:
+    """Answers a few fixed places, so the distance refusals can be reached without a live geocoder."""
+
+    PLACES = {
+        "nyc": (40.71, -74.0, "New York, United States"),
+        "suva": (-18.14, 178.44, "Suva, Fiji"),
+        "alert": (82.5, -62.3, "Alert, Nunavut"),
+    }
+
+    def __init__(self) -> None:
+        self.asked: list[str] = []
+
+    def geocode(self, location_name: str) -> dict[str, Any] | None:
+        return self._hit(location_name)
+
+    async def ageocode(self, location_name: str) -> dict[str, Any] | None:
+        return self._hit(location_name)
+
+    def _hit(self, location_name: str) -> dict[str, Any] | None:
+        self.asked.append(location_name)
+        found = self.PLACES.get(location_name.strip().lower())
+        if found is None:
+            return None
+        latitude, longitude, name = found
+        return {"latitude": latitude, "longitude": longitude, "display_name": name, "polygon": None, "bbox": None}
 
 
 def retrieval_record(handle: str, user: str = "user-a") -> HandleRecord:
@@ -176,6 +204,40 @@ class HostAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(-76 < west < east < -73 and 38 < south < north < 42)
         self.assertIn(region.geometry["type"], ("Polygon", "MultiPolygon"))
         self.assertIsNone(await places.resolve("Nowhere-in-particular"))
+
+    async def test_the_resolvers_refusals_become_place_refusals_with_their_facts(self):
+        places = ResolverPlaces(RegionResolver(geocoding_service=StubGeocoder()))  # type: ignore[arg-type]
+        for code, wording, facts, _ in REFUSALS:
+            with self.subTest(code=code):
+                with self.assertRaises(PlaceRefused) as caught:
+                    await places.resolve(wording)
+                self.assertEqual((caught.exception.code, caught.exception.facts), (code, facts))
+                self.assertIsNone(caught.exception.__cause__)
+        region = await places.resolve("within 50 km of NYC")
+        assert region is not None
+        self.assertIn("New York", region.name)
+
+    async def test_working_out_a_refusal_does_not_ask_the_geocoder_again(self):
+        geocoder = StubGeocoder()
+        places = ResolverPlaces(RegionResolver(geocoding_service=geocoder))  # type: ignore[arg-type]
+        for wording in ("within 50 km of Atlantis", "within 3000 miles of NYC"):
+            geocoder.asked.clear()
+            with self.subTest(wording=wording), self.assertRaises(PlaceRefused):
+                await places.resolve(wording)
+            self.assertEqual(len(geocoder.asked), 1, geocoder.asked)
+        # Each call asks afresh: a miss is not remembered across calls.
+        geocoder.asked.clear()
+        with self.assertRaises(PlaceRefused):
+            await places.resolve("within 50 km of Atlantis")
+        self.assertEqual(len(geocoder.asked), 1)
+
+    async def test_a_refused_place_reaches_the_capability_as_a_question(self):
+        places = ResolverPlaces(RegionResolver(geocoding_service=StubGeocoder()))  # type: ignore[arg-type]
+        env = await make_run_env(os.path.join(self._tmp.name, "payloads"), places=places)
+        result = await invoke(env, areas.resolve, {"place": "NY + Wakanda"}, step="input.area")
+        self.assertEqual(result.status, "needs_input")
+        assert result.question is not None
+        self.assertTrue(result.question.prompt.startswith("'Wakanda' in 'NY + Wakanda' could not be found"))
 
     async def test_get_data_runs_end_to_end_over_the_host_ports(self):
         places = ResolverPlaces(RegionResolver(geocoding_service=NoGeocoder()))  # type: ignore[arg-type]
