@@ -25,13 +25,20 @@ from tta_backend.harness.release import HARNESS_RELEASE
 from tta_backend.harness.results import RUN_ID_PATTERN, Mode
 
 RunStatus = Literal[
-    "running", "done", "needs_input", "insufficient_evidence", "failed", "cancelled"
+    "running",
+    "done",
+    "needs_input",
+    "waiting",
+    "insufficient_evidence",
+    "failed",
+    "cancelled",
 ]
 EntryKind = Literal["use", "ask", "agent", "workflow", "stop"]
 EntryStatus = Literal["done", "failed", "skipped", "waiting"]
 
 _RUN_STATUSES = frozenset(get_args(RunStatus))
-# A run in one of these is over and its record is final; needs_input is a pause.
+# A run in one of these is over and its record is final; needs_input and waiting are pauses.
+_PAUSED = frozenset({"needs_input", "waiting"})
 _TERMINAL = frozenset({"done", "failed", "cancelled", "insufficient_evidence"})
 _KINDS = frozenset(get_args(EntryKind))
 _ENTRY_STATUSES = frozenset(get_args(EntryStatus))
@@ -254,7 +261,7 @@ class TraceStore(Protocol):
     user and id, so two users' runs never collide.
 
     Entries are written only while a run is ``running``. A run paused in
-    ``needs_input`` takes no entries until ``resume_run``; a finished run's
+    ``needs_input`` or ``waiting`` takes no entries until ``resume_run``; a finished run's
     record is final, so every write to it raises RunClosed.
     """
 
@@ -265,7 +272,7 @@ class TraceStore(Protocol):
     ) -> Run: ...
 
     async def resume_run(self, user_id: str, run_id: str) -> Run:
-        """Return a run paused in ``needs_input`` to ``running``."""
+        """Return a run paused in ``needs_input`` or ``waiting`` to ``running``."""
         ...
 
     async def reserve_seq(self, user_id: str, run_id: str) -> int:
@@ -308,7 +315,7 @@ def _require_unfinished(run_id: str, status: str) -> None:
 
 
 def _require_paused(run_id: str, status: str) -> None:
-    if status != "needs_input":
+    if status not in _PAUSED:
         raise RunClosed(run_id, status)
 
 

@@ -9,7 +9,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from tta_backend.harness.release import HARNESS_RELEASE
 
-ResultStatus = Literal["done", "needs_input", "insufficient_evidence", "failed"]
+ResultStatus = Literal[
+    "done", "needs_input", "waiting", "insufficient_evidence", "failed", "cancelled"
+]
 ModeKind = Literal["validated", "draft", "exploratory"]
 
 # The one run-id format: trace runs and the result that points at one share it.
@@ -109,3 +111,15 @@ class Result(_Model):
     gaps: tuple[Gap, ...] = ()
     trace_id: str = Field(pattern=RUN_ID_PATTERN.pattern)
     harness_release: str = Field(default=HARNESS_RELEASE, min_length=1)
+    # Why the result is not done, in fixed wording.
+    reason: str | None = None
+    # The typed question a needs_input result waits on, as plain JSON.
+    question: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def _check(self) -> Self:
+        if self.question is not None and self.status != "needs_input":
+            raise ValueError("a question comes only with needs_input")
+        if self.reason is not None and self.status == "done":
+            raise ValueError("a done result has no reason")
+        return self

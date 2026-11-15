@@ -94,13 +94,42 @@ class ResultTests(unittest.TestCase):
 
     def test_status_and_trace_id_are_checked(self):
         with self.assertRaises(ValidationError):
-            self._result(status="cancelled")
+            self._result(status="paused")
         with self.assertRaises(ValidationError):
             self._result(trace_id="abc")
+        self.assertEqual(self._result(status="cancelled", reason="The run was cancelled.").status, "cancelled")
 
     def test_unknown_fields_are_refused(self):
         with self.assertRaises(ValidationError):
             self._result(extra=1)
+
+    def test_waiting_is_a_status(self):
+        r = self._result(status="waiting", reason="data is still loading")
+        self.assertEqual((r.status, r.reason), ("waiting", "data is still loading"))
+
+    def test_reason_and_question_default_to_none(self):
+        r = self._result()
+        self.assertEqual((r.reason, r.question), (None, None))
+
+    def test_question_only_with_needs_input(self):
+        question = {"prompt": "Which region?", "options": ["NJ", "NY"]}
+        r = self._result(status="needs_input", question=question)
+        self.assertEqual(r.question, question)
+        self.assertIsNone(self._result(status="needs_input").question)
+        for status in ("done", "waiting", "insufficient_evidence", "failed", "cancelled"):
+            with self.subTest(status), self.assertRaises(ValidationError):
+                self._result(status=status, question=question)
+
+    def test_done_has_no_reason(self):
+        with self.assertRaises(ValidationError):
+            self._result(status="done", reason="because")
+        for status in ("needs_input", "waiting", "insufficient_evidence", "failed", "cancelled"):
+            with self.subTest(status):
+                self.assertEqual(self._result(status=status, reason="why").reason, "why")
+
+    def test_question_round_trips_through_json(self):
+        r = self._result(status="needs_input", question={"options": [1, 2]}, reason="ambiguous")
+        self.assertEqual(Result.model_validate_json(r.model_dump_json()), r)
 
 
 if __name__ == "__main__":

@@ -24,6 +24,7 @@ from tta_backend.harness.trace import (
 )
 
 T0 = datetime.datetime(2026, 11, 11, 14, 0, 0, tzinfo=datetime.UTC)
+PAUSED = ("needs_input", "waiting")
 TERMINAL = ("done", "failed", "cancelled", "insufficient_evidence")
 
 
@@ -123,27 +124,40 @@ class TraceStoreContract:
                 self.assertEqual(len(await self.store.entries("alice", run_id)), 1)
 
     async def test_paused_run_takes_no_entries_until_resumed(self):
-        await self.store.start_run(run())
-        await self.store.append("alice", entry(kind="ask", capability=None, status="waiting"))
-        paused = await self.store.finish_run("alice", RUN_A, "needs_input", at(5))
-        self.assertEqual((paused.status, paused.ended), ("needs_input", at(5)))
-        with self.assertRaises(RunClosed):
-            await self.store.append("alice", entry())
-        with self.assertRaises(RunClosed):
-            await self.store.reserve_seq("alice", RUN_A)
-        resumed = await self.store.resume_run("alice", RUN_A)
-        self.assertEqual((resumed.status, resumed.ended), ("running", None))
-        self.assertEqual(await self.store.get_run("alice", RUN_A), resumed)
-        self.assertEqual((await self.store.append("alice", entry())).seq, 2)
+        for status in PAUSED:
+            with self.subTest(status):
+                run_id = rid(f"paused-{status}")
+                await self.store.start_run(run(run_id))
+                await self.store.append(
+                    "alice", entry(run_id, kind="ask", capability=None, status="waiting")
+                )
+                paused = await self.store.finish_run("alice", run_id, status, at(5))
+                self.assertEqual((paused.status, paused.ended), (status, at(5)))
+                with self.assertRaises(RunClosed):
+                    await self.store.append("alice", entry(run_id))
+                with self.assertRaises(RunClosed):
+                    await self.store.reserve_seq("alice", run_id)
+                resumed = await self.store.resume_run("alice", run_id)
+                self.assertEqual((resumed.status, resumed.ended), ("running", None))
+                self.assertEqual(await self.store.get_run("alice", run_id), resumed)
+                self.assertEqual((await self.store.append("alice", entry(run_id))).seq, 2)
 
-    async def test_resume_is_only_from_needs_input(self):
+    async def test_resume_is_only_from_a_pause(self):
         await self.store.start_run(run())
         with self.assertRaises(RunClosed):
             await self.store.resume_run("alice", RUN_A)
-        await self.store.finish_run("alice", RUN_A, "needs_input", at(5))
-        await self.store.resume_run("alice", RUN_A)
-        with self.assertRaises(RunClosed):
-            await self.store.resume_run("alice", RUN_A)
+        for status in PAUSED:
+            with self.subTest(status):
+                await self.store.finish_run("alice", RUN_A, status, at(5))
+                await self.store.resume_run("alice", RUN_A)
+                with self.assertRaises(RunClosed):
+                    await self.store.resume_run("alice", RUN_A)
+
+    async def test_waiting_run_can_move_to_needs_input_or_finish(self):
+        await self.store.start_run(run())
+        await self.store.finish_run("alice", RUN_A, "waiting", at(5))
+        done = await self.store.finish_run("alice", RUN_A, "done", at(6))
+        self.assertEqual((done.status, done.ended), ("done", at(6)))
 
     async def test_paused_run_can_be_cancelled(self):
         await self.store.start_run(run())

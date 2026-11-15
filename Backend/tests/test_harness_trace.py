@@ -113,6 +113,11 @@ class RunTests(unittest.TestCase):
         self.assertEqual((run.status, run.harness_release), ("running", HARNESS_RELEASE))
         self.assertRegex(run.id, RUN_ID_PATTERN)
 
+    def test_waiting_is_a_run_status(self):
+        run = Run(id=RUN_ID, user_id="u", conversation_id="c",
+                  mode=Mode.exploratory(), started=T0, status="waiting")
+        self.assertEqual(run.status, "waiting")
+
     def test_validation(self):
         base = {"id": RUN_ID, "user_id": "u", "conversation_id": "c",
                 "mode": Mode.validated("map", 1), "started": T0}
