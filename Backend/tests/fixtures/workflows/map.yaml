@@ -1,0 +1,22 @@
+name: map
+version: 1
+status: draft
+description: Map one quantity over an area for a date or date range.
+examples:
+  - Plot TEMPO NO2 over New Jersey for 2024-01-15.
+inputs:
+  quantity: {type: quantity, ask: "What should the map show?"}
+  area:     {type: area, ask: "Which area?"}
+  dates:    {type: date_range, ask: "Which date or dates?"}
+products:
+  quantity: registry_default
+steps:
+  - id: data
+    use: sources.satellite.get_data
+    with: {quantity: $quantity, area: $area, dates: $dates, date_role: range}
+  - id: figure
+    use: render.map
+    with: {grid: $data}
+outputs:
+  figures: [$figure]
+  data: [$data]

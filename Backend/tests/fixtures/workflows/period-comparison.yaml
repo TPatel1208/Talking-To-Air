@@ -1,0 +1,46 @@
+name: period-comparison
+version: 1
+status: draft
+description: Compare one quantity over an area between two periods, with the difference.
+examples:
+  - How did NO2 over New Jersey in July 2024 compare with July 2023?
+inputs:
+  quantity: {type: quantity, ask: "Which quantity?"}
+  area:     {type: area, ask: "Which area?"}
+  first:    {type: date_range, ask: "Which is the first period?"}
+  second:   {type: date_range, ask: "Which is the second period?"}
+  change:   {type: choice, options: [absolute, percent], default: absolute}
+products:
+  quantity: [TEMPO_NO2, TROPOMI_NO2, OMI_NO2]
+limits:
+  min_coverage: 0.3
+steps:
+  - id: a
+    use: sources.satellite.get_data
+    with: {quantity: $quantity, area: $area, dates: $first, date_role: range, min_valid_fraction: limits.min_coverage}
+    method: "{product} was retrieved for {area} over the first period and screened with its quality flag."
+  - id: b
+    use: sources.satellite.get_data
+    with: {quantity: $quantity, area: $area, dates: $second, date_role: range, product: $a.product, min_valid_fraction: limits.min_coverage}
+    method: The second period uses {a.product}, the same product as the first.
+  - id: mean_a
+    use: operations.aggregate_time
+    with: {data: $a, stat: mean}
+  - id: mean_b
+    use: operations.aggregate_time
+    with: {data: $b}
+  - id: diff
+    use: operations.difference
+    with: {a: $mean_a, b: $mean_b, change: $change}
+    method: The difference is the second period's mean minus the first's, cell by cell.
+  - id: figure
+    use: render.map
+    with: {grid: $diff, style: diverging, title: Change between the two periods}
+  - id: stat
+    use: operations.statistic
+    with: {data: $diff, stat: mean}
+outputs:
+  findings:
+    - {name: mean_change, value: $stat.summary.value, unit: $diff.unit}
+  figures: [$figure]
+  data: [$diff, $mean_a, $mean_b]
