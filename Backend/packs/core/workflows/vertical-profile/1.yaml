@@ -1,0 +1,38 @@
+name: vertical-profile
+version: 1
+status: draft
+description: Draw a layered quantity, such as the ozone profile, against pressure or altitude over an area.
+examples:
+  - Show the ozone vertical profile over Colorado on 2024-07-15.
+  - What does the TEMPO ozone profile look like over Houston for the week of 2024-08-05?
+
+inputs:
+  quantity: {type: quantity, default: o3_profile}
+  area:     {type: area, ask: "Which area?"}
+  dates:    {type: date_range, ask: "Which date or dates?"}
+  # A product or instrument the user named; absent means the registry chooses.
+  named:    {type: text, default: null}
+
+# Only a layered product can be profiled.
+products:
+  quantity: [TEMPO_O3PROF]
+
+limits:
+  min_coverage: 0.05
+
+steps:
+  - id: data
+    use: sources.satellite.get_data
+    with: {quantity: $quantity, named: $named, area: $area, dates: $dates, date_role: subject, min_valid_fraction: limits.min_coverage}
+  - id: profile
+    use: operations.vertical_profile
+    with: {grid: $data}
+  - id: figure
+    use: render.profile
+    with: {profile: $profile}
+
+outputs:
+  findings:
+    - {name: layers, value: $profile.summary.layers, unit: layers}
+  figures: [$figure]
+  data: [$profile]

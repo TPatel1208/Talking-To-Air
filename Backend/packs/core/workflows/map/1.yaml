@@ -1,0 +1,33 @@
+name: map
+version: 1
+status: draft
+description: Map one quantity over an area for a date or date range.
+examples:
+  - Plot TEMPO NO2 over New Jersey for 2024-01-15.
+  - Show me tropospheric ozone over the Northeast for the first week of July 2024.
+  - Map OMI_NO2 over Texas on 2023-08-20.
+
+inputs:
+  quantity: {type: quantity, ask: "What should the map show?"}
+  area:     {type: area, ask: "Which area?"}
+  dates:    {type: date_range, ask: "Which date or dates?"}
+  # A product or instrument the user named; absent means the registry chooses.
+  named:    {type: text, default: null}
+
+products:
+  quantity: registry_default
+
+limits:
+  min_coverage: 0.05
+
+steps:
+  - id: data
+    use: sources.satellite.get_data
+    with: {quantity: $quantity, named: $named, area: $area, dates: $dates, date_role: subject, min_valid_fraction: limits.min_coverage}
+  - id: figure
+    use: render.map
+    with: {grid: $data}
+
+outputs:
+  figures: [$figure]
+  data: [$data]
