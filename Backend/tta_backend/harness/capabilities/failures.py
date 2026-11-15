@@ -100,6 +100,23 @@ class JobStillRunning(StepFailure):
         self.still_running = tuple(pending)
 
 
+class JobFailed(StepFailure):
+    """A two-phase capability's job ended at the provider without a result: it
+    failed, or the service no longer holds it.
+
+    Completing the same job again cannot succeed, so a retry begins the step
+    again with a new ``attempt``, which submits a new job. The entry is
+    recorded as a retryable ``source_unavailable`` failure holding
+    ``{"job": ..., <state>: [job ids]}``.
+    """
+
+    def __init__(self, reason: str, *, job: Mapping[str, Any], state: str, job_ids: Iterable[str]) -> None:
+        ids = list(dict.fromkeys(job_ids))
+        super().__init__(FailureCategory.SOURCE_UNAVAILABLE, reason, result={"job": dict(job), state: ids})
+        self.job = dict(job)
+        self.job_ids = tuple(ids)
+
+
 def failure(rule: tuple[FailureCategory, str], **facts: str) -> StepFailure:
     category, wording = rule
     return StepFailure(category, wording.format(**facts))

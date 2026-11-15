@@ -13,6 +13,7 @@ from tests.test_harness_grids import LATS, LONS, NJ, granule
 from tta_backend.datasets.qa_flags import QA_VERIFIED
 from tta_backend.datasets.registry import load_registry
 from tta_backend.harness.capabilities import CapabilityRegistry, CapabilityResult, JobStillRunning, begin, complete, invoke
+from tta_backend.harness.capabilities.failures import JobFailed
 from tta_backend.harness.capabilities.sources import areas, satellite
 from tta_backend.harness.handles import Descriptor, HandleRecord
 from tta_backend.harness.run_context import Limits, RunEnv
@@ -538,6 +539,24 @@ class WaitingTests(SatelliteCase):
         failure = await self.failure(self.params())
         self.assertEqual(failure.category, FailureCategory.SOURCE_UNAVAILABLE)
         self.assertNotIn("provider says no", failure.reason)
+        self.assertIsInstance(failure, JobFailed)
+        self.assertEqual(failure.result["failed"], ["job_1"])
+
+    async def test_a_job_the_provider_cancelled_ends_the_step_and_is_not_retried(self):
+        self.service.statuses = [{"status": "cancelled"}]
+        failure = await self.failure(self.params())
+        self.assertNotIsInstance(failure, JobFailed)
+        self.assertEqual(failure.category, FailureCategory.BAD_INPUT)
+        self.assertEqual(failure.reason, "The retrieval of TEMPO_NO2 was cancelled at the data provider.")
+        self.assertEqual(failure.result["cancelled"], ["job_1"])
+
+    async def test_a_job_the_service_no_longer_holds_is_a_dead_job_to_begin_again(self):
+        self.service.statuses = [{"status": "expired"}]
+        failure = await self.failure(self.params())
+        self.assertIsInstance(failure, JobFailed)
+        self.assertEqual(failure.category, FailureCategory.SOURCE_UNAVAILABLE)
+        self.assertEqual(failure.result["expired"], ["job_1"])
+        self.assertIn("no longer held by the data service", failure.reason)
 
     async def test_transient_poll_failures_are_retried_a_bounded_number_of_times(self):
         calls = {"n": 0}

@@ -30,9 +30,11 @@ days without granules, or with nothing valid after masking, are dropped and
 listed in ``values.dropped_dates`` (the second kind also in
 ``values.dropped_after_masking``).
 
-A paused job is cancelled at the service before the step fails. A failed
-job ends the step as ``source_unavailable``; a retry begins the step again
-with a new ``attempt``, so the failed job is not answered again.
+A paused job is cancelled at the service before the step fails, and a job the
+provider reports cancelled ends the step with that reason; neither is retried.
+A job that failed at the provider, or that the service no longer holds, raises
+``JobFailed`` (``source_unavailable``); a retry begins the step again with a
+new ``attempt``, so the dead job is not answered again.
 """
 from __future__ import annotations
 
@@ -65,7 +67,7 @@ from tta_backend.domain.earthdata.retrieval import (
 )
 from tta_backend.harness.capabilities.call import Call
 from tta_backend.harness.capabilities.definition import Capability, Params, handle_param
-from tta_backend.harness.capabilities.failures import JobStillRunning
+from tta_backend.harness.capabilities.failures import JobFailed, JobStillRunning
 from tta_backend.harness.capabilities.grids import open_grid
 from tta_backend.harness.capabilities.products import (
     BBox,
@@ -595,18 +597,20 @@ async def _wait(call: Call[Any], job: Mapping[str, Any], product: str) -> dict[s
                 ready[job_id] = handle
                 pending.remove(job_id)
             elif state == "failed":
-                # A retry begins the step again with a new attempt, so the failed job is not reused.
-                raise StepFailure(
-                    FailureCategory.SOURCE_UNAVAILABLE,
-                    f"The retrieval of {product} failed at the data provider.",
-                    result={"job": dict(job), "failed": [job_id]},
+                raise JobFailed(
+                    f"The retrieval of {product} failed at the data provider.", job=job, state="failed", job_ids=[job_id],
                 )
-            elif state in TERMINAL_STATUSES:
-                # As for a failed job, running the step again takes a new attempt.
+            elif state == "cancelled":
+                # Stopped at the provider: the step ends with that reason and is not tried again.
                 raise StepFailure(
                     FailureCategory.BAD_INPUT,
+                    f"The retrieval of {product} was cancelled at the data provider.",
+                    result={"job": dict(job), "cancelled": [job_id]},
+                )
+            elif state in TERMINAL_STATUSES:
+                raise JobFailed(
                     f"The retrieval job for {product} is no longer held by the data service; run the step again.",
-                    result={"job": dict(job), state: [job_id]},
+                    job=job, state=state, job_ids=[job_id],
                 )
         if not pending:
             return ready
