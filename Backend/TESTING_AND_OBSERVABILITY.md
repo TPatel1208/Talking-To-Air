@@ -138,3 +138,65 @@ Relative dates are measured against the run's own clock, which the outcome
 records (the real UTC date at the start and end of the run). The "yesterday"
 case accepts an EPA AQS call dated the day before either, so a run that
 crosses midnight UTC still passes, but a "yesterday" sent as today fails.
+
+### The benchmark through the harness workflows (no model)
+
+`benchmark/adapters/workflow.py` runs the same cases through the agent harness's
+workflow runner instead of a model. A case opts in with two optional fields:
+`workflow` (a workflow name) and `workflow_inputs` (a dict, or a function of the
+run's date for relative dates such as "yesterday"). The adapter runs that
+workflow directly on the fake data boundary (the earthdata fake behind the app's
+own `McpEarthdataSession`, EPA AQS behind a capturing fetch, an offline
+geocoder, memory stores and an in-memory checkpointer) and fills the `Outcome`
+the existing checks read. The answer text is composed from the result envelope's
+fixed wording (mode label, findings, disclosures, gaps, and the reason when the
+run is not done), which is what a supervisor will later be handed. A case that
+names no workflow is not run and is listed as not covered, never as failed.
+
+```bash
+cd Backend
+uv run python -m benchmark.runner --system workflow
+docker compose --profile benchmark run --rm benchmark python -m benchmark.runner --system workflow
+```
+
+It needs no model key or network, and prints a table per workflow (cases
+covered, passed, the first failed check of each failing case) followed by the
+uncovered case ids. Its table is not comparable with the 17/20 gate and is
+never checked against it. Results are saved under `benchmark-results/workflow/`,
+apart from the current system's runs.
+
+`benchmark/runner.py` also has a command line: `--system workflow` as above,
+and `--system current` (the default), which runs the current system through
+`run_suite`, prints its table, saves it under `benchmark-results/` and exits
+non-zero below the gate. It needs models and Postgres, like the pytest eval.
+`--results-dir` overrides the folder (`BENCHMARK_RESULTS_DIR` also works).
+
+`e2e_satellite_plot` is expected to fail through this adapter: it checks the
+current system's stage names (`search`, `aoi`, ...), and the harness narrates
+its own (`workflow.map`, `sources.satellite.get_data`, ...). A needs_input
+result counts as a completed run (a refused area is an answer), except when
+the adapter left out a connector or an input, which is recorded as an error.
+`tests/test_benchmark_workflow_adapter.py` pins what each covered case does
+today, failures included.
+
+#### The shared fakes changed
+
+The fakes both systems run against were made to answer more like the real
+earthdata service, for the workflow adapter's sake:
+
+- `search_datasets` also returns a `datasets` list whose entry carries the
+  registry collection's `concept_id`, when the query is a concept id, a
+  registry short name or a registry key such as "TEMPO NO2".
+- Retrieved files name their science variable as the product's registry
+  `primary_var` does (`Tropospheric_NO2`, `vertical_column_troposphere`,
+  `column_amount_o3`), and `describe_dataset` for those cases lists that same
+  variable, in the file's units, with the registry's fill and valid range.
+- The two period files carry a one-step time axis.
+- The OTC ozone case serves a full OTC-sized grid in the product's valid
+  range of Dobson units, on its own handle, so the case now draws a map where
+  it used to find too little valid data.
+- The TROPOMI satellite-plot and cross-source cases read a new handle
+  `obs_e2e_tropomi_1`; `obs_e2e_satellite_1` is unchanged.
+
+The current system's recorded baseline (16/20) predates these changes. Re-run
+it before quoting it again.

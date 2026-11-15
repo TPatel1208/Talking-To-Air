@@ -11,9 +11,13 @@ import json
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from benchmark.pricing import estimate_cost
-from benchmark.scoring import CaseResult, format_results_table
+from benchmark.scoring import CaseResult, format_results_table, format_workflow_table
+
+if TYPE_CHECKING:
+    from benchmark.runner import WorkflowSuiteRun
 
 
 def case_record(result: CaseResult) -> dict:
@@ -54,4 +58,23 @@ def write_report(results: list[CaseResult], directory: str | Path, *, now: datet
     (folder / "table.txt").write_text(format_results_table(results) + "\n", encoding="utf-8")
     records = [case_record(result) for result in results]
     (folder / "cases.json").write_text(json.dumps(records, indent=2, default=str) + "\n", encoding="utf-8")
+    return folder
+
+
+def write_workflow_report(run: WorkflowSuiteRun, directory: str | Path, *, now: datetime | None = None) -> Path:
+    """Write ``table.txt`` and ``cases.json`` for a workflow-adapter run into a new timestamped folder under ``directory``.
+
+    Each record adds the workflow, its mode label and its findings; ``uncovered.json`` lists the cases skipped.
+    """
+    stamp = (now or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
+    folder = Path(directory) / stamp
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "table.txt").write_text(format_workflow_table(run.results, run.uncovered) + "\n", encoding="utf-8")
+    records = [
+        {**case_record(result), "workflow": result.case.workflow, "mode": result.outcome.mode,
+         "findings": result.outcome.findings}
+        for result in run.results
+    ]
+    (folder / "cases.json").write_text(json.dumps(records, indent=2, default=str) + "\n", encoding="utf-8")
+    (folder / "uncovered.json").write_text(json.dumps(run.uncovered, indent=2) + "\n", encoding="utf-8")
     return folder

@@ -116,3 +116,37 @@ def format_results_table(results: list[CaseResult]) -> str:
     if unpriced:
         lines.append(f"no price for: {', '.join(unpriced)}")
     return "\n".join(lines)
+
+
+WORKFLOW_TABLE_HEADER = (
+    "Workflow adapter: no model. Each case names the workflow that answers it and its inputs, and the "
+    "harness runs it on the fake data boundary.\n"
+    "These results are not compared with the pass threshold or the current system's results."
+)
+
+
+def format_workflow_table(results: list[CaseResult], uncovered: list[str]) -> str:
+    """One row per workflow (cases covered, passed, failed), each failing case's first failed
+    check beneath it, then the ids of the cases no workflow covers."""
+    by_workflow: dict[str, list[CaseResult]] = {}
+    for result in results:
+        by_workflow.setdefault(result.case.workflow or "", []).append(result)
+    header = f"{'workflow':<20} {'covered':>7} {'passed':>6} {'failed':>6}"
+    lines = [WORKFLOW_TABLE_HEADER, "", header, "-" * len(header)]
+    for workflow in sorted(by_workflow):
+        group = by_workflow[workflow]
+        passed = sum(1 for result in group if result.passed)
+        lines.append(f"{workflow:<20} {len(group):>7} {passed:>6} {len(group) - passed:>6}")
+        for result in group:
+            if result.passed:
+                continue
+            failure = result.first_failure
+            reason = failure.reason if failure is not None else (
+                f"over the {CATEGORY_BUDGETS[result.case.category]:.0f}s budget"
+            )
+            lines.append(f"    FAIL {result.case.id}: {reason}")
+    passed_total = sum(1 for result in results if result.passed)
+    lines.append("-" * len(header))
+    lines.append(f"{'total':<20} {len(results):>7} {passed_total:>6} {len(results) - passed_total:>6}")
+    lines.append(f"not covered ({len(uncovered)}): {', '.join(uncovered) if uncovered else 'none'}")
+    return "\n".join(lines)

@@ -855,7 +855,8 @@ class CoreImportsTests(unittest.TestCase):
         code = (
             "import sys\n"
             "import benchmark.outcome, benchmark.checks, benchmark.cases, benchmark.scoring, benchmark.runner\n"
-            "import benchmark.fake_earthdata, benchmark.adapters.current\n"
+            "import benchmark.report, benchmark.fake_earthdata, benchmark.adapters.current\n"
+            "import benchmark.adapters.workflow\n"
             "assert 'tta_backend' not in sys.modules, 'tta_backend was imported'\n"
         )
 

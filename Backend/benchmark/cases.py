@@ -9,7 +9,7 @@ own tools.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from typing import Any, Awaitable, Callable
 
 from benchmark.checks import (
@@ -32,6 +32,8 @@ from benchmark.checks import (
 
 Handler = Callable[..., Awaitable[dict]]
 AqsGetHandler = Callable[[str, dict], Awaitable[dict]]
+# A workflow's inputs, or a function of the run's date for relative dates.
+WorkflowInputs = dict[str, Any] | Callable[[date], dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -54,6 +56,17 @@ class BenchmarkCase:
     # Stub for the EPA AQS request function; None answers every request with an empty success.
     aqs_get: AqsGetHandler | None = None
     patches: tuple[PatchSpec, ...] = field(default_factory=tuple)
+    # The harness workflow that answers this case and the inputs it is run with;
+    # None when no workflow does. Only the workflow adapter reads them.
+    workflow: str | None = None
+    workflow_inputs: WorkflowInputs | None = None
+
+    def inputs_for(self, today: date) -> dict[str, Any]:
+        """The workflow inputs, with a callable given the run's date."""
+        inputs = self.workflow_inputs
+        if inputs is None:
+            return {}
+        return dict(inputs(today) if callable(inputs) else inputs)
 
 
 # Everything a satellite workflow narrates, in order; repeats and extras are fine.
@@ -66,6 +79,12 @@ NO_DATA_PATTERN = (
     r"|not available|unavailable|could ?n[o']t find|does ?n[o']t exist|did ?n[o']t find"
 )
 
+# The science variables of the products the harness chooses for the covered cases.
+TROPOMI_NO2_VARIABLE = "Tropospheric_NO2"
+TEMPO_NO2_VARIABLE = "vertical_column_troposphere"
+TEMPO_O3_VARIABLE = "column_amount_o3"
+NO2_FILE_UNITS = "mol/m^2"
+
 # What the geocoder returns for a region refusal case, so a buffer around
 # "NYC" centres on a real point without a live Nominatim call.
 GEOCODER_HIT = {
@@ -77,6 +96,24 @@ GEOCODER_HIT = {
 }
 
 
+def _registry_entry(query: str, handle: str) -> dict[str, Any] | None:
+    """The search hit for the registry collection ``query`` names, as the real service lists one.
+
+    ``query`` is a collection's concept id or its registry key spelled as free
+    text ("TEMPO NO2"); any other query names no collection.
+    """
+    from tta_backend.datasets.registry import load_registry
+
+    wanted = query.strip().upper().replace(" ", "_")
+    for key, cfg in load_registry().items():
+        if query.strip() in (cfg.collection_id, cfg.short_name) or wanted == key.upper():
+            return {
+                "handle": handle, "dataset_handle": handle, "concept_id": cfg.collection_id,
+                "short_name": cfg.short_name or key, "title": cfg.description or key,
+            }
+    return None
+
+
 def _standard_handlers(
     *,
     dataset_handle: str = "dataset_1",
@@ -84,18 +121,36 @@ def _standard_handlers(
     obs_handle: str = "obs_1",
     granule_count: int = 5,
     estimated_bytes: int = 100,
+    product: str | None = None,
+    units: str | None = None,
 ) -> dict[str, Handler]:
     """The discovery, area, coverage, size, retrieve handlers most cases share.
-    A case overrides entries to script a scenario (zero granules, an over-cap estimate)."""
+    A case overrides entries to script a scenario (zero granules, an over-cap estimate).
+
+    ``product`` is the registry key of the product the case's file holds; the
+    dataset then describes that product's science variable (with its registry
+    fill and valid range) in the file's ``units``, as the real service does.
+    """
 
     async def search_datasets(query, filters, workspace_id):
-        return {"dataset_handle": dataset_handle, "short_name": query, "title": query}
+        reply: dict[str, Any] = {"dataset_handle": dataset_handle, "short_name": query, "title": query}
+        entry = _registry_entry(query, dataset_handle)
+        if entry is not None:
+            reply["datasets"] = [entry]
+        return reply
 
     async def describe_dataset(dataset_handle, detail, workspace_id):
-        return {
-            "dataset_handle": dataset_handle,
-            "variables": [{"name": "no2", "fill_value": -9999, "valid_min": 0, "valid_max": 1}],
-        }
+        if product is None:
+            variable = {"name": "no2", "fill_value": -9999, "valid_min": 0, "valid_max": 1}
+        else:
+            from tta_backend.datasets.registry import load_registry
+
+            cfg = load_registry()[product]
+            variable = {
+                "name": cfg.primary_var.rsplit("/", 1)[-1], "units": units or cfg.units,
+                "fill_value": cfg.fill_value, "valid_min": cfg.valid_min, "valid_max": cfg.valid_max,
+            }
+        return {"dataset_handle": dataset_handle, "variables": [variable]}
 
     async def define_area_of_interest(location, workspace_id):
         return {"aoi_handle": aoi_handle, "location": location}
@@ -172,6 +227,14 @@ async def _requested_day_aqs_get(endpoint: str, params: dict) -> dict:
     return {"Header": [{"status": "success"}], "Data": []}
 
 
+def _dates(start: str, end: str | None = None) -> dict[str, str]:
+    return {"start": start, "end": end or start}
+
+
+def _days_before(today: date, days: int) -> str:
+    return (today - timedelta(days=days)).isoformat()
+
+
 def _covers(tool: str, *days: tuple[int, int, int]) -> tuple[Check, ...]:
     return tuple(TimeRangeCovers(tool, date(*day)) for day in days)
 
@@ -192,18 +255,20 @@ def build_cases(volume) -> list[BenchmarkCase]:
         lons = np.round(np.arange(lon_start, lon_stop + step / 2, step), 4)
         return lats, lons
 
-    def map_dataset():
+    # Each file holds the science variable the harness's registry names for the
+    # product the case is about, as the real service's files do.
+    def map_dataset(variable="no2"):
         # New Jersey.
         import numpy as np
 
         lats, lons = grid(38.9, 41.4, -75.6, -73.9, 0.1)
         values = np.add.outer(lats - lats.min(), lons - lons.min()) + 1.0
         return xr.Dataset(
-            {"no2": (("lat", "lon"), values, {"units": "mol/m^2"})},
+            {variable: (("lat", "lon"), values, {"units": "mol/m^2"})},
             coords={"lat": lats, "lon": lons},
         )
 
-    def timeseries_dataset():
+    def timeseries_dataset(variable="no2"):
         # Newark, NJ, every day of January 2024. Fine enough that the city's
         # own outline contains grid cells.
         import numpy as np
@@ -213,7 +278,7 @@ def build_cases(volume) -> list[BenchmarkCase]:
         daily = 1.0 + np.arange(len(times), dtype=float) / 10
         values = daily[:, None, None] + np.zeros((len(lats), len(lons)))
         return xr.Dataset(
-            {"no2": (("time", "lat", "lon"), values, {"units": "mol/m^2"})},
+            {variable: (("time", "lat", "lon"), values, {"units": "mol/m^2"})},
             coords={"time": times, "lat": lats, "lon": lons},
         )
 
@@ -236,19 +301,35 @@ def build_cases(volume) -> list[BenchmarkCase]:
             coords={"time": times, "lat": [40.0, 41.0], "lon": [-74.0, -73.0]},
         )
 
-    def newark_map_dataset():
+    def newark_map_dataset(variable="no2"):
         return xr.Dataset(
-            {"no2": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]], {"units": "mol/m^2"})},
+            {variable: (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]], {"units": "mol/m^2"})},
             coords={"lat": [40.0, 41.0], "lon": [-75.0, -74.0]},
         )
 
+    # A retrieved period carries a time axis, here a single step mid-period.
+    def period_dataset(day, values):
+        return xr.Dataset(
+            {TEMPO_NO2_VARIABLE: (("time", "lat", "lon"), [values], {"units": "mol/m^2"})},
+            coords={"time": pd.to_datetime([day]), "lat": [40.0, 41.0], "lon": [-75.0, -74.0]},
+        )
+
     def period_a_dataset():
-        return newark_map_dataset()
+        return period_dataset("2025-06-15", [[1.0, 2.0], [3.0, 4.0]])
 
     def period_b_dataset():
+        return period_dataset("2026-06-15", [[2.0, 4.0], [6.0, 8.0]])
+
+    def ozone_dataset():
+        # The Ozone Transport Region.
+        import numpy as np
+
+        lats, lons = grid(36.0, 46.0, -82.0, -66.0, 0.5)
+        # Total column ozone, in the product's valid range of Dobson units.
+        values = np.add.outer(lats - lats.min(), lons - lons.min()) + 280.0
         return xr.Dataset(
-            {"no2": (("lat", "lon"), [[2.0, 4.0], [6.0, 8.0]], {"units": "mol/m^2"})},
-            coords={"lat": [40.0, 41.0], "lon": [-75.0, -74.0]},
+            {TEMPO_O3_VARIABLE: (("lat", "lon"), values, {"units": "DU"})},
+            coords={"lat": lats, "lon": lons},
         )
 
     def aligned_dataset():
@@ -261,8 +342,8 @@ def build_cases(volume) -> list[BenchmarkCase]:
             coords={"source": [0, 1], "lat": [40.0, 41.0], "lon": [-75.0, -74.0]},
         )
 
-    volume.add_zarr("obs_map_1", map_dataset)
-    volume.add_zarr("obs_ts_1", timeseries_dataset)
+    volume.add_zarr("obs_map_1", lambda: map_dataset(TROPOMI_NO2_VARIABLE))
+    volume.add_zarr("obs_ts_1", lambda: timeseries_dataset(TEMPO_NO2_VARIABLE))
     volume.add_zarr("obs_cmp_a", map_dataset)
     volume.add_zarr("obs_cmp_b", map_dataset)
     volume.add_parquet("obs_pt_ts_1", point_timeseries_table)
@@ -271,6 +352,8 @@ def build_cases(volume) -> list[BenchmarkCase]:
     volume.add_zarr("obs_compare_period_b", period_b_dataset)
     volume.add_zarr("cube_compare_aligned", aligned_dataset)
     volume.add_zarr("obs_e2e_satellite_1", newark_map_dataset)
+    volume.add_zarr("obs_e2e_tropomi_1", lambda: newark_map_dataset(TROPOMI_NO2_VARIABLE))
+    volume.add_zarr("obs_e2e_ozone_1", ozone_dataset)
 
     lifecycle = _volume_lifecycle_handlers(volume)
 
@@ -339,20 +422,24 @@ def build_cases(volume) -> list[BenchmarkCase]:
             id="plotting_single_map",
             category="plotting",
             prompt="Plot TROPOMI NO2 over New Jersey for 2024-01-15.",
-            handlers={**_standard_handlers(obs_handle="obs_map_1"), **lifecycle},
+            handlers={**_standard_handlers(obs_handle="obs_map_1", product="TROPOMI_NO2", units=NO2_FILE_UNITS), **lifecycle},
             checks=(*retrieval_base, ChartProduced(), *_covers("retrieve_subset", (2024, 1, 15))),
+            workflow="map",
+            workflow_inputs={"quantity": "no2_tropospheric_column", "area": "New Jersey", "dates": _dates("2024-01-15"), "named": "TROPOMI"},
         ),
         BenchmarkCase(
             id="plotting_timeseries",
             category="plotting",
             prompt="Show me how NO2 changed over Newark NJ during January 2024.",
-            handlers={**_standard_handlers(obs_handle="obs_ts_1"), **lifecycle},
+            handlers={**_standard_handlers(obs_handle="obs_ts_1", product="TEMPO_NO2", units=NO2_FILE_UNITS), **lifecycle},
             checks=(
                 *retrieval_base,
                 ChartProduced(),
                 AreaRequested("Newark", (40.7357, -74.1724)),
                 *_covers("retrieve_subset", (2024, 1, 1), (2024, 1, 31)),
             ),
+            workflow="timeseries",
+            workflow_inputs={"quantity": "no2_tropospheric_column", "area": "Newark NJ", "dates": _dates("2024-01-01", "2024-01-31"), "mode": "region"},
         ),
         BenchmarkCase(
             id="plotting_point_timeseries",
@@ -375,6 +462,11 @@ def build_cases(volume) -> list[BenchmarkCase]:
                 HasResult(),
                 *_covers("retrieve_timeseries", (2024, 1, 1), (2024, 1, 31)),
             ),
+            workflow="timeseries",
+            workflow_inputs={
+                "quantity": "no2_tropospheric_column", "area": "the single point 40.735,-74.172 (Newark, NJ)",
+                "dates": _dates("2024-01-01", "2024-01-31"), "mode": "point", "named": "TROPOMI",
+            },
         ),
         # Comparison setup
         BenchmarkCase(
@@ -409,6 +501,8 @@ def build_cases(volume) -> list[BenchmarkCase]:
             prompt="Plot TEMPO NO2 over Death Valley for 1990-01-01.",
             handlers=_standard_handlers(granule_count=0),
             checks=(Completed(), BoundaryNotCalled("retrieve_subset"), AnswerMatches(NO_DATA_PATTERN, "says no data was found")),
+            workflow="map",
+            workflow_inputs={"quantity": "no2_tropospheric_column", "area": "Death Valley", "dates": _dates("1990-01-01"), "named": "TEMPO"},
         ),
         BenchmarkCase(
             id="failure_recovery_retrieval_refused",
@@ -440,7 +534,9 @@ def build_cases(volume) -> list[BenchmarkCase]:
             category="comparison",
             prompt="Compare TEMPO NO2 over New Jersey between June 2025 and June 2026 — did it change?",
             handlers={
-                **_standard_handlers(dataset_handle="dataset_compare", aoi_handle="aoi_compare"),
+                **_standard_handlers(
+                    dataset_handle="dataset_compare", aoi_handle="aoi_compare", product="TEMPO_NO2", units=NO2_FILE_UNITS,
+                ),
                 "retrieve_subset": period_retrieve_subset,
                 "align": aligned_cube,
                 **lifecycle,
@@ -450,6 +546,11 @@ def build_cases(volume) -> list[BenchmarkCase]:
                 HasResult(),
                 *_covers("retrieve_subset", (2025, 6, 15), (2026, 6, 15)),
             ),
+            workflow="period-comparison",
+            workflow_inputs={
+                "quantity": "no2_tropospheric_column", "area": "New Jersey", "first": _dates("2025-06-01", "2025-06-30"),
+                "second": _dates("2026-06-01", "2026-06-30"), "change": "absolute", "named": "TEMPO",
+            },
         ),
         # End to end: ground lookup
         BenchmarkCase(
@@ -459,14 +560,21 @@ def build_cases(volume) -> list[BenchmarkCase]:
             handlers=_standard_handlers(),
             checks=(Completed(), GroundSourceUsed(), AqsDateRelativeToClock(days=-1)),
             aqs_get=_requested_day_aqs_get,
+            workflow="monitor-readings",
+            workflow_inputs=lambda today: {
+                "pollutant": "no2", "area": "Newark, New Jersey",
+                "dates": _dates(_days_before(today, 1)), "view": "series",
+            },
         ),
         # End to end: satellite plot
         BenchmarkCase(
             id="e2e_satellite_plot",
             category="e2e_satellite",
             prompt="Plot TROPOMI NO2 over New Jersey for 2024-01-15.",
-            handlers={**_standard_handlers(obs_handle="obs_e2e_satellite_1"), **lifecycle},
+            handlers={**_standard_handlers(obs_handle="obs_e2e_tropomi_1", product="TROPOMI_NO2", units=NO2_FILE_UNITS), **lifecycle},
             checks=(Completed(), SatelliteSourceUsed(), StageSubsequence(SATELLITE_STAGES)),
+            workflow="map",
+            workflow_inputs={"quantity": "no2_tropospheric_column", "area": "New Jersey", "dates": _dates("2024-01-15"), "named": "TROPOMI"},
         ),
         # End to end: both sources
         BenchmarkCase(
@@ -476,7 +584,7 @@ def build_cases(volume) -> list[BenchmarkCase]:
                 "Compare the ground NO2 monitors with TROPOMI satellite NO2 "
                 "over Newark NJ for January 2024."
             ),
-            handlers={**_standard_handlers(obs_handle="obs_e2e_satellite_1"), **lifecycle},
+            handlers={**_standard_handlers(obs_handle="obs_e2e_tropomi_1", product="TROPOMI_NO2", units=NO2_FILE_UNITS), **lifecycle},
             checks=(Completed(), SatelliteSourceUsed(), GroundSourceUsed()),
             aqs_get=_requested_day_aqs_get,
         ),
@@ -485,8 +593,10 @@ def build_cases(volume) -> list[BenchmarkCase]:
             id="e2e_routing_ozone_otc_satellite_only",
             category="e2e_routing",
             prompt="Show me what ozone looked like across the OTC on 2024-07-15.",
-            handlers={**_standard_handlers(obs_handle="obs_e2e_satellite_1"), **lifecycle},
+            handlers={**_standard_handlers(obs_handle="obs_e2e_ozone_1", product="TEMPO_O3TOT", units="DU"), **lifecycle},
             checks=(Completed(), SatelliteSourceUsed(), GroundSourceNotUsed()),
+            workflow="map",
+            workflow_inputs={"quantity": "o3_total_column", "area": "the OTC", "dates": _dates("2024-07-15")},
         ),
         BenchmarkCase(
             id="e2e_routing_non_aq_no_ground",
@@ -503,6 +613,8 @@ def build_cases(volume) -> list[BenchmarkCase]:
             handlers=_standard_handlers(),
             checks=(*region_checks, AnswerMentionsAny(("wakanda",))),
             patches=geocoder,
+            workflow="map",
+            workflow_inputs={"quantity": "no2_tropospheric_column", "area": "NY + Wakanda", "dates": _dates("2024-06-01", "2024-06-07")},
         ),
         BenchmarkCase(
             id="region_refusal_buffer_too_large",
@@ -511,5 +623,7 @@ def build_cases(volume) -> list[BenchmarkCase]:
             handlers=_standard_handlers(),
             checks=region_checks,
             patches=geocoder,
+            workflow="map",
+            workflow_inputs={"quantity": "no2_tropospheric_column", "area": "within 3000 miles of NYC", "dates": _dates("2024-06-01", "2024-06-07")},
         ),
     ]
