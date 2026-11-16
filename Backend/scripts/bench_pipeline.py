@@ -233,10 +233,10 @@ def _time_one_run(da, geometry, crop: bool) -> tuple[float, int, int, int | None
 
     cells_in = int(da.size)
     read_before = _read_bytes_counter()
-    started = time.monotonic()
+    started = time.perf_counter()
     masked = mask_data_by_geometry(da, geometry, crop=crop)
     value = float(np.asarray(masked.mean(skipna=True).compute()))
-    elapsed = time.monotonic() - started
+    elapsed = time.perf_counter() - started
     read_after = _read_bytes_counter()
 
     bytes_read = None if read_before is None or read_after is None else read_after - read_before
