@@ -23,7 +23,7 @@ _MISSING_DEPENDENCIES = any(importlib.util.find_spec(name) is None for name in R
 PLACES = {
     "plotting_single_map": "New Jersey",
     "plotting_timeseries": "Newark NJ",
-    "plotting_point_timeseries": "the single point 40.735,-74.172 (Newark, NJ)",
+    "plotting_point_timeseries": "Newark, NJ",
     "failure_recovery_no_data": "Death Valley",
     "comparison_period_tempo_no2": "New Jersey",
     "e2e_ground_relative_date": "Newark, New Jersey",
@@ -40,7 +40,7 @@ REFUSALS = ("region_refusal_unresolvable_member", "region_refusal_buffer_too_lar
 EXPECTED: dict[str, tuple[str, bool | None, str]] = {
     "plotting_single_map": ("map", True, ""),
     "plotting_timeseries": ("timeseries", True, ""),
-    "plotting_point_timeseries": ("timeseries", False, "the run never finished: the workflow stopped to ask"),
+    "plotting_point_timeseries": ("timeseries", True, None),
     "failure_recovery_no_data": ("map", True, ""),
     "comparison_period_tempo_no2": ("period-comparison", True, ""),
     "e2e_ground_relative_date": ("monitor-readings", True, ""),
@@ -155,6 +155,19 @@ class WorkflowAdapterRunTests(unittest.TestCase):
                 self.assertIsNotNone(result.first_failure, case_id)
                 self.assertTrue(result.first_failure.reason.startswith(reason), f"{case_id}: {result.first_failure}")
 
+    def test_the_point_case_asks_for_daily_values_and_the_workflow_refuses_them(self):
+        result = self.results["plotting_point_timeseries"]
+        outcome = result.outcome
+
+        self.assertEqual(result.case.workflow_inputs["cadence"], "daily")
+        self.assertEqual(outcome.mode, "Draft workflow: timeseries v2")
+        self.assertEqual([call.tool for call in outcome.boundary_calls if call.tool.startswith("retrieve_")], [])
+        self.assertEqual(outcome.tool_calls, ["sources.areas.resolve", "sources.satellite.get_point_series"])
+        self.assertIn("a monthly product, so daily values are not available", outcome.answer_text)
+        self.assertTrue(outcome.done)
+        self.assertIsNone(outcome.error)
+        self.assertTrue(result.passed, result.first_failure)
+
     def test_a_refused_region_reaches_no_data_service_and_is_not_substituted(self):
         for case_id in REFUSALS:
             outcome = self.results[case_id].outcome
@@ -175,14 +188,6 @@ class WorkflowAdapterRunTests(unittest.TestCase):
 
         self.assertIn("Product: TROPOMI_NO2", outcome.answer_text)
         self.assertEqual(outcome.boundary_calls[0].args["query"], "C3087325222-GES_DISC")
-
-    def test_a_point_prompt_with_coordinates_is_not_resolved_by_the_harness(self):
-        outcome = self.results["plotting_point_timeseries"].outcome
-
-        self.assertFalse(outcome.done)
-        self.assertIn("stopped to ask", outcome.unfinished)
-        self.assertEqual(outcome.boundary_calls, [])
-        self.assertIn("could not be found as a place", outcome.answer_text)
 
     def test_a_case_without_a_workflow_is_listed_as_not_covered_and_never_run(self):
         expected = [case.id for case in build_cases(_NullVolume()) if case.workflow is None]

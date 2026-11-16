@@ -53,6 +53,8 @@ class BenchmarkCase:
     # Fake earthdata tool handlers; tools not named echo their arguments.
     handlers: dict[str, Handler]
     checks: tuple[Check, ...]
+    # Replaces ``checks`` when a harness adapter (workflow or explore) runs the case.
+    harness_checks: tuple[Check, ...] | None = None
     # Stub for the EPA AQS request function; None answers every request with an empty success.
     aqs_get: AqsGetHandler | None = None
     patches: tuple[PatchSpec, ...] = field(default_factory=tuple)
@@ -86,6 +88,16 @@ HARNESS_SATELLITE_STAGES = ("sources.areas.resolve", "sources.satellite.get_data
 NO_DATA_PATTERN = (
     r"\bno\b[^.\n]{0,40}\b(data|granules?|observations?|coverage|results?)\b"
     r"|not available|unavailable|could ?n[o']t find|does ?n[o']t exist|did ?n[o']t find"
+    r"|outside (?:the |its )?[^.;,\n]{0,30}\brecord\b"
+    r"|before (?:the |its )?[\w\- ,']{0,40}\brecords? (?:begins?|began|starts?)"
+    r"|(?:instrument|satellite|sensor|tempo|tropomi|product)\b[^.;\n]{0,40}(?:did not|didn't) (?:exist|operate)"
+    r"|(?:did not|didn't) (?:exist|operate) in \d{4}"
+)
+
+# How a harness answer says the product has no daily values: a refusal or negation tied to "daily".
+DAILY_UNAVAILABLE_PATTERN = (
+    r"\b(?:not|no|cannot|can't|could ?n[o']t|unable)\b[^.;\n]{0,60}\bdaily\b"
+    r"|\bdaily\b[^.;\n]{0,60}(?:not available|unavailable|too coarse|only monthly|cadence_too_coarse)"
 )
 
 # The science variables of the products the harness chooses for the covered cases.
@@ -242,37 +254,66 @@ def _aqs_ok(row: dict) -> dict:
     return {"Header": [{"status": "success"}], "Data": [row]}
 
 
+# Inside Newark's bounding box in the offline geocoder, a few km from its centre
+# so a nearest-monitor distance is not zero.
+_NEWARK_MONITOR_LAT, _NEWARK_MONITOR_LON = 40.7557, -74.1524
 _NEWARK_MONITOR = {
-    "latitude": "40.0", "longitude": "-74.0",
+    "latitude": str(_NEWARK_MONITOR_LAT), "longitude": str(_NEWARK_MONITOR_LON),
     "state_code": "34", "county_code": "017", "site_number": "0006",
-    "local_site_name": "Newark Firehouse",
+    "local_site_name": "Newark Firehouse", "poc": "1", "parameter_name": "Nitrogen dioxide (NO2)",
 }
+_NO2_PARAM = "42602"
 
 
 def _daily_row(day: str, mean: float) -> dict:
     return {
-        "date_local": day, "arithmetic_mean": str(mean), "state_code": "34",
-        "county_code": "017", "site_number": "0006", "units_of_measure": "ppb",
-        "pollutant_standard": "NO2 1-hour 2010", "local_site_name": "Newark Firehouse",
+        # The daily 1-hour max sits above the daily mean, as it does for NO2.
+        "date_local": day, "arithmetic_mean": str(mean), "first_max_value": str(round(mean * 1.5, 1)),
+        "state_code": "34", "county_code": "017", "site_number": "0006", "poc": "1",
+        "latitude": _NEWARK_MONITOR["latitude"], "longitude": _NEWARK_MONITOR["longitude"],
+        "units_of_measure": "parts per billion", "pollutant_standard": "NO2 1-hour 2010",
+        "local_site_name": "Newark Firehouse", "event_type": "No Events",
     }
 
 
-async def _week_of_january_aqs_get(endpoint: str, params: dict) -> dict:
-    if endpoint == "monitors/byBox":
-        return _aqs_ok(_NEWARK_MONITOR)
-    if endpoint == "dailyData/byBox":
-        return {"Header": [{"status": "success"}], "Data": [
-            _daily_row(day, mean) for day, mean in [("2024-01-01", 2.0), ("2024-01-02", 4.0), ("2024-01-03", 6.0)]
-        ]}
-    return {"Header": [{"status": "success"}], "Data": []}
+def _newark_aqs_get(daily_rows: Callable[[dict], list[dict]]):
+    """An AQS fake serving the Newark monitor and its NO2 daily rows on every
+    endpoint the current system and the harness's monitor capabilities call."""
+
+    def no2(params: dict) -> bool:
+        return str(params.get("param", _NO2_PARAM)) == _NO2_PARAM
+
+    def box_holds_monitor(params: dict) -> bool:
+        try:
+            return (
+                float(params["minlat"]) <= _NEWARK_MONITOR_LAT <= float(params["maxlat"])
+                and float(params["minlon"]) <= _NEWARK_MONITOR_LON <= float(params["maxlon"])
+            )
+        except (KeyError, TypeError, ValueError):
+            return False
+
+    async def get(endpoint: str, params: dict) -> dict:
+        if endpoint == "monitors/byBox":
+            if no2(params) and box_holds_monitor(params):
+                return _aqs_ok(_NEWARK_MONITOR)
+            return {"Header": [{"status": "success"}], "Data": []}
+        if endpoint in ("dailyData/byBox", "dailyData/bySite"):
+            at_site = (endpoint == "dailyData/byBox" and box_holds_monitor(params)) or (
+                params.get("state") == "34"
+                and params.get("county") == "017"
+                and str(params.get("site")).zfill(4) == "0006"
+            )
+            if at_site and no2(params):
+                return {"Header": [{"status": "success"}], "Data": daily_rows(params)}
+        return {"Header": [{"status": "success"}], "Data": []}
+
+    return get
 
 
-async def _requested_day_aqs_get(endpoint: str, params: dict) -> dict:
-    if endpoint == "monitors/byBox":
-        return _aqs_ok(_NEWARK_MONITOR)
-    if endpoint == "dailyData/byBox":
-        return _aqs_ok(_daily_row(params.get("bdate", ""), 5.0))
-    return {"Header": [{"status": "success"}], "Data": []}
+_week_of_january_aqs_get = _newark_aqs_get(lambda params: [
+    _daily_row(day, mean) for day, mean in [("2024-01-01", 2.0), ("2024-01-02", 4.0), ("2024-01-03", 6.0)]
+])
+_requested_day_aqs_get = _newark_aqs_get(lambda params: [_daily_row(str(params.get("bdate", "")), 5.0)])
 
 
 def _dates(start: str, end: str | None = None) -> dict[str, str]:
@@ -351,14 +392,16 @@ def build_cases(volume) -> list[BenchmarkCase]:
         }).replace_schema_metadata({b"units": b"mol/m^2"})
 
     def ground_validation_dataset():
-        # Newark and the monitor's own cell (40.0, -74.0), which reads 1, 2, 3
-        # ... over the first week of January; every other cell reads 10.
+        # The cell holding the Newark monitor reads 1, 2, 3 ... over the first
+        # week of January; every other cell reads 10.
         import numpy as np
 
         times = pd.date_range("2024-01-01", periods=7, freq="D")
         lats, lons = grid(40.0, 40.9, -74.3, -74.0, 0.02)
         values = np.full((len(times), len(lats), len(lons)), 10.0)
-        values[:, 0, -1] = np.arange(1, len(times) + 1, dtype=float)
+        lat_i = int(np.abs(lats - _NEWARK_MONITOR_LAT).argmin())
+        lon_i = int(np.abs(lons - _NEWARK_MONITOR_LON).argmin())
+        values[:, lat_i, lon_i] = np.arange(1, len(times) + 1, dtype=float)
         return xr.Dataset(
             {TEMPO_NO2_VARIABLE: (("time", "lat", "lon"), values, {"units": NO2_FILE_UNITS})},
             coords={"time": times, "lat": lats, "lon": lons},
@@ -580,10 +623,17 @@ def build_cases(volume) -> list[BenchmarkCase]:
                 HasResult(),
                 *_covers("retrieve_timeseries", (2024, 1, 1), (2024, 1, 31)),
             ),
+            # The only TROPOMI NO2 product is monthly, so the harness correctly refuses a daily series.
+            harness_checks=(
+                Completed(),
+                AnswerMatches(DAILY_UNAVAILABLE_PATTERN, "says daily values are not available"),
+                BoundaryNotCalled("retrieve_timeseries"),
+                BoundaryNotCalled("retrieve_subset"),
+            ),
             workflow="timeseries",
             workflow_inputs={
-                "quantity": "no2_tropospheric_column", "area": "the single point 40.735,-74.172 (Newark, NJ)",
-                "dates": _dates("2024-01-01", "2024-01-31"), "mode": "point", "named": "TROPOMI",
+                "quantity": "no2_tropospheric_column", "area": "Newark, NJ",
+                "dates": _dates("2024-01-01", "2024-01-31"), "mode": "point", "named": "TROPOMI", "cadence": "daily",
             },
         ),
         # Comparison setup

@@ -43,14 +43,19 @@ class CaseResult:
     check_results: list[CheckResult] = field(default_factory=list)
     within_budget: bool = True
     passed: bool = False
+    # Which checks scored it: "harness" when the case's harness_checks did, else "default".
+    check_set: str = "default"
 
     @property
     def first_failure(self) -> CheckResult | None:
         return next((result for result in self.check_results if not result.passed), None)
 
 
-def score(case: BenchmarkCase, outcome: Outcome) -> CaseResult:
-    check_results = [check.evaluate(outcome) for check in case.checks]
+def score(case: BenchmarkCase, outcome: Outcome, *, harness: bool = False) -> CaseResult:
+    """Score ``outcome``; a harness adapter's run uses the case's ``harness_checks`` when it has them."""
+    use_harness = harness and case.harness_checks is not None
+    checks = case.harness_checks if use_harness else case.checks
+    check_results = [check.evaluate(outcome) for check in checks]
     within_budget = outcome.elapsed_seconds <= CATEGORY_BUDGETS[case.category]
     return CaseResult(
         case=case,
@@ -58,6 +63,7 @@ def score(case: BenchmarkCase, outcome: Outcome) -> CaseResult:
         check_results=check_results,
         within_budget=within_budget,
         passed=all(result.passed for result in check_results) and within_budget,
+        check_set="harness" if use_harness else "default",
     )
 
 

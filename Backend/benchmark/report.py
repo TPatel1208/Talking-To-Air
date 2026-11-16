@@ -28,6 +28,7 @@ def case_record(result: CaseResult) -> dict:
         "category": result.case.category,
         "prompt": result.case.prompt,
         "passed": result.passed,
+        "check_set": result.check_set,
         "within_budget": result.within_budget,
         "elapsed_seconds": round(outcome.elapsed_seconds, 2),
         "checks": [asdict(check) for check in result.check_results],

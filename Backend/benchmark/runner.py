@@ -89,13 +89,13 @@ class WorkflowSuiteRun:
 
 
 async def run_workflow_suite(adapter, volume) -> WorkflowSuiteRun:
-    """Run every case that names a workflow and score it; a case without one is listed, never run."""
+    """Run every case the harness adapter covers and score it with the case's harness checks; a case without one is listed, never run."""
     run = WorkflowSuiteRun()
     for case in build_cases(volume):
         if not adapter.covers(case):
             run.uncovered.append(case.id)
             continue
-        run.results.append(score(case, await adapter.run(case, volume)))
+        run.results.append(score(case, await adapter.run(case, volume), harness=True))
     return run
 
 

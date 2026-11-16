@@ -468,6 +468,47 @@ class CaseStructureTests(unittest.TestCase):
 
 
 @unittest.skipIf(_MISSING_DEPENDENCIES, "benchmark test dependencies are not installed")
+class NewarkAqsFakeTests(unittest.IsolatedAsyncioTestCase):
+    """The AQS fakes answer the harness's endpoints as they do the current system's."""
+
+    async def test_site_and_box_endpoints_serve_the_same_readings(self):
+        from benchmark.cases import _requested_day_aqs_get, _week_of_january_aqs_get
+
+        site = {"param": "42602", "bdate": "20240102", "edate": "20240102", "state": "34", "county": "017", "site": "0006"}
+        box = {"param": "42602", "bdate": "20240102", "edate": "20240102", "minlat": 40.0, "maxlat": 41.0, "minlon": -75.0, "maxlon": -74.0}
+        for get in (_week_of_january_aqs_get, _requested_day_aqs_get):
+            by_site = (await get("dailyData/bySite", site))["Data"]
+            self.assertTrue(by_site)
+            self.assertEqual(by_site, (await get("dailyData/byBox", box))["Data"])
+        self.assertEqual((await _week_of_january_aqs_get("dailyData/bySite", {**site, "site": "0099"}))["Data"], [])
+        self.assertEqual((await _week_of_january_aqs_get("dailyData/bySite", {**site, "param": "44201"}))["Data"], [])
+
+    async def test_the_monitor_is_listed_only_for_a_box_holding_it_and_for_no2(self):
+        from benchmark.cases import _week_of_january_aqs_get as get
+
+        holding = {"param": "42602", "minlat": 40.6, "maxlat": 40.9, "minlon": -74.3, "maxlon": -74.0}
+        elsewhere = {**holding, "minlat": 30.0, "maxlat": 31.0}
+        self.assertEqual(len((await get("monitors/byBox", holding))["Data"]), 1)
+        self.assertEqual((await get("monitors/byBox", elsewhere))["Data"], [])
+        self.assertEqual((await get("monitors/byBox", {**holding, "param": "44201"}))["Data"], [])
+        self.assertEqual((await get("dailyData/byBox", {**elsewhere, "bdate": "20240101", "edate": "20240103"}))["Data"], [])
+
+    async def test_the_daily_max_is_above_the_daily_mean(self):
+        from benchmark.cases import _week_of_january_aqs_get as get
+
+        site = {"param": "42602", "bdate": "20240101", "edate": "20240103", "state": "34", "county": "017", "site": "0006"}
+        for row in (await get("dailyData/bySite", site))["Data"]:
+            self.assertGreater(float(row["first_max_value"]), float(row["arithmetic_mean"]))
+
+    def test_the_monitor_is_inside_the_offline_geocoders_newark_box(self):
+        from benchmark.adapters.harness_boundary import _NEWARK as newark
+        from benchmark.cases import _NEWARK_MONITOR
+
+        south, north, west, east = newark["bbox"]
+        self.assertTrue(south <= float(_NEWARK_MONITOR["latitude"]) <= north)
+        self.assertTrue(west <= float(_NEWARK_MONITOR["longitude"]) <= east)
+
+
 class StarterPromptCoverageTests(unittest.TestCase):
     def test_every_starter_prompt_names_a_benchmark_case(self):
         from benchmark.fake_earthdata import HandleVolume
@@ -689,6 +730,15 @@ class PricingTests(unittest.TestCase):
         self.assertIn("no price for: gemini-3.7-flash", lines[-1])
 
 
+# The explore run's answer for the 1990 Death Valley case, which the old pattern missed.
+LIVE_NO_DATA_ANSWER = (
+    "Exploratory\nI could not plot TEMPO NO2 over Death Valley for 1990-01-01 because the request falls outside "
+    "the TEMPO record. The check_availability call returned status \"done\" but available=false with reason "
+    "\"outside_record\". TEMPO_NO2's record begins 2023-08-02 (per the product description) and has no end date "
+    "(ongoing); the TEMPO instrument did not exist or operate in 1990. No grid was retrieved and no chart was made."
+)
+
+
 class NoDataAnswerTests(unittest.TestCase):
     def _check(self):
         from benchmark.cases import NO_DATA_PATTERN
@@ -702,17 +752,144 @@ class NoDataAnswerTests(unittest.TestCase):
             "TEMPO observations began in 2023; data from 1990 does not exist in this product.",
             "I couldn't find any coverage.",
             "That product is unavailable before 2018.",
+            LIVE_NO_DATA_ANSWER,
+            "1990-01-01 falls outside the TEMPO record.",
+            "The date is before the product's record begins.",
+            "The instrument didn't exist then.",
+            "The satellite did not operate in 1990.",
         ):
             with self.subTest(answer=answer):
                 self.assertTrue(self._check().evaluate(_outcome(answer_text=answer)).passed)
 
     def test_does_not_mistake_a_normal_answer_for_no_data(self):
-        answer = "Here is the TEMPO NO2 map over Houston; values range from 1 to 4 mol/m^2."
+        for answer in (
+            "Here is the TEMPO NO2 map over Houston; values range from 1 to 4 mol/m^2.",
+            "The record shows NO2 rose through the afternoon.",
+            "Data was found for Death Valley on 2024-01-01 and the map is ready.",
+            "The grid was retrieved; it covers the outside of the city and the instrument operated normally.",
+            "The observations did not exist in the cache, so I retrieved them and here is the map.",
+            "Before the record high of 5, values were normal; data found for Houston.",
+            "outside hours were recorded",
+            "The peak occurred before the end of the record.",
+            "Outside the city; the record shows 3 days.",
+        ):
+            with self.subTest(answer=answer):
+                result = self._check().evaluate(_outcome(answer_text=answer))
 
-        result = self._check().evaluate(_outcome(answer_text=answer))
+                self.assertFalse(result.passed)
+                self.assertIn("never says no data was found", result.reason)
 
-        self.assertFalse(result.passed)
-        self.assertIn("never says no data was found", result.reason)
+
+LIVE_MONTHLY_REFUSAL_ANSWER = (
+    "Exploratory\nA daily point-series for TROPOMI NO2 at 40.735,-74.172 (Newark, NJ) for January 2024 could not "
+    "be produced. The only product serving the no2_tropospheric_column quantity is TROPOMI_NO2, whose native "
+    "cadence is monthly, not daily — the request was refused with reason \"cadence_too_coarse\"."
+)
+
+
+@unittest.skipIf(_MISSING_DEPENDENCIES, "benchmark test dependencies are not installed")
+class HarnessChecksTests(unittest.TestCase):
+    def _case(self, case_id):
+        from benchmark.cases import build_cases
+        from benchmark.fake_earthdata import HandleVolume
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            return next(case for case in build_cases(HandleVolume(tmp)) if case.id == case_id)
+
+    def test_the_point_case_passes_on_the_live_refusal_and_fails_when_data_was_retrieved(self):
+        from benchmark.scoring import score
+
+        case = self._case("plotting_point_timeseries")
+        refused = _outcome(answer_text=LIVE_MONTHLY_REFUSAL_ANSWER)
+        retrieved = _outcome(
+            answer_text="Draft workflow: timeseries v1\npoint_mean: 2.0 molecules/cm^2\nProduct: TROPOMI_NO2",
+            boundary_calls=[_call("retrieve_timeseries", time_range="2024-01-01/2024-01-31")],
+        )
+
+        self.assertTrue(score(case, refused, harness=True).passed)
+        scored = score(case, retrieved, harness=True)
+        self.assertFalse(scored.passed)
+        self.assertEqual(
+            [result.passed for result in scored.check_results], [True, False, False, True],
+        )
+        self.assertFalse(score(case, _outcome(answer_text=LIVE_MONTHLY_REFUSAL_ANSWER, boundary_calls=[
+            _call("retrieve_subset"),
+        ]), harness=True).passed)
+
+    def test_the_daily_pattern_needs_a_negation_or_refusal_tied_to_daily(self):
+        from benchmark.cases import DAILY_UNAVAILABLE_PATTERN
+
+        check = AnswerMatches(DAILY_UNAVAILABLE_PATTERN, "says daily values are not available")
+        for answer in (
+            "Monthly and daily views are available.",
+            "Daily mean computed. The cadence is daily.",
+            "Daily values were retrieved; the product is monthly overall.",
+        ):
+            with self.subTest(answer=answer):
+                self.assertFalse(check.evaluate(_outcome(answer_text=answer)).passed)
+        for answer in (
+            LIVE_MONTHLY_REFUSAL_ANSWER,
+            "Daily values are not available from this product.",
+            "I cannot give a daily series.",
+        ):
+            with self.subTest(answer=answer):
+                self.assertTrue(check.evaluate(_outcome(answer_text=answer)).passed)
+
+    def test_the_result_records_which_check_set_scored_it(self):
+        from benchmark.report import case_record
+        from benchmark.scoring import score
+
+        case = self._case("plotting_point_timeseries")
+        other = self._case("discovery_no2_dataset")
+
+        self.assertEqual(score(case, _outcome(), harness=True).check_set, "harness")
+        self.assertEqual(score(case, _outcome()).check_set, "default")
+        self.assertEqual(score(other, _outcome(), harness=True).check_set, "default")
+        self.assertEqual(case_record(score(case, _outcome(), harness=True))["check_set"], "harness")
+        self.assertEqual(case_record(score(case, _outcome()))["check_set"], "default")
+
+    def test_the_current_system_keeps_the_original_checks(self):
+        from benchmark.scoring import score
+
+        case = self._case("plotting_point_timeseries")
+        refused = _outcome(answer_text=LIVE_MONTHLY_REFUSAL_ANSWER)
+
+        self.assertFalse(score(case, refused).passed)
+        self.assertEqual(len(score(case, refused).check_results), len(case.checks))
+        self.assertEqual(len(score(case, refused, harness=True).check_results), len(case.harness_checks))
+
+    def test_a_case_without_harness_checks_is_scored_on_its_checks_either_way(self):
+        from benchmark.scoring import score
+
+        case = self._case("discovery_no2_dataset")
+
+        self.assertIsNone(case.harness_checks)
+        self.assertEqual(
+            [r.reason for r in score(case, _outcome(), harness=True).check_results],
+            [r.reason for r in score(case, _outcome()).check_results],
+        )
+
+    def test_the_harness_suite_scores_with_harness_checks_and_the_current_suite_does_not(self):
+        import asyncio
+
+        from benchmark.runner import run_suite, run_workflow_suite
+
+        class Adapter:
+            covers = staticmethod(lambda case: case.id == "plotting_point_timeseries")
+
+            async def run(self, case, volume):
+                return Outcome(done=True, elapsed_seconds=0.1, answer_text=LIVE_MONTHLY_REFUSAL_ANSWER)
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            from benchmark.fake_earthdata import HandleVolume
+
+            volume = HandleVolume(tmp)
+            harness = asyncio.run(run_workflow_suite(Adapter(), volume))
+            current = {r.case.id: r for r in asyncio.run(run_suite(Adapter(), volume))}
+
+        [result] = harness.results
+        self.assertTrue(result.passed)
+        self.assertFalse(current["plotting_point_timeseries"].passed)
 
 
 class AreaRequestedTests(unittest.TestCase):
