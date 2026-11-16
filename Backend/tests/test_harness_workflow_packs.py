@@ -100,6 +100,14 @@ FIELDS: dict[str, dict[str, frozenset[str]]] = {
 }
 RESULT_FIELDS = frozenset(CapabilityResult.model_fields)
 
+# Latest version of each workflow. Version 2 of the three below adds the optional cadence input.
+LATEST: dict[str, int] = {name: 1 for name in ORDERS} | {"map": 2, "timeseries": 2, "period-comparison": 2}
+CADENCE_STEPS = {
+    "map": ("data",),
+    "timeseries": ("data", "point"),
+    "period-comparison": ("first_data", "second_data"),
+}
+
 
 def unknown_path(capability: str, path: tuple[str, ...]) -> str | None:
     """Why a result path cannot be read from a capability's result, or None when it can."""
@@ -152,7 +160,8 @@ def result_reads(spec: WorkflowSpec) -> list[tuple[str, str, tuple[str, ...]]]:
 
 class PackLoadTests(unittest.TestCase):
     def test_exactly_the_six_workflows_load(self):
-        self.assertEqual([(s.name, s.version) for s in CATALOGUE], [(name, 1) for name in sorted(ORDERS)])
+        expected = [(name, version) for name in sorted(ORDERS) for version in range(1, LATEST[name] + 1)]
+        self.assertEqual([(s.name, s.version) for s in CATALOGUE], expected)
 
     def test_each_is_a_runnable_draft(self):
         for spec in CATALOGUE:
@@ -165,23 +174,60 @@ class PackLoadTests(unittest.TestCase):
         lines = CATALOGUE.index().splitlines()
         self.assertEqual(len(lines), len(ORDERS))
         for line, name in zip(lines, sorted(ORDERS), strict=True):
-            self.assertTrue(line.startswith(f"{name} v1 (draft): "), line)
+            self.assertTrue(line.startswith(f"{name} v{LATEST[name]} (draft): "), line)
 
     def test_step_order(self):
         for name, order in ORDERS.items():
-            with self.subTest(name):
-                self.assertEqual(CATALOGUE.get(name, 1).order(), order)
+            for version in range(1, LATEST[name] + 1):
+                with self.subTest(f"{name} v{version}"):
+                    self.assertEqual(CATALOGUE.get(name, version).order(), order)
 
     def test_connectors(self):
         for name, connectors in CONNECTORS.items():
-            with self.subTest(name):
-                self.assertEqual(CATALOGUE.get(name, 1).connectors(CAPABILITIES), connectors)
+            for version in range(1, LATEST[name] + 1):
+                with self.subTest(f"{name} v{version}"):
+                    self.assertEqual(CATALOGUE.get(name, version).connectors(CAPABILITIES), connectors)
 
     def test_specs_leave_approved_to_the_runner(self):
         for spec in CATALOGUE:
             for step in spec.steps:
                 if isinstance(step, UseStep):
                     self.assertNotIn("approved", step.with_, f"{spec.name} {step.id}")
+
+
+class CadenceTests(unittest.TestCase):
+    def test_version_one_is_unchanged_and_takes_no_cadence(self):
+        for name in CADENCE_STEPS:
+            spec = CATALOGUE.get(name, 1)
+            with self.subTest(name):
+                self.assertNotIn("cadence", spec.inputs)
+                for step_id in CADENCE_STEPS[name]:
+                    self.assertNotIn("cadence", spec.step(step_id).with_)
+
+    def test_version_two_takes_an_optional_cadence_choice(self):
+        for name in CADENCE_STEPS:
+            with self.subTest(name):
+                self.assertEqual(CATALOGUE.versions(name), (1, 2))
+                declared = CATALOGUE.get(name, 2).inputs["cadence"]
+                self.assertEqual(declared.type, "choice")
+                self.assertEqual(tuple(declared.options or ()), ("hourly", "daily", "monthly"))
+                self.assertTrue(declared.optional)
+                self.assertTrue(declared.nullable)
+
+    def test_version_two_passes_the_cadence_to_every_retrieval(self):
+        for name, step_ids in CADENCE_STEPS.items():
+            spec = CATALOGUE.get(name, 2)
+            retrievals = [
+                s.id for s in spec.steps
+                if isinstance(s, UseStep) and s.use in ("sources.satellite.get_data", "sources.satellite.get_point_series")
+            ]
+            with self.subTest(name):
+                self.assertEqual(tuple(retrievals), step_ids)
+                for step_id in retrievals:
+                    self.assertEqual(spec.step(step_id).with_["cadence"], "$cadence")
+
+    def test_vertical_profile_is_left_alone(self):
+        self.assertNotIn("cadence", CATALOGUE.get("vertical-profile", 1).inputs)
 
 
 class ProductTests(unittest.TestCase):

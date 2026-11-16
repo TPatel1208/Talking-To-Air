@@ -244,6 +244,53 @@ class SatelliteWorkflowRuns(PackRun):
         self.assertAlmostEqual(float(mean_change.value) / 1e15, 1.0, places=6)
 
 
+class CadenceWorkflowRuns(PackRun):
+    """Version 2 of map, timeseries and period-comparison passes the requested cadence to every retrieval."""
+
+    MONTHLY = "TROPOMI_NO2"
+
+    async def start_v2(self, name: str, inputs: dict[str, Any]) -> Result:
+        return await self.f.start({"quantity": NO2, "area": "New Jersey", **inputs}, name=name, version=2)
+
+    async def test_a_daily_request_against_a_monthly_product_is_refused(self):
+        cases = {
+            "map": {"dates": JUNE},
+            "timeseries": {"dates": JUNE},
+            "period-comparison": {"first": JUNE, "second": JULY},
+        }
+        for name, inputs in cases.items():
+            with self.subTest(name):
+                result = await self.start_v2(name, {**inputs, "named": self.MONTHLY, "cadence": "daily"})
+                self.assertEqual(result.status, "insufficient_evidence")
+                self.assertIn("so daily values are not available", result.reason or "")
+                self.assertEqual(result.mode, Mode.draft(name, 2))
+
+    async def test_a_daily_point_request_is_refused_before_any_retrieval(self):
+        result = await self.start_v2(
+            "timeseries", {"dates": JUNE, "mode": "point", "named": self.MONTHLY, "cadence": "daily"},
+        )
+        self.assertEqual(result.status, "insufficient_evidence")
+        self.assertIn("so daily values are not available", result.reason or "")
+        self.assertEqual(self.service.jobs, {})
+
+    async def test_a_monthly_request_is_accepted_by_a_monthly_product(self):
+        result = await self.start_v2("map", {"dates": JUNE, "named": self.MONTHLY, "cadence": "monthly"})
+        self.assertNotIn("values are not available", result.reason or "")
+
+    async def test_no_cadence_keeps_the_monthly_product_as_before(self):
+        result = await self.start_v2("map", {"dates": JUNE, "named": self.MONTHLY})
+        self.assertNotIn("values are not available", result.reason or "")
+        v1 = await self.f.start({"quantity": NO2, "area": "New Jersey", "dates": JUNE, "named": self.MONTHLY}, name="map")
+        self.assertEqual(v1.status, result.status)
+
+    async def test_version_one_ignores_a_cadence_input(self):
+        result = await self.f.start(
+            {"quantity": NO2, "area": "New Jersey", "dates": JUNE, "named": self.MONTHLY, "cadence": "daily"}, name="map",
+        )
+        self.assertEqual(result.status, "failed")
+        self.assertIn("not an input", result.reason or "")
+
+
 class GroundWorkflowRuns(PackRun):
     inputs = {"pollutant": "o3", "area": "New Jersey", "dates": {"start": "2024-06-01", "end": "2024-06-02"}}
     EXCEEDANCE_FINDINGS = [
