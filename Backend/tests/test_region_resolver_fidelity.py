@@ -112,6 +112,54 @@ class RegionResolverFidelityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sync_region["name"], async_region["name"])
         self.assertEqual(sync_region["region_type"], async_region["region_type"])
 
+    def test_continental_us_wordings_reach_the_conus_polygon(self):
+        resolver = self._resolver()
+        reference = resolver.resolve_location("conus")
+        wordings = [
+            "continental united states", "contiguous united states",
+            "lower 48 states", "the lower 48", "Continental United States",
+            "the entire continental United States",
+            "the whole contiguous united states", "entire conus",
+        ]
+        with patch.object(resolver.geocoding_service, "geocode", return_value=None) as geocode:
+            for wording in wordings:
+                with self.subTest(wording=wording):
+                    region = resolver.resolve_location(wording)
+                    self.assertEqual(region["name"], "Continental US")
+                    self.assertEqual(region["region_type"], "polygon")
+                    self.assertTrue(region["geometry"].equals(reference["geometry"]))
+        geocode.assert_not_called()
+
+    async def test_async_resolver_reads_entire_and_whole_wordings(self):
+        resolver = self._resolver()
+        with patch.object(resolver.geocoding_service, "ageocode", return_value=None) as ageocode:
+            conus = await resolver.aresolve_location("the entire continental United States")
+            usa = await resolver.aresolve_location("the whole United States")
+        ageocode.assert_not_called()
+        self.assertEqual(conus["name"], "Continental US")
+        self.assertEqual(usa["name"], "United States")
+        self.assertEqual(usa["region_type"], "polygon")
+
+    def test_entire_and_whole_are_stripped_only_as_a_leading_word(self):
+        from tta_backend.utils.plotting import RegionResolver
+
+        normalize = RegionResolver._normalize_location_name
+        self.assertEqual(normalize("The  Entire Continental United States"), "continental united states")
+        self.assertEqual(normalize("whole foods market"), "foods market")
+        self.assertEqual(normalize("wholesale district"), "wholesale district")
+        self.assertEqual(normalize("the entirety"), "entirety")
+
+    def test_plain_city_still_geocodes_from_the_users_wording(self):
+        geo = {
+            "latitude": 40.7, "longitude": -74.0, "display_name": "New York City, New York, USA",
+            "polygon": None, "bbox": [],
+        }
+        resolver = self._resolver()
+        with patch.object(resolver.geocoding_service, "geocode", return_value=geo) as geocode:
+            region = resolver.resolve_location("The Whole of Springfield")
+            geocode.assert_called_once_with("The Whole of Springfield")
+        self.assertEqual(region["region_type"], "point_buffer")
+
     def test_usa_preset_uses_a_real_polygon_not_the_crude_box(self):
         from shapely.geometry import Point
 

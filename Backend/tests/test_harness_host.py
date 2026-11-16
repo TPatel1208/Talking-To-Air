@@ -205,6 +205,17 @@ class HostAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(region.geometry["type"], ("Polygon", "MultiPolygon"))
         self.assertIsNone(await places.resolve("Nowhere-in-particular"))
 
+    async def test_natural_continental_wording_resolves_without_the_geocoder(self):
+        places = ResolverPlaces(RegionResolver(geocoding_service=NoGeocoder()))  # type: ignore[arg-type]
+        conus = await places.resolve("the entire continental United States")
+        assert conus is not None
+        self.assertEqual((conus.name, conus.region_type), ("Continental US", "polygon"))
+        west, south, east, north = conus.bounds
+        self.assertTrue(-126 < west < -120 and 24 < south < 26 and -68 < east < -66 and 48 < north < 50)
+        usa = await places.resolve("the whole United States")
+        assert usa is not None
+        self.assertEqual((usa.name, usa.region_type), ("United States", "polygon"))
+
     async def test_the_resolvers_refusals_become_place_refusals_with_their_facts(self):
         places = ResolverPlaces(RegionResolver(geocoding_service=StubGeocoder()))  # type: ignore[arg-type]
         for code, wording, facts, _ in REFUSALS:

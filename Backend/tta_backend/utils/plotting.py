@@ -596,6 +596,9 @@ class RegionResolver:
         'continental us': {'geometry': box(-125, 24, -66, 50), 'bounds': (-125, 24, -66, 50), 'name': 'Continental US'},
         'contiguous us':  {'geometry': box(-125, 24, -66, 50), 'bounds': (-125, 24, -66, 50), 'name': 'Continental US'},
         'lower 48':       {'geometry': box(-125, 24, -66, 50), 'bounds': (-125, 24, -66, 50), 'name': 'Continental US'},
+        'lower 48 states':         {'geometry': box(-125, 24, -66, 50), 'bounds': (-125, 24, -66, 50), 'name': 'Continental US'},
+        'continental united states':{'geometry': box(-125, 24, -66, 50), 'bounds': (-125, 24, -66, 50), 'name': 'Continental US'},
+        'contiguous united states':{'geometry': box(-125, 24, -66, 50), 'bounds': (-125, 24, -66, 50), 'name': 'Continental US'},
 
         # --- US Regions ---
         'northeast us':  {'geometry': box( -80, 37,  -66, 48), 'bounds': ( -80, 37,  -66, 48), 'name': 'Northeast US'},
@@ -665,6 +668,8 @@ class RegionResolver:
         "united states": "united states", "usa": "united states", "us": "united states",
         "conus": "conus", "continental us": "conus",
         "contiguous us": "conus", "lower 48": "conus",
+        "lower 48 states": "conus", "continental united states": "conus",
+        "contiguous united states": "conus",
         "north america": "north america", "south america": "south america",
         "europe": "europe", "africa": "africa", "asia": "asia",
         "oceania": "oceania", "antarctica": "antarctica",
@@ -737,10 +742,13 @@ class RegionResolver:
     @staticmethod
     def _normalize_location_name(location_name: str) -> str:
         """One normalization for both resolvers (sync and async must agree):
-        lower, strip, collapse whitespace, and drop a leading "the " so "the
-        Netherlands" and "the north america" resolve the same either way."""
+        lower, strip, collapse whitespace, and drop a leading "the " and then
+        a leading "entire " or "whole ", so "the Netherlands" and "the entire
+        continental United States" resolve the same either way. Only the key
+        is normalized; the geocoder still gets the user's own wording."""
         normalized = " ".join(location_name.lower().strip().split())
-        return normalized.removeprefix("the ")
+        normalized = normalized.removeprefix("the ")
+        return normalized.removeprefix("entire ").removeprefix("whole ")
 
     def resolve_location(self, location_name: str) -> dict[str, Any] | None:
         """Convert location name to RegionResult with geometry"""

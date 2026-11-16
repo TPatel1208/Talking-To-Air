@@ -309,7 +309,8 @@ def _preset_key(name: str) -> str:
     ``ADMIN.lower()`` alone, ``"bahamas"`` would never resolve while
     ``"the bahamas"`` would."""
     normalized = " ".join(name.lower().strip().split())
-    return normalized.removeprefix("the ")
+    normalized = normalized.removeprefix("the ")
+    return normalized.removeprefix("entire ").removeprefix("whole ")
 
 
 def _admin0_tolerance(geom) -> float:

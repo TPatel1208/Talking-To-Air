@@ -515,7 +515,7 @@ class RetrievalPlaneAgreementTests(unittest.TestCase):
 
         # The guard itself still passes with everything this phase added.
         region_dispatch.assert_no_alias_collisions(resolver.global_regions)
-        self.assertEqual(len(resolver.global_regions), 90)
+        self.assertEqual(len(resolver.global_regions), 93)
 
     def test_a_non_composite_is_not_claimed_by_the_composite_extent_gate(self):
         """The mirror of requirement #11 on the retrieval plane. The composite
