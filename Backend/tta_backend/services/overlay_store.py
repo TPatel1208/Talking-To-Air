@@ -23,6 +23,7 @@ import uuid
 from collections.abc import Iterable
 from typing import Any
 
+from tta_backend.infrastructure.access_clock import stamp_access
 from tta_backend.infrastructure.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -55,6 +56,8 @@ def write_overlay(png_bytes: bytes) -> str:
     except BaseException:
         _remove(staging)
         raise
+    # A write is an access too, stamped on the same clock as reads.
+    _touch(path)
     return path
 
 
@@ -149,9 +152,9 @@ def evict_to_fit(incoming_bytes: int) -> int:
     return evicted
 
 
-def _entries() -> list[tuple[float, int, str]]:
+def _entries() -> list[tuple[int, int, str]]:
     """``(last_access, bytes_on_disk, path)`` for every overlay in the store."""
-    out: list[tuple[float, int, str]] = []
+    out: list[tuple[int, int, str]] = []
     try:
         scanned = list(os.scandir(_store_root()))
     except OSError:
@@ -163,7 +166,7 @@ def _entries() -> list[tuple[float, int, str]]:
             stat = entry.stat(follow_symlinks=False)
         except OSError:
             continue
-        out.append((stat.st_mtime, stat.st_size, entry.path))
+        out.append((stat.st_mtime_ns, stat.st_size, entry.path))
     return out
 
 
@@ -184,7 +187,7 @@ def _remove(path: str) -> bool:
 
 def _touch(path: str) -> None:
     try:
-        os.utime(path, None)
+        stamp_access(path)
     except OSError:
         pass
 

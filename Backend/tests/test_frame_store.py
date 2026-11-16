@@ -720,6 +720,21 @@ class EvictionTests(FrameStoreTestCase):
 
         self.assertIsNotNone(read_frames(hot, pipeline_version="4"))
 
+    def test_the_stack_being_read_survives_a_clock_that_never_moves(self):
+        """A coarse file clock gives a read and the write after it the same
+        time; the read must still count as the more recent access."""
+        from tta_backend.services.frame_store import (
+            read_frames, store_size_bytes, write_frames,
+        )
+
+        with unittest.mock.patch("time.time_ns", return_value=1_700_000_000_000_000_000):
+            hot = write_frames(self.small_stack(1), pipeline_version="4")
+            self.set_env(FRAME_STORE_MAX_BYTES=store_size_bytes() * 2 + 1024)
+            for seed in range(8):
+                self.assertIsNotNone(read_frames(hot, pipeline_version="4"), seed)
+                write_frames(self.small_stack(10 + seed), pipeline_version="4")
+            self.assertIsNotNone(read_frames(hot, pipeline_version="4"))
+
 
 @requires_numpy
 class PlaneEvictionTests(FrameStoreTestCase):

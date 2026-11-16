@@ -21,6 +21,7 @@ from urllib.request import url2pathname
 
 from langchain_core.tools import BaseTool
 
+from tta_backend.infrastructure.access_clock import stamp_access
 from tta_backend.infrastructure.settings import get_settings
 from tta_backend.config.workflow_stages import STAGE_OPEN
 from tta_backend.earthdata_mcp.results import CATEGORY_TOO_LARGE, MCPToolError, parse_tool_result
@@ -839,7 +840,7 @@ def _extract_bundle_cached(zf: Any, path: str, names: list[str]) -> tuple[str, b
     final_dir = os.path.join(root, key)
     marker = os.path.join(final_dir, _EXTRACT_COMPLETE_MARKER)
     if os.path.exists(marker):
-        os.utime(final_dir, None)  # keep a hot entry out of the pruner's reach
+        _stamp_entry(final_dir)  # keep a hot entry out of the pruner's reach
         return final_dir, True
 
     staging = tempfile.mkdtemp(prefix=f"staging-{key}-", dir=root)
@@ -848,6 +849,7 @@ def _extract_bundle_cached(zf: Any, path: str, names: list[str]) -> tuple[str, b
         with open(os.path.join(staging, _EXTRACT_COMPLETE_MARKER), "w"):
             pass
         os.rename(staging, final_dir)
+        _stamp_entry(final_dir)
     except OSError:
         shutil.rmtree(staging, ignore_errors=True)
         if os.path.exists(marker):
@@ -909,6 +911,14 @@ def _entry_size_bytes(path: str) -> int:
     return total
 
 
+def _stamp_entry(path: str) -> None:
+    """Record a use of an extract-cache entry on the shared access clock."""
+    try:
+        stamp_access(path)
+    except OSError:
+        pass
+
+
 def _prune_extract_cache(
     root: str,
     ttl_seconds: float = _EXTRACT_CACHE_TTL_SECONDS,
@@ -939,21 +949,21 @@ def _prune_extract_cache(
     if max_bytes is None:
         max_bytes = get_settings().bundle_extract_cache_max_bytes
 
-    cutoff = time.time() - ttl_seconds
+    cutoff_ns = time.time_ns() - int(ttl_seconds * 1_000_000_000)
     try:
         entries = list(os.scandir(root))
     except OSError:
         return
 
-    survivors: list[tuple[float, int, str]] = []
+    survivors: list[tuple[int, int, str]] = []
     for entry in entries:
         try:
             if not entry.is_dir(follow_symlinks=False):
                 continue
-            mtime = entry.stat(follow_symlinks=False).st_mtime
+            mtime = entry.stat(follow_symlinks=False).st_mtime_ns
             if is_pinned(entry.path):
                 continue  # pinned entries are neither swept nor counted against the cap
-            if mtime < cutoff:
+            if mtime < cutoff_ns:
                 shutil.rmtree(entry.path, ignore_errors=True)
                 continue
             survivors.append((mtime, _entry_size_bytes(entry.path), entry.path))

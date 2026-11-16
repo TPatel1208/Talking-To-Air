@@ -560,6 +560,20 @@ class EvictionTests(StoreTestCase):
 
         self.assertIsNotNone(self.cube_cache.lookup("hot"))
 
+    def test_the_cube_just_read_survives_a_clock_that_never_moves(self):
+        """A coarse file clock gives a read and the write after it the same
+        time; the read must still count as the more recent access."""
+        from unittest.mock import patch
+
+        with patch("time.time_ns", return_value=1_800_000_000_000_000_000):
+            self.cube_cache.write_cube(self._big_dataset(1), "hot")
+            headroom = int(self._big_dataset(0).nbytes) + 2048
+            self.set_limits(CUBE_STORE_MAX_BYTES=self.cube_cache.store_size_bytes() + headroom)
+            for i in range(6):
+                self.assertIsNotNone(self.cube_cache.lookup("hot"), i)
+                self.cube_cache.write_cube(self._big_dataset(20 + i), f"frozen{i}")
+            self.assertIsNotNone(self.cube_cache.lookup("hot"))
+
     def _compressible_dataset(self, cells: int = 224):
         """Fill-dominated, so its on-disk size collapses while ``nbytes``
         stays large — the TEMPO L3 shape, where the geostationary scan only

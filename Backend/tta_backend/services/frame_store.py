@@ -29,6 +29,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from tta_backend.infrastructure.access_clock import stamp_access
 from tta_backend.infrastructure.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -302,7 +303,7 @@ def sweep_store(current_pipeline_version: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _entries() -> list[tuple[float, int, str]]:
+def _entries() -> list[tuple[int, int, str]]:
     """``(last_access, bytes_on_disk, key)`` for every complete entry.
 
     **Real bytes on disk**, walked, not ``values.nbytes``. ``cube_store``
@@ -313,7 +314,7 @@ def _entries() -> list[tuple[float, int, str]]:
     the same mistake three times over on exactly the sparse stacks that cost
     least.
     """
-    out: list[tuple[float, int, str]] = []
+    out: list[tuple[int, int, str]] = []
     try:
         scanned = list(os.scandir(_store_root()))
     except OSError:
@@ -324,7 +325,7 @@ def _entries() -> list[tuple[float, int, str]]:
         if _read_manifest(entry.name) is None:
             continue  # incomplete: the manifest is the completion marker
         try:
-            out.append((entry.stat(follow_symlinks=False).st_mtime,
+            out.append((entry.stat(follow_symlinks=False).st_mtime_ns,
                         _entry_bytes(entry.path), entry.name))
         except OSError:
             continue
@@ -404,11 +405,10 @@ def evict_to_fit(incoming_bytes: int, *, protect: Iterable[str] = ()) -> int:
 
 
 def _touch(key: str) -> None:
-    """Record a hit as an access, so LRU means what it says. The extract
-    cache's pruner learned this the hard way: reads that don't touch mtime make
-    a hot entry indistinguishable from an abandoned one."""
+    """Record an access, so LRU means what it says: reads that don't touch
+    mtime make a hot entry indistinguishable from an abandoned one."""
     try:
-        os.utime(_entry_dir(key), None)
+        stamp_access(_entry_dir(key))
     except OSError:
         pass
 
@@ -469,6 +469,8 @@ def _write_entry(
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
         raise
+    # A write is an access too, stamped on the same clock as reads.
+    _touch(key)
 
 
 def _store_root() -> str:

@@ -144,6 +144,21 @@ class EvictionTests(OverlayStoreTestCase):
         self.assertEqual(read_overlay(warm), png(2))
         self.assertEqual(read_overlay(new), png(3))
 
+    def test_the_overlay_just_read_survives_a_clock_that_never_moves(self):
+        """A coarse file clock gives a read and the write after it the same
+        time; the read must still count as the more recent access."""
+        from tta_backend.services.overlay_store import (
+            read_overlay, store_size_bytes, write_overlay,
+        )
+
+        with unittest.mock.patch("time.time_ns", return_value=1_800_000_000_000_000_000):
+            hot = write_overlay(png(1))
+            self.set_env(OVERLAY_STORE_MAX_BYTES=store_size_bytes() * 2 + 1024)
+            for seed in range(8):
+                self.assertEqual(read_overlay(hot), png(1), seed)
+                write_overlay(png(10 + seed))
+            self.assertEqual(read_overlay(hot), png(1))
+
     def test_the_cap_is_a_fixed_1_gib_and_eviction_holds_the_store_under_it(self):
         """A fixed byte count, never a share of free space, which would expand
         to fill whatever disk the volume is on. Checked through eviction as
