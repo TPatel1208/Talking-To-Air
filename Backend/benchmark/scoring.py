@@ -1,6 +1,7 @@
 """Scoring one outcome against its case, and the thresholds a run must meet."""
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from benchmark.cases import BenchmarkCase
@@ -69,10 +70,14 @@ def _token_cell(count: int | None) -> str:
 
 
 def _cost_cell(cost: CostEstimate | None) -> str:
-    """Dollars, with "?" when some model's tokens had no price; "-" when no tokens were reported."""
+    """Dollars, with "?" when some model's tokens had no price and "!" when its cache counts exceed its input; "-" when no tokens were reported."""
     if cost is None:
         return "-"
-    return f"${cost.dollars:.4f}" + ("?" if cost.unpriced else "")
+    return f"${cost.dollars:.4f}" + ("?" if cost.unpriced else "") + ("!" if cost.inconsistent_models else "")
+
+
+def _inconsistent_line(models: list[str]) -> str:
+    return f"cached tokens exceed input for: {', '.join(models)} (cost understated)"
 
 
 def format_results_table(results: list[CaseResult]) -> str:
@@ -106,7 +111,10 @@ def format_results_table(results: list[CaseResult]) -> str:
         totals.append(f"{_token_cell(sum(counts) if counts else None):>9}")
     costs = [cost for result in results if (cost := estimate_cost(result.outcome)) is not None]
     unpriced = sorted({model for cost in costs for model in cost.unpriced})
-    total_cost = CostEstimate(sum(cost.dollars for cost in costs), tuple(unpriced)) if costs else None
+    inconsistent = sorted({model for cost in costs for model in cost.inconsistent_models})
+    total_cost = (
+        CostEstimate(sum(cost.dollars for cost in costs), tuple(unpriced), tuple(inconsistent)) if costs else None
+    )
     lines.append(rule)
     lines.append(
         f"{'total':<42} {'':<18} {f'{passed}/{len(results)}':<6} {seconds:>8.2f} {' '.join(totals)} "
@@ -125,18 +133,20 @@ WORKFLOW_TABLE_HEADER = (
 )
 
 
-def format_workflow_table(results: list[CaseResult], uncovered: list[str]) -> str:
-    """One row per workflow (cases covered, passed, failed), each failing case's first failed
-    check beneath it, then the ids of the cases no workflow covers."""
-    by_workflow: dict[str, list[CaseResult]] = {}
+def _grouped_table(
+    header_text: str, label: str, results: list[CaseResult], uncovered: list[str], key: Callable[[CaseResult], str]
+) -> list[str]:
+    """One row per group (cases covered, passed, failed), each failing case's first failed
+    check beneath it, then the ids of the cases not covered."""
+    groups: dict[str, list[CaseResult]] = {}
     for result in results:
-        by_workflow.setdefault(result.case.workflow or "", []).append(result)
-    header = f"{'workflow':<20} {'covered':>7} {'passed':>6} {'failed':>6}"
-    lines = [WORKFLOW_TABLE_HEADER, "", header, "-" * len(header)]
-    for workflow in sorted(by_workflow):
-        group = by_workflow[workflow]
+        groups.setdefault(key(result), []).append(result)
+    header = f"{label:<20} {'covered':>7} {'passed':>6} {'failed':>6}"
+    lines = [header_text, "", header, "-" * len(header)]
+    for name in sorted(groups):
+        group = groups[name]
         passed = sum(1 for result in group if result.passed)
-        lines.append(f"{workflow:<20} {len(group):>7} {passed:>6} {len(group) - passed:>6}")
+        lines.append(f"{name:<20} {len(group):>7} {passed:>6} {len(group) - passed:>6}")
         for result in group:
             if result.passed:
                 continue
@@ -149,4 +159,36 @@ def format_workflow_table(results: list[CaseResult], uncovered: list[str]) -> st
     lines.append("-" * len(header))
     lines.append(f"{'total':<20} {len(results):>7} {passed_total:>6} {len(results) - passed_total:>6}")
     lines.append(f"not covered ({len(uncovered)}): {', '.join(uncovered) if uncovered else 'none'}")
+    return lines
+
+
+def format_workflow_table(results: list[CaseResult], uncovered: list[str]) -> str:
+    """One row per workflow (cases covered, passed, failed), each failing case's first failed
+    check beneath it, then the ids of the cases no workflow covers."""
+    return "\n".join(_grouped_table(
+        WORKFLOW_TABLE_HEADER, "workflow", results, uncovered, lambda result: result.case.workflow or ""
+    ))
+
+
+EXPLORE_TABLE_HEADER = (
+    "Explore adapter: exploratory, with a real model. Each case's prompt is the objective of one exploration task\n"
+    "run with the case's bundle on the fake data boundary. Model output varies between runs.\n"
+    "These results are not compared with the pass threshold or the current system's results."
+)
+
+
+def format_explore_table(results: list[CaseResult], uncovered: list[str], cost_dollars: float | None) -> str:
+    """One row per bundle, each failing case's first failed check beneath it, the cases not
+    covered, and the estimated cost."""
+    lines = _grouped_table(
+        EXPLORE_TABLE_HEADER, "bundle", results, uncovered, lambda result: result.case.bundle or ""
+    )
+    lines.append(
+        "estimated cost: not available (no model tokens reported)" if cost_dollars is None
+        else f"estimated cost: ${cost_dollars:.4f} (list prices; models without a price are not counted)"
+    )
+    costs = [cost for result in results if (cost := estimate_cost(result.outcome)) is not None]
+    inconsistent = sorted({model for cost in costs for model in cost.inconsistent_models})
+    if inconsistent:
+        lines.append(_inconsistent_line(inconsistent))
     return "\n".join(lines)

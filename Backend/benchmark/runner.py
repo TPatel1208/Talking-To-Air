@@ -113,6 +113,7 @@ def starter_prompts_missing_cases(volume) -> list[str]:
 
 DEFAULT_RESULTS_DIR = "benchmark-results"
 WORKFLOW_RESULTS_SUBDIR = "workflow"
+EXPLORE_RESULTS_SUBDIR = "explore"
 
 
 async def _main(system: str, results_dir: str) -> int:
@@ -130,6 +131,19 @@ async def _main(system: str, results_dir: str) -> int:
             folder = write_workflow_report(run, Path(results_dir) / WORKFLOW_RESULTS_SUBDIR)
             print(f"results saved to {folder}")
             return 0
+        if system == "explore":
+            from benchmark.adapters.explore import ExploreAdapter
+            from benchmark.report import estimated_cost, write_explore_report
+            from benchmark.scoring import format_explore_table
+
+            run = await run_workflow_suite(ExploreAdapter(), volume)
+            dollars, unpriced = estimated_cost(run.results)
+            print(format_explore_table(run.results, run.uncovered, dollars))
+            if unpriced:
+                print(f"no price for: {', '.join(unpriced)}")
+            folder = write_explore_report(run, Path(results_dir) / EXPLORE_RESULTS_SUBDIR)
+            print(f"results saved to {folder}")
+            return 0
         from benchmark.adapters.current import CurrentSystemAdapter
         from benchmark.scoring import PASS_THRESHOLD
 
@@ -142,13 +156,15 @@ async def _main(system: str, results_dir: str) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m benchmark.runner", description="Run the benchmark suite.")
     parser.add_argument(
-        "--system", choices=("current", "workflow"), default="current",
+        "--system", choices=("current", "workflow", "explore"), default="current",
         help="current: the production chat stream (needs models and Postgres); "
-        "workflow: the harness workflows, no model, scored apart from the gate",
+        "workflow: the harness workflows, no model, scored apart from the gate; "
+        "explore: the harness exploration specialists with real models, exploratory, costs tokens, "
+        "scored apart from the gate",
     )
     parser.add_argument(
         "--results-dir", default=os.environ.get("BENCHMARK_RESULTS_DIR", DEFAULT_RESULTS_DIR),
-        help="where results are saved; the workflow system writes under its own subfolder",
+        help="where results are saved; the workflow and explore systems write under their own subfolders",
     )
     args = parser.parse_args(argv)
     return asyncio.run(_main(args.system, args.results_dir))

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from benchmark.pricing import estimate_cost
-from benchmark.scoring import CaseResult, format_results_table, format_workflow_table
+from benchmark.scoring import CaseResult, format_explore_table, format_results_table, format_workflow_table
 
 if TYPE_CHECKING:
     from benchmark.runner import WorkflowSuiteRun
@@ -77,4 +77,42 @@ def write_workflow_report(run: WorkflowSuiteRun, directory: str | Path, *, now: 
     ]
     (folder / "cases.json").write_text(json.dumps(records, indent=2, default=str) + "\n", encoding="utf-8")
     (folder / "uncovered.json").write_text(json.dumps(run.uncovered, indent=2) + "\n", encoding="utf-8")
+    return folder
+
+
+def estimated_cost(results: list[CaseResult]) -> tuple[float | None, list[str]]:
+    """The summed estimated cost of ``results`` (None if no case reported tokens) and the models left unpriced."""
+    dollars: float | None = None
+    unpriced: set[str] = set()
+    for result in results:
+        cost = estimate_cost(result.outcome)
+        if cost is None:
+            continue
+        dollars = (dollars or 0.0) + cost.dollars
+        unpriced.update(cost.unpriced)
+    return dollars, sorted(unpriced)
+
+
+def write_explore_report(run: WorkflowSuiteRun, directory: str | Path, *, now: datetime | None = None) -> Path:
+    """Write ``table.txt``, ``cases.json``, ``uncovered.json`` and ``cost.json`` for an explore-adapter run into a new
+    timestamped folder under ``directory``; each record adds the bundle, its mode label and its findings."""
+    stamp = (now or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
+    folder = Path(directory) / stamp
+    folder.mkdir(parents=True, exist_ok=True)
+    dollars, unpriced = estimated_cost(run.results)
+    (folder / "table.txt").write_text(
+        format_explore_table(run.results, run.uncovered, dollars) + "\n", encoding="utf-8"
+    )
+    records = [
+        {**case_record(result), "bundle": result.case.bundle, "mode": result.outcome.mode,
+         "findings": result.outcome.findings}
+        for result in run.results
+    ]
+    (folder / "cases.json").write_text(json.dumps(records, indent=2, default=str) + "\n", encoding="utf-8")
+    (folder / "uncovered.json").write_text(json.dumps(run.uncovered, indent=2) + "\n", encoding="utf-8")
+    costs = [cost for result in run.results if (cost := estimate_cost(result.outcome)) is not None]
+    cost = {"covered": len(run.results), "est_cost_dollars": None if dollars is None else round(dollars, 6),
+            "unpriced_models": unpriced,
+            "inconsistent_models": sorted({model for c in costs for model in c.inconsistent_models})}
+    (folder / "cost.json").write_text(json.dumps(cost, indent=2) + "\n", encoding="utf-8")
     return folder

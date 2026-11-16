@@ -19,8 +19,6 @@ from benchmark.checks import Completed
 REQUIRED_MODULES = ["langchain_mcp_adapters", "fastmcp", "uvicorn", "xarray", "zarr", "pyarrow", "langgraph"]
 _MISSING_DEPENDENCIES = any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES)
 
-STAGE_KEYS = "stages ['search', 'aoi', 'coverage', 'estimate', 'submit', 'progress', 'open', 'render'] not found in order"
-
 # The place each case's inputs carry, exactly as the prompt words it.
 PLACES = {
     "plotting_single_map": "New Jersey",
@@ -42,11 +40,11 @@ REFUSALS = ("region_refusal_unresolvable_member", "region_refusal_buffer_too_lar
 EXPECTED: dict[str, tuple[str, bool | None, str]] = {
     "plotting_single_map": ("map", True, ""),
     "plotting_timeseries": ("timeseries", True, ""),
-    "plotting_point_timeseries": ("timeseries", False, "retrieve_timeseries was never called"),
+    "plotting_point_timeseries": ("timeseries", False, "the run never finished: the workflow stopped to ask"),
     "failure_recovery_no_data": ("map", True, ""),
     "comparison_period_tempo_no2": ("period-comparison", True, ""),
     "e2e_ground_relative_date": ("monitor-readings", True, ""),
-    "e2e_satellite_plot": ("map", False, STAGE_KEYS),
+    "e2e_satellite_plot": ("map", True, ""),
     "e2e_routing_ozone_otc_satellite_only": ("map", True, ""),
     "region_refusal_unresolvable_member": ("map", True, ""),
     "region_refusal_buffer_too_large": ("map", True, ""),
@@ -181,7 +179,8 @@ class WorkflowAdapterRunTests(unittest.TestCase):
     def test_a_point_prompt_with_coordinates_is_not_resolved_by_the_harness(self):
         outcome = self.results["plotting_point_timeseries"].outcome
 
-        self.assertTrue(outcome.done)
+        self.assertFalse(outcome.done)
+        self.assertIn("stopped to ask", outcome.unfinished)
         self.assertEqual(outcome.boundary_calls, [])
         self.assertIn("could not be found as a place", outcome.answer_text)
 
@@ -261,6 +260,71 @@ class NeedsInputKindTests(unittest.TestCase):
         self.assertTrue(_misconfigured(self._result("Which area?", {"kind": "inputs", "inputs": []})))
         self.assertFalse(_misconfigured(self._result("'Wakanda' in 'NY + Wakanda' could not be found.")))
         self.assertFalse(_misconfigured(self._result("Pick one.", {"kind": "pick_one"})))
+
+
+class StoppedReasonTests(unittest.TestCase):
+    def _result(self, status, question=None, reason="why"):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(status=status, question=question, reason=reason)
+
+    def test_a_question_finishes_only_a_case_that_expects_one(self):
+        from benchmark.adapters.workflow import stopped_reason
+
+        question = {"kind": "text", "prompt": "Name the place.", "options": []}
+        case = _cases_by_id()["plotting_single_map"]
+        asking = dataclasses.replace(case, expects_question=True)
+
+        self.assertEqual(stopped_reason(self._result("needs_input", question), case, "the workflow"),
+                         "the workflow stopped to ask: Name the place.")
+        self.assertIsNone(stopped_reason(self._result("needs_input", question), asking, "the workflow"))
+
+    def test_waiting_incomplete_and_cancelled_never_finish(self):
+        from benchmark.adapters.workflow import stopped_reason
+
+        case = dataclasses.replace(_cases_by_id()["plotting_single_map"], expects_question=True)
+
+        for status in ("waiting", "incomplete", "cancelled"):
+            self.assertIsNotNone(stopped_reason(self._result(status), case, "the workflow"), status)
+        for status in ("done", "failed", "insufficient_evidence"):
+            self.assertIsNone(stopped_reason(self._result(status), case, "the workflow"), status)
+
+
+class ComposeAnswerTests(unittest.TestCase):
+    def _result(self, status, question=None, reason=None):
+        from types import SimpleNamespace
+
+        class Mode:
+            def label(self):
+                return "Draft workflow: map v1"
+
+        return SimpleNamespace(
+            mode=Mode(), findings=[], disclosures=[], gaps=[], status=status, reason=reason, question=question,
+        )
+
+    def test_a_question_the_user_must_answer_is_part_of_the_answer_with_its_options(self):
+        from benchmark.adapters.workflow import compose_answer
+
+        question = {"kind": "pick_one", "prompt": "Which Springfield?", "options": ["Illinois", "Missouri"]}
+
+        text = compose_answer(self._result("needs_input", question, "The map needs an area."))
+
+        self.assertEqual(text.splitlines()[1:], [
+            "The map needs an area.", "Which Springfield?", "Options: Illinois, Missouri",
+        ])
+
+    def test_a_text_question_has_no_options_line(self):
+        from benchmark.adapters.workflow import compose_answer
+
+        text = compose_answer(self._result("needs_input", {"kind": "text", "prompt": "Name the place.", "options": []}))
+
+        self.assertIn("Name the place.", text)
+        self.assertNotIn("Options", text)
+
+    def test_a_result_without_a_question_adds_nothing(self):
+        from benchmark.adapters.workflow import compose_answer
+
+        self.assertEqual(compose_answer(self._result("needs_input")), "Draft workflow: map v1")
 
 
 @unittest.skipIf(_MISSING_DEPENDENCIES, "benchmark test dependencies are not installed")

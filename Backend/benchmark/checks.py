@@ -60,6 +60,8 @@ class Completed:
         if outcome.error:
             return CheckResult(False, f"the run errored: {outcome.error}")
         if not outcome.done:
+            if outcome.unfinished:
+                return CheckResult(False, f"the run never finished: {outcome.unfinished}")
             return CheckResult(False, "the run never finished")
         return CheckResult(True, "completed")
 
@@ -253,6 +255,33 @@ class StageSubsequence:
         if contains_subsequence(outcome.stages, list(self.stages)):
             return CheckResult(True, "the stages appeared in order")
         return CheckResult(False, f"stages {list(self.stages)} not found in order; saw {outcome.stages}")
+
+
+@dataclass(frozen=True)
+class StageSequenceAny:
+    """The narrated stages include one of the ``alternatives`` in order, with others allowed between.
+
+    Each alternative is one system's narration of the same course of events,
+    so the check asks what happened, not how a system words it.
+
+    An alternative in ``needing_result`` narrates capabilities rather than
+    steps, so a stage alone proves little: it counts only when the data
+    service also handed back a ready handle and a chart or artifact was shown.
+    The outcome does not order those two against the stages, so this proves
+    data was retrieved and something was rendered, not that one fed the other.
+    """
+
+    alternatives: tuple[tuple[str, ...], ...]
+    needing_result: tuple[tuple[str, ...], ...] = ()
+
+    def evaluate(self, outcome: Outcome) -> CheckResult:
+        produced = bool(outcome.handles) and bool(outcome.charts or outcome.artifact_ids)
+        for stages in (*self.alternatives, *(s for s in self.needing_result if produced)):
+            if contains_subsequence(outcome.stages, list(stages)):
+                return CheckResult(True, f"the stages {list(stages)} appeared in order")
+        everything = [list(stages) for stages in (*self.alternatives, *self.needing_result)]
+        note = "" if produced or not self.needing_result else "; no data handle and chart were produced"
+        return CheckResult(False, f"none of {everything} found in order; saw {outcome.stages}{note}")
 
 
 @dataclass(frozen=True)

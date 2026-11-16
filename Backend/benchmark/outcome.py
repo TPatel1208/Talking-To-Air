@@ -41,12 +41,15 @@ class Outcome:
     elapsed_seconds: float = 0.0
     done: bool = False
     error: str | None = None
+    # Why a run that stopped without an answer stopped, e.g. a spent budget; Completed reports it.
+    unfinished: str | None = None
     mode: str | None = None
     findings: list = field(default_factory=list)
     # Names of the tool calls the system made itself; diagnostic, never scored.
     tool_calls: list[str] = field(default_factory=list)
     # Model tokens the provider reported, keyed by (model, agent, kind) where
-    # kind is "input", "output" or "cache_read" (a share of input). Never scored.
+    # kind is "input", "output", "cache_read" or "cache_creation" (the last two are
+    # shares of input). Never scored.
     tokens: dict[tuple[str, str, str], int] = field(default_factory=dict)
 
     def token_total(self, kind: str) -> int | None:
