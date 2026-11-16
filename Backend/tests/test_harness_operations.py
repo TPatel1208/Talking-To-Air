@@ -517,15 +517,33 @@ class ThresholdTests(OperationsCase):
         self.assertEqual(failure.result, {"refusal": "standard_unit_mismatch"})
         self.assertIn("ppb and the o3 standard in ppm", failure.reason)
 
-    async def test_a_pollutant_with_several_standards_asks_which(self):
+    async def test_a_pollutant_with_several_standards_without_one_is_bad_input(self):
         frame = pd.DataFrame({"time": ["2024-06-01T10Z"], "value": [40.0], "series": ["a"]})
         handle = await self.series(frame, unit="ug/m3")
-        result = await invoke(self.env, events.threshold, {"data": handle, "pollutant": "pm25"})
-        self.assertEqual((result.status, result.question.options), ("needs_input", ("annual", "24-hour")))
+        missing = await self.refusal(events.threshold, {"data": handle, "pollutant": "pm25"})
+        self.assertEqual(missing.category, FailureCategory.BAD_INPUT)
+        self.assertEqual(
+            missing.reason,
+            "operations.threshold needs a standard for pm25; call it again with averaging_period one of: 24-hour, annual.",
+        )
+        description = events.ThresholdParams.model_fields["averaging_period"].description or ""
+        self.assertIn("one of: 1-hour, 8-hour, 24-hour, annual.", description)
         done = await invoke(self.env, events.threshold, {"data": handle, "pollutant": "pm25", "averaging_period": "24-hour"})
         self.assertEqual(done.summary["values_above"], 1)
         unknown = await self.refusal(events.threshold, {"data": handle, "pollutant": "pm25", "averaging_period": "1-hour"})
         self.assertEqual(unknown.result, {"refusal": "unknown_standard"})
+        self.assertEqual(
+            unknown.reason,
+            "operations.threshold: the standards file has no pm25 standard for 1-hour; "
+            "call it again with averaging_period one of: 24-hour, annual.",
+        )
+
+    async def test_a_wrong_period_lists_only_that_pollutants_periods(self):
+        frame = pd.DataFrame({"time": ["2024-06-01T10Z"], "value": [0.075], "series": ["a"]})
+        handle = await self.series(frame)
+        wrong = await self.refusal(events.threshold, {"data": handle, "pollutant": "o3", "averaging_period": "annual"})
+        self.assertEqual(wrong.result, {"refusal": "unknown_standard"})
+        self.assertTrue(wrong.reason.endswith("call it again with averaging_period one of: 8-hour."), wrong.reason)
 
     async def test_a_level_and_a_pollutant_together_are_invalid(self):
         source = await self.grid(cube(ramp(), THREE_DAYS))

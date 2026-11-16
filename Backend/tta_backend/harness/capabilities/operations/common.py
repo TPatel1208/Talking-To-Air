@@ -35,7 +35,10 @@ REFUSALS: dict[str, str] = {
     "no_time_axis": "{name}: {param} has no time axis to work over.",
     "unsupported_dims": "{name}: {param} has dimensions other than time, latitude and longitude ({dims}); select a single level first.",
     "line_not_found": "{name}: {param} has no series line named {line}.",
-    "unknown_standard": "{name}: the standards file has no {pollutant} standard for {averaging_period}.",
+    "unknown_standard": (
+        "{name}: the standards file has no {pollutant} standard for {averaging_period}; "
+        "call it again with averaging_period one of: {periods}."
+    ),
     "standard_unit_mismatch": "{name}: the data is in {a} and the {pollutant} standard in {b}; units are not converted, so they cannot be compared.",
     "grid_mismatch": (
         "{name}: the two grids' cells do not line up (a has {spacing_a} cells, b has {spacing_b}); grids are not "

@@ -60,6 +60,11 @@ UNRECORDABLE_PARAMS = (_F.BAD_INPUT, "The parameters for {name} are too large to
 NOT_CONNECTED = (_F.CREDENTIAL_INVALID, "{name} needs the {connector} connector, which is not connected.")
 # The registry keys are registry facts; a user never names one, so this is the caller's mistake.
 UNKNOWN_PRODUCT = (_F.BAD_INPUT, "{name} needs a registered product key; call it again with one of: {keys}.")
+# A pollutant with several standards needs one chosen by the caller; the user is never asked.
+STANDARD_REQUIRED = (
+    _F.BAD_INPUT,
+    "{name} needs a standard for {pollutant}; call it again with averaging_period one of: {standards}.",
+)
 BAD_RESULT = (_F.INTERNAL_ERROR, "{name} returned a result that does not match its declaration.")
 SECRET_IN_OUTPUT = (_F.INTERNAL_ERROR, "{name} produced output holding its connector secret, so it was not stored.")
 GRID_OUTSIDE_OPENER = (

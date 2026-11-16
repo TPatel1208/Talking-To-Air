@@ -1,11 +1,12 @@
 """Days that stand out: each day's peak, and what is above a threshold or a standard."""
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal, Self
+from typing import Annotated, Any, Iterable, Literal, Self
 
 import pandas as pd
 from pydantic import Field, JsonValue, model_validator
 
+from tta_backend.datasets.standards import load_standards
 from tta_backend.domain.analysis.checks import units_mismatch
 from tta_backend.domain.analysis.peaks import daily_peaks_grid, daily_peaks_series
 from tta_backend.domain.analysis.thresholds import (
@@ -18,6 +19,7 @@ from tta_backend.domain.analysis.thresholds import (
 from tta_backend.harness.capabilities.call import Call
 from tta_backend.harness.capabilities.common import number, plain
 from tta_backend.harness.capabilities.definition import Capability, Params, handle_param
+from tta_backend.harness.capabilities.failures import STANDARD_REQUIRED, failure
 from tta_backend.harness.capabilities.operations.common import (
     MAX_LISTED,
     derived,
@@ -33,6 +35,23 @@ from tta_backend.harness.handles.model import HandleRecord
 __all__ = ["CAPABILITIES", "GROUP", "daily_peak", "threshold"]
 
 Pollutant = Literal["o3", "pm25", "pm10", "no2", "so2", "co"]
+_DURATION_ORDER = ("1-hour", "8-hour", "24-hour", "annual")
+
+
+def _by_duration(periods: Iterable[str]) -> list[str]:
+    """Averaging periods shortest first; any not in the table follow, by name."""
+    rank = {period: i for i, period in enumerate(_DURATION_ORDER)}
+    return sorted(dict.fromkeys(periods), key=lambda period: (rank.get(period, len(rank)), period))
+
+
+def _pollutant_periods(pollutant: str) -> list[str]:
+    return _by_duration(s.averaging_period for s in load_standards()[pollutant].naaqs)
+
+
+_AVERAGING_PERIODS = _by_duration(s.averaging_period for p in load_standards().values() for s in p.naaqs)
+_AVERAGING_DESCRIPTION = (
+    "Which of the pollutant's standards, required when it has several; one of: " + ", ".join(_AVERAGING_PERIODS) + "."
+)
 
 
 def _dates(frame: pd.DataFrame, column: str = "date") -> list[JsonValue]:
@@ -110,7 +129,7 @@ class ThresholdParams(Params):
     data: Annotated[str, handle_param("grid", "series"), Field(description="A grid or a series.")]
     level: float | None = Field(default=None, description="The threshold, in the data's unit.")
     pollutant: Pollutant | None = Field(default=None, description="Use this pollutant's NAAQS level instead of a level.")
-    averaging_period: str | None = Field(default=None, description="Which of the pollutant's standards, such as 8-hour or 24-hour.")
+    averaging_period: str | None = Field(default=None, description=_AVERAGING_DESCRIPTION)
     line: str | None = Field(default=None, description="For a series with several lines, the one line to use.")
 
     @model_validator(mode="after")
@@ -131,9 +150,15 @@ async def _threshold(call: Call[ThresholdParams]) -> CapabilityResult:
         try:
             standard = naaqs_for(p.pollutant, p.averaging_period)
         except UnknownStandard:
-            raise refuse(call, "unknown_standard", pollutant=p.pollutant, averaging_period=p.averaging_period) from None
+            raise refuse(
+                call, "unknown_standard", pollutant=p.pollutant, averaging_period=p.averaging_period,
+                periods=", ".join(_pollutant_periods(p.pollutant)),
+            ) from None
         if isinstance(standard, list):
-            return call.ask(f"Which {p.pollutant} standard should be applied?", standard)
+            raise failure(
+                STANDARD_REQUIRED, name=call.capability.name, pollutant=p.pollutant,
+                standards=", ".join(_by_duration(standard)),
+            )
         mismatch = units_mismatch(unit, standard.unit)
         if mismatch is not None:
             facts = mismatch.facts
