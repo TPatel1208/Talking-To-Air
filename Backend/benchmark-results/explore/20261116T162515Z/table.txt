@@ -1,0 +1,20 @@
+Explore adapter: exploratory, with a real model. Each case's prompt is the objective of one exploration task
+run with the case's bundle on the fake data boundary. Model output varies between runs.
+These results are not compared with the pass threshold or the current system's results.
+
+bundle               covered passed failed
+------------------------------------------
+analyse                   18     12      6
+    FAIL failure_recovery_no_data: the run never finished: the exploration stopped to ask: Which registered product? Options: AERDA_AOD_NRT, AERDA_AOD_NRT_3H, MODIS_AOD_AQUA, MODIS_AOD_TERRA, OMI_HCHO, OMI_NO2, OMI_O3, OMI_SO2, TEMPO_HCHO, TEMPO_HCHO_NRT, TEMPO_HCHO_V03, TEMPO_NO2, TEMPO_NO2_NRT, TEMPO_O3PROF, TEMPO_O3TOT, TROPOMI_NO2, VIIRS_AOD_NOAA20, VIIRS_AOD_SNPP
+    FAIL failure_recovery_retrieval_refused: the run never finished: the exploration stopped to ask: 'the entire continental United States' could not be found as a place. Name the area another way, such as a state, a city, or a west,south,east,north box.
+    FAIL ground_validation_tempo_vs_epa: the run never finished: the exploration stopped to ask: Which registered product? Options: AERDA_AOD_NRT, AERDA_AOD_NRT_3H, MODIS_AOD_AQUA, MODIS_AOD_TERRA, OMI_HCHO, OMI_NO2, OMI_O3, OMI_SO2, TEMPO_HCHO, TEMPO_HCHO_NRT, TEMPO_HCHO_V03, TEMPO_NO2, TEMPO_NO2_NRT, TEMPO_O3PROF, TEMPO_O3TOT, TROPOMI_NO2, VIIRS_AOD_NOAA20, VIIRS_AOD_SNPP
+    FAIL e2e_ground_relative_date: over the 15s budget
+    FAIL e2e_routing_ozone_otc_satellite_only: the ground source was used (monitors/byBox queried)
+    FAIL e2e_routing_non_aq_no_ground: the run never finished: the exploration stopped to ask: Which registered product? Options: AERDA_AOD_NRT, AERDA_AOD_NRT_3H, MODIS_AOD_AQUA, MODIS_AOD_TERRA, OMI_HCHO, OMI_NO2, OMI_O3, OMI_SO2, TEMPO_HCHO, TEMPO_HCHO_NRT, TEMPO_HCHO_V03, TEMPO_NO2, TEMPO_NO2_NRT, TEMPO_O3PROF, TEMPO_O3TOT, TROPOMI_NO2, VIIRS_AOD_NOAA20, VIIRS_AOD_SNPP
+find-data                  2      0      2
+    FAIL discovery_no2_dataset: the run never finished: the exploration stopped to ask: Which registered product? Options: AERDA_AOD_NRT, AERDA_AOD_NRT_3H, MODIS_AOD_AQUA, MODIS_AOD_TERRA, OMI_HCHO, OMI_NO2, OMI_O3, OMI_SO2, TEMPO_HCHO, TEMPO_HCHO_NRT, TEMPO_HCHO_V03, TEMPO_NO2, TEMPO_NO2_NRT, TEMPO_O3PROF, TEMPO_O3TOT, TROPOMI_NO2, VIIRS_AOD_NOAA20, VIIRS_AOD_SNPP
+    FAIL discovery_soil_moisture: the run never finished: the exploration ran out of its budget before it finished: The exploration reached its limit of 20 tool calls before it finished; what it found so far is kept.
+------------------------------------------
+total                     20     12      8
+not covered (0): none
+estimated cost: $0.7895 (list prices; models without a price are not counted)

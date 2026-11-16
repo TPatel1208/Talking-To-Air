@@ -1,0 +1,16 @@
+Explore adapter: exploratory, with a real model. Each case's prompt is the objective of one exploration task
+run with the case's bundle on the fake data boundary. Model output varies between runs.
+These results are not compared with the pass threshold or the current system's results.
+
+bundle               covered passed failed
+------------------------------------------
+analyse                   18     14      4
+    FAIL failure_recovery_retrieval_refused: the run never finished: the exploration stopped to ask: 'the entire continental United States' could not be found as a place. Name the area another way, such as a state, a city, or a west,south,east,north box.
+    FAIL ground_validation_tempo_vs_epa: over the 40s budget
+    FAIL e2e_ground_relative_date: the run never finished: the exploration ran out of its budget before it finished: The exploration used all 12 of its model calls before it finished; what it found so far is kept.
+    FAIL e2e_routing_ozone_otc_satellite_only: the ground source was used (monitors/byBox queried)
+find-data                  2      2      0
+------------------------------------------
+total                     20     16      4
+not covered (0): none
+estimated cost: $1.0763 (list prices; models without a price are not counted)
