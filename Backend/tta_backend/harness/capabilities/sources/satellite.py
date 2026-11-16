@@ -326,8 +326,12 @@ def _unavailable(
     elif reason == "no_registered_product":
         text = f"No registered product measures {quantity}."
     else:
-        ruled = "; ".join(
-            f"{c.key}: {', '.join(sorted(c.reasons))}" for c in resolution.considered[:5] if not c.fits
+        # The readable detail of each rule; the codes stay in values. A detail
+        # may hold commas or semicolons, so products are set apart with " | ".
+        ruled = " | ".join(
+            f"{c.key}: {' and '.join(r.detail for r in c.ruled_out)}"
+            for c in resolution.considered[:5]
+            if not c.fits
         )
         text = _short(f"No product can serve {quantity} over {area} for {dates.text()} ({ruled}).", 900)
     return CapabilityResult(status="insufficient_evidence", reason=text, values=values)

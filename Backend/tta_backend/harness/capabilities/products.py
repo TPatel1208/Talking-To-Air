@@ -479,6 +479,8 @@ def _check(
         ))
 
     if cadence_needed is not None and _CADENCE_ORDER[cfg.cadence] > _CADENCE_ORDER[cadence_needed]:
-        out.append(RuledOut("cadence_too_coarse", f"{cfg.cadence} product; {cadence_needed} needed"))
+        out.append(RuledOut(
+            "cadence_too_coarse", f"a {cfg.cadence} product, so {cadence_needed} values are not available",
+        ))
 
     return Considered(key, vouched, tuple(out), tuple(unchecked))

@@ -349,7 +349,8 @@ class NoDataTests(SatelliteCase):
         lisbon = (await invoke(self.env, areas.resolve, {"place": "Lisbon"})).handle
         result = await invoke(self.env, GET, self.params(area=lisbon, approved=["TEMPO_NO2"]))
         self.assertEqual(result.status, "insufficient_evidence")
-        self.assertIn("TEMPO_NO2: area_outside_coverage", result.reason)
+        self.assertIn("TEMPO_NO2: the area is outside its coverage", result.reason)
+        self.assertNotIn("area_outside_coverage", result.reason)
         self.assertNotIn("situation", result.values)
 
 
