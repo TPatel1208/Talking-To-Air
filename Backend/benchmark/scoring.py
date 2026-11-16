@@ -86,15 +86,16 @@ def _inconsistent_line(models: list[str]) -> str:
     return f"cached tokens exceed input for: {', '.join(models)} (cost understated)"
 
 
-def format_results_table(results: list[CaseResult]) -> str:
+def format_results_table(results: list[CaseResult], note: str | None = None) -> str:
     """One row per case: id, category, PASS or FAIL, seconds, model tokens,
     estimated cost, and why the first failing check failed; then a total row.
     A dash means the provider reported no tokens of that kind; a "?" on a cost
-    means some model had no price, and a footer names it."""
+    means some model had no price, and a footer names it. ``note`` goes above
+    the table."""
     token_headers = " ".join(f"{label:>9}" for _, label in _TOKEN_COLUMNS)
     header = f"{'case':<42} {'category':<18} {'result':<6} {'seconds':>8} {token_headers} {'est cost':>9}  reason"
     rule = "-" * len(header)
-    lines = [header, rule]
+    lines = [*([note, ""] if note else []), header, rule]
     for result in results:
         failure = result.first_failure
         if failure is not None:
@@ -131,6 +132,11 @@ def format_results_table(results: list[CaseResult]) -> str:
         lines.append(f"no price for: {', '.join(unpriced)}")
     return "\n".join(lines)
 
+
+HARNESS_TABLE_NOTE = (
+    "Harness system: the supervisor end to end on the benchmark's fake data boundary. It is the gate system, "
+    "scored against the pass threshold and comparable with `current` run on the same fakes."
+)
 
 WORKFLOW_TABLE_HEADER = (
     "Workflow adapter: no model. Each case names the workflow that answers it and its inputs, and the "

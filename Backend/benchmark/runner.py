@@ -114,6 +114,7 @@ def starter_prompts_missing_cases(volume) -> list[str]:
 DEFAULT_RESULTS_DIR = "benchmark-results"
 WORKFLOW_RESULTS_SUBDIR = "workflow"
 EXPLORE_RESULTS_SUBDIR = "explore"
+HARNESS_RESULTS_SUBDIR = "harness"
 
 
 async def _main(system: str, results_dir: str) -> int:
@@ -144,6 +145,15 @@ async def _main(system: str, results_dir: str) -> int:
             folder = write_explore_report(run, Path(results_dir) / EXPLORE_RESULTS_SUBDIR)
             print(f"results saved to {folder}")
             return 0
+        if system == "harness":
+            from benchmark.adapters.harness import HarnessAdapter
+            from benchmark.scoring import HARNESS_TABLE_NOTE, PASS_THRESHOLD
+
+            results = await run_suite(HarnessAdapter(), volume)
+            print(format_results_table(results, HARNESS_TABLE_NOTE))
+            folder = write_report(results, Path(results_dir) / HARNESS_RESULTS_SUBDIR, note=HARNESS_TABLE_NOTE)
+            print(f"results saved to {folder}")
+            return 0 if sum(1 for result in results if result.passed) >= PASS_THRESHOLD else 1
         from benchmark.adapters.current import CurrentSystemAdapter
         from benchmark.scoring import PASS_THRESHOLD
 
@@ -156,15 +166,17 @@ async def _main(system: str, results_dir: str) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m benchmark.runner", description="Run the benchmark suite.")
     parser.add_argument(
-        "--system", choices=("current", "workflow", "explore"), default="current",
+        "--system", choices=("current", "workflow", "explore", "harness"), default="current",
         help="current: the production chat stream (needs models and Postgres); "
         "workflow: the harness workflows, no model, scored apart from the gate; "
         "explore: the harness exploration specialists with real models, exploratory, costs tokens, "
-        "scored apart from the gate",
+        "scored apart from the gate; "
+        "harness: the new supervisor end to end on the same fakes, real models, costs tokens, "
+        "the cutover-gate system, scored against the pass threshold like current",
     )
     parser.add_argument(
         "--results-dir", default=os.environ.get("BENCHMARK_RESULTS_DIR", DEFAULT_RESULTS_DIR),
-        help="where results are saved; the workflow and explore systems write under their own subfolders",
+        help="where results are saved; the workflow, explore and harness systems write under their own subfolders",
     )
     args = parser.parse_args(argv)
     return asyncio.run(_main(args.system, args.results_dir))

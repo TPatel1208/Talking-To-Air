@@ -51,8 +51,12 @@ def case_record(result: CaseResult) -> dict:
     }
 
 
-def write_report(results: list[CaseResult], directory: str | Path, *, now: datetime | None = None) -> Path:
-    """Write ``table.txt`` and ``cases.json`` into a new timestamped folder under ``directory``; return the folder."""
+def write_report(
+    results: list[CaseResult], directory: str | Path, *, now: datetime | None = None, note: str | None = None
+) -> Path:
+    """Write ``table.txt`` and ``cases.json`` into a new timestamped folder under ``directory``; return the folder.
+
+    ``note`` is printed above the table."""
     stamp = (now or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
     folder = Path(directory) / stamp
     folder.mkdir(parents=True, exist_ok=True)

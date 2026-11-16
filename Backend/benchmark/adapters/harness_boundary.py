@@ -100,6 +100,8 @@ class Boundary:
     aqs_calls: list[tuple[str, dict]]
     clock: SystemClock
     run_day: date
+    # The session ``build_env`` hands every run, for a caller that needs it directly.
+    earthdata: Any = None
 
 
 @asynccontextmanager
@@ -167,9 +169,10 @@ async def harness_boundary(case: BenchmarkCase, *, models: Any = None) -> AsyncI
 
             settings = Settings(earthdata_mcp_url=server.url, earthdata_mcp_token=None)
             tools = await load_raw_mcp_tools(settings)
+            earthdata = McpEarthdataSession(tools)
             build = env_factory(
                 os.path.join(tmp, "payloads"),
-                earthdata=McpEarthdataSession(tools),
+                earthdata=earthdata,
                 compute=AdmissionCompute(),
                 limits=limits_from_settings(settings),
                 open_retrieval=open_retrieval_over(tools, USER_ID),
@@ -179,6 +182,7 @@ async def harness_boundary(case: BenchmarkCase, *, models: Any = None) -> AsyncI
             yield Boundary(
                 context=context, build_env=build, events=events, artifacts=artifacts, stores=stores,
                 boundary_calls=boundary_calls, aqs_calls=aqs_calls, clock=clock, run_day=clock.today(),
+                earthdata=earthdata,
             )
     finally:
         server.stop()
