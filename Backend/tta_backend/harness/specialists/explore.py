@@ -17,6 +17,10 @@ For one task:
    the rest of the result comes from what the calls did.
 
 A task that fails never fails another.
+
+Each task's result is saved to the results store before its run is finished,
+so a reader never sees a finished run without one. A result that cannot be
+saved is logged as an error and still returned, and the run still finished.
 """
 from __future__ import annotations
 
@@ -53,7 +57,6 @@ from tta_backend.harness.trace import (
     InvalidTrace,
     Run,
     RunClosed,
-    RunStatus,
     StepFailure,
     new_run_id,
 )
@@ -308,13 +311,27 @@ def _result(run_id: str, outcome: _Outcome, state: TaskState) -> Result:
     )
 
 
-async def _close(context: RunContext, run_id: str, status: RunStatus) -> None:
-    """Finish the run unless it is finished already; shielded from the cancellation that may have led here."""
-    finishing = context.storage.traces.finish_run(context.identity.user_id, run_id, status, context.clock.now())
+async def _save(context: RunContext, result: Result) -> None:
+    """Save the task's result. A failure is logged, not raised, so it never hides the task's own outcome."""
     try:
-        await asyncio.shield(finishing)
-    except RunClosed:
-        pass
+        await context.storage.results.put(context.identity.user_id, result)
+    except Exception as exc:
+        # The type name only: an exception's text can carry values or secrets.
+        logger.error("the result of exploration run %s could not be saved: %s", result.trace_id, type(exc).__name__)
+
+
+async def _close(context: RunContext, result: Result) -> None:
+    """Save ``result``, then finish its run with its status. Shielded, so a
+    cancellation arriving now still leaves both done. Raises RunClosed when
+    the run was finished already."""
+
+    async def closing() -> None:
+        await _save(context, result)
+        await context.storage.traces.finish_run(
+            context.identity.user_id, result.trace_id, result.status, context.clock.now()
+        )
+
+    await asyncio.shield(closing())
 
 
 async def _one(
@@ -339,21 +356,24 @@ async def _one(
         state = work.state
         outcome = await work.run()
     except asyncio.CancelledError:
-        await _close(context, run_id, "cancelled")
+        try:
+            await _close(context, _result(run_id, _Outcome(status="cancelled", reason=CANCELLED_REASON), state))
+        except RunClosed:
+            pass
         raise
     except Exception as exc:
         # The type name only: an exception's text can carry values or secrets.
         logger.error("exploration run %s hit an internal error: %s", run_id, type(exc).__name__)
         outcome = _Outcome.failed(FailureCategory.INTERNAL_ERROR, INTERNAL_REASON)
     result = _result(run_id, outcome, state)
-    finishing = context.storage.traces.finish_run(identity.user_id, run_id, result.status, context.clock.now())
     try:
-        # Shielded, so a cancellation arriving now still leaves the run finished.
-        await asyncio.shield(finishing)
+        await _close(context, result)
     except RunClosed as closed:
         if closed.status != "cancelled":
             raise
-        return _result(run_id, _Outcome(status="cancelled", reason=CANCELLED_REASON), state)
+        cancelled = _result(run_id, _Outcome(status="cancelled", reason=CANCELLED_REASON), state)
+        await _save(context, cancelled)
+        return cancelled
     return result
 
 
@@ -375,7 +395,9 @@ async def _guarded(
     except Exception as exc:
         # Reached only when the trace store itself failed; the run may be left unfinished.
         logger.error("exploration run %s could not be recorded: %s", run_id, type(exc).__name__)
-        return _result(run_id, _Outcome.failed(FailureCategory.INTERNAL_ERROR, INTERNAL_REASON), TaskState())
+        failed = _result(run_id, _Outcome.failed(FailureCategory.INTERNAL_ERROR, INTERNAL_REASON), TaskState())
+        await _save(context, failed)
+        return failed
 
 
 async def explore(

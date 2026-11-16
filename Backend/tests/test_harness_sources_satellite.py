@@ -499,7 +499,9 @@ class IdempotencyTests(SatelliteCase):
         self.assertEqual(float(self.service.files["obs_2"]["vertical_column_troposphere"].max()), 3.0e15)
 
     async def test_a_retry_after_a_failed_job_submits_again(self):
-        self.service.statuses = [{"status": "failed", "message": "provider says no"}]
+        # A failed job stays failed: the retry's reuse check is told so too.
+        failed = {"status": "failed", "message": "provider says no"}
+        self.service.statuses = [failed, failed]
         params = self.params()
         with self.assertRaises(StepFailure) as caught:
             await invoke(self.env, GET, params, step="event")

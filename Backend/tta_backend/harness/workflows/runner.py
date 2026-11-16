@@ -18,8 +18,13 @@ so every method first reads the run from the user's own trace store, which
 refuses another user's run as missing.
 
 Every outcome is finished in the trace with the matching status and returned
-as a ``Result``. ``outputs.interpretation`` fills the result's
-``interpretation`` from an agent step's answer.
+as a ``Result``. The result is saved to the results store first, so a reader
+never sees a finished run without one; a paused run's result is replaced when
+it finishes. A run already finished elsewhere (a cancel) keeps the result its
+finisher saved. A result that cannot be saved is logged as an error and still
+returned, and the run still finished: the caller keeps the run's outcome.
+``outputs.interpretation`` fills the result's ``interpretation`` from an agent
+step's answer.
 """
 from __future__ import annotations
 
@@ -73,6 +78,8 @@ SOURCE_WAITING = (
     "The data source for step {step} is temporarily unavailable; the run is saved and can be resumed to try again."
 )
 QUESTION_REASON = "Step {step} needs an answer before the workflow can continue."
+# Run statuses that are final; needs_input and waiting are pauses.
+_TERMINAL = frozenset({"done", "failed", "cancelled", "insufficient_evidence", "incomplete"})
 
 
 def _connect_reason(connectors: list[str]) -> str:
@@ -260,13 +267,21 @@ class WorkflowRunner:
         return await self._guarded(env.context, run.id, spec, lambda: self._drive(env, workflow, *_resumption(pending)))
 
     async def cancel(self, env: RunEnv) -> Run:
-        """Finish a run that has not finished as ``cancelled``. Its provider jobs are not cancelled."""
-        run, _ = await self._own_run(env)
+        """Finish a run that has not finished as ``cancelled``. Its provider jobs are not cancelled.
+
+        The saved result becomes a cancelled one, keeping what the run had
+        reported. It is saved only once the cancel has finished the run, so a
+        run that finished first (RunClosed) keeps its own result.
+        """
+        run, spec = await self._own_run(env)
         if run.status not in ("running", "needs_input", "waiting"):
             raise RunNotResumable(run.id, run.status)
-        return await env.context.storage.traces.finish_run(
+        cancelled = await _cancelled_result(env.context, spec, run.id)
+        finished = await env.context.storage.traces.finish_run(
             env.context.identity.user_id, run.id, "cancelled", env.context.clock.now()
         )
+        await _save(env.context, cancelled)
+        return finished
 
     async def steps(self, env: RunEnv) -> tuple[StepRecord, ...]:
         """Each step's recorded outcome and method sentence, in run order; empty before any step ran."""
@@ -348,15 +363,21 @@ class WorkflowRunner:
         values = values or {}
         # Built first, so the trace never says a status the result does not carry.
         result = _envelope(spec, env.run_id, status, reason, question, values)
+        traces, user_id = env.context.storage.traces, env.context.identity.user_id
+        # A run finished elsewhere keeps the result its finisher saved.
+        if (await traces.get_run(user_id, env.run_id)).status not in _TERMINAL:
+            await _save(env.context, result)
         try:
-            await env.context.storage.traces.finish_run(
-                env.context.identity.user_id, env.run_id, cast(RunStatus, result.status), env.context.clock.now()
-            )
+            await traces.finish_run(user_id, env.run_id, cast(RunStatus, result.status), env.context.clock.now())
         except RunClosed as closed:
             if closed.status != CANCELLED:
                 raise
-            # Cancelled while it ran: what it finished is still reported.
-            return _envelope(spec, env.run_id, CANCELLED, CANCELLED_REASON, None, values)
+            # Cancelled after the save above, which may have landed after the
+            # cancel's own: saved again so the stored result says cancelled, as
+            # the trace does. What the run finished is still reported.
+            cancelled = _envelope(spec, env.run_id, CANCELLED, CANCELLED_REASON, None, values)
+            await _save(env.context, cancelled)
+            return cancelled
         return result
 
     async def _guarded(
@@ -371,27 +392,59 @@ class WorkflowRunner:
         try:
             return await body()
         except asyncio.CancelledError:
-            await _close(context, run_id, CANCELLED)
+            await _close(context, _envelope(spec, run_id, CANCELLED, CANCELLED_REASON, None, {}))
             raise
         except RunClosed as closed:
             if closed.status == CANCELLED:
-                return _envelope(spec, run_id, CANCELLED, CANCELLED_REASON, None, {})
+                cancelled = await _cancelled_result(context, spec, run_id)
+                await _save(context, cancelled)
+                return cancelled
             failure: Exception = closed
         except Exception as exc:
             failure = exc
         # The type name only: an exception's text can carry values or secrets.
         logger.error("workflow %s v%s hit an internal error in run %s: %s", spec.name, spec.version, run_id,
                      type(failure).__name__)
-        await _close(context, run_id, FAILED)
-        return _envelope(spec, run_id, FAILED, INTERNAL_REASON, None, {})
+        failed = _envelope(spec, run_id, FAILED, INTERNAL_REASON, None, {})
+        await _close(context, failed)
+        return failed
 
 
-async def _close(context: RunContext, run_id: str, status: RunStatus) -> None:
-    """Finish the run unless it is finished already; shielded from the cancellation that may have led here."""
-    traces = context.storage.traces
-    finishing = traces.finish_run(context.identity.user_id, run_id, status, context.clock.now())
+async def _save(context: RunContext, result: Result) -> None:
+    """Save the run's result. A failure is logged, not raised, so it never hides the run's own outcome."""
     try:
-        await asyncio.shield(finishing)
+        await context.storage.results.put(context.identity.user_id, result)
+    except Exception as exc:
+        # The type name only: an exception's text can carry values or secrets.
+        logger.error("the result of workflow run %s could not be saved: %s", result.trace_id, type(exc).__name__)
+
+
+async def _cancelled_result(context: RunContext, spec: WorkflowSpec, run_id: str) -> Result:
+    """The run's saved result, marked cancelled; a bare cancelled result when none was saved."""
+    try:
+        saved = await context.storage.results.get(context.identity.user_id, run_id)
+    except Exception:
+        # Missing, or a store that cannot be read: the cancel still goes ahead.
+        return _envelope(spec, run_id, CANCELLED, CANCELLED_REASON, None, {})
+    return Result.model_validate(
+        {**saved.model_dump(), "status": CANCELLED, "reason": CANCELLED_REASON, "question": None}
+    )
+
+
+async def _close(context: RunContext, result: Result) -> None:
+    """Save ``result`` and finish its run with its status, unless the run is finished already;
+    shielded from the cancellation that may have led here."""
+    traces, user_id = context.storage.traces, context.identity.user_id
+
+    async def closing() -> None:
+        # A finished run keeps the result it was finished with.
+        if (await traces.get_run(user_id, result.trace_id)).status in _TERMINAL:
+            return
+        await _save(context, result)
+        await traces.finish_run(user_id, result.trace_id, cast(RunStatus, result.status), context.clock.now())
+
+    try:
+        await asyncio.shield(closing())
     except RunClosed:
         pass
 

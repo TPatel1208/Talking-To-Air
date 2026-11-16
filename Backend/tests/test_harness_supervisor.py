@@ -1,0 +1,781 @@
+"""The supervisor run on scripted models: tools, ledger, limits, answer assembly, streaming and checkpoints."""
+import asyncio
+import dataclasses
+import json
+import tempfile
+from collections.abc import AsyncIterator
+from typing import Any
+
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.outputs import ChatGenerationChunk
+from langgraph.checkpoint.memory import InMemorySaver
+
+from tests.test_harness_ledger import SHORT_WAIT, STILL_RUNNING, TickingClock
+from tests.test_harness_sources_satellite import NO2
+from tests.test_harness_specialists import Model, call_on_area, choice_of, final
+from tests.test_harness_workflow_packs_run import JUNE, PackRun
+from tta_backend.harness.context.ledger import EMPTY, HEADING
+from tta_backend.harness.knowledge import NoteCatalogue
+from tta_backend.harness.models import NO_BACKOFF, ModelChoice, NamedModel
+from tta_backend.harness.results import Finding, Gap, Mode, Result
+from tta_backend.harness.run_context import RunContext
+from tta_backend.harness.specialists import ExploreLimits
+from tta_backend.harness.supervisor import (
+    MAX_TASKS,
+    TOOL_NAMES,
+    Supervisor,
+    SupervisorLimits,
+    Turn,
+    assemble,
+    result_view,
+    sources_line,
+    thread_id,
+    unmatched_numbers,
+)
+from tta_backend.harness.supervisor.answer import data_sources
+from tta_backend.harness.supervisor.supervisor import (
+    FAILED_WORDING,
+    LIMIT_WORDING,
+    NUMBERS_STEP,
+    TOOL_LIMIT,
+    UNFINISHED_CALL,
+)
+from tta_backend.harness.supervisor.tools import (
+    NOT_READY,
+    STOP_RETRYING,
+    TOO_MANY_TASKS,
+    UNKNOWN_WORKFLOW,
+    tool_schemas,
+)
+from tta_backend.harness.testing import (
+    RecordingEvents,
+    ScriptedModels,
+    answer,
+    env_factory,
+    rate_limited,
+    tool_call,
+)
+from tta_backend.harness.workflows.runner import JOB_WAITING
+
+MAP_INPUTS = {"quantity": NO2, "area": "New Jersey", "dates": JUNE}
+RESOLVE = "sources.areas.resolve"
+# What a lookup resolving NJ discloses, appended to the answer.
+NJ_NOTE = "\n\nNotes:\n- 'NJ' was resolved to New Jersey."
+# The keys a compact result view may hold.
+VIEW_KEYS = {"run_id", "status", "mode", "findings", "handles", "charts", "reason", "question", "interpretation",
+             "followups"}
+
+
+class Partial:
+    """A streamed turn that sends ``text`` and then fails with ``error``."""
+
+    def __init__(self, text: str, error: BaseException) -> None:
+        self.text = text
+        self.error = error
+
+
+class Streamed(Model):
+    """A scripted model that streams like a provider: its text a line at a
+    time, then its tool calls as chunks."""
+
+    async def _astream(self, messages: list[BaseMessage], stop: Any = None, run_manager: Any = None,
+                       **kwargs: Any) -> AsyncIterator[ChatGenerationChunk]:
+        self.received.append(list(messages))
+        self.tools_offered.append(list(kwargs.get("tool_names", [])))
+        self.tool_choices.append(kwargs.get("tool_choice"))
+        turn = self.script[self.position]
+        self.position += 1
+        if callable(turn) and not isinstance(turn, AIMessage | BaseException | Partial):
+            turn = turn(messages)
+        if isinstance(turn, BaseException):
+            raise turn
+        if isinstance(turn, Partial):
+            yield ChatGenerationChunk(message=AIMessageChunk(content=turn.text))
+            raise turn.error
+        for line in turn.text.splitlines(keepends=True):
+            yield ChatGenerationChunk(message=AIMessageChunk(content=line))
+        if turn.tool_calls:
+            yield ChatGenerationChunk(message=AIMessageChunk(content="", tool_call_chunks=[
+                {"name": c["name"], "args": json.dumps(c["args"]), "id": c["id"], "index": i}
+                for i, c in enumerate(turn.tool_calls)
+            ]))
+
+
+class BrokenEarthdata:
+    """An earthdata session whose every call fails unclassified, so waiting runs' jobs go unchecked."""
+
+    async def call(self, tool: str, arguments: dict[str, Any], *, idempotency_key: str | None = None) -> dict[str, Any]:
+        raise RuntimeError("down")
+
+
+class BrokenRegistry:
+    async def get(self, user_id: str, handle_id: str) -> Any:
+        raise RuntimeError("the registry is down")
+
+
+def supervisor_choice(model: Model) -> ModelChoice:
+    return ModelChoice(primary=NamedModel(model, "fake:supervisor"))
+
+
+def run_map(**inputs: Any) -> AIMessage:
+    return tool_call("run_workflow", {"name": "map", "inputs": {**MAP_INPUTS, **inputs}})
+
+
+def tool_messages(messages: list[BaseMessage]) -> list[ToolMessage]:
+    return [m for m in messages if isinstance(m, ToolMessage)]
+
+
+def last_tool(model: Model, call: int = -1) -> dict[str, Any]:
+    return json.loads(tool_messages(model.received[call])[-1].text)
+
+
+def ledger_text(messages: list[BaseMessage]) -> str:
+    [ledger] = [m for m in messages if isinstance(m, HumanMessage) and m.additional_kwargs.get("lc_source") == "ledger"]
+    return ledger.text
+
+
+def walk(node: Any) -> list[Any]:
+    found = [node]
+    if isinstance(node, dict):
+        for value in node.values():
+            found.extend(walk(value))
+    elif isinstance(node, list):
+        for value in node:
+            found.extend(walk(value))
+    return found
+
+
+class SupervisorCase(PackRun):
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.f.context = dataclasses.replace(self.f.context, clock=TickingClock(self.f.context.clock.now()))
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = tmp.name
+        self.saver = InMemorySaver()
+        self.explorer = Model(script=[])
+        self.build = self.env_factory()
+
+    def env_factory(self, **kw: Any) -> Any:
+        return env_factory(
+            self.root, earthdata=self.service.earthdata(), open_retrieval=self.open_retrieval, places=self.f.places,
+            models=ScriptedModels({"explore": choice_of(self.explorer)}), **kw,
+        )
+
+    async def open_retrieval(self, user_id: str, record: Any) -> Any:
+        return self.service.files[record.id]
+
+    def supervisor(
+        self, model: Model, *, limits: SupervisorLimits | None = None, summary: Model | None = None,
+        saver: InMemorySaver | None = None,
+    ) -> Supervisor:
+        roles: dict[Any, ModelChoice] = {"supervisor": supervisor_choice(model)}
+        if summary is not None:
+            roles["agent_step"] = supervisor_choice(summary)
+        return Supervisor(
+            capabilities=self.f.registry, catalogue=self.catalogue, runner=self.f.runner, notes=NoteCatalogue([]),
+            checkpointer=saver or self.saver, models=ScriptedModels(roles), limits=limits,
+            explore_limits=ExploreLimits(retrieval_wait_seconds=0.05), backoff=NO_BACKOFF,
+        )
+
+    async def turn(self, supervisor: Supervisor, message: str = "Map NO2 over New Jersey for June 1 to 3, 2024.",
+                   context: RunContext | None = None, build: Any = None, earthdata: Any = None) -> Turn:
+        return await supervisor.turn(
+            context or self.f.context, build or self.build, earthdata or self.service.earthdata(), message,
+        )
+
+    async def checkpoint(self, context: RunContext | None = None, saver: InMemorySaver | None = None) -> list[BaseMessage]:
+        context = context or self.f.context
+        saved = await (saver or self.saver).aget_tuple({"configurable": {"thread_id": thread_id(context.identity)}})
+        assert saved is not None
+        return list(saved.checkpoint["channel_values"]["messages"])
+
+    def context_for(self, user_id: str) -> RunContext:
+        return dataclasses.replace(
+            self.f.context, identity=dataclasses.replace(self.f.context.identity, user_id=user_id),
+            events=RecordingEvents(),
+        )
+
+
+class WorkflowTurnTests(SupervisorCase):
+    async def test_a_turn_runs_a_workflow_end_to_end_and_the_next_turn_sees_it_in_the_ledger(self):
+        model = Model(script=[run_map(), answer("The NO2 map over New Jersey is ready."), answer("It is ready.")])
+        supervisor = self.supervisor(model)
+
+        turn = await self.turn(supervisor)
+
+        self.assertEqual(turn.status, "answered")
+        [result] = turn.results
+        latest = self.catalogue.latest("map").version
+        self.assertEqual((result.status, result.mode), ("done", Mode.draft("map", latest)))
+        self.assertEqual(result.mode.label(), f"Draft workflow: map v{latest}")
+        self.assertEqual(turn.run_ids, (result.trace_id,))
+        self.assertEqual(await self.f.stores.results.get("user-a", result.trace_id), result)
+        self.assertTrue(result.disclosures)
+        self.assertEqual(
+            turn.text,
+            f"{sources_line(['TEMPO_NO2'])}\n\n{assemble('The NO2 map over New Jersey is ready.', [result])}",
+        )
+        for disclosure in result.disclosures:
+            self.assertIn(disclosure, turn.text)
+        view = last_tool(model, 1)
+        self.assertEqual(view, json.loads(result_view(result)))
+        self.assertEqual(view["mode"], f"Draft workflow: map v{latest}")
+        self.assertEqual((turn.model_calls, turn.tool_calls), (2, 1))
+
+        await self.turn(supervisor, "Is it ready?")
+        ledger = ledger_text(model.received[2])
+        self.assertTrue(ledger.startswith(HEADING))
+        self.assertIn(result.trace_id, ledger)
+        self.assertIn(result.handles[0], ledger)
+
+    async def test_the_checkpoint_holds_compact_views_while_the_chart_reaches_the_ui(self):
+        model = Model(script=[run_map(), answer("Done.")])
+        turn = await self.turn(self.supervisor(model))
+
+        [result] = turn.results
+        [chart] = result.charts
+        payload = json.dumps(self.f.artifacts.stored[chart])
+        self.assertTrue(self.f.events.charts)
+        saved = await self.checkpoint()
+        for message in saved:
+            self.assertNotIn(payload, message.text)
+        [tool] = tool_messages(saved)
+        view = json.loads(tool.text)
+        self.assertLessEqual(set(view), VIEW_KEYS)
+        self.assertEqual(view["charts"], [chart])
+        self.assertLess(len(tool.text), 1000)
+        # Human and model messages are kept as they were.
+        self.assertEqual(saved[0].text, "Map NO2 over New Jersey for June 1 to 3, 2024.")
+        self.assertEqual(saved[-1].text, "Done.")
+
+    async def test_the_sources_line_is_code_built_and_a_model_written_one_is_dropped(self):
+        prose = "Data sources: a dataset the model made up\nThe map is ready.\n\n**Sources:** also made up\nLook north."
+        model = Model(script=[run_map(), answer(prose)])
+        turn = await self.turn(self.supervisor(model))
+
+        self.assertTrue(turn.text.startswith(f"{sources_line(['TEMPO_NO2'])}\n\nThe map is ready.\n\nLook north."))
+        self.assertNotIn("made up", turn.text)
+        self.assertEqual(turn.text.count("Data sources:"), 1)
+
+    async def test_satellite_products_come_before_monitors_in_the_sources_line(self):
+        ground = {"pollutant": "o3", "area": "New Jersey", "dates": {"start": "2024-06-01", "end": "2024-06-02"}}
+        model = Model(script=[
+            tool_call("run_workflow", {"name": "monitor-readings", "inputs": ground}), run_map(), answer("Both are ready."),
+        ])
+        turn = await self.turn(self.supervisor(model))
+
+        self.assertEqual([r.status for r in turn.results], ["done", "done"], [r.reason for r in turn.results])
+        self.assertTrue(turn.text.startswith(f"{sources_line(['TEMPO_NO2', 'EPA AQS'])}\n\n"))
+
+    async def test_a_turn_with_no_data_results_has_no_sources_line(self):
+        model = Model(script=[tool_call("resolve_area", {"place": "NJ"}), answer("New Jersey is a state.")])
+        turn = await self.turn(self.supervisor(model), "What is NJ?")
+        # The lookup's own disclosure is still appended.
+        self.assertEqual(turn.text, "New Jersey is a state." + NJ_NOTE)
+
+
+class InputTests(SupervisorCase):
+    async def test_bad_inputs_come_back_with_the_reason_then_a_fixed_refusal(self):
+        bad = {"dates": "June"}
+        model = Model(script=[run_map(**bad), run_map(**bad), run_map(), answer("I could not run it.")])
+        turn = await self.turn(self.supervisor(model))
+
+        first, second, third = (last_tool(model, i) for i in (1, 2, 3))
+        self.assertEqual(first, {"status": "refused", "reason": "Input dates must be a date range with an ISO start date and end date."})
+        self.assertEqual(second, {"status": "refused", "reason": STOP_RETRYING})
+        # Not run again in this turn, even with good inputs.
+        self.assertEqual(third, {"status": "refused", "reason": STOP_RETRYING})
+        self.assertEqual(turn.results, ())
+        self.assertEqual(turn.text, "I could not run it.")
+        # Both refused runs were made by this turn; the third call ran nothing.
+        runs = await self.f.stores.traces.list_runs("user-a", "conv-1")
+        self.assertEqual(turn.run_ids, tuple(run.id for run in runs))
+        self.assertEqual([run.status for run in runs], ["failed", "failed"])
+
+    async def test_missing_inputs_come_back_to_the_model(self):
+        model = Model(script=[tool_call("run_workflow", {"name": "map", "inputs": {"quantity": NO2}}), answer("Which dates?")])
+        turn = await self.turn(self.supervisor(model))
+        self.assertEqual(last_tool(model)["status"], "refused")
+        self.assertIn("The workflow needs more before it can run", last_tool(model)["reason"])
+        self.assertEqual(turn.results, ())
+
+    async def test_an_unknown_workflow_is_refused_without_a_run(self):
+        model = Model(script=[tool_call("run_workflow", {"name": "nope", "inputs": {}}), answer("No such workflow.")])
+        turn = await self.turn(self.supervisor(model))
+        self.assertEqual(last_tool(model), {"status": "refused", "reason": UNKNOWN_WORKFLOW})
+        self.assertEqual(await self.f.stores.traces.list_runs("user-a", "conv-1"), [])
+        self.assertEqual(turn.run_ids, ())
+
+
+class ExploreAndLookupTests(SupervisorCase):
+    async def test_an_explore_call_runs_a_specialist_with_the_place_as_the_user_wrote_it(self):
+        self.explorer.script = [
+            call_on_area("sources__satellite__get_data", quantity=NO2, dates=JUNE, date_role="range"),
+            final("NO2 was retrieved over New Jersey."),
+        ]
+        task = {"objective": "Retrieve NO2 over NJ.", "bundle": "analyse", "places": ["NJ"]}
+        model = Model(script=[tool_call("explore", {"tasks": [task]}), answer("NO2 was retrieved.")])
+        turn = await self.turn(self.supervisor(model), "Get NO2 over NJ for June 1-3 2024.")
+
+        [result] = turn.results
+        self.assertEqual((result.status, result.mode), ("done", Mode.exploratory()), result.reason)
+        [view] = last_tool(model)["results"]
+        self.assertEqual(view, json.loads(result_view(result)))
+        self.assertEqual(self.f.places.asked, ["NJ"])
+        [entry] = [e for e in await self.f.stores.traces.entries("user-a", result.trace_id) if e.kind == "explore"]
+        self.assertEqual(entry.params["inputs"]["places"], ["NJ"])
+        self.assertIn("Area: New Jersey", self.explorer.received[0][1].text)
+        # The specialist's own text never reaches the answer stream.
+        self.assertNotIn("NO2 was retrieved over New Jersey.", turn.text)
+        self.assertTrue(turn.text.startswith(sources_line(["TEMPO_NO2"]) or ""))
+
+    async def test_explore_refuses_more_than_four_tasks_and_bad_tasks(self):
+        task = {"objective": "Find NO2 data.", "bundle": "find-data"}
+        model = Model(script=[
+            tool_call("explore", {"tasks": [task] * (MAX_TASKS + 1)}),
+            tool_call("explore", {"tasks": [{"objective": "x", "bundle": "nope", "secret": "s3cr3t-value"}]}),
+            answer("Too many."),
+        ])
+        turn = await self.turn(self.supervisor(model))
+        self.assertEqual(last_tool(model, 1), {"status": "refused", "reason": TOO_MANY_TASKS})
+        bad = last_tool(model, 2)
+        self.assertEqual(bad["status"], "refused")
+        self.assertIn("Task 1: bundle:", bad["reason"])
+        self.assertNotIn("s3cr3t-value", bad["reason"])
+        self.assertEqual(self.explorer.calls, 0)
+        self.assertEqual(turn.results, ())
+
+    async def test_a_lookup_turn_makes_one_exploratory_run_whose_area_the_next_turn_sees(self):
+        model = Model(script=[
+            tool_call("resolve_area", {"place": "NJ"}), tool_call("search_datasets", {"query": "NO2"}),
+            answer("New Jersey is resolved."), answer("Yes."),
+        ])
+        supervisor = self.supervisor(model)
+        turn = await self.turn(supervisor, "Resolve NJ and look for NO2 data.")
+
+        self.assertEqual(turn.results, ())
+        [run_id] = turn.run_ids
+        run = await self.f.stores.traces.get_run("user-a", run_id)
+        self.assertEqual((run.status, run.mode), ("done", Mode.exploratory()))
+        entries = await self.f.stores.traces.entries("user-a", run_id)
+        self.assertEqual([e.capability for e in entries], [RESOLVE, "sources.satellite.search"])
+        resolved = last_tool(model, 1)
+        self.assertEqual((resolved["status"], resolved["kind"]), ("done", "polygons"))
+        saved = await self.f.stores.results.get("user-a", run_id)
+        self.assertEqual(saved.handles, (resolved["handle"],))
+
+        await self.turn(supervisor, "Is NJ still resolved?")
+        ledger = ledger_text(model.received[3])
+        self.assertIn(f"New Jersey (asked as \"NJ\"): {resolved['handle']}, run {run_id}", ledger)
+
+    async def test_a_failed_lookup_returns_its_fixed_reason(self):
+        model = Model(script=[tool_call("check_availability", {"product": "TEMPO_NO2", "area": "nope", "dates": "x"}),
+                              answer("It failed.")])
+        await self.turn(self.supervisor(model))
+        failed = last_tool(model)
+        self.assertEqual((failed["status"], failed["category"], failed["retry"]), ("failed", "bad_input", False))
+
+
+class LedgerTests(SupervisorCase):
+    async def test_the_ledger_sits_before_the_newest_message_on_every_call_and_is_never_saved(self):
+        model = Model(script=[tool_call("resolve_area", {"place": "NJ"}), answer("Resolved."), answer("Again.")])
+        supervisor = self.supervisor(model)
+        await self.turn(supervisor, "Resolve NJ.")
+        await self.turn(supervisor, "And again?")
+
+        for call, messages in enumerate(model.received):
+            with self.subTest(call=call):
+                newest = max(i for i, m in enumerate(messages) if isinstance(m, HumanMessage) and not m.additional_kwargs)
+                ledger = messages[newest - 1]
+                self.assertEqual(ledger.additional_kwargs.get("lc_source"), "ledger")
+                self.assertTrue(ledger.text == EMPTY or ledger.text.startswith(HEADING))
+                self.assertEqual(sum(m.additional_kwargs.get("lc_source") == "ledger" for m in messages), 1)
+        self.assertEqual(ledger_text(model.received[0]), EMPTY)
+        self.assertTrue(ledger_text(model.received[2]).startswith(HEADING))
+        for message in await self.checkpoint():
+            self.assertNotEqual(message.additional_kwargs.get("lc_source"), "ledger")
+            self.assertNotIn(HEADING, message.text)
+            self.assertNotIn(EMPTY, message.text)
+
+
+class ResumeTests(SupervisorCase):
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.build = self.env_factory(limits=SHORT_WAIT)
+
+    async def test_resume_is_refused_until_the_jobs_are_ready_then_continues_the_run(self):
+        self.service.statuses = list(STILL_RUNNING)
+        waiting = await self.f.runner.start(self.f.context, self.build, "map", 1, MAP_INPUTS)
+        self.assertEqual((waiting.status, waiting.reason), ("waiting", JOB_WAITING.format(step="data")))
+        run = waiting.trace_id
+        model = Model(script=[
+            tool_call("resume_run", {"run_id": run}), answer("Still running."),
+            tool_call("resume_run", {"run_id": "run_" + "0" * 32}), tool_call("resume_run", {"run_id": run}),
+            answer("The map is ready."),
+        ])
+        supervisor = self.supervisor(model)
+
+        turn = await self.turn(supervisor, "Is the map ready?")
+        self.assertEqual(last_tool(model), {"status": "refused", "reason": NOT_READY})
+        self.assertIn(f"resume_run({run}) once they are ready", ledger_text(model.received[0]))
+        self.assertEqual(turn.results, ())
+
+        self.service.statuses = []
+        turn = await self.turn(supervisor, "And now?")
+        self.assertIn(f"continue it with resume_run({run})", ledger_text(model.received[2]))
+        self.assertEqual(last_tool(model, 3), {"status": "refused", "reason": NOT_READY})
+        [result] = turn.results
+        self.assertEqual((result.trace_id, result.status), (run, "done"), result.reason)
+        self.assertEqual((await self.f.stores.traces.get_run("user-a", run)).status, "done")
+
+
+    async def test_a_run_whose_jobs_could_not_be_checked_can_be_resumed(self):
+        self.service.statuses = list(STILL_RUNNING)
+        waiting = await self.f.runner.start(self.f.context, self.build, "map", 1, MAP_INPUTS)
+        self.assertEqual(waiting.status, "waiting")
+        self.service.statuses = []
+        model = Model(script=[tool_call("resume_run", {"run_id": waiting.trace_id}), answer("The map is ready.")])
+
+        turn = await self.turn(self.supervisor(model), "Is the map ready?", earthdata=BrokenEarthdata())
+
+        self.assertIn("have not been checked", ledger_text(model.received[0]))
+        [result] = turn.results
+        self.assertEqual((result.trace_id, result.status), (waiting.trace_id, "done"), result.reason)
+
+
+class LimitTests(SupervisorCase):
+    async def test_at_the_tool_call_limit_the_next_call_must_answer(self):
+        model = Model(script=[
+            tool_call("resolve_area", {"place": "NJ"}),
+            tool_call("resolve_area", {"place": "New Jersey"}, content="New Jersey is resolved."),
+        ])
+        turn = await self.turn(self.supervisor(model, limits=SupervisorLimits(tool_calls=1)), "Resolve NJ.")
+
+        self.assertEqual(model.tool_choices, [None, "none"])
+        self.assertEqual(turn.status, "answered")
+        self.assertEqual(turn.text, "New Jersey is resolved." + NJ_NOTE)
+        self.assertEqual((turn.model_calls, turn.tool_calls), (2, 1))
+        [run_id] = turn.run_ids
+        self.assertEqual(len(await self.f.stores.traces.entries("user-a", run_id)), 1)
+        self.assertIsInstance((await self.checkpoint())[-1], AIMessage)
+        self.assertEqual((await self.checkpoint())[-1].tool_calls, [])
+
+    async def test_calls_past_the_tool_call_limit_in_one_turn_are_not_run(self):
+        both = AIMessage(content="", tool_calls=[
+            {"name": "resolve_area", "args": {"place": "NJ"}, "id": "call_a", "type": "tool_call"},
+            {"name": "resolve_area", "args": {"place": "New Jersey"}, "id": "call_b", "type": "tool_call"},
+        ])
+        model = Model(script=[both, answer("One was resolved.")])
+        turn = await self.turn(self.supervisor(model, limits=SupervisorLimits(tool_calls=1)), "Resolve NJ.")
+
+        contents = [m.text for m in tool_messages(model.received[1])]
+        self.assertEqual(contents.count(TOOL_LIMIT.format(limit=1)), 1)
+        self.assertEqual(turn.tool_calls, 1)
+
+    async def test_the_last_allowed_model_call_must_answer_and_wanting_tools_there_is_the_limit(self):
+        model = Model(script=[
+            tool_call("resolve_area", {"place": "NJ"}, content="Looking it up."),
+            tool_call("search_datasets", {"query": "NO2"}, content="New Jersey is resolved."),
+        ])
+        turn = await self.turn(self.supervisor(model, limits=SupervisorLimits(model_calls=2)), "Resolve NJ.")
+
+        self.assertEqual(model.tool_choices, [None, "none"])
+        self.assertEqual(turn.status, "limit")
+        self.assertEqual(model.calls, 2)
+        self.assertEqual(turn.text, f"New Jersey is resolved.\n\n{LIMIT_WORDING.format(limit=2)}{NJ_NOTE}")
+        self.assertEqual(turn.tool_calls, 1)
+
+    async def test_an_answer_on_the_last_allowed_call_is_not_the_limit(self):
+        model = Model(script=[tool_call("resolve_area", {"place": "NJ"}), answer("New Jersey is resolved.")])
+        turn = await self.turn(self.supervisor(model, limits=SupervisorLimits(model_calls=2)), "Resolve NJ.")
+        self.assertEqual(model.tool_choices, [None, "none"])
+        self.assertEqual((turn.status, turn.text), ("answered", "New Jersey is resolved." + NJ_NOTE))
+
+    async def test_every_model_failing_ends_failed_and_keeps_the_results(self):
+        model = Model(script=[run_map(), rate_limited(), rate_limited(), rate_limited()])
+        turn = await self.turn(self.supervisor(model))
+
+        self.assertEqual(turn.status, "failed")
+        [result] = turn.results
+        self.assertEqual(result.status, "done")
+        self.assertEqual(turn.text, f"{sources_line(['TEMPO_NO2'])}\n\n{FAILED_WORDING}\n\n{assemble('', [result])}")
+
+
+class QuestionTests(SupervisorCase):
+    async def test_a_question_with_options_is_the_turns_question_and_variable_choice(self):
+        self.service.estimated_bytes = 100_000_000
+        model = Model(script=[run_map(), answer("The retrieval is large.")])
+        turn = await self.turn(self.supervisor(model))
+
+        [result] = turn.results
+        self.assertEqual(result.status, "needs_input")
+        assert result.question is not None
+        self.assertEqual(turn.question, result.question)
+        self.assertEqual(turn.variable_choice, {
+            "run_id": result.trace_id, "prompt": result.question["prompt"], "options": ["confirm", "narrow"],
+        })
+        self.assertIn(f"Question: {result.question['prompt']}", turn.text)
+        self.assertIn("Options: confirm | narrow", turn.text)
+
+    async def test_a_question_without_options_has_no_variable_choice(self):
+        model = Model(script=[run_map(area="Atlantis"), answer("Which place?")])
+        turn = await self.turn(self.supervisor(model))
+        [result] = turn.results
+        self.assertEqual(result.status, "needs_input")
+        self.assertEqual(turn.question, result.question)
+        self.assertIsNone(turn.variable_choice)
+
+
+class NumbersTests(SupervisorCase):
+    async def test_an_unmatched_number_is_recorded_on_the_lookup_run_and_a_matched_one_is_not(self):
+        def prose(messages: list[BaseMessage]) -> AIMessage:
+            view = json.loads(tool_messages(messages)[-1].text)
+            days = next(f["value"] for f in view["findings"] if f["name"] == "days_with_data")
+            return answer(f"Data covered {days} days in 2024, and 12345 is invented.")
+
+        model = Model(script=[
+            tool_call("run_workflow", {"name": "timeseries", "inputs": MAP_INPUTS}), prose,
+        ])
+        turn = await self.turn(self.supervisor(model), "Plot the NO2 time series over NJ.")
+
+        result, lookup = turn.run_ids
+        self.assertEqual(turn.results[0].trace_id, result)
+        entries = await self.f.stores.traces.entries("user-a", lookup)
+        [entry] = entries
+        self.assertEqual((entry.kind, entry.step, entry.status), ("agent", NUMBERS_STEP, "done"))
+        self.assertEqual(entry.result, {"unmatched": ["12345"]})
+        self.assertEqual((await self.f.stores.traces.get_run("user-a", lookup)).status, "done")
+
+    async def test_no_entry_when_every_number_matches(self):
+        model = Model(script=[answer("Nothing to report.")])
+        turn = await self.turn(self.supervisor(model), "Hello 42")
+        self.assertEqual(turn.run_ids, ())
+
+    def test_matching_rules(self):
+        result = Result(status="done", mode=Mode.exploratory(), trace_id="run_" + "a" * 32, findings=(
+            Finding(name="mean", value=0.0123456, unit="ppm", source_handle="scalar_" + "b" * 32),
+            Finding(name="big", value=2.5e15, source_handle="scalar_" + "b" * 32),
+            Finding(name="share", value=0.42, source_handle="scalar_" + "b" * 32),
+        ))
+        prose = ("The mean was 0.0123 ppm (0.01235 rounded) on 2024-06-01 at 14:00 in 2024; the column was "
+                 "2.5 × 10^15, 42% of cells, 7 monitors and 3.5 others.")
+        self.assertEqual(unmatched_numbers(prose, [result], "Over 7 monitors?"), ["3.5"])
+        self.assertEqual(unmatched_numbers("NO2 and PM2.5 at site 34-003-0010.", [result]), [])
+        listed = "1. First item\n2) Second over 24 hours across 3 sites in 2023, on 1 day and 2 monitors."
+        self.assertEqual(unmatched_numbers(listed, []), [])
+        # Units are claims, so numbers carrying them are checked.
+        self.assertEqual(unmatched_numbers("It was 41 ppb, 12 µg/m³ and 30% of 3 days.", []), ["41", "12", "30%"])
+
+
+class ThreadTests(SupervisorCase):
+    async def test_two_users_with_the_same_conversation_id_never_share_a_checkpoint(self):
+        model = Model(script=[answer("Hello A."), answer("Hello B.")])
+        supervisor = self.supervisor(model)
+        other = self.context_for("user-b")
+        await self.turn(supervisor, "I am user A.")
+        await self.turn(supervisor, "I am user B.", context=other)
+
+        self.assertEqual([m.text for m in model.received[1] if isinstance(m, HumanMessage) and not m.additional_kwargs],
+                         ["I am user B."])
+        self.assertNotEqual(thread_id(self.f.context.identity), thread_id(other.identity))
+        self.assertEqual([m.text for m in await self.checkpoint()], ["I am user A.", "Hello A."])
+        self.assertEqual([m.text for m in await self.checkpoint(other)], ["I am user B.", "Hello B."])
+
+    def test_thread_ids_escape_their_parts(self):
+        from tta_backend.harness.run_context import Identity
+        self.assertNotEqual(thread_id(Identity("a/b", "c")), thread_id(Identity("a", "b/c")))
+        self.assertEqual(thread_id(Identity("user-a", "conv-1")), "supervisor/user-a/conv-1")
+
+
+class StreamingTests(SupervisorCase):
+    async def test_the_final_prose_streams_line_by_line_after_the_sources_line(self):
+        model = Streamed(script=[run_map(), answer("Line one.\n\n\nLine two.\nLine three.")])
+        turn = await self.turn(self.supervisor(model))
+
+        texts = self.f.events.texts
+        self.assertEqual(texts[:4], [sources_line(["TEMPO_NO2"]), "\n\nLine one.", "\n\nLine two.", "\nLine three."])
+        self.assertTrue(texts[-1].startswith("\n\nNotes:\n- "))
+        [result] = turn.results
+        self.assertEqual(turn.text, f"{sources_line(['TEMPO_NO2'])}\n\n{assemble('Line one.\n\nLine two.\nLine three.', [result])}")
+
+    async def test_narration_before_a_tool_call_streams_but_the_text_keeps_the_sources_and_final_prose(self):
+        model = Streamed(script=[
+            tool_call("run_workflow", {"name": "map", "inputs": MAP_INPUTS}, content="Let me check.\n"),
+            answer("The map is ready."),
+        ])
+        turn = await self.turn(self.supervisor(model))
+
+        [result] = turn.results
+        self.assertEqual(turn.text, f"{sources_line(['TEMPO_NO2'])}\n\n{assemble('The map is ready.', [result])}")
+        texts = self.f.events.texts
+        self.assertEqual(texts[0], "Let me check.")
+        opening = texts.index("\n\n" + (sources_line(["TEMPO_NO2"]) or ""))
+        self.assertEqual(texts[opening + 1], "\n\nThe map is ready.")
+
+    async def test_a_call_that_fails_mid_stream_is_retried_and_only_the_retry_is_the_answer(self):
+        model = Streamed(script=[Partial("Partial ans", rate_limited()), answer("Full answer.")])
+        turn = await self.turn(self.supervisor(model), "Hello")
+
+        self.assertEqual((turn.status, turn.text), ("answered", "Full answer."))
+        self.assertEqual(model.calls, 2)
+        self.assertNotIn("Partial ans", "".join(self.f.events.texts))
+        self.assertEqual("".join(self.f.events.texts), "Full answer.")
+
+    async def test_a_host_without_text_still_gets_the_turn(self):
+        class OldEvents:
+            def progress(self, message: str, *, stage: str | None = None, detail: Any = None) -> None: ...
+            def chart(self, payload: dict[str, Any]) -> None: ...
+            def question(self, payload: dict[str, Any]) -> None: ...
+
+        context = dataclasses.replace(self.f.context, events=OldEvents())
+        model = Model(script=[answer("Hi.")])
+        turn = await self.turn(self.supervisor(model), "Hello", context=context)
+        self.assertEqual(turn.text, "Hi.")
+
+
+class UnfinishedCallTests(SupervisorCase):
+    async def test_a_tool_call_left_without_a_result_is_answered_on_the_next_turn(self):
+        self.f.places.refusals["stuck"] = asyncio.CancelledError()
+        model = Model(script=[tool_call("resolve_area", {"place": "stuck"}, call_id="call_stuck"), answer("Hello again.")])
+        supervisor = self.supervisor(model)
+        # The tool is cut off mid-call, so the turn ends before its result is saved.
+        interrupted = await self.turn(supervisor, "Resolve stuck.")
+        self.assertEqual(interrupted.status, "failed")
+        saved = await self.checkpoint()
+        self.assertEqual(saved[-1].tool_calls[0]["id"], "call_stuck")
+
+        turn = await self.turn(supervisor, "Are you there?")
+
+        self.assertEqual((turn.status, turn.text), ("answered", "Hello again."))
+        sent = model.received[1]
+        index = next(i for i, m in enumerate(sent) if isinstance(m, AIMessage) and m.tool_calls)
+        answered = sent[index + 1]
+        self.assertIsInstance(answered, ToolMessage)
+        self.assertEqual((answered.tool_call_id, answered.text), ("call_stuck", UNFINISHED_CALL))
+        self.assertEqual(sent[-1].text, "Are you there?")
+        # Only the request is repaired; the saved state keeps the call as it was.
+        self.assertFalse(any(isinstance(m, ToolMessage) for m in await self.checkpoint()))
+
+
+class HistoryTests(SupervisorCase):
+    async def test_long_history_is_summarised_and_the_ledger_still_comes_last(self):
+        long = "A long answer about ozone. " * 20
+        model = Model(script=[answer(long), answer("Short.")])
+        summary = Model(script=[answer("Earlier the user asked about ozone.")])
+        supervisor = self.supervisor(model, summary=summary, limits=SupervisorLimits(summarise_above_tokens=50, keep_messages=2))
+
+        await self.turn(supervisor, "Tell me about ozone.")
+        self.assertEqual(summary.calls, 0)
+        turn = await self.turn(supervisor, "And now?")
+
+        self.assertEqual((turn.status, turn.text), ("answered", "Short."))
+        self.assertEqual(summary.calls, 1)
+        sent = model.received[1]
+        self.assertIn("Earlier the user asked about ozone.", sent[1].text)
+        self.assertNotIn("Tell me about ozone.", [m.text for m in sent])
+        self.assertEqual(sent[-2].additional_kwargs.get("lc_source"), "ledger")
+        self.assertEqual(sent[-1].text, "And now?")
+        saved = [m.text for m in await self.checkpoint()]
+        self.assertNotIn("Tell me about ozone.", saved)
+        self.assertEqual(saved[-1], "Short.")
+
+    async def test_old_tool_results_are_cleared_from_what_the_model_sees_but_kept_in_the_checkpoint(self):
+        model = Model(script=[tool_call("resolve_area", {"place": "NJ"}), answer("Done.")])
+        limits = SupervisorLimits(clear_tool_results_above_tokens=1, keep_tool_results=0)
+        await self.turn(self.supervisor(model, limits=limits), "Resolve NJ.")
+
+        [cleared] = tool_messages(model.received[1])
+        self.assertEqual(cleared.text, "[cleared]")
+        [kept] = tool_messages(await self.checkpoint())
+        self.assertEqual(json.loads(kept.text)["kind"], "polygons")
+
+
+class ToolSetTests(SupervisorCase):
+    async def test_exactly_the_six_tools_are_offered(self):
+        model = Model(script=[answer("Hi.")])
+        await self.turn(self.supervisor(model), "Hello")
+        self.assertEqual(model.tools_offered, [list(TOOL_NAMES)])
+
+    def test_every_schema_uses_only_keywords_every_provider_accepts(self):
+        schemas = tool_schemas(["map", "timeseries"], self.f.registry)
+        self.assertEqual(set(schemas), set(TOOL_NAMES))
+        for name, schema in schemas.items():
+            with self.subTest(tool=name):
+                self.assertEqual(schema["type"], "object")
+                for node in walk(schema):
+                    if isinstance(node, dict):
+                        self.assertFalse(set(node) & {"$defs", "$ref", "oneOf", "allOf", "anyOf", "discriminator",
+                                                      "additionalProperties"}, node)
+        dates = schemas["check_availability"]["properties"]["dates"]
+        self.assertNotIn("type", dates)
+        self.assertIn("One of: an ISO date; an object with start, end; a list of ISO dates.", dates["description"])
+        self.assertEqual(schemas["run_workflow"]["properties"]["name"]["enum"], ["map", "timeseries"])
+
+    def test_the_schemas_and_prompt_ask_for_places_as_the_user_wrote_them(self):
+        schemas = tool_schemas(["map"], self.f.registry)
+        task = schemas["explore"]["properties"]["tasks"]["items"]["properties"]
+        self.assertIn("exactly as the user wrote them", task["places"]["description"])
+        self.assertIn("as the user wrote it", schemas["resolve_area"]["properties"]["place"]["description"])
+        prompt = self.supervisor(Model(script=[])).prompt
+        self.assertIn("Use the user's own wording for places", prompt)
+
+    def test_the_prompt_leaves_sources_disclosures_and_failure_text_to_code(self):
+        prompt = self.supervisor(Model(script=[])).prompt
+        self.assertIn("Code appends the result's disclosures, gaps, fixed-wording reasons, questions and data sources", prompt)
+        self.assertIn("write a sources line", prompt)
+        self.assertIn("State only numbers that appear in the results", prompt)
+
+
+RUN = "run_" + "c" * 32
+
+
+class AnswerTests(SupervisorCase):
+    def test_code_appends_disclosures_gaps_reasons_and_questions_once_whatever_the_prose_says(self):
+        handle = "scalar_" + "d" * 32
+        done = Result(status="done", mode=Mode.exploratory(), trace_id=RUN, disclosures=("Product: A.", "Masked."),
+                      gaps=(Gap(step="figure", reason="The figure could not be drawn."),))
+        failed = Result(status="failed", mode=Mode.exploratory(), trace_id="run_" + "e" * 32,
+                        reason="The source is down.", disclosures=("Masked.",))
+        asking = Result(status="needs_input", mode=Mode.exploratory(), trace_id="run_" + "f" * 32,
+                        reason="Pick one.", question={"kind": "pick_one", "prompt": "Pick one.", "options": ["a", {"b": 1}]},
+                        findings=(Finding(name="n", value=1, source_handle=handle),))
+
+        text = assemble("Product: A. The answer.", [done, failed, asking])
+
+        self.assertEqual(text, "\n\n".join([
+            "Product: A. The answer.",
+            "Notes:\n- Product: A.\n- Masked.",
+            "Gaps:\n- The figure could not be drawn.",
+            "Not finished:\n- The source is down.",
+            'Question: Pick one.\nOptions: a | {"b":1}',
+        ]))
+        self.assertEqual(assemble("Only prose.", []), "Only prose.")
+        again = asking.model_copy(update={"trace_id": "run_" + "9" * 32, "reason": "Step x needs an answer."})
+        self.assertEqual(assemble("", [asking, again]).count("Question: Pick one."), 1)
+
+    def test_the_compact_view_holds_no_disclosures_or_data(self):
+        handle = "grid_" + "1" * 32
+        result = Result(status="done", mode=Mode.draft("map", 1), trace_id=RUN, handles=(handle,), charts=("chart-1",),
+                        disclosures=("Product: TEMPO_NO2.",), interpretation="Higher in the north.", followups=("Why?",),
+                        findings=(Finding(name="mean", value=1.5, unit="ppb", source_handle=handle),))
+        view = json.loads(result_view(result))
+        self.assertEqual(view, {
+            "run_id": RUN, "status": "done", "mode": "Draft workflow: map v1",
+            "findings": [{"name": "mean", "value": 1.5, "unit": "ppb", "source_handle": handle}],
+            "handles": [handle], "charts": ["chart-1"], "interpretation": "Higher in the north.", "followups": ["Why?"],
+        })
+
+    async def test_a_failed_result_names_no_source(self):
+        model = Model(script=[run_map(), answer("Done.")])
+        turn = await self.turn(self.supervisor(model))
+        [result] = turn.results
+        failed = Result.model_validate({**result.model_dump(), "status": "failed", "reason": "It failed."})
+        registry = self.f.stores.handles
+        self.assertEqual(await data_sources(registry, "user-a", [result]), ["TEMPO_NO2"])
+        self.assertEqual(await data_sources(registry, "user-a", [failed]), [])
+        self.assertEqual(await data_sources(registry, "user-b", [result]), [])
+        self.assertIsNone(sources_line([]))
+        with self.assertLogs("tta_backend.harness.supervisor.answer", "ERROR") as logged:
+            self.assertEqual(await data_sources(BrokenRegistry(), "user-a", [result]), [])  # type: ignore[arg-type]
+        self.assertNotIn("the registry is down", "".join(logged.output))

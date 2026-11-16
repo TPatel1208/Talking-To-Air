@@ -994,7 +994,7 @@ class ConcurrencyTests(ExploreCase):
                 await release.wait()
                 return await traces.finish_run(*args, **kwargs)
 
-        stores = Stores(handles=self.stores.handles, traces=SlowFinish())  # type: ignore[arg-type]
+        stores = Stores(handles=self.stores.handles, traces=SlowFinish(), results=self.stores.results, jobs=self.stores.jobs)  # type: ignore[arg-type]
         self.context = make_run_context(clock=self.clock, stores=stores)
         running = asyncio.ensure_future(self.go(task(places=("NJ",)), script=[final()]))
         await asyncio.wait_for(entered.wait(), timeout=5)

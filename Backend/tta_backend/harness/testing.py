@@ -51,6 +51,7 @@ class RecordingEvents:
         self.progress_events: list[dict[str, Any]] = []
         self.charts: list[dict[str, Any]] = []
         self.questions: list[dict[str, Any]] = []
+        self.texts: list[str] = []
 
     def progress(self, message: str, *, stage: str | None = None, detail: Any = None) -> None:
         self.progress_events.append({"message": message, "stage": stage, "detail": detail})
@@ -60,6 +61,9 @@ class RecordingEvents:
 
     def question(self, payload: dict[str, Any]) -> None:
         self.questions.append(payload)
+
+    def text(self, content: str) -> None:
+        self.texts.append(content)
 
 
 class MemoryArtifacts:
@@ -244,13 +248,15 @@ class ScriptedChatModel(BaseChatModel):
     """A chat model that answers from a script, for agents under test.
 
     Each call takes the next turn: an AIMessage is returned (a copy), an
-    exception is raised. ``received`` holds the messages each call was sent
-    and ``tools_offered`` the tool names bound for it.
+    exception is raised. ``received`` holds the messages each call was sent,
+    ``tools_offered`` the tool names bound for it and ``tool_choices`` the
+    tool choice it was bound with.
     """
 
     script: list[Any] = Field(default_factory=list)
     received: list[list[BaseMessage]] = Field(default_factory=list)
     tools_offered: list[list[str]] = Field(default_factory=list)
+    tool_choices: list[Any] = Field(default_factory=list)
     position: int = 0
 
     @property
@@ -274,6 +280,7 @@ class ScriptedChatModel(BaseChatModel):
     def _turn(self, messages: list[BaseMessage], kwargs: dict[str, Any]) -> ChatResult:
         self.received.append(list(messages))
         self.tools_offered.append(list(kwargs.get("tool_names", [])))
+        self.tool_choices.append(kwargs.get("tool_choice"))
         if self.position >= len(self.script):
             raise ScriptExhausted(f"the script has {len(self.script)} turns")
         turn = self.script[self.position]

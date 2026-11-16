@@ -39,6 +39,11 @@ class Events(Protocol):
 
     def question(self, payload: dict[str, Any]) -> None: ...
 
+    def text(self, content: str) -> None:
+        """The next piece of the answer's text. Optional: a host without it
+        gets no streamed text, and callers check for it before calling."""
+        ...
+
 
 class Artifacts(Protocol):
     async def store_chart(self, payload: dict[str, Any]) -> ArtifactRef: ...
@@ -280,7 +285,15 @@ def run_env(
     monotonic: Callable[[], float] = time.monotonic,
 ) -> RunEnv:
     """The environment for a run already started in ``context.storage.traces``."""
+    # Imported here because the jobs module builds on this one.
+    from tta_backend.harness.jobs import ReusingEarthdata
+
     user_id = context.identity.user_id
+    # Every run reuses a job the same user already submitted for the same
+    # request. A session already wrapped is not wrapped again: both layers
+    # would take the same lock for one submit and wait on each other.
+    if not isinstance(earthdata, ReusingEarthdata):
+        earthdata = ReusingEarthdata(earthdata, context.storage.jobs, user_id, context.clock)
     return RunEnv(
         context=context,
         run_id=run_id,
