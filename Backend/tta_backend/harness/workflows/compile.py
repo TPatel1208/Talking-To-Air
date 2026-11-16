@@ -5,6 +5,12 @@ A ``use`` step whose capability is two-phase is two nodes, ``<id>.begin`` and
 second completes from it, so the reference is in a checkpoint before any
 waiting. Every other step is one node named by its id.
 
+An ``agent`` step's node asks the run's ``agent_step`` model for an answer of
+the step's declared shape (see ``agent``). Its trace entry records the
+references it read and the notes it was given; its result is the answer, the
+model that gave it and the usage counts. The answer is the step's result in
+state, which later steps read as ``$step.field``.
+
 State holds handles and small JSON only (see ``WorkflowState``). The run's
 environment, retry settings and what a resumed node needs travel in the
 graph's context (``StepContext``), never in state.
@@ -51,31 +57,39 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.runtime import Runtime
 from langgraph.types import interrupt
 
+from tta_backend.harness.capabilities import failures
 from tta_backend.harness.capabilities.definition import Capability
 from tta_backend.harness.capabilities.failures import InputEvicted, JobFailed, JobStillRunning
 from tta_backend.harness.capabilities.invoke import begin, complete, invoke
 from tta_backend.harness.capabilities.registry import CapabilityRegistry
-from tta_backend.harness.capabilities.result import CapabilityResult, JobRef
+from tta_backend.harness.capabilities.result import CapabilityResult, JobRef, walk_path
+from tta_backend.harness.handles.errors import HandleError
+from tta_backend.harness.knowledge import Note, NoteCatalogue
+from tta_backend.harness.models import DEFAULT_BACKOFF, Backoff, Usage
 from tta_backend.harness.run_context import RunEnv
 from tta_backend.harness.trace import (
     MAX_REASON_CHARS,
     EntryKind,
     FailureCategory,
+    InvalidTrace,
     RunClosed,
     StepFailure,
     StepRecorder,
     StepScope,
+    serialize_json,
 )
+from tta_backend.harness.workflows.agent import MAX_READ_BYTES, MAX_READS_BYTES, ask_model, build_prompt, json_size
 from tta_backend.harness.workflows.expressions import (
     EvaluationError,
     MissingValue,
+    Ref,
     StepUnavailable,
     evaluate_condition,
     evaluate_value,
     render_template,
 )
 from tta_backend.harness.workflows.loader import approved_parameter
-from tta_backend.harness.workflows.spec import StopStep, UseStep, WorkflowSpec
+from tta_backend.harness.workflows.spec import AgentStep, StopStep, UseStep, WorkflowSpec
 
 APPROVED = "approved"
 BEGIN_SUFFIX = ".begin"
@@ -97,6 +111,10 @@ CANCELLED: Literal["cancelled"] = "cancelled"
 CANCELLED_REASON = "The run was cancelled."
 INSUFFICIENT = "insufficient_evidence"
 STOPPED = "stopped"
+# What an agent entry records in place of an answer too large for the trace.
+ANSWER_NOT_RECORDED = "not recorded: larger than the trace holds"
+# An agent step's run failing outside its model calls.
+AGENT_INTERNAL = "Step {step} hit an internal error while asking its model."
 # A step that reads one of these is skipped.
 NOT_PRODUCED = frozenset({SKIPPED, FAILED_OPTIONAL})
 
@@ -118,9 +136,9 @@ class WorkflowState(TypedDict, total=False):
     """A run's graph state; plain JSON only.
 
     ``outcomes`` maps a step id to its outcome: ``status`` (one of the
-    statuses above), ``kind`` (use or stop), the recorded capability
-    ``result``, the ``method`` sentence, and ``reason`` and ``category`` for a
-    step that did not finish. ``end`` is set by the step that ended the run
+    statuses above), ``kind`` (use, agent or stop), the ``result`` (the
+    recorded capability result, or an agent step's answer), the ``method``
+    sentence, and ``reason`` and ``category`` for a step that did not finish. ``end`` is set by the step that ended the run
     early: ``status``, ``reason``, ``step``, ``category`` and the step's
     ``rank`` in the file; when siblings both end it, the earlier step stands.
     A run found cancelled ends with status ``cancelled``.
@@ -153,10 +171,15 @@ class RetrySettings:
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
     # Submissions of a two-phase step over the whole run, across every resume.
     max_submissions: int = 6
+    # Retries of each model an agent step tries, and the waits between them.
+    model_retries: int = 2
+    model_backoff: Backoff = DEFAULT_BACKOFF
 
     def __post_init__(self) -> None:
         if self.retries < 0:
             raise ValueError("retries is zero or more")
+        if self.model_retries < 0:
+            raise ValueError("model_retries is zero or more")
         if self.max_submissions < 1:
             raise ValueError("max_submissions is at least 1")
 
@@ -229,12 +252,14 @@ class _TurnRecorder(StepRecorder):
 class StepContext:
     """What every node is handed besides state. ``resumed`` maps a node name to the
     interrupt value it paused with, for a node running again on resume; ``turns``
-    orders the trace entries of one superstep."""
+    orders the trace entries of one superstep; ``notes`` are the knowledge
+    notes agent steps are given, none when absent."""
 
     env: RunEnv
     retry: RetrySettings = field(default_factory=RetrySettings)
     resumed: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     turns: TraceTurns = field(default_factory=TraceTurns)
+    notes: NoteCatalogue | None = None
 
 
 class ResultView:
@@ -250,6 +275,19 @@ class ResultView:
         return self.result.handle
 
 
+class AnswerView:
+    """An agent step's answer as a reference reads it; a bare ``$step`` is the whole answer."""
+
+    def __init__(self, answer: Mapping[str, Any]) -> None:
+        self.answer = dict(answer)
+
+    def read(self, path: str) -> Any:
+        return walk_path(self.answer, path)
+
+    def value(self) -> Any:
+        return self.answer
+
+
 class StateScope:
     """The run's inputs, finished steps and limits, for evaluating a spec's expressions.
 
@@ -262,18 +300,22 @@ class StateScope:
         self._inputs: Mapping[str, Any] = state.get("inputs") or {}
         self._names: Mapping[str, str] = (state.get("input_names") or {}) if text else {}
         self._outcomes: Mapping[str, Mapping[str, Any]] = state.get("outcomes") or {}
-        self._views: dict[str, ResultView | None] = {}
+        self._views: dict[str, ResultView | AnswerView | None] = {}
 
     def input(self, name: str) -> Any:
         if name in self._names:
             return self._names[name]
         return self._inputs[name]
 
-    def step(self, step_id: str) -> ResultView | None:
+    def step(self, step_id: str) -> ResultView | AnswerView | None:
         if step_id not in self._views:
-            outcome = self._outcomes.get(step_id)
-            recorded = outcome.get("result") if outcome and outcome.get("status") == DONE else None
-            self._views[step_id] = None if recorded is None else ResultView(CapabilityResult.model_validate(recorded))
+            outcome = self._outcomes.get(step_id) or {}
+            recorded = outcome.get("result") if outcome.get("status") == DONE else None
+            view: ResultView | AnswerView | None = None
+            if recorded is not None:
+                agent = outcome.get("kind") == "agent"
+                view = AnswerView(recorded) if agent else ResultView(CapabilityResult.model_validate(recorded))
+            self._views[step_id] = view
         return self._views[step_id]
 
     def limit(self, name: str) -> Any:
@@ -316,7 +358,9 @@ class _StepNodes:
         if isinstance(self.step, UseStep):
             self.capability = capabilities.get(self.step.use)
             self.approved = approved_parameter(spec, step_id, capabilities)
-        self.entry_kind: EntryKind = "stop" if isinstance(self.step, StopStep) else "use"
+        self.entry_kind: EntryKind = (
+            "stop" if isinstance(self.step, StopStep) else "agent" if isinstance(self.step, AgentStep) else "use"
+        )
         self.rank = spec.step_ids.index(step_id)
         # The steps it reads, which skip it when they were skipped. A pure
         # ``after`` is ordering only, and so is a step named only inside
@@ -509,6 +553,10 @@ class _StepNodes:
         """A ``stop`` step."""
         return await self._node(self.id, state, runtime, self._stop)
 
+    async def agent(self, state: WorkflowState, runtime: Runtime[StepContext]) -> dict[str, Any]:
+        """An ``agent`` step."""
+        return await self._node(self.id, state, runtime, self._agent)
+
     async def _run(self, state: WorkflowState, context: StepContext) -> dict[str, Any]:
         """A one-phase ``use`` step."""
         env = context.env
@@ -667,6 +715,136 @@ class _StepNodes:
         end = self._end(self.step.stop, reason, None)
         return {"outcomes": {self.id: outcome}, "end": end}
 
+    async def _agent(self, state: WorkflowState, context: StepContext) -> dict[str, Any]:
+        """An ``agent`` step: its reads and notes to the model, and the typed answer back.
+
+        A wrong-shaped answer is retried once inside the model run. An answer
+        that still does not fit, every model failing, a failure outside the
+        model calls, or a run with no model for agent steps fails the step.
+        """
+        env = context.env
+        gated = await self._gate(state, env)
+        if gated is not None:
+            return gated
+        assert isinstance(self.step, AgentStep)
+        returns = self.step.agent.returns
+        scope = StateScope(self.spec, state)
+        try:
+            reads = [(ref.text(), evaluate_value(ref, scope)) for ref in self.compiled.reads]
+        except EvaluationError as error:
+            return await self._evaluation_failure(env, error)
+        notes = await self._notes(env, state, context.notes)
+        params = {"reads": [ref for ref, _ in reads], "notes": [note.id for note in notes]}
+        try:
+            async with env.recorder.step(kind="agent", params=params, step=self.id) as entry:
+                oversized = _oversized_reads(self.id, reads)
+                if oversized is not None:
+                    raise oversized
+                choice = env.model_for("agent_step")
+                prompt = build_prompt(self.step.agent.instruction, reads, notes, returns)
+                asked = await ask_model(
+                    choice, prompt, returns, max_retries=context.retry.model_retries, backoff=context.retry.model_backoff,
+                )
+                usage = _usage(asked.usage)
+                if asked.outcome == "internal_error":
+                    raise StepFailure(FailureCategory.INTERNAL_ERROR, AGENT_INTERNAL.format(step=self.id), result=usage)
+                if asked.answer is None:
+                    rule = failures.MODEL_FAILED if asked.outcome == "model_failed" else failures.MODEL_ANSWER_INVALID
+                    category, wording = rule
+                    raise StepFailure(category, wording.format(name=f"step {self.id}"), result=usage)
+                answer = asked.answer
+                entry.result = _recorded_answer(answer, usage)
+        except StepFailure as failure:
+            return self._failed(failure)
+        outcome = {"status": DONE, "kind": "agent", "result": answer, "method": self._agent_method(state)}
+        return {"outcomes": {self.id: outcome}}
+
+    async def _notes(self, env: RunEnv, state: Mapping[str, Any], catalogue: NoteCatalogue | None) -> tuple[Note, ...]:
+        """The notes for the datasets and quantities behind what the step reads:
+        the handles of the steps and inputs it reads, and any quantity input it reads."""
+        if catalogue is None or not len(catalogue):
+            return ()
+        outcomes: Mapping[str, Mapping[str, Any]] = state.get("outcomes") or {}
+        inputs: Mapping[str, Any] = state.get("inputs") or {}
+        datasets: set[str] = set()
+        quantities: set[str] = set()
+        handles: list[str] = []
+        for ref in self.compiled.reads:
+            if not isinstance(ref, Ref):
+                continue
+            if ref.root == "input":
+                declared, value = self.spec.inputs[ref.name], inputs.get(ref.name)
+                if declared.type == "quantity" and isinstance(value, str):
+                    quantities.add(value)
+                elif declared.handle_kind is not None and isinstance(value, str):
+                    handles.append(value)
+            elif ref.root == "step":
+                outcome = outcomes.get(ref.name) or {}
+                if outcome.get("kind") == "use" and outcome.get("status") == DONE and outcome.get("result"):
+                    result = CapabilityResult.model_validate(outcome["result"])
+                    if result.product:
+                        datasets.add(result.product)
+                    if result.handle:
+                        handles.append(result.handle)
+        user_id = env.context.identity.user_id
+        for handle_id in dict.fromkeys(handles):
+            try:
+                record = await env.resolver.get(user_id, handle_id)
+            except HandleError:
+                continue
+            if record.descriptor.product:
+                datasets.add(record.descriptor.product)
+            if record.descriptor.quantity:
+                quantities.add(record.descriptor.quantity)
+        return catalogue.notes_for(datasets=datasets, quantities=quantities)
+
+    def _agent_method(self, state: Mapping[str, Any]) -> str | None:
+        if self.compiled.method is None:
+            return None
+        try:
+            return render_template(self.compiled.method, StateScope(self.spec, state, text=True))
+        except (EvaluationError, ValueError):
+            return None
+
+
+def _oversized_reads(step_id: str, reads: list[tuple[str, Any]]) -> StepFailure | None:
+    """A failure when what an agent step reads is past its size bounds."""
+    total = 0
+    for ref, value in reads:
+        size = json_size(value)
+        if size > MAX_READ_BYTES:
+            return StepFailure(
+                FailureCategory.INTERNAL_ERROR,
+                f"Step {step_id} reads {ref}, which is larger than an agent step may read ({MAX_READ_BYTES} bytes).",
+            )
+        total += size
+    if total > MAX_READS_BYTES:
+        return StepFailure(
+            FailureCategory.INTERNAL_ERROR,
+            f"The values step {step_id} reads are larger together than an agent step may read ({MAX_READS_BYTES} bytes).",
+        )
+    return None
+
+
+def _usage(usage: Usage) -> dict[str, Any]:
+    return {
+        "model": usage.model_name,
+        "model_calls": usage.model_calls,
+        "failed_model_calls": usage.failed_model_calls,
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+    }
+
+
+def _recorded_answer(answer: dict[str, Any], usage: dict[str, Any]) -> dict[str, Any]:
+    """An agent entry's result: the answer when it fits the trace, else a marker, then the usage."""
+    recorded = {"answer": answer, **usage}
+    try:
+        serialize_json(recorded, "result")
+    except InvalidTrace:
+        recorded = {"answer": ANSWER_NOT_RECORDED, **usage}
+    return recorded
+
 
 @dataclass(frozen=True)
 class CompiledWorkflow:
@@ -706,6 +884,8 @@ def compile_workflow(
         nodes = _StepNodes(spec, capabilities, step_id)
         if isinstance(nodes.step, StopStep):
             builder.add_node(step_id, nodes.stop)
+        elif isinstance(nodes.step, AgentStep):
+            builder.add_node(step_id, nodes.agent)
         elif nodes._cap().two_phase:
             builder.add_node(step_id + BEGIN_SUFFIX, nodes.begin)
             builder.add_node(step_id, nodes.complete)

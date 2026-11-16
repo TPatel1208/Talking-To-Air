@@ -10,6 +10,7 @@ from psycopg.rows import dict_row
 
 from tests.postgres_helpers import TEST_DATABASE_URL, PostgresTestCase, isolated_schema
 from tests.test_harness_sources_satellite import NO2, FakeService
+from tests.test_harness_workflow_agent import NOTES, AgentFixture, agent_spec, choice, said
 from tests.test_harness_workflow_runner import (
     AREA_ENTRY,
     DATASETS,
@@ -26,6 +27,7 @@ from tta_backend.harness.capabilities.catalogue import build_registry
 from tta_backend.harness.database import Connect
 from tta_backend.harness.handles import HandleRecord
 from tta_backend.harness.storage import Stores, ensure_tables, postgres_stores
+from tta_backend.harness.testing import ScriptedChatModel, ScriptedModels
 from tta_backend.harness.trace import RunNotFound
 from tta_backend.harness.workflows.loader import load_specs
 
@@ -49,6 +51,21 @@ async def saver_in(connect: Connect) -> AsyncIterator[AsyncPostgresSaver]:
         saver = AsyncPostgresSaver(saver_conn)
         await saver.setup()
         yield saver
+
+
+async def checkpoint_bytes(connect: Connect) -> bytes:
+    """Everything the checkpointer stored, as one blob to search."""
+    async with connect() as conn:
+        stored: list[bytes] = []
+        for table in CHECKPOINT_TABLES:
+            cur = await conn.execute(f"SELECT * FROM {table}")  # noqa: S608
+            for row in await cur.fetchall():
+                for value in row:
+                    if isinstance(value, bytes | memoryview):
+                        stored.append(bytes(value))
+                    elif value is not None:
+                        stored.append(str(value).encode())
+    return b"\n".join(stored)
 
 
 class RunnerPostgresTests(PostgresTestCase):
@@ -88,6 +105,37 @@ class RunnerPostgresTests(PostgresTestCase):
             steps = await f.runner.steps(await f.env(result.trace_id))
             self.assertEqual([s.step for s in steps], ["data", "figure"])
 
+    async def test_an_agent_step_answers_and_its_answer_reaches_the_result(self):
+        script = Script()
+        registry = fake_registry(script)
+        catalogue = load_specs({"agent": agent_spec()}, registry, DATASETS)
+        model = ScriptedChatModel(script=[said()])
+        models = ScriptedModels({"agent_step": choice((model, "fake:primary"))})
+        async with self.world() as (connect, stores, root), saver_in(connect) as saver:
+            f = AgentFixture(root, registry, catalogue, script, models=models, notes=NOTES, stores=stores, saver=saver)
+            result = await f.start({"quantity": NO2})
+            self.assertEqual(result.status, "done", result.reason)
+            self.assertEqual(result.interpretation, "The total is 3.")
+            self.assertEqual(await f.entries(result.trace_id), [
+                ("use", "ops.make", "base", "done"),
+                ("use", "ops.make", "total", "done"),
+                ("agent", None, "interpret", "done"),
+            ])
+            entry = await f.entry(result.trace_id, "interpret")
+            self.assertEqual(entry.params["notes"], ["column-not-surface", "tempo-hours"])
+            self.assertEqual(entry.result, {
+                "answer": {"text": "The total is 3.", "ok": True},
+                "model": "fake:primary", "model_calls": 1, "failed_model_calls": 0,
+                "input_tokens": 12, "output_tokens": 7,
+            })
+            steps = await f.runner.steps(await f.env(result.trace_id))
+            self.assertEqual([(s.step, s.kind) for s in steps], [("base", "use"), ("total", "use"), ("interpret", "agent")])
+
+            blob = await checkpoint_bytes(connect)
+            self.assertIn(b"The total is 3.", blob)
+            # The model's own run is not part of the workflow's checkpoint.
+            self.assertNotIn(b"You carry out one step", blob)
+
     async def test_a_waiting_run_resumes_in_another_runner_and_only_its_user_can_touch_it(self):
         script = Script()
         registry = fake_registry(script)
@@ -116,17 +164,7 @@ class RunnerPostgresTests(PostgresTestCase):
                 self.assertEqual(await owner.run_status(waiting.trace_id), "done")
                 self.assertEqual((await owner.entries(waiting.trace_id))[-1], ("use", "ops.make", "use_it", "done"))
 
-                async with connect() as conn:
-                    stored: list[bytes] = []
-                    for table in CHECKPOINT_TABLES:
-                        cur = await conn.execute(f"SELECT * FROM {table}")  # noqa: S608
-                        for row in await cur.fetchall():
-                            for value in row:
-                                if isinstance(value, bytes | memoryview):
-                                    stored.append(bytes(value))
-                                elif value is not None:
-                                    stored.append(str(value).encode())
-                blob = b"\n".join(stored)
+                blob = await checkpoint_bytes(connect)
                 self.assertIn(waiting.trace_id.encode(), blob)
                 self.assertIn(b"job_1", blob)
                 self.assertNotIn(SECRET.encode(), blob)

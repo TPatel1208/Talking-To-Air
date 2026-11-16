@@ -13,8 +13,8 @@ Derived facts the compiler and runner use:
   ``after``; order follows references, not position in the file.
 - ``always_runs(step_id)``: no ``when``, ``required``, and depending only on
   steps that always run.
-- ``runnable`` / ``not_runnable_reason``: ``for_each`` and the ``ask``, ``agent``
-  and ``workflow`` kinds are parsed and checked but the runner refuses them.
+- ``runnable`` / ``not_runnable_reason``: ``for_each`` and the ``ask`` and
+  ``workflow`` kinds are parsed and checked but the runner refuses them.
 - ``approved_for(step_id)``: the products the runner passes as ``approved``.
 - ``connectors(capabilities)`` and ``mode()``.
 
@@ -94,6 +94,10 @@ STEP_KINDS: tuple[StepKind, ...] = ("use", "ask", "agent", "workflow", "stop")
 RESERVED_STEP_PREFIX = "input"
 MAX_LABEL_CHARS = 80
 MAX_LINE_CHARS = 500
+# An agent step's bounds; what its reads resolve to is bounded in ``agent``.
+MAX_INSTRUCTION_CHARS = 2000
+MAX_READS = 12
+MAX_RETURNS = 8
 
 WORKFLOW_NAME = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
 CAPABILITY_NAME = re.compile(r"[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+")
@@ -382,6 +386,9 @@ class AskStep(_StepBase):
 
 
 class AgentSpec(_Model):
+    """What an agent step is told and what it answers with. A ``list`` field is
+    a list of short texts."""
+
     instruction: str
     reads: tuple[str, ...] = ()
     returns: dict[str, ReturnType]
@@ -392,18 +399,27 @@ class AgentSpec(_Model):
         value = value.strip()
         if not value:
             raise ValueError("instruction is not empty")
+        if len(value) > MAX_INSTRUCTION_CHARS:
+            raise ValueError(f"instruction is at most {MAX_INSTRUCTION_CHARS} characters")
         return value
 
     @field_validator("reads")
     @classmethod
     def _reads(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        return tuple(_check_reference(item) for item in value)
+        found = tuple(_check_reference(item) for item in value)
+        if len(found) > MAX_READS:
+            raise ValueError(f"reads lists at most {MAX_READS} references")
+        if len(set(found)) != len(found):
+            raise ValueError("reads lists each reference once")
+        return found
 
     @field_validator("returns")
     @classmethod
     def _returns(cls, value: dict[str, ReturnType]) -> dict[str, ReturnType]:
         if not value:
             raise ValueError("returns names at least one field")
+        if len(value) > MAX_RETURNS:
+            raise ValueError(f"returns names at most {MAX_RETURNS} fields")
         for key in value:
             if not NAME.fullmatch(key):
                 raise ValueError("returns keys are lower-case names")
@@ -927,7 +943,7 @@ class WorkflowSpec(_Model):
     def not_runnable_reason(self) -> str | None:
         """Why the runner refuses this spec, naming the first step that uses an unsupported feature."""
         for step in self.steps:
-            if step.kind in ("ask", "agent", "workflow"):
+            if step.kind in ("ask", "workflow"):
                 article = "a" if step.kind == "workflow" else "an"
                 return f"step {step.id} is {article} {step.kind} step, which the runner does not run"
             if step.for_each is not None:

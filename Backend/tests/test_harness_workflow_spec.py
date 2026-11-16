@@ -111,6 +111,14 @@ class ShapeTests(unittest.TestCase):
             ({"id": "f", "ask": {"kind": "pick_one", "question": "Which?"}}, "a pick_one question has options and no items"),
             ({"id": "f", "ask": {"kind": "text", "question": "Which?", "items": [1]}}, "a text question has no options or items"),
             ({"id": "f", "agent": {"instruction": "Say.", "returns": {}}}, "returns names at least one field"),
+            ({"id": "f", "agent": {"instruction": "x" * 2001, "returns": {"text": "string"}}},
+             "instruction is at most 2000 characters"),
+            ({"id": "f", "agent": {"instruction": "Say.", "reads": ["$data.summary"] * 2, "returns": {"text": "string"}}},
+             "reads lists each reference once"),
+            ({"id": "f", "agent": {"instruction": "Say.", "reads": [f"$data.values.v{n}" for n in range(13)],
+                                   "returns": {"text": "string"}}}, "reads lists at most 12 references"),
+            ({"id": "f", "agent": {"instruction": "Say.", "returns": {f"f{n}": "string" for n in range(9)}}},
+             "returns names at most 8 fields"),
             ({"id": "f", "workflow": "Map", "version": 1}, "workflow names a workflow"),
             ({"id": "f", "stop": "done", "when": "true", "reason": "x"}, "stop: Input should be"),
             ({"id": "f", "stop": "failed", "reason": "{"}, "reason: unmatched {"),
@@ -271,19 +279,24 @@ class RunnerFactsTests(unittest.TestCase):
         self.assertTrue(spec().runnable)
         self.assertIsNone(spec().not_runnable_reason)
 
+    def test_an_agent_step_is_runnable(self):
+        say = {"id": "say", "agent": {"instruction": "Say.", "reads": ["$data.summary"], "returns": {"text": "string"}}}
+        parsed = spec(steps=[*BASE["steps"], say])
+        self.assertTrue(parsed.runnable)
+        self.assertIsNone(parsed.not_runnable_reason)
+
     def test_not_runnable_names_the_first_step_and_feature(self):
+        say = {"id": "say", "agent": {"instruction": "Say.", "reads": ["$data.summary"], "returns": {"text": "string"}}}
         cases: list[tuple[dict[str, Any], str]] = [
             ({"id": "pick", "ask": {"kind": "pick_one", "question": "Which?", "options": ["a", "b"]}},
              "step pick is an ask step, which the runner does not run"),
-            ({"id": "say", "agent": {"instruction": "Say.", "reads": ["$data.summary"], "returns": {"text": "string"}}},
-             "step say is an agent step, which the runner does not run"),
             ({"id": "child", "workflow": "map", "version": 1, "with": {"area": "$area"}},
              "step child is a workflow step, which the runner does not run"),
             (step(id="each", for_each="$data.values.days"), "step each uses for_each, which the runner does not run"),
         ]
         for entry, reason in cases:
             with self.subTest(reason=reason):
-                parsed = spec(steps=[*BASE["steps"], entry, step(id="later", for_each="$data.values.days")])
+                parsed = spec(steps=[*BASE["steps"], say, entry, step(id="later", for_each="$data.values.days")])
                 self.assertFalse(parsed.runnable)
                 self.assertEqual(parsed.not_runnable_reason, reason)
 

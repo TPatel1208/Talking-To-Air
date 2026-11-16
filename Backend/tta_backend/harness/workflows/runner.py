@@ -2,7 +2,8 @@
 
 A host builds one ``WorkflowRunner`` with the capability registry, the
 workflow catalogue and a LangGraph checkpointer (``AsyncPostgresSaver`` in
-production, after its ``setup()``; ``InMemorySaver`` in tests), then:
+production, after its ``setup()``; ``InMemorySaver`` in tests), and optionally
+the knowledge notes agent steps are given, then:
 
 - ``start(context, build_env, name, version, inputs)`` refuses an unknown or
   not-runnable spec before anything is written, starts the trace run with the
@@ -17,7 +18,8 @@ so every method first reads the run from the user's own trace store, which
 refuses another user's run as missing.
 
 Every outcome is finished in the trace with the matching status and returned
-as a ``Result``.
+as a ``Result``. ``outputs.interpretation`` fills the result's
+``interpretation`` from an agent step's answer.
 """
 from __future__ import annotations
 
@@ -35,6 +37,7 @@ from pydantic import ValidationError
 from tta_backend.datasets.registry import load_registry
 from tta_backend.harness.capabilities.registry import CapabilityRegistry
 from tta_backend.harness.capabilities.result import CapabilityResult
+from tta_backend.harness.knowledge import NoteCatalogue
 from tta_backend.harness.results import Finding, Gap, Mode, Result, ResultStatus
 from tta_backend.harness.run_context import RunContext, RunEnv
 from tta_backend.harness.trace import Run, RunClosed, RunStatus, new_run_id
@@ -131,7 +134,8 @@ class WorkflowRunner:
     """Runs specs from ``catalogue`` on ``capabilities``, saving each run under ``checkpointer``.
 
     ``quantities`` is the set of canonical quantities a ``quantity`` input may
-    take; it defaults to those the dataset registry records.
+    take; it defaults to those the dataset registry records. ``notes`` are the
+    knowledge notes agent steps are given; with none, they are given no notes.
     """
 
     def __init__(
@@ -142,12 +146,14 @@ class WorkflowRunner:
         *,
         retry: RetrySettings | None = None,
         quantities: Collection[str] | None = None,
+        notes: NoteCatalogue | None = None,
     ) -> None:
         self._capabilities = capabilities
         self._catalogue = catalogue
         self._checkpointer = checkpointer
         self._retry = retry or RetrySettings()
         self._quantities = frozenset(quantities) if quantities is not None else _known_quantities()
+        self._notes = notes
         self._compiled: dict[tuple[str, int], CompiledWorkflow] = {}
 
     # Specs
@@ -289,7 +295,9 @@ class WorkflowRunner:
         """Run the graph until it finishes or pauses. A pause that is only save
         points is resumed at once: the jobs they hold are in the checkpoint."""
         for _ in range(MAX_SAVE_POINTS):
-            context = StepContext(env=env, retry=self._retry, resumed=resumed, turns=workflow.turns(resumed))
+            context = StepContext(
+                env=env, retry=self._retry, resumed=resumed, turns=workflow.turns(resumed), notes=self._notes
+            )
             output = await workflow.graph.ainvoke(
                 given, _config(env.run_id), context=context, durability="sync", version="v2"
             )
@@ -409,7 +417,8 @@ def _pending(tasks: tuple[Any, ...]) -> list[Interrupt]:
 
 
 def _done_result(outcome: Mapping[str, Any] | None) -> CapabilityResult | None:
-    if not outcome or outcome.get("status") != DONE or outcome.get("result") is None:
+    """A finished ``use`` step's result; None for any other step."""
+    if not outcome or outcome.get("kind") != "use" or outcome.get("status") != DONE or outcome.get("result") is None:
         return None
     return CapabilityResult.model_validate(outcome["result"])
 
@@ -496,6 +505,18 @@ def _disclosures(spec: WorkflowSpec, values: Mapping[str, Any]) -> tuple[str, ..
     return tuple(dict.fromkeys(lines))
 
 
+def _interpretation(spec: WorkflowSpec, values: Mapping[str, Any]) -> str | None:
+    """The text ``outputs.interpretation`` reads, when its agent step answered."""
+    entry = spec.compiled_outputs.interpretation
+    if entry is None:
+        return None
+    try:
+        value = evaluate_value(entry.ref, StateScope(spec, values))
+    except EvaluationError:
+        return None
+    return value if isinstance(value, str) and value.strip() else None
+
+
 def _envelope(
     spec: WorkflowSpec,
     run_id: str,
@@ -529,4 +550,5 @@ def _envelope(
         trace_id=run_id,
         reason=None if status == "done" else reason,
         question=question if status == "needs_input" else None,
+        interpretation=_interpretation(spec, values),
     )

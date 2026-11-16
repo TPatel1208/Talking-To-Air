@@ -40,7 +40,7 @@ Bare step references
     ``$step`` with no path reads ``StepView.value()``. What that is depends on
     where it appears and is the consumer's decision: in ``with`` and
     ``outputs.data`` it means the step's handle, in ``outputs.figures`` its
-    charts, and for an ``ask`` step its answer.
+    charts, and for an ``ask`` or ``agent`` step its answer.
 """
 from __future__ import annotations
 

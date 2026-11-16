@@ -10,7 +10,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from tta_backend.harness.release import HARNESS_RELEASE
 
 ResultStatus = Literal[
-    "done", "needs_input", "waiting", "insufficient_evidence", "failed", "cancelled"
+    "done", "needs_input", "waiting", "insufficient_evidence", "failed", "cancelled",
+    # An exploration that ran out of its model-call or tool-call budget; it returns what it found.
+    "incomplete",
 ]
 ModeKind = Literal["validated", "draft", "exploratory"]
 
@@ -115,6 +117,10 @@ class Result(_Model):
     reason: str | None = None
     # The typed question a needs_input result waits on, as plain JSON.
     question: dict[str, Any] | None = None
+    # Model-written text, always shown as interpretation, apart from the methods.
+    interpretation: str | None = Field(default=None, min_length=1)
+    # Follow-up questions the model suggests.
+    followups: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def _check(self) -> Self:

@@ -100,6 +100,9 @@ class Capability(Generic[P]):
     ``connector_required=False`` the call runs without it, and only reaching
     for it (``call.earthdata`` or ``call.secret``) fails as not connected; for
     a capability that needs the connector for some inputs only.
+
+    ``workflow_only`` marks a capability that only validated workflows may
+    run, never an exploratory specialist.
     """
 
     name: str
@@ -112,6 +115,7 @@ class Capability(Generic[P]):
     retry_safe: bool
     connector: str | None = None
     connector_required: bool = True
+    workflow_only: bool = False
     run: Callable[[Call[P]], Awaitable[CapabilityResult]] | None = None
     # Returns the job reference, or a result when it settles the call without submitting.
     begin: Callable[[Call[P]], Awaitable[JobRef | CapabilityResult]] | None = None

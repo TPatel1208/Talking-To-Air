@@ -2,14 +2,27 @@
 from __future__ import annotations
 
 import datetime
+import itertools
 import os
-from collections.abc import Awaitable, Callable
-from typing import Any
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from typing import Any, get_args
+
+from langchain_core.callbacks import AsyncCallbackManagerForLLMRun, CallbackManagerForLLMRun
+from langchain_core.exceptions import ModelRateLimitError
+from langchain_core.language_models import BaseChatModel, LanguageModelInput
+from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.messages.ai import UsageMetadata
+from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.runnables import Runnable
+from langchain_core.tools import BaseTool
+from langchain_core.utils.function_calling import convert_to_openai_tool
+from pydantic import Field
 
 from tta_backend.harness.handles.errors import HandleError
 from tta_backend.harness.handles.model import HandleRecord
 from tta_backend.harness.handles.payloads import PayloadStore
 from tta_backend.harness.handles.resolver import OpenRetrieval
+from tta_backend.harness.models import ModelChoice, ModelRole, Models
 from tta_backend.harness.results import Mode
 from tta_backend.harness.run_context import (
     AnsweredRequests,
@@ -186,6 +199,129 @@ TEST_LIMITS = Limits(
 )
 
 
+_CALL_IDS = itertools.count(1)
+
+
+def _usage(usage: tuple[int, int] | None) -> UsageMetadata | None:
+    if usage is None:
+        return None
+    tokens_in, tokens_out = usage
+    return UsageMetadata(input_tokens=tokens_in, output_tokens=tokens_out, total_tokens=tokens_in + tokens_out)
+
+
+def answer(text: str, *, usage: tuple[int, int] | None = None) -> AIMessage:
+    """A scripted final answer; ``usage`` is (input tokens, output tokens)."""
+    return AIMessage(content=text, usage_metadata=_usage(usage))
+
+
+def tool_call(
+    name: str,
+    args: dict[str, Any],
+    *,
+    call_id: str | None = None,
+    content: str = "",
+    usage: tuple[int, int] | None = None,
+) -> AIMessage:
+    """A scripted turn that calls tool ``name``. A structured answer under
+    ``ToolStrategy`` is a call to the tool named after its schema."""
+    return AIMessage(
+        content=content,
+        tool_calls=[{"name": name, "args": args, "id": call_id or f"call_{next(_CALL_IDS)}", "type": "tool_call"}],
+        usage_metadata=_usage(usage),
+    )
+
+
+def rate_limited() -> ModelRateLimitError:
+    """A scripted rate-limit failure, the kind a retry repeats."""
+    return ModelRateLimitError("rate limited (scripted)")
+
+
+class ScriptExhausted(AssertionError):
+    """The scripted model was called more times than it has turns."""
+
+
+class ScriptedChatModel(BaseChatModel):
+    """A chat model that answers from a script, for agents under test.
+
+    Each call takes the next turn: an AIMessage is returned (a copy), an
+    exception is raised. ``received`` holds the messages each call was sent
+    and ``tools_offered`` the tool names bound for it.
+    """
+
+    script: list[Any] = Field(default_factory=list)
+    received: list[list[BaseMessage]] = Field(default_factory=list)
+    tools_offered: list[list[str]] = Field(default_factory=list)
+    position: int = 0
+
+    @property
+    def _llm_type(self) -> str:
+        return "scripted-fake"
+
+    @property
+    def calls(self) -> int:
+        return len(self.received)
+
+    def bind_tools(
+        self,
+        tools: Sequence[dict[str, Any] | type | Callable[..., Any] | BaseTool],
+        *,
+        tool_choice: str | None = None,
+        **kwargs: Any,
+    ) -> Runnable[LanguageModelInput, AIMessage]:
+        names = [convert_to_openai_tool(tool)["function"]["name"] for tool in tools]
+        return self.bind(tool_names=names, tool_choice=tool_choice, **kwargs)
+
+    def _turn(self, messages: list[BaseMessage], kwargs: dict[str, Any]) -> ChatResult:
+        self.received.append(list(messages))
+        self.tools_offered.append(list(kwargs.get("tool_names", [])))
+        if self.position >= len(self.script):
+            raise ScriptExhausted(f"the script has {len(self.script)} turns")
+        turn = self.script[self.position]
+        self.position += 1
+        if isinstance(turn, BaseException):
+            raise turn
+        if not isinstance(turn, AIMessage):
+            raise TypeError("a script turn is an AIMessage or an exception")
+        return ChatResult(generations=[ChatGeneration(message=turn.model_copy(deep=True))])
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        return self._turn(messages, kwargs)
+
+    async def _agenerate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: AsyncCallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        return self._turn(messages, kwargs)
+
+
+class ScriptedModels:
+    """Models keyed by role; a role not given gets ``default``. ``asked`` records each role asked for."""
+
+    def __init__(
+        self, choices: Mapping[ModelRole, ModelChoice] | None = None, *, default: ModelChoice | None = None
+    ) -> None:
+        self.choices = dict(choices or {})
+        self.default = default
+        self.asked: list[ModelRole] = []
+
+    @classmethod
+    def every_role(cls, choice: ModelChoice) -> ScriptedModels:
+        return cls({role: choice for role in get_args(ModelRole)})
+
+    def for_role(self, role: ModelRole) -> ModelChoice | None:
+        self.asked.append(role)
+        return self.choices.get(role, self.default)
+
+
 async def _no_retrievals(user_id: str, record: HandleRecord) -> Any:
     raise HandleError("not_found", record.id)
 
@@ -199,6 +335,7 @@ async def make_run_env(
     limits: Limits | None = None,
     open_retrieval: OpenRetrieval | None = None,
     places: Places | None = None,
+    models: Models | None = None,
     mode: Mode | None = None,
 ) -> RunEnv:
     """A run started in the context's trace store, with an environment on fakes."""
@@ -220,6 +357,7 @@ async def make_run_env(
         compute=compute or InlineCompute(),
         limits=limits or TEST_LIMITS,
         places=places or FakePlaces(),
+        models=models,
     )
 
 
@@ -231,6 +369,7 @@ def env_factory(
     limits: Limits | None = None,
     open_retrieval: OpenRetrieval | None = None,
     places: Places | None = None,
+    models: Models | None = None,
 ) -> Callable[[RunContext, str], Awaitable[RunEnv]]:
     """Builds the environment for a run already started, as a workflow runner asks for it."""
     shared_earthdata = earthdata or FakeEarthdata()
@@ -247,6 +386,7 @@ def env_factory(
             compute=shared_compute,
             limits=limits or TEST_LIMITS,
             places=shared_places,
+            models=models,
         )
 
     return build

@@ -260,6 +260,8 @@ def check_spec(
     for step in spec.steps:
         if isinstance(step, UseStep):
             _check_use(report, step, capabilities)
+        elif isinstance(step, AgentStep):
+            _check_agent(report, step)
     _check_products(report, capabilities, datasets)
     _check_outputs(report, capabilities, cyclic)
     _check_validated(report)
@@ -295,11 +297,46 @@ def _check_reference(report: _Report, ref: Reference, step: str | None, *, in_co
             report.add(f"{{{ref.text()}}} names no input, step or result field", step)
     elif in_condition and not ref.dollar and ref.root != "input":
         report.add(f"{ref.name} in when is not an input; a step is written ${ref.name}", step)
+    elif ref.root == "step" and ref.path:
+        _check_answer_field(report, ref, step)
+
+
+def _check_no_answer(report: _Report, field: str, refs: Iterable[Reference], step: str) -> None:
+    """An agent step's answer is read only in ``when`` and ``outputs.interpretation``,
+    so nothing a capability makes, and no fixed wording, comes from a model."""
+    for ref in refs:
+        if isinstance(ref, Ref) and ref.root == "step" and isinstance(report.spec.step(ref.name), AgentStep):
+            report.add(
+                f"{field} reads agent step {ref.name}; a model's answer is read only in when and in outputs.interpretation",
+                step,
+            )
+            return
+
+
+def _check_answer_field(report: _Report, ref: Ref, step: str | None) -> None:
+    """A field read from an agent step is one its ``returns`` declares; only a list goes deeper, by index."""
+    target = report.spec.step(ref.name)
+    if not isinstance(target, AgentStep):
+        return
+    returns = target.agent.returns
+    head, rest = ref.path[0], ref.path[1:]
+    if head not in returns:
+        report.add(f"{ref.text()}: agent step {ref.name} returns no field {head}", step)
+    elif rest and (returns[head] != "list" or len(rest) > 1 or not rest[0].isdigit()):
+        report.add(f"{ref.text()}: field {head} of agent step {ref.name} is a {returns[head]}, with nothing inside it", step)
+
+
+_ANSWER_TYPES: dict[str, ValueType] = {"string": "string", "number": "number", "boolean": "boolean"}
 
 
 def _type_of(spec: WorkflowSpec, ref: Reference) -> ValueType | None:
     if isinstance(ref, LimitRef):
         return "number" if ref.name in spec.limits else None
+    if ref.root == "step" and len(ref.path) == 1:
+        target = spec.step(ref.name)
+        if isinstance(target, AgentStep):
+            return _ANSWER_TYPES.get(target.agent.returns.get(ref.path[0], ""))
+        return None
     if ref.root != "input" or ref.path:
         return None
     kind = spec.inputs[ref.name].type
@@ -336,12 +373,19 @@ def _check_references(report: _Report) -> None:
         compiled = spec.compiled(step_id)
         if compiled.when is not None:
             _check_condition(report, compiled.when, step_id)
-        for node in (compiled.for_each, compiled.with_, compiled.method, compiled.reason, compiled.options, compiled.items, compiled.answers):
+        fields = (
+            ("for_each", compiled.for_each), ("with", compiled.with_), ("method", compiled.method),
+            ("reason", compiled.reason), ("options", compiled.options), ("items", compiled.items),
+            ("answers", compiled.answers),
+        )
+        for field, node in fields:
             if node is not None:
                 for ref in references(node):
                     _check_reference(report, ref, step_id)
+                _check_no_answer(report, field, references(node), step_id)
         for ref in compiled.reads:
             _check_reference(report, ref, step_id)
+        _check_no_answer(report, "reads", compiled.reads, step_id)
     outputs = spec.compiled_outputs
     for finding in outputs.findings:
         for ref in finding.references():
@@ -367,6 +411,21 @@ def _check_stops(report: _Report) -> None:
     for step in report.spec.steps:
         if isinstance(step, StopStep) and (step.when is None or step.reason is None):
             report.add("a stop step has a when and a reason", step.id)
+
+
+# agent steps
+
+
+def _check_agent(report: _Report, step: AgentStep) -> None:
+    """``reads`` takes summaries and small values: never a handle, which stands for data."""
+    spec = report.spec
+    for ref in spec.compiled(step.id).reads:
+        if not isinstance(ref, Ref) or not ref.bare:
+            continue
+        if ref.root == "input" and spec.inputs[ref.name].handle_kind is not None:
+            report.add(f"reads {ref.text()}, a handle; an agent step reads summaries and small values", step.id)
+        elif ref.root == "step" and isinstance(spec.step(ref.name), UseStep):
+            report.add(f"reads {ref.text()}, a handle; read a field of it, like {ref.text()}.summary", step.id)
 
 
 # use steps
@@ -734,6 +793,10 @@ def _check_outputs(report: _Report, capabilities: CapabilityRegistry, cyclic: bo
 
     for finding in outputs.findings:
         produced(f"finding {finding.name}", finding.references(), finding.optional)
+        for ref in finding.references():
+            if isinstance(ref, Ref) and ref.root == "step" and isinstance(spec.step(ref.name), AgentStep):
+                report.add(f"finding {finding.name} reads agent step {ref.name}; a finding comes from capabilities, not a model")
+                break
 
     def step_entries(section: str, entries: Sequence[CompiledOutputRef]) -> None:
         for entry in entries:
@@ -745,6 +808,9 @@ def _check_outputs(report: _Report, capabilities: CapabilityRegistry, cyclic: bo
                 continue
             produced(f"{section} entry {ref.text()}", (ref,), entry.optional)
             step = spec.step(ref.name)
+            if isinstance(step, AgentStep):
+                report.add(f"{section} entry {ref.text()} is an agent step, which returns no {'chart' if section == 'figures' else 'handle'}")
+                continue
             if not isinstance(step, UseStep):
                 continue
             try:
@@ -761,8 +827,11 @@ def _check_outputs(report: _Report, capabilities: CapabilityRegistry, cyclic: bo
     interpretation = outputs.interpretation
     if interpretation is not None and isinstance(interpretation.ref, Ref) and interpretation.ref.root is not None:
         ref = interpretation.ref
-        if ref.root != "step" or not isinstance(spec.step(ref.name), AgentStep):
+        target = spec.step(ref.name) if ref.root == "step" else None
+        if not isinstance(target, AgentStep):
             report.add("interpretation comes from an agent step")
+        elif len(ref.path) != 1 or target.agent.returns.get(ref.path[0]) != "string":
+            report.add(f"interpretation reads a string field of agent step {ref.name}, like ${ref.name}.text")
         else:
             produced("interpretation", (ref,), interpretation.optional)
 

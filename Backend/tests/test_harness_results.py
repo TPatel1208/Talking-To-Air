@@ -1,11 +1,12 @@
 """The result envelope validates its invariants and labels its mode."""
 import unittest
+from typing import get_args
 
 from pydantic import ValidationError
 
 from tta_backend.harness.release import HARNESS_RELEASE
-from tta_backend.harness.results import Finding, Gap, Mode, Result, WorkflowRef
-from tta_backend.harness.trace import new_run_id
+from tta_backend.harness.results import Finding, Gap, Mode, Result, ResultStatus, WorkflowRef
+from tta_backend.harness.trace import RunStatus, new_run_id
 
 
 def _finding(**over):
@@ -126,6 +127,18 @@ class ResultTests(unittest.TestCase):
         for status in ("needs_input", "waiting", "insufficient_evidence", "failed", "cancelled"):
             with self.subTest(status):
                 self.assertEqual(self._result(status=status, reason="why").reason, "why")
+
+    def test_incomplete_is_a_status_with_a_reason(self):
+        r = self._result(status="incomplete", reason="The model-call budget ran out.")
+        self.assertEqual((r.status, r.reason), ("incomplete", "The model-call budget ran out."))
+
+    def test_every_result_status_is_a_run_status(self):
+        # A run finishes with its result's status.
+        self.assertLessEqual(set(get_args(ResultStatus)), set(get_args(RunStatus)))
+
+    def test_incomplete_with_a_question_is_refused(self):
+        with self.assertRaises(ValidationError):
+            self._result(status="incomplete", reason="ran out", question={"prompt": "Which region?"})
 
     def test_question_round_trips_through_json(self):
         r = self._result(status="needs_input", question={"options": [1, 2]}, reason="ambiguous")

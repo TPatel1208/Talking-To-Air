@@ -8,12 +8,15 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, get_args
+from typing import TYPE_CHECKING, Any, Literal, Protocol, get_args
 
 from tta_backend.harness.handles.payloads import PayloadStore
 from tta_backend.harness.handles.resolver import HandleResolver, OpenRetrieval
 from tta_backend.harness.storage import Stores
-from tta_backend.harness.trace import StepRecorder
+from tta_backend.harness.trace import FailureCategory, StepFailure, StepRecorder
+
+if TYPE_CHECKING:
+    from tta_backend.harness.models import ModelChoice, ModelRole, Models
 
 
 @dataclass(frozen=True)
@@ -233,10 +236,16 @@ class Limits:
             raise ValueError("poll bounds are positive and poll_min <= poll_max <= timeout")
 
 
+NO_MODEL_REASON = "No language model is configured for {role} in this run."
+
+
 @dataclass(frozen=True, kw_only=True)
 class RunEnv:
     """What every step of one run is handed: the run context, the host's ports,
-    the run id, the handle resolver and the trace recorder. Build it with ``run_env``."""
+    the run id, the handle resolver and the trace recorder. Build it with ``run_env``.
+
+    ``models`` is None for a run whose steps need no language model.
+    """
 
     context: RunContext
     run_id: str
@@ -246,6 +255,15 @@ class RunEnv:
     compute: Compute
     limits: Limits
     places: Places
+    models: Models | None = None
+
+    def model_for(self, role: ModelRole) -> ModelChoice:
+        """The models for ``role``. Raises an internal-error StepFailure when the
+        host gave this run no models, or none for that role."""
+        choice = None if self.models is None else self.models.for_role(role)
+        if choice is None:
+            raise StepFailure(FailureCategory.INTERNAL_ERROR, NO_MODEL_REASON.format(role=role))
+        return choice
 
 
 def run_env(
@@ -258,6 +276,7 @@ def run_env(
     compute: Compute,
     limits: Limits,
     places: Places,
+    models: Models | None = None,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> RunEnv:
     """The environment for a run already started in ``context.storage.traces``."""
@@ -275,4 +294,5 @@ def run_env(
         compute=compute,
         limits=limits,
         places=places,
+        models=models,
     )

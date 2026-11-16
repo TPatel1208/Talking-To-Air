@@ -28,7 +28,7 @@ from tta_backend.harness.testing import (
     make_run_context,
     make_run_env,
 )
-from tta_backend.harness.trace import FailureCategory, StepFailure
+from tta_backend.harness.trace import MAX_REASON_CHARS, FailureCategory, StepFailure
 
 TODAY = datetime.datetime(2024, 7, 1, 12, tzinfo=datetime.UTC)
 SECRET = "edl-secret-token-value"
@@ -669,15 +669,57 @@ class DiscoveryTests(SatelliteCase):
         self.assertEqual(found["product"], "TEMPO_NO2")
         self.assertEqual(result.method, "The catalogue was searched for 'C2930763263-LARC_CLOUD' and returned 1 datasets.")
 
-    async def test_describe_reads_registry_facts_or_asks_which_product(self):
+    async def test_describe_reads_registry_facts(self):
         result = await invoke(self.env, satellite.describe, {"product": "TEMPO_NO2"})
         self.assertEqual((result.read("quantity"), result.read("cadence"), result.read("record_start")),
                          (NO2, "hourly", "2023-08-02"))
         self.assertEqual(self.tools(), [])
-        unknown = await invoke(self.env, satellite.describe, {"product": "NOPE"})
-        self.assertEqual(unknown.status, "needs_input")
-        assert unknown.question is not None
-        self.assertIn("TEMPO_NO2", unknown.question.options)
+
+    async def test_an_unknown_product_fails_as_bad_input_for_both_capabilities(self):
+        keys = ", ".join(sorted(load_registry()))
+        cases = [
+            (satellite.describe, {"product": "NOPE"}, "sources.satellite.describe"),
+            (satellite.check_availability,
+             {"product": "NOPE", "area": self.area, "dates": "2024-06-03"}, "sources.satellite.check_availability"),
+        ]
+        for capability, params, name in cases:
+            with self.subTest(name):
+                with self.assertRaises(StepFailure) as caught:
+                    await invoke(self.env, capability, params)
+                self.assertEqual(caught.exception.category, FailureCategory.BAD_INPUT)
+                self.assertEqual(caught.exception.reason, f"{name} needs a registered product key; call it again with one of: {keys}.")
+                self.assertLessEqual(len(caught.exception.reason), MAX_REASON_CHARS)
+        self.assertEqual(self.tools(), [])
+
+    def test_the_product_description_lists_every_key_within_the_cap(self):
+        for params in (satellite.DescribeParams, satellite.AvailabilityParams):
+            description = params.model_fields["product"].description or ""
+            for key in load_registry():
+                self.assertIn(key, description)
+            self.assertLess(len(description), 600)
+
+    async def test_an_empty_or_unregistered_search_carries_the_note(self):
+        note = "No registered product matched; only registered products can be retrieved."
+        for hits in ([], [{"handle": "dataset_other", "concept_id": "C0000000001-OTHER"}]):
+            with self.subTest(hits=len(hits)):
+                self.service.search_hits = hits
+                result = await invoke(self.env, satellite.search, {"query": "ozone"})
+                self.assertEqual(result.read("note"), note)
+                self.assertEqual(result.read("registered_quantities"), sorted(satellite.QUANTITIES))
+
+    async def test_a_registered_hit_past_the_limit_means_no_note(self):
+        other = [{"handle": f"dataset_{n}", "concept_id": f"C{n}-OTHER"} for n in range(6)]
+        match = {"handle": "dataset_1", "concept_id": load_registry()["TEMPO_NO2"].collection_id}
+        self.service.search_hits = [*other, match, {"handle": "dataset_x", "concept_id": "C9-OTHER"}]
+        result = await invoke(self.env, satellite.search, {"query": "no2", "limit": 5})
+        self.assertEqual(result.read("count"), 5)
+        self.assertTrue(all(item["product"] is None for item in result.read("datasets")))
+        self.assertNotIn("note", result.values)
+
+    async def test_a_search_with_a_registered_match_has_no_note(self):
+        result = await invoke(self.env, satellite.search, {"query": "C2930763263-LARC_CLOUD"})
+        self.assertNotIn("note", result.values)
+        self.assertNotIn("registered_quantities", result.values)
 
     async def test_availability_by_day_and_by_registry_facts(self):
         self.service.days_with_data = {"2024-06-03"}
@@ -704,6 +746,19 @@ class DiscoveryTests(SatelliteCase):
         ])
         self.assertIn("insufficient_evidence", satellite.GROUP.notes)
         self.assertEqual(registry.schema("sources.satellite.get_data")["properties"]["area"]["x-handle-kinds"], ["polygons"])
+
+    def test_the_quantity_description_names_every_registry_quantity(self):
+        registry = CapabilityRegistry()
+        registry.add_group(satellite.GROUP)
+        for capability in satellite.CAPABILITIES:
+            registry.register(capability)
+        description = registry.schema("sources.satellite.get_data")["properties"]["quantity"]["description"]
+        quantities = sorted({cfg.quantity for cfg in load_registry().values() if cfg.quantity})
+        for quantity in quantities:
+            self.assertIn(quantity, description)
+        self.assertIn("no2_tropospheric_column", description)
+        self.assertIn("o3_total_column", description)
+        self.assertLess(len(description), 400)
 
 
 if __name__ == "__main__":

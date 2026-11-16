@@ -25,7 +25,7 @@ from tta_backend.harness.trace import (
 
 T0 = datetime.datetime(2026, 11, 11, 14, 0, 0, tzinfo=datetime.UTC)
 PAUSED = ("needs_input", "waiting")
-TERMINAL = ("done", "failed", "cancelled", "insufficient_evidence")
+TERMINAL = ("done", "failed", "cancelled", "insufficient_evidence", "incomplete")
 
 
 def rid(tag: str) -> str:
@@ -193,6 +193,49 @@ class TraceStoreContract:
             await self.store.start_run(run(child, user="bob", parent_run_id=RUN_A))
         await self.store.start_run(run(child, parent_run_id=RUN_A))
         self.assertEqual((await self.store.get_run("alice", child)).parent_run_id, RUN_A)
+
+    async def test_explore_entry_round_trips_with_its_nested_calls(self):
+        task = {"objective": "Why is the difference in the south?", "bundle": "investigate",
+                "inputs": {"handles": ["diff_3"], "dates": ["2026-07-04"]}}
+        outcome = {"status": "incomplete", "model": "sonnet", "model_calls": 8,
+                   "tool_calls": 12, "input_tokens": 9000, "output_tokens": 800,
+                   "cache_read_tokens": 6000, "cache_creation_tokens": 1500}
+        await self.store.start_run(run())
+        seq = await self.store.reserve_seq("alice", RUN_A)
+        await self.store.append("alice", entry(parent_seq=seq))
+        await self.store.append(
+            "alice",
+            entry(kind="explore", capability=None, params=task, result=outcome, step="task-1"),
+            seq=seq,
+        )
+        got = await self.store.entries("alice", RUN_A)
+        self.assertEqual([e.seq for e in got], [1, 2])
+        self.assertEqual((got[0].kind, got[0].status, got[0].params, got[0].result),
+                         ("explore", "done", task, outcome))
+        self.assertEqual(got[1].parent_seq, 1)
+
+    async def test_failed_explore_entry_without_a_result_round_trips(self):
+        task = {"objective": "x", "bundle": "find-data", "inputs": {}}
+        await self.store.start_run(run())
+        await self.store.append(
+            "alice",
+            entry(kind="explore", capability=None, status="failed", params=task, result=None,
+                  failure_category=FailureCategory.MODEL_FAILURE, reason="model unavailable"),
+        )
+        [got] = await self.store.entries("alice", RUN_A)
+        self.assertEqual((got.status, got.params, got.result), ("failed", task, None))
+
+    async def test_incomplete_run_finishes_and_is_final(self):
+        await self.store.start_run(run())
+        done = await self.store.finish_run("alice", RUN_A, "incomplete", at(5))
+        self.assertEqual((done.status, done.ended), ("incomplete", at(5)))
+        self.assertEqual(await self.store.get_run("alice", RUN_A), done)
+        [listed] = await self.store.list_runs("alice", "c1")
+        self.assertEqual(listed.status, "incomplete")
+        with self.assertRaises(RunClosed):
+            await self.store.append("alice", entry())
+        with self.assertRaises(RunClosed):
+            await self.store.resume_run("alice", RUN_A)
 
     async def test_entries_get_increasing_seq_and_read_in_order(self):
         await self.store.start_run(run())
@@ -464,6 +507,33 @@ class StepRecorderContract:
         self.assertFalse(ran)
         self.assertEqual(await self.recorded(), [])
         self.assertEqual((await self.store.append("alice", entry())).seq, 1)
+
+    async def test_explore_step_records_the_task_and_nests_its_calls(self):
+        rec = await self.recorder()
+        task = {"objective": "x", "bundle": "analyse", "inputs": {"location": "Texas"}}
+        outcome = {"status": "waiting", "model": "sonnet", "model_calls": 2, "tool_calls": 1,
+                   "input_tokens": 10, "output_tokens": 5, "cache_read_tokens": 0, "cache_creation_tokens": 0}
+        async with rec.step(kind="explore", params=task) as scope:
+            async with rec.step(kind="use", capability="ops.diff", parent_seq=scope.seq):
+                pass
+            scope.status = "waiting"
+            scope.result = outcome
+        by_kind = {e.kind: e for e in await self.recorded()}
+        self.assertEqual((by_kind["explore"].status, by_kind["explore"].result),
+                         ("waiting", outcome))
+        self.assertEqual(by_kind["use"].parent_seq, by_kind["explore"].seq)
+
+    async def test_explore_step_with_a_contradictory_result_becomes_a_failed_entry(self):
+        rec = await self.recorder()
+        task = {"objective": "x", "bundle": "analyse", "inputs": {}}
+        with self.assertRaises(InvalidTrace):
+            async with rec.step(kind="explore", params=task) as scope:
+                scope.result = {"status": "failed", "model": "m", "model_calls": 0,
+                                "tool_calls": 0, "input_tokens": 0, "output_tokens": 0,
+                                "cache_read_tokens": 0, "cache_creation_tokens": 0}
+        [e] = await self.recorded()
+        self.assertEqual((e.status, e.failure_category, e.result),
+                         ("failed", FailureCategory.INTERNAL_ERROR, None))
 
     async def test_unstorable_outcome_is_replaced_by_a_failed_entry(self):
         outcomes = {

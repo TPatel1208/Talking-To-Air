@@ -780,6 +780,10 @@ class DefinitionTests(unittest.TestCase):
             with self.subTest(over), self.assertRaises(ValueError):
                 Capability(**self.base(**over))
 
+    def test_workflow_only_defaults_to_false_and_can_be_set(self):
+        self.assertFalse(scale.workflow_only)
+        self.assertTrue(Capability(**self.base(workflow_only=True)).workflow_only)
+
     def test_handle_params_are_found_and_checked_statically(self):
         self.assertEqual(dict(scale.handle_params), {"data": ("scalar",)})
         self.assertEqual(dict(total.handle_params), {"items": ("scalar",), "extra": ("scalar",)})

@@ -415,6 +415,65 @@ class LoadCheckTests(unittest.TestCase):
         self.assertEqual(messages(with_steps(agent, outputs={"figures": ["$figure"],
                                                              "interpretation": {"from": "$say.text", "optional": True}})), [])
 
+    def test_agent_steps(self):
+        def agent(**fields: Any) -> dict[str, Any]:
+            spec_ = {"instruction": "Say what the map shows.", "reads": ["$data.summary"],
+                     "returns": {"text": "string", "ok": "boolean", "points": "list"}}
+            spec_.update(fields)
+            return {"id": "say", "agent": spec_}
+
+        def make(step_: dict[str, Any], *more: dict[str, Any], outputs: dict[str, Any] | None = None) -> dict[str, Any]:
+            return with_steps(step_, *more, outputs=outputs or {"figures": ["$figure"], "interpretation": "$say.text"})
+
+        good = make(agent(reads=["$data.summary", "$data.quality", "$quantity", "$dates.start", "limits.min_coverage"]))
+        self.assertEqual(messages(good), [])
+        later = {"id": "later", "use": "render.map", "with": {"grid": "$data"}, "when": "$say.ok"}
+        self.assertEqual(messages(make(agent(), later)), [])
+        cases = [
+            ("a bare use step in reads", make(agent(reads=["$data"])),
+             "reads $data, a handle; read a field of it, like $data.summary"),
+            ("a handle input in reads", make(agent(reads=["$area"])),
+             "reads $area, a handle; an agent step reads summaries and small values"),
+            ("an undeclared field", make(agent(), outputs={"figures": ["$figure"], "interpretation": "$say.words"}),
+             "$say.words: agent step say returns no field words"),
+            ("inside a scalar field", make(agent(), {**later, "when": "exists($say.text.more)"}),
+             "$say.text.more: field text of agent step say is a string, with nothing inside it"),
+            ("a type mismatch in when", make(agent(), {**later, "when": "$say.text > 3"}),
+             "when: cannot compare string with number using >"),
+            ("interpretation from a field that is not text", make(agent(), outputs={"figures": ["$figure"], "interpretation": "$say.ok"}),
+             "interpretation reads a string field of agent step say, like $say.text"),
+            ("interpretation from the whole answer", make(agent(), outputs={"figures": ["$figure"], "interpretation": "$say"}),
+             "interpretation reads a string field of agent step say, like $say.text"),
+            ("a finding from an agent", make(agent(), outputs={"figures": ["$figure"], "findings": [{"name": "said", "value": "$say.text"}]}),
+             "finding said reads agent step say; a finding comes from capabilities, not a model"),
+            ("data from an agent", make(agent(), outputs={"data": ["$say"]}),
+             "data entry $say is an agent step, which returns no handle"),
+            ("a figure from an agent", make(agent(), outputs={"figures": ["$say"]}),
+             "figures entry $say is an agent step, which returns no chart"),
+            ("an answer as a handle", make(agent(), {"id": "later", "use": "render.map", "with": {"grid": "$say"}}),
+             "with.grid takes a handle; only a use step's result is a handle, and say is not one"),
+        ]
+        # A model's answer drives no capability and fills no fixed wording.
+        refused = "reads agent step say; a model's answer is read only in when and in outputs.interpretation"
+        statistic = {"id": "later", "use": "operations.statistic", "with": {"data": "$data"}}
+        cases += [
+            ("an answer in with", make(agent(), {**later, "with": {"grid": "$data", "title": "$say.text"}}), f"with {refused}"),
+            ("an answer in a nested with value", make(agent(), {**statistic, "with": {"data": "$data", "stat": ["$say.points.0"]}}),
+             f"with {refused}"),
+            ("an answer in a method", make(agent(), {**later, "method": "The map shows {say.text}."}), f"method {refused}"),
+            ("an answer in a stop reason", make(agent(), {"id": "halt", "stop": "failed", "when": "not $say.ok", "reason": "{say.text}"}),
+             f"reason {refused}"),
+            ("an answer in for_each", make(agent(), {**later, "for_each": "$say.points"}), f"for_each {refused}"),
+            ("an answer read by another agent", make(agent(), {"id": "again", "agent": {
+                "instruction": "Say it again.", "reads": ["$say.text"], "returns": {"text": "string"}}}), f"reads {refused}"),
+        ]
+        for name, source, expected in cases:
+            with self.subTest(name):
+                self.assertIn(expected, messages(source))
+        # A list field is read whole or by index.
+        listed = {"id": "later", "use": "render.map", "with": {"grid": "$data"}, "when": 'exists($say.points.0)'}
+        self.assertEqual(messages(make(agent(), listed)), [])
+
     def test_validated_needs_benchmark_and_sign_off(self):
         found = messages(raw(status="validated"))
         self.assertEqual(found, [

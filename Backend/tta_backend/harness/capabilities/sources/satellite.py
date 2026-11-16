@@ -67,7 +67,7 @@ from tta_backend.domain.earthdata.retrieval import (
 )
 from tta_backend.harness.capabilities.call import Call
 from tta_backend.harness.capabilities.definition import Capability, Params, handle_param
-from tta_backend.harness.capabilities.failures import JobFailed, JobStillRunning
+from tta_backend.harness.capabilities.failures import UNKNOWN_PRODUCT, JobFailed, JobStillRunning, failure
 from tta_backend.harness.capabilities.grids import open_grid
 from tta_backend.harness.capabilities.products import (
     BBox,
@@ -126,8 +126,25 @@ class DateSpan(Params):
 DateList = Annotated[list[date], Field(min_length=1, max_length=MAX_DATES)]
 
 
+def _registry_quantities() -> tuple[str, ...]:
+    """Every distinct registry quantity, sorted. Fails at import on an empty or malformed registry."""
+    names = {cfg.quantity for cfg in load_registry().values() if cfg.quantity is not None}
+    if not names:
+        raise ValueError("the dataset registry names no quantity, so sources.satellite cannot offer one")
+    for name in names:
+        if any(ch.isspace() or ch.isupper() for ch in name):
+            raise ValueError(f"registry quantity {name!r} must be lower_snake with no spaces or capitals")
+    return tuple(sorted(names))
+
+
+QUANTITIES = _registry_quantities()
+_QUANTITY_DESCRIPTION = "Canonical quantity, one of: " + ", ".join(QUANTITIES) + "."
+_PRODUCT_KEYS = tuple(sorted(load_registry()))
+_PRODUCT_DESCRIPTION = "Registered product key, one of: " + ", ".join(_PRODUCT_KEYS) + "."
+
+
 class _ProductChoice(Params):
-    quantity: str | None = Field(default=None, max_length=100, description="Canonical quantity, e.g. no2_tropospheric_column.")
+    quantity: str | None = Field(default=None, max_length=100, description=_QUANTITY_DESCRIPTION)
     named: str | None = Field(default=None, max_length=100, description="A product or instrument the user named.")
     approved: Approved = Field(default="registry_default", description="The workflow's approved products in order, or registry_default.")
     product: str | None = Field(default=None, max_length=100, description="The product this run already uses for the quantity.")
@@ -167,11 +184,11 @@ class SearchParams(Params):
 
 
 class DescribeParams(Params):
-    product: str = Field(min_length=1, max_length=100)
+    product: str = Field(min_length=1, max_length=100, description=_PRODUCT_DESCRIPTION)
 
 
 class AvailabilityParams(Params):
-    product: str = Field(min_length=1, max_length=100)
+    product: str = Field(min_length=1, max_length=100, description=_PRODUCT_DESCRIPTION)
     area: Annotated[str, handle_param("polygons")]
     dates: date | DateSpan | DateList
 
@@ -922,24 +939,34 @@ def _registry_key_for(entry: Mapping[str, Any], registry: Mapping[str, Collectio
     return None
 
 
+NO_REGISTERED_MATCH = "No registered product matched; only registered products can be retrieved."
+
+
 async def _search(call: Call[SearchParams]) -> CapabilityResult:
     found = await call.earthdata.call("search_datasets", {"query": call.params.query, "filters": None})
     entries = found.get("datasets") or found.get("results") or []
     registry = load_registry()
     listed: list[JsonValue] = []
+    any_registered = False
     for entry in entries if isinstance(entries, list) else []:
         if not isinstance(entry, dict):
+            continue
+        product = _registry_key_for(entry, registry)
+        any_registered = any_registered or product is not None
+        if len(listed) >= call.params.limit:
             continue
         handle = entry.get("handle") or entry.get("dataset_handle")
         listed.append({
             "dataset": handle if isinstance(handle, str) else None,
             "short_name": _short(str(entry.get("short_name") or ""), 60) or None,
             "title": _short(str(entry.get("title") or ""), 100) or None,
-            "product": _registry_key_for(entry, registry),
+            "product": product,
         })
-        if len(listed) >= call.params.limit:
-            break
-    return call.done(values={"datasets": listed, "count": len(listed)})
+    values: dict[str, JsonValue] = {"datasets": listed, "count": len(listed)}
+    if not any_registered:
+        values["note"] = NO_REGISTERED_MATCH
+        values["registered_quantities"] = list(QUANTITIES)
+    return call.done(values=values)
 
 
 search = Capability(
@@ -981,7 +1008,7 @@ async def _describe(call: Call[DescribeParams]) -> CapabilityResult:
     registry = load_registry()
     key = call.params.product
     if key not in registry:
-        return call.ask("Which registered product?", sorted(registry))
+        raise failure(UNKNOWN_PRODUCT, name=call.capability.name, keys=", ".join(_PRODUCT_KEYS))
     cfg = registry[key]
     return call.done(product=key, unit=cfg.units, values=product_facts(key, cfg))
 
@@ -1003,7 +1030,7 @@ async def _availability(call: Call[AvailabilityParams]) -> CapabilityResult:
     p = call.params
     registry = load_registry()
     if p.product not in registry:
-        return call.ask("Which registered product?", sorted(registry))
+        raise failure(UNKNOWN_PRODUCT, name=call.capability.name, keys=", ".join(_PRODUCT_KEYS))
     cfg = registry[p.product]
     area = area_facts(call.handle("area"), call=call)
     area_name = _short(area.name)

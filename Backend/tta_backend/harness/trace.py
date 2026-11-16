@@ -30,22 +30,44 @@ RunStatus = Literal[
     "needs_input",
     "waiting",
     "insufficient_evidence",
+    "incomplete",
     "failed",
     "cancelled",
 ]
-EntryKind = Literal["use", "ask", "agent", "workflow", "stop"]
+EntryKind = Literal["use", "ask", "agent", "workflow", "stop", "explore"]
 EntryStatus = Literal["done", "failed", "skipped", "waiting"]
 
 _RUN_STATUSES = frozenset(get_args(RunStatus))
 # A run in one of these is over and its record is final; needs_input and waiting are pauses.
 _PAUSED = frozenset({"needs_input", "waiting"})
-_TERMINAL = frozenset({"done", "failed", "cancelled", "insufficient_evidence"})
+_TERMINAL = frozenset({"done", "failed", "cancelled", "insufficient_evidence", "incomplete"})
 _KINDS = frozenset(get_args(EntryKind))
 _ENTRY_STATUSES = frozenset(get_args(EntryStatus))
 
 # A serialized params or result above this is almost certainly data, not a handle.
 MAX_JSON_BYTES = 4096
 MAX_REASON_CHARS = 1000
+
+# An explore entry wraps one exploration task; its capability calls nest under it.
+EXPLORE_BUNDLES = frozenset({"analyse", "investigate", "find-data"})
+_EXPLORE_PARAMS = frozenset({"objective", "bundle", "inputs"})
+# The cache counts are the parts of input_tokens read from and written to the provider's prompt cache.
+_EXPLORE_COUNTS = (
+    "model_calls", "tool_calls", "input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens",
+)
+_EXPLORE_RESULT = frozenset({"status", "model", *_EXPLORE_COUNTS})
+MAX_MODEL_NAME_CHARS = 100
+# A task's outcome as the entry records it: finished with an answer, whatever
+# its label, is done; a pause is waiting; a task that did not finish is failed.
+EXPLORE_ENTRY_STATUS: dict[str, EntryStatus] = {
+    "done": "done",
+    "incomplete": "done",
+    "insufficient_evidence": "done",
+    "waiting": "waiting",
+    "needs_input": "waiting",
+    "failed": "failed",
+    "cancelled": "failed",
+}
 
 
 class FailureCategory(enum.StrEnum):
@@ -162,6 +184,43 @@ def serialize_json(value: Any, label: str) -> str:
     return text
 
 
+def _check_explore(params: dict[str, Any], result: Any, status: EntryStatus) -> None:
+    unknown = set(params) - _EXPLORE_PARAMS
+    missing = _EXPLORE_PARAMS - set(params)
+    if unknown or missing:
+        raise InvalidTrace(
+            f"an explore entry's params are objective, bundle and inputs; "
+            f"missing {sorted(missing)}, unexpected {sorted(unknown)}"
+        )
+    objective = params["objective"]
+    if not isinstance(objective, str) or not objective.strip():
+        raise InvalidTrace("an explore entry needs a non-empty objective")
+    if params["bundle"] not in EXPLORE_BUNDLES:
+        raise InvalidTrace(f"unknown explore bundle: {params['bundle']!r}")
+    inputs = params["inputs"]
+    if not isinstance(inputs, dict) or not all(
+        isinstance(v, str) or (isinstance(v, list) and all(isinstance(i, str) for i in v))
+        for v in inputs.values()
+    ):
+        raise InvalidTrace("explore inputs must be an object of strings or lists of strings")
+    if result is None:
+        return
+    if not isinstance(result, dict) or set(result) != _EXPLORE_RESULT:
+        raise InvalidTrace(f"an explore result holds exactly {sorted(_EXPLORE_RESULT)}")
+    outcome = result["status"]
+    if outcome not in EXPLORE_ENTRY_STATUS:
+        raise InvalidTrace(f"unknown explore result status: {outcome!r}")
+    if EXPLORE_ENTRY_STATUS[outcome] != status:
+        raise InvalidTrace(f"an explore result {outcome!r} cannot sit on a {status} entry")
+    model = result["model"]
+    if not isinstance(model, str) or not 0 < len(model) <= MAX_MODEL_NAME_CHARS:
+        raise InvalidTrace("explore model must be a short name")
+    for name in _EXPLORE_COUNTS:
+        count = result[name]
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise InvalidTrace(f"explore {name} must be a non-negative integer")
+
+
 def _require_aware(value: datetime.datetime, label: str) -> None:
     if value.tzinfo is None or value.utcoffset() is None:
         raise InvalidTrace(f"{label} must be timezone-aware")
@@ -246,6 +305,12 @@ class NewEntry:
         if self.parent_seq is not None and self.parent_seq < 1:
             raise InvalidTrace("parent_seq must be a positive sequence number")
         _require_aware(self.started, "started")
+        if self.kind == "explore":
+            if self.status == "skipped":
+                raise InvalidTrace("an explore entry cannot be skipped")
+            if not isinstance(self.params, dict):
+                raise InvalidTrace("explore params must be an object")
+            _check_explore(self.params, self.result, self.status)
         serialize_json(self.params, "params")
         serialize_json(self.result, "result")
 

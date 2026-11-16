@@ -58,6 +58,8 @@ INTERNAL = (_F.INTERNAL_ERROR, "{name} hit an internal error.")
 INVALID_PARAMS = (_F.BAD_INPUT, "The parameters for {name} are not valid: {fields}.")
 UNRECORDABLE_PARAMS = (_F.BAD_INPUT, "The parameters for {name} are too large to record; pass data as a handle.")
 NOT_CONNECTED = (_F.CREDENTIAL_INVALID, "{name} needs the {connector} connector, which is not connected.")
+# The registry keys are registry facts; a user never names one, so this is the caller's mistake.
+UNKNOWN_PRODUCT = (_F.BAD_INPUT, "{name} needs a registered product key; call it again with one of: {keys}.")
 BAD_RESULT = (_F.INTERNAL_ERROR, "{name} returned a result that does not match its declaration.")
 SECRET_IN_OUTPUT = (_F.INTERNAL_ERROR, "{name} produced output holding its connector secret, so it was not stored.")
 GRID_OUTSIDE_OPENER = (
@@ -65,6 +67,10 @@ GRID_OUTSIDE_OPENER = (
     "{name} tried to read a grid directly; a grid is read only through the grid opener (grids.open_grid).",
 )
 UNRECORDABLE_JOB = (_F.INTERNAL_ERROR, "{name} returned a job reference too large or not plain enough to record.")
+# Every model for the step failed, after its retries and fallbacks.
+MODEL_FAILED = (_F.MODEL_FAILURE, "The language model for {name} did not answer.")
+# The model answered twice with something that does not fit the step's declared shape.
+MODEL_ANSWER_INVALID = (_F.MODEL_FAILURE, "The language model's answer for {name} did not fit its declared shape.")
 
 
 class InputEvicted(StepFailure):
