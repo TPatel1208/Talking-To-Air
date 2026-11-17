@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import re
+import sys
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -182,7 +183,10 @@ def main(argv: list[str] | None = None) -> int:
         help="where results are saved; the workflow, explore and harness systems write under their own subfolders",
     )
     args = parser.parse_args(argv)
-    return asyncio.run(_main(args.system, args.results_dir))
+    # psycopg's async driver cannot run on Windows' default Proactor loop, and
+    # the current system's checkpointer needs it.
+    loop_factory = asyncio.SelectorEventLoop if sys.platform == "win32" else None
+    return asyncio.run(_main(args.system, args.results_dir), loop_factory=loop_factory)
 
 
 if __name__ == "__main__":
