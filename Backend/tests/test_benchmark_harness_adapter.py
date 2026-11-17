@@ -179,7 +179,7 @@ class RunnerTests(unittest.TestCase):
 
         systems = []
 
-        def fake_run(coroutine):
+        def fake_run(coroutine, **kwargs):
             systems.append(coroutine.cr_frame.f_locals["system"])
             coroutine.close()
             return 0
