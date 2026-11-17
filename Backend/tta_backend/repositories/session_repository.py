@@ -4,6 +4,8 @@ import asyncio
 import logging
 from typing import Any
 
+from tta_backend.harness.run_context import Identity
+from tta_backend.harness.supervisor import thread_id as supervisor_thread_id
 from tta_backend.repositories.artifact_repository import delete_artifacts_for_session
 from tta_backend.repositories.chart_repository import delete_charts_for_session
 from tta_backend.repositories.session_metadata_repository import (
@@ -11,6 +13,7 @@ from tta_backend.repositories.session_metadata_repository import (
     list_session_metadata,
     session_belongs_to_user,
 )
+from tta_backend.repositories.transcript_repository import delete_transcript
 from tta_backend.services import overlay_store
 from tta_backend.utils.db import pg_connection
 
@@ -37,13 +40,16 @@ class SessionRepository:
         # LangGraph does not currently expose a session-delete helper here.
         # These table names are internal to LangGraph's Postgres checkpointer
         # and should be revisited when upgrading LangGraph.
+        # The supervisor checkpoints under a thread of its own per user.
+        checkpoint_threads = [thread_id, supervisor_thread_id(Identity(user_id=user_id, conversation_id=thread_id))]
         async with pg_connection() as conn:
             for table in ("checkpoint_writes", "checkpoint_blobs", "checkpoints"):
                 await conn.execute(
-                    f"DELETE FROM {table} WHERE thread_id = %s",
-                    (thread_id,),
+                    f"DELETE FROM {table} WHERE thread_id = ANY(%s)",
+                    (checkpoint_threads,),
                 )
             await conn.commit()
+        await delete_transcript(thread_id, user_id)
         deleted_charts = await delete_charts_for_session(thread_id, user_id)
         # The overlay PNGs after the rows that name them, so a surviving chart
         # never loses its overlay. Best effort: a PNG left behind here is an

@@ -203,6 +203,11 @@ services:
       # off every chart ever plotted while the frame axis persists in Postgres
       # and goes on advertising it — and D8 forbids rebuilding the blob.
       - frame_store:/app/frame_store
+      # Payload files of the harness's derived handles (means, differences,
+      # tables), under the path the chat host derives from CUBE_STORE_DIR.
+      # Without a volume, a container recreate evicts every derived handle the
+      # ledger still names, and a follow-up on it has to recompute.
+      - harness_payloads:/app/harness_payloads
       # earthdata-retrieval MCP's materialization volume, read-only, mounted
       # at the same absolute path (/data) the MCP stack uses internally so
       # `export_result`'s file:// URIs resolve as a plain filesystem read.
@@ -448,6 +453,8 @@ volumes:
   cube_store:
     driver: local
   frame_store:
+    driver: local
+  harness_payloads:
     driver: local
   # The harmony-retrieval-mcp stack's `data` volume (fixed name
   # `earthdata_data`); joined here as external, read-only, so this stack is

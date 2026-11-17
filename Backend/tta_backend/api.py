@@ -24,9 +24,6 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
-from tta_backend.agents.earthdata_agent import LazySatelliteAgent, build_earthdata_agent, refresh_live_tools
-from tta_backend.agents.ground_sensor_agent import build_ground_agent
-from tta_backend.agents.supervisor_agent import build_agent
 from tta_backend.config.connectors import CONNECTOR_REGISTRY, CONNECTOR_REGISTRY_BY_TYPE
 from tta_backend.infrastructure.settings import get_settings
 from tta_backend.config.starter_prompts import STARTER_PROMPTS, StarterPrompt
@@ -69,10 +66,9 @@ from tta_backend.services.connector_credential_service import (
 )
 from tta_backend.services.connector_token_service import TokenValidationError, decode_token_expiry
 from tta_backend.services.artifact_store import artifact_store
-from tta_backend.services.chat_stream_service import ChatStreamService
 from tta_backend.services.chart_service import ChartService
 from tta_backend.services.export_service import ExportService, hold_admission, materialize_first_chunk
-from tta_backend.services.history_service import HistoryService
+from tta_backend.services.harness_chat import HarnessChat, build_harness_chat, transcript_history
 from tta_backend.services.data_download_service import DataDownloadError, export_converted, iter_file_chunks
 from tta_backend.services.discovery_service import (
     check_coverage,
@@ -111,14 +107,14 @@ from tta_backend.tools.ground_sensor_tools.epa_aqs_tools import (
 )
 from tta_backend.utils.streaming import current_user_id, iter_with_user_id, user_id_context
 
-agent = None
+# The chat host every message goes through, built in the lifespan.
+agent: HarnessChat | None = None
 settings = get_settings()
 configure_logging(settings)
 logger = logging.getLogger(__name__)
 
 chart_service = ChartService()
 export_service = ExportService(settings.csv_export_max_granules)
-history_service = HistoryService(chart_service)
 session_repository = SessionRepository()
 # Constructed at import time so tests can patch the verifier before requests.
 # validate_config() runs during lifespan before any request is served, so a missing
@@ -129,25 +125,20 @@ supabase_verifier = SupabaseJwtVerifier(make_jwks_fetcher(settings.supabase_url 
 
 async def _on_earthdata_mcp_ready(tools: dict[str, Any]) -> None:
     """earthdata_mcp_manager's on_ready hook: refreshes the persistent
-    app.state.earthdata_mcp_tools dict (read directly by the chart export.png
-    endpoint; export.csv/.nc go through the readiness gate) and rebuilds the real satellite agent into whatever LazySatelliteAgent the
-    current lifespan cycle assigned to app.state.satellite_agent — see
-    agents/earthdata_agent.py for why a mutable placeholder, not a reassigned
-    reference, is what makes this visible to the supervisor's already-built
-    dispatch tool closure.
+    app.state.earthdata_mcp_tools dict, read by the chart export.png endpoint
+    and by every chat turn's earthdata session.
 
-    In-flight recovery: if the MCP server restarts, the manager reconnects and
-    re-fires this hook with the new session's tools. Refresh the tools dict IN PLACE (refresh_live_tools)
-    and rebuild the agent bound to that SAME dict — so a chat turn compiled
-    against it before the restart (an in-flight compare mid-retry) reads the
-    reconnected tools on its next call instead of retrying the dead session. See
-    refresh_live_tools for the call-time-indexing contract this relies on."""
+    The dict is updated in place, never replaced, so a turn already running
+    when the MCP server restarts reads the reconnected tools on its next
+    call. Entries are added before stale ones are dropped, so no key a
+    reader is indexing disappears in between."""
     live = app.state.earthdata_mcp_tools
     if live is None:  # a late callback racing lifespan shutdown — nothing to refresh
         return
-    refresh_live_tools(live, tools)
-    app.state.satellite_agent.set_real(build_earthdata_agent(mcp_tools=live))
-    logger.info("earthdata_mcp_satellite_agent_ready", extra={"_event": "earthdata_mcp_satellite_agent_ready"})
+    live.update(tools)
+    for stale in [key for key in live if key not in tools]:
+        del live[stale]
+    logger.info("earthdata_mcp_tools_ready", extra={"_event": "earthdata_mcp_tools_ready"})
 
 
 # One shared instance -- its in-process cache and per-turn
@@ -159,9 +150,6 @@ edl_credential_injector = EdlCredentialInjector(settings)
 aqs_credential_injector = get_aqs_credential_injector()
 earthdata_mcp_manager = EarthdataMCPConnectionManager(
     settings, current_user_id, on_ready=_on_earthdata_mcp_ready, edl_injector=edl_credential_injector,
-)
-chat_stream_service = ChatStreamService(
-    chart_service, settings.long_request_seconds, earthdata_mcp_manager, settings.chat_turn_timeout_seconds,
 )
 
 
@@ -216,11 +204,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # The backend boots without the earthdata-retrieval MCP — ground/EPA
     # features work immediately. earthdata_mcp_manager connects in the
     # background (capped exponential backoff); misconfiguration (a malformed URL) still fails loud
-    # from validate_config() above, before any of this runs. satellite_agent
-    # is a LazySatelliteAgent placeholder — services.subagent_dispatch
-    # .run_satellite gates on earthdata_mcp_manager.state before ever
-    # touching it, so it's never invoked before _on_earthdata_mcp_ready
-    # (module scope) fills it in.
+    # from validate_config() above, before any of this runs. A chat turn
+    # started before it is ready still runs: its satellite sources fail as
+    # temporarily unavailable.
     # One Redis pool behind both. The log writes a turn's frames and the
     # registry holds the per-thread claim and the idempotency records — same
     # Redis, and no reason for two sets of connections to it.
@@ -231,19 +217,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.earthdata_mcp_tools = {}
     app.state.earthdata_mcp_manager = earthdata_mcp_manager
-    app.state.satellite_agent = LazySatelliteAgent()
     earthdata_mcp_manager.start()
 
-    # Built once here (not inside build_agent) so the supervisor's tool
-    # wrappers and the router fast path (services/chat_stream_service.py)
-    # invoke the identical sub-agent instances.
-    ground_agent = build_ground_agent()
-    app.state.ground_agent = ground_agent
-    agent = await build_agent(
-        settings.llm_model,
-        ground_agent=ground_agent,
-        satellite_agent=app.state.satellite_agent,
+    # Every chat message goes through this one host.
+    agent = await build_harness_chat(
+        settings,
         mcp_manager=earthdata_mcp_manager,
+        live_tools=app.state.earthdata_mcp_tools,
+        chart_service=chart_service,
+        edl=edl_credential_injector,
+        aqs=aqs_credential_injector,
     )
     app.state.agent = agent
     logger.info("startup_complete")
@@ -257,8 +240,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await supabase_verifier.stop_warm()
         agent = None
         app.state.agent = None
-        app.state.ground_agent = None
-        app.state.satellite_agent = None
         app.state.earthdata_mcp_tools = None
         app.state.earthdata_mcp_manager = None
         # The registry cancels whatever turns are still running; the log
@@ -872,8 +853,8 @@ async def _handle_admission_overloaded(request: Request, exc: Exception) -> JSON
 
     Only the request/response endpoints reach here. The chat path raises the
     same exception from inside an already-committed SSE stream, where no status
-    code is available any more; ``ChatStreamService._overloaded_events`` ends
-    that turn instead.
+    code is available any more; the chat host (services/harness_chat.py) ends
+    that turn with an error frame instead.
 
     503 with ``Retry-After`` rather than 429: this is not the caller being too
     frequent -- their own rate limit is untouched and a retry may well be
@@ -1453,15 +1434,11 @@ async def chat(req: ChatRequest, request: Request) -> Response:
     active_agent = getattr(app.state, "agent", None) or agent
     if active_agent is None:
         raise HTTPException(status_code=503, detail="Agent is not ready")
-    ground_agent = getattr(app.state, "ground_agent", None)
-    satellite_agent = getattr(app.state, "satellite_agent", None)
     thread_id = await _resolve_thread(req, user.id)
     request_id = str(uuid.uuid4())
     await _save_session_metadata(thread_id, req.message, user.id, request_id)
     frames = _stamp_activity_on_first_frame(
-        chat_stream_service.stream_chat_events(
-            active_agent, ground_agent, satellite_agent, req.message, thread_id, user.id, request_id,
-        ),
+        active_agent.stream_chat_events(req.message, thread_id, user.id, request_id),
         thread_id,
         request_id,
     )
@@ -1641,13 +1618,11 @@ async def _stamp_activity_on_first_frame(
     The metadata row above is written before anything runs because it is the
     only record of who owns the thread, and both ``/chat/{thread}/stream`` and
     ``/chat/{thread}/stop`` refuse without one. It therefore cannot double as
-    "this conversation has something in it": the fast path checkpoints the
-    transcript once, at the end, so a turn that is stopped or dies leaves a
-    titled row over an empty conversation.
+    "this conversation has something in it": a turn that is stopped or dies
+    before saying anything leaves a titled row over an empty conversation.
 
-    Wrapped here, not inside ChatStreamService, because every route passes
-    through this point; the fast path never enters ``stream_response``, so a
-    stamp inside a route could miss threads.
+    Wrapped here, not inside the chat host, because every turn's frames pass
+    through this point.
 
     Stamped before the frame is yielded: a reader that has seen the frame may
     ask for the session list in the next breath.
@@ -1703,10 +1678,7 @@ async def get_history(thread_id: ThreadId, request: Request) -> dict[str, Any]:
         user_id = request.state.current_user.id
         if not await session_belongs_to_user(thread_id, user_id):
             raise HTTPException(status_code=404, detail="Session not found")
-        active_agent = getattr(app.state, "agent", None) or agent
-        if active_agent is None:
-            raise HTTPException(status_code=503, detail="Agent is not ready")
-        return {"messages": await history_service.build_history(active_agent, thread_id, user_id)}
+        return {"messages": await transcript_history(thread_id, user_id, chart_service)}
     except HTTPException:
         raise
     except Exception as exc:

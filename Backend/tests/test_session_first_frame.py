@@ -22,6 +22,7 @@ import os
 import sys
 import unittest
 import uuid
+from types import SimpleNamespace
 from contextlib import ExitStack, contextmanager
 from unittest.mock import patch
 
@@ -112,9 +113,9 @@ class FirstFrameStampTests(unittest.IsolatedAsyncioTestCase):
             patch.object(self.api, "get_session_metadata", fake_metadata),
             patch.object(self.api, "session_belongs_to_user", fake_owns),
             patch.object(
-                self.api.chat_stream_service,
-                "stream_chat_events",
-                fake_stream_chat_events,
+                self.api.app.state,
+                "agent",
+                SimpleNamespace(stream_chat_events=fake_stream_chat_events),
             ),
         )
         with ExitStack() as stack:

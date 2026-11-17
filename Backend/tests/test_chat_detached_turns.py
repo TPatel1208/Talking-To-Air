@@ -17,7 +17,9 @@ import importlib.util
 import os
 import sys
 import unittest
+import tempfile
 import uuid
+from contextlib import ExitStack, contextmanager
 from unittest.mock import patch
 
 TESTS_DIR = os.path.dirname(__file__)
@@ -26,7 +28,9 @@ if TESTS_DIR not in sys.path:
 
 import auth_helpers  # noqa: E402 -- needs the TESTS_DIR insert above
 from tta_backend.earthdata_mcp.connection import STATE_READY  # noqa: E402
+from harness_chat_helpers import MemoryCharts, MemoryTranscripts, PlaybackSupervisor, make_chat, memory_repositories  # noqa: E402
 from redis_helpers import REDIS_URL, requires_redis  # noqa: E402
+from tta_backend.harness.testing import FakeEarthdata  # noqa: E402
 
 _REQUIRED = ["fastapi", "httpx", "jwt", "langchain", "langgraph"]
 
@@ -68,6 +72,9 @@ class DetachedChatTurnTests(unittest.IsolatedAsyncioTestCase):
         token = auth_helpers.make_token(self.user.id, email=self.user.email)
         self.auth_headers = {"Authorization": f"Bearer {token}"}
         self.thread_id = str(uuid.uuid4())
+        self.earthdata = FakeEarthdata({
+            "retrieve_subset": lambda arguments: {"job_handle": "job-a", "status": "running"},
+        })
 
     def client(self):
         return self.httpx.AsyncClient(
@@ -76,19 +83,24 @@ class DetachedChatTurnTests(unittest.IsolatedAsyncioTestCase):
         )
 
     def serving(self, *events):
-        """Patch the agent stream so a turn produces these events and ends.
+        """Serve turns from the app's chat host on a supervisor that plays these events and ends.
 
         An ``asyncio.Event`` among them is a place the turn stops until the
         test lets it go on — which is how a reader gets to leave in the
-        middle of a turn that is genuinely still running.
+        middle of a turn that is genuinely still running. A ``("call", ...)``
+        event is an earthdata call through the run's session, answered by
+        ``self.earthdata``.
         """
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        host = make_chat(PlaybackSupervisor(*events), tmp.name, earthdata=self.earthdata)
 
-        async def fake_stream_response(agent, message, thread_id, **kwargs):
-            for item in events:
-                if isinstance(item, asyncio.Event):
-                    await item.wait()
-                    continue
-                yield item
+        @contextmanager
+        def stream():
+            with ExitStack() as stack:
+                stack.enter_context(memory_repositories(MemoryTranscripts(), MemoryCharts()))
+                stack.enter_context(patch.object(self.api.app.state, "agent", host))
+                yield
 
         async def fake_save(thread_id, first_message, user_id):
             return None
@@ -105,10 +117,7 @@ class DetachedChatTurnTests(unittest.IsolatedAsyncioTestCase):
             patch.object(self.api, "save_session_metadata_once", fake_save),
             patch.object(self.api, "get_session_metadata", fake_metadata),
             patch.object(self.api, "session_belongs_to_user", fake_owns),
-            patch(
-                "tta_backend.services.chat_stream_service.stream_response",
-                fake_stream_response,
-            ),
+            stream(),
         )
 
     async def test_the_post_hands_back_a_turn_id_instead_of_a_stream(self):
@@ -513,7 +522,7 @@ class DetachedChatTurnTests(unittest.IsolatedAsyncioTestCase):
         blocked = asyncio.Event()
         self.addCleanup(blocked.set)
         verifier, save, metadata, owns, stream = self.serving(
-            ("job_progress", {"job_handle": "job-a", "status": "running"}),
+            ("call", ("retrieve_subset", {"short_name": "TEMPO_NO2_L3"})),
             blocked,
             ("text", "never"),
         )

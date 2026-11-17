@@ -1,0 +1,112 @@
+"""Two chat turns through the host on the real Postgres stores, transcript and checkpointer."""
+from __future__ import annotations
+
+import json
+import os
+import sys
+import tempfile
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
+from unittest.mock import AsyncMock, patch
+
+TESTS_DIR = os.path.dirname(__file__)
+if TESTS_DIR not in sys.path:
+    sys.path.insert(0, TESTS_DIR)
+
+from harness_chat_helpers import make_chat  # noqa: E402
+from tests.postgres_helpers import PostgresTestCase, isolated_schema  # noqa: E402
+from tests.test_harness_sources_satellite import NO2, FakeService  # noqa: E402
+from tests.test_harness_specialists import Model  # noqa: E402
+from tests.test_harness_supervisor import MAP_INPUTS, ledger_text, supervisor_choice  # noqa: E402
+from tests.test_harness_workflow_runner import EDL_SECRET, Fixture, three_days  # noqa: E402
+from tests.test_harness_workflow_runner_postgres import saver_in  # noqa: E402
+from tta_backend.datasets.registry import load_registry  # noqa: E402
+from tta_backend.harness.capabilities.catalogue import build_registry  # noqa: E402
+from tta_backend.harness.context.ledger import HEADING  # noqa: E402
+from tta_backend.harness.database import Connect  # noqa: E402
+from tta_backend.harness.handles import HandleRecord  # noqa: E402
+from tta_backend.harness.knowledge import NoteCatalogue  # noqa: E402
+from tta_backend.harness.models import NO_BACKOFF  # noqa: E402
+from tta_backend.harness.storage import Stores, ensure_tables, postgres_stores  # noqa: E402
+from tta_backend.harness.supervisor import Supervisor  # noqa: E402
+from tta_backend.harness.testing import ScriptedModels, answer, tool_call  # noqa: E402
+from tta_backend.harness.workflows.loader import load_packs  # noqa: E402
+from tta_backend.repositories import chart_repository, transcript_repository  # noqa: E402
+from tta_backend.services.chart_service import ChartService  # noqa: E402
+from tta_backend.services.harness_chat import TurnPorts, transcript_history  # noqa: E402
+
+PACKS = Path(__file__).resolve().parent.parent / "packs"
+
+
+class HarnessChatPostgresTests(PostgresTestCase):
+    @asynccontextmanager
+    async def world(self) -> AsyncIterator[tuple[Connect, Stores, str]]:
+        with tempfile.TemporaryDirectory() as root:
+            async with isolated_schema() as connect:
+                await ensure_tables(connect)
+                with patch.object(transcript_repository, "pg_connection", connect), \
+                     patch.object(chart_repository, "pg_connection", connect):
+                    await transcript_repository.ensure_transcript_table()
+                    await chart_repository.ensure_chart_table()
+                    yield connect, postgres_stores(connect), root
+
+    async def test_two_turns_on_one_thread_are_in_history_and_the_ledger_carries_across(self):
+        service = FakeService()
+        service.make_file = lambda day: three_days(day, 2e15)
+        registry = build_registry()
+        catalogue = load_packs(PACKS, registry, load_registry())
+
+        async def open_retrieval(user_id: str, record: HandleRecord) -> Any:
+            return service.files[record.id]
+
+        model = Model(script=[
+            tool_call("run_workflow", {"name": "map", "inputs": MAP_INPUTS}),
+            answer("The NO2 map over New Jersey is ready."),
+            answer("Yes, the map from the last turn."),
+        ])
+        async with self.world() as (connect, stores, root), saver_in(connect) as saver:
+            f = Fixture(root, registry, catalogue, earthdata=service.earthdata(), open_retrieval=open_retrieval,
+                        credentials={"earthdata": EDL_SECRET}, stores=stores, saver=saver)
+            supervisor = Supervisor(
+                capabilities=registry, catalogue=catalogue, runner=f.runner, notes=NoteCatalogue([]),
+                checkpointer=saver, models=ScriptedModels({"supervisor": supervisor_choice(model)}), backoff=NO_BACKOFF,
+            )
+            chat = make_chat(
+                supervisor, root, stores=stores, credentials={"earthdata": EDL_SECRET}, clock=f.context.clock,
+                ports=lambda user_id, report_job: TurnPorts(build_env=f.build, earthdata=service.earthdata()),
+            )
+
+            first = [frame async for frame in chat.stream_chat_events(f"Map {NO2} over New Jersey.", "thread-1",
+                                                                       "user-a", "req-1")]
+            second = [frame async for frame in chat.stream_chat_events("Is that the map you made?", "thread-1",
+                                                                        "user-a", "req-2")]
+            self.assertTrue(first[-1].startswith("event: done"))
+            self.assertTrue(second[-1].startswith("event: done"))
+
+            turns = await transcript_repository.list_turns("thread-1", "user-a")
+            self.assertEqual([t.turn_index for t in turns], [0, 1])
+            self.assertEqual(turns[0].sources, ["TEMPO_NO2"])
+            self.assertEqual(turns[0].label.kind, "draft")
+            self.assertEqual(turns[1].answer_text, "Yes, the map from the last turn.")
+            done = json.loads(first[-1].partition("data: ")[2])
+            [result] = done["results"]
+            self.assertEqual(result["status"], "done")
+            workflow_run = result["run_id"]
+            ledger = ledger_text(model.received[2])
+            self.assertTrue(ledger.startswith(HEADING))
+            self.assertIn(workflow_run, ledger)
+            [reference] = turns[0].charts
+            self.assertIn(reference["chart_id"], ledger)
+
+            with patch("tta_backend.services.artifact_store.artifact_repository.get_artifact", AsyncMock()):
+                messages = await transcript_history("thread-1", "user-a", ChartService())
+            self.assertEqual([m["role"] for m in messages], ["user", "assistant", "user", "assistant"])
+            self.assertEqual(messages[2]["content"], "Is that the map you made?")
+            self.assertEqual(messages[3]["content"], "Yes, the map from the last turn.")
+            [chart] = messages[1]["charts"]
+            self.assertEqual(chart["chart_id"], reference["chart_id"])
+            self.assertEqual(chart["user_id"], "user-a")
+            self.assertTrue(messages[1]["label"].startswith("Draft workflow: map v"))
+            self.assertEqual(await transcript_history("thread-1", "user-b", ChartService()), [])
