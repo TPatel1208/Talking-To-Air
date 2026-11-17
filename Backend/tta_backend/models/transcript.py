@@ -3,9 +3,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal, Self
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from tta_backend.harness.results import Mode
+from tta_backend.harness.results import RUN_ID_PATTERN, Mode, ResultStatus
 from tta_backend.models.artifact import ArtifactReference
 
 
@@ -17,6 +17,30 @@ def _contains_nul(value: Any) -> bool:
     if isinstance(value, (list, tuple)):
         return any(_contains_nul(v) for v in value)
     return False
+
+
+# The connectors a result can stop for, as the frontend's connectors UI names them.
+ConnectorName = Literal["earthdata", "epa_aqs"]
+
+
+class TranscriptResult(BaseModel):
+    """One result of a turn as the user saw it: its run, status and mode, the
+    fixed-wording reason when it is not done, and the connector it stopped for."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    run_id: str = Field(pattern=RUN_ID_PATTERN.pattern)
+    status: ResultStatus
+    mode: Mode
+    reason: str | None = None
+    connector: ConnectorName | None = None
+
+    def view(self) -> dict[str, Any]:
+        """The shape the ``done`` frame and the history carry."""
+        return {
+            "run_id": self.run_id, "status": self.status, "mode": self.mode.view(),
+            "reason": self.reason, "connector": self.connector,
+        }
 
 
 class TranscriptTurn(BaseModel):
@@ -32,6 +56,8 @@ class TranscriptTurn(BaseModel):
     artifacts: list[ArtifactReference] = Field(default_factory=list)
     sources: list[str] = Field(default_factory=list)
     label: Mode | None = None
+    results: list[TranscriptResult] = Field(default_factory=list)
+    suggested_followups: list[str] = Field(default_factory=list)
     status: Literal["done", "stopped", "error"] = "done"
     created_at: datetime | None = None
 
@@ -41,6 +67,7 @@ class TranscriptTurn(BaseModel):
         fields = (
             self.thread_id, self.user_id, self.user_text, self.answer_text,
             self.sources, self.charts, [a.model_dump() for a in self.artifacts],
+            [r.model_dump() for r in self.results], self.suggested_followups,
         )
         if _contains_nul(fields):
             raise ValueError("transcript text cannot contain NUL characters")

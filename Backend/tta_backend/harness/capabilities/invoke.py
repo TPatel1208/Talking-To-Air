@@ -305,7 +305,10 @@ async def _step(
             failure: StepFailure | None = None
             try:
                 call = await _prepare(env, capability, params, recorded, scope, step, attempt)
-                env.context.events.progress(capability.label, stage=capability.name)
+                env.context.events.progress(
+                    capability.label, stage=capability.name,
+                    detail=None if step is None else {"step": step}, run_id=env.run_id,
+                )
                 outcome = await body(call, scope)
             except StepFailure as own:
                 _log_internal(env, capability, own, type(own).__name__)

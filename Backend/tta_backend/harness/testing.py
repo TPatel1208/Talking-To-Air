@@ -53,8 +53,10 @@ class RecordingEvents:
         self.questions: list[dict[str, Any]] = []
         self.texts: list[str] = []
 
-    def progress(self, message: str, *, stage: str | None = None, detail: Any = None) -> None:
-        self.progress_events.append({"message": message, "stage": stage, "detail": detail})
+    def progress(
+        self, message: str, *, stage: str | None = None, detail: Any = None, run_id: str | None = None
+    ) -> None:
+        self.progress_events.append({"message": message, "stage": stage, "detail": detail, "run_id": run_id})
 
     def chart(self, payload: dict[str, Any]) -> None:
         self.charts.append(payload)

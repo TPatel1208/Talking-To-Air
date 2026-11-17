@@ -41,7 +41,7 @@ from tta_backend.domain.monitors.pollutants import convert
 from tta_backend.harness.capabilities.call import Call
 from tta_backend.harness.capabilities.common import region_name
 from tta_backend.harness.capabilities.definition import Capability, Params, handle_param
-from tta_backend.harness.capabilities.render.common import refuse, sources
+from tta_backend.harness.capabilities.render.common import refuse, sources, with_run
 from tta_backend.harness.capabilities.render.group import GROUP
 from tta_backend.harness.capabilities.result import CapabilityResult
 from tta_backend.harness.capabilities.shapes import points_frame
@@ -139,7 +139,7 @@ async def _render_monitor_map(call: Call[MonitorMapParams]) -> CapabilityResult:
             "site_value": site_value,
         },
     }
-    ref = await call.env.context.artifacts.store_table(title, columns, rows, metadata)
+    ref = await call.env.context.artifacts.store_table(title, columns, rows, with_run(call, metadata))
 
     disclosures: list[str] = [
         f"The map data gives each monitor its {info.name} {period} AQI category and that category's colour "

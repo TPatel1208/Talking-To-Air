@@ -79,7 +79,7 @@ class HistoryMessagesTests(unittest.TestCase):
 
 class AppendTurnTests(unittest.IsolatedAsyncioTestCase):
     async def test_non_finite_floats_persist_as_null(self):
-        row = ("t1", "u1", 0, "hi", "hello", [], [], [], None, "done", datetime.now(UTC))
+        row = ("t1", "u1", 0, "hi", "hello", [], [], [], None, "done", datetime.now(UTC), [], [])
         cursor = MagicMock()
         cursor.fetchone = AsyncMock(return_value=row)
         conn = MagicMock()

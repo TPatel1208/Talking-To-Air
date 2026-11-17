@@ -1,10 +1,12 @@
 """Two chat turns through the host on the real Postgres stores, transcript and checkpointer."""
 from __future__ import annotations
 
+import io
 import json
 import os
 import sys
 import tempfile
+import zipfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -34,7 +36,9 @@ from tta_backend.harness.supervisor import Supervisor  # noqa: E402
 from tta_backend.harness.testing import ScriptedModels, answer, tool_call  # noqa: E402
 from tta_backend.harness.workflows.loader import load_packs  # noqa: E402
 from tta_backend.repositories import chart_repository, transcript_repository  # noqa: E402
-from tta_backend.services.chart_service import ChartService  # noqa: E402
+from tta_backend.services.artifact_store import artifact_store  # noqa: E402
+from tta_backend.services.chart_service import ChartLink, ChartService  # noqa: E402
+from tta_backend.services.result_export import ResultExporter, ResultNotFound, chart_provenance  # noqa: E402
 from tta_backend.services.harness_chat import TurnPorts, transcript_history  # noqa: E402
 
 PACKS = Path(__file__).resolve().parent.parent / "packs"
@@ -109,4 +113,22 @@ class HarnessChatPostgresTests(PostgresTestCase):
             self.assertEqual(chart["chart_id"], reference["chart_id"])
             self.assertEqual(chart["user_id"], "user-a")
             self.assertTrue(messages[1]["label"].startswith("Draft workflow: map v"))
+            self.assertEqual(messages[1]["results"], done["results"])
+            self.assertEqual(messages[1]["suggested_followups"], done.get("suggested_followups", []))
             self.assertEqual(await transcript_history("thread-1", "user-b", ChartService()), [])
+
+            # The stored chart carries its link to the run, and the run's result exports from the same stores.
+            link = ChartLink.of(chart)
+            assert link is not None
+            self.assertEqual((link.run_id, link.mode.view()), (workflow_run, result["mode"]))
+            view = await chart_provenance(stores, "user-a", link, None)
+            self.assertEqual((view["run_id"], view["handle"]), (workflow_run, link.handle))
+            self.assertEqual(view["product"]["key"], "TEMPO_NO2")
+            exporter = ResultExporter(stores, chart_service=ChartService(), artifacts=artifact_store, payload_root=root)
+            methods = await exporter.methods("user-a", workflow_run)
+            self.assertTrue(methods.startswith("# Methods: Draft workflow: map v"))
+            with zipfile.ZipFile(io.BytesIO(await exporter.archive("user-a", workflow_run))) as archive:
+                self.assertEqual(archive.read("methods.md").decode(), methods)
+                self.assertEqual(len([n for n in archive.namelist() if n.startswith("figures/")]), 1)
+            with self.assertRaises(ResultNotFound):
+                await exporter.methods("user-b", workflow_run)

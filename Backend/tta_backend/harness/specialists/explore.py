@@ -66,6 +66,8 @@ logger = logging.getLogger(__name__)
 EnvFactory = Callable[[RunContext, str], Awaitable[RunEnv]]
 
 RESOLVE = "sources.areas.resolve"
+# The stage of a task's first progress line, which names its objective and bundle.
+EXPLORE_STAGE = "explore"
 # Bundles whose tasks carry on with a place that could not be resolved.
 PLACES_AS_TEXT = frozenset({"find-data"})
 UNRESOLVED_DISCLOSURE = "'{place}' could not be resolved to an area, so it was not used as one."
@@ -176,6 +178,10 @@ class _Task:
     async def run(self) -> _Outcome:
         """The task's outcome, with its explore entry recorded."""
         params = {"objective": self.task.objective, "bundle": self.task.bundle, "inputs": self.task.inputs()}
+        self.env.context.events.progress(
+            f"Exploring: {self.task.objective}", stage=EXPLORE_STAGE,
+            detail={"objective": self.task.objective, "bundle": self.task.bundle}, run_id=self.env.run_id,
+        )
         outcome: _Outcome | None = None
         entered = False
         try:

@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
+from pydantic import ValidationError
+
+from tta_backend.harness.results import RUN_ID_PATTERN, Mode
 from tta_backend.models import (
     AgentResult,
     DispatchResult,
@@ -14,9 +18,49 @@ from tta_backend.models import (
 from tta_backend.repositories import chart_repository
 
 
+# Where a harness chart's link to its run is kept in the stored payload.
+LINK_KEY = "harness"
+
+
+@dataclass(frozen=True)
+class ChartLink:
+    """The run that drew a chart, the mode it ran in, and the handle the chart renders.
+
+    Kept in the chart's own row (``metadata.harness``): the row is already
+    owned by its user and deleted with its session, and a run's charts are
+    found from the other side through the run's trace, so a table of links
+    would only repeat both.
+    """
+
+    run_id: str
+    mode: Mode
+    handle: str | None
+
+    def to_json(self) -> dict[str, Any]:
+        return {"run_id": self.run_id, "mode": self.mode.model_dump(mode="json"), "handle": self.handle}
+
+    @classmethod
+    def of(cls, payload: dict[str, Any]) -> ChartLink | None:
+        """The link a stored chart carries; None for a chart no harness run drew."""
+        metadata = payload.get("metadata")
+        link = metadata.get(LINK_KEY) if isinstance(metadata, dict) else None
+        if not isinstance(link, dict):
+            return None
+        run_id, handle = link.get("run_id"), link.get("handle")
+        if not isinstance(run_id, str) or not RUN_ID_PATTERN.fullmatch(run_id):
+            return None
+        try:
+            mode = Mode.model_validate(link.get("mode"))
+        except ValidationError:
+            return None
+        return cls(run_id=run_id, mode=mode, handle=handle if isinstance(handle, str) else None)
+
+
 class ChartService:
-    async def persist_chart_payload(self, thread_id: str, chart: Any, user_id: str) -> dict[str, Any] | None:
-        """Store ``chart`` and return the stored row.
+    async def persist_chart_payload(
+        self, thread_id: str, chart: Any, user_id: str, *, link: ChartLink | None = None,
+    ) -> dict[str, Any] | None:
+        """Store ``chart`` and return the stored row, with ``link`` in its metadata when given.
 
         A chart reference is only ever looked up: it carries no grid, so
         saving it would replace the real row with a stub. None means the
@@ -28,6 +72,8 @@ class ChartService:
                 return stored
         if is_chart_reference(payload):
             return None
+        if link is not None:
+            payload["metadata"] = {**(payload.get("metadata") or {}), LINK_KEY: link.to_json()}
         return await chart_repository.save_chart(thread_id, payload, user_id)
 
     async def resolve_charts(self, charts: list[Any], user_id: str) -> list[dict[str, Any] | None]:
@@ -80,6 +126,10 @@ class ChartService:
 
     async def get_chart(self, chart_id: str) -> dict[str, Any] | None:
         return await chart_repository.get_chart(chart_id)
+
+    async def get_owned_charts(self, chart_ids: list[str], user_id: str) -> dict[str, dict[str, Any]]:
+        """The charts among ``chart_ids`` that ``user_id`` owns, keyed by id."""
+        return await chart_repository.get_charts(chart_ids, user_id) if chart_ids else {}
 
     def parse_charts(self, content: Any) -> tuple[str | None, list[Any]]:
         results = parse_tool_results(content)

@@ -28,10 +28,8 @@ class CapabilitiesStartersEndpointTests(unittest.IsolatedAsyncioTestCase):
         body = response.json()
         self.assertEqual(len(body), len(STARTER_PROMPTS))
         for entry in body:
-            self.assertIn("id", entry)
-            self.assertIn("label", entry)
-            self.assertIn("prompt", entry)
-            self.assertIn("category", entry)
+            self.assertEqual(set(entry), {"id", "label", "prompt", "category"})
+        self.assertEqual([entry["category"] for entry in body], [s["category"] for s in STARTER_PROMPTS])
 
 
 if __name__ == "__main__":

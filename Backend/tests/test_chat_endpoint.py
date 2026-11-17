@@ -152,7 +152,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
                 {"role": "user", "content": "hi", "toolCalls": []},
                 {
                     "role": "assistant", "content": "hello", "toolCalls": [], "charts": [], "artifacts": [],
-                    "label": None,
+                    "label": None, "results": [], "suggested_followups": [],
                 },
             ],
         )

@@ -491,6 +491,18 @@ class ToolCallTests(ExploreCase):
         self.assertEqual(result.findings[0].value, 28.0)
 
 
+class ProgressTests(ExploreCase):
+    async def test_a_task_opens_with_its_objective_and_bundle_and_every_line_names_its_run(self):
+        [result] = await self.go(task(places=("NJ",)), script=[final()])
+
+        events = self.context.events.progress_events  # type: ignore[attr-defined]
+        first = events[0]
+        self.assertEqual(first["stage"], "explore")
+        made = task(places=("NJ",))
+        self.assertEqual(first["detail"], {"objective": made.objective, "bundle": made.bundle})
+        self.assertEqual({e["run_id"] for e in events}, {result.trace_id})
+
+
 class PlaceTests(ExploreCase):
     async def test_places_are_resolved_before_the_model_and_join_the_handles(self):
         [result] = await self.go(task(places=("NJ",)), script=[final()])

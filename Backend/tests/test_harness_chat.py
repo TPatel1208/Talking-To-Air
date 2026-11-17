@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import datetime
 import importlib.util
 import json
 import os
@@ -28,7 +30,9 @@ from harness_chat_helpers import (  # noqa: E402
 from redis_helpers import REDIS_URL, requires_redis  # noqa: E402
 from tests.test_harness_specialists import Model  # noqa: E402
 from tests.test_harness_supervisor import SupervisorCase, run_map  # noqa: E402
-from tests.test_harness_workflow_packs_run import EDL_SECRET  # noqa: E402
+from tests.test_harness_sources_satellite import NO2  # noqa: E402
+from tests.test_harness_workflow_packs_run import EDL_SECRET, JUNE, GroundWorkflowRuns, PackRun  # noqa: E402
+from tta_backend.harness.testing import FakeToolError, StaticCredentials, env_factory  # noqa: E402
 from tta_backend.config.error_templates import (  # noqa: E402
     render_error_answer,
     render_overloaded_answer,
@@ -37,14 +41,19 @@ from tta_backend.config.error_templates import (  # noqa: E402
 from tta_backend.earthdata_mcp.connection import STATE_READY  # noqa: E402
 from tta_backend.earthdata_mcp.results import MCPToolError  # noqa: E402
 from tta_backend.harness.results import Mode, Result  # noqa: E402
+from tta_backend.harness.storage import memory_stores  # noqa: E402
+from tta_backend.harness.trace import Run, new_run_id  # noqa: E402
 from tta_backend.harness.supervisor.supervisor import FAILED_WORDING  # noqa: E402
 from tta_backend.harness.testing import answer, rate_limited  # noqa: E402
 from tta_backend.services import admission  # noqa: E402
 from tta_backend.services.harness_chat import (  # noqa: E402
     ConnectorCredentials,
     ReadyEarthdata,
+    StoppedConnectors,
+    StoredArtifacts,
     TurnPorts,
     picker_payload,
+    result_summaries,
     transcript_history,
 )
 from tta_backend.services.chart_service import ChartService  # noqa: E402
@@ -124,18 +133,42 @@ class ScriptedSupervisorTurnTests(SupervisorCase):
         latest = self.catalogue.latest("map").version
         self.assertEqual(result["status"], "done")
         self.assertTrue(result["run_id"].startswith("run_"))
-        self.assertEqual(result["mode"], {
+        mode = {
             "kind": "draft", "label": f"Draft workflow: map v{latest}", "workflow": {"name": "map", "version": latest},
-        })
+        }
+        self.assertEqual(result["mode"], mode)
+        self.assertEqual((result["reason"], result["connector"]), (None, None))
         self.assertEqual(done["label"], f"Draft workflow: map v{latest}")
         streamed = "".join(data["content"] for event, data in parse(frames) if event == "text")
         self.assertEqual(streamed, done["response"])
 
+        # Every status frame of the workflow run names it; the first announces its steps.
+        run_id = result["run_id"]
+        statuses = [data for event, data in parse(frames) if event == "status"]
+        announce = next(s for s in statuses if s.get("stage") == "workflow.map")
+        self.assertEqual(announce["run_id"], run_id)
+        spec = self.catalogue.latest("map")
+        self.assertEqual(announce["detail"]["steps"], list(spec.order()))
+        self.assertEqual(announce["detail"]["mode"], mode)
+        self.assertEqual((announce["detail"]["workflow"], announce["detail"]["version"]), ("map", latest))
+        steps = [s for s in statuses if s is not announce and s.get("run_id") == run_id]
+        self.assertTrue(steps)
+        # Inputs are resolved before the first step, under ids of their own.
+        self.assertTrue(all(s["detail"]["step"] in spec.order() or s["detail"]["step"].startswith("input.") for s in steps))
+
         chart = last(frames, "chart")
         self.assertIn(chart["chart_id"], self.charts.rows)
         self.assertEqual(self.charts.saves, 1)
+        self.assertEqual((chart["run_id"], chart["mode"]), (run_id, mode))
+        link = self.charts.rows[chart["chart_id"]]["metadata"]["harness"]
+        self.assertEqual(link["run_id"], run_id)
+        self.assertEqual(link["handle"], chart["metadata"]["source_handles"][0])
+        artifacts = [data for event, data in parse(frames) if event == "artifact"]
+        self.assertTrue(artifacts)
+        for artifact in artifacts:
+            self.assertEqual((artifact["run_id"], artifact["mode"]), (run_id, mode))
         for artifact in done["artifacts"]:
-            self.assertIn(artifact, [data for event, data in parse(frames) if event == "artifact"])
+            self.assertIn(artifact, artifacts)
 
         # Written once, before done.
         [turn] = self.transcripts.turns
@@ -148,7 +181,11 @@ class ScriptedSupervisorTurnTests(SupervisorCase):
         [reference] = turn.charts
         self.assertEqual((reference["chart_id"], reference["reference"]), (chart["chart_id"], True))
         self.assertNotIn("series", reference)
-        self.assertEqual([a.model_dump(exclude_none=True) for a in turn.artifacts], done["artifacts"])
+        drawn = ("run_id", "mode")
+        self.assertEqual([a.model_dump(exclude_none=True) for a in turn.artifacts],
+                         [{k: v for k, v in a.items() if k not in drawn} for a in done["artifacts"]])
+        self.assertEqual([r.view() for r in turn.results], done["results"])
+        self.assertEqual(turn.suggested_followups, done.get("suggested_followups", []))
 
     async def test_a_failing_model_ends_with_error_then_done_and_an_error_transcript(self):
         model = Model(script=[rate_limited(), rate_limited(), rate_limited()])
@@ -224,6 +261,23 @@ class HostFrameTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(last(frames, "done")["artifacts"], [artifact])
         [turn] = self.transcripts.turns
         self.assertEqual([a.id for a in turn.artifacts], [artifact["id"]])
+
+    async def test_a_table_a_run_drew_carries_the_runs_id_and_mode_and_only_for_its_own_user(self):
+        stores = memory_stores()
+        run_id = new_run_id()
+        await stores.traces.start_run(Run(
+            id=run_id, user_id="user-a", conversation_id="thread-1", mode=Mode.validated("trend", 2),
+            started=datetime.datetime(2024, 7, 1, tzinfo=datetime.UTC),
+        ))
+        sent: list[Any] = []
+        for user in ("user-a", "user-b"):
+            artifacts = StoredArtifacts(ChartService(), "thread-1", user, sent.append, stores.traces)
+            await artifacts.store_table("Sites", ["site"], [{"site": "A"}], {"run_id": run_id})
+
+        [(_, mine), (_, theirs)] = sent
+        self.assertEqual((mine["run_id"], mine["mode"]), (run_id, Mode.validated("trend", 2).view()))
+        self.assertNotIn("run_id", theirs)
+        self.assertNotIn("mode", theirs)
 
     async def test_progress_becomes_status_frames_with_stage_and_detail(self):
         supervisor = PlaybackSupervisor(
@@ -398,6 +452,58 @@ class HostFrameTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events(frames)[-2:], ["text", "done"])
 
 
+class StoppedConnectorTests(PackRun):
+    """Real workflow runs that stop for a connector, read back as the done frame's ``connector``."""
+
+    def connectors(self) -> StoppedConnectors:
+        return StoppedConnectors(self.f.registry, self.catalogue)
+
+    async def summary(self, result: Result) -> dict[str, Any]:
+        [summary] = await result_summaries([result], self.f.stores.traces, "user-a", self.connectors())
+        return summary.view()
+
+    async def test_a_workflow_that_did_not_start_without_its_connector_names_it(self):
+        self.f.context = dataclasses.replace(self.f.context, credentials=StaticCredentials({"earthdata": EDL_SECRET}))
+        result = await self.f.start(GroundWorkflowRuns.inputs, name="monitor-readings")
+
+        self.assertEqual(result.status, "needs_input")
+        summary = await self.summary(result)
+        self.assertEqual((summary["connector"], summary["reason"]), ("epa_aqs", result.reason))
+
+    async def test_a_credential_the_source_rejected_mid_run_names_its_connector(self):
+        earthdata = self.service.earthdata()
+
+        def expired(args: dict[str, Any]) -> dict[str, Any]:
+            raise FakeToolError("token_expired")
+
+        earthdata.tools["search_datasets"] = expired
+
+        async def open_retrieval(user_id: str, record: Any) -> Any:
+            return self.service.files[record.id]
+
+        self.f.build = env_factory(self.root(), earthdata=earthdata, open_retrieval=open_retrieval, places=self.f.places)
+        result = await self.f.start({"quantity": NO2, "area": "New Jersey", "dates": JUNE}, name="map")
+
+        self.assertEqual(result.status, "failed")
+        summary = await self.summary(result)
+        self.assertEqual(summary["connector"], "earthdata")
+        self.assertIn("credential has expired", summary["reason"])
+
+    async def test_a_done_result_or_another_failure_names_no_connector(self):
+        result, _ = await self.run_workflow("map", {"quantity": NO2, "area": "New Jersey", "dates": JUNE})
+        self.assertEqual(await self.summary(result), {
+            "run_id": result.trace_id, "status": "done", "mode": result.mode.view(), "reason": None, "connector": None,
+        })
+        failed = await self.f.start({"quantity": NO2, "area": "Atlantis", "dates": JUNE}, name="map")
+        self.assertNotEqual(failed.status, "done")
+        self.assertIsNone((await self.summary(failed))["connector"])
+
+    def root(self) -> str:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        return tmp.name
+
+
 class PickerTests(unittest.TestCase):
     def test_options_become_candidates_the_frontend_picker_reads(self):
         payload = picker_payload({"run_id": RUN_A, "prompt": "Which product?", "options": [
@@ -460,7 +566,7 @@ class EarthdataGateTests(unittest.IsolatedAsyncioTestCase):
 class TranscriptHistoryTests(unittest.IsolatedAsyncioTestCase):
     async def test_each_turn_is_a_user_and_an_assistant_message_with_its_charts_resolved(self):
         from tta_backend.models.artifact import ArtifactReference
-        from tta_backend.models.transcript import TranscriptTurn
+        from tta_backend.models.transcript import TranscriptResult, TranscriptTurn
 
         transcripts = MemoryTranscripts()
         charts = MemoryCharts()
@@ -472,6 +578,12 @@ class TranscriptHistoryTests(unittest.IsolatedAsyncioTestCase):
                         {"chart_id": "gone", "type": "timeseries", "reference": True}],
                 artifacts=[ArtifactReference(id="tbl_1", type="table", title="T", row_count=1)],
                 label=Mode.validated("trend", 2),
+                results=[
+                    TranscriptResult(run_id=RUN_A, status="done", mode=Mode.validated("trend", 2)),
+                    TranscriptResult(run_id=RUN_B, status="needs_input", mode=Mode.exploratory(),
+                                     reason="Connect it.", connector="epa_aqs"),
+                ],
+                suggested_followups=["And last year?"],
             ),
             TranscriptTurn(thread_id="thread-1", user_id="user-a", turn_index=1, user_text="Thanks",
                            answer_text="Welcome.", status="stopped"),
@@ -483,10 +595,17 @@ class TranscriptHistoryTests(unittest.IsolatedAsyncioTestCase):
             {"role": "user", "content": "Map it", "toolCalls": []},
             {"role": "assistant", "content": "Mapped.", "toolCalls": [], "charts": [stored],
              "artifacts": [{"id": "tbl_1", "type": "table", "title": "T", "row_count": 1, "metadata": {}}],
-             "label": "trend v2"},
+             "label": "trend v2",
+             "results": [
+                 {"run_id": RUN_A, "status": "done", "reason": None, "connector": None,
+                  "mode": {"kind": "validated", "label": "trend v2", "workflow": {"name": "trend", "version": 2}}},
+                 {"run_id": RUN_B, "status": "needs_input", "reason": "Connect it.", "connector": "epa_aqs",
+                  "mode": {"kind": "exploratory", "label": "Exploratory", "workflow": None}},
+             ],
+             "suggested_followups": ["And last year?"]},
             {"role": "user", "content": "Thanks", "toolCalls": []},
             {"role": "assistant", "content": "Welcome.", "toolCalls": [], "charts": [], "artifacts": [],
-             "label": None},
+             "label": None, "results": [], "suggested_followups": []},
         ])
         with memory_repositories(transcripts, charts):
             self.assertEqual(await transcript_history("thread-1", "user-b", ChartService()), [])

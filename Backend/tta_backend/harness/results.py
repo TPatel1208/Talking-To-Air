@@ -71,6 +71,11 @@ class Mode(_Model):
             child_workflows=children,
         )
 
+    def view(self) -> dict[str, Any]:
+        """The mode as the frontend reads it: kind, label and the workflow, if any."""
+        workflow = None if self.workflow is None else {"name": self.workflow.name, "version": self.workflow.version}
+        return {"kind": self.kind, "label": self.label(), "workflow": workflow}
+
     def label(self) -> str:
         """The wording a user sees for how the result was made."""
         if self.workflow is None:

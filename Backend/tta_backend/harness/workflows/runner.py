@@ -82,7 +82,8 @@ QUESTION_REASON = "Step {step} needs an answer before the workflow can continue.
 _TERMINAL = frozenset({"done", "failed", "cancelled", "insufficient_evidence", "incomplete"})
 
 
-def _connect_reason(connectors: list[str]) -> str:
+def connect_reason(connectors: list[str]) -> str:
+    """The fixed wording of a run that did not start because ``connectors`` are not connected."""
     names = " and ".join(connectors)
     noun = "connector" if len(connectors) == 1 else "connectors"
     return f"This workflow needs the {names} {noun}. Connect it in Settings -> Connectors, then run it again."
@@ -213,7 +214,7 @@ class WorkflowRunner:
         missing = [name for name in sorted(spec.connectors(self._capabilities))
                    if not await env.context.credentials.secret(name)]
         if missing:
-            return await self._finish(env, spec, "needs_input", reason=_connect_reason(missing))
+            return await self._finish(env, spec, "needs_input", reason=connect_reason(missing))
         resolved = await resolve_inputs(env, spec, raw, self._capabilities, quantities=self._quantities)
         if isinstance(resolved, InputProblem):
             return await self._finish(env, spec, resolved.status, reason=resolved.reason, question=resolved.question)
@@ -231,17 +232,22 @@ class WorkflowRunner:
         return await self._drive(env, workflow, state, {})
 
     def _announce(self, env: RunEnv, spec: WorkflowSpec) -> None:
-        steps = []
+        """The run's first progress line: the workflow, its mode and its step ids in order, with each step's label."""
+        labels: dict[str, str] = {}
         for step_id in spec.order():
             step = spec.step(step_id)
             label = step.label
             if label is None and isinstance(step, UseStep):
                 label = self._capabilities.get(step.use).label
-            steps.append({"id": step_id, "label": label or step_id})
+            labels[step_id] = label or step_id
         env.context.events.progress(
             f"Running workflow {spec.name} v{spec.version}",
             stage=f"workflow.{spec.name}",
-            detail={"workflow": spec.name, "version": spec.version, "mode": spec.mode().label(), "steps": steps},
+            detail={
+                "workflow": spec.name, "version": spec.version, "mode": spec.mode().view(),
+                "steps": list(labels), "labels": labels,
+            },
+            run_id=env.run_id,
         )
 
     # Resuming, cancelling, reading

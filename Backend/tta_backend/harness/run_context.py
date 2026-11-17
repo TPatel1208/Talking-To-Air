@@ -33,7 +33,12 @@ class ArtifactRef:
 
 
 class Events(Protocol):
-    def progress(self, message: str, *, stage: str | None = None, detail: Any = None) -> None: ...
+    def progress(
+        self, message: str, *, stage: str | None = None, detail: Any = None, run_id: str | None = None
+    ) -> None:
+        """A progress line. ``run_id`` names the run the step belongs to; None
+        for progress that belongs to no run."""
+        ...
 
     def chart(self, payload: dict[str, Any]) -> None: ...
 

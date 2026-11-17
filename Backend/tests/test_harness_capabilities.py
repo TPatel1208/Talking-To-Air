@@ -228,7 +228,9 @@ class InvokeTests(_EnvCase):
         self.assertEqual(entry.params, {"data": seed.id, "factor": 3.0})
         self.assertEqual(entry.result["handle"], result.handle)
         self.assertEqual(entry.result["method"], result.method)
-        self.assertEqual(self.events.progress_events[-1], {"message": "Scaling", "stage": "operations.scale", "detail": None})
+        self.assertEqual(self.events.progress_events[-1], {
+            "message": "Scaling", "stage": "operations.scale", "detail": {"step": "scaled"}, "run_id": self.env.run_id,
+        })
 
     async def test_list_and_optional_handle_params_resolve_and_become_parents(self):
         a, b = await seed_scalar(self.env, 1.0), await seed_scalar(self.env, 2.0)

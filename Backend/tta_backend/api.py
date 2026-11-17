@@ -66,9 +66,18 @@ from tta_backend.services.connector_credential_service import (
 )
 from tta_backend.services.connector_token_service import TokenValidationError, decode_token_expiry
 from tta_backend.services.artifact_store import artifact_store
-from tta_backend.services.chart_service import ChartService
+from tta_backend.harness.handles.model import is_derived_id
+from tta_backend.services.chart_service import ChartLink, ChartService
 from tta_backend.services.export_service import ExportService, hold_admission, materialize_first_chunk
 from tta_backend.services.harness_chat import HarnessChat, build_harness_chat, transcript_history
+from tta_backend.services.harness_host import McpEarthdataSession
+from tta_backend.services.payload_figures import chart_rows, csv_bytes, figure_png
+from tta_backend.services.result_export import (
+    ResultExporter,
+    ResultNotFound,
+    chart_citations,
+    chart_provenance,
+)
 from tta_backend.services.data_download_service import DataDownloadError, export_converted, iter_file_chunks
 from tta_backend.services.discovery_service import (
     check_coverage,
@@ -940,13 +949,16 @@ def _earthdata_tools(request: Request) -> dict[str, Any]:
 
 @app.get("/chart/{chart_id}/export.csv")
 @limiter.limit("3/minute")
-async def export_chart_csv(chart_id: str, request: Request) -> StreamingResponse:
+async def export_chart_csv(chart_id: str, request: Request) -> Response:
     # Resolved through the readiness gate (shared structured 503),
     # never app.state.earthdata_mcp_tools directly — a not-ready MCP must
     # fail here, before any 200 header is committed, not inside the
     # StreamingResponse generator.
     tools = _earthdata_tools(request)
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
+    link = ChartLink.of(payload)
+    if link is not None:
+        return await _harness_chart_csv(payload, link)
     if not payload.get("export"):
         raise HTTPException(status_code=422, detail="This chart does not include full-resolution export metadata.")
 
@@ -981,10 +993,44 @@ async def export_chart_csv(chart_id: str, request: Request) -> StreamingResponse
     )
 
 
+def _not_exported(link: ChartLink, what: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=f"{what} The archive of the result that drew it, /result/{link.run_id}/export.zip, holds its methods, "
+        "provenance and the data the result kept.",
+    )
+
+
+async def _harness_chart_csv(payload: dict[str, Any], link: ChartLink) -> Response:
+    """A harness chart's CSV, from the data its payload holds in full: a time series's lines or a profile's layers."""
+    rows = await chart_rows(payload)
+    if rows is None:
+        raise _not_exported(link, f"A {payload.get('type') or 'chart'} chart drawn by a harness run has no CSV export.")
+    return Response(
+        content=csv_bytes(rows),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{export_service.safe_export_name(payload, "csv")}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @app.get("/chart/{chart_id}/export.png")
 @limiter.limit("20/minute")
 async def export_chart_png(chart_id: str, request: Request) -> Response:
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
+    link = ChartLink.of(payload)
+    if link is not None:
+        # Drawn from the payload, since the chart may render a handle the data service cannot open.
+        content = await figure_png(payload)
+        if content is None:
+            raise _not_exported(link, f"A {payload.get('type') or 'chart'} chart drawn by a harness run is not drawn as PNG.")
+        return Response(
+            content=content,
+            media_type="image/png",
+            headers={"Content-Disposition": f'attachment; filename="{export_service.safe_export_name(payload, "png")}"'},
+        )
     try:
         with user_id_context(request.state.current_user.id):
             # Gated like the CSV export and for the same reason: _render_png
@@ -1199,28 +1245,40 @@ def _frame_blob_response(blob: frame_store.FrameBlob, request: Request) -> Respo
 @app.get("/chart/{chart_id}/provenance")
 @limiter.limit("30/minute")
 async def chart_provenance_endpoint(chart_id: str, request: Request) -> dict[str, Any]:
-    tools = _earthdata_tools(request)
-    payload = await _get_owned_chart(chart_id, request.state.current_user.id)
-    source_handles = _chart_source_handles(payload)
-    with user_id_context(request.state.current_user.id):
-        return await get_lineage(source_handles, tools)
+    user_id = request.state.current_user.id
+    payload = await _get_owned_chart(chart_id, user_id)
+    link = ChartLink.of(payload)
+    with user_id_context(user_id):
+        if link is not None:
+            # The harness's lineage walks derived handles, which the data service does not know; without the
+            # data service the retrieved data's own lineage is left out and the answer says so.
+            return await chart_provenance(_harness(request).stores, user_id, link, _data_service(request))
+        tools = _earthdata_tools(request)
+        return await get_lineage(_chart_source_handles(payload), tools)
 
 
 @app.get("/chart/{chart_id}/citations")
 @limiter.limit("30/minute")
 async def chart_citations_endpoint(chart_id: str, request: Request) -> dict[str, Any]:
     tools = _earthdata_tools(request)
-    payload = await _get_owned_chart(chart_id, request.state.current_user.id)
-    source_handles = _chart_source_handles(payload)
-    with user_id_context(request.state.current_user.id):
-        return {"citations": await get_citations(source_handles, tools)}
+    user_id = request.state.current_user.id
+    payload = await _get_owned_chart(chart_id, user_id)
+    link = ChartLink.of(payload)
+    with user_id_context(user_id):
+        if link is not None:
+            return {"citations": await chart_citations(_harness(request).stores, user_id, link, McpEarthdataSession(tools))}
+        return {"citations": await get_citations(_chart_source_handles(payload), tools)}
 
 
 @app.get("/chart/{chart_id}/methods.md")
 @limiter.limit("20/minute")
 async def chart_methods_endpoint(chart_id: str, request: Request) -> Response:
-    tools = _earthdata_tools(request)
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
+    link = ChartLink.of(payload)
+    if link is not None:
+        # A harness chart's methods are those of the result that drew it.
+        return await _result_methods_response(request, link.run_id, export_service.safe_export_name(payload, "md"))
+    tools = _earthdata_tools(request)
     source_handles = _chart_source_handles(payload)
     with user_id_context(request.state.current_user.id):
         lineage = await get_lineage(source_handles, tools)
@@ -1274,6 +1332,11 @@ async def export_chart_netcdf(chart_id: str, request: Request) -> StreamingRespo
     source_handles = _chart_source_handles(payload)
     if not source_handles:
         raise HTTPException(status_code=422, detail="This chart does not include a source handle to export.")
+    link = ChartLink.of(payload)
+    if link is not None and is_derived_id(source_handles[0]):
+        raise _not_exported(
+            link, "This chart shows data the backend derived, which the data service cannot convert to NetCDF.",
+        )
 
     try:
         with user_id_context(request.state.current_user.id):
@@ -1302,6 +1365,87 @@ async def export_chart_netcdf(chart_id: str, request: Request) -> StreamingRespo
             # download for it to spool.
             "X-Accel-Buffering": "no",
         },
+    )
+
+
+# A result's export. Each reads the run as the requesting user, so another
+# user's run is a 404 exactly as a missing one is.
+
+RunIdPath = Annotated[str, Path(min_length=1, max_length=64)]
+
+
+def _harness(request: Request) -> HarnessChat:
+    host: HarnessChat | None = getattr(request.app.state, "agent", None)
+    if host is None:
+        raise HTTPException(status_code=503, detail="The server is starting. Try again in a moment.")
+    return host
+
+
+def _data_service(request: Request) -> McpEarthdataSession | None:
+    """The data service for lineage and citations, or None while it is not connected."""
+    manager = getattr(request.app.state, "earthdata_mcp_manager", None)
+    if manager is None or manager.state != STATE_READY:
+        return None
+    return McpEarthdataSession(manager.tools)
+
+
+def _result_exporter(request: Request) -> ResultExporter:
+    host = _harness(request)
+    return ResultExporter(
+        host.stores, chart_service=host.chart_service, artifacts=artifact_store, payload_root=host.payload_root,
+        earthdata=_data_service(request),
+    )
+
+
+async def _result_methods_response(request: Request, run_id: str, filename: str) -> Response:
+    user_id = request.state.current_user.id
+    try:
+        with user_id_context(user_id):
+            markdown = await _result_exporter(request).methods(user_id, run_id)
+    except ResultNotFound as exc:
+        raise HTTPException(status_code=404, detail="Result not found") from exc
+    return Response(
+        content=markdown,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="methods-{filename}"', "Cache-Control": "no-store"},
+    )
+
+
+@app.get("/result/{run_id}/methods.md")
+@limiter.limit("20/minute")
+async def result_methods_endpoint(run_id: RunIdPath, request: Request) -> Response:
+    return await _result_methods_response(request, run_id, f"{run_id}.md")
+
+
+@app.get("/result/{run_id}/provenance.json")
+@limiter.limit("20/minute")
+async def result_provenance_endpoint(run_id: RunIdPath, request: Request) -> Response:
+    user_id = request.state.current_user.id
+    try:
+        with user_id_context(user_id):
+            provenance = await _result_exporter(request).provenance(user_id, run_id)
+    except ResultNotFound as exc:
+        raise HTTPException(status_code=404, detail="Result not found") from exc
+    return Response(
+        content=json.dumps(provenance, indent=2, default=str),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="provenance-{run_id}.json"', "Cache-Control": "no-store"},
+    )
+
+
+@app.get("/result/{run_id}/export.zip")
+@limiter.limit("6/minute")
+async def result_archive_endpoint(run_id: RunIdPath, request: Request) -> Response:
+    user_id = request.state.current_user.id
+    try:
+        with user_id_context(user_id):
+            content = await _result_exporter(request).archive(user_id, run_id)
+    except ResultNotFound as exc:
+        raise HTTPException(status_code=404, detail="Result not found") from exc
+    return Response(
+        content=content,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="result-{run_id}.zip"', "Cache-Control": "no-store"},
     )
 
 

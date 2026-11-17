@@ -3,7 +3,8 @@
 A refusal is a failure with fixed wording and ``{"refusal": reason}`` on its
 trace entry (``capabilities.common.refusal``). A chart is stored, then emitted
 with its artifact id as ``chart_id``. Its ``metadata.source_handles`` are the
-input handle ids.
+input handle ids and its ``metadata.run_id`` the run that drew it; a stored
+table's metadata carries the same two.
 """
 from __future__ import annotations
 
@@ -82,8 +83,14 @@ def chart_summary(payload: dict[str, Any]) -> dict[str, JsonValue]:
     return summary
 
 
+def with_run(call: Call[Any], metadata: dict[str, Any] | None) -> dict[str, Any]:
+    """``metadata`` with the run that drew the chart or table."""
+    return {**(metadata or {}), "run_id": call.env.run_id}
+
+
 async def store_and_emit(call: Call[Any], payload: dict[str, Any]) -> ArtifactRef:
     """Store the chart, then emit it with its artifact id."""
+    payload = {**payload, "metadata": with_run(call, payload.get("metadata"))}
     context = call.env.context
     # The store assigns the id as it stores (the app's chart repository writes it into the stored payload), so only the emitted copy is given it here.
     ref = await context.artifacts.store_chart(payload)

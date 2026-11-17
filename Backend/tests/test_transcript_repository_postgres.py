@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from tta_backend.harness.results import Mode
 from tta_backend.models.artifact import ArtifactReference
-from tta_backend.models.transcript import TranscriptTurn
+from tta_backend.models.transcript import TranscriptResult, TranscriptTurn
 from tta_backend.repositories import transcript_repository as repo
 from tests.postgres_helpers import PostgresTestCase, isolated_schema
 
@@ -46,6 +46,43 @@ class TranscriptRepositoryPostgresTests(PostgresTestCase):
         self.assertEqual(fetched.label, Mode.validated("trend", 2))
         self.assertEqual(fetched.sources, ["EPA AQS", "TEMPO"])
         self.assertEqual(fetched.status, "stopped")
+
+    async def test_results_and_followups_round_trip(self):
+        results = [
+            TranscriptResult(run_id="run_" + "a" * 32, status="done", mode=Mode.validated("trend", 2)),
+            TranscriptResult(run_id="run_" + "b" * 32, status="needs_input", mode=Mode.exploratory(),
+                             reason="Connect EPA AQS.", connector="epa_aqs"),
+        ]
+        stored = await repo.append_turn(_turn(results=results, suggested_followups=["And in July?"]))
+        [fetched] = await repo.list_turns("t1", "u1")
+        self.assertEqual(fetched, stored)
+        self.assertEqual(fetched.results, results)
+        self.assertEqual(fetched.suggested_followups, ["And in July?"])
+        await repo.append_turn(_turn(text="plain"))
+        self.assertEqual((await repo.list_turns("t1", "u1"))[1].results, [])
+
+    async def test_a_table_made_before_results_were_kept_gains_them_empty(self):
+        async with repo.pg_connection() as conn:
+            await conn.execute("DROP TABLE conversation_turns")
+            await conn.execute(
+                """
+                CREATE TABLE conversation_turns (
+                    user_id TEXT NOT NULL, thread_id TEXT NOT NULL, turn_index INTEGER NOT NULL,
+                    user_text TEXT NOT NULL, answer_text TEXT NOT NULL,
+                    charts JSONB NOT NULL DEFAULT '[]'::jsonb, artifacts JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    sources JSONB NOT NULL DEFAULT '[]'::jsonb, label JSONB, status TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY (user_id, thread_id, turn_index)
+                )
+                """
+            )
+            await conn.execute(
+                "INSERT INTO conversation_turns (user_id, thread_id, turn_index, user_text, answer_text, status) "
+                "VALUES ('u1', 't1', 0, 'old', 'answer', 'done')"
+            )
+            await conn.commit()
+        await repo.ensure_transcript_table()
+        [old] = await repo.list_turns("t1", "u1")
+        self.assertEqual((old.results, old.suggested_followups), ([], []))
 
     async def test_missing_label_round_trips_as_none(self):
         await repo.append_turn(_turn())

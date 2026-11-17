@@ -159,7 +159,10 @@ class Call(Generic[P]):
         return await self.env.compute.run(fn, *args, **kwargs)
 
     def progress(self, message: str, *, detail: Any = None) -> None:
-        self.env.context.events.progress(message, stage=self.capability.name, detail=detail)
+        """A progress line for this call, under its run; a workflow step's carries ``detail.step``."""
+        if self._step is not None and (detail is None or isinstance(detail, dict)):
+            detail = {**(detail or {}), "step": self._step}
+        self.env.context.events.progress(message, stage=self.capability.name, detail=detail, run_id=self.env.run_id)
 
     async def mint(
         self,

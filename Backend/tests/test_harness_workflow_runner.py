@@ -322,8 +322,14 @@ class OrderTests(RunnerCase):
         self.assertEqual(await f.run_status(result.trace_id), "done")
         progress = [e for e in f.events.progress_events if e["stage"] == "workflow.fake"]
         self.assertEqual(len(progress), 1)
-        self.assertEqual([s["id"] for s in progress[0]["detail"]["steps"]], ["one", "two", "figure"])
-        self.assertEqual(progress[0]["detail"]["steps"][0]["label"], "Running ops.make")
+        [announce] = progress
+        self.assertEqual(announce["run_id"], result.trace_id)
+        self.assertEqual(announce["detail"]["steps"], ["one", "two", "figure"])
+        self.assertEqual(announce["detail"]["labels"]["one"], "Running ops.make")
+        self.assertEqual(announce["detail"]["mode"], result.mode.view())
+        steps = [e for e in f.events.progress_events if e["stage"] == "ops.make"]
+        self.assertEqual([(e["detail"], e["run_id"]) for e in steps],
+                         [({"step": "one"}, result.trace_id), ({"step": "two"}, result.trace_id)])
 
     async def test_independent_steps_run_together_and_a_join_waits_for_both(self):
         f = self.fixture(spec(

@@ -6,12 +6,12 @@ from typing import Any
 from psycopg.types.json import Jsonb
 
 from tta_backend.harness.results import Mode
-from tta_backend.models.transcript import TranscriptTurn
+from tta_backend.models.transcript import TranscriptResult, TranscriptTurn
 from tta_backend.utils.db import pg_connection
 
 _COLUMNS = (
     "thread_id, user_id, turn_index, user_text, answer_text, "
-    "charts, artifacts, sources, label, status, created_at"
+    "charts, artifacts, sources, label, status, created_at, results, suggested_followups"
 )
 
 
@@ -39,6 +39,8 @@ def _from_row(row: Any) -> TranscriptTurn:
         label=Mode.model_validate(row[8]) if row[8] is not None else None,
         status=row[9],
         created_at=row[10],
+        results=[TranscriptResult.model_validate(r) for r in row[11]],
+        suggested_followups=row[12],
     )
 
 
@@ -58,10 +60,17 @@ async def ensure_transcript_table() -> None:
                 label JSONB,
                 status TEXT NOT NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                results JSONB NOT NULL DEFAULT '[]'::jsonb,
+                suggested_followups JSONB NOT NULL DEFAULT '[]'::jsonb,
                 PRIMARY KEY (user_id, thread_id, turn_index)
             )
             """
         )
+        # Tables made before these columns existed gain them empty.
+        for column in ("results", "suggested_followups"):
+            await conn.execute(
+                f"ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS {column} JSONB NOT NULL DEFAULT '[]'::jsonb"
+            )
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_conversation_turns_user_id ON conversation_turns (user_id)"
         )
@@ -78,13 +87,16 @@ async def append_turn(turn: TranscriptTurn) -> TranscriptTurn:
     charts = _sanitize_non_finite(turn.charts)
     artifacts = _sanitize_non_finite([a.model_dump(exclude_none=True) for a in turn.artifacts])
     label = _sanitize_non_finite(turn.label.model_dump(mode="json")) if turn.label else None
+    results = [r.model_dump(mode="json") for r in turn.results]
     async with pg_connection() as conn:
         await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (f"{len(turn.user_id)}:{turn.user_id}:{turn.thread_id}",))
         cursor = await conn.execute(
             f"""
             INSERT INTO conversation_turns
-                (thread_id, turn_index, user_id, user_text, answer_text, charts, artifacts, sources, label, status, created_at)
-            SELECT %s, COALESCE(MAX(turn_index) + 1, 0), %s, %s, %s, %s, %s, %s, %s, %s, COALESCE(%s::timestamptz, now())
+                (thread_id, turn_index, user_id, user_text, answer_text, charts, artifacts, sources, label, status,
+                 created_at, results, suggested_followups)
+            SELECT %s, COALESCE(MAX(turn_index) + 1, 0), %s, %s, %s, %s, %s, %s, %s, %s, COALESCE(%s::timestamptz, now()),
+                %s, %s
             FROM conversation_turns WHERE user_id = %s AND thread_id = %s
             RETURNING {_COLUMNS}
             """,
@@ -92,7 +104,8 @@ async def append_turn(turn: TranscriptTurn) -> TranscriptTurn:
                 turn.thread_id, turn.user_id, turn.user_text, turn.answer_text,
                 Jsonb(charts), Jsonb(artifacts), Jsonb(list(turn.sources)),
                 Jsonb(label) if label is not None else None,
-                turn.status, turn.created_at, turn.user_id, turn.thread_id,
+                turn.status, turn.created_at, Jsonb(results), Jsonb(list(turn.suggested_followups)),
+                turn.user_id, turn.thread_id,
             ),
         )
         row = await cursor.fetchone()

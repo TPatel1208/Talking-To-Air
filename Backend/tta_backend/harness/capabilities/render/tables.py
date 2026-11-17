@@ -14,7 +14,7 @@ from pydantic import Field, JsonValue
 from tta_backend.domain.charts.table import table_rows
 from tta_backend.harness.capabilities.call import Call
 from tta_backend.harness.capabilities.definition import Capability, Params, handle_param
-from tta_backend.harness.capabilities.render.common import sources
+from tta_backend.harness.capabilities.render.common import sources, with_run
 from tta_backend.harness.capabilities.render.group import GROUP
 from tta_backend.harness.capabilities.result import CapabilityResult
 
@@ -52,7 +52,7 @@ async def _render_table(call: Call[TableParams]) -> CapabilityResult:
         "source_handles": [record.id],
         "sources": sources((record,)),
     }
-    ref = await call.env.context.artifacts.store_table(title, columns, rows, metadata)
+    ref = await call.env.context.artifacts.store_table(title, columns, rows, with_run(call, metadata))
     disclosures = (f"The table shows the first {len(rows)} of {total} rows.",) if truncated else ()
     summary: dict[str, JsonValue] = {
         "render_type": "table",

@@ -524,6 +524,26 @@ class StarterPromptCoverageTests(unittest.TestCase):
 
         self.assertGreater(len({entry["category"] for entry in STARTER_PROMPTS}), 1)
 
+    def test_each_starter_prompt_shows_the_workflow_its_case_runs_on_the_same_question(self):
+        from benchmark.cases import build_cases
+        from benchmark.fake_earthdata import HandleVolume
+        from tta_backend.config.starter_prompts import STARTER_PROMPTS
+        from tta_backend.datasets.registry import load_registry
+        from tta_backend.harness.capabilities.catalogue import build_registry
+        from tta_backend.harness.workflows.loader import load_packs
+        from tta_backend.services.harness_chat import PACKS_ROOT
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cases = {case.id: case for case in build_cases(HandleVolume(tmpdir))}
+        workflows = load_packs(PACKS_ROOT, build_registry(), load_registry()).names()
+        self.assertEqual(len({entry["category"] for entry in STARTER_PROMPTS}), len(STARTER_PROMPTS))
+        for entry in STARTER_PROMPTS:
+            with self.subTest(entry["id"]):
+                case = cases[entry["id"]]
+                self.assertIn(entry["category"], workflows)
+                self.assertEqual(case.workflow, entry["category"])
+                self.assertEqual(case.prompt, entry["prompt"])
+
 
 class _FakeAdapter:
     def __init__(self, on_run=None):
