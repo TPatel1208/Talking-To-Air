@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import re
 from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
@@ -75,6 +76,23 @@ NOT_READY = (
     "can be resumed; this one cannot be resumed now."
 )
 TOO_MANY_TASKS = f"An explore call takes 1 to {MAX_TASKS} tasks; split the work or drop a task."
+SPLIT_PLACE = (
+    "'{place}' is one part of a place the user joined with '+'. Pass the whole place exactly as the user "
+    "wrote it; code resolves each part and asks the user about any part it cannot find."
+)
+_QUOTED_PLACE_CHARS = 80
+
+
+def part_of_combined_place(place: str, message: str) -> bool:
+    """Whether ``place`` is one side of a '+' the user wrote, such as 'NY' or
+    'Wakanda' in 'NY + Wakanda': a part passed alone would skip the check
+    that refuses the whole combined place when a part cannot be found."""
+    words = place.split()
+    if not words or "+" in place or "+" not in message:
+        return False
+    text = r"\s+".join(re.escape(word) for word in words)
+    joined = re.compile(rf"(?<!\w){text}\s*\+|\+\s*{text}(?!\w)", re.IGNORECASE)
+    return joined.search(message) is not None
 BAD_TASK = "Task {number}: {problems}."
 INTERNAL = "The tool stopped on an internal error. Do not retry it; answer with what you have."
 
@@ -254,8 +272,11 @@ class TurnTools:
         schemas: Mapping[str, dict[str, Any]],
         explore_limits: ExploreLimits | None,
         backoff: Backoff,
+        message: str = "",
     ) -> None:
         self.context = context
+        # The user's message this turn, which places passed to the tools are checked against.
+        self._message = message
         self._build_env = build_env
         self._ledger = ledger
         self._runner = runner
@@ -336,6 +357,14 @@ class TurnTools:
         self.results.append(result)
         self.run_ids.append(result.trace_id)
 
+    def _split(self, places: Sequence[Any]) -> str | None:
+        """The refusal for the first place that is one part of a combined place, or None."""
+        for place in places:
+            if isinstance(place, str) and part_of_combined_place(place, self._message):
+                quoted = " ".join(place.split())[:_QUOTED_PLACE_CHARS]
+                return SPLIT_PLACE.format(place=quoted)
+        return None
+
     def _input_refusal(self, name: str, reason: str) -> str:
         self._input_failures[name] += 1
         return _refused(STOP_RETRYING if self._input_failures[name] >= 2 else reason)
@@ -349,6 +378,10 @@ class TurnTools:
             inputs = {}
         if not isinstance(inputs, Mapping) or extra:
             return self._input_refusal(name, "inputs is an object of the workflow's inputs by name.")
+        spec = self._runner.spec(name, self._workflows[name])
+        split = self._split([inputs.get(key) for key, declared in spec.inputs.items() if declared.type == "area"])
+        if split is not None:
+            return self._input_refusal(name, split)
         try:
             result = await self._runner.start(self.context, self._build_env, name, self._workflows[name], inputs)
         except UnknownWorkflow:
@@ -391,6 +424,9 @@ class TurnTools:
                 problems.append(BAD_TASK.format(number=number, problems=_problems(error)))
         if problems:
             return _refused(" ".join(problems) + " Nothing was run.")
+        split = self._split([place for task in checked for place in task.places])
+        if split is not None:
+            return _refused(split + " Nothing was run.")
         results = await explore(
             self.context, self._build_env, checked, registry=self._capabilities, notes=self._notes,
             limits=self._explore_limits, backoff=self._backoff,
@@ -416,6 +452,9 @@ class TurnTools:
 
     def _lookup(self, capability: Capability[Any]) -> Callable[..., Awaitable[str]]:
         async def run(**params: Any) -> str:
+            split = self._split([params.get("place")])
+            if split is not None:
+                return _refused(split)
             env = await self.lookup_env()
             try:
                 result = await invoke(env, capability, params)

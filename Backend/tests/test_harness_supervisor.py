@@ -299,6 +299,40 @@ class InputTests(SupervisorCase):
         self.assertEqual(turn.run_ids, tuple(run.id for run in runs))
         self.assertEqual([run.status for run in runs], ["failed", "failed"])
 
+    async def test_one_part_of_a_combined_place_is_refused_everywhere_and_runs_nothing(self):
+        from tta_backend.harness.supervisor.tools import SPLIT_PLACE
+
+        message = "Map NO2 over NY + Wakanda for June 1 to 3, 2024."
+        model = Model(script=[
+            tool_call("resolve_area", {"place": "Wakanda"}),
+            run_map(area="NY"),
+            tool_call("explore", {"tasks": [{"objective": "Map NO2.", "bundle": "analyse", "places": ["Wakanda"]}]}),
+            answer("Which place did you mean?"),
+        ])
+        turn = await self.turn(self.supervisor(model), message)
+
+        expected = {
+            1: SPLIT_PLACE.format(place="Wakanda"),
+            2: SPLIT_PLACE.format(place="NY"),
+            3: SPLIT_PLACE.format(place="Wakanda") + " Nothing was run.",
+        }
+        for call, reason in expected.items():
+            with self.subTest(call=call):
+                self.assertEqual(last_tool(model, call), {"status": "refused", "reason": reason})
+        self.assertEqual(turn.results, ())
+        self.assertEqual(await self.f.stores.traces.list_runs("user-a", "conv-1"), [])
+
+    def test_only_a_side_of_a_plus_the_user_wrote_is_a_part(self):
+        from tta_backend.harness.supervisor.tools import part_of_combined_place
+
+        message = "map NO2 over NY + Wakanda for June 1-7 2024"
+        for place, part in (
+            ("NY", True), ("ny", True), ("Wakanda", True), ("NY + Wakanda", False), ("New York", False), ("Wak", False),
+        ):
+            with self.subTest(place=place):
+                self.assertIs(part_of_combined_place(place, message), part)
+        self.assertFalse(part_of_combined_place("Newark", "What was NO2 in Newark yesterday?"))
+
     async def test_missing_inputs_come_back_to_the_model(self):
         model = Model(script=[tool_call("run_workflow", {"name": "map", "inputs": {"quantity": NO2}}), answer("Which dates?")])
         turn = await self.turn(self.supervisor(model))

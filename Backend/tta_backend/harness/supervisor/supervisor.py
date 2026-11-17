@@ -550,7 +550,7 @@ class Supervisor:
         tools = TurnTools(
             context=context, build_env=build_env, ledger=ledger, runner=self._runner, workflows=self._workflows,
             capabilities=self._capabilities, notes=self._notes, schemas=self._schemas,
-            explore_limits=self._explore_limits, backoff=self._backoff,
+            explore_limits=self._explore_limits, backoff=self._backoff, message=message,
         )
         user_id = context.identity.user_id
 

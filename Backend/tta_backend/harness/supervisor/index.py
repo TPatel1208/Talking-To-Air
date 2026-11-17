@@ -17,7 +17,10 @@ def _input_line(name: str, declared: Input) -> str:
 
 # How run_workflow takes each input type. Places stay in the user's words; code resolves them.
 _FORMATS = {
-    "quantity": "quantity: one of " + ", ".join(QUANTITIES) + ". Pick the one for what the user asked about.",
+    "quantity": (
+        "quantity: one of " + ", ".join(QUANTITIES) + ". Pick the one for what the user asked about. "
+        "These are the quantities workflows take, not all the data there is."
+    ),
     "date": "date: an ISO date, YYYY-MM-DD.",
     "date_range": (
         'date_range: {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}; one day has the same start and end. '
