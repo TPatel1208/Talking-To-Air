@@ -94,8 +94,9 @@ GROUP = Group(
         "that chose it; pass product to keep using it. Set confirmed only after the user agreed to a "
         "large retrieval. A result with status insufficient_evidence names why there is no data: "
         "outside_record, not_published_yet, gap or too_little_valid. Do not retry it with other dates "
-        "or another product unless the user asks. search, describe and check_availability are cheap "
-        "lookups that retrieve nothing."
+        "or another product unless the user asks. When the user asks for values each day or each hour, "
+        "set cadence, so a monthly-only product is refused instead of read as daily values. search, "
+        "describe and check_availability are cheap lookups that retrieve nothing."
     ),
 )
 
@@ -148,7 +149,13 @@ class _ProductChoice(Params):
     named: str | None = Field(default=None, max_length=100, description="A product or instrument the user named.")
     approved: Approved = Field(default="registry_default", description="The workflow's approved products in order, or registry_default.")
     product: str | None = Field(default=None, max_length=100, description="The product this run already uses for the quantity.")
-    cadence: Cadence | None = Field(default=None, description="The finest cadence the analysis needs.")
+    cadence: Cadence | None = Field(
+        default=None,
+        description=(
+            "The finest cadence the analysis needs: set daily when the user asks for each day or daily "
+            "values, hourly for hours. A product too coarse for it is refused, never used instead."
+        ),
+    )
 
     @model_validator(mode="after")
     def _something_to_choose_by(self) -> Self:

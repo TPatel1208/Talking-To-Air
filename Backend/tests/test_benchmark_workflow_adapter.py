@@ -216,7 +216,7 @@ class WorkflowAdapterRunTests(unittest.TestCase):
 
         self.assertTrue(outcome.done)
         self.assertIsNone(outcome.error)
-        self.assertEqual(outcome.mode, "Draft workflow: monitor-readings v1")
+        self.assertEqual(outcome.mode, "Draft workflow: monitor-readings v2")
         self.assertEqual(outcome.tokens, {})
         self.assertEqual(outcome.stages[0], "workflow.monitor-readings")
         self.assertEqual(outcome.tool_calls[:2], ["sources.areas.resolve", "sources.monitors.find"])

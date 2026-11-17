@@ -101,7 +101,16 @@ FIELDS: dict[str, dict[str, frozenset[str]]] = {
 RESULT_FIELDS = frozenset(CapabilityResult.model_fields)
 
 # Latest version of each workflow. Version 2 of the three below adds the optional cadence input.
-LATEST: dict[str, int] = {name: 1 for name in ORDERS} | {"map": 2, "timeseries": 2, "period-comparison": 2}
+LATEST: dict[str, int] = {name: 1 for name in ORDERS} | {
+    "map": 2, "timeseries": 2, "period-comparison": 2, "monitor-readings": 2,
+}
+# Step orders that differ in a later version, by (name, version).
+VERSION_ORDERS: dict[tuple[str, int], tuple[str, ...]] = {
+    ("monitor-readings", 2): (
+        "find", "readings", "figure_series", "reading_mean", "reading_max", "summary", "figure_map", "figure_table",
+        "exceedances", "figure_exceedances",
+    ),
+}
 CADENCE_STEPS = {
     "map": ("data",),
     "timeseries": ("data", "point"),
@@ -180,7 +189,7 @@ class PackLoadTests(unittest.TestCase):
         for name, order in ORDERS.items():
             for version in range(1, LATEST[name] + 1):
                 with self.subTest(f"{name} v{version}"):
-                    self.assertEqual(CATALOGUE.get(name, version).order(), order)
+                    self.assertEqual(CATALOGUE.get(name, version).order(), VERSION_ORDERS.get((name, version), order))
 
     def test_connectors(self):
         for name, connectors in CONNECTORS.items():
