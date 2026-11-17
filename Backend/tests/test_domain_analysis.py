@@ -319,3 +319,12 @@ class SearchHitTests(unittest.TestCase):
         self.assertEqual(dataset_handle_from_search(reply, "C3685896708-LARC_CLOUD"), "dataset_b")
         self.assertIsNone(dataset_handle_from_search(reply, "C9-MISSING"))
         self.assertEqual(search_hits(reply)[1]["short_name"], "TEMPO_NO2_L3")
+
+    def test_a_size_estimate_is_read_from_its_megabytes(self):
+        from tta_backend.domain.earthdata.retrieval import estimated_bytes
+
+        self.assertEqual(estimated_bytes({"total_granules": 4, "total_size_mb": 2.0}), 2 * 1024 * 1024)
+        # Granules to fetch but no size reported: unknown, so the user is asked.
+        self.assertIsNone(estimated_bytes({"total_granules": 4, "total_size_mb": 0.0}))
+        self.assertEqual(estimated_bytes({"total_granules": 0, "total_size_mb": 0.0}), 0)
+        self.assertIsNone(estimated_bytes({"warning": "no estimate"}))

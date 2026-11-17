@@ -57,6 +57,7 @@ from tta_backend.domain.earthdata.retrieval import (
     aoi_handle_from_result,
     bbox_location,
     dataset_handle_from_search,
+    estimated_bytes,
     day_time_range,
     granule_count,
     nearby_dates,
@@ -429,10 +430,10 @@ async def _estimate(call: Call[Any], dataset: str, aoi: str, time_ranges: Sequen
         estimate = await call.earthdata.call(
             "estimate_retrieval_size", {"dataset_handle": dataset, "aoi_handle": aoi, "time_range": time_range}
         )
-        size = estimate.get("estimated_bytes")
-        if isinstance(size, bool) or not isinstance(size, int | float):
+        size = estimated_bytes(estimate)
+        if size is None:
             return None
-        total += int(size)
+        total += size
     return total
 
 

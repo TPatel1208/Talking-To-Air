@@ -222,7 +222,8 @@ def _standard_handlers(
         return {"granule_count": granule_count, "coverage_pct": 100 if granule_count else 0}
 
     async def estimate_retrieval_size(dataset_handle, aoi_handle, time_range, workspace_id):
-        return {"estimated_bytes": estimated_bytes}
+        # The service's own shape: megabytes over the sampled granules.
+        return {"total_granules": granule_count, "total_size_mb": round(estimated_bytes / 1024 ** 2, 6)}
 
     async def retrieve_subset(dataset_handle, aoi_handle, time_range, variables, output_format, workspace_id):
         return {"job_handle": f"job_{obs_handle}", "obs_handle": obs_handle}

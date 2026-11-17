@@ -250,6 +250,30 @@ def aoi_handle_from_result(result: dict[str, Any]) -> str | None:
     return handle if isinstance(handle, str) and handle else None
 
 
+# The service reports sizes in megabytes; read as mebibytes so a size checked
+# against a byte limit is never under-counted.
+_MEGABYTE = 1024 * 1024
+
+
+def estimated_bytes(result: dict[str, Any]) -> int | None:
+    """The bytes an ``estimate_retrieval_size`` result reports, or None when it cannot say.
+
+    The service gives ``total_size_mb``: the sampled granules' mean size times
+    the granule count, and 0 when no sampled granule reports a size. So 0 with
+    granules to fetch means unknown, and 0 with none means nothing to fetch.
+    """
+    given = result.get("estimated_bytes")
+    if isinstance(given, int | float) and not isinstance(given, bool) and given >= 0:
+        return int(given)
+    size = result.get("total_size_mb")
+    if isinstance(size, bool) or not isinstance(size, int | float) or size < 0:
+        return None
+    if size > 0:
+        return round(size * _MEGABYTE)
+    granules = result.get("total_granules")
+    return 0 if granules == 0 else None
+
+
 def granule_count(result: dict[str, Any]) -> int | None:
     """The granule count a ``check_coverage`` result reports, or None when it reports none."""
     count = result.get("granule_count")

@@ -99,7 +99,11 @@ class FakeService:
             "cancel_retrieval": self.cancel,
             "define_area_of_interest": lambda args: {"handle": "aoi_1", "location": args["location"]},
             "check_coverage": self.coverage,
-            "estimate_retrieval_size": lambda args: {"estimated_bytes": self.estimated_bytes},
+            # The service's own shape; no granule size reported reads as 0 MB over the granules.
+            "estimate_retrieval_size": lambda args: {
+                "total_granules": 1,
+                "total_size_mb": 0.0 if self.estimated_bytes is None else self.estimated_bytes / 1024 ** 2,
+            },
             "retrieve_subset": self.submit,
             "retrieve_timeseries": self.submit_series,
             "get_retrieval_status": self.status,
