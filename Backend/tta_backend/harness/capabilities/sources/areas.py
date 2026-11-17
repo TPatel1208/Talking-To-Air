@@ -11,6 +11,7 @@ region) and ``area_geometry`` / ``area_geometry_of`` (the footprint).
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -238,10 +239,45 @@ def refusal_prompt(refused: PlaceRefused, wording: str) -> str | None:
     return text if len(text) <= _PROMPT_CHARS else text[: _PROMPT_CHARS - 1] + "…"
 
 
+# A latitude,longitude pair, such as "40.735,-74.172 (Newark, NJ)"; a label in
+# brackets names the point. Both numbers need decimals, so "Route 1, 2 lanes" is not a point.
+_NUMBER = r"[-+]?\d+(?:\.\d+)?"
+_COORDINATE = r"[-+]?\d+\.\d+"
+_PAIR = re.compile(rf"(?<![\d.])({_COORDINATE})\s*,\s*({_COORDINATE})(?![\d.])")
+_LABEL = re.compile(r"\(([^()]{1,80})\)")
+# Half the side of the square drawn around a point: about a kilometre, inside one grid cell.
+POINT_HALF_SIDE_DEGREES = 0.01
+
+
+def point_region(wording: str) -> Region | None:
+    """The point a wording gives as one latitude,longitude pair, as a small
+    square around it; None when the wording holds any other numbers, such as
+    a west,south,east,north box or a distance."""
+    pairs = _PAIR.findall(wording)
+    if len(pairs) != 1 or len(re.findall(_NUMBER, _LABEL.sub("", wording))) != 2:
+        return None
+    lat, lon = (float(value) for value in pairs[0])
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return None
+    half = POINT_HALF_SIDE_DEGREES
+    west, south, east, north = lon - half, lat - half, lon + half, lat + half
+    label = _LABEL.search(wording)
+    where = f"{lat:g}, {lon:g}"
+    return Region(
+        name=f"{label.group(1).strip()} ({where})" if label else where,
+        bounds=(west, south, east, north),
+        geometry={
+            "type": "Polygon",
+            "coordinates": [[[west, south], [east, south], [east, north], [west, north], [west, south]]],
+        },
+        region_type="point",
+    )
+
+
 async def _resolve(call: Call[ResolveParams]) -> CapabilityResult:
     place = call.params.place
     try:
-        region = await call.env.places.resolve(place)
+        region = point_region(place) or await call.env.places.resolve(place)
     except PlaceRefused as refused:
         prompt = refusal_prompt(refused, place)
         if prompt is None:

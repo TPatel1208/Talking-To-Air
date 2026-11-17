@@ -79,9 +79,10 @@ BAD_TASK = "Task {number}: {problems}."
 INTERNAL = "The tool stopped on an internal error. Do not retry it; answer with what you have."
 
 RUN_WORKFLOW_DESCRIPTION = (
-    "Start a workflow from the index by name; code picks its version. Give inputs as the index lists them. "
-    "Write places, dates and the variable as the user wrote them: never expand, correct or normalise a place. "
-    "An area input takes a handle from the session ledger or the place in the user's words."
+    "Start a workflow from the index by name; code picks its version. Give inputs in the index's input "
+    "formats: a quantity from the listed ones, and dates as ISO dates or {start, end} ranges worked out from "
+    "today's date in the session ledger message. Write places as the user wrote them: never expand, correct "
+    "or normalise a place. An area input takes a handle from the session ledger or the place in the user's words."
 )
 RESUME_DESCRIPTION = (
     "Continue a workflow run the session ledger shows as waiting, as its advice for that run says; "

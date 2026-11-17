@@ -53,7 +53,8 @@ from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
 from tta_backend.harness.capabilities.registry import CapabilityRegistry
-from tta_backend.harness.context.ledger import build_ledger, render_ledger
+from tta_backend.harness.context.ledger import Ledger, build_ledger, render_ledger
+from tta_backend.harness.specialists.prompt import date_preamble
 from tta_backend.harness.jobs import check_waiting
 from tta_backend.harness.knowledge import NoteCatalogue
 from tta_backend.harness.models import (
@@ -150,6 +151,12 @@ def thread_id(identity: Identity) -> str:
 
 
 # Middleware
+
+
+def turn_context(context: RunContext, ledger: Ledger) -> str:
+    """The per-turn message: today's date, which relative dates in workflow
+    inputs are worked out from, then the ledger. It sits after the cached prefix."""
+    return f"{date_preamble(context.clock.today())}\n\n{render_ledger(ledger)}"
 
 
 def _with_ledger(messages: Sequence[AnyMessage], ledger: HumanMessage) -> list[AnyMessage]:
@@ -562,7 +569,8 @@ class Supervisor:
                 status, wording = "failed", NO_MODEL_REASON.format(role="supervisor")
             else:
                 status, wording, prose = await self._run(
-                    self._agent(choice, tools, guard, meter, render_ledger(ledger)), context, stream, guard, message,
+                    self._agent(choice, tools, guard, meter, turn_context(context, ledger)), context, stream, guard,
+                    message,
                 )
         except asyncio.CancelledError:
             await asyncio.shield(tools.close())

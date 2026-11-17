@@ -558,6 +558,19 @@ class RunSuiteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(adapter.ran, [result.case.id for result in results])
         self.assertTrue(all(result.within_budget for result in results))
 
+    async def test_a_harness_suite_scores_with_the_harness_checks_where_a_case_has_them(self):
+        from benchmark.runner import run_suite
+
+        current = await run_suite(_FakeAdapter(), self.volume)
+        harness = await run_suite(_FakeAdapter(), self.volume, harness=True)
+
+        self.assertEqual({result.check_set for result in current}, {"default"})
+        with_harness_checks = {result.case.id for result in harness if result.case.harness_checks is not None}
+        self.assertTrue(with_harness_checks)
+        for result in harness:
+            expected = "harness" if result.case.id in with_harness_checks else "default"
+            self.assertEqual(result.check_set, expected, result.case.id)
+
     async def test_raises_when_a_provider_retry_was_logged(self):
         from benchmark.runner import RateLimitDetected, run_suite
 

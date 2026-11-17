@@ -135,7 +135,10 @@ def _text(name: str, declared: Input, value: Any) -> str:
 
 
 def _date_range(name: str, value: Any) -> dict[str, JsonValue]:
-    wording = f"Input {name} must be a date range with an ISO start date and end date."
+    wording = (
+        f"Input {name} must be a date range with an ISO start date and end date, "
+        'like {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}.'
+    )
     if not isinstance(value, Mapping) or set(value) != {"start", "end"}:
         raise _Bad(wording)
     start, end = _iso_date(value["start"]), _iso_date(value["end"])

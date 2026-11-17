@@ -68,13 +68,16 @@ def capture_rate_limit_evidence():
             logger.setLevel(previous_level)
 
 
-async def run_suite(adapter: SystemAdapter, volume) -> list[CaseResult]:
-    """Run every case in order and score it; raise if any rate-limit evidence was logged."""
+async def run_suite(adapter: SystemAdapter, volume, *, harness: bool = False) -> list[CaseResult]:
+    """Run every case in order and score it; raise if any rate-limit evidence was logged.
+
+    ``harness`` scores a harness system with the cases' harness checks where they have them.
+    """
     results = []
     with capture_rate_limit_evidence() as evidence:
         for case in build_cases(volume):
             outcome = await adapter.run(case, volume)
-            results.append(score(case, outcome))
+            results.append(score(case, outcome, harness=harness))
     if evidence.matches:
         raise RateLimitDetected(f"provider rate-limit evidence during a single-user run: {evidence.matches}")
     return results
@@ -149,7 +152,7 @@ async def _main(system: str, results_dir: str) -> int:
             from benchmark.adapters.harness import HarnessAdapter
             from benchmark.scoring import HARNESS_TABLE_NOTE, PASS_THRESHOLD
 
-            results = await run_suite(HarnessAdapter(), volume)
+            results = await run_suite(HarnessAdapter(), volume, harness=True)
             print(format_results_table(results, HARNESS_TABLE_NOTE))
             folder = write_report(results, Path(results_dir) / HARNESS_RESULTS_SUBDIR, note=HARNESS_TABLE_NOTE)
             print(f"results saved to {folder}")

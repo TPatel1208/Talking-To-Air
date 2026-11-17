@@ -149,6 +149,37 @@ class AreasTests(unittest.IsolatedAsyncioTestCase):
         result = await invoke(self.env, areas.resolve, {"place": "Paris"})
         self.assertEqual(result.disclosures, ("'Paris' was resolved to Paris, Lamar County, Texas, United States.",))
 
+    async def test_a_latitude_longitude_pair_is_a_point_area_without_asking_the_places(self):
+        result = await invoke(self.env, areas.resolve, {"place": "40.735,-74.172 (Newark, NJ)"})
+
+        self.assertEqual(result.status, "done")
+        assert result.summary is not None
+        self.assertEqual(result.summary["name"], "Newark, NJ (40.735, -74.172)")
+        self.assertEqual(result.summary["region_type"], "point")
+        west, south, east, north = result.summary["bounds"]
+        self.assertAlmostEqual((west + east) / 2, -74.172)
+        self.assertAlmostEqual((south + north) / 2, 40.735)
+        self.assertEqual(self.places.asked, [])
+        self.assertEqual(
+            result.disclosures, ("'40.735,-74.172 (Newark, NJ)' was resolved to Newark, NJ (40.735, -74.172).",),
+        )
+
+    def test_only_one_decimal_latitude_longitude_pair_reads_as_a_point(self):
+        for wording, name in (
+            ("the single point 40.735,-74.172 (Newark, NJ)", "Newark, NJ (40.735, -74.172)"),
+            ("40.7, -74.1", "40.7, -74.1"),
+        ):
+            with self.subTest(wording=wording):
+                region = areas.point_region(wording)
+                assert region is not None
+                self.assertEqual(region.name, name)
+        for wording in (
+            "-75.0,39.0,-73.0,41.0", "within 50 km of Boston", "New Jersey", "95.0,10.0", "Route 1, 2 lanes",
+            "40.7,-74.1 within 5 km", "40.7,-74.1 and 41.0,-73.9",
+        ):
+            with self.subTest(wording=wording):
+                self.assertIsNone(areas.point_region(wording))
+
     async def test_an_unknown_place_is_a_question_and_nothing_is_minted(self):
         result = await invoke(self.env, areas.resolve, {"place": "Atlantis"})
         self.assertEqual(result.status, "needs_input")

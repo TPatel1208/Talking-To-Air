@@ -54,6 +54,18 @@ class SupervisorIndexTests(unittest.TestCase):
         self.assertIsNone(re.search(r"\b(?:h|handle)[_-][0-9a-f]{6,}", self.index))
 
 
+    def test_input_formats_name_every_registry_quantity_and_the_date_shapes(self) -> None:
+        from tta_backend.harness.capabilities.sources.satellite import QUANTITIES
+
+        formats = self.index[self.index.index("Input formats (run_workflow):"):self.index.index("Exploration bundles")]
+        for quantity in QUANTITIES:
+            self.assertIn(quantity, formats)
+        self.assertIn('{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}', formats)
+        self.assertIn("place exactly as the user wrote it", formats)
+        used = {declared.type for name in CATALOGUE.names() for declared in CATALOGUE.latest(name).inputs.values()}
+        for kind in used:
+            self.assertIn(f"- {kind}: ", formats)
+
 class SupervisorPromptTests(unittest.TestCase):
     def setUp(self) -> None:
         self.index = supervisor_index(CATALOGUE, CAPABILITIES)

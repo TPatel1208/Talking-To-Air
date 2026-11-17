@@ -130,8 +130,11 @@ def last_tool(model: Model, call: int = -1) -> dict[str, Any]:
 
 
 def ledger_text(messages: list[BaseMessage]) -> str:
+    """The ledger part of the per-turn message, after the date preamble it opens with."""
     [ledger] = [m for m in messages if isinstance(m, HumanMessage) and m.additional_kwargs.get("lc_source") == "ledger"]
-    return ledger.text
+    preamble, _, body = ledger.text.partition("\n\n")
+    assert preamble.startswith("Today's date is "), preamble
+    return body
 
 
 def walk(node: Any) -> list[Any]:
@@ -282,7 +285,10 @@ class InputTests(SupervisorCase):
         turn = await self.turn(self.supervisor(model))
 
         first, second, third = (last_tool(model, i) for i in (1, 2, 3))
-        self.assertEqual(first, {"status": "refused", "reason": "Input dates must be a date range with an ISO start date and end date."})
+        self.assertEqual(first, {"status": "refused", "reason": (
+            'Input dates must be a date range with an ISO start date and end date, '
+            'like {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}.'
+        )})
         self.assertEqual(second, {"status": "refused", "reason": STOP_RETRYING})
         # Not run again in this turn, even with good inputs.
         self.assertEqual(third, {"status": "refused", "reason": STOP_RETRYING})
@@ -389,7 +395,8 @@ class LedgerTests(SupervisorCase):
                 newest = max(i for i, m in enumerate(messages) if isinstance(m, HumanMessage) and not m.additional_kwargs)
                 ledger = messages[newest - 1]
                 self.assertEqual(ledger.additional_kwargs.get("lc_source"), "ledger")
-                self.assertTrue(ledger.text == EMPTY or ledger.text.startswith(HEADING))
+                body = ledger_text(messages)
+                self.assertTrue(body == EMPTY or body.startswith(HEADING))
                 self.assertEqual(sum(m.additional_kwargs.get("lc_source") == "ledger" for m in messages), 1)
         self.assertEqual(ledger_text(model.received[0]), EMPTY)
         self.assertTrue(ledger_text(model.received[2]).startswith(HEADING))
@@ -398,6 +405,17 @@ class LedgerTests(SupervisorCase):
             self.assertNotIn(HEADING, message.text)
             self.assertNotIn(EMPTY, message.text)
 
+
+    async def test_the_per_turn_message_opens_with_todays_date(self):
+        model = Model(script=[answer("Hello.")])
+        await self.turn(self.supervisor(model), "What can you do?")
+        [ledger] = [
+            m for m in model.received[0]
+            if isinstance(m, HumanMessage) and m.additional_kwargs.get("lc_source") == "ledger"
+        ]
+        today = self.f.context.clock.today().isoformat()
+        self.assertTrue(ledger.text.startswith(f"Today's date is {today} (UTC)."))
+        self.assertEqual(ledger_text(model.received[0]), EMPTY)
 
 class ResumeTests(SupervisorCase):
     async def asyncSetUp(self) -> None:
@@ -718,7 +736,7 @@ class ToolSetTests(SupervisorCase):
         self.assertIn("exactly as the user wrote them", task["places"]["description"])
         self.assertIn("as the user wrote it", schemas["resolve_area"]["properties"]["place"]["description"])
         prompt = self.supervisor(Model(script=[])).prompt
-        self.assertIn("Use the user's own wording for places", prompt)
+        self.assertIn("places in the user's own words", prompt)
 
     def test_the_prompt_leaves_sources_disclosures_and_failure_text_to_code(self):
         prompt = self.supervisor(Model(script=[])).prompt
