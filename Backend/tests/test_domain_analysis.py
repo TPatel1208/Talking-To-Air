@@ -304,3 +304,18 @@ class ThresholdTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SearchHitTests(unittest.TestCase):
+    def test_a_hit_is_read_from_its_summary_as_the_service_sends_it(self):
+        from tta_backend.domain.earthdata.retrieval import dataset_handle_from_search, search_hits
+
+        reply = {"datasets": [
+            {"handle": "dataset_a", "summary": {"concept_id": "C1-OTHER", "short_name": "OTHER"}},
+            {"handle": "dataset_b", "summary": {
+                "concept_id": "C3685896708-LARC_CLOUD", "short_name": "TEMPO_NO2_L3", "entry_title": "TEMPO NO2",
+            }},
+        ], "count": 2}
+        self.assertEqual(dataset_handle_from_search(reply, "C3685896708-LARC_CLOUD"), "dataset_b")
+        self.assertIsNone(dataset_handle_from_search(reply, "C9-MISSING"))
+        self.assertEqual(search_hits(reply)[1]["short_name"], "TEMPO_NO2_L3")

@@ -215,11 +215,24 @@ def nearby_dates(day: date, cadence: str, *, today: date, end: date | None = Non
     return [d for d in candidates if d <= today]
 
 
+def search_hit(entry: dict[str, Any]) -> dict[str, Any]:
+    """One ``search_datasets`` hit's fields in one mapping. The service lists
+    each hit as ``{"handle", "summary": {"concept_id", "short_name",
+    "entry_title", ...}}``; fields given beside the summary are read too."""
+    summary = entry.get("summary")
+    return {**entry, **summary} if isinstance(summary, dict) else dict(entry)
+
+
+def search_hits(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every hit of a ``search_datasets`` reply, each read with ``search_hit``."""
+    entries = result.get("datasets") or result.get("results") or []
+    return [search_hit(entry) for entry in entries if isinstance(entry, dict)] if isinstance(entries, list) else []
+
+
 def dataset_handle_from_search(result: dict[str, Any], collection_id: str) -> str | None:
     """The handle of the ``search_datasets`` hit whose concept id is exactly
     ``collection_id``, or None when no hit is that collection."""
-    entries = result.get("datasets") or result.get("results") or []
-    candidates = [entry for entry in entries if isinstance(entry, dict)] if isinstance(entries, list) else []
+    candidates = search_hits(result)
     if not candidates and isinstance(result.get("concept_id"), str):
         candidates = [result]
     for entry in candidates:

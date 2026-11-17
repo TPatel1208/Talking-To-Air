@@ -62,6 +62,7 @@ from tta_backend.domain.earthdata.retrieval import (
     nearby_dates,
     pinned_companion_variables,
     request_variables,
+    search_hits,
     size_gate,
     span_time_range,
 )
@@ -955,13 +956,10 @@ NO_REGISTERED_MATCH = "No registered product matched; only registered products c
 
 async def _search(call: Call[SearchParams]) -> CapabilityResult:
     found = await call.earthdata.call("search_datasets", {"query": call.params.query, "filters": None})
-    entries = found.get("datasets") or found.get("results") or []
     registry = load_registry()
     listed: list[JsonValue] = []
     any_registered = False
-    for entry in entries if isinstance(entries, list) else []:
-        if not isinstance(entry, dict):
-            continue
+    for entry in search_hits(found):
         product = _registry_key_for(entry, registry)
         any_registered = any_registered or product is not None
         if len(listed) >= call.params.limit:
@@ -970,7 +968,7 @@ async def _search(call: Call[SearchParams]) -> CapabilityResult:
         listed.append({
             "dataset": handle if isinstance(handle, str) else None,
             "short_name": _short(str(entry.get("short_name") or ""), 60) or None,
-            "title": _short(str(entry.get("title") or ""), 100) or None,
+            "title": _short(str(entry.get("entry_title") or entry.get("title") or ""), 100) or None,
             "product": product,
         })
     values: dict[str, JsonValue] = {"datasets": listed, "count": len(listed)}

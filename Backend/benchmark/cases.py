@@ -132,10 +132,10 @@ def _registry_entry(query: str, handle: str) -> dict[str, Any] | None:
     wanted = query.strip().upper().replace(" ", "_")
     for key, cfg in load_registry().items():
         if query.strip() in (cfg.collection_id, cfg.short_name) or wanted == key.upper():
-            return {
-                "handle": handle, "dataset_handle": handle, "concept_id": cfg.collection_id,
-                "short_name": cfg.short_name or key, "title": cfg.description or key,
-            }
+            return {"handle": handle, "summary": {
+                "concept_id": cfg.collection_id, "short_name": cfg.short_name or key,
+                "version": cfg.version, "entry_title": cfg.description or key,
+            }}
     return None
 
 
@@ -156,14 +156,14 @@ def _no2_hits() -> list[dict[str, Any]]:
 def _soil_moisture_hits(handle: str) -> list[dict[str, Any]]:
     """SMAP soil moisture hits. Not registered, so the harness lists them with no product."""
     return [
-        {
-            "handle": handle, "dataset_handle": handle, "concept_id": "C0000000001-NSIDC_ECS",
-            "short_name": "SPL3SMP_E", "title": "SMAP L3 Radiometer Global Daily 9 km EASE-Grid Soil Moisture",
-        },
-        {
-            "handle": f"{handle}_l4", "dataset_handle": f"{handle}_l4", "concept_id": "C0000000002-NSIDC_ECS",
-            "short_name": "SPL4SMGP", "title": "SMAP L4 Global 3-hourly 9 km EASE-Grid Surface and Root Zone Soil Moisture",
-        },
+        {"handle": handle, "summary": {
+            "concept_id": "C0000000001-NSIDC_ECS", "short_name": "SPL3SMP_E",
+            "entry_title": "SMAP L3 Radiometer Global Daily 9 km EASE-Grid Soil Moisture",
+        }},
+        {"handle": f"{handle}_l4", "summary": {
+            "concept_id": "C0000000002-NSIDC_ECS", "short_name": "SPL4SMGP",
+            "entry_title": "SMAP L4 Global 3-hourly 9 km EASE-Grid Surface and Root Zone Soil Moisture",
+        }},
     ]
 
 

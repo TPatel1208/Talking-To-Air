@@ -84,7 +84,10 @@ class FakeService:
     def search(self, args: dict[str, Any]) -> dict[str, Any]:
         if self.search_hits is not None:
             return {"datasets": self.search_hits}
-        return {"datasets": [{"handle": "dataset_1", "concept_id": args["query"], "short_name": "TEMPO_NO2_L3", "title": "TEMPO NO2"}]}
+        # The service's own shape: each hit's fields sit under its summary.
+        return {"datasets": [{"handle": "dataset_1", "summary": {
+            "concept_id": args["query"], "short_name": "TEMPO_NO2_L3", "version": "V04", "entry_title": "TEMPO NO2",
+        }}], "count": 1}
 
     def cancel(self, args: dict[str, Any]) -> dict[str, Any]:
         self.cancelled.append(args["job_handle"])
