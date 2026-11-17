@@ -328,6 +328,12 @@ function AuthenticatedApp({ user, onLogout }) {
   const rightPanelCollapsed = rightPanelTab === null
   const toggleSessionsCollapsed = useCallback(() => setSessionsCollapsed(v => !v), [])
   const toggleChatCollapsed = useCallback(() => setChatCollapsed(v => !v), [])
+  // A request from the chat to show a connector's card in the sidebar.
+  const [connectorsRequest, setConnectorsRequest] = useState(null)
+  const openConnectors = useCallback((connectorType) => {
+    setSessionsCollapsed(false)
+    setConnectorsRequest(prev => ({ connectorType, nonce: (prev?.nonce || 0) + 1 }))
+  }, [])
   const toggleRightPanelCollapsed = useCallback(() => setRightPanelTab(tab => tab ? null : 'discover'), [])
 
   const resetCompare = useCallback(() => {
@@ -427,6 +433,7 @@ function AuthenticatedApp({ user, onLogout }) {
         user={user}
         artifacts={artifacts}
         collapsed={sessionsCollapsed}
+        connectorsRequest={connectorsRequest}
         onCollapse={toggleSessionsCollapsed}
         onExpand={toggleSessionsCollapsed}
       />
@@ -452,6 +459,7 @@ function AuthenticatedApp({ user, onLogout }) {
             compareSelection={compareSelection}
             onToggleCompareSlot={toggleCompareSlot}
             onCollapse={toggleChatCollapsed}
+            onOpenConnectors={openConnectors}
           />
         </div>
       )}

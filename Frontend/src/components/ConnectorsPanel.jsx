@@ -4,8 +4,8 @@ import { buildCredentialRequest, connectorBadge, credentialFields, isConnectorLi
 
 const CONNECTOR_ICONS = { earthdata: '🛰️', epa_aqs: '📡' }
 
-function ConnectorCard({ connector, onSave, onDisconnect }) {
-  const [expanded, setExpanded] = useState(false)
+function ConnectorCard({ connector, onSave, onDisconnect, focused = false }) {
+  const [expanded, setExpanded] = useState(focused)
   const [values, setValues] = useState({})
   const [busy, setBusy] = useState(false)
   const [cardError, setCardError] = useState(null)
@@ -172,7 +172,7 @@ function ConnectorCard({ connector, onSave, onDisconnect }) {
   )
 }
 
-export default function ConnectorsPanel() {
+export default function ConnectorsPanel({ focusType = null }) {
   const { connectors, loading, error, notConfigured, saveCredentials, disconnect } = useConnectors()
 
   if (notConfigured) {
@@ -200,6 +200,7 @@ export default function ConnectorsPanel() {
           connector={connector}
           onSave={saveCredentials}
           onDisconnect={disconnect}
+          focused={connector.connector_type === focusType}
         />
       ))}
     </div>

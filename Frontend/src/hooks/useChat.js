@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { createSseParser } from '../utils/sseParser'
 import { applyWorkflowEvent, INITIAL_WORKFLOW_STATE } from '../utils/workflowStage'
 import { extractSuggestedFollowups } from '../utils/followups'
+import { hydrateHistoryMessage, normalizeResults } from '../utils/resultMode'
 import { extractVariableChoice } from '../utils/variableChoice'
 import { classifyHistoryFetchFailure, historyStateReducer } from '../utils/historyLoad'
 import { apiFetch } from '../utils/apiFetch.js'
@@ -280,10 +281,7 @@ export function useChat(onJobProgress) {
           : { type: 'failed' }
       } else {
         const data = await res.json()
-        const hydrated = (data.messages || []).map(m => ({
-          ...m,
-          artifacts: m.artifacts || [],
-        }))
+        const hydrated = (data.messages || []).map(m => hydrateHistoryMessage(m, extractSuggestedFollowups))
         action = { type: 'loaded', messages: hydrated }
       }
     } catch {
@@ -382,10 +380,6 @@ export function useChat(onJobProgress) {
         // not join onto what is on screen. Nothing to render now; the turn's
         // end swaps the bubble for history, which has all of it.
         state.truncated = true
-      } else if (event === 'tool_call') {
-        queueAssistantUpdate(streamId, msg => ({
-          toolCalls: [...(msg.toolCalls || []), { name: data.name, args: data.args }],
-        }))
       } else if (event === 'status') {
         queueAssistantUpdate(streamId, msg => ({
           statusMessage: data.message || '',
@@ -449,6 +443,8 @@ export function useChat(onJobProgress) {
           charts: msg.charts || [],
           artifacts: msg.artifacts?.length ? msg.artifacts : (data.artifacts || []),
           suggestedFollowups: extractSuggestedFollowups(data),
+          label: typeof data.label === 'string' ? data.label : null,
+          results: normalizeResults(data.results),
           // The deterministic variable-choice picker, when the resolver
           // couldn't confidently choose. null the vast majority of turns.
           variableChoice: extractVariableChoice(data),
@@ -521,7 +517,6 @@ export function useChat(onJobProgress) {
   const assistantPlaceholder = useCallback((streamId) => ({
     role: 'assistant',
     content: '',
-    toolCalls: [],
     statusMessage: '',
     workflowStage: INITIAL_WORKFLOW_STATE,
     startedAt: Date.now(),

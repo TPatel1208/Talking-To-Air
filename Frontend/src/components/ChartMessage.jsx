@@ -12,6 +12,7 @@ import Plotly from 'plotly.js-dist-min'
 import _createPlotlyComponent from 'react-plotly.js/factory'
 import { resolveCsvExport, resolveNetcdfExport } from '../utils/chartExport.js'
 import { buildOverlayTraces } from '../utils/timeseriesCompare.js'
+import { axisUnits, chartLines, hasMultipleLines } from '../utils/timeseriesSeries.js'
 import { availableAxes, profileLayout, profileTraces, spreadCaveat } from '../utils/verticalProfile.js'
 import { apiFetch } from '../utils/apiFetch.js'
 import { formatUnits, plotlySuperscript } from '../utils/displayFormat.js'
@@ -275,23 +276,44 @@ export function TimeSeriesPanel({ payload }) {
     if (!mounted.current) { mounted.current = true; requestAnimationFrame(() => setRevision(r => r + 1)) }
   }, [])
 
-  const data = [{
-    type: 'scatter', mode: 'lines+markers',
-    x: times, y: values,
-    line:          { color: '#1D9E75', width: 2 },
-    marker:        { color: '#1D9E75', size: 5 },
-    fill:          'tozeroy', fillcolor: 'rgba(29,158,117,0.08)',
-    hovertemplate: `%{x|%Y-%m-%d %H:%M}<br>${stat}: %{y:.3e} ${plotlySuperscript(formatUnits(units))}<extra></extra>`,
-  }]
+  const multiple = hasMultipleLines(payload)
+  const lines = chartLines(payload)
+  const unitsByAxis = axisUnits(lines)
+  const secondAxis = lines.some(line => line.axis === 'y2')
 
+  const data = multiple
+    ? lines.map(line => ({
+      type: 'scatter', mode: 'lines+markers', name: line.label,
+      x: line.times, y: line.values, yaxis: line.axis,
+      line: { color: line.color, width: 2 },
+      marker: { color: line.color, size: 4 },
+      hovertemplate: `%{x|%Y-%m-%d %H:%M}<br>${line.label}: %{y:.4~g} ${plotlySuperscript(formatUnits(line.units))}<extra></extra>`,
+    }))
+    : [{
+      type: 'scatter', mode: 'lines+markers',
+      x: times, y: values,
+      line:          { color: '#1D9E75', width: 2 },
+      marker:        { color: '#1D9E75', size: 5 },
+      fill:          'tozeroy', fillcolor: 'rgba(29,158,117,0.08)',
+      hovertemplate: `%{x|%Y-%m-%d %H:%M}<br>${stat}: %{y:.3e} ${plotlySuperscript(formatUnits(units))}<extra></extra>`,
+    }]
+
+  const yTitle = multiple ? plotlySuperscript(formatUnits(unitsByAxis.y)) : `${stat} (${plotlySuperscript(formatUnits(units))})`
   const layout = {
     paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
     font:   { family: "'Manrope', system-ui, sans-serif", size: 12, color: '#333333' },
-    margin: { t: 40, r: 16, b: 40, l: 16 },
+    margin: { t: 40, r: secondAxis ? 48 : 16, b: multiple ? 60 : 40, l: 16 },
     title:  { text: title, font: { size: 13, weight: 500 }, x: 0.5, xanchor: 'center' },
     height: 300,
     xaxis:  { title: { text: 'Time' }, showgrid: true, gridcolor: 'rgba(0,0,0,0.06)', zeroline: false, tickfont: { size: 10 } },
-    yaxis:  { title: { text: `${stat} (${plotlySuperscript(formatUnits(units))})` }, showgrid: true, gridcolor: 'rgba(0,0,0,0.06)', zeroline: false, tickfont: { size: 10 }, exponentformat: 'power' },
+    yaxis:  { title: { text: yTitle }, showgrid: true, gridcolor: 'rgba(0,0,0,0.06)', zeroline: false, tickfont: { size: 10 }, exponentformat: 'power' },
+    ...(secondAxis ? {
+      yaxis2: {
+        title: { text: plotlySuperscript(formatUnits(unitsByAxis.y2)) }, overlaying: 'y', side: 'right',
+        showgrid: false, zeroline: false, tickfont: { size: 10 }, exponentformat: 'power',
+      },
+    } : {}),
+    ...(multiple ? { showlegend: true, legend: { orientation: 'h', y: -0.25 } } : {}),
     datarevision: revision,
   }
 

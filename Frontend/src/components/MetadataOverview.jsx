@@ -15,6 +15,10 @@ import {
   levelResolutionFields,
 } from '../utils/metadataDisplay'
 import { MetaField } from './metadataPrimitives.jsx'
+import ModeBadge from './ModeBadge'
+import { useChartProvenance } from '../hooks/useChartProvenance.js'
+import { chartMode, productUsed } from '../utils/chartProvenance.js'
+import { modeBadge } from '../utils/resultMode.js'
 import { smallButtonStyle, copyToClipboard } from '../utils/metadataUiHelpers.js'
 
 export function MetadataOverview({ chart, onViewStatistics, onViewFullMetadata, note }) {
@@ -25,6 +29,9 @@ export function MetadataOverview({ chart, onViewStatistics, onViewFullMetadata, 
   const dateRange = dateRangeLabel(provenance)
   const maturity = useMemo(() => maturityFields(chart), [chart])
   const level = useMemo(() => levelResolutionFields(chart), [chart])
+  const harness = useChartProvenance(chart?.chart_id)
+  const badge = modeBadge(chartMode(chart, harness))
+  const product = productUsed(harness)
 
   if (chart?.type === 'table') {
     const firstRow = chart.rows?.[0] || {}
@@ -48,6 +55,7 @@ export function MetadataOverview({ chart, onViewStatistics, onViewFullMetadata, 
             </button>
           )}
         </div>
+        <ModeBadge badge={badge} />
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px' }}>
           <MetaField label="Source" value="EPA Air Quality System (AQS)" />
           <MetaField label="Pollutant" value={pollutant} />
@@ -69,6 +77,7 @@ export function MetadataOverview({ chart, onViewStatistics, onViewFullMetadata, 
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+      <ModeBadge badge={badge} />
       <div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginBottom: '8px' }}>
           <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)' }}>
@@ -129,6 +138,22 @@ export function MetadataOverview({ chart, onViewStatistics, onViewFullMetadata, 
           {level.axisVariable && (
             <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
               Resolved against {level.axisVariable}
+            </div>
+          )}
+        </div>
+      )}
+
+      {product && (
+        <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: '10px', padding: '11px 13px' }}>
+          <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '5px' }}>
+            Product used
+          </div>
+          {product.key && (
+            <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>{product.key}</div>
+          )}
+          {product.ruleText && (
+            <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginTop: '4px', lineHeight: 1.5 }}>
+              {product.ruleText}
             </div>
           )}
         </div>

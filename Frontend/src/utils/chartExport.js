@@ -20,6 +20,17 @@ export function resolveCsvExport(chart) {
   // is the one chart type where that is true; heatmaps fall through to the
   // refusal below rather than hand over their thinned grid.
   if (chart?.type === 'timeseries') {
+    if (Array.isArray(chart.series) && chart.series.length > 1) {
+      const rows = chart.series.flatMap(line => (line.times || []).map((time, i) => ({
+        variable: chart.variable,
+        series: line.label,
+        time,
+        stat: chart.stat,
+        value: line.values?.[i],
+        units: line.units,
+      })))
+      if (rows.length) return { kind: 'client', rows }
+    }
     const rows = (chart.times || []).map((time, i) => ({
       variable: chart.variable,
       time,

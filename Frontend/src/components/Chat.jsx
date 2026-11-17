@@ -10,8 +10,10 @@ import CardPreview from './CardPreview.jsx'
 import { compactDateRange } from '../utils/displayFormat.js'
 import { compareBadgeLabel, isChartComparable, isSelectionFull, slotIndexOf } from '../utils/compareMode'
 import { reachableArtifacts } from '../utils/artifactReachability'
-import { toolStepsTitle } from '../utils/toolSteps'
 import VariableChoicePicker from './VariableChoicePicker'
+import ModeBadge from './ModeBadge'
+import ResultActions from './ResultActions'
+import { answerBadge, modeBadge } from '../utils/resultMode'
 import { API_BASE } from '../config.js'
 import { PANEL_HEADER_HEIGHT } from '../utils/panelLayout.js'
 import { isGroundMapArtifact } from '../utils/groundMap.js'
@@ -35,71 +37,6 @@ function outputLabel(item) {
     subtitle = isGroundMapArtifact(artifact) ? `Map · ${rowCount} monitors` : `Table · ${rowCount} rows`
   }
   return { title: artifact.title || 'Output', subtitle }
-}
-
-/* ── One step inside the collapsed tool-call card ── */
-function ToolStep({ tc }) {
-  const [showArgs, setShowArgs] = useState(false)
-  const argStr  = tc.args ? JSON.stringify(tc.args, null, 2) : ''
-  const hasArgs = argStr && argStr !== '{}'
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '7px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-        <span style={{ color: 'var(--teal)', fontWeight: 700, flexShrink: 0 }}>✓</span>
-        <span
-          onClick={() => hasArgs && setShowArgs(v => !v)}
-          style={{ fontFamily: 'var(--font-mono)', cursor: hasArgs ? 'pointer' : 'default', userSelect: 'none' }}
-        >
-          {tc.name}()
-        </span>
-      </div>
-      {showArgs && (
-        <pre style={{
-          margin: '0 0 0 20px', padding: '6px 8px',
-          background: 'var(--bg-card)', borderRadius: '6px',
-          fontSize: '10px', overflowX: 'auto',
-          color: 'var(--text-secondary)', border: '1px solid var(--border)',
-        }}>
-          {argStr}
-        </pre>
-      )}
-    </div>
-  )
-}
-
-/* ── Collapsible tool card: "dispatch · N requests" or "N steps" (toolStepsTitle) ── */
-function ToolStepsCard({ toolCalls, error }) {
-  const [expanded, setExpanded] = useState(false)
-  if (!toolCalls?.length) return null
-
-  return (
-    <div style={{
-      border: '1px solid var(--border)', borderRadius: '10px',
-      background: 'var(--bg-secondary)', overflow: 'hidden',
-    }}>
-      <div
-        onClick={() => setExpanded(v => !v)}
-        style={{ display: 'flex', alignItems: 'center', gap: '7px', padding: '9px 12px', cursor: 'pointer' }}
-      >
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--teal)" strokeWidth="2" style={{ flexShrink: 0 }}>
-          <path d="M14.5 3.5a4 4 0 0 0-5.4 4.7L3 14.3v3.2h3.2l6.1-6.1a4 4 0 0 0 4.7-5.4l-2.9 2.9-2-2z" strokeLinejoin="round" />
-        </svg>
-        <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-secondary)', flex: 1 }}>
-          {toolStepsTitle(toolCalls, error)}
-        </span>
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-          style={{ color: 'var(--text-muted)', transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform .15s' }}>
-          <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      </div>
-      {expanded && (
-        <div style={{ padding: '0 12px 11px 34px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-          {toolCalls.map((tc, i) => <ToolStep key={i} tc={tc} />)}
-        </div>
-      )}
-    </div>
-  )
 }
 
 /* ── Compact output card — click opens the full view in the central
@@ -132,6 +69,7 @@ function OutputCard({ item, active, inert, slotBadge, onClick }) {
           <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '1px' }}>{subtitle}</div>
         )}
         <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '5px' }}>
+          <ModeBadge badge={modeBadge(item.data.mode)} />
           <div style={{
             display: 'inline-block', fontSize: '10.5px', fontWeight: 700,
             color: 'var(--teal-text)', background: 'var(--teal-light)',
@@ -156,7 +94,7 @@ function OutputCard({ item, active, inert, slotBadge, onClick }) {
 }
 
 /* ── Loading indicator ── */
-function LoadingMessage({ toolCalls, statusMessage, workflowStage, startedAt }) {
+function LoadingMessage({ statusMessage, workflowStage, startedAt }) {
   const hasWorkflowStrip = workflowStage?.active
   return (
     <div style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'flex-start', gap: '10px' }}>
@@ -177,37 +115,7 @@ function LoadingMessage({ toolCalls, statusMessage, workflowStage, startedAt }) 
         background: 'var(--bg-card)', border: '1px solid var(--border)',
         fontSize: '13px', lineHeight: '1.6', minWidth: '72px',
       }}>
-        {toolCalls?.length > 0 ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-            {toolCalls.map((tc, i) => (
-              <ToolStep key={i} tc={tc} />
-            ))}
-            {hasWorkflowStrip ? (
-              <div style={{ marginTop: '5px', paddingLeft: '3px' }}>
-                <WorkflowStrip workflowStage={workflowStage} startedAt={startedAt} />
-              </div>
-            ) : cleanStatusMessage(statusMessage) && (
-              <div style={{
-                marginTop: '5px',
-                paddingLeft: '3px',
-                color: 'var(--text-muted)',
-                fontSize: '12px',
-                lineHeight: 1.45,
-              }}>
-                {cleanStatusMessage(statusMessage)}
-              </div>
-            )}
-            <div style={{ display: 'flex', gap: '4px', paddingTop: '8px' }}>
-              {[0, 1, 2].map(i => (
-                <div key={i} style={{
-                  width: '4px', height: '4px', borderRadius: '50%',
-                  background: 'var(--text-muted)',
-                  animation: `wm-bounce 1.2s ease-in-out ${i * 0.2}s infinite`,
-                }}/>
-              ))}
-            </div>
-          </div>
-        ) : hasWorkflowStrip ? (
+        {hasWorkflowStrip ? (
           <WorkflowStrip workflowStage={workflowStage} startedAt={startedAt} />
         ) : cleanStatusMessage(statusMessage) ? (
           <div style={{ color: 'var(--text-muted)', fontSize: '12px', lineHeight: 1.45 }}>
@@ -287,7 +195,7 @@ function ReloadSessionButton({ onReloadSession }) {
 function MessageBubble({
   msg, onFollowupClick, focusedOutput, onFocusOutput,
   compareMode, compareSelection, onToggleCompareSlot, onCompareCapFull,
-  onReloadSession,
+  onReloadSession, onOpenConnectors,
 }) {
   const isUser = msg.role === 'user'
   const comparing = compareMode === 'active'
@@ -345,10 +253,7 @@ function MessageBubble({
 
       {/* Bubble content */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', maxWidth: '78%', minWidth: 0 }}>
-        {/* Tool calls above bubble */}
-        {!isUser && msg.toolCalls?.length > 0 && (
-          <ToolStepsCard toolCalls={msg.toolCalls} error={msg.isError} />
-        )}
+        {!isUser && !msg.isLoading && <ModeBadge badge={answerBadge(msg)} />}
 
         {(msg.content || isUser) && (
           <div
@@ -482,6 +387,10 @@ function MessageBubble({
           </div>
         )}
 
+        {!isUser && !msg.isLoading && (
+          <ResultActions results={msg.results} onOpenConnectors={onOpenConnectors} />
+        )}
+
         {/* The deterministic variable-choice picker — shown when the
             resolver couldn't confidently choose. Clicking a candidate sends
             its reconstructed prompt through the same path as a typed message. */}
@@ -586,7 +495,7 @@ export default function Chat({
   historyError, onRetryHistory, onReloadSession,
   focusedOutput, onFocusOutput,
   compareMode = 'off', compareSelection = [], onToggleCompareSlot,
-  onCollapse,
+  onCollapse, onOpenConnectors,
 }) {
   const [input, setInput] = useState('')
   const scrollContainerRef = useRef(null)
@@ -783,7 +692,6 @@ export default function Chat({
               msg.isLoading ? (
                 <LoadingMessage
                   key={i}
-                  toolCalls={msg.toolCalls}
                   statusMessage={msg.statusMessage}
                   workflowStage={msg.workflowStage}
                   startedAt={msg.startedAt}
@@ -800,6 +708,7 @@ export default function Chat({
                   onToggleCompareSlot={onToggleCompareSlot}
                   onCompareCapFull={showCapFullHint}
                   onReloadSession={onReloadSession}
+                  onOpenConnectors={onOpenConnectors}
                 />
               )
             )}

@@ -118,10 +118,17 @@ export default function SessionSidebar({
   user,
   artifacts = [],
   collapsed = false,
+  connectorsRequest = null,
   onCollapse,
   onExpand,
 }) {
   const [nav, setNav] = useState('chats')
+  // A connectors request from the chat switches to that view once per request.
+  const [seenRequest, setSeenRequest] = useState(connectorsRequest?.nonce ?? 0)
+  if (connectorsRequest && connectorsRequest.nonce !== seenRequest) {
+    setSeenRequest(connectorsRequest.nonce)
+    setNav('connectors')
+  }
 
   const getSessionId = (session) => typeof session === 'string' ? session : session?.id
   const getSessionTitle = (session, index) => {
@@ -498,7 +505,7 @@ export default function SessionSidebar({
           <div style={{ fontSize: '10.5px', fontWeight: 700, letterSpacing: '0.06em', color: 'var(--text-muted)', textTransform: 'uppercase', padding: '0 10px 8px' }}>
             Connected services
           </div>
-          <ConnectorsPanel />
+          <ConnectorsPanel key={connectorsRequest?.nonce ?? 0} focusType={connectorsRequest?.connectorType} />
         </div>
       )}
 

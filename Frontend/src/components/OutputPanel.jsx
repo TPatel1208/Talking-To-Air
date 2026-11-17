@@ -20,6 +20,8 @@ import {
 import { selectFrame } from '../utils/frameStack.js'
 import { PANEL_MIN_WIDTH, PANEL_HEADER_HEIGHT } from '../utils/panelLayout.js'
 import { MetadataOverview } from './MetadataOverview.jsx'
+import ModeBadge from './ModeBadge'
+import { modeBadge } from '../utils/resultMode.js'
 import { MetaField } from './metadataPrimitives.jsx'
 import { smallButtonStyle, copyToClipboard } from '../utils/metadataUiHelpers.js'
 import { resolveMasking, resolveRegionFidelity, formatQaPassRate, regionTypeNote, regionOriginNote } from '../utils/maskingProvenance'
@@ -575,6 +577,7 @@ function TableMetadataOverview({ artifact, page, status }) {
   const loadingOr = (value) => (status === 'loading' ? '…' : fmt(value))
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+      <ModeBadge badge={modeBadge(artifact?.mode)} />
       <div>
         <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '8px' }}>
           This table
@@ -933,8 +936,9 @@ function ArtifactTabsPanel({
         />
       </div>
 
-      {metaChips.length > 0 && (
-        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', padding: '12px 22px 0' }}>
+      {(metaChips.length > 0 || artifact.mode) && (
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', padding: '12px 22px 0' }}>
+          <ModeBadge badge={modeBadge(artifact.mode)} />
           {metaChips.map((chip, i) => <MetaChip key={i}>{chip}</MetaChip>)}
         </div>
       )}
@@ -1169,7 +1173,8 @@ export default function OutputPanel({
         </div>
         <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '18px 22px' }}>
           <div style={{ fontSize: '16px', fontWeight: 800, color: 'var(--text-primary)', marginBottom: '4px' }}>{artifact.title || 'Output'}</div>
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', margin: '10px 0 16px' }}>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', margin: '10px 0 16px' }}>
+            <ModeBadge badge={modeBadge(artifact.mode)} />
             {artifactMetaChips(artifact).map((chip, i) => <MetaChip key={i}>{chip}</MetaChip>)}
           </div>
           <ArtifactMessage artifact={artifact} />
@@ -1193,8 +1198,9 @@ export default function OutputPanel({
         />
       </div>
 
-      {metaChips.length > 0 && (
-        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', padding: '12px 22px 0' }}>
+      {(metaChips.length > 0 || chart.mode) && (
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', padding: '12px 22px 0' }}>
+          <ModeBadge badge={modeBadge(chart.mode)} />
           {metaChips.map((chip, i) => <MetaChip key={i}>{chip}</MetaChip>)}
         </div>
       )}
