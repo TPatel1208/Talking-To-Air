@@ -272,13 +272,36 @@ class SizeGateTests(SatelliteCase):
         self.assertIn("about 300 MB, above the 200 MB limit", failure.reason)
         self.assertNotIn("retrieve_subset", self.tools())
 
-    async def test_an_absent_estimate_is_treated_as_between_the_caps(self):
+    async def test_an_absent_estimate_over_many_granules_is_treated_as_between_the_caps(self):
         self.service.estimated_bytes = None
-        result = await invoke(self.env, GET, self.params())
+        # The fake counts one granule a day, so a month is past the unsized limit.
+        month = {"start": "2024-06-01", "end": "2024-06-30"}
+        result = await invoke(self.env, GET, self.params(dates=month, date_role="range"))
         self.assertEqual(result.status, "needs_input")
         assert result.question is not None
         self.assertIn("of unknown size", result.question.prompt)
         self.assertNotIn("retrieve_subset", self.tools())
+
+    async def test_an_absent_estimate_over_few_granules_goes_ahead_and_says_so(self):
+        self.service.estimated_bytes = None
+        result = await invoke(self.env, GET, self.params())
+        self.assertEqual(result.status, "done")
+        self.assertIn("retrieve_subset", self.tools())
+        self.assertIn(
+            "The data provider reports no size for TEMPO_NO2's files, so this retrieval of 1 granule was not "
+            "checked against the size limits.",
+            result.disclosures,
+        )
+
+    def test_the_size_gate_lets_only_small_unsized_retrievals_through(self):
+        from tta_backend.domain.earthdata.retrieval import MAX_UNSIZED_GRANULES, size_gate
+
+        gate = {"soft": 100, "hard": 200, "confirmed": False, "max_unsized_granules": MAX_UNSIZED_GRANULES}
+        self.assertEqual(size_gate(None, granules=MAX_UNSIZED_GRANULES, **gate), "proceed")
+        self.assertEqual(size_gate(None, granules=MAX_UNSIZED_GRANULES + 1, **gate), "confirm")
+        self.assertEqual(size_gate(None, granules=None, **gate), "confirm")
+        self.assertEqual(size_gate(None, granules=0, **gate), "confirm")
+        self.assertEqual(size_gate(150, granules=1, **gate), "confirm")
 
 
 class NoDataTests(SatelliteCase):

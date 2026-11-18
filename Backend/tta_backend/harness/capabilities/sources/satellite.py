@@ -64,6 +64,7 @@ from tta_backend.domain.earthdata.retrieval import (
     pinned_companion_variables,
     request_variables,
     search_hits,
+    MAX_UNSIZED_GRANULES,
     size_gate,
     span_time_range,
 )
@@ -303,6 +304,12 @@ def _choice_disclosures(job: Mapping[str, Any], cfg: CollectionConfig) -> list[s
             f"Moved from {skipped['product']} to {product}: {skipped['product']} was ruled out "
             f"({skipped['reason']}: {skipped['detail']})."
         )
+    unsized = job.get("unsized_granules")
+    if isinstance(unsized, int) and unsized > 0:
+        lines.append(
+            f"The data provider reports no size for {product}'s files, so this retrieval of {unsized} "
+            f"granule{'s' if unsized != 1 else ''} was not checked against the size limits."
+        )
     return lines
 
 
@@ -462,8 +469,10 @@ async def _begin(call: Call[GetDataParams]) -> JobRef | CapabilityResult:
 
     # Coverage, applied by the role of the dates.
     dropped: list[str] = []
+    granules = 0
     if dates.kind == "range":
-        if not await _granules(call, dataset, aoi, span_time_range(dates.start, dates.end)):
+        granules = await _granules(call, dataset, aoi, span_time_range(dates.start, dates.end))
+        if not granules:
             nearest: list[str] = []
             if p.date_role == "subject":
                 nearest = await _nearest_with_data(call, dataset, aoi, dates, cfg.cadence)
@@ -472,8 +481,10 @@ async def _begin(call: Call[GetDataParams]) -> JobRef | CapabilityResult:
     else:
         kept: list[date] = []
         for day in dates.listed:
-            if await _granules(call, dataset, aoi, day_time_range(day)):
+            count = await _granules(call, dataset, aoi, day_time_range(day))
+            if count:
                 kept.append(day)
+                granules += count
             else:
                 dropped.append(day.isoformat())
         if not kept:
@@ -490,7 +501,8 @@ async def _begin(call: Call[GetDataParams]) -> JobRef | CapabilityResult:
     estimated = await _estimate(call, dataset, aoi, [time_range for time_range, _ in plan])
     limits = call.limits
     decision = size_gate(
-        estimated, soft=limits.retrieval_soft_bytes, hard=limits.retrieval_hard_bytes, confirmed=p.confirmed
+        estimated, soft=limits.retrieval_soft_bytes, hard=limits.retrieval_hard_bytes, confirmed=p.confirmed,
+        granules=granules, max_unsized_granules=MAX_UNSIZED_GRANULES,
     )
     if decision == "refuse":
         assert estimated is not None
@@ -538,6 +550,8 @@ async def _begin(call: Call[GetDataParams]) -> JobRef | CapabilityResult:
         "dropped": list(dropped),
         "skipped": list(choice["skipped"]),
         "estimated_bytes": estimated,
+        # Set when the provider could not size the retrieval and it went ahead unasked.
+        "unsized_granules": granules if estimated is None and not p.confirmed else None,
     }
 
 

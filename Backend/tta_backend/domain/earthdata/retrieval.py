@@ -168,17 +168,35 @@ def request_variables(cfg: CollectionConfig) -> tuple[str, list[str]]:
 SizeDecision = Literal["proceed", "confirm", "refuse"]
 
 
-def size_gate(estimated_bytes: int | None, *, soft: int, hard: int, confirmed: bool) -> SizeDecision:
+# A retrieval the provider cannot size goes ahead unasked when it fetches at
+# most this many granules: one day of an hourly product. Larger ones ask.
+MAX_UNSIZED_GRANULES = 24
+
+
+def size_gate(
+    estimated_bytes: int | None,
+    *,
+    soft: int,
+    hard: int,
+    confirmed: bool,
+    granules: int | None = None,
+    max_unsized_granules: int = 0,
+) -> SizeDecision:
     """Whether a retrieval of ``estimated_bytes`` may proceed.
 
-    Above the hard cap it is refused even when confirmed. Between the caps,
-    or with no estimate at all, it needs the user's confirmation.
+    Above the hard cap it is refused even when confirmed. Between the caps it
+    needs the user's confirmation. With no estimate at all it needs
+    confirmation too, unless it fetches at most ``max_unsized_granules`` of
+    the ``granules`` the coverage check counted.
     """
     if estimated_bytes is not None and estimated_bytes > hard:
         return "refuse"
     if confirmed:
         return "proceed"
-    if estimated_bytes is None or estimated_bytes > soft:
+    if estimated_bytes is None:
+        small = granules is not None and 0 < granules <= max_unsized_granules
+        return "proceed" if small else "confirm"
+    if estimated_bytes > soft:
         return "confirm"
     return "proceed"
 
