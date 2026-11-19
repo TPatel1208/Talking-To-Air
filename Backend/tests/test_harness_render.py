@@ -156,8 +156,14 @@ class MapTests(RenderCase):
         self.assertEqual(payload["export"]["source_handles"], [grid.id])
         self.assertEqual(payload["provenance"]["masking"]["qa_status"], "verified")
         self.assertEqual(payload["provenance"]["dataset"], "TEMPO_NO2_L3")
-        self.assertNotIn("url", payload["overlay"])
+        # One timestep: an overlay, and no frame stack or refusal to say about one.
+        [chart_id] = result.charts
+        self.assertEqual(payload["overlay"]["url"], f"/chart/{chart_id}/overlay.png")
+        self.assertTrue(payload["overlay"]["rescalable"])
+        self.assertIn(payload["overlay"]["_path"], self.artifacts.overlays)
         self.assertNotIn("frames", payload)
+        self.assertNotIn("frames_unavailable", payload)
+        self.assertEqual(self.artifacts.frame_stacks, {})
         self.assertEqual(result.summary["render_type"], "heatmap")
         self.assertEqual(result.summary["grid_dims"], [LATS.size, LONS.size])
 
@@ -239,6 +245,91 @@ class MapTests(RenderCase):
         grid = await self.seed_grid()
         failure = await self.failure(maps.render_map, {"grid": grid.id, "points": grid.id})
         self.assertEqual(failure.category, FailureCategory.BAD_INPUT)
+
+
+class MapMediaTests(RenderCase):
+    """The overlay and the frame stack a map keeps in the host's stores."""
+
+    async def test_a_time_axis_gets_a_stored_frame_stack_with_urls(self):
+        ds = grid_dataset(times=3)
+        ds["vertical_column_troposphere"][1, 0, 0] = np.nan
+        grid = await self.seed_grid(ds)
+        result = await invoke(self.env, maps.render_map, {"grid": grid.id})
+        payload = self.assert_stored_and_emitted(result)
+        [chart_id] = result.charts
+
+        frames = payload["frames"]
+        self.assertEqual(frames["url"], f"/chart/{chart_id}/frames.f32.gz")
+        self.assertIs(self.artifacts.frame_stacks[frames["_key"]].values.dtype, np.dtype("float32"))
+        for statistic in ("max", "min"):
+            plane = frames["planes"][statistic]
+            self.assertEqual(plane["url"], f"/chart/{chart_id}/frames.{statistic}.f32.gz")
+            self.assertIn(plane["_key"], self.artifacts.frame_stacks)
+        self.assertEqual(sum(f["n_granules"] for f in frames["frames"]), 3)
+        self.assertEqual(frames["shape"], [len(frames["frames"]) + 1, LATS.size, LONS.size])
+        self.assertEqual(frames["cadence"], payload["aggregation_meta"]["cadence"])
+        spec = payload["export"]["frames"]["spec"]
+        self.assertEqual(spec["statistics"], ["mean", "max", "min"])
+        self.assertEqual(spec["pipeline_version"], MemoryArtifacts.PIPELINE_VERSION)
+        self.assertEqual(payload["export"]["frames"]["exports"], "period aggregate")
+        self.assertEqual(result.summary["frames"]["statistics"], ["mean", "max", "min"])
+        self.assertNotIn("frames_unavailable", payload)
+        self.assertEqual(payload["overlay"]["url"], f"/chart/{chart_id}/overlay.png")
+
+    async def test_the_stack_holds_the_field_the_map_shows(self):
+        ds = grid_dataset(times=3)
+        ds["vertical_column_troposphere"][:, 1, 1] = np.nan
+        ds["vertical_column_troposphere"][0, 2, 2] = np.nan
+        grid = await self.seed_grid(ds)
+        result = await invoke(self.env, maps.render_map, {"grid": grid.id})
+        payload = self.artifacts.stored[result.charts[0]]
+        stack = self.artifacts.frame_stacks[payload["frames"]["_key"]]
+
+        shown = np.array([[np.nan if v is None else v for v in row] for row in payload["values"]], dtype="float64")
+        np.testing.assert_allclose(stack.period_values, shown, rtol=1e-5)
+        self.assertTrue(np.isnan(stack.period_values[1, 1]))
+        drawn = self.artifacts.overlays[payload["overlay"]["_path"]]
+        np.testing.assert_allclose([drawn["vmin"], drawn["vmax"]], [payload["vmin"], payload["vmax"]], rtol=1e-6)
+        np.testing.assert_allclose(drawn["field"], shown, rtol=1e-5)
+
+    async def test_a_span_the_frame_axis_cannot_hold_says_why(self):
+        ds = grid_dataset(times=2)
+        ds = ds.assign_coords(time=pd.to_datetime(["2024-01-01T15:00", "2024-06-01T15:00"]).to_numpy())
+        grid = await self.seed_grid(ds)
+        result = await invoke(self.env, maps.render_map, {"grid": grid.id})
+        payload = self.assert_stored_and_emitted(result)
+
+        self.assertNotIn("frames", payload)
+        self.assertEqual(payload["frames_unavailable"]["reason"], "span_too_long")
+        self.assertEqual(payload["export"]["frames"], {"unavailable": payload["frames_unavailable"]})
+        self.assertEqual(result.summary["frames_unavailable"]["reason"], "span_too_long")
+        self.assertEqual(self.artifacts.frame_stacks, {})
+        self.assertTrue(payload["is_aggregated"])
+
+    async def test_a_failed_build_leaves_the_map_without_frames(self):
+        from unittest import mock
+
+        from tta_backend.domain.aggregation import frame_stack
+
+        grid = await self.seed_grid(grid_dataset(times=3))
+        with mock.patch.object(frame_stack, "build_frame_stack", side_effect=MemoryError("no room")):
+            result = await invoke(self.env, maps.render_map, {"grid": grid.id})
+        payload = self.assert_stored_and_emitted(result)
+        self.assertEqual(result.status, "done")
+        self.assertNotIn("frames", payload)
+        self.assertNotIn("frames_unavailable", payload)
+
+    async def test_media_that_did_not_land_leave_an_axis_and_no_urls(self):
+        self.artifacts.media_lands = False
+        grid = await self.seed_grid(grid_dataset(times=3))
+        result = await invoke(self.env, maps.render_map, {"grid": grid.id})
+        payload = self.assert_stored_and_emitted(result)
+
+        self.assertEqual(len(payload["frames"]["frames"]), payload["frames"]["shape"][0] - 1)
+        self.assertNotIn("_key", payload["frames"])
+        self.assertNotIn("url", payload["frames"])
+        self.assertEqual(payload["export"]["frames"]["spec"]["statistics"], [])
+        self.assertEqual(payload["overlay"], {"bounds": payload["overlay"]["bounds"]})
 
 
 class MonitorMapTests(RenderCase):

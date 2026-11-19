@@ -5,9 +5,15 @@ timesteps that hold data; ``is_aggregated`` and ``aggregation_meta`` say so,
 as the current map does. Overlays are additive payload fields:
 ``overlays.points`` (``id``, ``name``, ``lat``, ``lon``, ``value`` when the
 points carry one; at most MAX_OVERLAY_POINTS) and ``overlays.polygons`` (one
-GeoJSON FeatureCollection per handle). The overlay PNG and the frame stack
-need host stores the run context does not offer, so the payload has neither;
-the frontend draws the map from ``values``.
+GeoJSON FeatureCollection per handle).
+
+The overlay PNG and, for a grid with a browsable time axis, the frame stack
+the scrubber plays are kept in the host's stores (``Artifacts.store_overlay``
+and ``store_frames``); the payload records what they return, and the host
+adds the urls as it stores the chart. The stack is built from the same
+masked grid the time mean is taken over, at the same cadence. A grid the
+frame gate refuses for its span, cadence or extent carries
+``frames_unavailable``; a failed store leaves the map without that medium.
 """
 from __future__ import annotations
 
@@ -18,6 +24,7 @@ import xarray as xr
 from pydantic import Field, JsonValue
 
 from tta_backend.domain.aggregation.aggregation_service import AggregationService
+from tta_backend.domain.charts import media
 from tta_backend.domain.charts.heatmap import (
     DIVERGING_SCALE_DISCLOSURE,
     diverging_bounds,
@@ -41,6 +48,7 @@ from tta_backend.harness.capabilities.render.common import (
 from tta_backend.harness.capabilities.render.group import GROUP
 from tta_backend.harness.capabilities.result import CapabilityResult
 from tta_backend.harness.capabilities.shapes import polygons_collection
+from tta_backend.harness.run_context import Artifacts
 
 __all__ = ["CAPABILITIES", "GROUP", "render_map"]
 
@@ -67,8 +75,9 @@ class MapParams(Params):
 def _build(
     data: xr.DataArray, *, style: str, title: str | None, place: str, col_info: dict[str, Any] | None,
     masking: dict[str, Any], handles: list[str], region: dict[str, Any] | None,
+    artifacts: Artifacts, region_area: float | None,
 ) -> dict[str, Any] | None:
-    """The heatmap payload, or None when no cell holds a value."""
+    """The heatmap payload with its overlay and frame stack stored, or None when no cell holds a value."""
     service = AggregationService()
     time_dim = identify_time(data)
     if time_dim is not None and time_dim in data.dims:
@@ -101,6 +110,7 @@ def _build(
         diverging=diverging,
         value_range=diverging_bounds(np.asarray(field.values)) if diverging else None,
         scale_disclosure=DIVERGING_SCALE_DISCLOSURE if diverging else None,
+        overlay_renderer=artifacts.store_overlay,
     )
     payload["cmap"] = CMAP
     if region is not None:
@@ -112,6 +122,11 @@ def _build(
         agg_meta["aggregation_label"] if is_aggregated else "single snapshot",
         {"chart_type": "heatmap", "style": style, "cmap": CMAP},
         agg_meta, region, col_info,
+    )
+    # After the reproducibility block: the frame recipe lands beside it in ``export``.
+    media.attach_frames(
+        payload, data, cadence=agg_meta.get("cadence") or "unknown", store=artifacts.store_frames,
+        region_area=region_area,
     )
     return payload
 
@@ -127,7 +142,7 @@ async def _render_map(call: Call[MapParams]) -> CapabilityResult:
     payload = await call.compute(
         _build, grid.data, style=p.style, title=p.title, place=region_name(record),
         col_info=col_info_for(record), masking=dict(grid.masking), handles=list(call.input_ids()),
-        region=region_of(record),
+        region=region_of(record), artifacts=call.env.context.artifacts, region_area=grid.region_area,
     )
     if payload is None:
         return CapabilityResult(status="insufficient_evidence", reason=NO_VALID, values={"situation": "too_little_valid"})

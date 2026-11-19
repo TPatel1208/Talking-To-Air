@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   answerBadge, connectorNotices, downloadableResults, hydrateHistoryMessage, labelBadge,
-  modeBadge, normalizeResults, resultExportUrl,
+  modeBadge, normalizeResults, offersConnect, resultExportUrl,
 } from '../src/utils/resultMode.js'
 import { extractSuggestedFollowups } from '../src/utils/followups.js'
 import { fetchResultArchive } from '../src/utils/resultDownload.js'
@@ -78,6 +78,22 @@ test('a result stopped on a connector yields a notice with its reason and connec
   })
   assert.equal(notices[1].connector, 'epa_aqs')
   assert.match(notices[1].reason, /EPA AQS/)
+})
+
+test('a source that is down gives its reason with no connect offer', () => {
+  const reason = 'NASA Earthdata is unavailable right now, so nothing that needs it was started.'
+  const results = [
+    { run_id: null, status: 'failed', mode: null, reason, connector: 'earthdata', unavailable: true },
+    { run_id: 'r2', status: 'failed', mode: VALIDATED, reason: 'Your Earthdata connection has expired.', connector: 'earthdata' },
+  ]
+  const [down, expired] = connectorNotices(results)
+
+  assert.deepEqual(down, {
+    runId: null, connector: 'earthdata', connectorName: 'NASA Earthdata', reason, unavailable: true,
+  })
+  assert.equal(offersConnect(down), false)
+  assert.equal('unavailable' in expired, false)
+  assert.equal(offersConnect(expired), true)
 })
 
 test('each finished result gets a download link to its archive', () => {

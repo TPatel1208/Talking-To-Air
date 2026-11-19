@@ -50,7 +50,6 @@ Time-series
 import json
 import logging
 import uuid
-import numpy as np
 from langchain.tools import tool
 from langchain_core.tools import BaseTool
 from typing import Annotated, Any, List, Optional
@@ -78,7 +77,6 @@ from tta_backend.services.open_handle import (
 )
 from tta_backend.domain.geo import find_lat_coord, find_lon_coord
 from tta_backend.utils.colormaps import resolve as resolve_colormap
-from tta_backend.utils.overlay_render import render_overlay
 from tta_backend.infrastructure.phase_timing import phase_timer
 from tta_backend.domain.masking.dimensions import _normalize_to_2d
 from tta_backend.domain.masking.geometry import (
@@ -107,10 +105,10 @@ from tta_backend.domain.charts.profile import (
 from tta_backend.domain.charts.provenance import attach_reproducibility, provenance
 from tta_backend.domain.charts.summary import (
     chart_model_summary as _chart_model_summary,
-    scrubbable_statistics as _scrubbable_statistics,
 )
 from tta_backend.domain.charts.timeseries import timeseries_payload, timeseries_points
 from tta_backend.domain.charts import heatmap as _heatmap
+from tta_backend.domain.charts import media as _media
 from tta_backend.domain.charts import profile as _profile
 from tta_backend.domain.charts import provenance as _provenance_module
 from tta_backend.domain.charts import summary as _summary
@@ -180,35 +178,8 @@ def overlay_store_dir() -> str:
     """
     return get_settings().overlay_store_dir
 
-def _render_and_store_overlay(lats: np.ndarray, lons: np.ndarray, arr: np.ndarray, lut: list[Any], vmin: float, vmax: float) -> dict[str, Any]:
-    """Render the full-native-resolution overlay PNG and persist it, with the
-    value raster it was drawn from, to the overlay store. Returns the overlay
-    fields to record: ``_path`` for the PNG and ``_values`` (``_path``, ``lo``,
-    ``hi``) for the raster the route recolors at a requested scale.
-
-    Returns ``{}`` on failure -- a failed render must degrade the chart (no
-    overlay.url; the frontend falls back to canvas-from-arrays), never fail
-    the whole tool call. A raster that fails to store only drops ``_values``:
-    the chart keeps its overlay and loses the full-resolution recolor.
-
-    The store creates its directory on first write and evicts older overlays
-    to stay under its byte cap (services/overlay_store.py). A failed write
-    degrades exactly like a failed render."""
-    try:
-        rendered = render_overlay(lats, lons, arr, lut, vmin, vmax)
-        fields: dict[str, Any] = {"_path": overlay_store.write_overlay(rendered.png)}
-    except Exception:
-        logger.warning("overlay_render_failed", exc_info=True)
-        return {}
-    raster = rendered.value_raster
-    if raster is not None:
-        try:
-            raster_path = overlay_store.write_overlay(raster.png)
-        except Exception:
-            logger.warning("overlay_value_raster_store_failed", exc_info=True)
-        else:
-            fields["_values"] = {"_path": raster_path, "lo": raster.lo, "hi": raster.hi}
-    return fields
+# Renders the overlay PNG and stores it with its value raster; {} on failure.
+_render_and_store_overlay = overlay_store.render_and_store
 
 
 def _da_to_heatmap_payload(
@@ -246,33 +217,11 @@ def _build_heatmap_payload(
 
 
 
-def _wire_overlay_url(overlay: dict[str, Any] | None, url: str) -> None:
-    if isinstance(overlay, dict) and overlay.get("_path"):
-        overlay["url"] = url
-        # The same url takes ?vmin=&vmax=&cmap= to recolor the stored value
-        # raster; a chart drawn before the raster existed has none.
-        if isinstance(overlay.get("_values"), dict) and overlay["_values"].get("_path"):
-            overlay["rescalable"] = True
-
-
-def _wire_overlay_urls(payload: dict[str, Any]) -> None:
-    """Turn each rendered overlay's internal `_path` into a servable `url`,
-    now that `_save_chart` has minted `chart_id` -- the render happens
-    earlier (admission.run_heavy, before chart_id exists) with a `_path` that
-    only this process can read, never handed to the frontend directly."""
-    chart_id = payload.get("chart_id")
-    if not chart_id:
-        return
-
-    if payload.get("type") == "heatmap_multi":
-        for i, panel in enumerate(payload.get("panels") or []):
-            if isinstance(panel, dict):
-                _wire_overlay_url(panel.get("overlay"), f"/chart/{chart_id}/overlay.png?panel={i}")
-        difference = payload.get("difference")
-        if isinstance(difference, dict):
-            _wire_overlay_url(difference.get("overlay"), f"/chart/{chart_id}/overlay.png")
-    else:
-        _wire_overlay_url(payload.get("overlay"), f"/chart/{chart_id}/overlay.png")
+# Turn stored media's internal ``_path``/``_key`` into servable urls once
+# ``_save_chart`` has minted ``chart_id``: the render and the frame stack run
+# earlier (admission.run_heavy, before chart_id exists).
+_wire_overlay_urls = _media.wire_overlay_urls
+_wire_frames_url = _media.wire_frames_url
 
 
 def _save_chart(payload: dict[str, Any], name: str) -> str:
@@ -376,159 +325,30 @@ def _attach_reproducibility(
 
 # ── Frame stack ───────────────────────────────────────────────────────────────
 
-#: Which gate refusals a reader is told about, and which pass in silence.
-#:
-#: The split is not squeamishness about noise. These three are requests that
-#: COULD have been scrubbed and were not, and they are three different facts: a
-#: span past the backstop, a product whose cadence is not registered, and a
-#: region too large for the reduction to survive. Someone who asked for a week
-#: of TEMPO and got no slider deserves to know which one they hit, because only
-#: one of them is fixed by narrowing the map.
-#:
-#: The rest -- a single granule, everything inside one interval, a field still
-#: carrying a vertical axis -- withhold nothing the request implied. There is
-#: no time axis to browse, and saying so on every single-granule map would be
-#: noise about a feature nobody asked for.
-_DISCLOSED_FRAME_REFUSALS = ("cadence_unknown", "span_too_long", "extent_too_large")
+_DISCLOSED_FRAME_REFUSALS = _media.DISCLOSED_FRAME_REFUSALS
 
 
 def _attach_frames(payload: dict[str, Any], result: AggregatedResult, masked: xr.DataArray, agg_meta: dict[str, Any]) -> None:
-    """Give ``payload`` a browsable time axis, or say why not.
+    """Give ``payload`` a browsable time axis, or say why not (``domain.charts.media.attach_frames``).
 
-    Purely additive: ``type`` stays ``"heatmap"`` and the aggregate is
-    unchanged, so consumers that ignore frames stay correct.
-
-    ``result`` is the ``AggregatedResult``, which carries the masked field the
-    map was reduced from and the QA counters the mask recorded on the way.
-    ``masked`` is the pre-QA geometry-masked array, the only place
-    ``region_area`` exists. Both are passed in because re-deriving them would
-    be a second full read of a lazily-opened bundle.
-
-    Never raises: a failed frame stack must never cost the user the chart
-    (same as ``_render_and_store_overlay``).
+    ``result`` carries the masked field the map was reduced from and the QA
+    counters the mask recorded; ``masked`` is the pre-QA geometry-masked
+    array, the only place ``region_area`` exists. Both are passed in because
+    re-deriving them would be a second full read of a lazily-opened bundle.
+    Never raises.
     """
-    from tta_backend.domain.aggregation import frame_stack as frame_stack_module
-    from tta_backend.domain.aggregation.frame_stack import (
-        FRAME_CELL_CEILING,
-        MAX_FRAMES,
-        PLANE_STATISTICS,
-        frame_gate,
-        plane_gate,
-    )
     from tta_backend.services import frame_store
-    from tta_backend.domain.geo import identify_time
 
     field = getattr(result, "masked", None)
     if field is None:
         return
-    cadence = agg_meta.get("cadence") or "unknown"
-    time_dim = identify_time(field.data)
-
-    refusal = frame_gate(field.data, time_dim=time_dim, cadence=cadence)
-    if refusal is not None:
-        if refusal.reason in _DISCLOSED_FRAME_REFUSALS:
-            disclosure = {"reason": refusal.reason, "detail": refusal.detail}
-            payload["frames_unavailable"] = disclosure
-            # Into the recipe as well, not only the render payload: a jsonb row
-            # that simply lacks a frame block cannot say whether frames were
-            # refused or never attempted.
-            payload.setdefault("export", {})["frames"] = {"unavailable": disclosure}
-        return
-    # frame_gate refuses a missing time axis, so past it there always is one.
-    assert time_dim is not None
-
-    # Max/min planes have their own extent limit, because building all three
-    # statistics can OOM where the mean alone fits. Above it the chart keeps
-    # its mean scrubber; only the toggle is withheld.
-    plane_refusal = plane_gate(field.data, time_dim=time_dim)
-    statistics = ("mean",) if plane_refusal is not None else PLANE_STATISTICS
-
-    try:
-        with phase_timer("frames", cells_in=int(getattr(field.data, "size", 0))):
-            stack = frame_stack_module.build_frame_stack(
-                field.data,
-                time_dim=time_dim,
-                cadence=cadence,
-                statistics=statistics,
-                # Every quantity comes from the native field. Coverage uses the
-                # region's own footprint, not the bounding box (otherwise a full
-                # US retrieval reads 60% covered because the Atlantic counts as
-                # missing). The counters also save a second pass for the 2-98
-                # histogram.
-                region_area=masked.attrs.get("region_area"),
-                qa_counts=field.counts,
-            )
-        block = frame_store.store_frame_stack(
-            stack, pipeline_version=OPEN_PIPELINE_VERSION,
-        )
-    except Exception:  # noqa: BLE001 — degrade to a chart with no scrubber
-        logger.warning("frame_stack_failed", exc_info=True)
-        return
-
-    if plane_refusal is not None:
-        # Next to the axis, not ``frames_unavailable``: the chart has a
-        # scrubber, it just lacks the toggle, and that should come with a
-        # reason. Absent when every plane was built.
-        block["planes_unavailable"] = {
-            "reason": plane_refusal.reason, "detail": plane_refusal.detail,
-        }
-
-    payload["frames"] = block
-    payload.setdefault("export", {})["frames"] = {
-        # The recipe, beside source_handles/variable/region_name/
-        # aggregation_meta, so the jsonb row reproduces the stack rather than
-        # merely holding it.
-        "spec": {
-            "cadence": stack.cadence,
-            "tier": stack.tier,
-            "n_frames": len(stack.frames),
-            "buckets_per_frame": stack.buckets_per_frame,
-            "max_frames": MAX_FRAMES,
-            "target_cells": FRAME_CELL_CEILING,
-            "cells_per_frame": stack.cells_per_frame,
-            "coarsen_k": [int(k) for k in stack.coarsen_k],
-            "boundary": "pad",
-            # What the EXPORT is, unchanged and unchanging. The exported
-            # thing is still the period aggregate of the mean, so this field
-            # still says so.
-            "statistic": "mean",
-            # What the SCRUBBER offers: a separate key, so the field above
-            # keeps its meaning on archived rows. Derived from what landed,
-            # not what was asked for.
-            "statistics": _scrubbable_statistics(block),
-            "dtype": "float32",
-            "span": [stack.frames[0].t_start, stack.frames[-1].t_end],
-            "pipeline_version": OPEN_PIPELINE_VERSION,
-        },
-        # Recorded in the row, not just the UI: exports are the period
-        # aggregate. The frame grid is a downsampled rendering and must never
-        # end up in someone's paper.
-        "exports": "period aggregate",
-    }
-
-
-def _wire_frames_url(payload: dict[str, Any]) -> None:
-    """Turn a stored stack's internal ``_key`` into a servable url, now that
-    ``_save_chart`` has minted ``chart_id`` -- ``_wire_overlay_urls``' rule, for
-    the same reason: the stack is built inside ``admission.run_heavy``, before a
-    ``chart_id`` exists, and the key addresses the blob store directly rather
-    than being anything the frontend may hold.
-
-    No ``_key`` means the values didn't land: the frontend shows a labeled
-    axis that can't be scrubbed (same as an evicted chart).
-
-    Each extra plane gets its own url under the same rule, per plane, so a
-    missing url means only that statistic is unavailable.
-    """
-    frames = payload.get("frames")
-    chart_id = payload.get("chart_id")
-    if not chart_id or not isinstance(frames, dict):
-        return
-    if frames.get("_key"):
-        frames["url"] = f"/chart/{chart_id}/frames.f32.gz"
-    for statistic, plane in (frames.get("planes") or {}).items():
-        if isinstance(plane, dict) and plane.get("_key"):
-            plane["url"] = f"/chart/{chart_id}/frames.{statistic}.f32.gz"
+    _media.attach_frames(
+        payload, field.data,
+        cadence=agg_meta.get("cadence") or "unknown",
+        store=lambda stack: frame_store.store_frame_stack(stack, pipeline_version=OPEN_PIPELINE_VERSION),
+        region_area=masked.attrs.get("region_area"),
+        qa_counts=field.counts,
+    )
 
 
 # ── Vertical profile ──────────────────────────────────────────────────────────

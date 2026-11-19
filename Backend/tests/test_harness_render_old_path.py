@@ -118,6 +118,33 @@ class MapAgreesWithThePlotToolTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_single_granule(self):
         await self.assert_same_map(["2024-06-01T15:00"])
+        old = await self.old_payload(bundle(["2024-06-01T15:00"]))
+        new = self.artifacts.stored[next(iter(self.artifacts.stored))]
+        self.assertNotIn("frames", old)
+        self.assertNotIn("frames", new)
+        self.assertEqual(sorted(new["overlay"]), sorted(old["overlay"]))
+
+    async def test_the_frame_stack_matches_the_plot_tools(self):
+        times = ["2024-06-01T15:00", "2024-06-01T17:00", "2024-06-02T15:00"]
+        old = await self.old_payload(bundle(times))
+        new = await self.new_payload(bundle(times))
+        old_frames, new_frames = old["frames"], new["frames"]
+
+        self.assertEqual(sorted(new_frames), sorted(old_frames))
+        self.assertEqual(sorted(new_frames["planes"]), sorted(old_frames["planes"]))
+        for key in ("shape", "lats", "lons", "cadence", "tier", "buckets_per_frame", "coarsen_k", "value_range", "delta"):
+            self.assertEqual(new_frames[key], old_frames[key], key)
+        self.assertEqual(len(new_frames["frames"]), len(old_frames["frames"]))
+        for new_frame, old_frame in zip(new_frames["frames"], old_frames["frames"], strict=True):
+            # The harness grid carries no QA counters, so its frames do not state a pass rate.
+            self.assertIsNone(new_frame["qa_pass_rate"])
+            for key in ("t_start", "t_end", "n_granules", "valid_fraction", "statistics"):
+                self.assertEqual(new_frame[key], old_frame[key], key)
+        old_spec, new_spec = old["export"]["frames"]["spec"], new["export"]["frames"]["spec"]
+        self.assertEqual(sorted(new_spec), sorted(old_spec))
+        for key in ("cadence", "tier", "n_frames", "statistics", "span", "cells_per_frame"):
+            self.assertEqual(new_spec[key], old_spec[key], key)
+        self.assertEqual(sorted(new["overlay"]), sorted(old["overlay"]))
 
     async def test_a_time_mean_over_several_granules(self):
         await self.assert_same_map(["2024-06-01T15:00", "2024-06-02T15:00", "2024-06-03T15:00"])

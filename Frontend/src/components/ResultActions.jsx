@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { apiFetch } from '../utils/apiFetch.js'
 import { API_BASE } from '../config.js'
-import { connectorNotices, downloadableResults } from '../utils/resultMode.js'
+import { connectorNotices, downloadableResults, offersConnect } from '../utils/resultMode.js'
 import { fetchResultArchive } from '../utils/resultDownload.js'
 import ModeBadge from './ModeBadge'
 
@@ -51,7 +51,8 @@ function DownloadResult({ item, many }) {
 }
 
 /* Under an answer: why a run stopped on a missing connector, with a way to
- * connect it, and a download of each finished result. */
+ * connect it (none when the service is down), and a download of each
+ * finished result. */
 export default function ResultActions({ results, onOpenConnectors }) {
   const notices = connectorNotices(results)
   const downloads = downloadableResults(results)
@@ -69,7 +70,7 @@ export default function ResultActions({ results, onOpenConnectors }) {
           }}
         >
           <span>{notice.reason}</span>{' '}
-          {onOpenConnectors && (
+          {onOpenConnectors && offersConnect(notice) && (
             <button type="button" onClick={() => onOpenConnectors(notice.connector)} style={linkStyle}>
               Connect {notice.connectorName}
             </button>

@@ -31,7 +31,8 @@ Frames, in order:
   connector a result stopped for when it is missing, expired or rejected.
   Work refused because a connector's service is down adds an entry with
   ``run_id`` and ``mode`` null, ``status`` ``failed``, the fixed wording as
-  ``reason`` and ``connector`` set; nothing was started for it;
+  ``reason``, ``connector`` set and ``unavailable`` true; nothing was started
+  for it;
 - on a failed turn, ``error`` ``{detail}`` before ``done``; on a timeout or
   when admission refuses the turn, ``error`` then a short ``done``; on any
   other exception, ``error`` alone.
@@ -47,6 +48,7 @@ import logging
 import os
 import threading
 import time
+import uuid
 from collections.abc import AsyncIterator, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -61,6 +63,7 @@ from tta_backend.config.error_templates import (
     render_turn_timeout_answer,
 )
 from tta_backend.config.workflow_stages import STAGE_WORKING
+from tta_backend.domain.charts.media import carries_media, wire_media_urls
 from tta_backend.domain.earthdata.retrieval import annotate_paused
 from tta_backend.earthdata_mcp.connection import STATE_READY
 from tta_backend.earthdata_mcp.results import CATEGORY_CONTRACT, CATEGORY_PROVIDER_UNAVAILABLE, MCPToolError
@@ -96,7 +99,7 @@ from tta_backend.models import chart_reference
 from tta_backend.models.artifact import ArtifactReference
 from tta_backend.models.transcript import ConnectorName, TranscriptResult, TranscriptTurn
 from tta_backend.repositories import transcript_repository
-from tta_backend.services import admission, cube_cache
+from tta_backend.services import admission, cube_cache, frame_store, overlay_store
 from tta_backend.services.artifact_registry import build_artifact_reference
 from tta_backend.services.artifact_store import artifact_store
 from tta_backend.services.chart_service import ChartLink, ChartService
@@ -113,6 +116,7 @@ from tta_backend.services.harness_host import (
     limits_from_settings,
     open_retrieval_over,
 )
+from tta_backend.services.open_handle import OPEN_PIPELINE_VERSION
 from tta_backend.utils import streaming
 from tta_backend.utils.streaming import user_id_context
 
@@ -266,6 +270,11 @@ class StoredArtifacts:
     read. A stored table is sent as an ``artifact`` at once. A chart or table
     whose metadata names the run that drew it (``metadata.run_id``) is linked
     to that run when the run is the user's own; a chart's link is stored with it.
+
+    A map's frame stack goes into the frame store and its overlay into the
+    overlay store. A chart carrying either is given its id before it is
+    stored, so the stored row holds the urls the ``/chart/{chart_id}/...``
+    routes serve them at; those routes serve only the chart's owner.
     """
 
     def __init__(
@@ -298,12 +307,24 @@ class StoredArtifacts:
     async def store_chart(self, payload: dict[str, Any]) -> ArtifactRef:
         run = await self._run_of(payload.get("metadata"))
         link = None if run is None else ChartLink(run_id=run[0], mode=run[1], handle=_source_handle(payload))
+        if carries_media(payload) and not payload.get("chart_id"):
+            payload = {**payload, "chart_id": str(uuid.uuid4())}
+            # Into the payload's own frames and overlay blocks, which the caller's copy shares.
+            wire_media_urls(payload)
         stored = await self._charts.persist_chart_payload(self._thread_id, payload, self._user_id, link=link)
         if stored is None or not stored.get("chart_id"):
             raise RuntimeError("the chart was not stored")
         chart_id = str(stored["chart_id"])
         self.stored_charts[chart_id] = stored
         return ArtifactRef(id=chart_id, type="chart", title=payload.get("title"))
+
+    def store_frames(self, stack: Any) -> dict[str, Any]:
+        return frame_store.store_frame_stack(stack, pipeline_version=OPEN_PIPELINE_VERSION)
+
+    def store_overlay(
+        self, lats: Any, lons: Any, field: Any, lut: list[Any], vmin: float, vmax: float,
+    ) -> dict[str, Any]:
+        return overlay_store.render_and_store(lats, lons, field, lut, vmin, vmax)
 
     async def store_table(
         self,
@@ -527,6 +548,7 @@ def unavailable_summaries(connectors: Sequence[str]) -> list[TranscriptResult]:
     return [
         TranscriptResult(
             status="failed", reason=unavailable_wording(connector), connector=cast(ConnectorName, connector),
+            unavailable=True,
         )
         for connector in connectors if connector in CONNECT_LINKED
     ]

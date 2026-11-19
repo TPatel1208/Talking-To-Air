@@ -47,7 +47,9 @@ export function normalizeResults(results) {
   return Array.isArray(results) ? results.filter(r => r && typeof r === 'object') : []
 }
 
-// One notice per result that stopped on a missing, expired or rejected connector.
+// One notice per result that stopped on a missing, expired or rejected
+// connector, or on a connector whose service is down. A down service is
+// marked `unavailable`: reconnecting would not help, so it offers no connect.
 export function connectorNotices(results) {
   return normalizeResults(results)
     .filter(r => typeof r.connector === 'string' && r.connector)
@@ -56,7 +58,13 @@ export function connectorNotices(results) {
       connector: r.connector,
       connectorName: CONNECTOR_NAMES[r.connector] || r.connector,
       reason: r.reason || `${CONNECTOR_NAMES[r.connector] || r.connector} is not connected.`,
+      ...(r.unavailable === true ? { unavailable: true } : {}),
     }))
+}
+
+// Whether a notice offers to connect its connector.
+export function offersConnect(notice) {
+  return !notice?.unavailable
 }
 
 export function resultExportUrl(apiBase, runId) {

@@ -275,7 +275,9 @@ class ScriptedSupervisorTurnTests(SupervisorCase):
         done = last(frames, "done")
         self.assertEqual(done["response"].count(wording), 1)
         self.assertEqual(
-            done["results"], [{"run_id": None, "status": "failed", "mode": None, "reason": wording, "connector": "earthdata"}],
+            done["results"],
+            [{"run_id": None, "status": "failed", "mode": None, "reason": wording, "connector": "earthdata",
+              "unavailable": True}],
         )
         self.assertEqual(await self.f.stores.traces.list_runs("user-a", "thread-1"), [])
 
@@ -548,7 +550,10 @@ class HostFrameTests(unittest.IsolatedAsyncioTestCase):
         frames = await self.collect.run(make_chat(supervisor, self.root))
 
         wording = unavailable_wording("earthdata")
-        expected = {"run_id": None, "status": "failed", "mode": None, "reason": wording, "connector": "earthdata"}
+        expected = {
+            "run_id": None, "status": "failed", "mode": None, "reason": wording, "connector": "earthdata",
+            "unavailable": True,
+        }
         done = last(frames, "done")
         self.assertEqual(done["results"], [expected])
         self.assertIsNone(done["label"])

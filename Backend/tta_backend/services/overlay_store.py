@@ -21,10 +21,13 @@ import os
 import re
 import uuid
 from collections.abc import Iterable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from tta_backend.infrastructure.access_clock import stamp_access
 from tta_backend.infrastructure.settings import get_settings
+
+if TYPE_CHECKING:
+    import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +62,38 @@ def write_overlay(png_bytes: bytes) -> str:
     # A write is an access too, stamped on the same clock as reads.
     _touch(path)
     return path
+
+
+def render_and_store(
+    lats: np.ndarray, lons: np.ndarray, arr: np.ndarray, lut: list[Any], vmin: float, vmax: float,
+) -> dict[str, Any]:
+    """Render the full-resolution overlay PNG and store it with the value
+    raster it was drawn from. Returns the overlay fields a payload records:
+    ``_path`` for the PNG and ``_values`` (``_path``, ``lo``, ``hi``) for the
+    raster the route recolours at a requested scale.
+
+    Returns ``{}`` when the render or its write fails: the chart keeps its
+    grid and the frontend draws from it. A raster that fails to store drops
+    only ``_values``. Never raises.
+    """
+    # Local: rasterio is a render-path import, and the API imports this module at startup.
+    from tta_backend.utils.overlay_render import render_overlay
+
+    try:
+        rendered = render_overlay(lats, lons, arr, lut, vmin, vmax)
+        fields: dict[str, Any] = {"_path": write_overlay(rendered.png)}
+    except Exception:
+        logger.warning("overlay_render_failed", exc_info=True)
+        return {}
+    raster = rendered.value_raster
+    if raster is not None:
+        try:
+            raster_path = write_overlay(raster.png)
+        except Exception:
+            logger.warning("overlay_value_raster_store_failed", exc_info=True)
+        else:
+            fields["_values"] = {"_path": raster_path, "lo": raster.lo, "hi": raster.hi}
+    return fields
 
 
 def read_overlay(stored_path: str) -> bytes | None:

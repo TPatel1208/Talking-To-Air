@@ -51,7 +51,36 @@ class Events(Protocol):
 
 
 class Artifacts(Protocol):
-    async def store_chart(self, payload: dict[str, Any]) -> ArtifactRef: ...
+    """Where charts, tables and a map's media are stored.
+
+    A map's media are kept in host stores: ``store_frames`` and
+    ``store_overlay`` return the fields the payload records (internal
+    ``_key``/``_path`` entries no reader may fetch directly). Both are called
+    off the event loop, may block, and never raise: a failure degrades the
+    map (no ``_key``, or no overlay fields), never costs the chart.
+    """
+
+    async def store_chart(self, payload: dict[str, Any]) -> ArtifactRef:
+        """Store the chart and return its id. A chart carrying stored media
+        has each medium's ``url`` written into its ``frames`` and ``overlay``
+        blocks of ``payload``, in place, as it is stored."""
+        ...
+
+    def store_frames(self, stack: Any) -> dict[str, Any]:
+        """Store a frame stack (``domain.aggregation.frame_stack.FrameStack``)
+        and return its block (``domain.charts.media.axis_block``), with
+        ``_key`` where the mean's values landed and ``planes[name]["_key"]``
+        where each extra statistic's did."""
+        ...
+
+    def store_overlay(
+        self, lats: Any, lons: Any, field: Any, lut: list[Any], vmin: float, vmax: float,
+    ) -> dict[str, Any]:
+        """Render and store the overlay PNG of a 2-D (lat x lon) field coloured
+        through ``lut`` over ``vmin``..``vmax``, and return the overlay fields:
+        ``_path``, and ``_values`` (``_path``, ``lo``, ``hi``) for its value
+        raster when that was stored. ``{}`` when nothing was stored."""
+        ...
 
     async def store_table(
         self,

@@ -50,11 +50,14 @@ class MaskedGrid:
     ``units`` in its attrs. ``masking`` is the small provenance a grid handle
     records. ``region_cells`` is how many grid cells lie inside the area on
     one time slice, the denominator of the valid-data fraction.
+    ``region_area`` is those cells' cos(latitude)-weighted area, the
+    denominator of a frame's coverage; None when it was not measured.
     """
 
     data: xr.DataArray
     masking: dict[str, Any]
     region_cells: int
+    region_area: float | None = None
 
     def dataset(self) -> xr.Dataset:
         """The grid in the harness's grid layout: one data variable."""
@@ -160,6 +163,7 @@ def mask_retrieval(
     masked = mask_data_by_geometry(normalize_longitudes(da, lon), shape_)
     region_type = masked.attrs.get("region_type")
     region_cells = int(masked.attrs.get("region_cells", 0))
+    area = masked.attrs.get("region_area")
     masked = sel_bounds(masked, lat, lon, tuple(bounds))  # type: ignore[arg-type]
 
     service = AggregationService()
@@ -174,7 +178,10 @@ def mask_retrieval(
     masking.update({key: provenance[key] for key in _PROVENANCE_KEYS if key in provenance})
     masking["region"] = "boundary_cells" if region_type == "boundary_cells" else "geometry"
     masking["registry_entry"] = registry_entry
-    return MaskedGrid(data=masked, masking=masking, region_cells=region_cells)
+    return MaskedGrid(
+        data=masked, masking=masking, region_cells=region_cells,
+        region_area=float(area) if isinstance(area, int | float) else None,
+    )
 
 
 def combine(grids: Sequence[MaskedGrid], days: Sequence[str]) -> MaskedGrid:
@@ -212,7 +219,9 @@ def combine(grids: Sequence[MaskedGrid], days: Sequence[str]) -> MaskedGrid:
         if total_checked:
             masking["qa_pass_rate"] = round(total_passing / total_checked, 6)
     masking["parts"] = len(grids)
-    return MaskedGrid(data=joined, masking=masking, region_cells=grids[0].region_cells)
+    return MaskedGrid(
+        data=joined, masking=masking, region_cells=grids[0].region_cells, region_area=grids[0].region_area,
+    )
 
 
 def _days(values: Any) -> list[str]:

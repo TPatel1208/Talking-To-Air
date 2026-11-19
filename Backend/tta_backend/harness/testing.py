@@ -16,8 +16,10 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
+import numpy as np
 from pydantic import Field
 
+from tta_backend.domain.charts.media import axis_block, carries_media, wire_media_urls
 from tta_backend.harness.handles.errors import HandleError
 from tta_backend.harness.handles.model import HandleRecord
 from tta_backend.harness.handles.payloads import PayloadStore
@@ -71,16 +73,62 @@ class RecordingEvents:
 
 
 class MemoryArtifacts:
-    def __init__(self) -> None:
+    """Charts, tables and map media in memory, shaped as the host stores them.
+
+    ``frame_stacks`` holds each stored stack or plane by its key and
+    ``overlays`` each overlay's arguments by its path. With ``media_lands``
+    False no medium lands: a frame block comes back without ``_key`` and an
+    overlay as ``{}``, as when the host's store fails.
+    """
+
+    PIPELINE_VERSION = "memory"
+
+    def __init__(self, *, media_lands: bool = True) -> None:
         self.stored: dict[str, dict[str, Any]] = {}
+        self.frame_stacks: dict[str, Any] = {}
+        self.overlays: dict[str, dict[str, Any]] = {}
+        self.media_lands = media_lands
 
     def _mint(self, kind: str) -> str:
         return f"{kind}-{len(self.stored) + 1}"
 
     async def store_chart(self, payload: dict[str, Any]) -> ArtifactRef:
         ref = ArtifactRef(id=self._mint("chart"), type="chart", title=payload.get("title"))
+        if carries_media(payload):
+            wire_media_urls({**payload, "chart_id": ref.id})
         self.stored[ref.id] = payload
         return ref
+
+    def _keep_frames(self, source: Any) -> str | None:
+        if not self.media_lands:
+            return None
+        key = f"frames-{len(self.frame_stacks) + 1}"
+        self.frame_stacks[key] = source
+        return key
+
+    def store_frames(self, stack: Any) -> dict[str, Any]:
+        block = axis_block(stack, pipeline_version=self.PIPELINE_VERSION)
+        key = self._keep_frames(stack)
+        if key is not None:
+            block["_key"] = key
+        for name, plane in (getattr(stack, "planes", None) or {}).items():
+            plane_key = self._keep_frames(plane)
+            if plane_key is not None:
+                block["planes"][name]["_key"] = plane_key
+        return block
+
+    def store_overlay(
+        self, lats: Any, lons: Any, field: Any, lut: list[Any], vmin: float, vmax: float,
+    ) -> dict[str, Any]:
+        if not self.media_lands:
+            return {}
+        path = f"overlay-{len(self.overlays) + 1}.png"
+        self.overlays[path] = {"lats": lats, "lons": lons, "field": field, "lut": lut, "vmin": vmin, "vmax": vmax}
+        finite = field[np.isfinite(field)]
+        fields: dict[str, Any] = {"_path": path}
+        if finite.size:
+            fields["_values"] = {"_path": f"values-{path}", "lo": float(finite.min()), "hi": float(finite.max())}
+        return fields
 
     async def store_table(
         self,

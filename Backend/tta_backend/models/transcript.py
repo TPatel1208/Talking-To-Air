@@ -26,7 +26,8 @@ ConnectorName = Literal["earthdata", "epa_aqs"]
 class TranscriptResult(BaseModel):
     """One result of a turn as the user saw it: its run, status and mode, the
     fixed-wording reason when it is not done, and the connector it stopped for.
-    Work refused because a source was down has no run and no mode."""
+    Work refused because a source was down has no run and no mode, and is
+    ``unavailable``: reconnecting would not help."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -35,13 +36,17 @@ class TranscriptResult(BaseModel):
     mode: Mode | None = None
     reason: str | None = None
     connector: ConnectorName | None = None
+    unavailable: bool = False
 
     def view(self) -> dict[str, Any]:
-        """The shape the ``done`` frame and the history carry."""
-        return {
+        """The shape the ``done`` frame and the history carry; ``unavailable`` only when set."""
+        view: dict[str, Any] = {
             "run_id": self.run_id, "status": self.status, "mode": None if self.mode is None else self.mode.view(),
             "reason": self.reason, "connector": self.connector,
         }
+        if self.unavailable:
+            view["unavailable"] = True
+        return view
 
 
 class TranscriptTurn(BaseModel):
