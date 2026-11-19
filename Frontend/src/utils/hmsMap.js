@@ -56,3 +56,30 @@ export function fitSmokeMap(map, bounds, container) {
     maxZoom: 10, duration: 0,
   })
 }
+
+const normalized = new WeakMap()
+
+// The harness stores smoke as a generic `polygon_map` (one FeatureCollection
+// per polygons handle); the smoke panel reads the `smoke_map` shape. Other
+// payloads pass through unchanged, and a given payload maps to one stable object.
+export function asSmokeMap(chart) {
+  if (chart?.type !== 'polygon_map') return chart
+  if (normalized.has(chart)) return normalized.get(chart)
+  const features = (chart.polygons || []).flatMap(entry => entry?.geojson?.features || [])
+  const counts = { light: 0, medium: 0, heavy: 0, unknown: 0 }
+  for (const feature of features) {
+    const density = feature?.properties?.density
+    counts[density in counts ? density : 'unknown'] += 1
+  }
+  const start = features.map(f => f?.properties?.start).find(Boolean)
+  const result = {
+    ...chart,
+    type: 'smoke_map',
+    geojson: { type: 'FeatureCollection', features },
+    counts,
+    feature_count: chart.feature_count ?? features.length,
+    date: chart.date ?? (typeof start === 'string' ? start.slice(0, 10) : 'map'),
+  }
+  normalized.set(chart, result)
+  return result
+}

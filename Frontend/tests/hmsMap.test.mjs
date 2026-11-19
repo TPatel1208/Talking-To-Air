@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { smokeMapStyle, smokeMapBounds, fitSmokeMap } from '../src/utils/hmsMap.js'
+import { smokeMapStyle, smokeMapBounds, fitSmokeMap, asSmokeMap } from '../src/utils/hmsMap.js'
 
 const geojson = { type: 'FeatureCollection', features: [{ type: 'Feature', geometry: {
   type: 'MultiPolygon', coordinates: [[[[-80, 30], [-70, 30], [-70, 40], [-80, 30]]]],
@@ -64,4 +64,24 @@ test('fitBounds uses requested area and adapts padding to resized or hidden pane
   assert.equal(calls.length, 2)
   assert.deepEqual(calls[0], [bounds, { padding: 35, maxZoom: 10, duration: 0 }])
   assert.equal(calls[1][1].padding, 20)
+})
+
+test('a harness polygon_map becomes the smoke map shape the panel reads', () => {
+  const feature = density => ({ type: 'Feature', geometry: null, properties: { density, start: '2024-06-01T11:00:00Z' } })
+  const chart = {
+    type: 'polygon_map', bounds: [-80, 30, -70, 40], feature_count: 3,
+    polygons: [
+      { handle: 'polygons_a', geojson: { type: 'FeatureCollection', features: [feature('light'), feature('heavy')] } },
+      { handle: 'polygons_b', geojson: { type: 'FeatureCollection', features: [feature('odd')] } },
+    ],
+  }
+  const smoke = asSmokeMap(chart)
+  assert.equal(smoke.type, 'smoke_map')
+  assert.equal(smoke.geojson.features.length, 3)
+  assert.deepEqual(smoke.counts, { light: 1, medium: 0, heavy: 1, unknown: 1 })
+  assert.equal(smoke.date, '2024-06-01')
+  assert.deepEqual(smokeMapBounds(smoke), [[-80, 30], [-70, 40]])
+  assert.equal(asSmokeMap(chart), smoke)
+  const other = { type: 'heatmap' }
+  assert.equal(asSmokeMap(other), other)
 })

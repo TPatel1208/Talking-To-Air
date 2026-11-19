@@ -1,4 +1,5 @@
 import { useMemo, useState, useEffect, useRef } from 'react'
+import { asSmokeMap } from '../utils/hmsMap.js'
 import { TimeSeriesPanel, ProfilePanel, ChartToolbar } from './ChartMessage'
 import MapLibreHeatmapPanel from './MapLibreHeatmapPanel.jsx'
 import MapLibreSmokePanel from './MapLibreSmokePanel.jsx'
@@ -975,7 +976,7 @@ export default function OutputPanel({
   rightPanelTab = null, onSelectRightPanelTab, hasRunningJobs = false,
 }) {
   const kind = focusedOutput?.kind
-  const chart = kind === 'chart' ? focusedOutput.data : null
+  const chart = kind === 'chart' ? asSmokeMap(focusedOutput.data) : null
   const artifact = kind === 'artifact' ? focusedOutput.data : null
   const isMetadataTabbedArtifact = artifact?.type === 'table' || artifact?.type === 'timeseries'
 
