@@ -65,6 +65,12 @@ _call_budget: ContextVar[Optional[dict[str, Any]]] = ContextVar("call_budget", d
 _mcp_failure_state: ContextVar[Optional[dict[str, Any]]] = ContextVar("mcp_failure_state", default=None)
 
 
+def bind_status_emitter(emitter: Callable[..., None]) -> None:
+    """Send ``emit_status`` calls made from the current context, and the tasks
+    and threads it starts, to ``emitter(message, stage=..., detail=...)``."""
+    _status_emitter.set(emitter)
+
+
 def emit_status(message: str, *, stage: str | None = None, detail: Any = None) -> None:
     """Emit a user-visible progress message for the active SSE stream.
 

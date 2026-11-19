@@ -37,9 +37,11 @@ from tta_backend.harness.run_context import (
     Limits,
     PlaceRefused,
     Places,
+    Reachable,
     Region,
     RunContext,
     RunEnv,
+    all_reachable,
     run_env,
 )
 from tta_backend.harness.storage import Stores, memory_stores
@@ -410,8 +412,10 @@ def make_run_context(
     credentials: Credentials | None = None,
     clock: Clock | None = None,
     stores: Stores | None = None,
+    reachable: Reachable | None = None,
 ) -> RunContext:
-    """A run context on fakes. Pass one ``stores`` to several contexts to test users against each other."""
+    """A run context on fakes. Pass one ``stores`` to several contexts to test users against each other.
+    Every connector is reachable unless ``reachable`` says otherwise."""
     return RunContext(
         identity=Identity(user_id=user_id, conversation_id=conversation_id),
         events=events or RecordingEvents(),
@@ -419,4 +423,5 @@ def make_run_context(
         credentials=credentials or StaticCredentials(),
         storage=stores or memory_stores(),
         clock=clock or FixedClock(datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)),
+        reachable=reachable or all_reachable,
     )

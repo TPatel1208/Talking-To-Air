@@ -35,6 +35,9 @@ NOTES_HEADING = "Notes:"
 GAPS_HEADING = "Gaps:"
 NOT_DONE_HEADING = "Not finished:"
 QUESTION_LINE = "Question: {prompt}"
+# The sources a connector names, as the user knows them.
+SOURCE_NAMES = {"earthdata": "NASA Earthdata", "epa_aqs": "EPA AQS"}
+UNAVAILABLE = "{source} is unavailable right now, so nothing was started; try again in a few minutes."
 OPTIONS_LINE = "Options: {options}"
 
 # Results whose handles name no source: nothing they hold was delivered as an answer.
@@ -199,11 +202,17 @@ def _question_lines(question: dict[str, Any]) -> list[str]:
     return lines
 
 
-def appended(results: Sequence[Result]) -> str:
+def unavailable_wording(connector: str) -> str:
+    """The fixed wording of work refused because ``connector``'s service is down."""
+    return UNAVAILABLE.format(source=SOURCE_NAMES.get(connector, connector))
+
+
+def appended(results: Sequence[Result], unavailable: Sequence[str] = ()) -> str:
     """The parts code writes after the prose, in a fixed layout: every
-    disclosure, every gap, the reason of each result not done, and each
-    question with its options. A text already written for an earlier result
-    is not repeated, a question included; empty when there is nothing to add."""
+    disclosure, every gap, the reason of each result not done, the wording for
+    each unavailable connector, and each question with its options. A text
+    already written for an earlier result is not repeated, a question
+    included; empty when there is nothing to add."""
     seen: set[str] = set()
 
     def fresh(text: str) -> bool:
@@ -228,6 +237,7 @@ def appended(results: Sequence[Result]) -> str:
             asked = _question_lines(result.question)
             if asked and fresh("\n".join(asked)):
                 questions.extend(asked)
+    not_done.extend(f"- {line}" for line in map(unavailable_wording, unavailable) if fresh(line))
     sections = []
     for heading, lines in ((NOTES_HEADING, notes), (GAPS_HEADING, gaps), (NOT_DONE_HEADING, not_done)):
         if lines:
@@ -237,10 +247,10 @@ def appended(results: Sequence[Result]) -> str:
     return "\n\n".join(sections)
 
 
-def assemble(prose: str, results: Sequence[Result]) -> str:
+def assemble(prose: str, results: Sequence[Result], unavailable: Sequence[str] = ()) -> str:
     """The answer without its sources line: the prose with any sources line
-    the model wrote removed, then ``appended(results)``."""
-    return "\n\n".join(part for part in (clean_prose(prose), appended(results)) if part)
+    the model wrote removed, then ``appended(results, unavailable)``."""
+    return "\n\n".join(part for part in (clean_prose(prose), appended(results, unavailable)) if part)
 
 
 # The numbers check

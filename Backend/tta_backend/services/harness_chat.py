@@ -12,7 +12,11 @@ Frames, in order:
   only on the turn's own frames. A workflow run opens with ``stage``
   ``workflow.<name>`` and ``detail`` ``{workflow, version, mode, steps,
   labels}``, and its steps' frames carry ``detail.step``; an exploration task
-  opens with ``stage`` ``explore`` and ``detail`` ``{objective, bundle}``;
+  is shown first with ``stage`` ``explore`` and ``detail`` ``{objective,
+  bundle, queued: true}``, then opens with the same stage and ``detail``
+  ``{objective, bundle}``. Lines from the older helpers (area, coverage,
+  opening retrieved data) arrive as ``status`` frames with their own stages,
+  carrying the run id when a run's call or retrieval open raised them;
 - ``text`` ``{content}`` for each piece of the answer as it streams;
 - ``job_progress`` ``{job_handle, status, progress, phase, message, note}``
   for each retrieval a run submits or polls, which the jobs panel lists and
@@ -24,7 +28,10 @@ Frames, in order:
 - ``done`` ``{thread_id, response, artifacts, tool_calls, results, label,
   suggested_followups?, variable_choice?}``; each of ``results`` is
   ``{run_id, status, mode, reason, connector}``, ``connector`` naming the
-  connector a result stopped for when it is missing, expired or rejected;
+  connector a result stopped for when it is missing, expired or rejected.
+  Work refused because a connector's service is down adds an entry with
+  ``run_id`` and ``mode`` null, ``status`` ``failed``, the fixed wording as
+  ``reason`` and ``connector`` set; nothing was started for it;
 - on a failed turn, ``error`` ``{detail}`` before ``done``; on a timeout or
   when admission refuses the turn, ``error`` then a short ``done``; on any
   other exception, ``error`` alone.
@@ -32,6 +39,7 @@ Frames, in order:
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import datetime
 import itertools
 import json
@@ -71,13 +79,15 @@ from tta_backend.harness.run_context import (
     Identity,
     Limits,
     Places,
+    Reachable,
     RunContext,
     RunEnv,
+    all_reachable,
     run_env,
 )
 from tta_backend.harness.storage import Stores
 from tta_backend.harness.supervisor import Supervisor, Turn
-from tta_backend.harness.supervisor.answer import data_sources
+from tta_backend.harness.supervisor.answer import data_sources, unavailable_wording
 from tta_backend.harness.trace import FailureCategory, RunNotFound, TraceStore
 from tta_backend.harness.workflows.loader import WorkflowCatalogue
 from tta_backend.harness.workflows.runner import EnvFactory, connect_reason
@@ -196,6 +206,50 @@ class StreamEvents:
     def text(self, content: str) -> None:
         if content:
             self._put(("text", {"content": content}))
+
+
+# The run whose earthdata call or retrieval open is in progress, for the status
+# lines of helpers that know nothing of runs.
+_working_run: contextvars.ContextVar[str | None] = contextvars.ContextVar("harness_working_run", default=None)
+
+
+def status_emitter(events: StreamEvents) -> Callable[..., None]:
+    """The emitter ``utils.streaming.emit_status`` calls reach the stream through."""
+
+    def emit(message: str, *, stage: str | None = None, detail: Any = None) -> None:
+        events.progress(message, stage=stage, detail=detail, run_id=_working_run.get())
+
+    return emit
+
+
+class RunBoundEarthdata:
+    """An earthdata session whose calls, and the status lines they raise, belong to one run."""
+
+    def __init__(self, inner: EarthdataSession, run_id: str) -> None:
+        self._inner = inner
+        self._run_id = run_id
+
+    async def call(
+        self, tool: str, arguments: dict[str, Any], *, idempotency_key: str | None = None
+    ) -> dict[str, Any]:
+        token = _working_run.set(self._run_id)
+        try:
+            return await self._inner.call(tool, arguments, idempotency_key=idempotency_key)
+        finally:
+            _working_run.reset(token)
+
+
+def run_bound_open(open_retrieval: OpenRetrieval, run_id: str) -> OpenRetrieval:
+    """``open_retrieval`` with its status lines belonging to ``run_id``."""
+
+    async def open_bound(owner: str, record: Any) -> Any:
+        token = _working_run.set(run_id)
+        try:
+            return await open_retrieval(owner, record)
+        finally:
+            _working_run.reset(token)
+
+    return open_bound
 
 
 def _source_handle(payload: dict[str, Any]) -> str | None:
@@ -335,6 +389,21 @@ class JobReporting:
         return reply
 
 
+def earthdata_ready(manager: Any) -> bool:
+    """Whether the earthdata connection is up."""
+    return manager is not None and manager.state == STATE_READY
+
+
+def connector_reachable(manager: Any) -> Reachable:
+    """Which connectors' services are up, read from the connection state at each call.
+    Only the earthdata service can be down; EPA AQS is always reachable."""
+
+    def reachable(connector: str) -> bool:
+        return connector != CONNECTOR_TYPE_EARTHDATA or earthdata_ready(manager)
+
+    return reachable
+
+
 class ReadyEarthdata:
     """The earthdata session over the app's live MCP tools; while the
     connection is not ready, every call fails as provider_unavailable."""
@@ -346,7 +415,7 @@ class ReadyEarthdata:
     async def call(
         self, tool: str, arguments: dict[str, Any], *, idempotency_key: str | None = None
     ) -> dict[str, Any]:
-        if self._manager is None or self._manager.state != STATE_READY:
+        if not earthdata_ready(self._manager):
             raise MCPToolError(CATEGORY_PROVIDER_UNAVAILABLE, EARTHDATA_UNAVAILABLE)
         return await self._session.call(tool, arguments, idempotency_key=idempotency_key)
 
@@ -365,8 +434,9 @@ def env_factory(
 
     async def build(context: RunContext, run_id: str) -> RunEnv:
         return run_env(
-            context, run_id=run_id, payloads=PayloadStore(payload_root), open_retrieval=open_retrieval,
-            earthdata=earthdata, compute=compute, limits=limits, places=places, models=models,
+            context, run_id=run_id, payloads=PayloadStore(payload_root),
+            open_retrieval=run_bound_open(open_retrieval, run_id),
+            earthdata=RunBoundEarthdata(earthdata, run_id), compute=compute, limits=limits, places=places, models=models,
         )
 
     return build
@@ -451,6 +521,17 @@ async def result_summaries(
     ]
 
 
+def unavailable_summaries(connectors: Sequence[str]) -> list[TranscriptResult]:
+    """An entry for each connector whose service was down, shaped like a result
+    that stopped for it; it names no run, since nothing was started."""
+    return [
+        TranscriptResult(
+            status="failed", reason=unavailable_wording(connector), connector=cast(ConnectorName, connector),
+        )
+        for connector in connectors if connector in CONNECT_LINKED
+    ]
+
+
 def results_view(summaries: Sequence[TranscriptResult]) -> list[dict[str, Any]]:
     return [summary.view() for summary in summaries]
 
@@ -522,8 +603,10 @@ class HarnessChat:
         capabilities: CapabilityRegistry | None = None,
         catalogue: WorkflowCatalogue | None = None,
         payload_root: str | None = None,
+        reachable: Reachable = all_reachable,
     ) -> None:
         self.supervisor = supervisor
+        self._reachable = reachable
         self.stores = stores
         self._ports = ports
         self._credentials = credentials
@@ -561,6 +644,7 @@ class HarnessChat:
             credentials=self._credentials(user_id),
             storage=self.stores,
             clock=self._clock,
+            reachable=self._reachable,
         )
         ports = self._ports(user_id, lambda payload: put(("job_progress", payload)))
         seen = _Seen()
@@ -570,6 +654,8 @@ class HarnessChat:
         async def run() -> None:
             # Connector last-used writes are coalesced per turn through this.
             streaming.get_call_budget()
+            # Status lines from the helpers the tools call reach the stream through here.
+            streaming.bind_status_emitter(status_emitter(cast(StreamEvents, context.events)))
             try:
                 put(("__turn__", await self.supervisor.turn(context, ports.build_env, ports.earthdata, message)))
             except Exception as exc:  # noqa: BLE001 -- ends the turn with an error frame below
@@ -621,6 +707,7 @@ class HarnessChat:
 
         sources = await data_sources(self.stores.handles, user_id, turn.results)
         summaries = await result_summaries(turn.results, self.stores.traces, user_id, self._connectors)
+        summaries.extend(unavailable_summaries(turn.unavailable))
         failed = turn.status == "failed"
         await self._record(
             message, thread_id, user_id, turn.text, seen, "error" if failed else "done",
@@ -849,7 +936,7 @@ async def build_harness_chat(
         supervisor=supervisor, stores=postgres_stores(pg_connection), ports=ports, credentials=credentials,
         chart_service=chart_service, chat_turn_timeout_seconds=settings.chat_turn_timeout_seconds,
         long_request_seconds=settings.long_request_seconds, capabilities=capabilities, catalogue=catalogue,
-        payload_root=root,
+        payload_root=root, reachable=connector_reachable(mcp_manager),
     )
 
 
@@ -858,15 +945,21 @@ __all__ = [
     "HarnessChat",
     "JobReporting",
     "ReadyEarthdata",
+    "RunBoundEarthdata",
     "StoppedConnectors",
     "StoredArtifacts",
     "StreamEvents",
     "TurnPorts",
     "build_harness_chat",
+    "connector_reachable",
+    "earthdata_ready",
     "job_progress",
     "picker_payload",
     "result_summaries",
     "results_view",
+    "run_bound_open",
     "sse",
+    "status_emitter",
     "transcript_history",
+    "unavailable_summaries",
 ]

@@ -33,10 +33,11 @@ def make_turn(
     followups: tuple[str, ...] = (),
     question: dict[str, Any] | None = None,
     variable_choice: dict[str, Any] | None = None,
+    unavailable: tuple[str, ...] = (),
 ) -> Turn:
     return Turn(
         text=text, results=results, run_ids=tuple(r.trace_id for r in results), followups=followups,
-        question=question, variable_choice=variable_choice, status=status, model_calls=1, tool_calls=0,
+        question=question, variable_choice=variable_choice, unavailable=unavailable, status=status, model_calls=1, tool_calls=0,
         input_tokens=0, output_tokens=0, cache_read_tokens=0, cache_creation_tokens=0,
     )
 
@@ -167,6 +168,7 @@ def make_chat(
     timeout: float = 60.0,
     clock: Any = None,
     earthdata: FakeEarthdata | None = None,
+    reachable: Any = None,
 ) -> HarnessChat:
     """A chat host on ``supervisor``, memory stores and fake earthdata, its runs' jobs reported as the app's are."""
     session = earthdata or FakeEarthdata()
@@ -180,4 +182,5 @@ def make_chat(
         supervisor=supervisor, stores=stores or memory_stores(), ports=ports or default_ports,
         credentials=lambda user_id: StaticCredentials(credentials or {}),
         chart_service=ChartService(), chat_turn_timeout_seconds=timeout, long_request_seconds=999.0, clock=clock,
+        **({} if reachable is None else {"reachable": reachable}),
     )

@@ -11,6 +11,10 @@
   through ``invoke``. A turn's lookups share one exploratory run, started on
   the first and closed with ``close`` at the end of the turn.
 
+Work that needs a connector whose service is down (``context.reachable``) is
+refused before any run starts, in fixed wording; the connector is kept in
+``unavailable`` for the answer to name.
+
 Every result reaches the model as ``result_view``; a lookup as the small JSON
 specialists see. Refusals use fixed wording. An unexpected exception is
 logged by type and the model gets a fixed internal-error message.
@@ -26,7 +30,7 @@ import copy
 import logging
 import re
 from collections import Counter
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from typing import Any
 
 from langchain_core.tools import BaseTool, StructuredTool
@@ -45,7 +49,8 @@ from tta_backend.harness.specialists.explore import explore
 from tta_backend.harness.specialists.task import ExploreLimits, ExploreTask
 from tta_backend.harness.specialists.tools import failure_view, retry_helps, tool_schema
 from tta_backend.harness.specialists.tools import result_view as capability_view
-from tta_backend.harness.supervisor.answer import dumps, result_view, view_of
+from tta_backend.harness.specialists.bundles import get_bundle
+from tta_backend.harness.supervisor.answer import dumps, result_view, unavailable_wording, view_of
 from tta_backend.harness.trace import FailureCategory, Run, RunNotFound, StepFailure, new_run_id
 from tta_backend.harness.workflows.compile import NotRunnable
 from tta_backend.harness.workflows.inputs import input_step_id
@@ -289,6 +294,8 @@ class TurnTools:
         self.results: list[Result] = []
         # Every run the turn's tools made, a refused input failure's included, in order.
         self.run_ids: list[str] = []
+        # Connectors whose service was down when work needing them was refused, in order.
+        self.unavailable: list[str] = []
         self._input_failures: Counter[str] = Counter()
         self._resumed: set[str] = set()
         self._lookup_env: RunEnv | None = None
@@ -365,6 +372,14 @@ class TurnTools:
                 return SPLIT_PLACE.format(place=quoted)
         return None
 
+    def _down(self, needed: Iterable[str | None]) -> str | None:
+        """The refusal when a connector in ``needed`` is unreachable, or None; the connector is noted."""
+        down = sorted({c for c in needed if c is not None and not self.context.reachable(c)})
+        if not down:
+            return None
+        self.unavailable.extend(c for c in down if c not in self.unavailable)
+        return _refused(" ".join(unavailable_wording(c) for c in down))
+
     def _input_refusal(self, name: str, reason: str) -> str:
         self._input_failures[name] += 1
         return _refused(STOP_RETRYING if self._input_failures[name] >= 2 else reason)
@@ -379,6 +394,9 @@ class TurnTools:
         if not isinstance(inputs, Mapping) or extra:
             return self._input_refusal(name, "inputs is an object of the workflow's inputs by name.")
         spec = self._runner.spec(name, self._workflows[name])
+        down = self._down(spec.connectors(self._capabilities))
+        if down is not None:
+            return down
         split = self._split([inputs.get(key) for key, declared in spec.inputs.items() if declared.type == "area"])
         if split is not None:
             return self._input_refusal(name, split)
@@ -427,6 +445,14 @@ class TurnTools:
         split = self._split([place for task in checked for place in task.places])
         if split is not None:
             return _refused(split + " Nothing was run.")
+        down = self._down(
+            capability.connector
+            for task in checked
+            for capability in get_bundle(task.bundle).capabilities(self._capabilities)
+            if capability.connector_required
+        )
+        if down is not None:
+            return down
         results = await explore(
             self.context, self._build_env, checked, registry=self._capabilities, notes=self._notes,
             limits=self._explore_limits, backoff=self._backoff,
@@ -455,6 +481,9 @@ class TurnTools:
             split = self._split([params.get("place")])
             if split is not None:
                 return _refused(split)
+            down = self._down([capability.connector] if capability.connector_required else [])
+            if down is not None:
+                return down
             env = await self.lookup_env()
             try:
                 result = await invoke(env, capability, params)

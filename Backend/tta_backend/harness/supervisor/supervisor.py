@@ -98,6 +98,9 @@ INTERNAL_WORDING = "The answer stopped on an internal error; what had already ru
 UNFINISHED_CALL = "This call did not finish."
 TOOL_LIMIT = "The limit of {limit} tool calls for this turn is reached, so this call was not run. Answer from what you have."
 
+# The most follow-ups a turn suggests, after merging its results' in order.
+MAX_FOLLOWUPS = 3
+
 TurnStatus = Literal["answered", "limit", "failed"]
 
 
@@ -132,6 +135,8 @@ class Turn:
     # Those results' runs, then the turn's lookup run, if any.
     run_ids: tuple[str, ...]
     followups: tuple[str, ...]
+    # Connectors whose service was down when work needing them was refused.
+    unavailable: tuple[str, ...] = ()
     # The first needs_input question, if any.
     question: dict[str, Any] | None
     # For a question with options: run_id, prompt and options, for the app's picker.
@@ -462,9 +467,12 @@ def final_message(messages: Sequence[AnyMessage]) -> AIMessage | None:
     return last if newest < len(messages) - 1 else None
 
 
-def turn_text(sources: Sequence[str], prose: str, wording: str | None, results: Sequence[Result]) -> str:
+def turn_text(
+    sources: Sequence[str], prose: str, wording: str | None, results: Sequence[Result],
+    unavailable: Sequence[str] = (),
+) -> str:
     """The turn as the user sees it: the sources line, the final message's prose, then code's parts."""
-    parts = (sources_line(sources), clean_prose(prose), wording, appended(results))
+    parts = (sources_line(sources), clean_prose(prose), wording, appended(results, unavailable))
     return "\n\n".join(part for part in parts if part)
 
 
@@ -580,9 +588,9 @@ class Supervisor:
             await self._record_numbers(tools, unmatched)
         lookup = await tools.close()
         shown = [*tools.results, *([lookup] if lookup is not None else [])]
-        tail = "\n\n".join(part for part in (wording, appended(shown)) if part)
+        tail = "\n\n".join(part for part in (wording, appended(shown, tools.unavailable)) if part)
         await stream.finish(tail)
-        text = turn_text(await sources(), prose, wording, shown)
+        text = turn_text(await sources(), prose, wording, shown, tools.unavailable)
         return self._turn(text, tools, guard, meter, status, lookup)
 
     async def _run(
@@ -654,7 +662,8 @@ class Supervisor:
             text=text,
             results=results,
             run_ids=tuple(dict.fromkeys(run_ids)),
-            followups=tuple(dict.fromkeys(f for r in results for f in r.followups)),
+            followups=tuple(dict.fromkeys(f for r in results for f in r.followups))[:MAX_FOLLOWUPS],
+            unavailable=tuple(tools.unavailable),
             question=question,
             variable_choice=variable_choice,
             status=status,

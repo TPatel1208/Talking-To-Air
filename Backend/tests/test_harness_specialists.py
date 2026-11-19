@@ -496,11 +496,37 @@ class ProgressTests(ExploreCase):
         [result] = await self.go(task(places=("NJ",)), script=[final()])
 
         events = self.context.events.progress_events  # type: ignore[attr-defined]
-        first = events[0]
-        self.assertEqual(first["stage"], "explore")
         made = task(places=("NJ",))
+        queued, first = events[0], events[1]
+        self.assertEqual((queued["stage"], first["stage"]), ("explore", "explore"))
+        self.assertEqual(queued["detail"], {"objective": made.objective, "bundle": made.bundle, "queued": True})
         self.assertEqual(first["detail"], {"objective": made.objective, "bundle": made.bundle})
         self.assertEqual({e["run_id"] for e in events}, {result.trace_id})
+
+    async def test_every_task_is_shown_queued_with_its_run_id_before_a_slot_frees(self):
+        objectives = ["Hold first.", "Hold second."]
+        model = Routed(turns={
+            objective: [tool_call("sources__fake__hold", {"label": objective}), final(objective)]
+            for objective in objectives
+        })
+        results_ = await explore(
+            self.context, self.build_env(ScriptedModels({"explore": choice_of(model)})),
+            [task(objective) for objective in objectives], registry=self.registry, notes=NOTES,
+            backoff=NO_BACKOFF, max_concurrent=1,
+        )
+
+        events = self.context.events.progress_events  # type: ignore[attr-defined]
+        queued = [e for e in events if (e["detail"] or {}).get("queued")]
+        self.assertEqual([e["detail"]["objective"] for e in queued], objectives)
+        self.assertEqual([e["run_id"] for e in queued], [r.trace_id for r in results_])
+        # Both are shown before the first task's own first line.
+        first_start = next(i for i, e in enumerate(events) if not (e["detail"] or {}).get("queued"))
+        self.assertEqual(events.index(queued[1]), 1)
+        self.assertLess(events.index(queued[1]), first_start)
+        # Each task then opens under the run id it was queued with.
+        for result in results_:
+            started = [e for e in events if e["run_id"] == result.trace_id and not (e["detail"] or {}).get("queued")]
+            self.assertEqual(started[0]["stage"], "explore")
 
 
 class PlaceTests(ExploreCase):

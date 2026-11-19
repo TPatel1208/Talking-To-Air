@@ -25,20 +25,21 @@ ConnectorName = Literal["earthdata", "epa_aqs"]
 
 class TranscriptResult(BaseModel):
     """One result of a turn as the user saw it: its run, status and mode, the
-    fixed-wording reason when it is not done, and the connector it stopped for."""
+    fixed-wording reason when it is not done, and the connector it stopped for.
+    Work refused because a source was down has no run and no mode."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    run_id: str = Field(pattern=RUN_ID_PATTERN.pattern)
+    run_id: str | None = Field(default=None, pattern=RUN_ID_PATTERN.pattern)
     status: ResultStatus
-    mode: Mode
+    mode: Mode | None = None
     reason: str | None = None
     connector: ConnectorName | None = None
 
     def view(self) -> dict[str, Any]:
         """The shape the ``done`` frame and the history carry."""
         return {
-            "run_id": self.run_id, "status": self.status, "mode": self.mode.view(),
+            "run_id": self.run_id, "status": self.status, "mode": None if self.mode is None else self.mode.view(),
             "reason": self.reason, "connector": self.connector,
         }
 

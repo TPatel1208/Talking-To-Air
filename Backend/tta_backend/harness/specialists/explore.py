@@ -66,7 +66,8 @@ logger = logging.getLogger(__name__)
 EnvFactory = Callable[[RunContext, str], Awaitable[RunEnv]]
 
 RESOLVE = "sources.areas.resolve"
-# The stage of a task's first progress line, which names its objective and bundle.
+# The stage of a task's progress lines that name its objective and bundle: first
+# queued, then again when it starts.
 EXPLORE_STAGE = "explore"
 # Bundles whose tasks carry on with a place that could not be resolved.
 PLACES_AS_TEXT = frozenset({"find-data"})
@@ -391,9 +392,9 @@ async def _guarded(
     notes: NoteCatalogue,
     limits: ExploreLimits,
     backoff: Backoff,
+    run_id: str,
 ) -> Result:
     """One task's result whatever happens, so a task that fails never fails another."""
-    run_id = new_run_id()
     try:
         return await _one(context, build_env, task, registry, notes, limits, backoff, run_id)
     except asyncio.CancelledError:
@@ -427,9 +428,16 @@ async def explore(
         raise ValueError("max_concurrent is at least 1")
     limits = limits or ExploreLimits()
     slots = asyncio.Semaphore(max_concurrent)
+    # Allocated up front so a task still waiting for a slot can be shown under its own run id.
+    run_ids = [new_run_id() for _ in tasks]
+    for task, run_id in zip(tasks, run_ids, strict=True):
+        context.events.progress(
+            f"Waiting to explore: {task.objective}", stage=EXPLORE_STAGE,
+            detail={"objective": task.objective, "bundle": task.bundle, "queued": True}, run_id=run_id,
+        )
 
-    async def bounded(task: ExploreTask) -> Result:
+    async def bounded(task: ExploreTask, run_id: str) -> Result:
         async with slots:
-            return await _guarded(context, build_env, task, registry, notes, limits, backoff)
+            return await _guarded(context, build_env, task, registry, notes, limits, backoff, run_id)
 
-    return list(await asyncio.gather(*(bounded(task) for task in tasks)))
+    return list(await asyncio.gather(*(bounded(task, run_id) for task, run_id in zip(tasks, run_ids, strict=True))))

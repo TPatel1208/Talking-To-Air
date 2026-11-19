@@ -53,10 +53,17 @@ from tta_backend.services.harness_chat import (  # noqa: E402
     StoppedConnectors,
     StoredArtifacts,
     TurnPorts,
+    connector_reachable,
     picker_payload,
     result_summaries,
     transcript_history,
 )
+from tta_backend.services.harness_chat import env_factory as app_env_factory  # noqa: E402
+from tta_backend.services.harness_host import open_retrieval_over  # noqa: E402
+from tta_backend.harness.supervisor.answer import unavailable_wording  # noqa: E402
+from tta_backend.harness.testing import FakeEarthdata, FakePlaces, InlineCompute, TEST_LIMITS  # noqa: E402
+from tta_backend.utils.streaming import emit_status  # noqa: E402
+from harness_handle_helpers import retrieval_record  # noqa: E402
 from tta_backend.services.chart_service import ChartService  # noqa: E402
 
 RUN_A = "run_" + "a" * 32
@@ -227,10 +234,12 @@ class ScriptedSupervisorTurnTests(SupervisorCase):
             with self.subTest(run=run):
                 mine = [(i, d) for i, d in statuses if d.get("run_id") == run]
                 # One row opens the run, labelled with its objective, before anything else of the run's.
+                # The queued row comes first, then the one that opens the run.
                 openings = [(i, d) for i, d in mine if d.get("stage") == "explore"]
-                [(opened, opening)] = openings
+                [(queued, held), (opened, opening)] = openings
+                self.assertEqual(held["detail"], {"objective": objective, "bundle": "analyse", "queued": True})
                 self.assertEqual(opening["detail"], {"objective": objective, "bundle": "analyse"})
-                self.assertEqual(opened, min(i for i, _ in mine))
+                self.assertEqual(queued, min(i for i, _ in mine))
                 self.assertGreater(len(mine), 2)
                 charts = [(i, data) for i, (event, data) in enumerate(parsed) if event == "chart" and data.get("run_id") == run]
                 [(drawn, chart)] = charts
@@ -248,6 +257,42 @@ class ScriptedSupervisorTurnTests(SupervisorCase):
         self.assertEqual(sorted(submitted), ["job_1", "job_2"])
         self.assertTrue(all(set(j) == {"job_handle", "status", "progress", "phase", "message", "note"} for j in jobs))
         self.assertTrue(all(EDL_SECRET not in frame for frame in frames))
+
+    async def test_the_apps_connection_state_decides_whether_a_turn_starts_anything(self):
+        class Manager:
+            state = "connecting"
+
+        manager = Manager()
+        model = Model(script=[run_map(), answer("No map."), run_map(), answer("The map is ready.")])
+        chat = make_chat(
+            self.supervisor(model), self.root, stores=self.f.stores, reachable=connector_reachable(manager),
+            ports=lambda user_id, report_job: TurnPorts(build_env=self.build, earthdata=self.service.earthdata()),
+            credentials={"earthdata": EDL_SECRET}, clock=self.f.context.clock,
+        )
+
+        frames = await self.collect.run(chat)
+        wording = unavailable_wording("earthdata")
+        done = last(frames, "done")
+        self.assertEqual(done["response"].count(wording), 1)
+        self.assertEqual(
+            done["results"], [{"run_id": None, "status": "failed", "mode": None, "reason": wording, "connector": "earthdata"}],
+        )
+        self.assertEqual(await self.f.stores.traces.list_runs("user-a", "thread-1"), [])
+
+        manager.state = STATE_READY
+        frames = await self.collect.run(chat, "Try again.")
+        done = last(frames, "done")
+        self.assertNotIn(wording, done["response"])
+        self.assertEqual([r["status"] for r in done["results"]], ["done"])
+
+    def test_only_the_earthdata_service_can_be_down(self):
+        self.assertFalse(connector_reachable(None)("earthdata"))
+        self.assertTrue(connector_reachable(None)("epa_aqs"))
+
+        class Manager:
+            state = STATE_READY
+
+        self.assertTrue(connector_reachable(Manager())("earthdata"))
 
     async def test_a_failed_result_reaches_the_user_in_fixed_wording_and_the_next_turn_works(self):
         earthdata = self.service.earthdata()
@@ -465,6 +510,52 @@ class HostFrameTests(unittest.IsolatedAsyncioTestCase):
         with self.assertLogs("tta_backend.services.harness_chat", level="WARNING"):
             reply = await JobReporting(inner, broken).call("retrieve_subset", {})
         self.assertEqual(reply, {"job_handle": "job-1"})
+
+    async def test_a_status_line_from_open_handle_reaches_the_stream_under_its_run(self):
+        run = new_run_id()
+
+        class Opening(PlaybackSupervisor):
+            async def turn(self, context: Any, build_env: Any, earthdata: Any, message: str) -> Any:
+                emit_status("Resolving the area...", stage="area")
+                await context.storage.handles.record_retrieval(retrieval_record(context.identity.user_id))
+                env = await build_env(context, run)
+                await env.resolver.open(context.identity.user_id, "obs_tempo_no2_1")
+                emit_status("Back outside any run.", stage="after")
+                return make_turn("Opened.")
+
+        def ports(user_id: str, report_job: Any) -> TurnPorts:
+            session = FakeEarthdata()
+            return TurnPorts(
+                build_env=app_env_factory(
+                    self.root, earthdata=session, open_retrieval=open_retrieval_over({}, user_id),
+                    compute=InlineCompute(), limits=TEST_LIMITS, places=FakePlaces(), models=ScriptedModels({}),
+                ),
+                earthdata=session,
+            )
+
+        with patch("tta_backend.services.open_handle._serve_from_index", return_value="the data"):
+            frames = await self.collect.run(make_chat(Opening(), self.root, ports=ports))
+
+        statuses = [data for event, data in parse(frames) if event == "status"]
+        self.assertEqual(statuses, [
+            {"message": "Resolving the area...", "stage": "area"},
+            {"message": "Opening retrieved data...", "stage": "open", "run_id": run},
+            {"message": "Back outside any run.", "stage": "after"},
+        ])
+
+    async def test_a_turn_refused_for_a_down_source_names_it_in_done_and_the_transcript(self):
+        supervisor = PlaybackSupervisor(turn=make_turn("Nothing ran.", unavailable=("earthdata",)))
+        frames = await self.collect.run(make_chat(supervisor, self.root))
+
+        wording = unavailable_wording("earthdata")
+        expected = {"run_id": None, "status": "failed", "mode": None, "reason": wording, "connector": "earthdata"}
+        done = last(frames, "done")
+        self.assertEqual(done["results"], [expected])
+        self.assertIsNone(done["label"])
+        [turn] = self.transcripts.turns
+        self.assertEqual([r.view() for r in turn.results], [expected])
+        history = await transcript_history("thread-1", "user-a", ChartService())
+        self.assertEqual(history[-1]["results"], [expected])
 
     async def test_followups_reach_done(self):
         supervisor = PlaybackSupervisor(turn=make_turn("Done.", followups=("And in July?",)))

@@ -76,14 +76,26 @@ class Clock(Protocol):
         ...
 
 
+# Whether a connector's service can be reached right now.
+Reachable = Callable[[str], bool]
+
+
+def all_reachable(connector: str) -> bool:
+    return True
+
+
 @dataclass(frozen=True)
 class RunContext:
+    """``reachable`` says whether a connector's service is up; work that needs
+    one that is not is refused before any run starts."""
+
     identity: Identity
     events: Events
     artifacts: Artifacts
     credentials: Credentials
     storage: Stores
     clock: Clock
+    reachable: Reachable = all_reachable
 
 
 class EarthdataSession(Protocol):

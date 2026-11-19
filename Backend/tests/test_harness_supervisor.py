@@ -32,10 +32,11 @@ from tta_backend.harness.supervisor import (
     thread_id,
     unmatched_numbers,
 )
-from tta_backend.harness.supervisor.answer import data_sources
+from tta_backend.harness.supervisor.answer import data_sources, unavailable_wording
 from tta_backend.harness.supervisor.supervisor import (
     FAILED_WORDING,
     LIMIT_WORDING,
+    MAX_FOLLOWUPS,
     NUMBERS_STEP,
     TOOL_LIMIT,
     UNFINISHED_CALL,
@@ -633,6 +634,21 @@ class DoneExtrasTests(SupervisorCase):
         self.assertEqual([r.followups for r in turn.results], [("Why?", "Where?"), ("Where?", "When?"), ()])
         self.assertEqual(turn.followups, ("Why?", "Where?", "When?"))
 
+    async def test_a_turns_followups_are_capped_after_merging_and_dropping_repeats(self):
+        self.explorer.script = [
+            final("One.", followups=["A?", "B?", "A?"]), final("Two.", followups=["B?", "C?", "D?"]),
+        ]
+        find = {"objective": "Find NO2 data.", "bundle": "find-data"}
+        model = Model(script=[
+            tool_call("explore", {"tasks": [find]}), tool_call("explore", {"tasks": [find]}), answer("Two searches ran."),
+        ])
+        turn = await self.turn(self.supervisor(model), "What NO2 data is there?")
+
+        self.assertEqual(MAX_FOLLOWUPS, 3)
+        self.assertEqual(turn.followups, ("A?", "B?", "C?"))
+        # Each result keeps all it suggested.
+        self.assertEqual(turn.results[1].followups, ("B?", "C?", "D?"))
+
     async def test_a_turn_whose_results_suggest_nothing_has_no_followups(self):
         turn = await self.turn(self.supervisor(Model(script=[run_map(), answer("Done.")])))
         self.assertEqual(turn.followups, ())
@@ -650,6 +666,83 @@ class DoneExtrasTests(SupervisorCase):
         self.assertEqual(turn.variable_choice, {
             "run_id": first.trace_id, "prompt": first.question["prompt"], "options": ["confirm", "narrow"],
         })
+
+
+EARTHDATA_DOWN = unavailable_wording("earthdata")
+
+
+class SourceDownTests(SupervisorCase):
+    def down(self, *connectors: str) -> RunContext:
+        return dataclasses.replace(self.f.context, reachable=lambda connector: connector not in connectors)
+
+    async def no_runs(self) -> None:
+        self.assertEqual(await self.f.stores.traces.list_runs("user-a", "conv-1"), [])
+
+    def test_the_wording_names_the_source(self):
+        self.assertEqual(
+            EARTHDATA_DOWN, "NASA Earthdata is unavailable right now, so nothing was started; try again in a few minutes.",
+        )
+        self.assertIn("EPA AQS", unavailable_wording("epa_aqs"))
+
+    async def test_a_workflow_that_needs_a_down_source_starts_nothing_and_the_answer_says_so_once(self):
+        model = Model(script=[run_map(), run_map(), answer("The map could not be made.")])
+        turn = await self.turn(self.supervisor(model), context=self.down("earthdata"))
+
+        self.assertEqual(last_tool(model, 1), {"status": "refused", "reason": EARTHDATA_DOWN})
+        self.assertEqual(turn.results, ())
+        self.assertEqual((turn.run_ids, turn.unavailable), ((), ("earthdata",)))
+        await self.no_runs()
+        self.assertEqual(turn.text.count(EARTHDATA_DOWN), 1)
+        self.assertEqual(turn.text, f"The map could not be made.\n\nNot finished:\n- {EARTHDATA_DOWN}")
+
+    async def test_explore_tasks_whose_bundle_needs_a_down_source_are_refused_before_any_run(self):
+        for bundle in ("analyse", "find-data"):
+            with self.subTest(bundle=bundle):
+                task = {"objective": "Get NO2 over NJ.", "bundle": bundle, "places": ["NJ"]}
+                model = Model(script=[tool_call("explore", {"tasks": [task]}), answer("Nothing ran.")])
+                turn = await self.turn(self.supervisor(model), context=self.down("earthdata"))
+
+                self.assertEqual(last_tool(model), {"status": "refused", "reason": EARTHDATA_DOWN})
+                self.assertEqual((turn.results, turn.unavailable), ((), ("earthdata",)))
+                self.assertEqual(turn.text.count(EARTHDATA_DOWN), 1)
+        self.assertEqual(self.explorer.calls, 0)
+        self.assertEqual(self.f.places.asked, [])
+        await self.no_runs()
+
+    async def test_a_task_that_works_on_existing_handles_is_not_held_by_a_down_source(self):
+        self.explorer.script = [final("Nothing to work on.")]
+        task = {"objective": "Review the earlier numbers.", "bundle": "investigate"}
+        model = Model(script=[tool_call("explore", {"tasks": [task]}), answer("Reviewed.")])
+        turn = await self.turn(self.supervisor(model), context=self.down("earthdata"))
+
+        self.assertEqual(turn.unavailable, ())
+        self.assertEqual(len(turn.results), 1)
+
+    async def test_a_satellite_lookup_is_refused_before_its_run_starts_and_a_place_lookup_is_not(self):
+        model = Model(script=[
+            tool_call("search_datasets", {"query": "NO2"}), tool_call("resolve_area", {"place": "NJ"}),
+            answer("Searching was not possible."),
+        ])
+        turn = await self.turn(self.supervisor(model), context=self.down("earthdata"))
+
+        self.assertEqual(last_tool(model, 1), {"status": "refused", "reason": EARTHDATA_DOWN})
+        self.assertEqual(last_tool(model, 2)["status"], "done")
+        self.assertEqual(turn.unavailable, ("earthdata",))
+        # Only the place lookup made a run.
+        [run_id] = turn.run_ids
+        entries = await self.f.stores.traces.entries("user-a", run_id)
+        self.assertEqual([e.capability for e in entries], [RESOLVE])
+        self.assertEqual(turn.text.count(EARTHDATA_DOWN), 1)
+
+    async def test_a_source_that_is_up_is_unaffected(self):
+        turn = await self.turn(
+            self.supervisor(Model(script=[run_map(), answer("Mapped.")])), context=self.down("epa_aqs"),
+        )
+
+        [result] = turn.results
+        self.assertEqual(result.status, "done")
+        self.assertEqual(turn.unavailable, ())
+        self.assertNotIn("unavailable", turn.text)
 
 
 class NumbersTests(SupervisorCase):
