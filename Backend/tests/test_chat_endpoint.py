@@ -1344,6 +1344,26 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         ]:
             self.assertIn(name, response.text)
 
+    async def test_a_chat_request_without_a_signed_in_user_is_refused_before_any_run(self):
+        import tempfile
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        supervisor = PlaybackSupervisor(("text", "should not run"))
+        self.api.app.state.agent = make_chat(supervisor, tmp.name)
+        saved = AsyncMock()
+        transport = self.httpx.ASGITransport(app=self.api.app)
+
+        with self._auth_patch(), patch.object(self.api, "save_session_metadata_once", saved):
+            async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                anonymous = await client.post("/chat", json={"message": "hi"})
+                forged = await client.post("/chat", json={"message": "hi"}, headers={"Authorization": "Bearer not-a-token"})
+
+        self.assertEqual((anonymous.status_code, forged.status_code), (401, 401))
+        self.assertEqual(supervisor.messages, [])
+        self.assertEqual(supervisor.contexts, [])
+        saved.assert_not_awaited()
+
     async def test_chat_validation_happens_before_streaming(self):
         import tempfile
 

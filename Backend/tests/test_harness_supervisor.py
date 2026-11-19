@@ -12,7 +12,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from tests.test_harness_ledger import SHORT_WAIT, STILL_RUNNING, TickingClock
 from tests.test_harness_sources_satellite import NO2
-from tests.test_harness_specialists import Model, call_on_area, choice_of, final
+from tests.test_harness_specialists import Model, call_on_area, choice_of, final, input_handle
 from tests.test_harness_workflow_packs_run import JUNE, PackRun
 from tta_backend.harness.context.ledger import EMPTY, HEADING
 from tta_backend.harness.knowledge import NoteCatalogue
@@ -271,6 +271,15 @@ class WorkflowTurnTests(SupervisorCase):
         self.assertEqual([r.status for r in turn.results], ["done", "done"], [r.reason for r in turn.results])
         self.assertTrue(turn.text.startswith(f"{sources_line(['TEMPO_NO2', 'EPA AQS'])}\n\n"))
 
+    async def test_a_dataset_behind_two_results_is_named_once(self):
+        later = {"start": "2024-06-10", "end": "2024-06-12"}
+        model = Model(script=[run_map(), run_map(dates=later), answer("Both maps are ready.")])
+        turn = await self.turn(self.supervisor(model))
+
+        self.assertEqual([r.status for r in turn.results], ["done", "done"])
+        self.assertEqual(turn.text.splitlines()[0], "Data sources: TEMPO_NO2")
+        self.assertEqual(turn.text.count("Data sources:"), 1)
+
     async def test_a_turn_with_no_data_results_has_no_sources_line(self):
         model = Model(script=[tool_call("resolve_area", {"place": "NJ"}), answer("New Jersey is a state.")])
         turn = await self.turn(self.supervisor(model), "What is NJ?")
@@ -298,6 +307,9 @@ class InputTests(SupervisorCase):
         runs = await self.f.stores.traces.list_runs("user-a", "conv-1")
         self.assertEqual(turn.run_ids, tuple(run.id for run in runs))
         self.assertEqual([run.status for run in runs], ["failed", "failed"])
+        # Nothing ran under them: no step was written.
+        for run in runs:
+            self.assertEqual(await self.f.stores.traces.entries("user-a", run.id), [])
 
     async def test_one_part_of_a_combined_place_is_refused_everywhere_and_runs_nothing(self):
         from tta_backend.harness.supervisor.tools import SPLIT_PLACE
@@ -369,6 +381,32 @@ class ExploreAndLookupTests(SupervisorCase):
         # The specialist's own text never reaches the answer stream.
         self.assertNotIn("NO2 was retrieved over New Jersey.", turn.text)
         self.assertTrue(turn.text.startswith(sources_line(["TEMPO_NO2"]) or ""))
+
+    async def test_a_specialists_narration_and_answer_call_never_reach_the_answer_stream(self):
+        narration = "Retrieving the NO2 grid now."
+        summary = "The specialist's own account of what it found."
+        self.explorer = Streamed(script=[
+            lambda m: tool_call("sources__satellite__get_data", {
+                "area": input_handle(m, "polygons"), "quantity": NO2, "dates": JUNE, "date_role": "range",
+            }, content=narration),
+            final(summary),
+        ])
+        self.build = self.env_factory()
+        task = {"objective": "Retrieve NO2 over NJ.", "bundle": "analyse", "places": ["NJ"]}
+        model = Streamed(script=[tool_call("explore", {"tasks": [task]}), answer("NO2 was retrieved.")])
+        turn = await self.turn(self.supervisor(model), "Get NO2 over NJ for June 1-3 2024.")
+
+        [result] = turn.results
+        self.assertEqual((result.status, result.interpretation), ("done", summary), result.reason)
+        # The specialist's model did stream, both turns of it.
+        self.assertEqual(self.explorer.calls, 2)
+        streamed = "".join(self.f.events.texts)
+        self.assertNotIn(narration, streamed)
+        self.assertNotIn(summary, streamed)
+        self.assertNotIn("SpecialistAnswer", streamed)
+        # Only the supervisor's own answer is streamed; stage events from the capability calls still arrive.
+        self.assertIn("NO2 was retrieved.", streamed)
+        self.assertTrue(any(e["stage"] for e in self.f.events.progress_events))
 
     async def test_explore_refuses_more_than_four_tasks_and_bad_tasks(self):
         task = {"objective": "Find NO2 data.", "bundle": "find-data"}
@@ -577,6 +615,41 @@ class QuestionTests(SupervisorCase):
         self.assertEqual(result.status, "needs_input")
         self.assertEqual(turn.question, result.question)
         self.assertIsNone(turn.variable_choice)
+
+
+class DoneExtrasTests(SupervisorCase):
+    async def test_followups_from_several_results_merge_in_order_without_repeats(self):
+        self.explorer.script = [
+            final("One.", followups=["Why?", "Where?"]), final("Two.", followups=["Where?", "When?"]),
+            final("Three.", followups=[]),
+        ]
+        find = {"objective": "Find NO2 data.", "bundle": "find-data"}
+        model = Model(script=[
+            tool_call("explore", {"tasks": [find]}), tool_call("explore", {"tasks": [find]}),
+            tool_call("explore", {"tasks": [find]}), answer("Three searches ran."),
+        ])
+        turn = await self.turn(self.supervisor(model), "What NO2 data is there?")
+
+        self.assertEqual([r.followups for r in turn.results], [("Why?", "Where?"), ("Where?", "When?"), ()])
+        self.assertEqual(turn.followups, ("Why?", "Where?", "When?"))
+
+    async def test_a_turn_whose_results_suggest_nothing_has_no_followups(self):
+        turn = await self.turn(self.supervisor(Model(script=[run_map(), answer("Done.")])))
+        self.assertEqual(turn.followups, ())
+
+    async def test_with_several_questions_the_first_with_options_is_the_picker(self):
+        self.service.estimated_bytes = 100_000_000
+        model = Model(script=[run_map(), run_map(dates={"start": "2024-06-10", "end": "2024-06-12"}), answer("Both are large.")])
+        turn = await self.turn(self.supervisor(model))
+
+        first, second = turn.results
+        self.assertEqual([r.status for r in turn.results], ["needs_input", "needs_input"])
+        self.assertNotEqual(first.trace_id, second.trace_id)
+        assert first.question is not None
+        self.assertEqual(turn.question, first.question)
+        self.assertEqual(turn.variable_choice, {
+            "run_id": first.trace_id, "prompt": first.question["prompt"], "options": ["confirm", "narrow"],
+        })
 
 
 class NumbersTests(SupervisorCase):

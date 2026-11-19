@@ -3,6 +3,7 @@ import dataclasses
 import datetime
 import json
 import tempfile
+import typing
 import unittest
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -10,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 
 from tta_backend.domain.monitors import aqs as aqs_client
+from tta_backend.domain.monitors.pollutants import POLLUTANTS, Pollutant
 from tta_backend.harness.capabilities import CapabilityRegistry, invoke
 from tta_backend.harness.capabilities.sources import monitors
 from tta_backend.harness.handles import Descriptor, HandleRecord
@@ -647,6 +649,31 @@ class DeclarationTests(unittest.TestCase):
         self.assertTrue(monitors.GROUP.notes.strip())
         self.assertEqual({c.output_kind for c in monitors.CAPABILITIES}, {"points", "series", "table"})
         self.assertEqual(monitors.find.schema()["properties"]["area"]["x-handle-kinds"], ["polygons"])
+
+
+class PollutantTests(_MonitorCase):
+    async def test_a_pollutant_outside_the_supported_set_is_bad_input_before_any_request(self):
+        by_monitor = {"monitors": ["06-037-1103"], "start": "2024-06-01", "end": "2024-06-02"}
+        near_a_point = {"lat": 34.07, "lon": -118.22, "start": "2024-06-01", "end": "2024-06-02"}
+        for capability, params in (
+            (monitors.find, near_a_point),
+            (monitors.readings, by_monitor),
+            (monitors.daily_summary, by_monitor),
+            (monitors.quarterly_summary, by_monitor),
+            (monitors.annual_summary, by_monitor),
+            (monitors.exceedance_days, by_monitor),
+        ):
+            for pollutant in ("lead", "co2", "ozone", ""):
+                with self.subTest(capability=capability.name, pollutant=pollutant):
+                    failure = await self.failure(capability, {"pollutant": pollutant, **params})
+                    self.assertEqual(failure.category, FailureCategory.BAD_INPUT)
+        self.assertEqual(self.aqs.requests, [])
+
+    def test_every_pollutant_a_capability_accepts_has_its_aqs_definition(self):
+        self.assertEqual(set(typing.get_args(Pollutant)), set(POLLUTANTS))
+        for capability in monitors.CAPABILITIES:
+            with self.subTest(capability=capability.name):
+                self.assertEqual(set(capability.schema()["properties"]["pollutant"]["enum"]), set(POLLUTANTS))
 
 
 if __name__ == "__main__":

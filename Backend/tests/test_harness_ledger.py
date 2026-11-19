@@ -10,13 +10,13 @@ from tests.test_harness_workflow_packs_run import JULY, JUNE, SMOKE_DATE, PackRu
 from tta_backend.harness.capabilities.catalogue import build_registry
 from tta_backend.harness.context import Ledger, LedgerArea, LedgerChart, LedgerHandle, build_ledger, render_ledger
 from tta_backend.harness.context.ledger import EMPTY, HEADING
-from tta_backend.harness.handles import HandleRecord
+from tta_backend.harness.handles import Descriptor, HandleRecord
 from tta_backend.harness.knowledge import NoteCatalogue
 from tta_backend.harness.models import NO_BACKOFF
 from tta_backend.harness.results import Result
 from tta_backend.harness.run_context import RunContext
 from tta_backend.harness.specialists import ExploreLimits, ExploreTask, explore
-from tta_backend.harness.testing import TEST_LIMITS, ScriptedModels, env_factory
+from tta_backend.harness.testing import TEST_LIMITS, ScriptedModels, box_region, env_factory, tool_call
 from tta_backend.harness.trace import TraceEntry
 from tta_backend.harness.workflows.runner import JOB_WAITING
 
@@ -372,3 +372,91 @@ class IsolationTests(LedgerCase):
         self.assertNotIn(mine.trace_id, their_text)
         self.assertNotIn("obs_1", their_text)
         self.assertEqual(await self.text(self.context_for("user-c")), EMPTY)
+
+
+class ExplorationLedgerCase(LedgerCase):
+    async def explore_one(self, task: ExploreTask, script: list[Any]) -> Result:
+        model = Model(script=script)
+        build = env_factory(
+            self.root, earthdata=self.service.earthdata(), open_retrieval=self.open_retrieval, places=self.f.places,
+            models=ScriptedModels({"explore": choice_of(model)}),
+        )
+        [result] = await explore(
+            self.f.context, build, [task], registry=build_registry(), notes=NoteCatalogue([]),
+            limits=ExploreLimits(retrieval_wait_seconds=0.05), backoff=NO_BACKOFF,
+        )
+        return result
+
+
+class MonitorSearchTests(ExplorationLedgerCase):
+    async def test_monitors_found_near_a_point_are_listed_with_the_point(self):
+        search = {"pollutant": "o3", "lat": 40.8, "lon": -74.1, "start": "2024-06-01", "end": "2024-06-02"}
+        result = await self.explore_one(
+            ExploreTask(objective="Which ozone monitors are near Bergen?", bundle="analyse"),
+            [tool_call("sources__monitors__find", search), final("Two monitors were found.")],
+        )
+        self.assertEqual(result.status, "done", result.reason)
+        [find] = await self.done_entries(result.trace_id, FIND)
+        points, ids = find.result["handle"], find.result["values"]["monitor_ids"]
+
+        [monitors] = (await self.ledger()).monitors
+        self.assertEqual((monitors.handle, monitors.area, monitors.point, monitors.pollutant),
+                         (points, None, (40.8, -74.1), "o3"))
+        self.assertEqual(monitors.monitor_ids, tuple(ids))
+        self.assertEqual(self.section(await self.text(), "Monitors:"), [
+            f"- {points}: {len(ids)} o3 monitors near 40.8, -74.1, 2024-06-01 to 2024-06-02; "
+            f"monitor ids {', '.join(ids)} (run {result.trace_id})",
+        ])
+
+
+class CarryOverTests(ExplorationLedgerCase):
+    async def test_a_call_that_did_not_happen_lists_nothing(self):
+        result = await self.start("map", {**MAP, "area": "Atlantis"})
+        self.assertEqual(result.status, "needs_input")
+
+        ledger = await self.ledger()
+        self.assertEqual((ledger.areas, ledger.products, ledger.handles, ledger.charts, ledger.monitors), ((),) * 5)
+        self.assertEqual([run.run_id for run in ledger.open_runs], [result.trace_id])
+        text = render_ledger(ledger)
+        for heading in ("Areas:", "Products:", "Handles:", "Charts:", "Monitors:"):
+            self.assertNotIn(heading, text)
+
+    async def test_each_place_asked_for_is_its_own_area_with_the_words_it_was_asked_in(self):
+        self.f.places.regions["delaware valley"] = box_region("Delaware Valley", -75.6, 39.6, -74.6, 40.3)
+        first = await self.start("map", MAP)
+        self.assertEqual(first.status, "done", first.reason)
+        second = await self.explore_one(
+            ExploreTask(objective="Resolve the Delaware Valley.", bundle="find-data", places=("Delaware Valley",)),
+            [final("Resolved.")],
+        )
+        self.assertEqual(second.status, "done", second.reason)
+
+        ledger = await self.ledger()
+        self.assertEqual([(a.name, a.wording, a.run_id) for a in ledger.areas], [
+            ("New Jersey", "NJ", first.trace_id), ("Delaware Valley", "Delaware Valley", second.trace_id),
+        ])
+        self.assertEqual(len({a.handle for a in ledger.areas}), 2)
+        lines = self.section(render_ledger(ledger), "Areas:")
+        self.assertEqual(lines, [
+            f'- New Jersey (asked as "NJ"): {ledger.areas[0].handle}, run {first.trace_id}',
+            f"- Delaware Valley: {ledger.areas[1].handle}, run {second.trace_id}",
+        ])
+
+    async def test_a_polygons_handle_with_no_recorded_place_is_a_handle_not_an_area(self):
+        env = await self.f.build(self.f.context, "run_" + "0" * 32)
+        unnamed = await env.resolver.mint(
+            user_id="user-a", conversation_id="conv-1", kind="polygons",
+            data={"type": "FeatureCollection", "features": []},
+            descriptor=Descriptor(summary="Some polygons", region={"name": "Somewhere", "bounds": [-75.0, 39.0, -74.0, 40.0]}),
+            operation="operations.make", created_at=self.f.context.clock.now(),
+        )
+        result = await self.explore_one(
+            ExploreTask(objective="Look at these polygons.", bundle="investigate", handles=(unnamed.id,)),
+            [final("Looked.")],
+        )
+        self.assertEqual(result.status, "done", result.reason)
+
+        ledger = await self.ledger()
+        self.assertEqual(ledger.areas, ())
+        self.assertEqual([(h.id, h.kind) for h in ledger.handles], [(unnamed.id, "polygons")])
+        self.assertNotIn("Areas:", render_ledger(ledger))

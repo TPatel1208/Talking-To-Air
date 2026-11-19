@@ -687,6 +687,50 @@ class BudgetTests(ExploreCase):
         self.assertEqual([f.name for f in result.findings], ["mean"])
 
 
+class PartialDeliveryTests(ExploreCase):
+    """A task that stops short still returns what its earlier calls made."""
+
+    def assert_kept(self, result: Result) -> None:
+        self.assertEqual(result.charts, ("chart-1",))
+        self.assertEqual([h.split("_")[0] for h in result.handles], ["polygons", "scalar"])
+        self.assertEqual(result.disclosures, (
+            "'NJ' was resolved to New Jersey.",
+            "Measured over the area.",
+            "Product: TEMPO_NO2, chosen by rule approved_preference.",
+            "Drawn as dots.",
+        ))
+
+    async def test_a_task_asking_for_an_answer_keeps_its_charts_handles_and_disclosures(self):
+        [result] = await self.go(task(places=("NJ",)), script=[
+            call_on_area("sources__fake__measure"),
+            call_on_last("render__draw"),
+            tool_call("sources__fake__ask", {"label": "level"}),
+            final(),
+        ])
+        self.assertEqual(result.status, "needs_input")
+        self.assert_kept(result)
+        self.assertEqual(result.question["prompt"], "Which level should be used?")
+
+    async def test_a_task_still_waiting_on_a_job_keeps_its_charts_handles_and_disclosures(self):
+        [result] = await self.go(task(places=("NJ",)), script=[
+            call_on_area("sources__fake__measure"),
+            call_on_last("render__draw"),
+            tool_call("sources__fake__fetch", {"label": "big"}),
+            final(),
+        ])
+        self.assertEqual(result.status, "waiting")
+        self.assert_kept(result)
+
+    async def test_a_task_that_ran_out_of_calls_keeps_its_charts_handles_and_disclosures(self):
+        [result] = await self.go(task(places=("NJ",)), limits=ExploreLimits(model_calls=2), script=[
+            call_on_area("sources__fake__measure"),
+            call_on_last("render__draw"),
+            final(),
+        ])
+        self.assertEqual(result.status, "incomplete")
+        self.assert_kept(result)
+
+
 class WaitingTests(ExploreCase):
     async def test_a_job_still_running_ends_the_task_waiting_with_the_job_in_the_trace(self):
         [result] = await self.go(task(places=("NJ",)), script=[

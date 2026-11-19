@@ -1,5 +1,7 @@
 """Exploration over the real capability catalogue, fake earthdata and the core pack's notes."""
+import datetime
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +10,7 @@ from typing import Any
 from tests.test_harness_grids import NJ
 from tests.test_harness_sources_satellite import NO2, SECRET, TODAY, FakeService
 from tests.test_harness_specialists import (
+    HANDLE_ID,
     Model,
     Turn,
     call_on_area,
@@ -23,7 +26,8 @@ from tta_backend.harness.knowledge import load_notes
 from tta_backend.harness.models import NO_BACKOFF
 from tta_backend.harness.results import Result
 from tta_backend.harness.run_context import RunContext
-from tta_backend.harness.specialists import ExploreLimits, ExploreTask, explore, get_bundle, tool_name
+from tta_backend.harness.specialists import ExploreLimits, ExploreTask, explore, get_bundle, tool_name, tool_schema
+from tta_backend.harness.specialists.prompt import system_prompt
 from tta_backend.harness.specialists.tools import JOB_WAITING
 from tta_backend.harness.storage import Stores, memory_stores
 from tta_backend.harness.testing import (
@@ -152,3 +156,52 @@ class CatalogueTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("TEMPO covers North America only", str(self.world.model.received[0][0].content))
         self.assertEqual(result.handles[0], grid)
         self.assertEqual(json.loads(json.dumps(result.findings[0].model_dump()))["source_handle"], result.handles[1])
+
+
+# The smallest prefix Claude models cache; below it the cache discount does not apply.
+MIN_CACHEABLE_TOKENS = 1024
+UUID_LIKE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+RUN_ID = re.compile(r"run_[0-9a-f]{32}")
+
+
+def prefix_of(bundle_name: str) -> tuple[str, str]:
+    """A specialist's cacheable prefix as built from scratch: its system prompt and its tool schemas as serialised."""
+    registry = build_registry()
+    bundle = get_bundle(bundle_name)
+    notes = NOTES.notes_for(datasets=["TEMPO_NO2"], quantities=["no2_tropospheric_column"], pollutants=["no2"])
+    tools = [
+        {"name": tool_name(c), "description": c.description, "parameters": tool_schema(c)}
+        for c in bundle.capabilities(registry)
+    ]
+    return system_prompt(bundle.groups(registry), notes), json.dumps(tools, sort_keys=True)
+
+
+class PrefixStabilityTests(unittest.TestCase):
+    BUNDLES = ("analyse", "investigate", "find-data")
+
+    def test_two_builds_of_a_bundles_prompt_and_tool_schemas_are_byte_identical(self):
+        for name in self.BUNDLES:
+            with self.subTest(bundle=name):
+                self.assertEqual(prefix_of(name), prefix_of(name))
+
+    def test_the_prefix_holds_no_date_or_per_request_identifier(self):
+        now = datetime.datetime.now(datetime.UTC)
+        todays = (
+            now.strftime("%Y-%m-%d"), now.strftime("%d/%m/%Y"), now.strftime("%m/%d/%Y"),
+            now.strftime("%B %d, %Y"), now.strftime("%b %d %Y"),
+        )
+        for name in self.BUNDLES:
+            prompt, schemas = prefix_of(name)
+            for part, text in (("system prompt", prompt), ("tool schemas", schemas)):
+                with self.subTest(bundle=name, part=part):
+                    for rendered in todays:
+                        self.assertNotIn(rendered, text)
+                    for pattern in (UUID_LIKE, RUN_ID, HANDLE_ID):
+                        self.assertIsNone(pattern.search(text), pattern.pattern)
+
+    def test_the_prefix_clears_the_size_the_cache_discount_needs(self):
+        # Characters rather than tokens, at four to a token, so this is not a test of a tokenizer.
+        for name in self.BUNDLES:
+            with self.subTest(bundle=name):
+                prompt, schemas = prefix_of(name)
+                self.assertGreater((len(prompt) + len(schemas)) // 4, MIN_CACHEABLE_TOKENS)

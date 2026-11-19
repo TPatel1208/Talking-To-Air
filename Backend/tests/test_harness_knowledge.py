@@ -54,6 +54,31 @@ class ShippedNotesTest(unittest.TestCase):
         by_dataset = [n.id for n in catalogue.notes_for(datasets=["TEMPO_O3PROF"])]
         self.assertEqual(by_dataset, ["ozone-profile-layers", "tempo-coverage-and-cadence"])
 
+    def test_the_core_notes_say_what_the_old_prompts_said_and_arrive_with_their_data(self) -> None:
+        catalogue = load_notes(PACKS, DATASETS)
+
+        def says(note_id: str, *phrases: str) -> None:
+            body = " ".join(catalogue.get(note_id).body.lower().split())
+            for phrase in phrases:
+                self.assertIn(phrase.lower(), body, f"{note_id} no longer says {phrase!r}")
+
+        # A satellite column and a surface concentration are different quantities.
+        says("column-vs-surface", "are different physical quantities", "never state or imply the two measure the same thing")
+        self.assertIn("column-vs-surface", [n.id for n in catalogue.notes_for(quantities=["no2_tropospheric_column"])])
+        # Standard products lag, near-real-time products exist, and a partial range is reported as N of M days.
+        says(
+            "recent-data-and-nrt", "multi-day latency", "not evidence the data does not exist", "near real-time (nrt)",
+            "data returned for n of your m requested days", "never present the covered subset as the whole range",
+        )
+        for dataset in ("MODIS_AOD_TERRA", "TEMPO_NO2_NRT"):
+            self.assertIn("recent-data-and-nrt", [n.id for n in catalogue.notes_for(datasets=[dataset])])
+        # A layer index is not a height; a named height or pressure resolves to the nearest layer, not a profile.
+        says(
+            "ozone-profile-layers", "a layer index is not a height", "resolves to the nearest available layer",
+            "is a different claim from", "the unit is the only thing saying which axis was meant",
+        )
+        self.assertIn("ozone-profile-layers", [n.id for n in catalogue.notes_for(quantities=["o3_profile"])])
+
 
 class ValidationTest(unittest.TestCase):
     def test_a_valid_note_loads(self) -> None:

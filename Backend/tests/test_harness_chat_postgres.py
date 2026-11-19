@@ -35,6 +35,7 @@ from tta_backend.harness.storage import Stores, ensure_tables, postgres_stores  
 from tta_backend.harness.supervisor import Supervisor  # noqa: E402
 from tta_backend.harness.testing import ScriptedModels, answer, tool_call  # noqa: E402
 from tta_backend.harness.workflows.loader import load_packs  # noqa: E402
+from tta_backend.models.transcript import TranscriptTurn  # noqa: E402
 from tta_backend.repositories import chart_repository, transcript_repository  # noqa: E402
 from tta_backend.services.artifact_store import artifact_store  # noqa: E402
 from tta_backend.services.chart_service import ChartLink, ChartService  # noqa: E402
@@ -109,6 +110,9 @@ class HarnessChatPostgresTests(PostgresTestCase):
             self.assertEqual([m["role"] for m in messages], ["user", "assistant", "user", "assistant"])
             self.assertEqual(messages[2]["content"], "Is that the map you made?")
             self.assertEqual(messages[3]["content"], "Yes, the map from the last turn.")
+            # A reload shows the answer, with its sources line, exactly as it streamed.
+            self.assertEqual(messages[1]["content"], done["response"])
+            self.assertEqual(messages[1]["content"].splitlines()[0], "Data sources: TEMPO_NO2")
             [chart] = messages[1]["charts"]
             self.assertEqual(chart["chart_id"], reference["chart_id"])
             self.assertEqual(chart["user_id"], "user-a")
@@ -132,3 +136,53 @@ class HarnessChatPostgresTests(PostgresTestCase):
                 self.assertEqual(len([n for n in archive.namelist() if n.startswith("figures/")]), 1)
             with self.assertRaises(ResultNotFound):
                 await exporter.methods("user-b", workflow_run)
+
+    async def test_history_shows_only_the_users_own_charts_reads_them_in_one_query_and_writes_nothing(self):
+        def chart(title: str) -> dict[str, Any]:
+            return {"type": "timeseries", "title": title, "series": [], "metadata": {}}
+
+        def reference(chart_id: str) -> dict[str, Any]:
+            return {"chart_id": chart_id, "type": "timeseries", "reference": True}
+
+        async def rows(connect: Connect) -> list[tuple[Any, ...]]:
+            async with connect() as conn:
+                cursor = await conn.execute("SELECT id, thread_id, user_id, payload FROM agent_charts ORDER BY id")
+                return [tuple(row) for row in await cursor.fetchall()]
+
+        async with self.world() as (connect, stores, root):
+            mine = await chart_repository.save_chart("thread-1", chart("Mine"), "user-a")
+            other = await chart_repository.save_chart("thread-9", chart("Theirs"), "user-b")
+            also = await chart_repository.save_chart("thread-1", chart("Also mine"), "user-a")
+            gone = "00000000-0000-0000-0000-0000000000aa"
+            # The first turn points at two of the user's own charts, one that no longer exists and another user's.
+            for charts in ([reference(mine["chart_id"]), reference(gone), reference(other["chart_id"]),
+                            reference(also["chart_id"])],
+                           [reference(mine["chart_id"])], []):
+                await transcript_repository.append_turn(TranscriptTurn(
+                    thread_id="thread-1", user_id="user-a", user_text="Plot it", answer_text="Plotted.", charts=charts,
+                ))
+            await transcript_repository.append_turn(TranscriptTurn(
+                thread_id="thread-1", user_id="user-b", user_text="Mine too", answer_text="Plotted.",
+                charts=[reference(mine["chart_id"])],
+            ))
+            before = await rows(connect)
+
+            with patch.object(chart_repository, "get_charts", wraps=chart_repository.get_charts) as reads, \
+                 patch.object(chart_repository, "save_chart", wraps=chart_repository.save_chart) as writes:
+                messages = await transcript_history("thread-1", "user-a", ChartService())
+                theirs = await transcript_history("thread-1", "user-b", ChartService())
+
+            assistants = [m for m in messages if m["role"] == "assistant"]
+            self.assertEqual([[c["chart_id"] for c in m["charts"]] for m in assistants],
+                             [[mine["chart_id"], also["chart_id"]], [mine["chart_id"]], []])
+            self.assertEqual(assistants[0]["charts"][0]["user_id"], "user-a")
+            # Another user's chart is not shown to the one whose transcript points at it, and the reverse.
+            self.assertEqual([c["chart_id"] for m in theirs for c in m.get("charts", [])], [])
+            # Each history is one read for every chart of every turn, and nothing is written, no stub for the missing one.
+            self.assertEqual(reads.await_count, 2)
+            self.assertEqual(len(reads.await_args_list[0].args[0]), 5)
+            self.assertEqual(writes.await_count, 0)
+            self.assertEqual(await rows(connect), before)
+            self.assertEqual({r[0]: r[2] for r in before}, {
+                mine["chart_id"]: "user-a", also["chart_id"]: "user-a", other["chart_id"]: "user-b",
+            })

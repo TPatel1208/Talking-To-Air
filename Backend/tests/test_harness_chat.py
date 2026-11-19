@@ -28,11 +28,11 @@ from harness_chat_helpers import (  # noqa: E402
     memory_repositories,
 )
 from redis_helpers import REDIS_URL, requires_redis  # noqa: E402
-from tests.test_harness_specialists import Model  # noqa: E402
+from tests.test_harness_specialists import Model, Routed, choice_of, final, input_handle, results  # noqa: E402
 from tests.test_harness_supervisor import SupervisorCase, run_map  # noqa: E402
 from tests.test_harness_sources_satellite import NO2  # noqa: E402
-from tests.test_harness_workflow_packs_run import EDL_SECRET, JUNE, GroundWorkflowRuns, PackRun  # noqa: E402
-from tta_backend.harness.testing import FakeToolError, StaticCredentials, env_factory  # noqa: E402
+from tests.test_harness_workflow_packs_run import EDL_SECRET, JULY, JUNE, GroundWorkflowRuns, PackRun  # noqa: E402
+from tta_backend.harness.testing import FakeToolError, ScriptedModels, StaticCredentials, env_factory, tool_call  # noqa: E402
 from tta_backend.config.error_templates import (  # noqa: E402
     render_error_answer,
     render_overloaded_answer,
@@ -45,9 +45,10 @@ from tta_backend.harness.storage import memory_stores  # noqa: E402
 from tta_backend.harness.trace import Run, new_run_id  # noqa: E402
 from tta_backend.harness.supervisor.supervisor import FAILED_WORDING  # noqa: E402
 from tta_backend.harness.testing import answer, rate_limited  # noqa: E402
-from tta_backend.services import admission  # noqa: E402
+from tta_backend.services import admission, cube_cache  # noqa: E402
 from tta_backend.services.harness_chat import (  # noqa: E402
     ConnectorCredentials,
+    JobReporting,
     ReadyEarthdata,
     StoppedConnectors,
     StoredArtifacts,
@@ -186,6 +187,106 @@ class ScriptedSupervisorTurnTests(SupervisorCase):
                          [{k: v for k, v in a.items() if k not in drawn} for a in done["artifacts"]])
         self.assertEqual([r.view() for r in turn.results], done["results"])
         self.assertEqual(turn.suggested_followups, done.get("suggested_followups", []))
+
+    async def test_parallel_specialists_each_get_their_own_labelled_run_and_their_jobs_and_charts_arrive_once(self):
+        def retrieve_and_map(dates: dict[str, str]) -> list[Any]:
+            return [
+                lambda m: tool_call("sources__satellite__get_data", {
+                    "area": input_handle(m, "polygons"), "quantity": NO2, "dates": dates, "date_role": "range",
+                }),
+                lambda m: tool_call("render__map", {"grid": next(r["handle"] for r in results(m) if r.get("kind") == "grid")}),
+                final("Mapped."),
+            ]
+
+        objectives = ("Map NO2 over NJ in early June.", "Map NO2 over NJ in mid June.")
+        self.explorer = Routed(turns={objectives[0]: retrieve_and_map(JUNE), objectives[1]: retrieve_and_map(JULY)})
+        session = self.service.earthdata()
+
+        def ports(user_id: str, report_job: Any) -> TurnPorts:
+            build = env_factory(
+                self.root, earthdata=JobReporting(session, report_job), open_retrieval=self.open_retrieval,
+                places=self.f.places, models=ScriptedModels({"explore": choice_of(self.explorer)}),
+            )
+            return TurnPorts(build_env=build, earthdata=session)
+
+        tasks = [{"objective": o, "bundle": "analyse", "places": ["NJ"]} for o in objectives]
+        model = Model(script=[tool_call("explore", {"tasks": tasks}), answer("Both maps are ready.")])
+        chat = make_chat(
+            self.supervisor(model), self.root, stores=self.f.stores, ports=ports,
+            credentials={"earthdata": EDL_SECRET}, clock=self.f.context.clock,
+        )
+        frames = await self.collect.run(chat, "Map NO2 over NJ for early and mid June 2024.")
+
+        done = last(frames, "done")
+        runs = [r["run_id"] for r in done["results"]]
+        self.assertEqual([r["status"] for r in done["results"]], ["done", "done"], done["results"])
+        self.assertEqual(len(set(runs)), 2)
+        parsed = parse(frames)
+        statuses = [(i, data) for i, (event, data) in enumerate(parsed) if event == "status"]
+        for run, objective in zip(runs, objectives, strict=True):
+            with self.subTest(run=run):
+                mine = [(i, d) for i, d in statuses if d.get("run_id") == run]
+                # One row opens the run, labelled with its objective, before anything else of the run's.
+                openings = [(i, d) for i, d in mine if d.get("stage") == "explore"]
+                [(opened, opening)] = openings
+                self.assertEqual(opening["detail"], {"objective": objective, "bundle": "analyse"})
+                self.assertEqual(opened, min(i for i, _ in mine))
+                self.assertGreater(len(mine), 2)
+                charts = [(i, data) for i, (event, data) in enumerate(parsed) if event == "chart" and data.get("run_id") == run]
+                [(drawn, chart)] = charts
+                self.assertGreater(drawn, opened)
+                self.assertEqual(chart["mode"]["label"], "Exploratory")
+        # Nothing that opens a run is sent without it.
+        self.assertTrue(all("run_id" in d for _, d in statuses if d.get("stage") == "explore"))
+        chart_ids = [data["chart_id"] for event, data in parsed if event == "chart"]
+        self.assertEqual(len(chart_ids), 2)
+        self.assertEqual(len(set(chart_ids)), 2)
+        self.assertEqual(self.charts.saves, 2)
+        self.assertEqual([a["id"] for a in done["artifacts"]], chart_ids)
+        jobs = [data for event, data in parsed if event == "job_progress"]
+        submitted = [j["job_handle"] for j in jobs if j["status"] == "submitted"]
+        self.assertEqual(sorted(submitted), ["job_1", "job_2"])
+        self.assertTrue(all(set(j) == {"job_handle", "status", "progress", "phase", "message", "note"} for j in jobs))
+        self.assertTrue(all(EDL_SECRET not in frame for frame in frames))
+
+    async def test_a_failed_result_reaches_the_user_in_fixed_wording_and_the_next_turn_works(self):
+        earthdata = self.service.earthdata()
+
+        def unsupported(arguments: dict[str, Any]) -> dict[str, Any]:
+            raise FakeToolError("unsupported_grid", "detail only the service knows")
+
+        earthdata.tools["search_datasets"] = unsupported
+        build = env_factory(
+            self.root, earthdata=earthdata, open_retrieval=self.open_retrieval, places=self.f.places,
+            models=ScriptedModels({"explore": choice_of(self.explorer)}),
+        )
+        model = Model(script=[run_map(), answer("The map could not be made."), answer("Yes, still here.")])
+        chat = make_chat(
+            self.supervisor(model), self.root, stores=self.f.stores, clock=self.f.context.clock,
+            ports=lambda user_id, report_job: TurnPorts(build_env=build, earthdata=earthdata),
+            credentials={"earthdata": EDL_SECRET},
+        )
+
+        first = await self.collect.run(chat, "Map NO2 over New Jersey for June 1 to 3, 2024.")
+
+        # A failed run is a result, not a failed turn: no error frame, and the reason is in the answer.
+        self.assertEqual(events(first)[-1], "done")
+        self.assertNotIn("error", events(first))
+        done = last(first, "done")
+        [result] = done["results"]
+        self.assertEqual(result["status"], "failed")
+        self.assertTrue(result["reason"])
+        self.assertIn(f"Not finished:\n- {result['reason']}", done["response"])
+        self.assertNotIn("detail only the service knows", "".join(first))
+        self.assertEqual(events(first).count("chart"), 0)
+        [turn] = self.transcripts.turns
+        self.assertEqual((turn.status, [r.status for r in turn.results], turn.charts), ("done", ["failed"], []))
+        self.assertEqual(turn.answer_text, done["response"])
+
+        second = await self.collect.run(chat, "Are you still there?")
+        self.assertEqual(last(second, "done")["response"], "Yes, still here.")
+        self.assertEqual([t.turn_index for t in self.transcripts.turns], [0, 1])
+        self.assertEqual(self.transcripts.turns[1].status, "done")
 
     async def test_a_failing_model_ends_with_error_then_done_and_an_error_transcript(self):
         model = Model(script=[rate_limited(), rate_limited(), rate_limited()])
@@ -452,6 +553,124 @@ class HostFrameTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events(frames)[-2:], ["text", "done"])
 
 
+class Hanging:
+    """A supervisor that waits forever, noting when it is cancelled."""
+
+    def __init__(self) -> None:
+        self.cancelled = False
+
+    async def turn(self, context: Any, build_env: Any, earthdata: Any, message: str) -> Any:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+
+
+class Watching(PlaybackSupervisor):
+    """A playback supervisor noting whether the process is marked busy while it runs."""
+
+    def __init__(self, *steps: Any, **kw: Any) -> None:
+        super().__init__(*steps, **kw)
+        self.busy_during: list[bool] = []
+
+    async def turn(self, context: Any, build_env: Any, earthdata: Any, message: str) -> Any:
+        self.busy_during.append(cube_cache.turn_is_active())
+        result = await super().turn(context, build_env, earthdata, message)
+        await asyncio.sleep(0)
+        self.busy_during.append(cube_cache.turn_is_active())
+        return result
+
+
+class TurnLifetimeTests(unittest.IsolatedAsyncioTestCase):
+    """What the host does around a turn that runs long, is cut off, or keeps talking."""
+
+    async def asyncSetUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = tmp.name
+        self.transcripts = MemoryTranscripts()
+        self.charts = MemoryCharts()
+        self.enterContext(memory_repositories(self.transcripts, self.charts))
+        self.collect = Collecting(self.transcripts)
+
+    async def test_a_turn_past_its_deadline_has_its_running_work_cancelled(self):
+        supervisor = Hanging()
+        frames = await self.collect.run(make_chat(supervisor, self.root, timeout=0.05))
+
+        self.assertEqual(events(frames), ["error", "done"])
+        for _ in range(20):
+            await asyncio.sleep(0)
+        self.assertTrue(supervisor.cancelled)
+
+    async def test_a_slow_turn_within_its_deadline_completes_normally(self):
+        pause = asyncio.Event()
+        asyncio.get_running_loop().call_later(0.1, pause.set)
+        supervisor = PlaybackSupervisor(("text", "Taking a while. "), pause, ("text", "Done."))
+        frames = await self.collect.run(make_chat(supervisor, self.root, timeout=5.0))
+
+        self.assertEqual(events(frames), ["text", "text", "done"])
+        self.assertEqual(last(frames, "done")["response"], "Taking a while. Done.")
+        self.assertEqual(self.transcripts.turns[0].status, "done")
+
+    async def test_a_turn_that_keeps_talking_gets_no_heartbeat(self):
+        class Chatty:
+            async def turn(self, context: Any, build_env: Any, earthdata: Any, message: str) -> Any:
+                for n in range(8):
+                    context.events.text(f"{n} ")
+                    await asyncio.sleep(0.03)
+                return make_turn("0 1 2 3 4 5 6 7 ")
+
+        with patch("tta_backend.utils.streaming.HEARTBEAT_INTERVAL_SECONDS", 0.2):
+            frames = await self.collect.run(make_chat(Chatty(), self.root))
+
+        self.assertEqual(events(frames), ["text"] * 8 + ["done"])
+
+    async def test_a_heartbeat_between_two_pieces_of_the_answer_leaves_them_in_order(self):
+        blocked = asyncio.Event()
+        supervisor = PlaybackSupervisor(("text", "First part. "), blocked, ("text", "Second part."))
+        asyncio.get_running_loop().call_later(0.3, blocked.set)
+        with patch("tta_backend.utils.streaming.HEARTBEAT_INTERVAL_SECONDS", 0.05):
+            frames = await self.collect.run(make_chat(supervisor, self.root))
+
+        names = events(frames)
+        self.assertEqual((names[0], names[-2:]), ("text", ["text", "done"]))
+        middle = names[1:-2]
+        self.assertTrue(middle)
+        self.assertEqual(set(middle), {"status"})
+        self.assertTrue(all(d["stage"] == "working" for event, d in parse(frames) if event == "status"))
+        self.assertEqual(
+            [d["content"] for event, d in parse(frames) if event == "text"], ["First part. ", "Second part."],
+        )
+        self.assertEqual(last(frames, "done")["response"], "First part. Second part.")
+
+    async def test_the_process_is_marked_busy_for_the_whole_turn_and_idle_after_it(self):
+        self.assertFalse(cube_cache.turn_is_active())
+        supervisor = Watching(("text", "Done."))
+        await self.collect.run(make_chat(supervisor, self.root))
+        self.assertEqual(supervisor.busy_during, [True, True])
+        self.assertFalse(cube_cache.turn_is_active())
+
+        failing = Watching(("raise", RuntimeError("boom")))
+        with self.assertLogs("tta_backend.services.harness_chat", level="ERROR"):
+            await self.collect.run(make_chat(failing, self.root))
+        self.assertEqual(failing.busy_during, [True])
+        self.assertFalse(cube_cache.turn_is_active())
+
+    async def test_a_malformed_chart_is_still_sent_with_a_warning_and_a_good_one_has_none(self):
+        broken = {"type": "heatmap", "title": "A map with no bounds"}
+        supervisor = PlaybackSupervisor(("chart", broken), ("text", "Done."))
+        with self.assertLogs("tta_backend.services.harness_chat", level="WARNING") as logged:
+            frames = await self.collect.run(make_chat(supervisor, self.root))
+        self.assertEqual(events(frames), ["chart", "text", "done"])
+        self.assertTrue(any("chart_artifact_reference_invalid" in line for line in logged.output), logged.output)
+
+        supervisor = PlaybackSupervisor(("chart", CHART), ("text", "Done."))
+        with self.assertNoLogs("tta_backend.services.harness_chat", level="WARNING"):
+            frames = await self.collect.run(make_chat(supervisor, self.root))
+        self.assertEqual(events(frames), ["chart", "artifact", "text", "done"])
+
+
 class StoppedConnectorTests(PackRun):
     """Real workflow runs that stop for a connector, read back as the done frame's ``connector``."""
 
@@ -700,6 +919,42 @@ class ChatEndpointUsesTheHarnessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(assistant["charts"][0]["series"], [])
         self.assertEqual([a["id"] for a in assistant["artifacts"]], ["chart-1"])
         self.assertIsNone(assistant["label"])
+
+
+@unittest.skipIf(
+    any(importlib.util.find_spec(module) is None for module in _REQUIRED),
+    "chat endpoint dependencies are not installed",
+)
+class ReconnectedEarthdataTests(unittest.IsolatedAsyncioTestCase):
+    """A turn's earthdata session reads the app's live tools at each call, so a reconnect mid-turn reaches it."""
+
+    async def test_calls_after_the_connection_is_replaced_use_the_new_sessions_tools(self):
+        import tta_backend.api as api
+
+        class Manager:
+            state = STATE_READY
+
+        live: dict[str, Any] = {"search_datasets": "dead-session-tool", "check_coverage": "dead-session-coverage"}
+        previous = getattr(api.app.state, "earthdata_mcp_tools", None)
+        api.app.state.earthdata_mcp_tools = live
+        self.addCleanup(setattr, api.app.state, "earthdata_mcp_tools", previous)
+        # Built when the turn starts, before the reconnect.
+        session = ReadyEarthdata(Manager(), live)
+        called: list[Any] = []
+
+        async def call_tool(tool: Any, arguments: dict[str, Any]) -> str:
+            called.append(tool)
+            return json.dumps({"used": tool})
+
+        with patch("tta_backend.services.harness_host.call_tool", call_tool):
+            self.assertEqual(await session.call("search_datasets", {}), {"used": "dead-session-tool"})
+            await api._on_earthdata_mcp_ready({"search_datasets": "new-session-tool"})
+            self.assertIs(api.app.state.earthdata_mcp_tools, live)
+            self.assertEqual(await session.call("search_datasets", {}), {"used": "new-session-tool"})
+            # A tool the new session no longer offers is gone, not served from the dead session.
+            with self.assertRaises(MCPToolError):
+                await session.call("check_coverage", {})
+        self.assertEqual(called, ["dead-session-tool", "new-session-tool"])
 
 
 if __name__ == "__main__":
